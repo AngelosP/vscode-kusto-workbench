@@ -369,7 +369,6 @@ export class QueryEditorProvider {
 			margin-top: 8px;
 			border-radius: 4px;
 			display: none;
-			overflow-x: auto;
 			max-width: 100%;
 		}
 
@@ -383,11 +382,74 @@ export class QueryEditorProvider {
 			margin-bottom: 8px;
 			padding-bottom: 8px;
 			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 8px;
+		}
+
+		.column-search {
+			position: relative;
+			min-width: 200px;
+		}
+
+		.column-search input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 100%;
+		}
+
+		.column-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.column-autocomplete {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			right: 0;
+			max-height: 200px;
+			overflow-y: auto;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-top: none;
+			border-radius: 0 0 4px 4px;
+			z-index: 1000;
+			display: none;
+		}
+
+		.column-autocomplete.visible {
+			display: block;
+		}
+
+		.column-autocomplete-item {
+			padding: 6px 8px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		.column-autocomplete-item:hover,
+		.column-autocomplete-item.selected {
+			background: var(--vscode-list-hoverBackground);
 		}
 
 		.table-container {
-			overflow-x: auto;
+			overflow: auto;
 			max-width: 100%;
+			max-height: 600px;
+			position: relative;
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+		}
+
+		.table-container:focus {
+			outline: 1px solid var(--vscode-focusBorder);
 		}
 
 		table {
@@ -395,13 +457,16 @@ export class QueryEditorProvider {
 			min-width: 100%;
 			border-collapse: collapse;
 			font-size: 12px;
+			user-select: none;
 		}
 
 		th, td {
 			text-align: left;
 			padding: 6px 8px;
+			border-right: 1px solid var(--vscode-panel-border);
 			border-bottom: 1px solid var(--vscode-panel-border);
 			white-space: nowrap;
+			position: relative;
 		}
 
 		th {
@@ -409,7 +474,44 @@ export class QueryEditorProvider {
 			background: var(--vscode-list-hoverBackground);
 			position: sticky;
 			top: 0;
+			z-index: 2;
+		}
+
+		.row-selector {
+			width: 30px;
+			min-width: 30px;
+			max-width: 30px;
+			text-align: center;
+			background: var(--vscode-editor-background);
+			cursor: pointer;
+			sticky: left;
+			left: 0;
 			z-index: 1;
+			user-select: none;
+		}
+
+		th.row-selector {
+			z-index: 3;
+		}
+
+		td.selected-cell {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: -2px;
+		}
+
+		tr.selected-row {
+			background: var(--vscode-list-inactiveSelectionBackground);
+		}
+
+		tr.selected-row td {
+			background: var(--vscode-list-inactiveSelectionBackground);
+		}
+
+		tr.selected-row .row-selector {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
 		}
 
 		.add-query {
@@ -692,17 +794,47 @@ export class QueryEditorProvider {
 			const resultsDiv = document.getElementById(boxId + '_results');
 			if (!resultsDiv) {return;}
 
+			// Store result data for navigation
+			window.currentResult = {
+				boxId: boxId,
+				columns: result.columns,
+				rows: result.rows,
+				metadata: result.metadata,
+				selectedCell: null,
+				selectedRows: new Set()
+			};
+
 			let html = \`
 				<div class="results-header">
-					<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
-					(Execution time: \${result.metadata.executionTime})
+					<div>
+						<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
+						(Execution time: \${result.metadata.executionTime})
+					</div>
+					<div class="column-search">
+						<input type="text" placeholder="Search columns..." 
+							   id="\${boxId}_column_search"
+							   oninput="filterColumns('\${boxId}')"
+							   onkeydown="handleColumnSearchKeydown(event, '\${boxId}')" />
+						<div class="column-autocomplete" id="\${boxId}_column_autocomplete"></div>
+					</div>
 				</div>
-				<div class="table-container">
-					<table>
-						<thead><tr>\${result.columns.map(c => '<th>' + c + '</th>').join('')}</tr></thead>
+				<div class="table-container" id="\${boxId}_table_container" tabindex="0"
+					 onkeydown="handleTableKeydown(event, '\${boxId}')">
+					<table id="\${boxId}_table">
+						<thead><tr>
+							<th class="row-selector"></th>
+							\${result.columns.map((c, i) => '<th data-col="' + i + '">' + c + '</th>').join('')}
+						</tr></thead>
 						<tbody>
-							\${result.rows.map(row => 
-								'<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') + '</tr>'
+							\${result.rows.map((row, rowIdx) => 
+								'<tr data-row="' + rowIdx + '">' +
+								'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">▶</td>' +
+								row.map((cell, colIdx) => 
+									'<td data-row="' + rowIdx + '" data-col="' + colIdx + '" ' +
+									'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
+									cell + '</td>'
+								).join('') + 
+								'</tr>'
 							).join('')}
 						</tbody>
 					</table>
@@ -727,7 +859,207 @@ export class QueryEditorProvider {
 			\`;
 			resultsDiv.classList.add('visible');
 		}
+		function selectCell(row, col, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			// Clear previous selection
+			const prevCell = document.querySelector('#' + boxId + '_table td.selected-cell');
+			if (prevCell) {
+				prevCell.classList.remove('selected-cell');
+			}
+			
+			// Select new cell
+			const cell = document.querySelector('#' + boxId + '_table td[data-row="' + row + '"][data-col="' + col + '"]');
+			if (cell) {
+				cell.classList.add('selected-cell');
+				window.currentResult.selectedCell = { row, col };
+				
+				// Scroll cell into view
+				cell.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+				
+				// Focus the container for keyboard navigation
+				const container = document.getElementById(boxId + '_table_container');
+				if (container) {
+					container.focus();
+				}
+			}
+		}
 
+		function toggleRowSelection(row, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const rowElement = document.querySelector('#' + boxId + '_table tr[data-row="' + row + '"]');
+			if (!rowElement) {return;}
+			
+			if (window.currentResult.selectedRows.has(row)) {
+				window.currentResult.selectedRows.delete(row);
+				rowElement.classList.remove('selected-row');
+			} else {
+				window.currentResult.selectedRows.add(row);
+				rowElement.classList.add('selected-row');
+			}
+		}
+
+		function handleTableKeydown(event, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const cell = window.currentResult.selectedCell;
+			if (!cell) {
+				// If no cell selected, select first cell
+				if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+					event.preventDefault();
+					selectCell(0, 0, boxId);
+				}
+				return;
+			}
+			
+			let newRow = cell.row;
+			let newCol = cell.col;
+			const maxRow = window.currentResult.rows.length - 1;
+			const maxCol = window.currentResult.columns.length - 1;
+			
+			switch(event.key) {
+				case 'ArrowRight':
+					if (newCol < maxCol) {
+						newCol++;
+						event.preventDefault();
+					}
+					break;
+				case 'ArrowLeft':
+					if (newCol > 0) {
+						newCol--;
+						event.preventDefault();
+					}
+					break;
+				case 'ArrowDown':
+					if (newRow < maxRow) {
+						newRow++;
+						event.preventDefault();
+					}
+					break;
+				case 'ArrowUp':
+					if (newRow > 0) {
+						newRow--;
+						event.preventDefault();
+					}
+					break;
+				case 'Home':
+					if (event.ctrlKey) {
+						newRow = 0;
+						newCol = 0;
+					} else {
+						newCol = 0;
+					}
+					event.preventDefault();
+					break;
+				case 'End':
+					if (event.ctrlKey) {
+						newRow = maxRow;
+						newCol = maxCol;
+					} else {
+						newCol = maxCol;
+					}
+					event.preventDefault();
+					break;
+				default:
+					return;
+			}
+			
+			if (newRow !== cell.row || newCol !== cell.col) {
+				selectCell(newRow, newCol, boxId);
+			}
+		}
+
+		function filterColumns(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const input = document.getElementById(boxId + '_column_search');
+			const autocomplete = document.getElementById(boxId + '_column_autocomplete');
+			if (!input || !autocomplete) {return;}
+			
+			const query = input.value.toLowerCase();
+			
+			if (!query) {
+				autocomplete.classList.remove('visible');
+				return;
+			}
+			
+			const matches = window.currentResult.columns
+				.map((col, idx) => ({ name: col, index: idx }))
+				.filter(col => col.name.toLowerCase().includes(query));
+			
+			if (matches.length === 0) {
+				autocomplete.classList.remove('visible');
+				return;
+			}
+			
+			autocomplete.innerHTML = matches.map((col, idx) => 
+				'<div class="column-autocomplete-item' + (idx === 0 ? ' selected' : '') + '" ' +
+				'data-col-index="' + col.index + '" ' +
+				'onclick="scrollToColumn(' + col.index + ', \\'' + boxId + '\\')">' + 
+				col.name + '</div>'
+			).join('');
+			
+			autocomplete.classList.add('visible');
+			window.currentAutocompleteIndex = 0;
+		}
+
+		function handleColumnSearchKeydown(event, boxId) {
+			const autocomplete = document.getElementById(boxId + '_column_autocomplete');
+			if (!autocomplete || !autocomplete.classList.contains('visible')) {return;}
+			
+			const items = autocomplete.querySelectorAll('.column-autocomplete-item');
+			if (items.length === 0) {return;}
+			
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				window.currentAutocompleteIndex = (window.currentAutocompleteIndex + 1) % items.length;
+				updateAutocompleteSelection(items);
+			} else if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				window.currentAutocompleteIndex = (window.currentAutocompleteIndex - 1 + items.length) % items.length;
+				updateAutocompleteSelection(items);
+			} else if (event.key === 'Enter') {
+				event.preventDefault();
+				const selected = items[window.currentAutocompleteIndex];
+				if (selected) {
+					const colIndex = parseInt(selected.getAttribute('data-col-index'));
+					scrollToColumn(colIndex, boxId);
+					autocomplete.classList.remove('visible');
+					const input = document.getElementById(boxId + '_column_search');
+					if (input) {input.value = '';}
+				}
+			} else if (event.key === 'Escape') {
+				event.preventDefault();
+				autocomplete.classList.remove('visible');
+			}
+		}
+
+		function updateAutocompleteSelection(items) {
+			items.forEach((item, idx) => {
+				if (idx === window.currentAutocompleteIndex) {
+					item.classList.add('selected');
+					item.scrollIntoView({ block: 'nearest' });
+				} else {
+					item.classList.remove('selected');
+				}
+			});
+		}
+
+		function scrollToColumn(colIndex, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			// Select first cell in that column first
+			selectCell(0, colIndex, boxId);
+			
+			// Then scroll the container to center the column
+			setTimeout(() => {
+				const cell = document.querySelector('#' + boxId + '_table td[data-row="0"][data-col="' + colIndex + '"]');
+				if (cell) {
+					cell.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+				}
+			}, 100);
+		}
 		// Add initial query box
 		addQueryBox();
 	</script>
