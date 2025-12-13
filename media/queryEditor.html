@@ -1,50 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kusto Query Editor</title>
-<link rel="stylesheet" href="{{monacoCssUri}}">
-<link rel="stylesheet" href="{{queryEditorCssUri}}">
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Kusto Query Editor</title>
+	<link rel="stylesheet" href="{{monacoCssUri}}">
+	<link rel="stylesheet" href="{{queryEditorCssUri}}">
 </head>
+
 <body>
-<div id="queries-container"></div>
-<button class="add-query" onclick="addQueryBox()">+ Add Query Box</button>
+	<div id="queries-container"></div>
+	<button class="add-query" onclick="addQueryBox()">+ Add Query Box</button>
 
-<!-- Object Viewer Modal -->
-<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
-<div class="object-viewer-content" onclick="event.stopPropagation()">
-<div class="object-viewer-header">
-<h3>Object Viewer</h3>
-<div class="object-viewer-search">
-<input type="text" id="objectViewerSearch" placeholder="Search in JSON..." oninput="searchInObjectViewer()" />
-<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
-</div>
-<button class="object-viewer-close" onclick="closeObjectViewer()">Close</button>
-</div>
-<div class="object-viewer-body">
-<div id="objectViewerContent" class="object-viewer-json"></div>
-</div>
-</div>
-</div>
+	<!-- Object Viewer Modal -->
+	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
+		<div class="object-viewer-content" onclick="event.stopPropagation()">
+			<div class="object-viewer-header">
+				<h3>Object Viewer</h3>
+				<div class="object-viewer-search">
+					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..."
+						oninput="searchInObjectViewer()" />
+					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
+				</div>
+				<button class="object-viewer-close" onclick="closeObjectViewer()">Close</button>
+			</div>
+			<div class="object-viewer-body">
+				<div id="objectViewerContent" class="object-viewer-json"></div>
+			</div>
+		</div>
+	</div>
 
-<!-- Column Analysis Modal -->
-<div id="columnAnalysisModal" class="column-analysis-modal" onclick="closeColumnAnalysis(event)">
-<div class="column-analysis-content" onclick="event.stopPropagation()">
-<div class="column-analysis-header">
-<h3 id="columnAnalysisTitle">Column Analysis</h3>
-<button class="column-analysis-close" onclick="closeColumnAnalysis()">Close</button>
-</div>
-<div class="column-analysis-body" id="columnAnalysisBody"></div>
-</div>
-</div>
+	<!-- Column Analysis Modal -->
+	<div id="columnAnalysisModal" class="column-analysis-modal" onclick="closeColumnAnalysis(event)">
+		<div class="column-analysis-content" onclick="event.stopPropagation()">
+			<div class="column-analysis-header">
+				<h3 id="columnAnalysisTitle">Column Analysis</h3>
+				<button class="column-analysis-close" onclick="closeColumnAnalysis()">Close</button>
+			</div>
+			<div class="column-analysis-body" id="columnAnalysisBody"></div>
+		</div>
+	</div>
 
-<script src="{{monacoLoaderUri}}"></script>
-<script>
-window.__kustoQueryEditorConfig = {
-monacoVsUri: "{{monacoVsUri}}"
-};
-</script>
-<script src="{{queryEditorJsUri}}"></script>
+	<script src="{{monacoLoaderUri}}"></script>
+	<script>
+		window.__kustoQueryEditorConfig = {
+			monacoVsUri: "{{monacoVsUri}}"
+		};
+	</script>
+	<script src="{{queryEditorJsUri}}"></script>
 </body>
+
 </html>
