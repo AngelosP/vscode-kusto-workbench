@@ -525,7 +525,7 @@ export class QueryEditorProvider {
 		.split-button .split-menu {
 			position: absolute;
 			top: calc(100% + 4px);
-			right: 0;
+			left: 0;
 			min-width: 220px;
 			background: var(--vscode-dropdown-background);
 			color: var(--vscode-dropdown-foreground);
@@ -1708,6 +1708,22 @@ export class QueryEditorProvider {
 			} catch (e) {
 				// If clipboard read isn't permitted, fall back to default behavior.
 				// (Do not preventDefault in this case.)
+			}
+		}, true);
+
+		// Ctrl+Enter (Cmd+Enter on macOS) runs the active query box, same as clicking the main run button.
+		document.addEventListener('keydown', (event) => {
+			if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') {
+				return;
+			}
+			if (!activeQueryEditorBoxId) {
+				return;
+			}
+			event.preventDefault();
+			try {
+				executeQuery(activeQueryEditorBoxId);
+			} catch {
+				// ignore
 			}
 		}, true);
 
