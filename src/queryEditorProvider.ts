@@ -510,6 +510,140 @@ export class QueryEditorProvider {
 			cursor: help;
 		}
 
+		.object-view-btn {
+			margin-left: 6px;
+			padding: 2px 6px;
+			font-size: 11px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 3px;
+			cursor: pointer;
+			vertical-align: middle;
+		}
+
+		.object-view-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.object-viewer-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.object-viewer-modal.visible {
+			display: flex;
+		}
+
+		.object-viewer-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 80%;
+			max-width: 1200px;
+			height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.object-viewer-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.object-viewer-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+		}
+
+		.object-viewer-search {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex: 1;
+			margin: 0 16px;
+		}
+
+		.object-viewer-search input {
+			flex: 1;
+			max-width: 300px;
+			padding: 4px 8px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 2px;
+		}
+
+		.object-viewer-search-results {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.object-viewer-close {
+			padding: 4px 12px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: none;
+			border-radius: 2px;
+			cursor: pointer;
+		}
+
+		.object-viewer-close:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.object-viewer-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+		}
+
+		.object-viewer-json {
+			font-family: var(--vscode-editor-font-family);
+			font-size: var(--vscode-editor-font-size);
+			white-space: pre;
+			line-height: 1.6;
+		}
+
+		.json-key {
+			color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe);
+		}
+
+		.json-string {
+			color: var(--vscode-symbolIcon-stringForeground, #ce9178);
+		}
+
+		.json-number {
+			color: var(--vscode-symbolIcon-numberForeground, #b5cea8);
+		}
+
+		.json-boolean {
+			color: var(--vscode-symbolIcon-booleanForeground, #569cd6);
+		}
+
+		.json-null {
+			color: var(--vscode-symbolIcon-nullForeground, #569cd6);
+		}
+
+		.json-highlight {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			border-radius: 2px;
+		}
+
 		tr.selected-row {
 			background: var(--vscode-list-inactiveSelectionBackground);
 		}
@@ -580,6 +714,24 @@ export class QueryEditorProvider {
 <body>
 	<div id="queries-container"></div>
 	<button class="add-query" onclick="addQueryBox()">+ Add Query Box</button>
+
+	<!-- Object Viewer Modal -->
+	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
+		<div class="object-viewer-content" onclick="event.stopPropagation()">
+			<div class="object-viewer-header">
+				<h3>Object Viewer</h3>
+				<div class="object-viewer-search">
+					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..." 
+						   oninput="searchInObjectViewer()" />
+					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
+				</div>
+				<button class="object-viewer-close" onclick="closeObjectViewer()">Close</button>
+			</div>
+			<div class="object-viewer-body">
+				<div id="objectViewerContent" class="object-viewer-json"></div>
+			</div>
+		</div>
+	</div>
 
 	<script>
 		const vscode = acquireVsCodeApi();
@@ -843,10 +995,12 @@ export class QueryEditorProvider {
 									const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 									const displayValue = hasHover ? cell.display : cell;
 									const fullValue = hasHover ? cell.full : cell;
-									const title = hasHover && displayValue !== fullValue ? ' title="' + fullValue + '"' : '';
+									const isObject = cell && cell.isObject;
+									const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + fullValue + '"' : '';
+									const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">View</button>' : '';
 									return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
 										'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
-										displayValue + '</td>';
+										displayValue + viewBtn + '</td>';
 								}).join('') + 
 								'</tr>'
 							).join('')}
@@ -912,6 +1066,200 @@ export class QueryEditorProvider {
 				window.currentResult.selectedRows.add(row);
 				rowElement.classList.add('selected-row');
 			}
+		}
+
+		function openObjectViewer(row, col, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const cellData = window.currentResult.rows[row][col];
+			if (!cellData || !cellData.isObject) {return;}
+			
+			const modal = document.getElementById('objectViewer');
+			const content = document.getElementById('objectViewerContent');
+			
+			// Store the JSON data for searching
+			window.currentObjectViewerData = {
+				raw: cellData.full,
+				formatted: formatJson(cellData.full)
+			};
+			
+			content.innerHTML = window.currentObjectViewerData.formatted;
+			modal.classList.add('visible');
+			
+			// Clear search
+			document.getElementById('objectViewerSearch').value = '';
+			document.getElementById('objectViewerSearchResults').textContent = '';
+		}
+
+		function closeObjectViewer(event) {
+			if (event && event.target !== event.currentTarget && !event.currentTarget.classList.contains('object-viewer-close')) {
+				return;
+			}
+			
+			const modal = document.getElementById('objectViewer');
+			modal.classList.remove('visible');
+			window.currentObjectViewerData = null;
+		}
+
+		function formatJson(jsonString) {
+			try {
+				const obj = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
+				return syntaxHighlightJson(obj);
+			} catch (e) {
+				return '<span class="json-string">' + escapeHtml(jsonString) + '</span>';
+			}
+		}
+
+		function syntaxHighlightJson(obj, indent = 0) {
+			const indentStr = '  '.repeat(indent);
+			const nextIndent = '  '.repeat(indent + 1);
+			
+			if (obj === null) {
+				return '<span class="json-null">null</span>';
+			}
+			
+			if (typeof obj === 'string') {
+				return '<span class="json-string">"' + escapeHtml(obj) + '"</span>';
+			}
+			
+			if (typeof obj === 'number') {
+				return '<span class="json-number">' + obj + '</span>';
+			}
+			
+			if (typeof obj === 'boolean') {
+				return '<span class="json-boolean">' + obj + '</span>';
+			}
+			
+			if (Array.isArray(obj)) {
+				if (obj.length === 0) {
+					return '[]';
+				}
+				
+				let result = '[\\n';
+				obj.forEach((item, index) => {
+					result += nextIndent + syntaxHighlightJson(item, indent + 1);
+					if (index < obj.length - 1) {
+						result += ',';
+					}
+					result += '\\n';
+				});
+				result += indentStr + ']';
+				return result;
+			}
+			
+			if (typeof obj === 'object') {
+				const keys = Object.keys(obj);
+				if (keys.length === 0) {
+					return '{}';
+				}
+				
+				let result = '{\\n';
+				keys.forEach((key, index) => {
+					result += nextIndent + '<span class="json-key">"' + escapeHtml(key) + '"</span>: ';
+					result += syntaxHighlightJson(obj[key], indent + 1);
+					if (index < keys.length - 1) {
+						result += ',';
+					}
+					result += '\\n';
+				});
+				result += indentStr + '}';
+				return result;
+			}
+			
+			return String(obj);
+		}
+
+		function escapeHtml(str) {
+			const div = document.createElement('div');
+			div.textContent = str;
+			return div.innerHTML;
+		}
+
+		function searchInObjectViewer() {
+			if (!window.currentObjectViewerData) {return;}
+			
+			const searchTerm = document.getElementById('objectViewerSearch').value.toLowerCase();
+			const content = document.getElementById('objectViewerContent');
+			const resultsSpan = document.getElementById('objectViewerSearchResults');
+			
+			if (!searchTerm) {
+				content.innerHTML = window.currentObjectViewerData.formatted;
+				resultsSpan.textContent = '';
+				return;
+			}
+			
+			// Count matches in the raw JSON
+			const rawJson = window.currentObjectViewerData.raw.toLowerCase();
+			const matches = (rawJson.match(new RegExp(escapeRegex(searchTerm), 'g')) || []).length;
+			
+			// Highlight matches in the formatted JSON
+			const highlightedHtml = highlightSearchTerm(window.currentObjectViewerData.formatted, searchTerm);
+			content.innerHTML = highlightedHtml;
+			
+			resultsSpan.textContent = matches > 0 ? matches + ' match' + (matches !== 1 ? 'es' : '') : 'No matches';
+			
+			// Scroll to first match
+			const firstMatch = content.querySelector('.json-highlight');
+			if (firstMatch) {
+				firstMatch.scrollIntoView({ block: 'center', behavior: 'smooth' });
+			}
+		}
+
+		function highlightSearchTerm(html, searchTerm) {
+			// Create a temporary div to work with the HTML
+			const tempDiv = document.createElement('div');
+			tempDiv.innerHTML = html;
+			
+			// Function to highlight text in text nodes
+			function highlightInNode(node) {
+				if (node.nodeType === Node.TEXT_NODE) {
+					const text = node.textContent;
+					const lowerText = text.toLowerCase();
+					const lowerSearch = searchTerm.toLowerCase();
+					
+					if (lowerText.includes(lowerSearch)) {
+						const parts = [];
+						let lastIndex = 0;
+						let index = lowerText.indexOf(lowerSearch);
+						
+						while (index !== -1) {
+							// Add text before match
+							if (index > lastIndex) {
+								parts.push(document.createTextNode(text.substring(lastIndex, index)));
+							}
+							
+							// Add highlighted match
+							const span = document.createElement('span');
+							span.className = 'json-highlight';
+							span.textContent = text.substring(index, index + searchTerm.length);
+							parts.push(span);
+							
+							lastIndex = index + searchTerm.length;
+							index = lowerText.indexOf(lowerSearch, lastIndex);
+						}
+						
+						// Add remaining text
+						if (lastIndex < text.length) {
+							parts.push(document.createTextNode(text.substring(lastIndex)));
+						}
+						
+						// Replace the text node with highlighted parts
+						const parent = node.parentNode;
+						parts.forEach(part => parent.insertBefore(part, node));
+						parent.removeChild(node);
+					}
+				} else if (node.nodeType === Node.ELEMENT_NODE) {
+					// Recursively process child nodes
+					Array.from(node.childNodes).forEach(child => highlightInNode(child));
+				}
+			}
+			
+			highlightInNode(tempDiv);
+			return tempDiv.innerHTML;
+		}
+
+		function escapeRegex(str) {
+			return str.replace(/[-\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
 		}
 
 		function handleTableKeydown(event, boxId) {

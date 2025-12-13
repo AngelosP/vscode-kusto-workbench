@@ -109,7 +109,7 @@ export class KustoQueryClient {
 			const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
 			
 			// Helper function to format cell values
-			const formatCellValue = (cell: any): { display: string; full: string } => {
+			const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
 				if (cell === null || cell === undefined) {
 					return { display: 'null', full: 'null' };
 				}
@@ -120,6 +120,23 @@ export class KustoQueryClient {
 					// Format as YYYY-MM-DD HH:MM:SS
 					const display = cell.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 					return { display, full };
+				}
+				
+				// Check if it's an object or array (complex structure)
+				if (typeof cell === 'object') {
+					try {
+						const jsonStr = JSON.stringify(cell, null, 2);
+						return { 
+							display: '[object]', 
+							full: jsonStr,
+							isObject: true,
+							rawObject: cell
+						};
+					} catch (e) {
+						// If JSON.stringify fails, fall back to string representation
+						const str = String(cell);
+						return { display: str, full: str };
+					}
 				}
 				
 				// Check if it's a string that looks like an ISO date
