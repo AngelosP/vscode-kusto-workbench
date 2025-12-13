@@ -279,6 +279,11 @@
 			display: block;
 		}
 
+		/* Ensure Monaco content widgets (our caret docs tooltip) render above editor content. */
+		.monaco-editor .contentWidgets {
+			z-index: 1000 !important;
+		}
+
 		.kusto-doc-widget {
 			max-width: 560px;
 			padding: 8px 10px;
@@ -289,9 +294,13 @@
 			font-size: 12px;
 			line-height: 1.35;
 			box-shadow: none;
-			z-index: 50;
+			z-index: 1001 !important;
 			pointer-events: none;
 			user-select: none;
+		}
+
+		.kusto-doc-widget-overlay {
+			position: fixed;
 		}
 
 		.kusto-doc-widget code {

@@ -536,31 +536,27 @@ function initQueryEditor(boxId) {
 				.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 		};
 
-		const createDocWidget = () => {
+		// Use a DOM overlay (instead of Monaco content widgets) for reliability in VS Code webviews.
+		const createDocOverlay = () => {
 			const dom = document.createElement('div');
-			dom.className = 'kusto-doc-widget';
-			let visible = false;
-			let lastPos = null;
+			dom.className = 'kusto-doc-widget kusto-doc-widget-overlay';
+			dom.style.display = 'none';
+			// Use fixed positioning so the tooltip can render outside the editor bounds.
+			dom.style.position = 'fixed';
+			dom.style.zIndex = '2000';
+			dom.style.left = '0px';
+			dom.style.top = '0px';
 			let lastHtml = '';
+			let lastKey = '';
+			try {
+				(document.body || document.documentElement).appendChild(dom);
+			} catch {
+				// ignore
+			}
 
-			const widget = {
-				getId: () => 'kusto.docWidget.' + boxId,
-				getDomNode: () => dom,
-				getPosition: () => {
-					if (!visible || !lastPos) {
-						return null;
-					}
-					return {
-						position: lastPos,
-						preference: [
-							monaco.editor.ContentWidgetPositionPreference.ABOVE,
-							monaco.editor.ContentWidgetPositionPreference.BELOW
-						]
-					};
-				}
+			const hide = () => {
+				dom.style.display = 'none';
 			};
-
-			editor.addContentWidget(widget);
 
 			const update = () => {
 				try {
@@ -568,51 +564,113 @@ function initQueryEditor(boxId) {
 					const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
 					const isThisEditorActive = (activeQueryEditorBoxId === boxId) || hasWidgetFocus || hasTextFocus;
 					if (!isThisEditorActive) {
-						visible = false;
-						lastPos = null;
-						editor.layoutContentWidget(widget);
+						hide();
 						return;
 					}
 					const model = editor.getModel();
 					const pos = editor.getPosition();
 					const sel = editor.getSelection();
 					if (!model || !pos || !sel || !sel.isEmpty()) {
-						visible = false;
-						lastPos = null;
-						editor.layoutContentWidget(widget);
+						hide();
+						return;
+					}
+					// If the caret is after a closing ')' (even with trailing whitespace), stop showing the custom tooltip.
+					try {
+						const fullText = model.getValue();
+						const caretOffset = model.getOffsetAt(pos);
+						let i = Math.min(Math.max(0, caretOffset - 1), fullText.length - 1);
+						while (i >= 0 && /\s/.test(fullText[i])) i--;
+						if (i >= 0 && fullText[i] === ')') {
+							hide();
+							return;
+						}
+					} catch {
+						// ignore
+					}
+					const coords = typeof editor.getScrolledVisiblePosition === 'function' ? editor.getScrolledVisiblePosition(pos) : null;
+					if (!coords) {
+						hide();
 						return;
 					}
 					const getter = window.__kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
-						visible = false;
-						lastPos = null;
-						editor.layoutContentWidget(widget);
+						hide();
 						return;
 					}
-					const info = getter(model, pos);
+					// Probe near the caret so we still show docs when the caret is on/near '(' or ')' or just after ')'.
+					const probePositions = [];
+					probePositions.push(pos);
+					try {
+						const maxCol = typeof model.getLineMaxColumn === 'function' ? model.getLineMaxColumn(pos.lineNumber) : null;
+						if (pos.column > 1) probePositions.push(new monaco.Position(pos.lineNumber, pos.column - 1));
+						if (pos.column > 2) probePositions.push(new monaco.Position(pos.lineNumber, pos.column - 2));
+						if (typeof maxCol === 'number' && pos.column < maxCol) probePositions.push(new monaco.Position(pos.lineNumber, pos.column + 1));
+					} catch {
+						// ignore
+					}
+					let info = null;
+					for (const p of probePositions) {
+						try {
+							info = getter(model, p);
+							if (info && info.markdown) break;
+						} catch {
+							// ignore
+						}
+					}
 					const html = info && info.markdown ? renderDocMarkdownToHtml(info.markdown) : '';
 					if (!html) {
-						visible = false;
-						lastPos = null;
-						editor.layoutContentWidget(widget);
+						hide();
 						return;
 					}
+
+					const key = `${pos.lineNumber}:${pos.column}:${html.slice(0, 120)}`;
 					if (html !== lastHtml) {
 						lastHtml = html;
 						dom.innerHTML = html;
 					}
-					visible = true;
-					lastPos = pos;
-					editor.layoutContentWidget(widget);
+					if (key !== lastKey) {
+						lastKey = key;
+					}
+
+					dom.style.display = 'block';
+
+					const editorDom = editor.getDomNode();
+					if (!editorDom) {
+						return;
+					}
+					const editorRect = editorDom.getBoundingClientRect();
+
+					// Caret in viewport coordinates.
+					const caretX = editorRect.left + coords.left;
+					const caretHeight = coords.height || 16;
+					const cursorY = editorRect.top + coords.top + caretHeight;
+
+					const margin = 6;
+					const clearance = 14; // keep tooltip bottom above the typing cursor (but not too high)
+					const width = dom.offsetWidth;
+					const height = dom.offsetHeight;
+
+					// Prefer above cursor; allow outside editor bounds; clamp to viewport.
+					let left = caretX;
+					let top = cursorY - height - margin - clearance;
+
+					const viewportMargin = 6;
+					const maxLeft = Math.max(viewportMargin, window.innerWidth - width - viewportMargin);
+					left = Math.min(Math.max(viewportMargin, left), maxLeft);
+					const maxTop = Math.max(viewportMargin, window.innerHeight - height - viewportMargin);
+					top = Math.min(Math.max(viewportMargin, top), maxTop);
+
+					dom.style.left = `${Math.round(left)}px`;
+					dom.style.top = `${Math.round(top)}px`;
 				} catch {
 					// ignore
 				}
 			};
 
-			return { update };
+			return { update, hide };
 		};
 
-		const docWidget = createDocWidget();
+		const docOverlay = createDocOverlay();
 		let docTimer = null;
 		const scheduleDocUpdate = () => {
 			try {
@@ -620,7 +678,7 @@ function initQueryEditor(boxId) {
 					clearTimeout(docTimer);
 				}
 				docTimer = setTimeout(() => {
-					try { docWidget.update(); } catch { /* ignore */ }
+					try { docOverlay.update(); } catch { /* ignore */ }
 				}, 140);
 			} catch {
 				// ignore
@@ -628,6 +686,7 @@ function initQueryEditor(boxId) {
 		};
 
 		editor.onDidChangeCursorPosition(scheduleDocUpdate);
+		try { editor.onDidScrollChange(scheduleDocUpdate); } catch { /* ignore */ }
 		try {
 			const model = editor.getModel();
 			if (model && model.uri) {
@@ -679,6 +738,7 @@ function initQueryEditor(boxId) {
 		// Defer focus slightly so Monaco can handle click-to-place-caret on the first click.
 		const focusSoon = () => {
 			setTimeout(() => {
+				try { activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
 				try { editor.focus(); } catch { /* ignore */ }
 			}, 0);
 		};
@@ -706,18 +766,12 @@ function initQueryEditor(boxId) {
 				} catch {
 					// ignore
 				}
-				if (isEditorFocused()) {
-					return;
-				}
 				focusSoon();
 			}, true);
 		}
 
 		// Keep a direct hook on the editor container too.
 		container.addEventListener('mousedown', () => {
-			if (isEditorFocused()) {
-				return;
-			}
 			focusSoon();
 		}, true);
 		editor.onDidBlurEditorText(() => {

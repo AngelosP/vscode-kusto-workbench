@@ -41,10 +41,25 @@
 		'queryEditor/main.js'
 	];
 
+	const getCacheBuster = () => {
+		try {
+			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.cacheBuster) ?
+				String(window.__kustoQueryEditorConfig.cacheBuster) :
+				'';
+		} catch {
+			return '';
+		}
+	};
+
 	const loadScript = (relativePath) => {
 		return new Promise((resolve, reject) => {
 			const el = document.createElement('script');
-			el.src = new URL(relativePath, baseUrl).toString();
+			const url = new URL(relativePath, baseUrl);
+			const bust = getCacheBuster();
+			if (bust) {
+				url.searchParams.set('v', bust);
+			}
+			el.src = url.toString();
 			el.onload = () => resolve();
 			el.onerror = () => reject(new Error(`Failed to load ${relativePath}`));
 			(document.head || document.documentElement).appendChild(el);

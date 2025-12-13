@@ -465,12 +465,18 @@ export class QueryEditorProvider {
 		const templateBytes = await vscode.workspace.fs.readFile(templateUri);
 		const template = new TextDecoder('utf-8').decode(templateBytes);
 
-		const queryEditorCssUri = webview
-			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.css'))
-			.toString();
-		const queryEditorJsUri = webview
-			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.js'))
-			.toString();
+		const cacheBuster = `${this.context.extension.packageJSON?.version ?? 'dev'}-${Date.now()}`;
+		const withCacheBuster = (uri: string) => {
+			const sep = uri.includes('?') ? '&' : '?';
+			return `${uri}${sep}v=${encodeURIComponent(cacheBuster)}`;
+		};
+
+		const queryEditorCssUri = withCacheBuster(
+			webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.css')).toString()
+		);
+		const queryEditorJsUri = withCacheBuster(
+			webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.js')).toString()
+		);
 
 		const monacoVsUri = webview
 			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs'))
@@ -486,7 +492,8 @@ export class QueryEditorProvider {
 			.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
 			.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 			.replaceAll('{{monacoVsUri}}', monacoVsUri)
-			.replaceAll('{{monacoLoaderUri}}', monacoLoaderUri)
-			.replaceAll('{{monacoCssUri}}', monacoCssUri);
+			.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
+			.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))
+			.replaceAll('{{cacheBuster}}', cacheBuster);
 	}
 }
