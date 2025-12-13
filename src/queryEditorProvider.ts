@@ -405,11 +405,43 @@ export class QueryEditorProvider {
 			gap: 8px;
 		}
 
+		.results-tools {
+			display: flex;
+			gap: 4px;
+		}
+
+		.tool-toggle-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			padding: 4px 8px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 14px;
+		}
+
+		.tool-toggle-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.tool-toggle-btn.active {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
 		.data-search {
 			display: flex;
 			gap: 4px;
 			align-items: center;
 			min-width: 300px;
+			margin-bottom: 8px;
+			padding: 8px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
 		}
 
 		.data-search input {
@@ -460,6 +492,11 @@ export class QueryEditorProvider {
 		.column-search {
 			position: relative;
 			min-width: 200px;
+			margin-bottom: 8px;
+			padding: 8px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
 		}
 
 		.column-search input {
@@ -1256,24 +1293,32 @@ export class QueryEditorProvider {
 						<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
 						(Execution time: \${result.metadata.executionTime})
 					</div>
-					<div class="data-search">
-						<input type="text" placeholder="Search data..." 
-							   id="\${boxId}_data_search"
-							   oninput="searchData('\${boxId}')"
-							   onkeydown="handleDataSearchKeydown(event, '\${boxId}')" />
-						<div class="data-search-nav">
-							<button id="\${boxId}_search_prev" onclick="previousSearchMatch('\${boxId}')" disabled title="Previous (Shift+Enter)">↑</button>
-							<button id="\${boxId}_search_next" onclick="nextSearchMatch('\${boxId}')" disabled title="Next (Enter)">↓</button>
-						</div>
-						<span class="data-search-info" id="\${boxId}_search_info"></span>
+					<div class="results-tools">
+						<button class="tool-toggle-btn" onclick="toggleSearchTool('\${boxId}')" title="Search data">
+							🔍
+						</button>
+						<button class="tool-toggle-btn" onclick="toggleColumnTool('\${boxId}')" title="Scroll to column">
+							📋
+						</button>
 					</div>
-					<div class="column-search">
-						<input type="text" placeholder="Scroll to column..." 
-							   id="\${boxId}_column_search"
-							   oninput="filterColumns('\${boxId}')"
-							   onkeydown="handleColumnSearchKeydown(event, '\${boxId}')" />
-						<div class="column-autocomplete" id="\${boxId}_column_autocomplete"></div>
+				</div>
+				<div class="data-search" id="\${boxId}_data_search_container" style="display: none;">
+					<input type="text" placeholder="Search data..." 
+						   id="\${boxId}_data_search"
+						   oninput="searchData('\${boxId}')"
+						   onkeydown="handleDataSearchKeydown(event, '\${boxId}')" />
+					<div class="data-search-nav">
+						<button id="\${boxId}_search_prev" onclick="previousSearchMatch('\${boxId}')" disabled title="Previous (Shift+Enter)">↑</button>
+						<button id="\${boxId}_search_next" onclick="nextSearchMatch('\${boxId}')" disabled title="Next (Enter)">↓</button>
 					</div>
+					<span class="data-search-info" id="\${boxId}_search_info"></span>
+				</div>
+				<div class="column-search" id="\${boxId}_column_search_container" style="display: none;">
+					<input type="text" placeholder="Scroll to column..." 
+						   id="\${boxId}_column_search"
+						   oninput="filterColumns('\${boxId}')"
+						   onkeydown="handleColumnSearchKeydown(event, '\${boxId}')" />
+					<div class="column-autocomplete" id="\${boxId}_column_autocomplete"></div>
 				</div>
 				<div class="table-container" id="\${boxId}_table_container" tabindex="0"
 					 onkeydown="handleTableKeydown(event, '\${boxId}')">
@@ -1895,6 +1940,64 @@ function showDistinctCountPicker(colIdx, boxId) {
 				});
 			}
 		});
+
+		function toggleSearchTool(boxId) {
+			const container = document.getElementById(boxId + '_data_search_container');
+			const button = event.target.closest('.tool-toggle-btn');
+			
+			if (container.style.display === 'none') {
+				// Close the other tool first
+				const columnContainer = document.getElementById(boxId + '_column_search_container');
+				if (columnContainer) {
+					columnContainer.style.display = 'none';
+				}
+				// Remove active state from all buttons
+				document.querySelectorAll('.tool-toggle-btn').forEach(btn => btn.classList.remove('active'));
+				
+				// Show this tool
+				container.style.display = 'flex';
+				button.classList.add('active');
+				
+				// Focus the input
+				const input = document.getElementById(boxId + '_data_search');
+				if (input) {
+					setTimeout(() => input.focus(), 0);
+				}
+			} else {
+				// Hide this tool
+				container.style.display = 'none';
+				button.classList.remove('active');
+			}
+		}
+
+		function toggleColumnTool(boxId) {
+			const container = document.getElementById(boxId + '_column_search_container');
+			const button = event.target.closest('.tool-toggle-btn');
+			
+			if (container.style.display === 'none') {
+				// Close the other tool first
+				const searchContainer = document.getElementById(boxId + '_data_search_container');
+				if (searchContainer) {
+					searchContainer.style.display = 'none';
+				}
+				// Remove active state from all buttons
+				document.querySelectorAll('.tool-toggle-btn').forEach(btn => btn.classList.remove('active'));
+				
+				// Show this tool
+				container.style.display = 'block';
+				button.classList.add('active');
+				
+				// Focus the input
+				const input = document.getElementById(boxId + '_column_search');
+				if (input) {
+					setTimeout(() => input.focus(), 0);
+				}
+			} else {
+				// Hide this tool
+				container.style.display = 'none';
+				button.classList.remove('active');
+			}
+		}
 
 		function searchData(boxId) {
 			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
