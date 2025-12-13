@@ -299,13 +299,59 @@ function initQueryEditor(boxId) {
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
 		});
-		container.addEventListener('mousedown', () => editor.focus());
+
+		// In VS Code webviews, the first click can sometimes focus the webview but not reliably
+		// place the Monaco caret if we eagerly call editor.focus() during the same mouse event.
+		// Defer focus slightly so Monaco can handle click-to-place-caret on the first click.
+		const focusSoon = () => {
+			setTimeout(() => {
+				try { editor.focus(); } catch { /* ignore */ }
+			}, 0);
+		};
+
+		if (wrapper) {
+			wrapper.addEventListener('mousedown', (e) => {
+				try {
+					if (e && e.target && e.target.closest) {
+						if (e.target.closest('.query-editor-toolbar')) {
+							return;
+						}
+						if (e.target.closest('.query-editor-resizer')) {
+							return;
+						}
+					}
+				} catch {
+					// ignore
+				}
+				if (activeQueryEditorBoxId === boxId) {
+					return;
+				}
+				focusSoon();
+			}, true);
+		}
+
+		// Keep a direct hook on the editor container too.
+		container.addEventListener('mousedown', () => {
+			if (activeQueryEditorBoxId === boxId) {
+				return;
+			}
+			focusSoon();
+		}, true);
 		editor.onDidBlurEditorText(() => {
 			if (activeQueryEditorBoxId === boxId) {
 				activeQueryEditorBoxId = null;
 			}
 			syncPlaceholder();
 		});
+
+		// Ensure Monaco has a correct initial layout after insertion into the DOM.
+		try {
+			requestAnimationFrame(() => {
+				try { editor.layout(); } catch { /* ignore */ }
+			});
+		} catch {
+			// ignore
+		}
 
 		// Auto-trigger suggestions while typing once schema is loaded.
 		editor.onDidChangeModelContent(() => {
