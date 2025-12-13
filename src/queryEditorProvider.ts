@@ -966,6 +966,50 @@ export class QueryEditorProvider {
 			font-size: 12px;
 		}
 
+		.query-actions {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			margin-top: 8px;
+			width: 100%;
+		}
+
+		.query-run {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.query-exec-status {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+		}
+
+		.query-spinner {
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			border: 2px solid var(--vscode-editorWidget-border);
+			border-top-color: var(--vscode-progressBar-background);
+			animation: query-spinner-spin 0.9s linear infinite;
+		}
+
+		@keyframes query-spinner-spin {
+			from { transform: rotate(0deg); }
+			to { transform: rotate(360deg); }
+		}
+
+		.query-actions .cache-controls {
+			margin: 0;
+			margin-left: auto;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+
 		.cache-checkbox {
 			display: flex;
 			align-items: center;
@@ -1093,20 +1137,28 @@ export class QueryEditorProvider {
 						</button>
 					</div>
 					<textarea id="\${id}_query" placeholder="Enter your KQL query here..."></textarea>
-					<div class="cache-controls">
-						<label class="cache-checkbox">
-							<input type="checkbox" id="\${id}_cache_enabled" checked onchange="toggleCacheControls('\${id}')" />
-							Cache results for
-						</label>
-						<input type="number" id="\${id}_cache_value" value="1" min="1" />
-						<select id="\${id}_cache_unit">
-							<option value="minutes">Minutes</option>
-							<option value="hours">Hours</option>
-							<option value="days" selected>Days</option>
-						</select>
-						<span class="cache-info">(reduces query costs)</span>
+					<div class="query-actions">
+						<div class="query-run">
+							<button id="\${id}_run_btn" onclick="executeQuery('\${id}')">▶ Run Query</button>
+							<span class="query-exec-status" id="\${id}_exec_status" style="display: none;">
+								<span class="query-spinner" aria-hidden="true"></span>
+								<span id="\${id}_exec_elapsed">0:00.0</span>
+							</span>
+						</div>
+						<div class="cache-controls">
+							<label class="cache-checkbox">
+								<input type="checkbox" id="\${id}_cache_enabled" checked onchange="toggleCacheControls('\${id}')" />
+								Cache results for
+							</label>
+							<input type="number" id="\${id}_cache_value" value="1" min="1" />
+							<select id="\${id}_cache_unit">
+								<option value="minutes">Minutes</option>
+								<option value="hours">Hours</option>
+								<option value="days" selected>Days</option>
+							</select>
+							<span class="cache-info">(reduces query costs)</span>
+						</div>
 					</div>
-					<button onclick="executeQuery('\${id}')">▶ Run Query</button>
 					<div class="results" id="\${id}_results"></div>
 				</div>
 			\`;
@@ -1236,6 +1288,54 @@ export class QueryEditorProvider {
 			}
 		}
 
+		let queryExecutionTimers = {};
+
+		function formatElapsed(ms) {
+			const totalSeconds = Math.floor(ms / 1000);
+			const minutes = Math.floor(totalSeconds / 60);
+			const seconds = totalSeconds % 60;
+			const tenths = Math.floor((ms % 1000) / 100);
+			return minutes + ':' + seconds.toString().padStart(2, '0') + '.' + tenths;
+		}
+
+		function setQueryExecuting(boxId, executing) {
+			const runBtn = document.getElementById(boxId + '_run_btn');
+			const status = document.getElementById(boxId + '_exec_status');
+			const elapsed = document.getElementById(boxId + '_exec_elapsed');
+
+			if (queryExecutionTimers[boxId]) {
+				clearInterval(queryExecutionTimers[boxId]);
+				delete queryExecutionTimers[boxId];
+			}
+
+			if (executing) {
+				if (runBtn) {
+					runBtn.disabled = true;
+				}
+				if (status) {
+					status.style.display = 'inline-flex';
+				}
+				if (elapsed) {
+					elapsed.textContent = '0:00.0';
+				}
+
+				const start = performance.now();
+				queryExecutionTimers[boxId] = setInterval(() => {
+					if (elapsed) {
+						elapsed.textContent = formatElapsed(performance.now() - start);
+					}
+				}, 100);
+				return;
+			}
+
+			if (runBtn) {
+				runBtn.disabled = false;
+			}
+			if (status) {
+				status.style.display = 'none';
+			}
+		}
+
 		function executeQuery(boxId) {
 			const query = document.getElementById(boxId + '_query').value;
 			const connectionId = document.getElementById(boxId + '_connection').value;
@@ -1253,6 +1353,11 @@ export class QueryEditorProvider {
 				return;
 			}
 
+			setQueryExecuting(boxId, true);
+
+			// Store the last executed box for result display
+			window.lastExecutedBox = boxId;
+
 			vscode.postMessage({
 				type: 'executeQuery',
 				query,
@@ -1263,14 +1368,13 @@ export class QueryEditorProvider {
 				cacheValue,
 				cacheUnit
 			});
-
-			// Store the last executed box for result display
-			window.lastExecutedBox = boxId;
 		}
 
 		function displayResult(result) {
 			const boxId = window.lastExecutedBox;
 			if (!boxId) {return;}
+
+			setQueryExecuting(boxId, false);
 
 			const resultsDiv = document.getElementById(boxId + '_results');
 			if (!resultsDiv) {return;}
@@ -1368,6 +1472,8 @@ export class QueryEditorProvider {
 		function displayError(error) {
 			const boxId = window.lastExecutedBox;
 			if (!boxId) {return;}
+
+			setQueryExecuting(boxId, false);
 
 			const resultsDiv = document.getElementById(boxId + '_results');
 			if (!resultsDiv) {return;}
