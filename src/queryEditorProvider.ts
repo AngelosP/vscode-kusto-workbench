@@ -10,6 +10,7 @@ export class QueryEditorProvider {
 	private kustoClient: KustoQueryClient;
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
+	private readonly output = vscode.window.createOutputChannel('Notebooks for Kusto');
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -65,6 +66,9 @@ export class QueryEditorProvider {
 					this.saveLastSelection(message.connectionId, message.database);
 					await this.executeQuery(message.query, message.connectionId, message.database, 
 						message.cacheEnabled, message.cacheValue, message.cacheUnit);
+					break;
+				case 'prefetchSchema':
+					await this.prefetchSchema(message.connectionId, message.database, message.boxId);
 					break;
 			}
 		});
@@ -171,6 +175,60 @@ export class QueryEditorProvider {
 			vscode.window.showErrorMessage(`Query execution failed: ${errorMessage}`);
 			this.panel?.webview.postMessage({
 				type: 'queryError',
+				error: errorMessage
+			});
+		}
+	}
+
+	private async prefetchSchema(connectionId: string, database: string, boxId: string) {
+		const connection = this.connectionManager.getConnections().find(c => c.id === connectionId);
+		if (!connection) {
+			return;
+		}
+		if (!database) {
+			return;
+		}
+		try {
+			this.output.appendLine(`[schema] request connectionId=${connectionId} db=${database}`);
+			const result = await this.kustoClient.getDatabaseSchema(connection, database, false);
+			const schema = result.schema;
+			const tablesCount = schema.tables?.length ?? 0;
+			let columnsCount = 0;
+			for (const cols of Object.values(schema.columnsByTable || {})) {
+				columnsCount += cols.length;
+			}
+			this.output.appendLine(`[schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${result.fromCache}`);
+			if (tablesCount === 0 || columnsCount === 0) {
+				const d = result.debug;
+				if (d) {
+					this.output.appendLine(`[schema] debug command=${d.commandUsed ?? ''}`);
+					this.output.appendLine(`[schema] debug columns=${(d.primaryColumns ?? []).join(', ')}`);
+					this.output.appendLine(`[schema] debug sampleRowType=${d.sampleRowType ?? ''} keys=${(d.sampleRowKeys ?? []).join(', ')}`);
+					this.output.appendLine(`[schema] debug sampleRowPreview=${d.sampleRowPreview ?? ''}`);
+				}
+			}
+			this.panel?.webview.postMessage({
+				type: 'schemaData',
+				boxId,
+				connectionId,
+				database,
+				schema,
+				schemaMeta: {
+					fromCache: result.fromCache,
+					cacheAgeMs: result.cacheAgeMs,
+					tablesCount,
+					columnsCount,
+					debug: result.debug
+				}
+			});
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[schema] error db=${database}: ${errorMessage}`);
+			this.panel?.webview.postMessage({
+				type: 'schemaError',
+				boxId,
+				connectionId,
+				database,
 				error: errorMessage
 			});
 		}
@@ -1038,6 +1096,37 @@ export class QueryEditorProvider {
 			animation: query-spinner-spin 0.9s linear infinite;
 		}
 
+		.schema-status {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+		}
+
+		.schema-loaded {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+		}
+
+		.schema-loaded.error {
+			text-decoration: underline;
+		}
+
+		.schema-spinner {
+			width: 12px;
+			height: 12px;
+			border-radius: 50%;
+			border: 2px solid var(--vscode-editorWidget-border);
+			border-top-color: var(--vscode-progressBar-background);
+			animation: query-spinner-spin 0.9s linear infinite;
+		}
+
 		@keyframes query-spinner-spin {
 			from { transform: rotate(0deg); }
 			to { transform: rotate(360deg); }
@@ -1128,8 +1217,74 @@ export class QueryEditorProvider {
 		let cachedDatabases = {};
 		let queryEditors = {};
 		let queryEditorResizeObservers = {};
+		let queryEditorBoxByModelUri = {};
+		let suggestDebounceTimers = {};
 		let activeQueryEditorBoxId = null;
+		let schemaByBoxId = {};
+		let schemaFetchInFlightByBoxId = {};
+		let lastSchemaRequestAtByBoxId = {};
 		let monacoReadyPromise = null;
+
+		function setSchemaLoading(boxId, loading) {
+			schemaFetchInFlightByBoxId[boxId] = !!loading;
+			const el = document.getElementById(boxId + '_schema_status');
+			if (el) {
+				el.style.display = loading ? 'inline-flex' : 'none';
+			}
+		}
+
+		function setSchemaLoadedSummary(boxId, text, title, isError) {
+			const el = document.getElementById(boxId + '_schema_loaded');
+			if (!el) {
+				return;
+			}
+			el.textContent = text || '';
+			el.title = title || '';
+			el.classList.toggle('error', !!isError);
+			el.style.display = text ? 'inline-flex' : 'none';
+		}
+
+		function ensureSchemaForBox(boxId) {
+			if (!boxId) {
+				return;
+			}
+			if (schemaByBoxId[boxId]) {
+				return;
+			}
+			if (schemaFetchInFlightByBoxId[boxId]) {
+				return;
+			}
+			const now = Date.now();
+			const last = lastSchemaRequestAtByBoxId[boxId] || 0;
+			// Avoid spamming schema fetch requests if autocomplete is invoked repeatedly.
+			if (now - last < 1500) {
+				return;
+			}
+			lastSchemaRequestAtByBoxId[boxId] = now;
+
+			const connectionSelect = document.getElementById(boxId + '_connection');
+			const databaseSelect = document.getElementById(boxId + '_database');
+			const connectionId = connectionSelect ? connectionSelect.value : '';
+			const database = databaseSelect ? databaseSelect.value : '';
+			if (!connectionId || !database) {
+				return;
+			}
+
+			setSchemaLoading(boxId, true);
+			vscode.postMessage({
+				type: 'prefetchSchema',
+				connectionId,
+				database,
+				boxId
+			});
+		}
+
+		function onDatabaseChanged(boxId) {
+			// Clear any prior schema so it matches the newly selected DB.
+			delete schemaByBoxId[boxId];
+			setSchemaLoadedSummary(boxId, '', '', false);
+			ensureSchemaForBox(boxId);
+		}
 
 		function isDarkTheme() {
 			const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
@@ -1201,6 +1356,124 @@ export class QueryEditorProvider {
 							});
 
 							monaco.editor.setTheme(isDarkTheme() ? 'vs-dark' : 'vs');
+
+							// Autocomplete driven by cached schema (tables + columns).
+							monaco.languages.registerCompletionItemProvider('kusto', {
+								triggerCharacters: [' ', '|', '.'],
+								provideCompletionItems: function (model, position) {
+									let boxId = null;
+									try {
+										if (model && model.uri) {
+											boxId = queryEditorBoxByModelUri[model.uri.toString()] || null;
+										}
+									} catch {
+										// ignore
+									}
+									if (!boxId) {
+										boxId = activeQueryEditorBoxId;
+									}
+									const schema = boxId ? schemaByBoxId[boxId] : null;
+									if (!schema || !schema.tables) {
+										// Kick off a background fetch if schema isn't ready yet.
+										ensureSchemaForBox(boxId);
+										return { suggestions: [] };
+									}
+
+									const word = model.getWordUntilPosition(position);
+									const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+									const linePrefix = model.getLineContent(position.lineNumber).slice(0, position.column - 1).toLowerCase();
+										const shouldSuggestColumns = /\\|\\s*(project|where|extend|summarize|order\\s+by|sort\\s+by|take|top)\\b[^|]*$/i.test(linePrefix);
+
+									const textUpToCursor = model.getValueInRange({
+										startLineNumber: 1,
+										startColumn: 1,
+										endLineNumber: position.lineNumber,
+										endColumn: position.column
+									});
+
+										const inferActiveTable = (text) => {
+											// Prefer last explicit join/from target.
+											const joinFromMatches = Array.from(text.matchAll(/\\b(join|from)\\s+([A-Za-z_][\\w-]*)\\b/gi));
+											if (joinFromMatches.length > 0) {
+												return joinFromMatches[joinFromMatches.length - 1][2];
+											}
+
+											// Otherwise, find the first "source" line (not a pipe/operator line).
+											const lines = text.split(/\\r?\\n/);
+											for (const raw of lines) {
+												const line = raw.trim();
+												if (!line) {
+													continue;
+												}
+												if (line.startsWith('|') || line.startsWith('.') || line.startsWith('//')) {
+													continue;
+												}
+												const m = line.match(/^([A-Za-z_][\\w-]*)\\b/);
+												if (m) {
+													return m[1];
+												}
+											}
+											return null;
+										};
+
+										let activeTable = inferActiveTable(textUpToCursor);
+
+									const suggestions = [];
+										const seen = new Set();
+
+										const pushSuggestion = (item, key) => {
+											const k = key || item.label;
+											if (seen.has(k)) {
+												return;
+											}
+											seen.add(k);
+											suggestions.push(item);
+										};
+
+										// Columns first when in '| where' / '| project' etc.
+										if (shouldSuggestColumns) {
+											let columns = null;
+											if (activeTable && schema.columnsByTable && schema.columnsByTable[activeTable]) {
+												columns = schema.columnsByTable[activeTable];
+											} else if (schema.tables && schema.tables.length === 1 && schema.columnsByTable && schema.columnsByTable[schema.tables[0]]) {
+												activeTable = schema.tables[0];
+												columns = schema.columnsByTable[activeTable];
+											} else if (schema.columnsByTable) {
+												// Fallback: suggest the union of columns across tables (deduped).
+												const set = new Set();
+												for (const cols of Object.values(schema.columnsByTable)) {
+													for (const c of cols) set.add(c);
+												}
+												columns = Array.from(set).sort((a, b) => a.localeCompare(b)).slice(0, 500);
+											}
+
+											if (columns) {
+												for (const c of columns) {
+													pushSuggestion({
+														label: c,
+														kind: monaco.languages.CompletionItemKind.Field,
+														insertText: c,
+														sortText: '0' + c,
+														range
+													}, 'col:' + c);
+												}
+											}
+										}
+
+									// Tables: always suggest.
+									for (const t of schema.tables) {
+											pushSuggestion({
+											label: t,
+											kind: monaco.languages.CompletionItemKind.Class,
+											insertText: t,
+												sortText: (shouldSuggestColumns ? '1' : '0') + t,
+											range
+											}, 'tbl:' + t);
+									}
+
+									return { suggestions };
+								}
+							});
 							resolve(monaco);
 						} catch (e) {
 							reject(e);
@@ -1233,6 +1506,9 @@ export class QueryEditorProvider {
 					language: 'kusto',
 					readOnly: false,
 					automaticLayout: true,
+					suggestOnTriggerCharacters: true,
+					quickSuggestions: { other: true, comments: false, strings: false },
+					quickSuggestionsDelay: 200,
 					minimap: { enabled: false },
 					scrollBeyondLastLine: false,
 					fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
@@ -1242,6 +1518,14 @@ export class QueryEditorProvider {
 				});
 
 				queryEditors[boxId] = editor;
+				try {
+					const model = editor.getModel();
+					if (model && model.uri) {
+						queryEditorBoxByModelUri[model.uri.toString()] = boxId;
+					}
+				} catch {
+					// ignore
+				}
 
 				const syncPlaceholder = () => {
 					if (!placeholder) {
@@ -1256,6 +1540,7 @@ export class QueryEditorProvider {
 				editor.onDidFocusEditorText(() => {
 					activeQueryEditorBoxId = boxId;
 					syncPlaceholder();
+					ensureSchemaForBox(boxId);
 				});
 				container.addEventListener('mousedown', () => editor.focus());
 				editor.onDidBlurEditorText(() => {
@@ -1263,6 +1548,23 @@ export class QueryEditorProvider {
 						activeQueryEditorBoxId = null;
 					}
 					syncPlaceholder();
+				});
+
+				// Auto-trigger suggestions while typing once schema is loaded.
+				editor.onDidChangeModelContent(() => {
+					if (!schemaByBoxId[boxId]) {
+						return;
+					}
+					if (suggestDebounceTimers[boxId]) {
+						clearTimeout(suggestDebounceTimers[boxId]);
+					}
+					suggestDebounceTimers[boxId] = setTimeout(() => {
+						try {
+							editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+						} catch {
+							// ignore
+						}
+					}, 180);
 				});
 
 				// Keep Monaco laid out when the user resizes the wrapper.
@@ -1356,6 +1658,27 @@ export class QueryEditorProvider {
 				case 'queryError':
 					displayError(message.error);
 					break;
+				case 'schemaData':
+					schemaByBoxId[message.boxId] = message.schema;
+					setSchemaLoading(message.boxId, false);
+					{
+						const meta = message.schemaMeta || {};
+						const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
+						const columnsCount = meta.columnsCount ?? 0;
+						const cacheTag = meta.fromCache ? ' (cache)' : '';
+						setSchemaLoadedSummary(
+							message.boxId,
+							'Schema: ' + tablesCount + ' tables, ' + columnsCount + ' cols' + cacheTag,
+							'Schema loaded for autocomplete' + cacheTag,
+							false
+						);
+					}
+					break;
+				case 'schemaError':
+					// Non-fatal; autocomplete will just not have schema.
+					setSchemaLoading(message.boxId, false);
+					setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+					break;
 			}
 		});
 
@@ -1364,58 +1687,56 @@ export class QueryEditorProvider {
 			queryBoxes.push(id);
 			
 			const container = document.getElementById('queries-container');
-			const boxHtml = \`
-				<div class="query-box" id="\${id}">
-					<div class="query-header">
-						<input type="text" class="query-name" placeholder="Query Name (optional)" 
-							   id="\${id}_name" />
-						<div class="select-wrapper" data-icon="🖥️">
-							<select id="\${id}_connection" onchange="updateDatabaseField('\${id}')">
-								<option value="">Select Cluster...</option>
-							</select>
-						</div>
-						<div class="select-wrapper" data-icon="📊">
-							<select id="\${id}_database">
-								<option value="">Select Database...</option>
-							</select>
-						</div>
-						<button class="refresh-btn" onclick="refreshDatabases('\${id}')" 
-								id="\${id}_refresh" title="Refresh database list">
-							⟳
-						</button>
-						<button class="refresh-btn" onclick="removeQueryBox('\${id}')" title="Remove query box">
-							✖
-						</button>
-					</div>
-					<div class="query-editor-wrapper">
-						<div class="query-editor" id="\${id}_query_editor"></div>
-						<div class="query-editor-placeholder" id="\${id}_query_placeholder">Enter your KQL query here...</div>
-						<div class="query-editor-resizer" id="\${id}_query_resizer" title="Drag to resize editor"></div>
-					</div>
-					<div class="query-actions">
-						<div class="query-run">
-							<button id="\${id}_run_btn" onclick="executeQuery('\${id}')">▶ Run Query</button>
-							<span class="query-exec-status" id="\${id}_exec_status" style="display: none;">
-								<span class="query-spinner" aria-hidden="true"></span>
-								<span id="\${id}_exec_elapsed">0:00.0</span>
-							</span>
-						</div>
-						<div class="cache-controls">
-							<label class="cache-checkbox">
-								<input type="checkbox" id="\${id}_cache_enabled" checked onchange="toggleCacheControls('\${id}')" />
-								Cache results for
-							</label>
-							<input type="number" id="\${id}_cache_value" value="1" min="1" />
-							<select id="\${id}_cache_unit">
-								<option value="minutes">Minutes</option>
-								<option value="hours">Hours</option>
-								<option value="days" selected>Days</option>
-							</select>
-						</div>
-					</div>
-					<div class="results" id="\${id}_results"></div>
-				</div>
-			\`;
+			const boxHtml =
+				'<div class="query-box" id="' + id + '">' +
+					'<div class="query-header">' +
+						'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" />' +
+						'<div class="select-wrapper" data-icon="🖥️">' +
+							'<select id="' + id + '_connection" onchange="updateDatabaseField(\\\'' + id + '\\\')">' +
+								'<option value="">Select Cluster...</option>' +
+							'</select>' +
+						'</div>' +
+						'<div class="select-wrapper" data-icon="📊">' +
+							'<select id="' + id + '_database" onchange="onDatabaseChanged(\\\'' + id + '\\\')">' +
+								'<option value="">Select Database...</option>' +
+							'</select>' +
+						'</div>' +
+						'<span class="schema-status" id="' + id + '_schema_status" style="display: none;" title="Loading schema for autocomplete...">' +
+							'<span class="schema-spinner" aria-hidden="true"></span>' +
+							'<span>Loading schema…</span>' +
+						'</span>' +
+						'<span class="schema-loaded" id="' + id + '_schema_loaded" style="display: none;"></span>' +
+						'<button class="refresh-btn" onclick="refreshDatabases(\\\'' + id + '\\\')" id="' + id + '_refresh" title="Refresh database list">⟳</button>' +
+						'<button class="refresh-btn" onclick="removeQueryBox(\\\'' + id + '\\\')" title="Remove query box">✖</button>' +
+					'</div>' +
+					'<div class="query-editor-wrapper">' +
+						'<div class="query-editor" id="' + id + '_query_editor"></div>' +
+						'<div class="query-editor-placeholder" id="' + id + '_query_placeholder">Enter your KQL query here...</div>' +
+						'<div class="query-editor-resizer" id="' + id + '_query_resizer" title="Drag to resize editor"></div>' +
+					'</div>' +
+					'<div class="query-actions">' +
+						'<div class="query-run">' +
+							'<button id="' + id + '_run_btn" onclick="executeQuery(\\\'' + id + '\\\')">▶ Run Query</button>' +
+							'<span class="query-exec-status" id="' + id + '_exec_status" style="display: none;">' +
+								'<span class="query-spinner" aria-hidden="true"></span>' +
+								'<span id="' + id + '_exec_elapsed">0:00.0</span>' +
+							'</span>' +
+						'</div>' +
+						'<div class="cache-controls">' +
+							'<label class="cache-checkbox">' +
+								'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCacheControls(\\\'' + id + '\\\')" />' +
+								'Cache results for' +
+							'</label>' +
+							'<input type="number" id="' + id + '_cache_value" value="1" min="1" />' +
+							'<select id="' + id + '_cache_unit">' +
+								'<option value="minutes">Minutes</option>' +
+								'<option value="hours">Hours</option>' +
+								'<option value="days" selected>Days</option>' +
+							'</select>' +
+						'</div>' +
+					'</div>' +
+					'<div class="results" id="' + id + '_results"></div>' +
+				'</div>';
 			
 			container.insertAdjacentHTML('beforeend', boxHtml);
 			updateConnectionSelects();
@@ -1483,7 +1804,7 @@ export class QueryEditorProvider {
 				if (select) {
 					const currentValue = select.value;
 					select.innerHTML = '<option value="">Select Cluster...</option>' +
-						connections.map(c => \`<option value="\${c.id}">\${c.name}</option>\`).join('');
+						connections.map(c => '<option value="' + c.id + '">' + c.name + '</option>').join('');
 					
 					// Pre-fill with last selection if this is a new box
 					if (!currentValue && lastConnectionId) {
@@ -1501,6 +1822,8 @@ export class QueryEditorProvider {
 			const connectionId = document.getElementById(boxId + '_connection').value;
 			const databaseSelect = document.getElementById(boxId + '_database');
 			const refreshBtn = document.getElementById(boxId + '_refresh');
+			// Connection changed: clear schema so it doesn't mismatch.
+			delete schemaByBoxId[boxId];
 			
 			if (connectionId && databaseSelect) {
 				// Check if we have cached databases for this connection
@@ -1566,7 +1889,7 @@ export class QueryEditorProvider {
 			
 			if (databaseSelect) {
 				databaseSelect.innerHTML = '<option value="">Select Database...</option>' +
-					databases.map(db => \`<option value="\${db}">\${db}</option>\`).join('');
+					databases.map(db => '<option value="' + db + '">' + db + '</option>').join('');
 				databaseSelect.disabled = false;
 				
 				// Update local cache with new databases
@@ -1578,6 +1901,7 @@ export class QueryEditorProvider {
 				// Pre-fill with last selection if available
 				if (lastDatabase && databases.includes(lastDatabase)) {
 					databaseSelect.value = lastDatabase;
+					onDatabaseChanged(boxId);
 				}
 			}
 			if (refreshBtn) {
@@ -1688,79 +2012,71 @@ export class QueryEditorProvider {
 				currentSearchIndex: -1
 			};
 
-			let html = \`
-				<div class="results-header">
-					<div>
-						<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
-						(Execution time: \${result.metadata.executionTime})
-					</div>
-					<div class="results-tools">
-						<button class="tool-toggle-btn" onclick="toggleSearchTool('\${boxId}')" title="Search data">
-							🔍
-						</button>
-						<button class="tool-toggle-btn" onclick="toggleColumnTool('\${boxId}')" title="Scroll to column">
-							📋
-						</button>
-					</div>
-				</div>
-				<div class="data-search" id="\${boxId}_data_search_container" style="display: none;">
-					<input type="text" placeholder="Search data..." 
-						   id="\${boxId}_data_search"
-						   oninput="searchData('\${boxId}')"
-						   onkeydown="handleDataSearchKeydown(event, '\${boxId}')" />
-					<div class="data-search-nav">
-						<button id="\${boxId}_search_prev" onclick="previousSearchMatch('\${boxId}')" disabled title="Previous (Shift+Enter)">↑</button>
-						<button id="\${boxId}_search_next" onclick="nextSearchMatch('\${boxId}')" disabled title="Next (Enter)">↓</button>
-					</div>
-					<span class="data-search-info" id="\${boxId}_search_info"></span>
-				</div>
-				<div class="column-search" id="\${boxId}_column_search_container" style="display: none;">
-					<input type="text" placeholder="Scroll to column..." 
-						   id="\${boxId}_column_search"
-						   oninput="filterColumns('\${boxId}')"
-						   onkeydown="handleColumnSearchKeydown(event, '\${boxId}')" />
-					<div class="column-autocomplete" id="\${boxId}_column_autocomplete"></div>
-				</div>
-				<div class="table-container" id="\${boxId}_table_container" tabindex="0"
-					 onkeydown="handleTableKeydown(event, '\${boxId}')">
-					<table id="\${boxId}_table">
-						<thead><tr>
-							<th class="row-selector">#</th>
-							\${result.columns.map((c, i) => 
+			let html =
+				'<div class="results-header">' +
+					'<div>' +
+						'<strong>Results:</strong> ' + result.metadata.cluster + ' / ' + result.metadata.database +
+						' (Execution time: ' + result.metadata.executionTime + ')' +
+					'</div>' +
+					'<div class="results-tools">' +
+						'<button class="tool-toggle-btn" onclick="toggleSearchTool(\\\'' + boxId + '\\\')" title="Search data">🔍</button>' +
+						'<button class="tool-toggle-btn" onclick="toggleColumnTool(\\\'' + boxId + '\\\')" title="Scroll to column">📋</button>' +
+					'</div>' +
+				'</div>' +
+				'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +
+					'<input type="text" placeholder="Search data..." id="' + boxId + '_data_search" ' +
+						'oninput="searchData(\\\'' + boxId + '\\\')" ' +
+						'onkeydown="handleDataSearchKeydown(event, \\\'' + boxId + '\\\')" />' +
+					'<div class="data-search-nav">' +
+						'<button id="' + boxId + '_search_prev" onclick="previousSearchMatch(\\\'' + boxId + '\\\')" disabled title="Previous (Shift+Enter)">↑</button>' +
+						'<button id="' + boxId + '_search_next" onclick="nextSearchMatch(\\\'' + boxId + '\\\')" disabled title="Next (Enter)">↓</button>' +
+					'</div>' +
+					'<span class="data-search-info" id="' + boxId + '_search_info"></span>' +
+				'</div>' +
+				'<div class="column-search" id="' + boxId + '_column_search_container" style="display: none;">' +
+					'<input type="text" placeholder="Scroll to column..." id="' + boxId + '_column_search" ' +
+						'oninput="filterColumns(\\\'' + boxId + '\\\')" ' +
+						'onkeydown="handleColumnSearchKeydown(event, \\\'' + boxId + '\\\')" />' +
+					'<div class="column-autocomplete" id="' + boxId + '_column_autocomplete"></div>' +
+				'</div>' +
+				'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" onkeydown="handleTableKeydown(event, \\\'' + boxId + '\\\')">' +
+					'<table id="' + boxId + '_table">' +
+						'<thead><tr>' +
+							'<th class="row-selector">#</th>' +
+							result.columns.map((c, i) =>
 								'<th data-col="' + i + '">' +
-								'<div class="column-header-content">' +
-								'<span>' + c + '</span>' +
-								'<button class="column-menu-btn" onclick="toggleColumnMenu(' + i + ', \\'' + boxId + '\\'); event.stopPropagation();">☰</button>' +
-								'<div class="column-menu" id="' + boxId + '_col_menu_' + i + '">' +
-								'<div class="column-menu-item" onclick="showUniqueValues(' + i + ', \\'' + boxId + '\\')">Unique values</div>' +
-								'<div class="column-menu-item" onclick="showDistinctCountPicker(' + i + ', \\'' + boxId + '\\')">Distinct count by column...</div>' +
-								'</div>' +
-								'</div>' +
+									'<div class="column-header-content">' +
+										'<span>' + c + '</span>' +
+										'<button class="column-menu-btn" onclick="toggleColumnMenu(' + i + ', \\'' + boxId + '\\'); event.stopPropagation();">☰</button>' +
+										'<div class="column-menu" id="' + boxId + '_col_menu_' + i + '">' +
+											'<div class="column-menu-item" onclick="showUniqueValues(' + i + ', \\'' + boxId + '\\')">Unique values</div>' +
+											'<div class="column-menu-item" onclick="showDistinctCountPicker(' + i + ', \\'' + boxId + '\\')">Distinct count by column...</div>' +
+										'</div>' +
+									'</div>' +
 								'</th>'
-							).join('')}
-						</tr></thead>
-						<tbody>
-							\${result.rows.map((row, rowIdx) => 
+							).join('') +
+						'</tr></thead>' +
+						'<tbody>' +
+							result.rows.map((row, rowIdx) =>
 								'<tr data-row="' + rowIdx + '">' +
-								'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">' + (rowIdx + 1) + '</td>' +
-								row.map((cell, colIdx) => {
-									// Check if cell is an object with display and full properties
-									const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
-									const displayValue = hasHover ? cell.display : cell;
-									const fullValue = hasHover ? cell.full : cell;
-									const isObject = cell && cell.isObject;
-									const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + fullValue + '"' : '';
-									const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">View</button>' : '';
-									return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
-										'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
-										displayValue + viewBtn + '</td>';
-								}).join('') + 
+									'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">' + (rowIdx + 1) + '</td>' +
+									row.map((cell, colIdx) => {
+										// Check if cell is an object with display and full properties
+										const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+										const displayValue = hasHover ? cell.display : cell;
+										const fullValue = hasHover ? cell.full : cell;
+										const isObject = cell && cell.isObject;
+										const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + fullValue + '"' : '';
+										const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">View</button>' : '';
+										return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
+											'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' +
+											displayValue + viewBtn + '</td>';
+									}).join('') +
 								'</tr>'
-							).join('')}
-						</tbody>
-					</table>
-				</div>
-			\`;
+							).join('') +
+						'</tbody>' +
+					'</table>' +
+				'</div>';
 
 			resultsDiv.innerHTML = html;
 			resultsDiv.classList.add('visible');
@@ -1775,11 +2091,10 @@ export class QueryEditorProvider {
 			const resultsDiv = document.getElementById(boxId + '_results');
 			if (!resultsDiv) {return;}
 
-			resultsDiv.innerHTML = \`
-				<div class="results-header" style="color: var(--vscode-errorForeground);">
-					<strong>Error:</strong> \${error}
-				</div>
-			\`;
+			resultsDiv.innerHTML =
+				'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+					'<strong>Error:</strong> ' + error +
+				'</div>';
 			resultsDiv.classList.add('visible');
 		}
 		function selectCell(row, col, boxId) {

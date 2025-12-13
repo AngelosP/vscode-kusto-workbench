@@ -11,10 +11,30 @@ export interface QueryResult {
 	};
 }
 
+export interface DatabaseSchemaIndex {
+	tables: string[];
+	columnsByTable: Record<string, string[]>;
+}
+
+export interface DatabaseSchemaResult {
+	schema: DatabaseSchemaIndex;
+	fromCache: boolean;
+	cacheAgeMs?: number;
+	debug?: {
+		commandUsed?: string;
+		primaryColumns?: string[];
+		sampleRowType?: string;
+		sampleRowKeys?: string[];
+		sampleRowPreview?: string;
+	};
+}
+
 export class KustoQueryClient {
 	private clients: Map<string, any> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
+	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+	private readonly SCHEMA_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
 
 	private async getOrCreateClient(connection: KustoConnection): Promise<any> {
 		if (this.clients.has(connection.id)) {
@@ -212,6 +232,266 @@ export class KustoQueryClient {
 			
 			throw new Error(`Query execution failed: ${errorMessage}`);
 		}
+	}
+
+	async getDatabaseSchema(
+		connection: KustoConnection,
+		database: string,
+		forceRefresh: boolean = false
+	): Promise<DatabaseSchemaResult> {
+		const cacheKey = `${connection.clusterUrl}|${database}`;
+		if (!forceRefresh) {
+			const cached = this.schemaCache.get(cacheKey);
+			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {
+				return {
+					schema: cached.schema,
+					fromCache: true,
+					cacheAgeMs: Date.now() - cached.timestamp
+				};
+			}
+		}
+
+		const client = await this.getOrCreateClient(connection);
+
+		const tryCommands = [
+			'.show database schema as json',
+			'.show database schema'
+		];
+
+		let lastError: unknown = null;
+		for (const command of tryCommands) {
+			try {
+				const result = await client.execute(database, command);
+				const debug = this.buildSchemaDebug(result, command);
+				const schema = this.parseDatabaseSchemaResult(result);
+				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
+				return { schema, fromCache: false, debug };
+			} catch (e) {
+				lastError = e;
+			}
+		}
+
+		throw new Error(
+			`Failed to fetch database schema: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+		);
+	}
+
+	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {
+		const columnsByTable: Record<string, Set<string>> = {};
+		const primary = result?.primaryResults?.[0];
+		if (!primary) {
+			return { tables: [], columnsByTable: {} };
+		}
+
+		// Attempt JSON-based schema first.
+		try {
+			// Some drivers expose rows() as iterable, not iterator.
+			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
+			if (rowCandidate && typeof rowCandidate === 'object') {
+				// If the row itself is already an object/array with schema shape, try it.
+				this.extractSchemaFromJson(rowCandidate, columnsByTable);
+				const direct = this.finalizeSchema(columnsByTable);
+				if (direct.tables.length > 0) {
+					return direct;
+				}
+
+				for (const key of Object.keys(rowCandidate)) {
+					const val = (rowCandidate as any)[key];
+					if (val && typeof val === 'object') {
+						this.extractSchemaFromJson(val, columnsByTable);
+						const finalized = this.finalizeSchema(columnsByTable);
+						if (finalized.tables.length > 0) {
+							return finalized;
+						}
+						continue;
+					}
+
+					if (typeof val === 'string') {
+						const trimmed = val.trim();
+						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+							const parsed = JSON.parse(val);
+							this.extractSchemaFromJson(parsed, columnsByTable);
+							const finalized = this.finalizeSchema(columnsByTable);
+							if (finalized.tables.length > 0) {
+								return finalized;
+							}
+						}
+					}
+				}
+			}
+		} catch {
+			// ignore and fall back to tabular parsing
+		}
+
+		// Tabular fallback: try to infer TableName/ColumnName columns.
+		const colNames: string[] = (primary.columns ?? []).map((c: any) => String(c.name ?? c.type ?? '')).filter(Boolean);
+		const findCol = (candidates: string[]) => {
+			const lowered = colNames.map(c => c.toLowerCase());
+			for (const cand of candidates) {
+				const idx = lowered.indexOf(cand.toLowerCase());
+				if (idx >= 0) {
+					return colNames[idx];
+				}
+			}
+			return null;
+		};
+		const tableCol = findCol(['TableName', 'Table', 'Name']);
+		const columnCol = findCol(['ColumnName', 'Column', 'Column1', 'Name1']);
+
+		if (primary.rows) {
+			for (const row of primary.rows()) {
+				const tableName = tableCol ? (row as any)[tableCol] : (row as any)['TableName'];
+				const columnName = columnCol ? (row as any)[columnCol] : (row as any)['ColumnName'];
+				if (!tableName || !columnName) {
+					continue;
+				}
+				const t = String(tableName);
+				const c = String(columnName);
+				columnsByTable[t] ??= new Set();
+				columnsByTable[t].add(c);
+			}
+		}
+
+		return this.finalizeSchema(columnsByTable);
+	}
+
+	private buildSchemaDebug(result: any, commandUsed: string): DatabaseSchemaResult['debug'] {
+		try {
+			const primary = result?.primaryResults?.[0];
+			const primaryColumns: string[] = (primary?.columns ?? []).map((c: any) => String(c?.name ?? c?.type ?? '')).filter(Boolean);
+			let sampleRow: any = null;
+			if (primary?.rows) {
+				sampleRow = Array.from(primary.rows())[0] ?? null;
+			}
+			const sampleRowType = sampleRow === null ? 'null' : Array.isArray(sampleRow) ? 'array' : typeof sampleRow;
+			const sampleRowKeys = sampleRow && typeof sampleRow === 'object' ? Object.keys(sampleRow).slice(0, 20) : [];
+			let sampleRowPreview = '';
+			try {
+				sampleRowPreview = JSON.stringify(sampleRow)?.slice(0, 500) ?? '';
+			} catch {
+				sampleRowPreview = String(sampleRow)?.slice(0, 500) ?? '';
+			}
+			return { commandUsed, primaryColumns, sampleRowType, sampleRowKeys, sampleRowPreview };
+		} catch {
+			return { commandUsed };
+		}
+	}
+
+	private extractSchemaFromJson(parsed: any, columnsByTable: Record<string, Set<string>>) {
+		if (!parsed) {
+			return;
+		}
+
+		// Shape observed from `.show database schema as json`:
+		// {
+		//   Databases: {
+		//     <DbName>: {
+		//       Name: <DbName>,
+		//       Tables: {
+		//         <TableName>: { Name: <TableName>, OrderedColumns: [ { Name: ... } ] }
+		//       }
+		//     }
+		//   }
+		// }
+		const databases = parsed.Databases ?? parsed.databases;
+		if (databases && typeof databases === 'object' && !Array.isArray(databases)) {
+			for (const [dbKey, dbValue] of Object.entries(databases)) {
+				const dbObj: any = dbValue;
+				const tablesObj = dbObj?.Tables ?? dbObj?.tables;
+				if (tablesObj && typeof tablesObj === 'object' && !Array.isArray(tablesObj)) {
+					for (const [tableKey, tableValue] of Object.entries(tablesObj)) {
+						const table: any = tableValue;
+						const tableName = table?.Name ?? table?.name ?? tableKey;
+						if (!tableName) {
+							continue;
+						}
+						const t = String(tableName);
+						columnsByTable[t] ??= new Set();
+						const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
+						if (Array.isArray(cols)) {
+							for (const col of cols) {
+								const colName = (col as any)?.Name ?? (col as any)?.name;
+								if (colName) {
+									columnsByTable[t].add(String(colName));
+								}
+							}
+						}
+					}
+				}
+
+				// Also recurse into each database object for any alternative shapes.
+				if (dbObj && typeof dbObj === 'object') {
+					this.extractSchemaFromJson(dbObj, columnsByTable);
+				}
+			}
+			return;
+		}
+
+		// Common shapes:
+		// { Tables: [ { Name, Columns: [ { Name } ] } ] }
+		// { tables: [ ... ] }
+		const tables = parsed.Tables ?? parsed.tables ?? parsed.databaseSchema?.Tables ?? parsed.databaseSchema?.tables;
+		if (Array.isArray(tables)) {
+			for (const table of tables) {
+				const tableName = table?.Name ?? table?.name;
+				if (!tableName) {
+					continue;
+				}
+				const t = String(tableName);
+				columnsByTable[t] ??= new Set();
+				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
+				if (Array.isArray(cols)) {
+					for (const col of cols) {
+						const colName = col?.Name ?? col?.name;
+						if (colName) {
+							columnsByTable[t].add(String(colName));
+						}
+					}
+				}
+			}
+			return;
+		}
+
+		// Another common shape: Tables is a dictionary/object map, not an array.
+		if (tables && typeof tables === 'object' && !Array.isArray(tables)) {
+			for (const [tableKey, tableValue] of Object.entries(tables)) {
+				const table: any = tableValue;
+				const tableName = table?.Name ?? table?.name ?? tableKey;
+				if (!tableName) {
+					continue;
+				}
+				const t = String(tableName);
+				columnsByTable[t] ??= new Set();
+				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
+				if (Array.isArray(cols)) {
+					for (const col of cols) {
+						const colName = (col as any)?.Name ?? (col as any)?.name;
+						if (colName) {
+							columnsByTable[t].add(String(colName));
+						}
+					}
+				}
+			}
+			return;
+		}
+
+		// If unknown shape, attempt recursive walk looking for {Name, Columns:[{Name}]} patterns.
+		if (typeof parsed === 'object') {
+			for (const value of Object.values(parsed)) {
+				if (Array.isArray(value) || (value && typeof value === 'object')) {
+					this.extractSchemaFromJson(value, columnsByTable);
+				}
+			}
+		}
+	}
+
+	private finalizeSchema(columnsByTable: Record<string, Set<string>>): DatabaseSchemaIndex {
+		const tables = Object.keys(columnsByTable).sort((a, b) => a.localeCompare(b));
+		const out: Record<string, string[]> = {};
+		for (const t of tables) {
+			out[t] = Array.from(columnsByTable[t]).sort((a, b) => a.localeCompare(b));
+		}
+		return { tables, columnsByTable: out };
 	}
 
 	dispose() {
