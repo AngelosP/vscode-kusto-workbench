@@ -31,7 +31,12 @@ type IncomingWebviewMessage =
 		cacheValue?: number;
 		cacheUnit?: CacheUnit | string;
 	}
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean };
+	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+	| {
+			type: 'importConnectionsFromXml';
+			connections: Array<{ name: string; clusterUrl: string; database?: string }>;
+			boxId?: string;
+		};
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -97,8 +102,51 @@ export class QueryEditorProvider {
 			case 'prefetchSchema':
 				await this.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh);
 				return;
+			case 'importConnectionsFromXml':
+				await this.importConnectionsFromXml(message.connections);
+				await this.sendConnectionsData();
+				return;
 			default:
 				return;
+		}
+	}
+
+	private async importConnectionsFromXml(
+		connections: Array<{ name: string; clusterUrl: string; database?: string }>
+	): Promise<void> {
+		const incoming = Array.isArray(connections) ? connections : [];
+		if (!incoming.length) {
+			return;
+		}
+
+		const existing = this.connectionManager.getConnections();
+		const existingByCluster = new Set(existing.map((c) => (c.clusterUrl || '').trim().toLowerCase()).filter(Boolean));
+
+		let added = 0;
+		for (const c of incoming) {
+			const name = String(c?.name || '').trim();
+			const clusterUrl = String(c?.clusterUrl || '').trim();
+			const database = c?.database ? String(c.database).trim() : undefined;
+			if (!clusterUrl) {
+				continue;
+			}
+			const key = clusterUrl.toLowerCase();
+			if (existingByCluster.has(key)) {
+				continue;
+			}
+			await this.connectionManager.addConnection({
+				name: name || clusterUrl,
+				clusterUrl,
+				database
+			});
+			existingByCluster.add(key);
+			added++;
+		}
+
+		if (added > 0) {
+			void vscode.window.showInformationMessage(`Imported ${added} Kusto connection${added === 1 ? '' : 's'}.`);
+		} else {
+			void vscode.window.showInformationMessage('No new connections were imported (they may already exist).');
 		}
 	}
 

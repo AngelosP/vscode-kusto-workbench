@@ -551,14 +551,15 @@ function updateConnectionSelects() {
 		if (select) {
 			const currentValue = select.value;
 			select.innerHTML = '<option value="">Select Cluster...</option>' +
-				connections.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>').join('');
+				connections.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>').join('') +
+				'<option value="__import_xml__">Import from .xml file…</option>';
 
 			// Pre-fill with last selection if this is a new box
 			if (!currentValue && lastConnectionId) {
 				select.value = lastConnectionId;
 				// Trigger database loading
 				updateDatabaseField(id);
-			} else if (currentValue) {
+			} else if (currentValue && currentValue !== '__import_xml__') {
 				select.value = currentValue;
 			}
 		}
@@ -566,7 +567,17 @@ function updateConnectionSelects() {
 }
 
 function updateDatabaseField(boxId) {
-	const connectionId = document.getElementById(boxId + '_connection').value;
+	const connectionSelect = document.getElementById(boxId + '_connection');
+	const connectionId = connectionSelect ? connectionSelect.value : '';
+	if (connectionSelect && connectionId === '__import_xml__') {
+		const prev = connectionSelect.dataset.prevValue || '';
+		connectionSelect.value = prev;
+		importConnectionsFromXmlFile(boxId);
+		return;
+	}
+	if (connectionSelect) {
+		connectionSelect.dataset.prevValue = connectionId;
+	}
 	const databaseSelect = document.getElementById(boxId + '_database');
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 	// Connection changed: clear schema so it doesn't mismatch.
@@ -604,6 +615,135 @@ function updateDatabaseField(boxId) {
 			refreshBtn.disabled = true;
 		}
 	}
+}
+
+let __kustoImportFileInput = null;
+
+function importConnectionsFromXmlFile(boxId) {
+	try {
+		if (!__kustoImportFileInput) {
+			__kustoImportFileInput = document.createElement('input');
+			__kustoImportFileInput.type = 'file';
+			__kustoImportFileInput.accept = '.xml,text/xml,application/xml';
+			__kustoImportFileInput.style.position = 'fixed';
+			__kustoImportFileInput.style.left = '-9999px';
+			__kustoImportFileInput.style.top = '0';
+			(document.body || document.documentElement).appendChild(__kustoImportFileInput);
+		}
+		__kustoImportFileInput.value = '';
+		__kustoImportFileInput.onchange = async () => {
+			const file = (__kustoImportFileInput.files && __kustoImportFileInput.files[0]) || null;
+			if (!file) {
+				return;
+			}
+			try {
+				const text = await file.text();
+				const imported = parseKustoExplorerConnectionsXml(text);
+				if (!imported.length) {
+					alert('No connections found in the selected XML file.');
+					return;
+				}
+				vscode.postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: boxId });
+			} catch (e) {
+				alert('Failed to import connections: ' + (e && e.message ? e.message : String(e)));
+			}
+		};
+		__kustoImportFileInput.click();
+	} catch (e) {
+		alert('Failed to open file picker: ' + (e && e.message ? e.message : String(e)));
+	}
+}
+
+function parseKustoExplorerConnectionsXml(xmlText) {
+	const text = String(xmlText || '');
+	if (!text.trim()) {
+		return [];
+	}
+	let doc;
+	try {
+		doc = new DOMParser().parseFromString(text, 'application/xml');
+	} catch {
+		return [];
+	}
+	// Detect parse errors.
+	try {
+		const err = doc.getElementsByTagName('parsererror');
+		if (err && err.length) {
+			return [];
+		}
+	} catch {
+		// ignore
+	}
+
+	const nodes = Array.from(doc.getElementsByTagName('ServerDescriptionBase'));
+	const results = [];
+	for (const node of nodes) {
+		const name = getChildText(node, 'Name');
+		const details = getChildText(node, 'Details');
+		const connectionString = getChildText(node, 'ConnectionString');
+		const parsed = parseKustoConnectionString(connectionString);
+		let clusterUrl = (parsed.dataSource || details || '').trim();
+		if (!clusterUrl) {
+			continue;
+		}
+		// Normalize URL-ish strings.
+		if (!/^https?:\/\//i.test(clusterUrl)) {
+			clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
+		}
+		results.push({
+			name: (name || '').trim() || clusterUrl,
+			clusterUrl: clusterUrl.trim(),
+			database: (parsed.initialCatalog || '').trim() || undefined
+		});
+	}
+
+	// De-dupe within the file.
+	const seen = new Set();
+	const deduped = [];
+	for (const r of results) {
+		const key = (r.clusterUrl || '').toLowerCase();
+		if (!key || seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		deduped.push(r);
+	}
+	return deduped;
+}
+
+function getChildText(node, localName) {
+	if (!node || !node.childNodes) {
+		return '';
+	}
+	for (const child of Array.from(node.childNodes)) {
+		if (!child || child.nodeType !== 1) {
+			continue;
+		}
+		const ln = child.localName || child.nodeName;
+		if (String(ln).toLowerCase() === String(localName).toLowerCase()) {
+			return String(child.textContent || '');
+		}
+	}
+	return '';
+}
+
+function parseKustoConnectionString(cs) {
+	const raw = String(cs || '');
+	const parts = raw.split(';').map(p => p.trim()).filter(Boolean);
+	const map = {};
+	for (const part of parts) {
+		const idx = part.indexOf('=');
+		if (idx <= 0) {
+			continue;
+		}
+		const key = part.slice(0, idx).trim().toLowerCase();
+		const val = part.slice(idx + 1).trim();
+		map[key] = val;
+	}
+	return {
+		dataSource: map['data source'] || map['datasource'] || map['server'] || map['address'] || '',
+		initialCatalog: map['initial catalog'] || map['database'] || ''
+	};
 }
 
 function refreshDatabases(boxId) {
