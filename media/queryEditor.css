@@ -182,11 +182,50 @@
 		}
 
 		.query-editor-resizer {
-			flex: 0 0 10px;
-			height: 10px;
+			flex: 0 0 12px;
+			height: 12px;
 			cursor: ns-resize;
 			border-top: 1px solid var(--vscode-input-border);
 			background: var(--vscode-editor-background);
+			position: relative;
+			touch-action: none;
+		}
+
+		.query-editor-resizer::after {
+			content: '';
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 34px;
+			height: 6px;
+			transform: translate(-50%, -50%);
+			border-radius: 3px;
+			opacity: 0.55;
+			background-image: repeating-linear-gradient(
+				90deg,
+				var(--vscode-input-placeholderForeground),
+				var(--vscode-input-placeholderForeground) 2px,
+				transparent 2px,
+				transparent 6px
+			);
+		}
+
+		.query-editor-resizer:hover {
+			background: var(--vscode-list-hoverBackground);
+			border-top-color: var(--vscode-focusBorder);
+		}
+
+		.query-editor-resizer:hover::after {
+			opacity: 0.85;
+		}
+
+		.query-editor-resizer.is-dragging {
+			background: var(--vscode-list-hoverBackground);
+			border-top-color: var(--vscode-focusBorder);
+		}
+
+		.query-editor-resizer.is-dragging::after {
+			opacity: 0.95;
 		}
 
 		.query-editor-placeholder {

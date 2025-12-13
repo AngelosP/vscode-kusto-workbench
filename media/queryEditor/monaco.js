@@ -297,6 +297,12 @@ function initQueryEditor(boxId) {
 				e.preventDefault();
 				e.stopPropagation();
 
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+
 				const startY = e.clientY;
 				const startHeight = wrapper.getBoundingClientRect().height;
 
@@ -309,6 +315,9 @@ function initQueryEditor(boxId) {
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
 					document.removeEventListener('mouseup', onUp, true);
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
 				};
 
 				document.addEventListener('mousemove', onMove, true);
