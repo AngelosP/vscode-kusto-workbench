@@ -478,20 +478,22 @@ export class QueryEditorProvider {
 		}
 
 		.row-selector {
-			width: 30px;
-			min-width: 30px;
-			max-width: 30px;
+			width: 40px;
+			min-width: 40px;
+			max-width: 40px;
 			text-align: center;
 			background: var(--vscode-editor-background);
 			cursor: pointer;
-			sticky: left;
+			position: sticky;
 			left: 0;
-			z-index: 1;
+			z-index: 10;
 			user-select: none;
+			border-right: 2px solid var(--vscode-panel-border);
 		}
 
 		th.row-selector {
-			z-index: 3;
+			z-index: 100;
+			background: var(--vscode-list-hoverBackground);
 		}
 
 		td.selected-cell {
@@ -822,13 +824,13 @@ export class QueryEditorProvider {
 					 onkeydown="handleTableKeydown(event, '\${boxId}')">
 					<table id="\${boxId}_table">
 						<thead><tr>
-							<th class="row-selector"></th>
+							<th class="row-selector">#</th>
 							\${result.columns.map((c, i) => '<th data-col="' + i + '">' + c + '</th>').join('')}
 						</tr></thead>
 						<tbody>
 							\${result.rows.map((row, rowIdx) => 
 								'<tr data-row="' + rowIdx + '">' +
-								'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">▶</td>' +
+								'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">' + (rowIdx + 1) + '</td>' +
 								row.map((cell, colIdx) => 
 									'<td data-row="' + rowIdx + '" data-col="' + colIdx + '" ' +
 									'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
