@@ -467,6 +467,9 @@ export class QueryEditorProvider {
 			border-bottom: 1px solid var(--vscode-panel-border);
 			white-space: nowrap;
 			position: relative;
+			max-width: 75ch;
+			overflow: hidden;
+			text-overflow: ellipsis;
 		}
 
 		th {
@@ -813,7 +816,7 @@ export class QueryEditorProvider {
 						(Execution time: \${result.metadata.executionTime})
 					</div>
 					<div class="column-search">
-						<input type="text" placeholder="Search columns..." 
+						<input type="text" placeholder="Scroll to column..." 
 							   id="\${boxId}_column_search"
 							   oninput="filterColumns('\${boxId}')"
 							   onkeydown="handleColumnSearchKeydown(event, '\${boxId}')" />
