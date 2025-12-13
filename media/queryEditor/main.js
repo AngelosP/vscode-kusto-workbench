@@ -50,6 +50,34 @@ document.addEventListener('keydown', (event) => {
 	}
 }, true);
 
+// F1 should show the Monaco hover tooltip (docs) when inside the editor.
+document.addEventListener('keydown', (event) => {
+	if (event.key !== 'F1') {
+		return;
+	}
+	if (!activeQueryEditorBoxId) {
+		return;
+	}
+	const editor = queryEditors[activeQueryEditorBoxId];
+	if (!editor) {
+		return;
+	}
+	try {
+		event.preventDefault();
+		event.stopPropagation();
+		if (typeof event.stopImmediatePropagation === 'function') {
+			event.stopImmediatePropagation();
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		editor.trigger('keyboard', 'editor.action.showHover', {});
+	} catch {
+		// ignore
+	}
+}, true);
+
 // Request connections on load
 vscode.postMessage({ type: 'getConnections' });
 

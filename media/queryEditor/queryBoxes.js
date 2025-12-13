@@ -92,7 +92,7 @@ function addQueryBox() {
 		'<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
 		'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
 		'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\')">' +
-		'<option value="">Select Database...</option>' +
+		'<option value="" disabled selected hidden>Select Database...</option>' +
 		'</select>' +
 		'</div>' +
 		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
@@ -624,7 +624,7 @@ function updateDatabaseField(boxId) {
 			});
 		}
 	} else if (databaseSelect) {
-		databaseSelect.innerHTML = '<option value="">Select Database...</option>';
+		databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>';
 		databaseSelect.disabled = false;
 		if (refreshBtn) {
 			refreshBtn.disabled = true;
@@ -798,7 +798,7 @@ function updateDatabaseSelect(boxId, databases) {
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 
 	if (databaseSelect) {
-		databaseSelect.innerHTML = '<option value="">Select Database...</option>' +
+		databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>' +
 			databases.map(db => '<option value="' + db + '">' + db + '</option>').join('');
 		databaseSelect.disabled = false;
 

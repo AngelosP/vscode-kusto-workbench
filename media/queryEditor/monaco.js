@@ -29,6 +29,217 @@ function ensureMonaco() {
 			require(['vs/editor/editor.main'], () => {
 				try {
 					monaco.languages.register({ id: 'kusto' });
+
+					const KUSTO_KEYWORD_DOCS = {
+						'summarize': {
+							signature: '| summarize [Column =] Aggregation(...) [by GroupKey[, ...]]',
+							description: 'Aggregates rows into groups (optionally) and computes aggregate values.'
+						},
+						'where': {
+							signature: '| where Predicate',
+							description: 'Filters rows using a boolean predicate.'
+						},
+						'extend': {
+							signature: '| extend Column = Expression[, ...]',
+							description: 'Adds calculated columns to the result set.'
+						},
+						'project': {
+							signature: '| project Column[, ...]',
+							description: 'Selects and optionally renames columns.'
+						},
+						'join': {
+							signature: '| join kind=... (RightTable) on Key',
+							description: 'Combines rows from two tables using a matching key.'
+						},
+						'take': {
+							signature: '| take N',
+							description: 'Returns up to N rows.'
+						},
+						'top': {
+							signature: '| top N by Expression [desc|asc]',
+							description: 'Returns the top N rows ordered by an expression.'
+						},
+						'render': {
+							signature: '| render VisualizationType',
+							description: 'Renders results using a chart/visualization type.'
+						},
+						'mv-expand': {
+							signature: '| mv-expand Column',
+							description: 'Expands multi-value (array/dynamic) into multiple rows.'
+						}
+					};
+
+					const KUSTO_FUNCTION_DOCS = {
+						'dcountif': {
+							args: ['expr', 'predicate', 'accuracy?'],
+							returnType: 'long',
+							description: 'Returns the number of distinct values of expr for which predicate evaluates to true.'
+						},
+						'countif': {
+							args: ['predicate'],
+							returnType: 'long',
+							description: 'Counts rows for which predicate evaluates to true.'
+						},
+						'sumif': {
+							args: ['expr', 'predicate'],
+							returnType: 'real',
+							description: 'Sums expr over rows where predicate is true.'
+						},
+						'avgif': {
+							args: ['expr', 'predicate'],
+							returnType: 'real',
+							description: 'Averages expr over rows where predicate is true.'
+						}
+					};
+
+					const isIdentChar = (ch) => /[A-Za-z0-9_]/.test(ch);
+					const isIdentStart = (ch) => /[A-Za-z_]/.test(ch);
+
+					const getWordRangeAt = (model, position) => {
+						try {
+							const w = model.getWordAtPosition(position);
+							if (!w) {
+								return null;
+							}
+							return new monaco.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn);
+						} catch {
+							return null;
+						}
+					};
+
+					const findEnclosingFunctionCall = (model, offset) => {
+						const text = model.getValue();
+						if (!text) {
+							return null;
+						}
+
+						let depth = 0;
+						let inSingle = false;
+						for (let i = offset - 1; i >= 0; i--) {
+							const ch = text[i];
+							if (ch === "'") {
+								// Toggle string if not escaped.
+								const prev = i > 0 ? text[i - 1] : '';
+								if (prev !== '\\') {
+									inSingle = !inSingle;
+								}
+								continue;
+							}
+							if (inSingle) {
+								continue;
+							}
+							if (ch === ')') {
+								depth++;
+								continue;
+							}
+							if (ch === '(') {
+								if (depth === 0) {
+									// Found the opening paren for the call containing the cursor.
+									let j = i - 1;
+									while (j >= 0 && /\s/.test(text[j])) j--;
+									let end = j;
+									while (j >= 0 && isIdentChar(text[j])) j--;
+									const start = j + 1;
+									if (start <= end && isIdentStart(text[start])) {
+										const name = text.slice(start, end + 1);
+										return { name, openParenOffset: i, nameStart: start, nameEnd: end + 1 };
+									}
+									return null;
+								}
+								depth--;
+							}
+						}
+						return null;
+					};
+
+					const computeArgIndex = (model, openParenOffset, offset) => {
+						const text = model.getValue();
+						let idx = 0;
+						let depth = 0;
+						let inSingle = false;
+						for (let i = openParenOffset + 1; i < offset && i < text.length; i++) {
+							const ch = text[i];
+							if (ch === "'") {
+								const prev = i > 0 ? text[i - 1] : '';
+								if (prev !== '\\') {
+									inSingle = !inSingle;
+								}
+								continue;
+							}
+							if (inSingle) continue;
+							if (ch === '(') {
+								depth++;
+								continue;
+							}
+							if (ch === ')') {
+								if (depth > 0) depth--;
+								continue;
+							}
+							if (depth === 0 && ch === ',') {
+								idx++;
+							}
+						}
+						return idx;
+					};
+
+					const buildFunctionSignatureMarkdown = (name, doc, activeArgIndex) => {
+						const args = Array.isArray(doc.args) ? doc.args : [];
+						const formattedArgs = args.map((a, i) => (i === activeArgIndex ? `**${a}**` : a)).join(', ');
+						const ret = doc.returnType ? `: ${doc.returnType}` : '';
+						return `\`${name}(${formattedArgs})${ret}\``;
+					};
+
+					const getHoverInfoAt = (model, position) => {
+						let offset;
+						try {
+							offset = model.getOffsetAt(position);
+						} catch {
+							return null;
+						}
+
+						// Prefer function-call context (cursor could be inside args).
+						const call = findEnclosingFunctionCall(model, offset);
+						if (call) {
+							const fnKey = String(call.name || '').toLowerCase();
+							const doc = KUSTO_FUNCTION_DOCS[fnKey];
+							if (doc) {
+								const argIndex = computeArgIndex(model, call.openParenOffset, offset);
+								const md =
+									buildFunctionSignatureMarkdown(fnKey, doc, argIndex) +
+									(doc.description ? `\n\n${doc.description}` : '');
+								const startPos = model.getPositionAt(call.nameStart);
+								const endPos = model.getPositionAt(call.nameEnd);
+								const range = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+								return { range, markdown: md };
+							}
+						}
+
+						// Otherwise, show keyword/function docs for the word under cursor.
+						let word = null;
+						try {
+							word = model.getWordAtPosition(position);
+						} catch {
+							word = null;
+						}
+						if (!word || !word.word) {
+							return null;
+						}
+						const w = String(word.word).toLowerCase();
+						if (KUSTO_FUNCTION_DOCS[w]) {
+							const doc = KUSTO_FUNCTION_DOCS[w];
+							const md =
+								buildFunctionSignatureMarkdown(w, doc, -1) +
+								(doc.description ? `\n\n${doc.description}` : '');
+							return { range: getWordRangeAt(model, position), markdown: md };
+						}
+						if (KUSTO_KEYWORD_DOCS[w]) {
+							const doc = KUSTO_KEYWORD_DOCS[w];
+							const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+							return { range: getWordRangeAt(model, position), markdown: md };
+						}
+
+						return null;
+					};
 					monaco.languages.setMonarchTokensProvider('kusto', {
 						keywords: [
 							'and', 'as', 'by', 'case', 'contains', 'count', 'dcount', 'distinct', 'extend', 'externaldata',
@@ -231,6 +442,27 @@ function ensureMonaco() {
 							return { suggestions };
 						}
 					});
+
+						// Hover docs for keywords/functions, including argument tracking for function calls.
+						monaco.languages.registerHoverProvider('kusto', {
+							provideHover: function (model, position) {
+								try {
+									const info = getHoverInfoAt(model, position);
+									if (!info) {
+										return null;
+									}
+									return {
+										range: info.range || undefined,
+										contents: [{ value: info.markdown }]
+									};
+								} catch {
+									return null;
+								}
+							}
+						});
+
+						// Expose a helper so the editor instance can decide whether to auto-show hover.
+						window.__kustoGetHoverInfoAt = getHoverInfoAt;
 					resolve(monaco);
 				} catch (e) {
 					reject(e);
@@ -275,6 +507,127 @@ function initQueryEditor(boxId) {
 		});
 
 		queryEditors[boxId] = editor;
+
+		// F1 should show docs hover (not the webview / VS Code default behavior).
+		try {
+			editor.addCommand(monaco.KeyCode.F1, () => {
+				try {
+					editor.trigger('keyboard', 'editor.action.showHover', {});
+				} catch {
+					// ignore
+				}
+			});
+		} catch {
+			// ignore
+		}
+
+		// Docs tooltip: keep visible while typing, even when Monaco autocomplete is open.
+		const renderDocMarkdownToHtml = (markdown) => {
+			const raw = String(markdown || '');
+			if (!raw.trim()) {
+				return '';
+			}
+			const escaped = typeof escapeHtml === 'function' ? escapeHtml(raw) : raw;
+			return escaped
+				.replace(/\r\n/g, '\n')
+				.replace(/\n\n/g, '<br><br>')
+				.replace(/\n/g, '<br>')
+				.replace(/`([^`]+)`/g, '<code>$1</code>')
+				.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+		};
+
+		const createDocWidget = () => {
+			const dom = document.createElement('div');
+			dom.className = 'kusto-doc-widget';
+			let visible = false;
+			let lastPos = null;
+			let lastHtml = '';
+
+			const widget = {
+				getId: () => 'kusto.docWidget.' + boxId,
+				getDomNode: () => dom,
+				getPosition: () => {
+					if (!visible || !lastPos) {
+						return null;
+					}
+					return {
+						position: lastPos,
+						preference: [
+							monaco.editor.ContentWidgetPositionPreference.ABOVE,
+							monaco.editor.ContentWidgetPositionPreference.BELOW
+						]
+					};
+				}
+			};
+
+			editor.addContentWidget(widget);
+
+			const update = () => {
+				try {
+					const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+					const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+					const isThisEditorActive = (activeQueryEditorBoxId === boxId) || hasWidgetFocus || hasTextFocus;
+					if (!isThisEditorActive) {
+						visible = false;
+						lastPos = null;
+						editor.layoutContentWidget(widget);
+						return;
+					}
+					const model = editor.getModel();
+					const pos = editor.getPosition();
+					const sel = editor.getSelection();
+					if (!model || !pos || !sel || !sel.isEmpty()) {
+						visible = false;
+						lastPos = null;
+						editor.layoutContentWidget(widget);
+						return;
+					}
+					const getter = window.__kustoGetHoverInfoAt;
+					if (typeof getter !== 'function') {
+						visible = false;
+						lastPos = null;
+						editor.layoutContentWidget(widget);
+						return;
+					}
+					const info = getter(model, pos);
+					const html = info && info.markdown ? renderDocMarkdownToHtml(info.markdown) : '';
+					if (!html) {
+						visible = false;
+						lastPos = null;
+						editor.layoutContentWidget(widget);
+						return;
+					}
+					if (html !== lastHtml) {
+						lastHtml = html;
+						dom.innerHTML = html;
+					}
+					visible = true;
+					lastPos = pos;
+					editor.layoutContentWidget(widget);
+				} catch {
+					// ignore
+				}
+			};
+
+			return { update };
+		};
+
+		const docWidget = createDocWidget();
+		let docTimer = null;
+		const scheduleDocUpdate = () => {
+			try {
+				if (docTimer) {
+					clearTimeout(docTimer);
+				}
+				docTimer = setTimeout(() => {
+					try { docWidget.update(); } catch { /* ignore */ }
+				}, 140);
+			} catch {
+				// ignore
+			}
+		};
+
+		editor.onDidChangeCursorPosition(scheduleDocUpdate);
 		try {
 			const model = editor.getModel();
 			if (model && model.uri) {
@@ -293,12 +646,33 @@ function initQueryEditor(boxId) {
 			placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';
 		};
 		syncPlaceholder();
-		editor.onDidChangeModelContent(syncPlaceholder);
+		editor.onDidChangeModelContent(() => {
+			syncPlaceholder();
+			scheduleDocUpdate();
+		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
+			scheduleDocUpdate();
 		});
+		// When the suggest widget opens, Monaco may blur the text area while the editor widget
+		// still has focus. Track focus at the editor-widget level so our docs widget stays visible.
+		try {
+			editor.onDidFocusEditorWidget(() => {
+				activeQueryEditorBoxId = boxId;
+				syncPlaceholder();
+				scheduleDocUpdate();
+			});
+			editor.onDidBlurEditorWidget(() => {
+				if (activeQueryEditorBoxId === boxId) {
+					activeQueryEditorBoxId = null;
+				}
+				syncPlaceholder();
+			});
+		} catch {
+			// ignore
+		}
 
 		// In VS Code webviews, the first click can sometimes focus the webview but not reliably
 		// place the Monaco caret if we eagerly call editor.focus() during the same mouse event.
@@ -307,6 +681,15 @@ function initQueryEditor(boxId) {
 			setTimeout(() => {
 				try { editor.focus(); } catch { /* ignore */ }
 			}, 0);
+		};
+		const isEditorFocused = () => {
+			try {
+				const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+				const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+				return hasWidgetFocus || hasTextFocus;
+			} catch {
+				return false;
+			}
 		};
 
 		if (wrapper) {
@@ -323,7 +706,7 @@ function initQueryEditor(boxId) {
 				} catch {
 					// ignore
 				}
-				if (activeQueryEditorBoxId === boxId) {
+				if (isEditorFocused()) {
 					return;
 				}
 				focusSoon();
@@ -332,15 +715,12 @@ function initQueryEditor(boxId) {
 
 		// Keep a direct hook on the editor container too.
 		container.addEventListener('mousedown', () => {
-			if (activeQueryEditorBoxId === boxId) {
+			if (isEditorFocused()) {
 				return;
 			}
 			focusSoon();
 		}, true);
 		editor.onDidBlurEditorText(() => {
-			if (activeQueryEditorBoxId === boxId) {
-				activeQueryEditorBoxId = null;
-			}
 			syncPlaceholder();
 		});
 

@@ -16,8 +16,7 @@ type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
 
-type IncomingWebviewMessage =
-	| { type: 'getConnections' }
+type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'showInfo'; message: string }

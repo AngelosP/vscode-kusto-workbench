@@ -279,6 +279,26 @@
 			display: block;
 		}
 
+		.kusto-doc-widget {
+			max-width: 560px;
+			padding: 8px 10px;
+			border-radius: 6px;
+			border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-input-border));
+			background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background));
+			color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+			font-size: 12px;
+			line-height: 1.35;
+			box-shadow: none;
+			z-index: 50;
+			pointer-events: none;
+			user-select: none;
+		}
+
+		.kusto-doc-widget code {
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+		}
+
 		.query-editor {
 			width: 100%;
 			flex: 1 1 auto;
