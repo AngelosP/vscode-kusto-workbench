@@ -17,6 +17,7 @@ type IncomingWebviewMessage =
 	| { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'showInfo'; message: string }
 	| {
 		type: 'executeQuery';
 		query: string;
@@ -82,6 +83,9 @@ export class QueryEditorProvider {
 				return;
 			case 'refreshDatabases':
 				await this.sendDatabases(message.connectionId, message.boxId, true);
+				return;
+			case 'showInfo':
+				vscode.window.showInformationMessage(message.message);
 				return;
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);

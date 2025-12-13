@@ -11,18 +11,18 @@ function addQueryBox() {
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'doubleToSingle\')" title="Replace \" with \'\nReplaces all double quotes with single quotes">' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'doubleToSingle\')" title="Replace double quotes with single quotes\nReplaces all double quotes with single quotes">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleToDouble\')" title="Replace \' with \"\nReplaces all single quotes with double quotes">' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleToDouble\')" title="Replace single quotes with double quotes\nReplaces all single quotes with double quotes">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>' +
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nWraps the query in Power Query (M) using AzureDataExplorer.Contents(...)">' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3zm9 2h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-2V5z"/></svg>' +
 		'</span>' +
@@ -185,7 +185,7 @@ function replaceAllInEditor(boxId, from, to) {
 	}
 }
 
-function exportQueryToPowerBI(boxId) {
+async function exportQueryToPowerBI(boxId) {
 	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
@@ -224,11 +224,44 @@ function exportQueryToPowerBI(boxId) {
 		'in\n' +
 		'    Source';
 
+	// Write to clipboard instead of changing the editor contents.
 	try {
-		editor.executeEdits('toolbar', [{ range: model.getFullModelRange(), text: m }]);
-		editor.focus();
+		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+			await navigator.clipboard.writeText(m);
+			try {
+				vscode.postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+			} catch {
+				// ignore
+			}
+			return;
+		}
 	} catch {
-		// ignore
+		// fall through
+	}
+
+	// Fallback path (older webview/permission edge cases).
+	try {
+		const ta = document.createElement('textarea');
+		ta.value = m;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		ta.style.top = '0';
+		(document.body || document.documentElement).appendChild(ta);
+		ta.focus();
+		ta.select();
+		const ok = document.execCommand('copy');
+		try { ta.parentNode && ta.parentNode.removeChild(ta); } catch { /* ignore */ }
+		if (!ok) {
+			throw new Error('copy failed');
+		}
+		try {
+			vscode.postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+		} catch {
+			// ignore
+		}
+	} catch {
+		alert('Failed to copy Power BI query to clipboard.');
 	}
 }
 
