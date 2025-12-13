@@ -198,12 +198,38 @@ function ensureMonaco() {
 						}
 
 						// Prefer function-call context (cursor could be inside args).
-						const call = findEnclosingFunctionCall(model, offset);
+						// Note: when the caret is on '(' (or just before it), the backward scan starting at offset-1
+						// may miss the opening paren. Probe slightly forward so active-arg tracking works while typing.
+						let call = findEnclosingFunctionCall(model, offset);
+						let callOffset = offset;
+						if (!call) {
+							try {
+								const text = model.getValue();
+								if (text && offset < text.length) {
+									call = findEnclosingFunctionCall(model, offset + 1);
+									callOffset = offset + 1;
+								}
+								if (!call && text && (offset + 1) < text.length) {
+									call = findEnclosingFunctionCall(model, offset + 2);
+									callOffset = offset + 2;
+								}
+							} catch {
+								// ignore
+							}
+						}
 						if (call) {
 							const fnKey = String(call.name || '').toLowerCase();
 							const doc = KUSTO_FUNCTION_DOCS[fnKey];
 							if (doc) {
-								const argIndex = computeArgIndex(model, call.openParenOffset, offset);
+								let argIndex = computeArgIndex(model, call.openParenOffset, callOffset);
+								try {
+									const args = Array.isArray(doc.args) ? doc.args : [];
+									if (args.length > 0 && typeof argIndex === 'number') {
+										argIndex = Math.max(0, Math.min(argIndex, args.length - 1));
+									}
+								} catch {
+									// ignore
+								}
 								const md =
 									buildFunctionSignatureMarkdown(fnKey, doc, argIndex) +
 									(doc.description ? `\n\n${doc.description}` : '');
@@ -533,7 +559,8 @@ function initQueryEditor(boxId) {
 				.replace(/\n\n/g, '<br><br>')
 				.replace(/\n/g, '<br>')
 				.replace(/`([^`]+)`/g, '<code>$1</code>')
-				.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+				// Show literal **...** markers while also bolding the content.
+				.replace(/\*\*([^*]+)\*\*/g, '<strong>**$1**</strong>');
 		};
 
 		// Use a DOM overlay (instead of Monaco content widgets) for reliability in VS Code webviews.
@@ -560,6 +587,10 @@ function initQueryEditor(boxId) {
 
 			const update = () => {
 				try {
+					if (!caretDocsEnabled) {
+						hide();
+						return;
+					}
 					const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
 					const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
 					const isThisEditorActive = (activeQueryEditorBoxId === boxId) || hasWidgetFocus || hasTextFocus;
@@ -598,8 +629,8 @@ function initQueryEditor(boxId) {
 						return;
 					}
 					// Probe near the caret so we still show docs when the caret is on/near '(' or ')' or just after ')'.
-					const probePositions = [];
-					probePositions.push(pos);
+					// Keep the caret position first so active-argument detection stays accurate.
+					const probePositions = [pos];
 					try {
 						const maxCol = typeof model.getLineMaxColumn === 'function' ? model.getLineMaxColumn(pos.lineNumber) : null;
 						if (pos.column > 1) probePositions.push(new monaco.Position(pos.lineNumber, pos.column - 1));
@@ -671,6 +702,24 @@ function initQueryEditor(boxId) {
 		};
 
 		const docOverlay = createDocOverlay();
+		try { caretDocOverlaysByBoxId[boxId] = docOverlay; } catch { /* ignore */ }
+
+		// Hide caret tooltip on Escape (without preventing Monaco default behavior).
+		try {
+			editor.onKeyDown((e) => {
+				try {
+					if (!e) return;
+					// monaco.KeyCode.Escape === 9
+					if (e.keyCode === monaco.KeyCode.Escape) {
+						try { docOverlay.hide(); } catch { /* ignore */ }
+					}
+				} catch {
+					// ignore
+				}
+			});
+		} catch {
+			// ignore
+		}
 		let docTimer = null;
 		const scheduleDocUpdate = () => {
 			try {
@@ -724,6 +773,7 @@ function initQueryEditor(boxId) {
 				scheduleDocUpdate();
 			});
 			editor.onDidBlurEditorWidget(() => {
+				try { docOverlay.hide(); } catch { /* ignore */ }
 				if (activeQueryEditorBoxId === boxId) {
 					activeQueryEditorBoxId = null;
 				}

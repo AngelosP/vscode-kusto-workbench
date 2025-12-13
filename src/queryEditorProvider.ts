@@ -9,7 +9,8 @@ const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
 	lastDatabase: 'kusto.lastDatabase',
 	cachedDatabases: 'kusto.cachedDatabases',
-	cachedSchemas: 'kusto.cachedSchemas'
+	cachedSchemas: 'kusto.cachedSchemas',
+	caretDocsEnabled: 'kusto.caretDocsEnabled'
 } as const;
 
 type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
@@ -20,6 +21,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'showInfo'; message: string }
+	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| {
 		type: 'executeQuery';
 		query: string;
@@ -86,6 +88,9 @@ export class QueryEditorProvider {
 		switch (message.type) {
 			case 'getConnections':
 				await this.sendConnectionsData();
+				return;
+			case 'setCaretDocsEnabled':
+				await this.context.globalState.update(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
 				return;
 			case 'getDatabases':
 				await this.sendDatabases(message.connectionId, message.boxId, false);
@@ -251,13 +256,15 @@ export class QueryEditorProvider {
 	private async sendConnectionsData(): Promise<void> {
 		const connections = this.connectionManager.getConnections();
 		const cachedDatabases = this.getCachedDatabases();
+		const caretDocsEnabled = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled, true);
 
 		this.postMessage({
 			type: 'connectionsData',
 			connections,
 			lastConnectionId: this.lastConnectionId,
 			lastDatabase: this.lastDatabase,
-			cachedDatabases
+			cachedDatabases,
+			caretDocsEnabled
 		});
 	}
 

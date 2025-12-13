@@ -258,6 +258,11 @@
 			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 		}
 
+		.query-editor-toolbar-btn.is-active {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
 		.query-editor-toolbar-btn:active {
 			opacity: 0.8;
 		}

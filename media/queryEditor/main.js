@@ -78,6 +78,37 @@ document.addEventListener('keydown', (event) => {
 	}
 }, true);
 
+// Escape hides the custom caret tooltip overlay (without interfering with Monaco default behavior).
+document.addEventListener('keydown', (event) => {
+	if (event.key !== 'Escape' && event.key !== 'Esc') {
+		return;
+	}
+	try {
+		if (activeQueryEditorBoxId && caretDocOverlaysByBoxId && caretDocOverlaysByBoxId[activeQueryEditorBoxId]) {
+			const overlay = caretDocOverlaysByBoxId[activeQueryEditorBoxId];
+			if (overlay && typeof overlay.hide === 'function') {
+				overlay.hide();
+			}
+		}
+	} catch {
+		// ignore
+	}
+}, true);
+
+// If the webview loses focus, hide any visible caret tooltip.
+window.addEventListener('blur', () => {
+	try {
+		for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
+			const overlay = caretDocOverlaysByBoxId[key];
+			if (overlay && typeof overlay.hide === 'function') {
+				overlay.hide();
+			}
+		}
+	} catch {
+		// ignore
+	}
+});
+
 // Request connections on load
 vscode.postMessage({ type: 'getConnections' });
 
@@ -89,7 +120,9 @@ window.addEventListener('message', event => {
 			lastConnectionId = message.lastConnectionId;
 			lastDatabase = message.lastDatabase;
 			cachedDatabases = message.cachedDatabases || {};
+			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			updateConnectionSelects();
+			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 			break;
 		case 'databasesData':
 			updateDatabaseSelect(message.boxId, message.databases);

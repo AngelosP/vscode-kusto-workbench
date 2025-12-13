@@ -15,3 +15,7 @@ let monacoReadyPromise = null;
 
 let queryExecutionTimers = {};
 let runModesByBoxId = {};
+
+// Caret docs (custom tooltip) toggle
+let caretDocsEnabled = true;
+let caretDocOverlaysByBoxId = {};

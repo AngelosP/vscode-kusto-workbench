@@ -34,6 +34,13 @@ function addQueryBox() {
 		'<path d="M4 4l8 8"/>' +
 		'<path d="M12 4L4 12"/>' +
 		'</svg>';
+
+	const caretDocsIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 3.5h10v7H8.2L6 13V10.5H3v-7z"/>' +
+		'<path d="M5.2 5.6h5.6"/>' +
+		'<path d="M5.2 7.8h4.2"/>' +
+		'</svg>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table">' +
@@ -73,6 +80,10 @@ function addQueryBox() {
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h7v2H3V3zm0 4h10v2H3V7zm0 4h6v2H3v-2z"/><path d="M12.5 2.5l1 1-2.5 2.5-1-1 2.5-2.5zM9 6l1 1-1 1-1-1 1-1z"/></svg>' +
 		'</span>' +
+		'</button>' +
+		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Caret docs tooltip\nShows a persistent tooltip near the caret while typing" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
 		'</div>';
 	const boxHtml =
@@ -145,9 +156,44 @@ function addQueryBox() {
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
 	initQueryEditor(id);
+}
+
+function updateCaretDocsToggleButtons() {
+	for (const boxId of queryBoxes) {
+		const btn = document.getElementById(boxId + '_caret_docs_toggle');
+		if (!btn) {
+			continue;
+		}
+		btn.setAttribute('aria-pressed', caretDocsEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!caretDocsEnabled);
+	}
+}
+
+function toggleCaretDocsEnabled() {
+	caretDocsEnabled = !caretDocsEnabled;
+	updateCaretDocsToggleButtons();
+	// Hide existing overlays immediately when turning off.
+	if (!caretDocsEnabled) {
+		try {
+			for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
+				const overlay = caretDocOverlaysByBoxId[key];
+				if (overlay && typeof overlay.hide === 'function') {
+					overlay.hide();
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}
+	try {
+		vscode.postMessage({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled });
+	} catch {
+		// ignore
+	}
 }
 
 function onQueryEditorToolbarAction(boxId, action) {
