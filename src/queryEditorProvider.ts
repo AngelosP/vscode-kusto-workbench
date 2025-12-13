@@ -908,6 +908,13 @@ export class QueryEditorProvider {
 		function handleTableKeydown(event, boxId) {
 			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
 			
+			// Handle copy to clipboard (Ctrl+C or Cmd+C)
+			if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+				event.preventDefault();
+				copySelectionToClipboard(boxId);
+				return;
+			}
+			
 			const cell = window.currentResult.selectedCell;
 			if (!cell) {
 				// If no cell selected, select first cell
@@ -1065,6 +1072,37 @@ export class QueryEditorProvider {
 				}
 			}, 100);
 		}
+
+		function copySelectionToClipboard(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			// Check if any rows are selected
+			if (window.currentResult.selectedRows.size > 0) {
+				// Copy selected rows in tab-delimited format
+				const rowIndices = Array.from(window.currentResult.selectedRows).sort((a, b) => a - b);
+				const textToCopy = rowIndices.map(rowIdx => {
+					const row = window.currentResult.rows[rowIdx];
+					return row.join('\\t');
+				}).join('\\n');
+				
+				navigator.clipboard.writeText(textToCopy).then(() => {
+					console.log('Copied ' + rowIndices.length + ' row(s) to clipboard');
+				}).catch(err => {
+					console.error('Failed to copy rows:', err);
+				});
+			} else if (window.currentResult.selectedCell) {
+				// Copy single cell value
+				const cell = window.currentResult.selectedCell;
+				const value = window.currentResult.rows[cell.row][cell.col];
+				
+				navigator.clipboard.writeText(value).then(() => {
+					console.log('Copied cell value to clipboard:', value);
+				}).catch(err => {
+					console.error('Failed to copy cell:', err);
+				});
+			}
+		}
+
 		// Add initial query box
 		addQueryBox();
 	</script>
