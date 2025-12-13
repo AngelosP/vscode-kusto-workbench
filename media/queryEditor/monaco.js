@@ -67,6 +67,51 @@ function ensureMonaco() {
 						]
 					});
 
+					// Basic formatter so users can format the whole query.
+					const formatKusto = (input) => {
+						const raw = String(input || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+						const lines = raw.split('\n');
+						const out = [];
+						let blankRun = 0;
+						for (let line of lines) {
+							line = String(line).replace(/[ \t]+$/g, '');
+							if (!line.trim()) {
+								blankRun++;
+								if (blankRun <= 2) {
+									out.push('');
+								}
+								continue;
+							}
+							blankRun = 0;
+							// Normalize leading whitespace.
+							line = line.replace(/^\s+/g, '');
+							// Normalize pipe operator lines: "| foo".
+							if (/^\|/.test(line)) {
+								line = '| ' + line.slice(1).replace(/^\s+/g, '');
+							}
+							out.push(line);
+						}
+						// Trim leading/trailing blank lines.
+						while (out.length && !out[0].trim()) out.shift();
+						while (out.length && !out[out.length - 1].trim()) out.pop();
+						return out.join('\n');
+					};
+
+					monaco.languages.registerDocumentFormattingEditProvider('kusto', {
+						provideDocumentFormattingEdits(model) {
+							try {
+								const original = model.getValue();
+								const formatted = formatKusto(original);
+								if (formatted === original) {
+									return [];
+								}
+								return [{ range: model.getFullModelRange(), text: formatted }];
+							} catch {
+								return [];
+							}
+						}
+					});
+
 					monaco.editor.setTheme(isDarkTheme() ? 'vs-dark' : 'vs');
 
 					// Autocomplete driven by cached schema (tables + columns).

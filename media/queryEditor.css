@@ -171,6 +171,65 @@
 			flex-direction: column;
 		}
 
+		.query-editor-toolbar {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 6px;
+			border-bottom: 1px solid var(--vscode-input-border);
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			flex: 0 0 auto;
+		}
+
+		.query-editor-toolbar-sep {
+			width: 1px;
+			height: 18px;
+			background: var(--vscode-input-border);
+			margin: 0 4px;
+			opacity: 0.9;
+		}
+
+		.query-editor-toolbar-btn {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: 1px solid transparent;
+			padding: 4px 6px;
+			cursor: pointer;
+			border-radius: 4px;
+			height: 28px;
+			min-width: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.query-editor-toolbar-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.query-editor-toolbar-btn:active {
+			opacity: 0.8;
+		}
+
+		.query-editor-toolbar-btn:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.query-editor-toolbar-btn .qe-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 16px;
+			height: 16px;
+		}
+
+		.query-editor-toolbar-btn svg {
+			display: block;
+		}
+
 		.query-editor {
 			width: 100%;
 			flex: 1 1 auto;
@@ -231,7 +290,7 @@
 		.query-editor-placeholder {
 			position: absolute;
 			left: 56px;
-			top: 6px;
+			top: 42px;
 			right: 10px;
 			pointer-events: none;
 			user-select: none;
