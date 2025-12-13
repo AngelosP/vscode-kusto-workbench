@@ -22,9 +22,11 @@ function addQueryBox() {
 		'</svg>';
 
 	const refreshIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M13 7.5a5 5 0 1 0 1 3.1"/>' +
-		'<path d="M13 2.5v4h-4"/>' +
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3.5 8a4.5 4.5 0 0 1 7.8-3.1"/>' +
+		'<polyline points="11.3 2.7 11.3 5.4 8.6 5.4"/>' +
+		'<path d="M12.5 8a4.5 4.5 0 0 1-7.8 3.1"/>' +
+		'<polyline points="4.7 13.3 4.7 10.6 7.4 10.6"/>' +
 		'</svg>';
 
 	const closeIconSvg =
