@@ -46,11 +46,13 @@ export class QueryEditorProvider {
 			switch (message.type) {
 				case 'getConnections':
 					const connections = this.connectionManager.getConnections();
+					const cachedDatabases = await this.getCachedDatabases();
 					this.panel?.webview.postMessage({
 						type: 'connectionsData',
 						connections,
 						lastConnectionId: this.lastConnectionId,
-						lastDatabase: this.lastDatabase
+						lastDatabase: this.lastDatabase,
+						cachedDatabases
 					});
 					break;
 				case 'getDatabases':
@@ -78,6 +80,16 @@ export class QueryEditorProvider {
 		this.lastDatabase = this.context.globalState.get('kusto.lastDatabase');
 	}
 
+	private async getCachedDatabases(): Promise<Record<string, string[]>> {
+		return this.context.globalState.get('kusto.cachedDatabases', {});
+	}
+
+	private async saveCachedDatabases(connectionId: string, databases: string[]) {
+		const cached = await this.getCachedDatabases();
+		cached[connectionId] = databases;
+		await this.context.globalState.update('kusto.cachedDatabases', cached);
+	}
+
 	private async saveLastSelection(connectionId: string, database: string) {
 		this.lastConnectionId = connectionId;
 		this.lastDatabase = database;
@@ -93,6 +105,10 @@ export class QueryEditorProvider {
 
 		try {
 			const databases = await this.kustoClient.getDatabases(connection, forceRefresh);
+			
+			// Cache the databases
+			await this.saveCachedDatabases(connectionId, databases);
+			
 			this.panel?.webview.postMessage({
 				type: 'databasesData',
 				databases: databases,
@@ -532,6 +548,174 @@ export class QueryEditorProvider {
 			z-index: 2;
 		}
 
+		.column-header-content {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 4px;
+		}
+
+		.column-menu-btn {
+			padding: 2px 6px;
+			height: 18px;
+			background: var(--vscode-button-secondaryBackground);
+			border: 1px solid transparent;
+			color: var(--vscode-button-secondaryForeground);
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 11px;
+			font-weight: normal;
+			border-radius: 3px;
+			opacity: 0.7;
+		}
+
+		.column-menu-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.column-menu {
+			position: absolute;
+			top: 100%;
+			right: 0;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 4px;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+			z-index: 1000;
+			min-width: 200px;
+			display: none;
+		}
+
+		.column-menu.visible {
+			display: block;
+		}
+
+		.column-menu-item {
+			padding: 8px 12px;
+			cursor: pointer;
+			font-size: 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.column-menu-item:last-child {
+			border-bottom: none;
+		}
+
+		.column-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-analysis-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.column-analysis-modal.visible {
+			display: flex;
+		}
+
+		.column-analysis-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 60%;
+			max-width: 800px;
+			max-height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.column-analysis-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.column-analysis-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+		}
+
+		.column-analysis-close {
+			padding: 4px 12px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: none;
+			border-radius: 2px;
+			cursor: pointer;
+		}
+
+		.column-analysis-close:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.column-analysis-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+		}
+
+		.column-analysis-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+		}
+
+		.column-analysis-table th,
+		.column-analysis-table td {
+			text-align: left;
+			padding: 8px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.column-analysis-table th {
+			font-weight: 600;
+			background: var(--vscode-list-hoverBackground);
+			position: sticky;
+			top: 0;
+		}
+
+		.column-analysis-table tr:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-picker {
+			margin-bottom: 16px;
+		}
+
+		.column-picker label {
+			display: block;
+			margin-bottom: 4px;
+			font-weight: 600;
+			font-size: 12px;
+		}
+
+		.column-picker select {
+			width: 100%;
+			padding: 4px 8px;
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+		}
+
 		.row-selector {
 			width: 40px;
 			min-width: 40px;
@@ -796,12 +980,25 @@ export class QueryEditorProvider {
 		</div>
 	</div>
 
+	<!-- Column Analysis Modal -->
+	<div id="columnAnalysisModal" class="column-analysis-modal" onclick="closeColumnAnalysis(event)">
+		<div class="column-analysis-content" onclick="event.stopPropagation()">
+			<div class="column-analysis-header">
+				<h3 id="columnAnalysisTitle">Column Analysis</h3>
+				<button class="column-analysis-close" onclick="closeColumnAnalysis()">Close</button>
+			</div>
+			<div class="column-analysis-body" id="columnAnalysisBody">
+			</div>
+		</div>
+	</div>
+
 	<script>
 		const vscode = acquireVsCodeApi();
 		let connections = [];
 		let queryBoxes = [];
 		let lastConnectionId = null;
 		let lastDatabase = null;
+		let cachedDatabases = {};
 
 		// Request connections on load
 		vscode.postMessage({ type: 'getConnections' });
@@ -813,6 +1010,7 @@ export class QueryEditorProvider {
 					connections = message.connections;
 					lastConnectionId = message.lastConnectionId;
 					lastDatabase = message.lastDatabase;
+					cachedDatabases = message.cachedDatabases || {};
 					updateConnectionSelects();
 					break;
 				case 'databasesData':
@@ -914,19 +1112,30 @@ export class QueryEditorProvider {
 			const refreshBtn = document.getElementById(boxId + '_refresh');
 			
 			if (connectionId && databaseSelect) {
-				// Clear and disable while loading
-				databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
-				databaseSelect.disabled = true;
-				if (refreshBtn) {
-					refreshBtn.disabled = true;
-				}
+				// Check if we have cached databases for this connection
+				const cached = cachedDatabases[connectionId];
 				
-				// Request databases from the extension
-				vscode.postMessage({
-					type: 'getDatabases',
-					connectionId: connectionId,
-					boxId: boxId
-				});
+				if (cached && cached.length > 0) {
+					// Use cached databases immediately
+					updateDatabaseSelect(boxId, cached);
+					if (refreshBtn) {
+						refreshBtn.disabled = false;
+					}
+				} else {
+					// No cache, need to load from server
+					databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
+					databaseSelect.disabled = true;
+					if (refreshBtn) {
+						refreshBtn.disabled = true;
+					}
+					
+					// Request databases from the extension
+					vscode.postMessage({
+						type: 'getDatabases',
+						connectionId: connectionId,
+						boxId: boxId
+					});
+				}
 			} else if (databaseSelect) {
 				databaseSelect.innerHTML = '<option value="">Select Database...</option>';
 				databaseSelect.disabled = false;
@@ -968,6 +1177,12 @@ export class QueryEditorProvider {
 				databaseSelect.innerHTML = '<option value="">Select Database...</option>' +
 					databases.map(db => \`<option value="\${db}">\${db}</option>\`).join('');
 				databaseSelect.disabled = false;
+				
+				// Update local cache with new databases
+				const connectionId = document.getElementById(boxId + '_connection').value;
+				if (connectionId) {
+					cachedDatabases[connectionId] = databases;
+				}
 				
 				// Pre-fill with last selection if available
 				if (lastDatabase && databases.includes(lastDatabase)) {
@@ -1060,7 +1275,18 @@ export class QueryEditorProvider {
 					<table id="\${boxId}_table">
 						<thead><tr>
 							<th class="row-selector">#</th>
-							\${result.columns.map((c, i) => '<th data-col="' + i + '">' + c + '</th>').join('')}
+							\${result.columns.map((c, i) => 
+								'<th data-col="' + i + '">' +
+								'<div class="column-header-content">' +
+								'<span>' + c + '</span>' +
+								'<button class="column-menu-btn" onclick="toggleColumnMenu(' + i + ', \\'' + boxId + '\\'); event.stopPropagation();">☰</button>' +
+								'<div class="column-menu" id="' + boxId + '_col_menu_' + i + '">' +
+								'<div class="column-menu-item" onclick="showUniqueValues(' + i + ', \\'' + boxId + '\\')">Unique values</div>' +
+								'<div class="column-menu-item" onclick="showDistinctCountPicker(' + i + ', \\'' + boxId + '\\')">Distinct count by column...</div>' +
+								'</div>' +
+								'</div>' +
+								'</th>'
+							).join('')}
 						</tr></thead>
 						<tbody>
 							\${result.rows.map((row, rowIdx) => 
@@ -1349,6 +1575,182 @@ export class QueryEditorProvider {
 		function escapeRegex(str) {
 			return str.replace(/[-\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
 		}
+
+		function toggleColumnMenu(colIdx, boxId) {
+			// Close all other menus
+			document.querySelectorAll('.column-menu').forEach(menu => {
+				if (menu.id !== boxId + '_col_menu_' + colIdx) {
+					menu.classList.remove('visible');
+				}
+			});
+			
+			// Toggle this menu
+			const menu = document.getElementById(boxId + '_col_menu_' + colIdx);
+			if (menu) {
+				menu.classList.toggle('visible');
+			}
+		}
+
+		function showUniqueValues(colIdx, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			// Close menu
+			toggleColumnMenu(colIdx, boxId);
+			
+			const columnName = window.currentResult.columns[colIdx];
+			const valueCounts = new Map();
+			
+			// Count occurrences of each value
+			window.currentResult.rows.forEach(row => {
+				const cell = row[colIdx];
+				let value;
+				
+				// Extract value from cell object
+				if (typeof cell === 'object' && cell !== null && 'display' in cell) {
+					value = cell.display;
+				} else {
+					value = String(cell);
+				}
+				
+				valueCounts.set(value, (valueCounts.get(value) || 0) + 1);
+			});
+			
+			// Convert to array and sort by count (descending)
+			const sortedValues = Array.from(valueCounts.entries())
+				.sort((a, b) => b[1] - a[1]);
+			
+			// Display in modal
+			const modal = document.getElementById('columnAnalysisModal');
+			const title = document.getElementById('columnAnalysisTitle');
+			const body = document.getElementById('columnAnalysisBody');
+			
+			title.textContent = 'Unique Values - ' + columnName;
+			
+			let html = '<table class="column-analysis-table">';
+			html += '<thead><tr><th>Value</th><th>Count</th></tr></thead>';
+			html += '<tbody>';
+			
+			sortedValues.forEach(([value, count]) => {
+				html += '<tr><td>' + escapeHtml(value) + '</td><td>' + count + '</td></tr>';
+			});
+			
+			html += '</tbody></table>';
+			
+			body.innerHTML = html;
+			modal.classList.add('visible');
+		}
+
+		function showDistinctCountPicker(colIdx, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			// Close menu
+			toggleColumnMenu(colIdx, boxId);
+			
+			const columnName = window.currentResult.columns[colIdx];
+			const modal = document.getElementById('columnAnalysisModal');
+			const title = document.getElementById('columnAnalysisTitle');
+			const body = document.getElementById('columnAnalysisBody');
+			
+			title.textContent = 'Distinct Count - ' + columnName;
+			
+			let html = '<div class="column-picker">';
+			html += '<label>Group by column:</label>';
+			html += '<select id="distinctCountGroupByColumn" onchange="calculateDistinctCount(' + colIdx + ', \\'' + boxId + '\\')">';
+			html += '<option value="">Select a column...</option>';
+			
+			window.currentResult.columns.forEach((col, idx) => {
+				if (idx !== colIdx) {
+					html += '<option value="' + idx + '">' + col + '</option>';
+				}
+			});
+			
+			html += '</select>';
+			html += '</div>';
+			html += '<div id="distinctCountResults"></div>';
+			
+			body.innerHTML = html;
+			modal.classList.add('visible');
+		}
+
+		function calculateDistinctCount(targetColIdx, boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const groupByColIdx = parseInt(document.getElementById('distinctCountGroupByColumn').value);
+			if (isNaN(groupByColIdx)) {return;}
+			
+			const targetColumnName = window.currentResult.columns[targetColIdx];
+			const groupByColumnName = window.currentResult.columns[groupByColIdx];
+			
+			// Map of groupBy value -> Set of target values
+			const groupedValues = new Map();
+			
+			window.currentResult.rows.forEach(row => {
+				const groupByCell = row[groupByColIdx];
+				const targetCell = row[targetColIdx];
+				
+				let groupByValue;
+				let targetValue;
+				
+				// Extract values
+				if (typeof groupByCell === 'object' && groupByCell !== null && 'display' in groupByCell) {
+					groupByValue = groupByCell.display;
+				} else {
+					groupByValue = String(groupByCell);
+				}
+				
+				if (typeof targetCell === 'object' && targetCell !== null && 'display' in targetCell) {
+					targetValue = targetCell.display;
+				} else {
+					targetValue = String(targetCell);
+				}
+				
+				if (!groupedValues.has(groupByValue)) {
+					groupedValues.set(groupByValue, new Set());
+				}
+				groupedValues.get(groupByValue).add(targetValue);
+			});
+			
+			// Convert to array and sort by distinct count (descending)
+			const results = Array.from(groupedValues.entries())
+				.map(([groupValue, valueSet]) => ({
+					groupValue,
+					distinctCount: valueSet.size
+				}))
+				.sort((a, b) => b.distinctCount - a.distinctCount);
+			
+			// Display results
+			const resultsDiv = document.getElementById('distinctCountResults');
+			
+			let html = '<table class="column-analysis-table">';
+			html += '<thead><tr><th>' + escapeHtml(groupByColumnName) + '</th><th>Distinct ' + escapeHtml(targetColumnName) + '</th></tr></thead>';
+			html += '<tbody>';
+			
+			results.forEach(result => {
+				html += '<tr><td>' + escapeHtml(result.groupValue) + '</td><td>' + result.distinctCount + '</td></tr>';
+			});
+			
+			html += '</tbody></table>';
+			
+			resultsDiv.innerHTML = html;
+		}
+
+		function closeColumnAnalysis(event) {
+			if (event && event.target !== event.currentTarget) {
+				return;
+			}
+			
+			const modal = document.getElementById('columnAnalysisModal');
+			modal.classList.remove('visible');
+		}
+
+		// Close column menus when clicking outside
+		document.addEventListener('click', (event) => {
+			if (!event.target.closest('.column-menu-btn')) {
+				document.querySelectorAll('.column-menu').forEach(menu => {
+					menu.classList.remove('visible');
+				});
+			}
+		});
 
 		function searchData(boxId) {
 			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
