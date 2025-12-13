@@ -1137,7 +1137,7 @@ export class QueryEditorProvider {
 						</div>
 						<button class="refresh-btn" onclick="refreshDatabases('\${id}')" 
 								id="\${id}_refresh" title="Refresh database list">
-							🔄
+							⟳
 						</button>
 						<button class="refresh-btn" onclick="removeQueryBox('\${id}')" title="Remove query box">
 							✖
