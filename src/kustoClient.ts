@@ -93,7 +93,18 @@ export class KustoQueryClient {
 			// Extract rows
 			const rows: any[][] = [];
 			for (const row of primaryResults.rows()) {
-				rows.push(row.map((cell: any) => cell === null ? 'null' : String(cell)));
+				// Row might be an object or array, convert to array
+				const rowArray: any[] = [];
+				if (Array.isArray(row)) {
+					rowArray.push(...row);
+				} else {
+					// If it's an object, extract values based on column order
+					for (const col of primaryResults.columns) {
+						const value = (row as any)[col.name] ?? (row as any)[col.ordinal];
+						rowArray.push(value === null || value === undefined ? 'null' : String(value));
+					}
+				}
+				rows.push(rowArray.map((cell: any) => cell === null || cell === undefined ? 'null' : String(cell)));
 			}
 			
 			return {
@@ -107,7 +118,20 @@ export class KustoQueryClient {
 			};
 		} catch (error) {
 			console.error('Error executing query:', error);
-			throw new Error(`Query execution failed: ${error instanceof Error ? error.message : String(error)}`);
+			
+			// Extract more detailed error information
+			let errorMessage = 'Unknown error';
+			if (error instanceof Error) {
+				errorMessage = error.message;
+				// Check if there's additional error info from Kusto
+				if ((error as any).response?.data) {
+					errorMessage = JSON.stringify((error as any).response.data);
+				}
+			} else {
+				errorMessage = String(error);
+			}
+			
+			throw new Error(`Query execution failed: ${errorMessage}`);
 		}
 	}
 
