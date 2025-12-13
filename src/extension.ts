@@ -18,7 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register commands
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openQueryEditor', () => {
-			queryEditorProvider.openEditor();
+			void queryEditorProvider.openEditor();
 		})
 	);
 
