@@ -1,4 +1,6 @@
 const esbuild = require("esbuild");
+const fs = require('fs');
+const path = require('path');
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -24,6 +26,22 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
+	// Monaco assets are used directly by the webview (not bundled into extension.js).
+	// Copy them into dist so they are included in the VSIX (node_modules is excluded).
+	const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs');
+	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
+	try {
+		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
+		// Node 16+ supports fs.promises.cp
+		if (fs.promises.cp) {
+			await fs.promises.cp(monacoSrc, monacoDest, { recursive: true, force: true });
+		} else {
+			console.warn('[watch] fs.promises.cp not available; Monaco assets may be missing');
+		}
+	} catch (e) {
+		console.warn('[watch] failed to copy Monaco assets:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'

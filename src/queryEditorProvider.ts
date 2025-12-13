@@ -177,12 +177,21 @@ export class QueryEditorProvider {
 	}
 
 	private getHtmlContent(webview: vscode.Webview): string {
+		const monacoVsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs'));
+		const monacoLoaderUri = webview.asWebviewUri(
+			vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs', 'loader.js')
+		);
+		const monacoCssUri = webview.asWebviewUri(
+			vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs', 'editor', 'editor.main.css')
+		);
+
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Kusto Query Editor</title>
+	<link rel="stylesheet" href="${monacoCssUri}">
 	<style>
 		* {
 			box-sizing: border-box;
@@ -342,22 +351,35 @@ export class QueryEditorProvider {
 			}
 		}
 
-		textarea {
+		.query-editor-wrapper {
+			position: relative;
 			width: 100%;
 			min-height: 120px;
-			background: var(--vscode-input-background);
-			color: var(--vscode-input-foreground);
-			border: 1px solid var(--vscode-input-border);
-			padding: 8px;
-			font-family: var(--vscode-editor-font-family);
-			font-size: 13px;
-			resize: vertical;
 			margin: 8px 0;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 2px;
+			background: var(--vscode-input-background);
+			overflow: hidden;
 		}
 
-		textarea:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
+		.query-editor {
+			width: 100%;
+			height: 120px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 13px;
+		}
+
+		.query-editor-placeholder {
+			position: absolute;
+			left: 56px;
+			top: 6px;
+			right: 10px;
+			pointer-events: none;
+			user-select: none;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 13px;
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 0.9;
 		}
 
 		button {
@@ -1082,6 +1104,7 @@ export class QueryEditorProvider {
 		</div>
 	</div>
 
+	<script src="${monacoLoaderUri}"></script>
 	<script>
 		const vscode = acquireVsCodeApi();
 		let connections = [];
@@ -1089,6 +1112,169 @@ export class QueryEditorProvider {
 		let lastConnectionId = null;
 		let lastDatabase = null;
 		let cachedDatabases = {};
+		let queryEditors = {};
+		let activeQueryEditorBoxId = null;
+		let monacoReadyPromise = null;
+
+		function isDarkTheme() {
+			const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
+			const match = bg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/i);
+			if (!match) {
+				return true;
+			}
+			const r = parseInt(match[1], 10);
+			const g = parseInt(match[2], 10);
+			const b = parseInt(match[3], 10);
+			const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+			return luminance < 0.5;
+		}
+
+		function ensureMonaco() {
+			if (monacoReadyPromise) {
+				return monacoReadyPromise;
+			}
+
+			monacoReadyPromise = new Promise((resolve, reject) => {
+				try {
+					// Monaco worker bootstrap
+					window.MonacoEnvironment = {
+						getWorkerUrl: function () {
+							return '${monacoVsUri}/base/worker/workerMain.js';
+						}
+					};
+
+					require.config({ paths: { vs: '${monacoVsUri}' } });
+					require(['vs/editor/editor.main'], () => {
+						try {
+							monaco.languages.register({ id: 'kusto' });
+							monaco.languages.setMonarchTokensProvider('kusto', {
+								keywords: [
+									'and','as','by','case','contains','count','dcount','distinct','extend','externaldata',
+									'false','from','has','has_any','has_all','in','invoke','join','kind','let','limit',
+									'mv-expand','not','null','on','or','order','project','project-away','project-keep',
+									'project-rename','render','sample','search','serialize','sort','summarize','take',
+									'top','toscalar','true','union','where'
+								],
+								tokenizer: {
+									root: [
+											[/\\/\\*.*?\\*\\//, 'comment'],
+											[/\\/\\/.*$/, 'comment'],
+										[/'.*?'/, 'string'],
+											[/\\b\\d+(\\.\\d+)?\\b/, 'number'],
+											[/\\|/, 'delimiter'],
+										[/[=><!~]+/, 'operator'],
+											[/[a-zA-Z_][\\w\\-]*/, {
+											cases: {
+												'@keywords': 'keyword',
+												'@default': 'identifier'
+											}
+										}],
+											[/[{}()\\[\\]]/, '@brackets'],
+										[/[,;.]/, 'delimiter']
+									]
+								}
+							});
+							monaco.languages.setLanguageConfiguration('kusto', {
+								comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+								brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+								autoClosingPairs: [
+									{ open: '{', close: '}' },
+									{ open: '[', close: ']' },
+									{ open: '(', close: ')' },
+									{ open: "'", close: "'" }
+								]
+							});
+
+							monaco.editor.setTheme(isDarkTheme() ? 'vs-dark' : 'vs');
+							resolve(monaco);
+						} catch (e) {
+							reject(e);
+						}
+					});
+				} catch (e) {
+					reject(e);
+				}
+			});
+
+			return monacoReadyPromise;
+		}
+
+		function initQueryEditor(boxId) {
+			return ensureMonaco().then(monaco => {
+				const container = document.getElementById(boxId + '_query_editor');
+				const placeholder = document.getElementById(boxId + '_query_placeholder');
+				if (!container) {
+					return;
+				}
+
+				const editor = monaco.editor.create(container, {
+					value: '',
+					language: 'kusto',
+					readOnly: false,
+					automaticLayout: true,
+					minimap: { enabled: false },
+					scrollBeyondLastLine: false,
+					fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
+					fontSize: 13,
+					lineNumbers: 'on',
+					renderLineHighlight: 'none'
+				});
+
+				queryEditors[boxId] = editor;
+
+				const syncPlaceholder = () => {
+					if (!placeholder) {
+						return;
+					}
+					// Hide placeholder while the editor is focused, even if empty.
+					const isFocused = activeQueryEditorBoxId === boxId;
+					placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';
+				};
+				syncPlaceholder();
+				editor.onDidChangeModelContent(syncPlaceholder);
+				editor.onDidFocusEditorText(() => {
+					activeQueryEditorBoxId = boxId;
+					syncPlaceholder();
+				});
+				container.addEventListener('mousedown', () => editor.focus());
+				editor.onDidBlurEditorText(() => {
+					if (activeQueryEditorBoxId === boxId) {
+						activeQueryEditorBoxId = null;
+					}
+					syncPlaceholder();
+				});
+			});
+		}
+
+		// VS Code can intercept Ctrl/Cmd+V in webviews; provide a reliable paste path for Monaco.
+		document.addEventListener('keydown', async (event) => {
+			if (!(event.ctrlKey || event.metaKey) || (event.key !== 'v' && event.key !== 'V')) {
+				return;
+			}
+			if (!activeQueryEditorBoxId) {
+				return;
+			}
+			const editor = queryEditors[activeQueryEditorBoxId];
+			if (!editor) {
+				return;
+			}
+
+			try {
+				const text = await navigator.clipboard.readText();
+				if (typeof text !== 'string') {
+					return;
+				}
+				event.preventDefault();
+				const selection = editor.getSelection();
+				if (selection) {
+					editor.executeEdits('clipboard', [{ range: selection, text }]);
+					editor.focus();
+				}
+			} catch (e) {
+				// If clipboard read isn't permitted, fall back to default behavior.
+				// (Do not preventDefault in this case.)
+			}
+		}, true);
 
 		// Request connections on load
 		vscode.postMessage({ type: 'getConnections' });
@@ -1143,7 +1329,10 @@ export class QueryEditorProvider {
 							✖
 						</button>
 					</div>
-					<textarea id="\${id}_query" placeholder="Enter your KQL query here..."></textarea>
+					<div class="query-editor-wrapper">
+						<div class="query-editor" id="\${id}_query_editor"></div>
+						<div class="query-editor-placeholder" id="\${id}_query_placeholder">Enter your KQL query here...</div>
+					</div>
 					<div class="query-actions">
 						<div class="query-run">
 							<button id="\${id}_run_btn" onclick="executeQuery('\${id}')">▶ Run Query</button>
@@ -1171,11 +1360,22 @@ export class QueryEditorProvider {
 			
 			container.insertAdjacentHTML('beforeend', boxHtml);
 			updateConnectionSelects();
+			initQueryEditor(id);
 		}
 
 		function removeQueryBox(boxId) {
 			// Stop any running timer/spinner for this box
 			setQueryExecuting(boxId, false);
+
+			// Dispose editor if present
+			if (queryEditors[boxId]) {
+				try {
+					queryEditors[boxId].dispose();
+				} catch {
+					// ignore
+				}
+				delete queryEditors[boxId];
+			}
 
 			// Remove from tracked list
 			queryBoxes = queryBoxes.filter(id => id !== boxId);
@@ -1365,7 +1565,7 @@ export class QueryEditorProvider {
 		}
 
 		function executeQuery(boxId) {
-			const query = document.getElementById(boxId + '_query').value;
+			const query = queryEditors[boxId] ? queryEditors[boxId].getValue() : '';
 			const connectionId = document.getElementById(boxId + '_connection').value;
 			const database = document.getElementById(boxId + '_database').value;
 			const cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
