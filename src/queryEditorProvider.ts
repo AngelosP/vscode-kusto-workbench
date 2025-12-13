@@ -506,6 +506,10 @@ export class QueryEditorProvider {
 			outline-offset: -2px;
 		}
 
+		td[title]:hover {
+			cursor: help;
+		}
+
 		tr.selected-row {
 			background: var(--vscode-list-inactiveSelectionBackground);
 		}
@@ -834,11 +838,16 @@ export class QueryEditorProvider {
 							\${result.rows.map((row, rowIdx) => 
 								'<tr data-row="' + rowIdx + '">' +
 								'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \\'' + boxId + '\\')">' + (rowIdx + 1) + '</td>' +
-								row.map((cell, colIdx) => 
-									'<td data-row="' + rowIdx + '" data-col="' + colIdx + '" ' +
-									'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
-									cell + '</td>'
-								).join('') + 
+								row.map((cell, colIdx) => {
+									// Check if cell is an object with display and full properties
+									const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+									const displayValue = hasHover ? cell.display : cell;
+									const fullValue = hasHover ? cell.full : cell;
+									const title = hasHover && displayValue !== fullValue ? ' title="' + fullValue + '"' : '';
+									return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
+										'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \\'' + boxId + '\\')">' + 
+										displayValue + '</td>';
+								}).join('') + 
 								'</tr>'
 							).join('')}
 						</tbody>

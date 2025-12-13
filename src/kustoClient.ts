@@ -108,6 +108,40 @@ export class KustoQueryClient {
 			// Extract column names
 			const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
 			
+			// Helper function to format cell values
+			const formatCellValue = (cell: any): { display: string; full: string } => {
+				if (cell === null || cell === undefined) {
+					return { display: 'null', full: 'null' };
+				}
+				
+				// Check if it's a Date object
+				if (cell instanceof Date) {
+					const full = cell.toString();
+					// Format as YYYY-MM-DD HH:MM:SS
+					const display = cell.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+					return { display, full };
+				}
+				
+				// Check if it's a string that looks like an ISO date
+				const str = String(cell);
+				const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+				if (isoDateRegex.test(str)) {
+					try {
+						const date = new Date(str);
+						if (!isNaN(date.getTime())) {
+							const full = date.toString();
+							// Format as YYYY-MM-DD HH:MM:SS
+							const display = date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+							return { display, full };
+						}
+					} catch (e) {
+						// Not a valid date, fall through
+					}
+				}
+				
+				return { display: str, full: str };
+			};
+			
 			// Extract rows
 			const rows: any[][] = [];
 			for (const row of primaryResults.rows()) {
@@ -119,10 +153,10 @@ export class KustoQueryClient {
 					// If it's an object, extract values based on column order
 					for (const col of primaryResults.columns) {
 						const value = (row as any)[col.name] ?? (row as any)[col.ordinal];
-						rowArray.push(value === null || value === undefined ? 'null' : String(value));
+						rowArray.push(value);
 					}
 				}
-				rows.push(rowArray.map((cell: any) => cell === null || cell === undefined ? 'null' : String(cell)));
+				rows.push(rowArray.map((cell: any) => formatCellValue(cell)));
 			}
 			
 			return {
