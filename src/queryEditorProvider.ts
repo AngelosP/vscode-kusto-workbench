@@ -1152,6 +1152,7 @@ export class QueryEditorProvider {
 			
 			const modal = document.getElementById('objectViewer');
 			const content = document.getElementById('objectViewerContent');
+			const searchInput = document.getElementById('objectViewerSearch');
 			
 			// Store the JSON data for searching
 			window.currentObjectViewerData = {
@@ -1162,9 +1163,20 @@ export class QueryEditorProvider {
 			content.innerHTML = window.currentObjectViewerData.formatted;
 			modal.classList.add('visible');
 			
-			// Clear search
-			document.getElementById('objectViewerSearch').value = '';
-			document.getElementById('objectViewerSearchResults').textContent = '';
+			// Check if there's an active data search and if this cell is a search match
+			const dataSearchInput = document.getElementById(boxId + '_data_search');
+			const dataSearchTerm = dataSearchInput ? dataSearchInput.value : '';
+			
+			if (dataSearchTerm && window.currentResult.searchMatches && 
+			    window.currentResult.searchMatches.some(m => m.row === row && m.col === col)) {
+				// Automatically search for the same term in the object viewer
+				searchInput.value = dataSearchTerm;
+				searchInObjectViewer();
+			} else {
+				// Clear search
+				searchInput.value = '';
+				document.getElementById('objectViewerSearchResults').textContent = '';
+			}
 		}
 
 		function closeObjectViewer(event) {
