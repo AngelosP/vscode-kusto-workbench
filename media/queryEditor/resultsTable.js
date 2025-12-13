@@ -22,7 +22,7 @@ function displayResult(result) {
 	let html =
 		'<div class="results-header">' +
 		'<div>' +
-		'<strong>Results:</strong> ' + result.metadata.cluster + ' / ' + result.metadata.database +
+		'<strong>Results:</strong> ' + (result.rows ? result.rows.length : 0) + ' rows / ' + (result.columns ? result.columns.length : 0) + ' columns' +
 		' (Execution time: ' + result.metadata.executionTime + ')' +
 		'</div>' +
 		'<div class="results-tools">' +
