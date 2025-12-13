@@ -36,7 +36,13 @@ document.addEventListener('keydown', (event) => {
 	if (!activeQueryEditorBoxId) {
 		return;
 	}
+	// Prevent Monaco's default Ctrl/Cmd+Enter behavior (typically "insert line below")
+	// from running in addition to executing the query.
 	event.preventDefault();
+	event.stopPropagation();
+	if (typeof event.stopImmediatePropagation === 'function') {
+		event.stopImmediatePropagation();
+	}
 	try {
 		executeQuery(activeQueryEditorBoxId);
 	} catch {
