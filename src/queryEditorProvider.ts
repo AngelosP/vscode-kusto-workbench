@@ -355,18 +355,32 @@ export class QueryEditorProvider {
 			position: relative;
 			width: 100%;
 			min-height: 120px;
+			height: 180px;
 			margin: 8px 0;
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 2px;
 			background: var(--vscode-input-background);
 			overflow: hidden;
+			display: flex;
+			flex-direction: column;
 		}
 
 		.query-editor {
 			width: 100%;
-			height: 120px;
+			flex: 1 1 auto;
+			height: auto;
+			min-height: 0;
+			min-width: 0;
 			font-family: var(--vscode-editor-font-family);
 			font-size: 13px;
+		}
+
+		.query-editor-resizer {
+			flex: 0 0 10px;
+			height: 10px;
+			cursor: ns-resize;
+			border-top: 1px solid var(--vscode-input-border);
+			background: var(--vscode-editor-background);
 		}
 
 		.query-editor-placeholder {
@@ -1113,6 +1127,7 @@ export class QueryEditorProvider {
 		let lastDatabase = null;
 		let cachedDatabases = {};
 		let queryEditors = {};
+		let queryEditorResizeObservers = {};
 		let activeQueryEditorBoxId = null;
 		let monacoReadyPromise = null;
 
@@ -1202,10 +1217,16 @@ export class QueryEditorProvider {
 		function initQueryEditor(boxId) {
 			return ensureMonaco().then(monaco => {
 				const container = document.getElementById(boxId + '_query_editor');
+				const wrapper = container ? container.parentElement : null;
 				const placeholder = document.getElementById(boxId + '_query_placeholder');
+				const resizer = document.getElementById(boxId + '_query_resizer');
 				if (!container) {
 					return;
 				}
+
+				// Ensure flex sizing doesn't allow the editor container to expand with content.
+				container.style.minHeight = '0';
+				container.style.minWidth = '0';
 
 				const editor = monaco.editor.create(container, {
 					value: '',
@@ -1243,6 +1264,43 @@ export class QueryEditorProvider {
 					}
 					syncPlaceholder();
 				});
+
+				// Keep Monaco laid out when the user resizes the wrapper.
+				if (wrapper && typeof ResizeObserver !== 'undefined') {
+					if (queryEditorResizeObservers[boxId]) {
+						try { queryEditorResizeObservers[boxId].disconnect(); } catch { /* ignore */ }
+					}
+					const ro = new ResizeObserver(() => {
+						try { editor.layout(); } catch { /* ignore */ }
+					});
+					ro.observe(wrapper);
+					queryEditorResizeObservers[boxId] = ro;
+				}
+
+				// Drag handle resize (more reliable than CSS resize in VS Code webviews).
+				if (wrapper && resizer) {
+					resizer.addEventListener('mousedown', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+
+						const startY = e.clientY;
+						const startHeight = wrapper.getBoundingClientRect().height;
+
+						const onMove = (moveEvent) => {
+							const delta = moveEvent.clientY - startY;
+							const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+							wrapper.style.height = nextHeight + 'px';
+							try { editor.layout(); } catch { /* ignore */ }
+						};
+						const onUp = () => {
+							document.removeEventListener('mousemove', onMove, true);
+							document.removeEventListener('mouseup', onUp, true);
+						};
+
+						document.addEventListener('mousemove', onMove, true);
+						document.addEventListener('mouseup', onUp, true);
+					});
+				}
 			});
 		}
 
@@ -1332,6 +1390,7 @@ export class QueryEditorProvider {
 					<div class="query-editor-wrapper">
 						<div class="query-editor" id="\${id}_query_editor"></div>
 						<div class="query-editor-placeholder" id="\${id}_query_placeholder">Enter your KQL query here...</div>
+						<div class="query-editor-resizer" id="\${id}_query_resizer" title="Drag to resize editor"></div>
 					</div>
 					<div class="query-actions">
 						<div class="query-run">
@@ -1366,6 +1425,16 @@ export class QueryEditorProvider {
 		function removeQueryBox(boxId) {
 			// Stop any running timer/spinner for this box
 			setQueryExecuting(boxId, false);
+
+			// Disconnect any resize observer
+			if (queryEditorResizeObservers[boxId]) {
+				try {
+					queryEditorResizeObservers[boxId].disconnect();
+				} catch {
+					// ignore
+				}
+				delete queryEditorResizeObservers[boxId];
+			}
 
 			// Dispose editor if present
 			if (queryEditors[boxId]) {
