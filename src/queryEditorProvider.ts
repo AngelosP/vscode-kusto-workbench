@@ -64,8 +64,15 @@ export class QueryEditorProvider {
 					break;
 				case 'executeQuery':
 					this.saveLastSelection(message.connectionId, message.database);
-					await this.executeQuery(message.query, message.connectionId, message.database, 
-						message.cacheEnabled, message.cacheValue, message.cacheUnit);
+					await this.executeQuery(
+						message.query,
+						message.connectionId,
+						message.database,
+						message.queryMode,
+						message.cacheEnabled,
+						message.cacheValue,
+						message.cacheUnit
+					);
 					break;
 				case 'prefetchSchema':
 					await this.prefetchSchema(message.connectionId, message.database, message.boxId);
@@ -130,7 +137,7 @@ export class QueryEditorProvider {
 	}
 
 	private async executeQuery(query: string, connectionId: string, database?: string, 
-		cacheEnabled?: boolean, cacheValue?: number, cacheUnit?: string) {
+		queryMode?: string, cacheEnabled?: boolean, cacheValue?: number, cacheUnit?: string) {
 		const connection = this.connectionManager.getConnections().find(c => c.id === connectionId);
 		
 		if (!connection) {
@@ -143,8 +150,11 @@ export class QueryEditorProvider {
 			return;
 		}
 
+		// Append optional query-mode fragment at the end of the query.
+		const queryWithMode = this.appendQueryMode(query, queryMode);
+
 		// Add cache directive if enabled
-		let finalQuery = query;
+		let finalQuery = queryWithMode;
 		if (cacheEnabled && cacheValue && cacheUnit) {
 			// Convert cache duration to timespan format
 			let timespan = '';
@@ -160,7 +170,7 @@ export class QueryEditorProvider {
 					break;
 			}
 			if (timespan) {
-				finalQuery = `set query_results_cache_max_age = ${timespan};\n${query}`;
+				finalQuery = `set query_results_cache_max_age = ${timespan};\n${queryWithMode}`;
 			}
 		}
 
@@ -178,6 +188,27 @@ export class QueryEditorProvider {
 				error: errorMessage
 			});
 		}
+	}
+
+	private appendQueryMode(query: string, queryMode?: string): string {
+		const mode = (queryMode ?? '').toLowerCase();
+		let fragment = '';
+		switch (mode) {
+			case 'take100':
+				fragment = '| take 100';
+				break;
+			case 'sample100':
+				fragment = '| sample 100';
+				break;
+			case 'plain':
+			case '':
+			default:
+				return query;
+		}
+
+		// Trim trailing whitespace and a trailing semicolon (common when writing a single-statement script).
+		const base = query.replace(/\s+$/g, '').replace(/;+\s*$/g, '');
+		return `${base}\n${fragment}`;
 	}
 
 	private async prefetchSchema(connectionId: string, database: string, boxId: string) {
@@ -470,6 +501,50 @@ export class QueryEditorProvider {
 
 		button:active {
 			opacity: 0.8;
+		}
+
+		.split-button {
+			position: relative;
+			display: inline-flex;
+			align-items: stretch;
+		}
+
+		.split-button .split-main {
+			border-top-right-radius: 0;
+			border-bottom-right-radius: 0;
+		}
+
+		.split-button .split-toggle {
+			border-top-left-radius: 0;
+			border-bottom-left-radius: 0;
+			padding: 6px 10px;
+			min-width: 28px;
+			border-left: 1px solid var(--vscode-button-border);
+		}
+
+		.split-button .split-menu {
+			position: absolute;
+			top: calc(100% + 4px);
+			right: 0;
+			min-width: 220px;
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+			z-index: 2000;
+			display: none;
+			box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+		}
+
+		.split-button .split-menu-item {
+			padding: 8px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.split-button .split-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
 		}
 
 		.results {
@@ -1716,7 +1791,15 @@ export class QueryEditorProvider {
 					'</div>' +
 					'<div class="query-actions">' +
 						'<div class="query-run">' +
-							'<button id="' + id + '_run_btn" onclick="executeQuery(\\\'' + id + '\\\')">▶ Run Query</button>' +
+							'<div class="split-button" id="' + id + '_run_split">' +
+								'<button class="split-main" id="' + id + '_run_btn" onclick="executeQuery(\\\'' + id + '\\\')">▶ Run Query (take 100)</button>' +
+								'<button class="split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\\\'' + id + '\\\'); event.stopPropagation();" aria-label="Run query options">▾</button>' +
+								'<div class="split-menu" id="' + id + '_run_menu" role="menu">' +
+									'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\\\'' + id + '\\\', \\\'plain\\\'); executeQuery(\\\'' + id + '\\\'); closeRunMenu(\\\'' + id + '\\\');">Run Query</div>' +
+									'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\\\'' + id + '\\\', \\\'take100\\\'); executeQuery(\\\'' + id + '\\\'); closeRunMenu(\\\'' + id + '\\\');">Run Query (take 100)</div>' +
+									'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\\\'' + id + '\\\', \\\'sample100\\\'); executeQuery(\\\'' + id + '\\\'); closeRunMenu(\\\'' + id + '\\\');">Run Query (sample 100)</div>' +
+								'</div>' +
+							'</div>' +
 							'<span class="query-exec-status" id="' + id + '_exec_status" style="display: none;">' +
 								'<span class="query-spinner" aria-hidden="true"></span>' +
 								'<span id="' + id + '_exec_elapsed">0:00.0</span>' +
@@ -1739,6 +1822,7 @@ export class QueryEditorProvider {
 				'</div>';
 			
 			container.insertAdjacentHTML('beforeend', boxHtml);
+			setRunMode(id, 'take100');
 			updateConnectionSelects();
 			initQueryEditor(id);
 		}
@@ -1746,6 +1830,7 @@ export class QueryEditorProvider {
 		function removeQueryBox(boxId) {
 			// Stop any running timer/spinner for this box
 			setQueryExecuting(boxId, false);
+			delete runModesByBoxId[boxId];
 
 			// Disconnect any resize observer
 			if (queryEditorResizeObservers[boxId]) {
@@ -1910,6 +1995,56 @@ export class QueryEditorProvider {
 		}
 
 		let queryExecutionTimers = {};
+		let runModesByBoxId = {};
+
+		function getRunMode(boxId) {
+			return runModesByBoxId[boxId] || 'take100';
+		}
+
+		function getRunModeLabel(mode) {
+			switch ((mode || '').toLowerCase()) {
+				case 'plain':
+					return '▶ Run Query';
+				case 'sample100':
+					return '▶ Run Query (sample 100)';
+				case 'take100':
+				default:
+					return '▶ Run Query (take 100)';
+			}
+		}
+
+		function setRunMode(boxId, mode) {
+			runModesByBoxId[boxId] = (mode || 'take100');
+			const runBtn = document.getElementById(boxId + '_run_btn');
+			if (runBtn) {
+				runBtn.textContent = getRunModeLabel(runModesByBoxId[boxId]);
+			}
+		}
+
+		function closeRunMenu(boxId) {
+			const menu = document.getElementById(boxId + '_run_menu');
+			if (menu) {
+				menu.style.display = 'none';
+			}
+		}
+
+		function closeAllRunMenus() {
+			queryBoxes.forEach(id => closeRunMenu(id));
+		}
+
+		function toggleRunMenu(boxId) {
+			const menu = document.getElementById(boxId + '_run_menu');
+			if (!menu) {
+				return;
+			}
+			const next = menu.style.display === 'block' ? 'none' : 'block';
+			closeAllRunMenus();
+			menu.style.display = next;
+		}
+
+		document.addEventListener('click', () => {
+			closeAllRunMenus();
+		});
 
 		function formatElapsed(ms) {
 			const totalSeconds = Math.floor(ms / 1000);
@@ -1921,6 +2056,7 @@ export class QueryEditorProvider {
 
 		function setQueryExecuting(boxId, executing) {
 			const runBtn = document.getElementById(boxId + '_run_btn');
+			const runToggle = document.getElementById(boxId + '_run_toggle');
 			const status = document.getElementById(boxId + '_exec_status');
 			const elapsed = document.getElementById(boxId + '_exec_elapsed');
 
@@ -1933,6 +2069,10 @@ export class QueryEditorProvider {
 				if (runBtn) {
 					runBtn.disabled = true;
 				}
+				if (runToggle) {
+					runToggle.disabled = true;
+				}
+				closeRunMenu(boxId);
 				if (status) {
 					status.style.display = 'inline-flex';
 				}
@@ -1952,12 +2092,16 @@ export class QueryEditorProvider {
 			if (runBtn) {
 				runBtn.disabled = false;
 			}
+			if (runToggle) {
+				runToggle.disabled = false;
+			}
 			if (status) {
 				status.style.display = 'none';
 			}
 		}
 
-		function executeQuery(boxId) {
+		function executeQuery(boxId, mode) {
+			const effectiveMode = mode || getRunMode(boxId);
 			const query = queryEditors[boxId] ? queryEditors[boxId].getValue() : '';
 			const connectionId = document.getElementById(boxId + '_connection').value;
 			const database = document.getElementById(boxId + '_database').value;
@@ -1975,6 +2119,7 @@ export class QueryEditorProvider {
 			}
 
 			setQueryExecuting(boxId, true);
+			closeRunMenu(boxId);
 
 			// Store the last executed box for result display
 			window.lastExecutedBox = boxId;
@@ -1982,6 +2127,7 @@ export class QueryEditorProvider {
 			vscode.postMessage({
 				type: 'executeQuery',
 				query,
+				queryMode: effectiveMode,
 				connectionId,
 				database,
 				boxId,
