@@ -692,6 +692,15 @@ export class QueryEditorProvider {
 			background: var(--vscode-list-hoverBackground);
 		}
 
+		.column-analysis-table .total-row {
+			border-top: 2px solid var(--vscode-panel-border);
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-analysis-table .total-row td {
+			font-weight: 600;
+		}
+
 		.column-picker {
 			margin-bottom: 16px;
 		}
@@ -1843,17 +1852,27 @@ function showDistinctCountPicker(colIdx, boxId) {
 				}))
 				.sort((a, b) => b.distinctCount - a.distinctCount);
 			
+			// Calculate total distinct count across all groups
+			const totalDistinctValues = new Set();
+			groupedValues.forEach(valueSet => {
+				valueSet.forEach(value => totalDistinctValues.add(value));
+			});
+			const totalDistinctCount = totalDistinctValues.size;
+			
 			// Display results
 			const resultsDiv = document.getElementById('distinctCountResults');
 			
 			let html = '<table class="column-analysis-table">';
-			html += '<thead><tr><th>' + escapeHtml(groupByColumnName) + '</th><th>Distinct ' + escapeHtml(targetColumnName) + '</th></tr></thead>';
+			html += '<thead><tr><th>' + escapeHtml(groupByColumnName) + '</th><th>Distinct ' + escapeHtml(targetColumnName) + '</th><th>%</th></tr></thead>';
 			html += '<tbody>';
 			
 			results.forEach(result => {
-				html += '<tr><td>' + escapeHtml(result.groupValue) + '</td><td>' + result.distinctCount + '</td></tr>';
+				const percentage = ((result.distinctCount / totalDistinctCount) * 100).toFixed(2);
+				html += '<tr><td>' + escapeHtml(result.groupValue) + '</td><td>' + result.distinctCount + '</td><td>' + percentage + '%</td></tr>';
 			});
 			
+			// Add total row
+			html += '<tr class="total-row"><td><strong>Total</strong></td><td><strong>' + totalDistinctCount + '</strong></td><td><strong>100.00%</strong></td></tr>';
 			html += '</tbody></table>';
 			
 			resultsDiv.innerHTML = html;
