@@ -61,7 +61,8 @@ export class QueryEditorProvider {
 					break;
 				case 'executeQuery':
 					this.saveLastSelection(message.connectionId, message.database);
-					await this.executeQuery(message.query, message.connectionId, message.database);
+					await this.executeQuery(message.query, message.connectionId, message.database, 
+						message.cacheEnabled, message.cacheValue, message.cacheUnit);
 					break;
 			}
 		});
@@ -108,7 +109,8 @@ export class QueryEditorProvider {
 		}
 	}
 
-	private async executeQuery(query: string, connectionId: string, database?: string) {
+	private async executeQuery(query: string, connectionId: string, database?: string, 
+		cacheEnabled?: boolean, cacheValue?: number, cacheUnit?: string) {
 		const connection = this.connectionManager.getConnections().find(c => c.id === connectionId);
 		
 		if (!connection) {
@@ -121,8 +123,29 @@ export class QueryEditorProvider {
 			return;
 		}
 
+		// Add cache directive if enabled
+		let finalQuery = query;
+		if (cacheEnabled && cacheValue && cacheUnit) {
+			// Convert cache duration to timespan format
+			let timespan = '';
+			switch (cacheUnit) {
+				case 'minutes':
+					timespan = `time(${cacheValue}m)`;
+					break;
+				case 'hours':
+					timespan = `time(${cacheValue}h)`;
+					break;
+				case 'days':
+					timespan = `time(${cacheValue}d)`;
+					break;
+			}
+			if (timespan) {
+				finalQuery = `set query_results_cache_max_age = ${timespan};\n${query}`;
+			}
+		}
+
 		try {
-			const result = await this.kustoClient.executeQuery(connection, database, query);
+			const result = await this.kustoClient.executeQuery(connection, database, finalQuery);
 			this.panel?.webview.postMessage({
 				type: 'queryResult',
 				result: result
@@ -399,6 +422,48 @@ export class QueryEditorProvider {
 		.add-query:hover {
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
+
+		.cache-controls {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-top: 8px;
+			margin-bottom: 8px;
+			font-size: 12px;
+		}
+
+		.cache-checkbox {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			cursor: pointer;
+		}
+
+		.cache-checkbox input[type="checkbox"] {
+			cursor: pointer;
+		}
+
+		.cache-controls select,
+		.cache-controls input[type="number"] {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 70px;
+		}
+
+		.cache-controls select:disabled,
+		.cache-controls input[type="number"]:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.cache-info {
+			color: var(--vscode-descriptionForeground);
+			font-size: 11px;
+		}
 	</style>
 </head>
 <body>
@@ -462,6 +527,19 @@ export class QueryEditorProvider {
 						</button>
 					</div>
 					<textarea id="\${id}_query" placeholder="Enter your KQL query here..."></textarea>
+					<div class="cache-controls">
+						<label class="cache-checkbox">
+							<input type="checkbox" id="\${id}_cache_enabled" checked onchange="toggleCacheControls('\${id}')" />
+							Cache results for
+						</label>
+						<input type="number" id="\${id}_cache_value" value="1" min="1" />
+						<select id="\${id}_cache_unit">
+							<option value="minutes">Minutes</option>
+							<option value="hours">Hours</option>
+							<option value="days" selected>Days</option>
+						</select>
+						<span class="cache-info">(reduces query costs)</span>
+					</div>
 					<button onclick="executeQuery('\${id}')">▶ Run Query</button>
 					<div class="results" id="\${id}_results"></div>
 				</div>
@@ -469,6 +547,19 @@ export class QueryEditorProvider {
 			
 			container.insertAdjacentHTML('beforeend', boxHtml);
 			updateConnectionSelects();
+		}
+
+		function toggleCacheControls(boxId) {
+			const enabled = document.getElementById(boxId + '_cache_enabled').checked;
+			const valueInput = document.getElementById(boxId + '_cache_value');
+			const unitSelect = document.getElementById(boxId + '_cache_unit');
+			
+			if (valueInput) {
+				valueInput.disabled = !enabled;
+			}
+			if (unitSelect) {
+				unitSelect.disabled = !enabled;
+			}
 		}
 
 		function updateConnectionSelects() {
@@ -566,6 +657,9 @@ export class QueryEditorProvider {
 			const query = document.getElementById(boxId + '_query').value;
 			const connectionId = document.getElementById(boxId + '_connection').value;
 			const database = document.getElementById(boxId + '_database').value;
+			const cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
+			const cacheValue = parseInt(document.getElementById(boxId + '_cache_value').value) || 1;
+			const cacheUnit = document.getElementById(boxId + '_cache_unit').value;
 
 			if (!query.trim()) {
 				return;
@@ -581,7 +675,10 @@ export class QueryEditorProvider {
 				query,
 				connectionId,
 				database,
-				boxId
+				boxId,
+				cacheEnabled,
+				cacheValue,
+				cacheUnit
 			});
 
 			// Store the last executed box for result display
