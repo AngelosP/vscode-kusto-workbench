@@ -32,6 +32,7 @@ type IncomingWebviewMessage =
 		cacheUnit?: CacheUnit | string;
 	}
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+	| { type: 'promptAddConnection'; boxId?: string }
 	| {
 			type: 'importConnectionsFromXml';
 			connections: Array<{ name: string; clusterUrl: string; database?: string }>;
@@ -106,9 +107,59 @@ export class QueryEditorProvider {
 				await this.importConnectionsFromXml(message.connections);
 				await this.sendConnectionsData();
 				return;
+			case 'promptAddConnection':
+				await this.promptAddConnection(message.boxId);
+				return;
 			default:
 				return;
 		}
+	}
+
+	private async promptAddConnection(boxId?: string): Promise<void> {
+		const clusterUrlRaw = await vscode.window.showInputBox({
+			prompt: 'Cluster URL',
+			placeHolder: 'https://mycluster.region.kusto.windows.net',
+			ignoreFocusOut: true
+		});
+		if (!clusterUrlRaw) {
+			return;
+		}
+
+		let clusterUrl = clusterUrlRaw.trim();
+		if (!/^https?:\/\//i.test(clusterUrl)) {
+			clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
+		}
+
+		const name =
+			(await vscode.window.showInputBox({
+				prompt: 'Connection name (optional)',
+				placeHolder: 'My cluster',
+				ignoreFocusOut: true
+			})) || '';
+		const database =
+			(await vscode.window.showInputBox({
+				prompt: 'Default database (optional)',
+				placeHolder: 'MyDatabase',
+				ignoreFocusOut: true
+			})) || '';
+
+		const newConn = await this.connectionManager.addConnection({
+			name: name.trim() || clusterUrl,
+			clusterUrl,
+			database: database.trim() || undefined
+		});
+		await this.saveLastSelection(newConn.id, newConn.database);
+
+		// Notify webview so it can pick the newly created connection in the right box.
+		this.postMessage({
+			type: 'connectionAdded',
+			boxId,
+			connectionId: newConn.id,
+			lastConnectionId: this.lastConnectionId,
+			lastDatabase: this.lastDatabase,
+			connections: this.connectionManager.getConnections(),
+			cachedDatabases: this.getCachedDatabases()
+		});
 	}
 
 	private async importConnectionsFromXml(

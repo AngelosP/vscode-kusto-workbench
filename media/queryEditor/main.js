@@ -93,6 +93,32 @@ window.addEventListener('message', event => {
 			setSchemaLoading(message.boxId, false);
 			setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
 			break;
+			case 'connectionAdded':
+				// Refresh list and preselect the new connection in the originating box.
+				if (Array.isArray(message.connections)) {
+					connections = message.connections;
+				}
+				if (message.lastConnectionId) {
+					lastConnectionId = message.lastConnectionId;
+				}
+				if (typeof message.lastDatabase === 'string') {
+					lastDatabase = message.lastDatabase;
+				}
+				updateConnectionSelects();
+				try {
+					const boxId = message.boxId || null;
+					if (boxId && message.connectionId) {
+						const sel = document.getElementById(boxId + '_connection');
+						if (sel) {
+							sel.value = message.connectionId;
+							sel.dataset.prevValue = message.connectionId;
+							updateDatabaseField(boxId);
+						}
+					}
+				} catch {
+					// ignore
+				}
+				break;
 	}
 });
 

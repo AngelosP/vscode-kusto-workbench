@@ -86,7 +86,7 @@ function addQueryBox() {
 		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
 		'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
 		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\')">' +
-		'<option value="">Select Cluster...</option>' +
+		'<option value="" disabled selected hidden>Select Cluster...</option>' +
 		'</select>' +
 		'</div>' +
 		'<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
@@ -550,16 +550,25 @@ function updateConnectionSelects() {
 		const select = document.getElementById(id + '_connection');
 		if (select) {
 			const currentValue = select.value;
-			select.innerHTML = '<option value="">Select Cluster...</option>' +
-				connections.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>').join('') +
-				'<option value="__import_xml__">Import from .xml file…</option>';
+			const sortedConnections = (connections || []).slice().sort((a, b) => {
+				const an = String(formatClusterDisplayName(a) || '').toLowerCase();
+				const bn = String(formatClusterDisplayName(b) || '').toLowerCase();
+				return an.localeCompare(bn);
+			});
+			select.innerHTML =
+				'<option value="" disabled ' + (currentValue ? '' : 'selected ') + 'hidden>Select Cluster...</option>' +
+				'<option value="__enter_new__">Enter new cluster…</option>' +
+				'<option value="__import_xml__">Import from .xml file…</option>' +
+				sortedConnections
+					.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>')
+					.join('');
 
 			// Pre-fill with last selection if this is a new box
 			if (!currentValue && lastConnectionId) {
 				select.value = lastConnectionId;
 				// Trigger database loading
 				updateDatabaseField(id);
-			} else if (currentValue && currentValue !== '__import_xml__') {
+			} else if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
 				select.value = currentValue;
 			}
 		}
@@ -569,6 +578,12 @@ function updateConnectionSelects() {
 function updateDatabaseField(boxId) {
 	const connectionSelect = document.getElementById(boxId + '_connection');
 	const connectionId = connectionSelect ? connectionSelect.value : '';
+	if (connectionSelect && connectionId === '__enter_new__') {
+		const prev = connectionSelect.dataset.prevValue || '';
+		connectionSelect.value = prev;
+		promptAddConnectionFromDropdown(boxId);
+		return;
+	}
 	if (connectionSelect && connectionId === '__import_xml__') {
 		const prev = connectionSelect.dataset.prevValue || '';
 		connectionSelect.value = prev;
@@ -614,6 +629,14 @@ function updateDatabaseField(boxId) {
 		if (refreshBtn) {
 			refreshBtn.disabled = true;
 		}
+	}
+}
+
+function promptAddConnectionFromDropdown(boxId) {
+	try {
+		vscode.postMessage({ type: 'promptAddConnection', boxId: boxId });
+	} catch {
+		// ignore
 	}
 }
 
