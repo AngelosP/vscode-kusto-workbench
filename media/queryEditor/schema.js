@@ -17,11 +17,11 @@ function setSchemaLoadedSummary(boxId, text, title, isError) {
 	el.style.display = text ? 'inline-flex' : 'none';
 }
 
-function ensureSchemaForBox(boxId) {
+function ensureSchemaForBox(boxId, forceRefresh) {
 	if (!boxId) {
 		return;
 	}
-	if (schemaByBoxId[boxId]) {
+	if (!forceRefresh && schemaByBoxId[boxId]) {
 		return;
 	}
 	if (schemaFetchInFlightByBoxId[boxId]) {
@@ -30,7 +30,7 @@ function ensureSchemaForBox(boxId) {
 	const now = Date.now();
 	const last = lastSchemaRequestAtByBoxId[boxId] || 0;
 	// Avoid spamming schema fetch requests if autocomplete is invoked repeatedly.
-	if (now - last < 1500) {
+	if (!forceRefresh && now - last < 1500) {
 		return;
 	}
 	lastSchemaRequestAtByBoxId[boxId] = now;
@@ -48,7 +48,8 @@ function ensureSchemaForBox(boxId) {
 		type: 'prefetchSchema',
 		connectionId,
 		database,
-		boxId
+		boxId,
+		forceRefresh: !!forceRefresh
 	});
 }
 
@@ -56,5 +57,16 @@ function onDatabaseChanged(boxId) {
 	// Clear any prior schema so it matches the newly selected DB.
 	delete schemaByBoxId[boxId];
 	setSchemaLoadedSummary(boxId, '', '', false);
-	ensureSchemaForBox(boxId);
+	ensureSchemaForBox(boxId, false);
+}
+
+function refreshSchema(boxId) {
+	if (!boxId) {
+		return;
+	}
+	// Force a refetch even if we fetched recently.
+	delete schemaByBoxId[boxId];
+	lastSchemaRequestAtByBoxId[boxId] = 0;
+	setSchemaLoadedSummary(boxId, '', '', false);
+	ensureSchemaForBox(boxId, true);
 }

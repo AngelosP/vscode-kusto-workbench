@@ -21,10 +21,20 @@
 
 		.query-header {
 			display: flex;
+			flex-direction: column;
 			gap: 8px;
 			margin-bottom: 8px;
+		}
+
+		.query-header-row {
+			display: flex;
+			gap: 8px;
 			align-items: center;
 			flex-wrap: wrap;
+		}
+
+		.query-header-row-top {
+			flex-wrap: nowrap;
 		}
 
 		.query-name {
@@ -52,7 +62,31 @@
 			min-width: 40px;
 			display: flex;
 			align-items: center;
-			gap: 4px;
+		}
+
+		.select-wrapper.has-icon .select-icon {
+			position: absolute;
+			left: 8px;
+			top: 50%;
+			transform: translateY(-50%);
+			pointer-events: none;
+			z-index: 1;
+			opacity: 0.95;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 16px;
+			height: 16px;
+		}
+
+		.select-wrapper.has-icon select {
+			padding-left: 28px;
+		}
+
+		.select-wrapper.half-width {
+			flex: 0 0 210px;
+			width: 210px;
+			max-width: 210px;
 		}
 
 		.select-wrapper select {
@@ -71,30 +105,39 @@
 			cursor: not-allowed;
 		}
 
-		.select-wrapper::before {
-			content: attr(data-icon);
-			position: absolute;
-			left: 8px;
-			top: 50%;
-			transform: translateY(-50%);
-			pointer-events: none;
-			font-size: 14px;
-			z-index: 1;
-		}
+
 
 		.refresh-btn {
 			background: transparent;
 			border: 1px solid var(--vscode-input-border);
 			color: var(--vscode-foreground);
 			cursor: pointer;
-			padding: 4px 8px;
+			padding: 0;
 			font-size: 12px;
-			border-radius: 2px;
+			border-radius: 4px;
 			display: flex;
 			align-items: center;
 			justify-content: center;
+			line-height: 0;
 			min-width: 28px;
+			width: 28px;
 			height: 28px;
+		}
+
+		.refresh-btn svg {
+			display: block;
+		}
+
+		.refresh-btn.close-btn {
+			border: none;
+		}
+
+		.schema-area {
+			margin-left: auto;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			text-align: right;
 		}
 
 		.refresh-btn:hover {
@@ -108,10 +151,6 @@
 		.refresh-btn:disabled {
 			opacity: 0.5;
 			cursor: not-allowed;
-		}
-
-		.select-wrapper select {
-			padding-left: 28px;
 		}
 
 		.select-wrapper.icon-only {
@@ -138,6 +177,12 @@
 				width: 40px;
 				min-width: 40px;
 			}
+
+			.select-wrapper.half-width {
+				flex: 0 0 40px;
+				width: 40px;
+				max-width: 40px;
+			}
 			
 			.select-wrapper select {
 				padding-left: 8px;
@@ -145,13 +190,17 @@
 				text-indent: -9999px;
 				color: transparent;
 			}
+
+			.select-wrapper.has-icon select {
+				padding-left: 8px;
+			}
 			
 			.select-wrapper select option {
 				text-indent: 0;
 				color: var(--vscode-dropdown-foreground);
 			}
 
-			.select-wrapper::before {
+			.select-wrapper.has-icon .select-icon {
 				left: 50%;
 				transform: translate(-50%, -50%);
 			}

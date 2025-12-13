@@ -3,6 +3,35 @@ function addQueryBox() {
 	queryBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
+
+	const clusterIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M5 3.5h6"/>' +
+		'<path d="M4 6h8"/>' +
+		'<path d="M3.5 8.5h9"/>' +
+		'<path d="M4 11h8"/>' +
+		'<path d="M5 13.5h6"/>' +
+		'</svg>';
+
+	const databaseIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<ellipse cx="8" cy="4" rx="5" ry="2"/>' +
+		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4"/>' +
+		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>' +
+		'<path d="M3 12c0 1.1 2.2 2 5 2s5-.9 5-2"/>' +
+		'</svg>';
+
+	const refreshIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M13 7.5a5 5 0 1 0 1 3.1"/>' +
+		'<path d="M13 2.5v4h-4"/>' +
+		'</svg>';
+
+	const closeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M4 4l8 8"/>' +
+		'<path d="M12 4L4 12"/>' +
+		'</svg>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table">' +
@@ -47,24 +76,33 @@ function addQueryBox() {
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="query-header">' +
+		'<div class="query-header-row query-header-row-top">' +
 		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" />' +
-		'<div class="select-wrapper" data-icon="🖥️">' +
+		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
+		'</div>' +
+		'<div class="query-header-row query-header-row-bottom">' +
+		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
+		'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
 		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\')">' +
 		'<option value="">Select Cluster...</option>' +
 		'</select>' +
 		'</div>' +
-		'<div class="select-wrapper" data-icon="📊">' +
+		'<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
+		'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
 		'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\')">' +
 		'<option value="">Select Database...</option>' +
 		'</select>' +
 		'</div>' +
+		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
+		'<div class="schema-area" aria-label="Schema status">' +
 		'<span class="schema-status" id="' + id + '_schema_status" style="display: none;" title="Loading schema for autocomplete...">' +
 		'<span class="schema-spinner" aria-hidden="true"></span>' +
-		'<span>Loading schema…</span>' +
+		'<span>Schema…</span>' +
 		'</span>' +
 		'<span class="schema-loaded" id="' + id + '_schema_loaded" style="display: none;"></span>' +
-		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list">⟳</button>' +
-		'<button class="refresh-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box">✖</button>' +
+		'<button class="refresh-btn" onclick="refreshSchema(\'' + id + '\')" id="' + id + '_schema_refresh" title="Refresh schema" aria-label="Refresh schema">' + refreshIconSvg + '</button>' +
+		'</div>' +
+		'</div>' +
 		'</div>' +
 		'<div class="query-editor-wrapper">' +
 		toolbarHtml +
@@ -484,13 +522,34 @@ function toggleCacheControls(boxId) {
 	}
 }
 
+function formatClusterDisplayName(connection) {
+	if (!connection) {
+		return '';
+	}
+	const url = String(connection.clusterUrl || '').trim();
+	if (url) {
+		try {
+			const u = new URL(url);
+			const hostname = String(u.hostname || '').trim();
+			const lower = hostname.toLowerCase();
+			if (lower.endsWith('.kusto.windows.net')) {
+				return hostname.slice(0, hostname.length - '.kusto.windows.net'.length);
+			}
+			return hostname || url;
+		} catch {
+			// ignore
+		}
+	}
+	return String(connection.name || connection.clusterUrl || '').trim();
+}
+
 function updateConnectionSelects() {
 	queryBoxes.forEach(id => {
 		const select = document.getElementById(id + '_connection');
 		if (select) {
 			const currentValue = select.value;
 			select.innerHTML = '<option value="">Select Cluster...</option>' +
-				connections.map(c => '<option value="' + c.id + '">' + c.name + '</option>').join('');
+				connections.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>').join('');
 
 			// Pre-fill with last selection if this is a new box
 			if (!currentValue && lastConnectionId) {

@@ -1,15 +1,18 @@
 import * as vscode from 'vscode';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { KustoQueryClient } from './kustoClient';
+import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 
 const OUTPUT_CHANNEL_NAME = 'Notebooks for Kusto';
 
 const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
 	lastDatabase: 'kusto.lastDatabase',
-	cachedDatabases: 'kusto.cachedDatabases'
+	cachedDatabases: 'kusto.cachedDatabases',
+	cachedSchemas: 'kusto.cachedSchemas'
 } as const;
+
+type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
 
@@ -28,7 +31,7 @@ type IncomingWebviewMessage =
 		cacheValue?: number;
 		cacheUnit?: CacheUnit | string;
 	}
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string };
+	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean };
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -36,6 +39,7 @@ export class QueryEditorProvider {
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
 	private readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -91,7 +95,7 @@ export class QueryEditorProvider {
 				await this.executeQueryFromWebview(message);
 				return;
 			case 'prefetchSchema':
-				await this.prefetchSchema(message.connectionId, message.database, message.boxId);
+				await this.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh);
 				return;
 			default:
 				return;
@@ -109,6 +113,24 @@ export class QueryEditorProvider {
 
 	private getCachedDatabases(): Record<string, string[]> {
 		return this.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
+	}
+
+	private getCachedSchemas(): Record<string, CachedSchemaEntry> {
+		return this.context.globalState.get<Record<string, CachedSchemaEntry>>(STORAGE_KEYS.cachedSchemas, {});
+	}
+
+	private async saveCachedSchema(cacheKey: string, entry: CachedSchemaEntry): Promise<void> {
+		const cached = this.getCachedSchemas();
+		cached[cacheKey] = entry;
+		await this.context.globalState.update(STORAGE_KEYS.cachedSchemas, cached);
+	}
+
+	private async deleteCachedSchema(cacheKey: string): Promise<void> {
+		const cached = this.getCachedSchemas();
+		if (cached[cacheKey]) {
+			delete cached[cacheKey];
+			await this.context.globalState.update(STORAGE_KEYS.cachedSchemas, cached);
+		}
 	}
 
 	private async saveCachedDatabases(connectionId: string, databases: string[]): Promise<void> {
@@ -236,15 +258,60 @@ export class QueryEditorProvider {
 		return `${base}\n${fragment}`;
 	}
 
-	private async prefetchSchema(connectionId: string, database: string, boxId: string): Promise<void> {
+	private async prefetchSchema(
+		connectionId: string,
+		database: string,
+		boxId: string,
+		forceRefresh: boolean
+	): Promise<void> {
 		const connection = this.findConnection(connectionId);
 		if (!connection || !database) {
 			return;
 		}
 
+		const cacheKey = `${connection.clusterUrl}|${database}`;
+		if (forceRefresh) {
+			await this.deleteCachedSchema(cacheKey);
+		}
+
 		try {
-			this.output.appendLine(`[schema] request connectionId=${connectionId} db=${database}`);
-			const result = await this.kustoClient.getDatabaseSchema(connection, database, false);
+			this.output.appendLine(
+				`[schema] request connectionId=${connectionId} db=${database} forceRefresh=${forceRefresh}`
+			);
+
+			// Default path: check persisted cache first (survives VS Code sessions).
+			if (!forceRefresh) {
+				const cachedSchemas = this.getCachedSchemas();
+				const cached = cachedSchemas[cacheKey];
+				if (cached && Date.now() - cached.timestamp < this.SCHEMA_CACHE_TTL_MS) {
+					const schema = cached.schema;
+					const tablesCount = schema.tables?.length ?? 0;
+					let columnsCount = 0;
+					for (const cols of Object.values(schema.columnsByTable || {})) {
+						columnsCount += cols.length;
+					}
+
+					this.output.appendLine(
+						`[schema] loaded (persisted cache) db=${database} tables=${tablesCount} columns=${columnsCount}`
+					);
+					this.postMessage({
+						type: 'schemaData',
+						boxId,
+						connectionId,
+						database,
+						schema,
+						schemaMeta: {
+							fromCache: true,
+							cacheAgeMs: Date.now() - cached.timestamp,
+							tablesCount,
+							columnsCount
+						}
+					});
+					return;
+				}
+			}
+
+			const result = await this.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
 			const schema = result.schema;
 
 			const tablesCount = schema.tables?.length ?? 0;
@@ -256,6 +323,12 @@ export class QueryEditorProvider {
 			this.output.appendLine(
 				`[schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${result.fromCache}`
 			);
+
+			// Persist schema across VS Code sessions.
+			const timestamp = result.fromCache
+				? Date.now() - (result.cacheAgeMs ?? 0)
+				: Date.now();
+			await this.saveCachedSchema(cacheKey, { schema, timestamp });
 			if (tablesCount === 0 || columnsCount === 0) {
 				const d = result.debug;
 				if (d) {
