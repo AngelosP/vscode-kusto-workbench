@@ -389,6 +389,58 @@ export class QueryEditorProvider {
 			gap: 8px;
 		}
 
+		.data-search {
+			display: flex;
+			gap: 4px;
+			align-items: center;
+			min-width: 300px;
+		}
+
+		.data-search input {
+			flex: 1;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+		}
+
+		.data-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.data-search-nav {
+			display: flex;
+			gap: 2px;
+		}
+
+		.data-search-nav button {
+			padding: 2px 8px;
+			font-size: 11px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			cursor: pointer;
+		}
+
+		.data-search-nav button:hover:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.data-search-nav button:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.data-search-info {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+		}
+
 		.column-search {
 			position: relative;
 			min-width: 200px;
@@ -508,6 +560,17 @@ export class QueryEditorProvider {
 
 		td[title]:hover {
 			cursor: help;
+		}
+
+		td.search-match {
+			background: var(--vscode-editor-findMatchBackground);
+			outline: 1px solid var(--vscode-editor-findMatchBorder);
+		}
+
+		td.search-match-current {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			outline: 2px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -2px;
 		}
 
 		.object-view-btn {
@@ -962,7 +1025,9 @@ export class QueryEditorProvider {
 				rows: result.rows,
 				metadata: result.metadata,
 				selectedCell: null,
-				selectedRows: new Set()
+				selectedRows: new Set(),
+				searchMatches: [],
+				currentSearchIndex: -1
 			};
 
 			let html = \`
@@ -970,6 +1035,17 @@ export class QueryEditorProvider {
 					<div>
 						<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
 						(Execution time: \${result.metadata.executionTime})
+					</div>
+					<div class="data-search">
+						<input type="text" placeholder="Search data..." 
+							   id="\${boxId}_data_search"
+							   oninput="searchData('\${boxId}')"
+							   onkeydown="handleDataSearchKeydown(event, '\${boxId}')" />
+						<div class="data-search-nav">
+							<button id="\${boxId}_search_prev" onclick="previousSearchMatch('\${boxId}')" disabled title="Previous (Shift+Enter)">↑</button>
+							<button id="\${boxId}_search_next" onclick="nextSearchMatch('\${boxId}')" disabled title="Next (Enter)">↓</button>
+						</div>
+						<span class="data-search-info" id="\${boxId}_search_info"></span>
 					</div>
 					<div class="column-search">
 						<input type="text" placeholder="Scroll to column..." 
@@ -1260,6 +1336,139 @@ export class QueryEditorProvider {
 
 		function escapeRegex(str) {
 			return str.replace(/[-\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+		}
+
+		function searchData(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const searchInput = document.getElementById(boxId + '_data_search');
+			const searchTerm = searchInput.value.toLowerCase();
+			const infoSpan = document.getElementById(boxId + '_search_info');
+			const prevBtn = document.getElementById(boxId + '_search_prev');
+			const nextBtn = document.getElementById(boxId + '_search_next');
+			
+			// Clear previous search highlights
+			document.querySelectorAll('#' + boxId + '_table td.search-match, #' + boxId + '_table td.search-match-current')
+				.forEach(cell => {
+					cell.classList.remove('search-match', 'search-match-current');
+				});
+			
+			window.currentResult.searchMatches = [];
+			window.currentResult.currentSearchIndex = -1;
+			
+			if (!searchTerm) {
+				infoSpan.textContent = '';
+				prevBtn.disabled = true;
+				nextBtn.disabled = true;
+				return;
+			}
+			
+			// Search through all cells
+			window.currentResult.rows.forEach((row, rowIdx) => {
+				row.forEach((cell, colIdx) => {
+					let cellText = '';
+					
+					// Extract searchable text from cell
+					if (typeof cell === 'object' && cell !== null) {
+						// If it's a formatted cell object, search in both display and full values
+						if ('display' in cell) {
+							cellText = cell.display + ' ' + (cell.full || '');
+						} else {
+							cellText = JSON.stringify(cell);
+						}
+					} else {
+						cellText = String(cell);
+					}
+					
+					// Check if search term is in cell text
+					if (cellText.toLowerCase().includes(searchTerm)) {
+						window.currentResult.searchMatches.push({ row: rowIdx, col: colIdx });
+					}
+				});
+			});
+			
+			// Update UI
+			const matchCount = window.currentResult.searchMatches.length;
+			if (matchCount > 0) {
+				infoSpan.textContent = matchCount + ' match' + (matchCount !== 1 ? 'es' : '');
+				prevBtn.disabled = false;
+				nextBtn.disabled = false;
+				
+				// Highlight all matches
+				window.currentResult.searchMatches.forEach(match => {
+					const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
+					if (cell) {
+						cell.classList.add('search-match');
+					}
+				});
+				
+				// Jump to first match
+				window.currentResult.currentSearchIndex = 0;
+				highlightCurrentSearchMatch(boxId);
+			} else {
+				infoSpan.textContent = 'No matches';
+				prevBtn.disabled = true;
+				nextBtn.disabled = true;
+			}
+		}
+
+		function nextSearchMatch(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const matches = window.currentResult.searchMatches;
+			if (matches.length === 0) {return;}
+			
+			window.currentResult.currentSearchIndex = (window.currentResult.currentSearchIndex + 1) % matches.length;
+			highlightCurrentSearchMatch(boxId);
+		}
+
+		function previousSearchMatch(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const matches = window.currentResult.searchMatches;
+			if (matches.length === 0) {return;}
+			
+			window.currentResult.currentSearchIndex = (window.currentResult.currentSearchIndex - 1 + matches.length) % matches.length;
+			highlightCurrentSearchMatch(boxId);
+		}
+
+		function highlightCurrentSearchMatch(boxId) {
+			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+			
+			const matches = window.currentResult.searchMatches;
+			const currentIndex = window.currentResult.currentSearchIndex;
+			
+			if (currentIndex < 0 || currentIndex >= matches.length) {return;}
+			
+			// Remove current highlight from all cells
+			document.querySelectorAll('#' + boxId + '_table td.search-match-current')
+				.forEach(cell => cell.classList.remove('search-match-current'));
+			
+			// Highlight current match
+			const match = matches[currentIndex];
+			const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
+			
+			if (cell) {
+				cell.classList.add('search-match-current');
+				cell.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+			}
+			
+			// Update info text
+			const infoSpan = document.getElementById(boxId + '_search_info');
+			if (infoSpan) {
+				infoSpan.textContent = (currentIndex + 1) + ' of ' + matches.length;
+			}
+		}
+
+		function handleDataSearchKeydown(event, boxId) {
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				if (event.shiftKey) {
+					previousSearchMatch(boxId);
+				} else {
+					nextSearchMatch(boxId);
+				}
+			}
 		}
 
 		function handleTableKeydown(event, boxId) {

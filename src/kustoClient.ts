@@ -125,6 +125,16 @@ export class KustoQueryClient {
 				// Check if it's an object or array (complex structure)
 				if (typeof cell === 'object') {
 					try {
+						// Check if object/array is empty
+						const isEmpty = Array.isArray(cell) 
+							? cell.length === 0 
+							: Object.keys(cell).length === 0;
+						
+						if (isEmpty) {
+							const display = Array.isArray(cell) ? '[]' : '{}';
+							return { display, full: display };
+						}
+						
 						const jsonStr = JSON.stringify(cell, null, 2);
 						return { 
 							display: '[object]', 
