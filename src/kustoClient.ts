@@ -13,6 +13,8 @@ export interface QueryResult {
 
 export class KustoQueryClient {
 	private clients: Map<string, any> = new Map();
+	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
+	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 	private async getOrCreateClient(connection: KustoConnection): Promise<any> {
 		if (this.clients.has(connection.id)) {
@@ -40,8 +42,17 @@ export class KustoQueryClient {
 		return client;
 	}
 
-	async getDatabases(connection: KustoConnection): Promise<string[]> {
+	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
 		try {
+			// Check cache first
+			if (!forceRefresh) {
+				const cached = this.databaseCache.get(connection.clusterUrl);
+				if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
+					console.log('Returning cached databases for:', connection.clusterUrl);
+					return cached.databases;
+				}
+			}
+
 			console.log('Fetching databases for cluster:', connection.clusterUrl);
 			const client = await this.getOrCreateClient(connection);
 			
@@ -64,6 +75,13 @@ export class KustoQueryClient {
 			}
 			
 			console.log('Databases found:', databases);
+			
+			// Update cache
+			this.databaseCache.set(connection.clusterUrl, {
+				databases,
+				timestamp: Date.now()
+			});
+			
 			return databases;
 		} catch (error) {
 			console.error('Error fetching databases:', error);

@@ -13,7 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const connectionManager = new ConnectionManager(context);
 
 	// Register query editor provider
-	const queryEditorProvider = new QueryEditorProvider(context.extensionUri, connectionManager);
+	const queryEditorProvider = new QueryEditorProvider(context.extensionUri, connectionManager, context);
 
 	// Register commands
 	context.subscriptions.push(

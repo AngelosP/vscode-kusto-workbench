@@ -8,12 +8,16 @@ import { KustoQueryClient } from './kustoClient';
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
 	private kustoClient: KustoQueryClient;
+	private lastConnectionId?: string;
+	private lastDatabase?: string;
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
-		private readonly connectionManager: ConnectionManager
+		private readonly connectionManager: ConnectionManager,
+		private readonly context: vscode.ExtensionContext
 	) {
 		this.kustoClient = new KustoQueryClient();
+		this.loadLastSelection();
 	}
 
 	openEditor() {
@@ -44,13 +48,19 @@ export class QueryEditorProvider {
 					const connections = this.connectionManager.getConnections();
 					this.panel?.webview.postMessage({
 						type: 'connectionsData',
-						connections
+						connections,
+						lastConnectionId: this.lastConnectionId,
+						lastDatabase: this.lastDatabase
 					});
 					break;
 				case 'getDatabases':
-					await this.getDatabases(message.connectionId, message.boxId);
+					await this.getDatabases(message.connectionId, message.boxId, false);
+					break;
+				case 'refreshDatabases':
+					await this.getDatabases(message.connectionId, message.boxId, true);
 					break;
 				case 'executeQuery':
+					this.saveLastSelection(message.connectionId, message.database);
 					await this.executeQuery(message.query, message.connectionId, message.database);
 					break;
 			}
@@ -62,14 +72,26 @@ export class QueryEditorProvider {
 		});
 	}
 
-	private async getDatabases(connectionId: string, boxId: string) {
+	private loadLastSelection() {
+		this.lastConnectionId = this.context.globalState.get('kusto.lastConnectionId');
+		this.lastDatabase = this.context.globalState.get('kusto.lastDatabase');
+	}
+
+	private async saveLastSelection(connectionId: string, database: string) {
+		this.lastConnectionId = connectionId;
+		this.lastDatabase = database;
+		await this.context.globalState.update('kusto.lastConnectionId', connectionId);
+		await this.context.globalState.update('kusto.lastDatabase', database);
+	}
+
+	private async getDatabases(connectionId: string, boxId: string, forceRefresh: boolean) {
 		const connection = this.connectionManager.getConnections().find(c => c.id === connectionId);
 		if (!connection) {
 			return;
 		}
 
 		try {
-			const databases = await this.kustoClient.getDatabases(connection);
+			const databases = await this.kustoClient.getDatabases(connection, forceRefresh);
 			this.panel?.webview.postMessage({
 				type: 'databasesData',
 				databases: databases,
@@ -148,6 +170,7 @@ export class QueryEditorProvider {
 			gap: 8px;
 			margin-bottom: 8px;
 			align-items: center;
+			flex-wrap: wrap;
 		}
 
 		.query-name {
@@ -156,7 +179,8 @@ export class QueryEditorProvider {
 			color: var(--vscode-foreground);
 			padding: 4px 8px;
 			font-size: 12px;
-			flex: 1;
+			flex: 1 1 150px;
+			min-width: 100px;
 		}
 
 		.query-name:hover {
@@ -168,13 +192,115 @@ export class QueryEditorProvider {
 			border-color: var(--vscode-focusBorder);
 		}
 
-		select {
+		.select-wrapper {
+			position: relative;
+			flex: 1 1 200px;
+			min-width: 40px;
+			display: flex;
+			align-items: center;
+			gap: 4px;
+		}
+
+		.select-wrapper select {
 			background: var(--vscode-dropdown-background);
 			color: var(--vscode-dropdown-foreground);
 			border: 1px solid var(--vscode-dropdown-border);
+			padding: 4px 24px 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 100%;
+			cursor: pointer;
+		}
+
+		.select-wrapper select:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.select-wrapper::before {
+			content: attr(data-icon);
+			position: absolute;
+			left: 8px;
+			top: 50%;
+			transform: translateY(-50%);
+			pointer-events: none;
+			font-size: 14px;
+			z-index: 1;
+		}
+
+		.refresh-btn {
+			background: transparent;
+			border: 1px solid var(--vscode-input-border);
+			color: var(--vscode-foreground);
+			cursor: pointer;
 			padding: 4px 8px;
 			font-size: 12px;
 			border-radius: 2px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			min-width: 28px;
+			height: 28px;
+		}
+
+		.refresh-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.refresh-btn:active {
+			opacity: 0.7;
+		}
+
+		.refresh-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.select-wrapper select {
+			padding-left: 28px;
+		}
+
+		.select-wrapper.icon-only {
+			width: 40px;
+			min-width: 40px;
+			flex: 0 0 40px;
+		}
+
+		.select-wrapper.icon-only select {
+			padding-left: 8px;
+			padding-right: 8px;
+			text-indent: -9999px;
+			color: transparent;
+		}
+
+		.select-wrapper.icon-only select option {
+			text-indent: 0;
+			color: var(--vscode-dropdown-foreground);
+		}
+
+		@media (max-width: 700px) {
+			.select-wrapper {
+				flex: 0 0 40px;
+				width: 40px;
+				min-width: 40px;
+			}
+			
+			.select-wrapper select {
+				padding-left: 8px;
+				padding-right: 8px;
+				text-indent: -9999px;
+				color: transparent;
+			}
+			
+			.select-wrapper select option {
+				text-indent: 0;
+				color: var(--vscode-dropdown-foreground);
+			}
+
+			.select-wrapper::before {
+				left: 50%;
+				transform: translate(-50%, -50%);
+			}
 		}
 
 		textarea {
@@ -220,6 +346,8 @@ export class QueryEditorProvider {
 			margin-top: 8px;
 			border-radius: 4px;
 			display: none;
+			overflow-x: auto;
+			max-width: 100%;
 		}
 
 		.results.visible {
@@ -234,8 +362,14 @@ export class QueryEditorProvider {
 			border-bottom: 1px solid var(--vscode-panel-border);
 		}
 
+		.table-container {
+			overflow-x: auto;
+			max-width: 100%;
+		}
+
 		table {
-			width: 100%;
+			width: max-content;
+			min-width: 100%;
 			border-collapse: collapse;
 			font-size: 12px;
 		}
@@ -244,11 +378,15 @@ export class QueryEditorProvider {
 			text-align: left;
 			padding: 6px 8px;
 			border-bottom: 1px solid var(--vscode-panel-border);
+			white-space: nowrap;
 		}
 
 		th {
 			font-weight: 600;
 			background: var(--vscode-list-hoverBackground);
+			position: sticky;
+			top: 0;
+			z-index: 1;
 		}
 
 		.add-query {
@@ -271,6 +409,8 @@ export class QueryEditorProvider {
 		const vscode = acquireVsCodeApi();
 		let connections = [];
 		let queryBoxes = [];
+		let lastConnectionId = null;
+		let lastDatabase = null;
 
 		// Request connections on load
 		vscode.postMessage({ type: 'getConnections' });
@@ -280,6 +420,8 @@ export class QueryEditorProvider {
 			switch (message.type) {
 				case 'connectionsData':
 					connections = message.connections;
+					lastConnectionId = message.lastConnectionId;
+					lastDatabase = message.lastDatabase;
 					updateConnectionSelects();
 					break;
 				case 'databasesData':
@@ -304,12 +446,20 @@ export class QueryEditorProvider {
 					<div class="query-header">
 						<input type="text" class="query-name" placeholder="Query Name (optional)" 
 							   id="\${id}_name" />
-						<select id="\${id}_connection" onchange="updateDatabaseField('\${id}')">
-							<option value="">Select Cluster...</option>
-						</select>
-						<select id="\${id}_database">
-							<option value="">Select Database...</option>
-						</select>
+						<div class="select-wrapper" data-icon="🖥️">
+							<select id="\${id}_connection" onchange="updateDatabaseField('\${id}')">
+								<option value="">Select Cluster...</option>
+							</select>
+						</div>
+						<div class="select-wrapper" data-icon="📊">
+							<select id="\${id}_database">
+								<option value="">Select Database...</option>
+							</select>
+						</div>
+						<button class="refresh-btn" onclick="refreshDatabases('\${id}')" 
+								id="\${id}_refresh" title="Refresh database list">
+							🔄
+						</button>
 					</div>
 					<textarea id="\${id}_query" placeholder="Enter your KQL query here..."></textarea>
 					<button onclick="executeQuery('\${id}')">▶ Run Query</button>
@@ -328,7 +478,13 @@ export class QueryEditorProvider {
 					const currentValue = select.value;
 					select.innerHTML = '<option value="">Select Cluster...</option>' +
 						connections.map(c => \`<option value="\${c.id}">\${c.name}</option>\`).join('');
-					if (currentValue) {
+					
+					// Pre-fill with last selection if this is a new box
+					if (!currentValue && lastConnectionId) {
+						select.value = lastConnectionId;
+						// Trigger database loading
+						updateDatabaseField(id);
+					} else if (currentValue) {
 						select.value = currentValue;
 					}
 				}
@@ -338,11 +494,15 @@ export class QueryEditorProvider {
 		function updateDatabaseField(boxId) {
 			const connectionId = document.getElementById(boxId + '_connection').value;
 			const databaseSelect = document.getElementById(boxId + '_database');
+			const refreshBtn = document.getElementById(boxId + '_refresh');
 			
 			if (connectionId && databaseSelect) {
 				// Clear and disable while loading
 				databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
 				databaseSelect.disabled = true;
+				if (refreshBtn) {
+					refreshBtn.disabled = true;
+				}
 				
 				// Request databases from the extension
 				vscode.postMessage({
@@ -353,15 +513,52 @@ export class QueryEditorProvider {
 			} else if (databaseSelect) {
 				databaseSelect.innerHTML = '<option value="">Select Database...</option>';
 				databaseSelect.disabled = false;
+				if (refreshBtn) {
+					refreshBtn.disabled = true;
+				}
 			}
+		}
+
+		function refreshDatabases(boxId) {
+			const connectionId = document.getElementById(boxId + '_connection').value;
+			if (!connectionId) {
+				return;
+			}
+
+			const databaseSelect = document.getElementById(boxId + '_database');
+			const refreshBtn = document.getElementById(boxId + '_refresh');
+			
+			if (databaseSelect) {
+				databaseSelect.innerHTML = '<option value="">Refreshing...</option>';
+				databaseSelect.disabled = true;
+			}
+			if (refreshBtn) {
+				refreshBtn.disabled = true;
+			}
+
+			vscode.postMessage({
+				type: 'refreshDatabases',
+				connectionId: connectionId,
+				boxId: boxId
+			});
 		}
 
 		function updateDatabaseSelect(boxId, databases) {
 			const databaseSelect = document.getElementById(boxId + '_database');
+			const refreshBtn = document.getElementById(boxId + '_refresh');
+			
 			if (databaseSelect) {
 				databaseSelect.innerHTML = '<option value="">Select Database...</option>' +
 					databases.map(db => \`<option value="\${db}">\${db}</option>\`).join('');
 				databaseSelect.disabled = false;
+				
+				// Pre-fill with last selection if available
+				if (lastDatabase && databases.includes(lastDatabase)) {
+					databaseSelect.value = lastDatabase;
+				}
+			}
+			if (refreshBtn) {
+				refreshBtn.disabled = false;
 			}
 		}
 
@@ -403,14 +600,16 @@ export class QueryEditorProvider {
 					<strong>Results:</strong> \${result.metadata.cluster} / \${result.metadata.database}
 					(Execution time: \${result.metadata.executionTime})
 				</div>
-				<table>
-					<thead><tr>\${result.columns.map(c => '<th>' + c + '</th>').join('')}</tr></thead>
-					<tbody>
-						\${result.rows.map(row => 
-							'<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') + '</tr>'
-						).join('')}
-					</tbody>
-				</table>
+				<div class="table-container">
+					<table>
+						<thead><tr>\${result.columns.map(c => '<th>' + c + '</th>').join('')}</tr></thead>
+						<tbody>
+							\${result.rows.map(row => 
+								'<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') + '</tr>'
+							).join('')}
+						</tbody>
+					</table>
+				</div>
 			\`;
 
 			resultsDiv.innerHTML = html;
