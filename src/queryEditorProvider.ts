@@ -548,6 +548,10 @@ export class QueryEditorProvider {
 			z-index: 2;
 		}
 
+		th:not(.row-selector) {
+			position: relative;
+		}
+
 		.column-header-content {
 			display: flex;
 			align-items: center;
@@ -578,14 +582,12 @@ export class QueryEditorProvider {
 		}
 
 		.column-menu {
-			position: absolute;
-			top: 100%;
-			right: 0;
+			position: fixed;
 			background: var(--vscode-dropdown-background);
 			border: 1px solid var(--vscode-dropdown-border);
 			border-radius: 4px;
 			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-			z-index: 1000;
+			z-index: 10000;
 			min-width: 200px;
 			display: none;
 		}
@@ -687,12 +689,6 @@ export class QueryEditorProvider {
 
 		.column-analysis-table th {
 			font-weight: 600;
-			background: var(--vscode-list-hoverBackground);
-			position: sticky;
-			top: 0;
-		}
-
-		.column-analysis-table tr:hover {
 			background: var(--vscode-list-hoverBackground);
 		}
 
@@ -1577,6 +1573,8 @@ export class QueryEditorProvider {
 		}
 
 		function toggleColumnMenu(colIdx, boxId) {
+			console.log('toggleColumnMenu called:', colIdx, boxId);
+			
 			// Close all other menus
 			document.querySelectorAll('.column-menu').forEach(menu => {
 				if (menu.id !== boxId + '_col_menu_' + colIdx) {
@@ -1585,9 +1583,25 @@ export class QueryEditorProvider {
 			});
 			
 			// Toggle this menu
-			const menu = document.getElementById(boxId + '_col_menu_' + colIdx);
+			const menuId = boxId + '_col_menu_' + colIdx;
+			const menu = document.getElementById(menuId);
+			console.log('Menu element:', menu, 'ID:', menuId);
 			if (menu) {
+				const isVisible = menu.classList.contains('visible');
+				
+				if (!isVisible) {
+					// Position the menu using fixed positioning
+					const button = menu.previousElementSibling;
+					if (button) {
+						const rect = button.getBoundingClientRect();
+						menu.style.position = 'fixed';
+						menu.style.top = (rect.bottom + 2) + 'px';
+						menu.style.left = rect.left + 'px';
+					}
+				}
+				
 				menu.classList.toggle('visible');
+				console.log('Menu classes after toggle:', menu.className);
 			}
 		}
 
@@ -1615,6 +1629,8 @@ export class QueryEditorProvider {
 				valueCounts.set(value, (valueCounts.get(value) || 0) + 1);
 			});
 			
+			const totalRows = window.currentResult.rows.length;
+			
 			// Convert to array and sort by count (descending)
 			const sortedValues = Array.from(valueCounts.entries())
 				.sort((a, b) => b[1] - a[1]);
@@ -1627,24 +1643,129 @@ export class QueryEditorProvider {
 			title.textContent = 'Unique Values - ' + columnName;
 			
 			let html = '<table class="column-analysis-table">';
-			html += '<thead><tr><th>Value</th><th>Count</th></tr></thead>';
+			html += '<thead><tr><th>Value</th><th>Count</th><th>%</th></tr></thead>';
 			html += '<tbody>';
 			
 			sortedValues.forEach(([value, count]) => {
-				html += '<tr><td>' + escapeHtml(value) + '</td><td>' + count + '</td></tr>';
+				const percentage = ((count / totalRows) * 100).toFixed(2);
+				html += '<tr><td>' + escapeHtml(value) + '</td><td>' + count + '</td><td>' + percentage + '%</td></tr>';
 			});
 			
 			html += '</tbody></table>';
+			html += '<div style="margin-top: 24px;">';
+			html += '<canvas id="uniqueValuesPieChart" style="width: 100%; height: 400px;"></canvas>';
+			html += '</div>';
 			
 			body.innerHTML = html;
 			modal.classList.add('visible');
+			
+			// Draw pie chart after DOM is updated
+			setTimeout(() => {
+				const canvas = document.getElementById('uniqueValuesPieChart');
+				if (canvas) {
+					canvas.width = canvas.offsetWidth;
+					canvas.height = 400;
+					drawPieChart('uniqueValuesPieChart', sortedValues, totalRows);
+				}
+			}, 0);
 		}
 
-		function showDistinctCountPicker(colIdx, boxId) {
-			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
+		function drawPieChart(canvasId, data, total) {
+			const canvas = document.getElementById(canvasId);
+			if (!canvas) return;
 			
-			// Close menu
-			toggleColumnMenu(colIdx, boxId);
+			const ctx = canvas.getContext('2d');
+		// Calculate dimensions based on canvas width
+		const chartWidth = canvas.width * 0.6; // 60% for pie chart
+		const legendWidth = canvas.width * 0.4; // 40% for legend
+		const centerX = chartWidth / 2;
+		const centerY = canvas.height / 2;
+		const radius = Math.min(centerX, centerY) - 40;
+		
+		// Generate colors
+		const colors = [
+			'#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+			'#1abc9c', '#e67e22', '#34495e', '#95a5a6', '#16a085',
+			'#27ae60', '#2980b9', '#8e44ad', '#c0392b', '#d35400'
+		];
+		
+		let currentAngle = -Math.PI / 2; // Start at top
+		
+		// Take top 10 values, group the rest as "Others"
+		const topN = 10;
+		let displayData = data.slice(0, topN);
+		
+		if (data.length > topN) {
+			const othersCount = data.slice(topN).reduce((sum, [_, count]) => sum + count, 0);
+			displayData.push(['Others', othersCount]);
+		}
+	
+	// Draw slices
+	displayData.forEach(([value, count], index) => {
+		const sliceAngle = (count / total) * 2 * Math.PI;
+		const color = colors[index % colors.length];
+		
+		// Draw slice
+		ctx.fillStyle = color;
+		ctx.beginPath();
+		ctx.moveTo(centerX, centerY);
+		ctx.arc(centerX, centerY, radius, currentAngle, currentAngle + sliceAngle);
+		ctx.closePath();
+		ctx.fill();
+		
+		// Draw border
+		ctx.strokeStyle = '#ffffff';
+		ctx.lineWidth = 2;
+		ctx.stroke();
+		
+		// Draw label if slice is large enough
+		const percentage = (count / total) * 100;
+		if (percentage > 3) {
+			const labelAngle = currentAngle + sliceAngle / 2;
+			const labelX = centerX + (radius * 0.7) * Math.cos(labelAngle);
+			const labelY = centerY + (radius * 0.7) * Math.sin(labelAngle);
+			
+			ctx.fillStyle = '#ffffff';
+			ctx.font = 'bold 12px sans-serif';
+			ctx.textAlign = 'center';
+			ctx.textBaseline = 'middle';
+			ctx.strokeStyle = '#000000';
+			ctx.lineWidth = 3;
+			ctx.strokeText(percentage.toFixed(1) + '%', labelX, labelY);
+			ctx.fillText(percentage.toFixed(1) + '%', labelX, labelY);
+		}
+		
+		currentAngle += sliceAngle;
+	});
+
+// Draw legend on the right side
+const legendX = chartWidth + 20;
+let legendY = 40;
+
+displayData.forEach(([value, count], index) => {
+	const color = colors[index % colors.length];
+	
+	// Draw color box
+	ctx.fillStyle = color;
+		ctx.lineWidth = 1;
+		ctx.strokeRect(legendX, legendY, 15, 15);
+		
+		// Draw label
+		ctx.fillStyle = 'var(--vscode-foreground)';
+		ctx.font = '11px sans-serif';
+		ctx.textAlign = 'left';
+		ctx.textBaseline = 'top';
+		
+		const labelText = value.length > 25 ? value.substring(0, 22) + '...' : value;
+		const percentage = ((count / total) * 100).toFixed(1);
+		ctx.fillText(labelText + ' (' + percentage + '%)', legendX + 20, legendY + 2);
+		
+		legendY += 20;
+	});
+}
+
+function showDistinctCountPicker(colIdx, boxId) {
+	if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
 			
 			const columnName = window.currentResult.columns[colIdx];
 			const modal = document.getElementById('columnAnalysisModal');
@@ -1654,14 +1775,18 @@ export class QueryEditorProvider {
 			title.textContent = 'Distinct Count - ' + columnName;
 			
 			let html = '<div class="column-picker">';
-			html += '<label>Group by column:</label>';
-			html += '<select id="distinctCountGroupByColumn" onchange="calculateDistinctCount(' + colIdx + ', \\'' + boxId + '\\')">';
+			html += '<label>Count distinct values of:</label>';
+			html += '<select id="distinctCountTargetColumn" onchange="calculateDistinctCount(' + colIdx + ', \\'' + boxId + '\\')">';
 			html += '<option value="">Select a column...</option>';
 			
-			window.currentResult.columns.forEach((col, idx) => {
-				if (idx !== colIdx) {
-					html += '<option value="' + idx + '">' + col + '</option>';
-				}
+			// Build sorted column list
+			const sortedColumns = window.currentResult.columns
+				.map((col, idx) => ({col, idx}))
+				.filter(item => item.idx !== colIdx)
+				.sort((a, b) => a.col.localeCompare(b.col));
+			
+			sortedColumns.forEach(item => {
+				html += '<option value="' + item.idx + '">' + item.col + '</option>';
 			});
 			
 			html += '</select>';
@@ -1672,14 +1797,14 @@ export class QueryEditorProvider {
 			modal.classList.add('visible');
 		}
 
-		function calculateDistinctCount(targetColIdx, boxId) {
+		function calculateDistinctCount(groupByColIdx, boxId) {
 			if (!window.currentResult || window.currentResult.boxId !== boxId) {return;}
 			
-			const groupByColIdx = parseInt(document.getElementById('distinctCountGroupByColumn').value);
-			if (isNaN(groupByColIdx)) {return;}
+			const targetColIdx = parseInt(document.getElementById('distinctCountTargetColumn').value);
+			if (isNaN(targetColIdx)) {return;}
 			
-			const targetColumnName = window.currentResult.columns[targetColIdx];
 			const groupByColumnName = window.currentResult.columns[groupByColIdx];
+			const targetColumnName = window.currentResult.columns[targetColIdx];
 			
 			// Map of groupBy value -> Set of target values
 			const groupedValues = new Map();
