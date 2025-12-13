@@ -980,6 +980,10 @@ export class QueryEditorProvider {
 			gap: 8px;
 		}
 
+		.query-run button {
+			margin-bottom: 10px;
+		}
+
 		.query-exec-status {
 			display: inline-flex;
 			align-items: center;
@@ -1135,6 +1139,9 @@ export class QueryEditorProvider {
 								id="\${id}_refresh" title="Refresh database list">
 							🔄
 						</button>
+						<button class="refresh-btn" onclick="removeQueryBox('\${id}')" title="Remove query box">
+							✖
+						</button>
 					</div>
 					<textarea id="\${id}_query" placeholder="Enter your KQL query here..."></textarea>
 					<div class="query-actions">
@@ -1156,7 +1163,6 @@ export class QueryEditorProvider {
 								<option value="hours">Hours</option>
 								<option value="days" selected>Days</option>
 							</select>
-							<span class="cache-info">(reduces query costs)</span>
 						</div>
 					</div>
 					<div class="results" id="\${id}_results"></div>
@@ -1165,6 +1171,28 @@ export class QueryEditorProvider {
 			
 			container.insertAdjacentHTML('beforeend', boxHtml);
 			updateConnectionSelects();
+		}
+
+		function removeQueryBox(boxId) {
+			// Stop any running timer/spinner for this box
+			setQueryExecuting(boxId, false);
+
+			// Remove from tracked list
+			queryBoxes = queryBoxes.filter(id => id !== boxId);
+
+			// Clear any global pointers if they reference this box
+			if (window.lastExecutedBox === boxId) {
+				window.lastExecutedBox = null;
+			}
+			if (window.currentResult && window.currentResult.boxId === boxId) {
+				window.currentResult = null;
+			}
+
+			// Remove DOM node
+			const box = document.getElementById(boxId);
+			if (box && box.parentNode) {
+				box.parentNode.removeChild(box);
+			}
 		}
 
 		function toggleCacheControls(boxId) {
