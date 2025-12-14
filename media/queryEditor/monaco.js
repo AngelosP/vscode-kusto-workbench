@@ -1769,6 +1769,40 @@ function __kustoPrettifyKusto(input) {
 		i++;
 	}
 
+	// Indent pipeline clauses under the initial expression/table line.
+	// Example:
+	//   Table
+	//       | where ...
+	//           and ...
+	try {
+		const firstIdx = out.findIndex((l) => String(l || '').trim().length > 0);
+		if (firstIdx >= 0 && !String(out[firstIdx] || '').trim().startsWith('|')) {
+			const baseIndentMatch = String(out[firstIdx] || '').match(/^\s*/);
+			const baseIndent = baseIndentMatch ? baseIndentMatch[0] : '';
+			const pipeIndent = baseIndent + '    ';
+			let inPipeline = false;
+			for (let j = firstIdx + 1; j < out.length; j++) {
+				const line = String(out[j] ?? '');
+				const trimmed = line.trim();
+				if (!trimmed) {
+					continue;
+				}
+				if (trimmed.startsWith('|')) {
+					out[j] = pipeIndent + trimmed;
+					inPipeline = true;
+					continue;
+				}
+				// Continuation lines emitted by prettifier for where/summarize blocks.
+				if (inPipeline && /^ {4}/.test(line)) {
+					out[j] = pipeIndent + line;
+					continue;
+				}
+				// New top-level statement.
+				inPipeline = false;
+			}
+		}
+	} catch { /* ignore */ }
+
 	// Trim leading/trailing blank lines.
 	while (out.length && !String(out[0]).trim()) out.shift();
 	while (out.length && !String(out[out.length - 1]).trim()) out.pop();
