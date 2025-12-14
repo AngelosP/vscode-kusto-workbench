@@ -637,6 +637,17 @@ function initQueryEditor(boxId) {
 			renderLineHighlight: 'none'
 		});
 
+		// Apply any pending restored text (restore runs before Monaco is ready).
+		try {
+			const pending = window.__kustoPendingQueryTextByBoxId && window.__kustoPendingQueryTextByBoxId[boxId];
+			if (typeof pending === 'string') {
+				editor.setValue(pending);
+				try { delete window.__kustoPendingQueryTextByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		queryEditors[boxId] = editor;
 
 		// F1 should show docs hover (not the webview / VS Code default behavior).
@@ -862,6 +873,7 @@ function initQueryEditor(boxId) {
 		editor.onDidChangeModelContent(() => {
 			syncPlaceholder();
 			scheduleDocUpdate();
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
@@ -998,6 +1010,7 @@ function initQueryEditor(boxId) {
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 				};
 
 				document.addEventListener('mousemove', onMove, true);

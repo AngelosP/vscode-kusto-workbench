@@ -1,5 +1,5 @@
-function addQueryBox() {
-	const id = 'query_' + Date.now();
+function addQueryBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	queryBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
@@ -90,19 +90,19 @@ function addQueryBox() {
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="query-header">' +
 		'<div class="query-header-row query-header-row-top">' +
-		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" />' +
+		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
 		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +
 		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
 		'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
-		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\')">' +
+		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
 		'<option value="" disabled selected hidden>Select Cluster...</option>' +
 		'</select>' +
 		'</div>' +
 		'<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
 		'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
-		'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\')">' +
+		'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
 		'<option value="" disabled selected hidden>Select Database...</option>' +
 		'</select>' +
 		'</div>' +
@@ -148,11 +148,11 @@ function addQueryBox() {
 		'</div>' +
 		'<div class="cache-controls">' +
 		'<label class="cache-checkbox">' +
-		'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCacheControls(\'' + id + '\')" />' +
+		'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCacheControls(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}" />' +
 		'Cache results for' +
 		'</label>' +
-		'<input type="number" id="' + id + '_cache_value" value="1" min="1" />' +
-		'<select id="' + id + '_cache_unit">' +
+		'<input type="number" id="' + id + '_cache_value" value="1" min="1" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
+		'<select id="' + id + '_cache_unit" onchange="try{schedulePersist&&schedulePersist()}catch{}">' +
 		'<option value="minutes">Minutes</option>' +
 		'<option value="hours">Hours</option>' +
 		'<option value="days" selected>Days</option>' +
@@ -167,6 +167,7 @@ function addQueryBox() {
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
 	initQueryEditor(id);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -175,6 +176,7 @@ function addQueryBox() {
 	} catch {
 		// ignore
 	}
+	return id;
 }
 
 function updateCaretDocsToggleButtons() {
@@ -209,6 +211,7 @@ function toggleCaretDocsEnabled() {
 	} catch {
 		// ignore
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function onQueryEditorToolbarAction(boxId, action) {
@@ -570,6 +573,7 @@ function removeQueryBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function toggleCacheControls(boxId) {
@@ -583,6 +587,7 @@ function toggleCacheControls(boxId) {
 	if (unitSelect) {
 		unitSelect.disabled = !enabled;
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function formatClusterDisplayName(connection) {
@@ -869,7 +874,18 @@ function updateDatabaseSelect(boxId, databases) {
 			cachedDatabases[connectionId] = databases;
 		}
 
-		// Pre-fill with last selection if available
+		// Prefer per-box desired selection (restore), else last selection.
+		try {
+			const desired = (databaseSelect.dataset && databaseSelect.dataset.desired) ? String(databaseSelect.dataset.desired) : '';
+			if (desired && databases.includes(desired)) {
+				databaseSelect.value = desired;
+				onDatabaseChanged(boxId);
+				try { delete databaseSelect.dataset.desired; } catch { /* ignore */ }
+				return;
+			}
+		} catch {
+			// ignore
+		}
 		if (lastDatabase && databases.includes(lastDatabase)) {
 			databaseSelect.value = lastDatabase;
 			onDatabaseChanged(boxId);
@@ -878,6 +894,7 @@ function updateDatabaseSelect(boxId, databases) {
 	if (refreshBtn) {
 		refreshBtn.disabled = false;
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function getRunMode(boxId) {
@@ -902,6 +919,7 @@ function setRunMode(boxId, mode) {
 	if (runBtn) {
 		runBtn.textContent = getRunModeLabel(runModesByBoxId[boxId]);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function closeRunMenu(boxId) {

@@ -98,8 +98,8 @@ function onMarkdownTitleInput(boxId) {
 	autoSizeTitleInput(input);
 }
 
-function addMarkdownBox() {
-	const id = 'markdown_' + Date.now();
+function addMarkdownBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('markdown_' + Date.now());
 	markdownBoxes.push(id);
 	markdownTabByBoxId[id] = 'edit';
 
@@ -159,6 +159,7 @@ function addMarkdownBox() {
 	}
 	initMarkdownEditor(id);
 	setMarkdownTab(id, 'edit');
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -167,6 +168,7 @@ function addMarkdownBox() {
 	} catch {
 		// ignore
 	}
+	return id;
 }
 
 function removeMarkdownBox(boxId) {
@@ -182,6 +184,7 @@ function removeMarkdownBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function setMarkdownTab(boxId, tab) {
@@ -291,6 +294,17 @@ function initMarkdownEditor(boxId) {
 			renderLineHighlight: 'none'
 		});
 
+		// Apply any pending restored markdown text (restore runs before Monaco is ready).
+		try {
+			const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
+			if (typeof pending === 'string') {
+				editor.setValue(pending);
+				try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
 		try {
 			if (typeof editor.onDidFocusEditorText === 'function') {
@@ -308,6 +322,13 @@ function initMarkdownEditor(boxId) {
 		}
 
 		markdownEditors[boxId] = editor;
+		try {
+			editor.onDidChangeModelContent(() => {
+				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			});
+		} catch {
+			// ignore
+		}
 
 		// Drag handle resize (same pattern as the KQL editor).
 		try {
@@ -343,6 +364,7 @@ function initMarkdownEditor(boxId) {
 						resizer.classList.remove('is-dragging');
 						document.body.style.cursor = previousCursor;
 						document.body.style.userSelect = previousUserSelect;
+						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 					};
 
 					document.addEventListener('mousemove', onMove, true);
@@ -430,8 +452,8 @@ function renderMarkdownIntoViewer(boxId, markdown) {
 	markdownRenderCacheByBoxId[boxId] = '';
 }
 
-function addPythonBox() {
-	const id = 'python_' + Date.now();
+function addPythonBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
 	pythonBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
@@ -464,6 +486,7 @@ function addPythonBox() {
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	initPythonEditor(id);
 	setPythonOutput(id, '');
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -472,6 +495,7 @@ function addPythonBox() {
 	} catch {
 		// ignore
 	}
+	return id;
 }
 
 function removePythonBox(boxId) {
@@ -484,6 +508,7 @@ function removePythonBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function initPythonEditor(boxId) {
@@ -509,6 +534,17 @@ function initPythonEditor(boxId) {
 			renderLineHighlight: 'none'
 		});
 
+		// Apply any pending restored python code (restore runs before Monaco is ready).
+		try {
+			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
+			if (typeof pending === 'string') {
+				editor.setValue(pending);
+				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
 		try {
 			if (typeof editor.onDidFocusEditorText === 'function') {
@@ -526,6 +562,13 @@ function initPythonEditor(boxId) {
 		}
 
 		pythonEditors[boxId] = editor;
+		try {
+			editor.onDidChangeModelContent(() => {
+				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			});
+		} catch {
+			// ignore
+		}
 
 		// Drag handle resize (copied from KQL editor behavior).
 		try {
@@ -561,6 +604,7 @@ function initPythonEditor(boxId) {
 						resizer.classList.remove('is-dragging');
 						document.body.style.cursor = previousCursor;
 						document.body.style.userSelect = previousUserSelect;
+						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 					};
 
 					document.addEventListener('mousemove', onMove, true);
@@ -626,8 +670,8 @@ function onPythonError(message) {
 	setPythonOutput(boxId, String(message.error || 'Python execution failed.'));
 }
 
-function addUrlBox() {
-	const id = 'url_' + Date.now();
+function addUrlBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
 	urlStateByBoxId[id] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '' };
 
@@ -658,6 +702,7 @@ function addUrlBox() {
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -666,6 +711,7 @@ function addUrlBox() {
 	} catch {
 		// ignore
 	}
+	return id;
 }
 
 function removeUrlBox(boxId) {
@@ -675,6 +721,7 @@ function removeUrlBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function onUrlChanged(boxId) {
@@ -694,6 +741,7 @@ function onUrlChanged(boxId) {
 	if (urlStateByBoxId[boxId].expanded && url) {
 		requestUrlContent(boxId);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function toggleUrlBox(boxId) {
@@ -709,6 +757,7 @@ function toggleUrlBox(boxId) {
 	if (urlStateByBoxId[boxId].expanded && urlStateByBoxId[boxId].url) {
 		requestUrlContent(boxId);
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function updateUrlContent(boxId) {

@@ -12,10 +12,32 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "kusto.kqlxEditor",
+        "displayName": "Kusto Session (.kqlx)",
+        "selector": [
+          {
+            "filenamePattern": "*.kqlx"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
         "command": "kusto.openQueryEditor",
         "title": "Kusto: Open Query Editor",
+        "category": "Kusto"
+      },
+      {
+        "command": "kusto.openKqlxFile",
+        "title": "Kusto: Open .kqlx File",
+        "category": "Kusto"
+      },
+      {
+        "command": "kusto.saveKqlxAs",
+        "title": "Kusto: Save Session As... (.kqlx)",
         "category": "Kusto"
       },
       {

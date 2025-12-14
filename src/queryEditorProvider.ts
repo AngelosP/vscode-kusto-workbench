@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
+import { getQueryEditorHtml } from './queryEditorHtml';
 
 const OUTPUT_CHANNEL_NAME = 'Notebooks for Kusto';
 
@@ -63,6 +64,16 @@ export class QueryEditorProvider {
 		this.loadLastSelection();
 	}
 
+	async initializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+		this.panel = panel;
+		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
+
+		this.panel.onDidDispose(() => {
+			this.cancelAllRunningQueries();
+			this.panel = undefined;
+		});
+	}
+
 	async openEditor(): Promise<void> {
 		if (this.panel) {
 			this.panel.reveal(vscode.ViewColumn.One);
@@ -80,7 +91,8 @@ export class QueryEditorProvider {
 			}
 		);
 
-		this.panel.webview.html = await this.getHtmlContent(this.panel.webview);
+		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
+
 
 		this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
 			return this.handleWebviewMessage(message);
@@ -92,7 +104,7 @@ export class QueryEditorProvider {
 		});
 	}
 
-	private async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
+	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
 		switch (message.type) {
 			case 'getConnections':
 				await this.sendConnectionsData();
@@ -693,40 +705,5 @@ export class QueryEditorProvider {
 		}
 	}
 
-	private async getHtmlContent(webview: vscode.Webview): Promise<string> {
-		const templateUri = vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.html');
-		const templateBytes = await vscode.workspace.fs.readFile(templateUri);
-		const template = new TextDecoder('utf-8').decode(templateBytes);
-
-		const cacheBuster = `${this.context.extension.packageJSON?.version ?? 'dev'}-${Date.now()}`;
-		const withCacheBuster = (uri: string) => {
-			const sep = uri.includes('?') ? '&' : '?';
-			return `${uri}${sep}v=${encodeURIComponent(cacheBuster)}`;
-		};
-
-		const queryEditorCssUri = withCacheBuster(
-			webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.css')).toString()
-		);
-		const queryEditorJsUri = withCacheBuster(
-			webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.js')).toString()
-		);
-
-		const monacoVsUri = webview
-			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs'))
-			.toString();
-		const monacoLoaderUri = webview
-			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs', 'loader.js'))
-			.toString();
-		const monacoCssUri = webview
-			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs', 'editor', 'editor.main.css'))
-			.toString();
-
-		return template
-			.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
-			.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
-			.replaceAll('{{monacoVsUri}}', monacoVsUri)
-			.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
-			.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))
-			.replaceAll('{{cacheBuster}}', cacheBuster);
-	}
+	// HTML rendering moved to src/queryEditorHtml.ts
 }

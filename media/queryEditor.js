@@ -47,6 +47,7 @@
 	const scriptPaths = [
 		'queryEditor/vscode.js',
 		'queryEditor/state.js',
+		'queryEditor/persistence.js',
 		'queryEditor/utils.js',
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',

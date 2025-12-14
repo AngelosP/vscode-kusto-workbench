@@ -58,6 +58,7 @@ function onDatabaseChanged(boxId) {
 	delete schemaByBoxId[boxId];
 	setSchemaLoadedSummary(boxId, '', '', false);
 	ensureSchemaForBox(boxId, false);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function refreshSchema(boxId) {

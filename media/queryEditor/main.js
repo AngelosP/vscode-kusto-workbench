@@ -137,6 +137,8 @@ window.addEventListener('blur', () => {
 
 // Request connections on load
 vscode.postMessage({ type: 'getConnections' });
+// Request document state on load (.kqlx custom editor)
+try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 window.addEventListener('message', event => {
 	const message = event.data;
@@ -149,6 +151,15 @@ window.addEventListener('message', event => {
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			updateConnectionSelects();
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+			break;
+		case 'documentData':
+			try {
+				if (typeof handleDocumentDataMessage === 'function') {
+					handleDocumentDataMessage(message);
+				}
+			} catch {
+				// ignore
+			}
 			break;
 		case 'databasesData':
 			updateDatabaseSelect(message.boxId, message.databases);
@@ -249,19 +260,4 @@ window.addEventListener('message', event => {
 	}
 });
 
-// Add initial content (and handle any add button clicks that happened before load)
-const pendingAdds = (window.__kustoQueryEditorPendingAdds && typeof window.__kustoQueryEditorPendingAdds === 'object')
-	? window.__kustoQueryEditorPendingAdds
-	: { query: 0, markdown: 0, python: 0, url: 0 };
-// Reset counts so they don't replay on reload.
-window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
-
-const pendingTotal = (pendingAdds.query || 0) + (pendingAdds.markdown || 0) + (pendingAdds.python || 0) + (pendingAdds.url || 0);
-if (pendingTotal > 0) {
-	for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
-	for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();
-	for (let i = 0; i < (pendingAdds.python || 0); i++) addPythonBox();
-	for (let i = 0; i < (pendingAdds.url || 0); i++) addUrlBox();
-} else {
-	addQueryBox();
-}
+// Initial content is now driven by the .kqlx document state.
