@@ -777,38 +777,10 @@ function promptAddConnectionFromDropdown(boxId) {
 	}
 }
 
-let __kustoImportFileInput = null;
-
 function importConnectionsFromXmlFile(boxId) {
 	try {
-		if (!__kustoImportFileInput) {
-			__kustoImportFileInput = document.createElement('input');
-			__kustoImportFileInput.type = 'file';
-			__kustoImportFileInput.accept = '.xml,text/xml,application/xml';
-			__kustoImportFileInput.style.position = 'fixed';
-			__kustoImportFileInput.style.left = '-9999px';
-			__kustoImportFileInput.style.top = '0';
-			(document.body || document.documentElement).appendChild(__kustoImportFileInput);
-		}
-		__kustoImportFileInput.value = '';
-		__kustoImportFileInput.onchange = async () => {
-			const file = (__kustoImportFileInput.files && __kustoImportFileInput.files[0]) || null;
-			if (!file) {
-				return;
-			}
-			try {
-				const text = await file.text();
-				const imported = parseKustoExplorerConnectionsXml(text);
-				if (!imported.length) {
-					alert('No connections found in the selected XML file.');
-					return;
-				}
-				vscode.postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: boxId });
-			} catch (e) {
-				alert('Failed to import connections: ' + (e && e.message ? e.message : String(e)));
-			}
-		};
-		__kustoImportFileInput.click();
+		// Use the extension host's file picker so we can default to the user's Kusto Explorer folder.
+		vscode.postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
 	} catch (e) {
 		alert('Failed to open file picker: ' + (e && e.message ? e.message : String(e)));
 	}

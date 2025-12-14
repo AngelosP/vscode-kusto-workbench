@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 
 import { spawn } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
@@ -23,6 +25,7 @@ type CacheUnit = 'minutes' | 'hours' | 'days';
 type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'showInfo'; message: string }
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'executePython'; boxId: string; code: string }
@@ -109,6 +112,9 @@ export class QueryEditorProvider {
 			case 'getConnections':
 				await this.sendConnectionsData();
 				return;
+			case 'promptImportConnectionsXml':
+				await this.promptImportConnectionsXml(message.boxId);
+				return;
 			case 'setCaretDocsEnabled':
 				await this.context.globalState.update(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
 				return;
@@ -145,6 +151,44 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private async promptImportConnectionsXml(boxId?: string): Promise<void> {
+		try {
+			const localAppData = process.env.LOCALAPPDATA;
+			const base = localAppData && localAppData.trim()
+				? localAppData.trim()
+				: path.join(os.homedir(), 'AppData', 'Local');
+			const defaultFolder = path.join(base, 'Kusto.Explorer');
+			const defaultUri = vscode.Uri.file(defaultFolder);
+
+			const picked = await vscode.window.showOpenDialog({
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				defaultUri,
+				openLabel: 'Import',
+				filters: {
+					'XML files': ['xml'],
+					'All files': ['*']
+				}
+			});
+			if (!picked || picked.length === 0) {
+				return;
+			}
+			const uri = picked[0];
+			const bytes = await vscode.workspace.fs.readFile(uri);
+			const text = new TextDecoder('utf-8').decode(bytes);
+			this.postMessage({
+				type: 'importConnectionsXmlText',
+				boxId,
+				text,
+				fileName: path.basename(uri.fsPath)
+			});
+		} catch (e: any) {
+			const error = typeof e?.message === 'string' ? e.message : String(e);
+			this.postMessage({ type: 'importConnectionsXmlError', boxId, error });
 		}
 	}
 

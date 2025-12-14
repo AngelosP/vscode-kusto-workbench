@@ -176,6 +176,24 @@ window.addEventListener('message', event => {
 		case 'databasesData':
 			updateDatabaseSelect(message.boxId, message.databases);
 			break;
+		case 'importConnectionsXmlText':
+			try {
+				const text = (typeof message.text === 'string') ? message.text : '';
+				const imported = (typeof parseKustoExplorerConnectionsXml === 'function')
+					? parseKustoExplorerConnectionsXml(text)
+					: [];
+				if (!imported || !imported.length) {
+					alert('No connections found in the selected XML file.');
+					break;
+				}
+				vscode.postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: message.boxId });
+			} catch (e) {
+				alert('Failed to import connections: ' + (e && e.message ? e.message : String(e)));
+			}
+			break;
+		case 'importConnectionsXmlError':
+			alert('Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error'));
+			break;
 		case 'queryResult':
 			try {
 				if (message.boxId) {
