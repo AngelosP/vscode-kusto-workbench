@@ -519,10 +519,14 @@ async function fullyQualifyTablesInEditor(boxId) {
 
 async function qualifyTablesInTextPriority(text, opts) {
 	const normalizeClusterForKusto = (clusterUrl) => {
-		return String(clusterUrl || '')
+		let s = String(clusterUrl || '')
 			.trim()
 			.replace(/^https?:\/\//i, '')
-			.replace(/\/+$/, '');
+			.replace(/\/+$/, '')
+			.replace(/:\d+$/, '');
+		// Azure Data Explorer public cloud clusters
+		s = s.replace(/\.kusto\.windows\.net$/i, '');
+		return s;
 	};
 
 	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
@@ -704,19 +708,28 @@ async function qualifyTablesInTextPriority(text, opts) {
 		}
 	};
 
+	const tryResolveFromSchema = (schema, clusterUrl, dbName) => {
+		if (!schema || !dbName || unresolvedLower.size === 0) {
+			return;
+		}
+		const tableLowerSet = getSchemaTableLowerSet(schema);
+		if (!tableLowerSet) {
+			return;
+		}
+		for (const lowerName of Array.from(unresolvedLower)) {
+			if (tableLowerSet.has(lowerName)) {
+				markResolved(lowerName, clusterUrl, dbName);
+			}
+		}
+	};
+
 	const scanCachedSchemasForMatches = (schemas, clusterUrl) => {
 		for (const entry of schemas) {
 			if (!entry) continue;
 			const dbName = String(entry.database || '').trim();
 			const schema = entry.schema;
 			if (!dbName || !schema) continue;
-			const tableLowerSet = getSchemaTableLowerSet(schema);
-			if (!tableLowerSet) continue;
-			for (const lowerName of Array.from(unresolvedLower)) {
-				if (tableLowerSet.has(lowerName)) {
-					markResolved(lowerName, clusterUrl, dbName);
-				}
-			}
+			tryResolveFromSchema(schema, clusterUrl, dbName);
 			if (unresolvedLower.size === 0) return;
 		}
 	};
@@ -782,7 +795,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 			if (!dbName || dbName === String(opts.currentDatabase)) continue;
 			const key = cid + '|' + dbName;
 			if (schemaByConnDb && schemaByConnDb[key]) continue;
-			await requestSchema(cid, dbName);
+			const sch = await requestSchema(cid, dbName);
+			tryResolveFromSchema(sch, opts.currentClusterUrl, dbName);
 		}
 
 		// Re-scan cached current cluster after fetch.
@@ -818,7 +832,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 				if (!dbName) continue;
 				const key = c.cid + '|' + dbName;
 				if (schemaByConnDb && schemaByConnDb[key]) continue;
-				await requestSchema(c.cid, dbName);
+				const sch = await requestSchema(c.cid, dbName);
+				tryResolveFromSchema(sch, c.clusterUrl, dbName);
 			}
 
 			// Re-scan cached for this connection after fetch.
@@ -851,10 +866,13 @@ async function qualifyTablesInTextPriority(text, opts) {
 
 function qualifyTablesInText(text, tables, clusterUrl, database) {
 	const normalizeClusterForKusto = (value) => {
-		return String(value || '')
+		let s = String(value || '')
 			.trim()
 			.replace(/^https?:\/\//i, '')
-			.replace(/\/+$/, '');
+			.replace(/\/+$/, '')
+			.replace(/:\d+$/, '');
+		s = s.replace(/\.kusto\.windows\.net$/i, '');
+		return s;
 	};
 
 	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
