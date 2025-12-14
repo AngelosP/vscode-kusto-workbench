@@ -350,6 +350,7 @@ export class QueryEditorProvider {
 
 		const timeoutMs = 15000;
 		const maxChars = 200000;
+		const maxBytes = 5 * 1024 * 1024; // 5MB cap for binary content (images/pages/etc.)
 		const ac = new AbortController();
 		const timer = setTimeout(() => ac.abort(), timeoutMs);
 		try {
@@ -358,20 +359,69 @@ export class QueryEditorProvider {
 				signal: ac.signal
 			});
 			const contentType = resp.headers.get('content-type') || '';
-			let body = await resp.text();
+			const ctLower = contentType.toLowerCase();
+			const finalUrl = resp.url || url.toString();
+
+			// Read as bytes so we can support images and other non-text content.
+			const ab = await resp.arrayBuffer();
+			const bytes = Buffer.from(ab);
+			if (bytes.byteLength > maxBytes) {
+				this.postMessage({
+					type: 'urlError',
+					boxId,
+					error: `Response too large (${Math.round(bytes.byteLength / 1024)} KB). Max is ${Math.round(maxBytes / 1024)} KB.`
+				});
+				return;
+			}
+
+			const pathLower = (() => {
+				try {
+					return new URL(finalUrl).pathname.toLowerCase();
+				} catch {
+					return '';
+				}
+			})();
+
+			const looksLikeCsv = ctLower.includes('text/csv') || ctLower.includes('application/csv') || pathLower.endsWith('.csv');
+			const looksLikeHtml = ctLower.includes('text/html') || pathLower.endsWith('.html') || pathLower.endsWith('.htm');
+			const looksLikeImage = ctLower.startsWith('image/');
+			const looksLikeText = ctLower.startsWith('text/') || ctLower.includes('json') || ctLower.includes('xml') || ctLower.includes('yaml');
+
+			if (looksLikeImage) {
+				const mime = contentType.split(';')[0].trim() || 'image/*';
+				const base64 = bytes.toString('base64');
+				const dataUri = `data:${mime};base64,${base64}`;
+				this.postMessage({
+					type: 'urlContent',
+					boxId,
+					url: finalUrl,
+					contentType,
+					status: resp.status,
+					kind: 'image',
+					dataUri,
+					byteLength: bytes.byteLength
+				});
+				return;
+			}
+
+			// Default: decode as UTF-8 text.
+			let body = bytes.toString('utf8');
 			let truncated = false;
 			if (body.length > maxChars) {
 				body = body.slice(0, maxChars);
 				truncated = true;
 			}
+
 			this.postMessage({
 				type: 'urlContent',
 				boxId,
-				url: url.toString(),
+				url: finalUrl,
 				contentType,
 				status: resp.status,
+				kind: looksLikeCsv ? 'csv' : (looksLikeHtml ? 'html' : (looksLikeText ? 'text' : 'text')),
 				body,
-				truncated
+				truncated,
+				byteLength: bytes.byteLength
 			});
 		} catch (e: any) {
 			const msg = e?.name === 'AbortError'

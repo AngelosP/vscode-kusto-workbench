@@ -530,16 +530,23 @@ function applyKqlxState(state) {
 					const input = document.getElementById(boxId + '_input');
 					if (input) input.value = url;
 					if (!urlStateByBoxId[boxId]) {
-						urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '' };
+						urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
 					}
 					urlStateByBoxId[boxId].url = url;
 					urlStateByBoxId[boxId].expanded = expanded;
 					urlStateByBoxId[boxId].loaded = false;
 					urlStateByBoxId[boxId].content = '';
 					urlStateByBoxId[boxId].error = '';
+					urlStateByBoxId[boxId].kind = '';
+					urlStateByBoxId[boxId].contentType = '';
+					urlStateByBoxId[boxId].status = null;
+					urlStateByBoxId[boxId].dataUri = '';
+					urlStateByBoxId[boxId].body = '';
+					urlStateByBoxId[boxId].truncated = false;
 					try {
-						const btn = document.getElementById(boxId + '_toggle');
-						if (btn) btn.textContent = expanded ? 'Hide' : 'Show';
+						if (typeof __kustoUpdateUrlToggleButton === 'function') {
+							__kustoUpdateUrlToggleButton(boxId);
+						}
 					} catch { /* ignore */ }
 					updateUrlContent(boxId);
 				} catch { /* ignore */ }

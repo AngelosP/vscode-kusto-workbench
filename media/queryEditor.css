@@ -112,6 +112,17 @@
 			align-items: center;
 		}
 
+		/* URL header: URL input + view toggle + close on one line */
+		.section-header-row.url-section-header {
+			justify-content: flex-start;
+			gap: 8px;
+		}
+
+		.section-header-row.url-section-header .url-input {
+			flex: 1 1 auto;
+			min-width: 220px;
+		}
+
 		.section-title-edit {
 			display: inline-flex;
 			gap: 2px;
@@ -236,8 +247,7 @@
 			border-radius: 3px;
 		}
 
-		.python-output,
-		.url-output {
+		.python-output {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
 			background: var(--vscode-editor-background);
@@ -245,6 +255,17 @@
 			font-family: var(--vscode-editor-font-family);
 			font-size: 12px;
 			white-space: pre-wrap;
+			overflow: auto;
+			max-height: 320px;
+		}
+
+		.url-output {
+			border: none;
+			border-radius: 0;
+			background: transparent;
+			padding: 0;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
 			overflow: auto;
 			max-height: 320px;
 		}
@@ -895,6 +916,15 @@
 
 		.table-container:focus {
 			outline: 1px solid var(--vscode-focusBorder);
+		}
+
+		/* URL CSV previews: avoid nested scrollbars (outer .url-output should scroll). */
+		.url-table-container {
+			overflow: visible;
+			max-width: none;
+			max-height: none;
+			border: none;
+			border-radius: 0;
 		}
 
 		table {

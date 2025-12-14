@@ -13,7 +13,7 @@ let pythonEditors = {};
 let markdownRenderCacheByBoxId = {};
 let markdownTabByBoxId = {}; // 'edit' | 'preview'
 let markdownEditHeightByBoxId = {}; // number (px) - last editor wrapper height
-let urlStateByBoxId = {}; // { url, expanded, loading, loaded, content, error }
+let urlStateByBoxId = {}; // { url, expanded, loading, loaded, content, error, kind, contentType, status, dataUri, body, truncated }
 
 let markdownMarkedResolvePromise = null;
 
@@ -96,6 +96,19 @@ function focusMarkdownTitle(boxId) {
 function onMarkdownTitleInput(boxId) {
 	const input = document.getElementById(boxId + '_md_title');
 	autoSizeTitleInput(input);
+}
+
+function __kustoUpdateUrlToggleButton(boxId) {
+	const btn = document.getElementById(boxId + '_toggle');
+	const st = urlStateByBoxId[boxId];
+	if (!btn || !st) {
+		return;
+	}
+	const expanded = !!st.expanded;
+	btn.classList.toggle('is-active', expanded);
+	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
+	btn.title = expanded ? 'Hide' : 'Show';
+	btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
 }
 
 function addMarkdownBox(options) {
@@ -867,7 +880,8 @@ function onPythonError(message) {
 function addUrlBox(options) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
-	urlStateByBoxId[id] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '' };
+	// Default to expanded (view on) so the section shows content immediately once a URL is entered.
+	urlStateByBoxId[id] = { url: '', expanded: true, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -880,22 +894,29 @@ function addUrlBox(options) {
 		'<path d="M12 4L4 12"/>' +
 		'</svg>';
 
+	const previewIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>';
+
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
-		'<div class="section-header-row">' +
-		'<div class="section-title">URL</div>' +
-		'<div class="section-actions">' +
-		'<button class="section-btn" type="button" id="' + id + '_toggle" onclick="toggleUrlBox(\'' + id + '\')" title="Expand/collapse">Show</button>' +
-		'<button class="section-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
-		'</div>' +
-		'</div>' +
-		'<div class="url-row">' +
+		'<div class="section-header-row url-section-header">' +
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
+		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
+		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleUrlBox(\'' + id + '\')" title="Show" aria-label="Show">' + previewIconSvg + '</button>' +
+		'</div>' +
+		'<button class="refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'</div>' +
 		'</div>' +
 		'<div class="url-output url-collapsed" id="' + id + '_content" aria-label="URL content"></div>' +
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	try { __kustoUpdateUrlToggleButton(id); } catch { /* ignore */ }
+	try { updateUrlContent(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -925,12 +946,18 @@ function onUrlChanged(boxId) {
 	}
 	const url = String(input.value || '').trim();
 	if (!urlStateByBoxId[boxId]) {
-		urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '' };
+		urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
 	}
 	urlStateByBoxId[boxId].url = url;
 	urlStateByBoxId[boxId].loaded = false;
 	urlStateByBoxId[boxId].content = '';
 	urlStateByBoxId[boxId].error = '';
+	urlStateByBoxId[boxId].kind = '';
+	urlStateByBoxId[boxId].contentType = '';
+	urlStateByBoxId[boxId].status = null;
+	urlStateByBoxId[boxId].dataUri = '';
+	urlStateByBoxId[boxId].body = '';
+	urlStateByBoxId[boxId].truncated = false;
 	updateUrlContent(boxId);
 	if (urlStateByBoxId[boxId].expanded && url) {
 		requestUrlContent(boxId);
@@ -940,18 +967,166 @@ function onUrlChanged(boxId) {
 
 function toggleUrlBox(boxId) {
 	if (!urlStateByBoxId[boxId]) {
-		urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '' };
+		urlStateByBoxId[boxId] = { url: '', expanded: true, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
 	}
 	urlStateByBoxId[boxId].expanded = !urlStateByBoxId[boxId].expanded;
-	const btn = document.getElementById(boxId + '_toggle');
-	if (btn) {
-		btn.textContent = urlStateByBoxId[boxId].expanded ? 'Hide' : 'Show';
-	}
+	try { __kustoUpdateUrlToggleButton(boxId); } catch { /* ignore */ }
 	updateUrlContent(boxId);
 	if (urlStateByBoxId[boxId].expanded && urlStateByBoxId[boxId].url) {
 		requestUrlContent(boxId);
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoClearElement(el) {
+	try {
+		while (el && el.firstChild) {
+			el.removeChild(el.firstChild);
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoParseCsv(text) {
+	// Minimal CSV parser (RFC 4180-ish): supports quoted fields, commas, and newlines.
+	const rows = [];
+	let row = [];
+	let field = '';
+	let inQuotes = false;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		const next = text[i + 1];
+		if (inQuotes) {
+			if (ch === '"' && next === '"') {
+				field += '"';
+				i++;
+				continue;
+			}
+			if (ch === '"') {
+				inQuotes = false;
+				continue;
+			}
+			field += ch;
+			continue;
+		}
+		if (ch === '"') {
+			inQuotes = true;
+			continue;
+		}
+		if (ch === ',') {
+			row.push(field);
+			field = '';
+			continue;
+		}
+		if (ch === '\r') {
+			continue;
+		}
+		if (ch === '\n') {
+			row.push(field);
+			rows.push(row);
+			row = [];
+			field = '';
+			continue;
+		}
+		field += ch;
+	}
+	row.push(field);
+	rows.push(row);
+	return rows;
+}
+
+function __kustoRenderUrlContent(contentEl, st) {
+	try {
+		__kustoClearElement(contentEl);
+		// Default for rich render.
+		try { contentEl.style.whiteSpace = 'normal'; } catch { /* ignore */ }
+
+		const kind = String(st.kind || '').toLowerCase();
+		if (kind === 'image' && st.dataUri) {
+			const img = document.createElement('img');
+			img.src = String(st.dataUri);
+			img.alt = 'Image';
+			img.style.maxWidth = '100%';
+			img.style.height = 'auto';
+			img.style.display = 'block';
+			contentEl.appendChild(img);
+			return;
+		}
+
+		if (kind === 'csv' && typeof st.body === 'string') {
+			const rows = __kustoParseCsv(st.body);
+			const wrapper = document.createElement('div');
+			// Important: don't create a nested scroller; let the URL section container scroll.
+			wrapper.className = 'url-table-container';
+			const table = document.createElement('table');
+			const thead = document.createElement('thead');
+			const tbody = document.createElement('tbody');
+
+			const header = rows.length ? rows[0] : [];
+			const headerRow = document.createElement('tr');
+			for (const h of header) {
+				const th = document.createElement('th');
+				th.textContent = String(h ?? '');
+				headerRow.appendChild(th);
+			}
+			thead.appendChild(headerRow);
+
+			for (let i = 1; i < rows.length; i++) {
+				const tr = document.createElement('tr');
+				for (const cell of rows[i]) {
+					const td = document.createElement('td');
+					td.textContent = String(cell ?? '');
+					tr.appendChild(td);
+				}
+				tbody.appendChild(tr);
+			}
+
+			table.appendChild(thead);
+			table.appendChild(tbody);
+			wrapper.appendChild(table);
+			contentEl.appendChild(wrapper);
+			return;
+		}
+
+		if (kind === 'html' && typeof st.body === 'string') {
+			// Render the page in an iframe using srcdoc, sanitized via DOMPurify if available.
+			let html = String(st.body);
+			try {
+				const base = st.url ? ('<base href="' + String(st.url).replace(/"/g, '&quot;') + '">') : '';
+				html = base + html;
+			} catch { /* ignore */ }
+			try {
+				if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+					html = window.DOMPurify.sanitize(html, {
+						ADD_TAGS: ['base'],
+						ADD_ATTR: ['href', 'target', 'rel']
+					});
+				}
+			} catch {
+				// ignore
+			}
+			const iframe = document.createElement('iframe');
+			iframe.style.width = '100%';
+			iframe.style.height = '300px';
+			iframe.style.border = 'none';
+			iframe.setAttribute('sandbox', '');
+			iframe.setAttribute('referrerpolicy', 'no-referrer');
+			iframe.srcdoc = html;
+			contentEl.appendChild(iframe);
+			return;
+		}
+
+		// Default: show as text.
+		try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
+		const pre = document.createElement('pre');
+		pre.style.whiteSpace = 'pre-wrap';
+		pre.style.margin = '0';
+		pre.textContent = String(st.body || st.content || '');
+		contentEl.appendChild(pre);
+	} catch {
+		// ignore
+	}
 }
 
 function updateUrlContent(boxId) {
@@ -965,17 +1140,20 @@ function updateUrlContent(boxId) {
 		return;
 	}
 	if (st.loading) {
+		try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
 		contentEl.textContent = 'Loading…';
 		return;
 	}
 	if (st.error) {
+		try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
 		contentEl.textContent = st.error;
 		return;
 	}
 	if (st.loaded) {
-		contentEl.textContent = st.content || '';
+		__kustoRenderUrlContent(contentEl, st);
 		return;
 	}
+	try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
 	contentEl.textContent = st.url ? 'Ready to load.' : 'Enter a URL above.';
 }
 
@@ -1009,41 +1187,15 @@ function onUrlContent(message) {
 	st.loading = false;
 	st.loaded = true;
 	st.error = '';
-	const url = String(message.url || st.url || '');
-	const contentType = String(message.contentType || '');
-	let body = String(message.body || '');
-	const truncated = !!message.truncated;
-	const status = (typeof message.status === 'number') ? message.status : null;
-
-	// If this looks like HTML, present a readable text extraction.
-	try {
-		if (contentType.toLowerCase().includes('text/html') && typeof DOMParser !== 'undefined') {
-			const doc = new DOMParser().parseFromString(body, 'text/html');
-			const extracted = (doc && doc.body && (doc.body.innerText || doc.body.textContent))
-				? String(doc.body.innerText || doc.body.textContent)
-				: (doc && doc.documentElement && doc.documentElement.textContent ? String(doc.documentElement.textContent) : '');
-			if (extracted && extracted.trim()) {
-				body = extracted;
-			}
-		}
-	} catch {
-		// ignore
-	}
-
-	let header = '';
-	if (url) {
-		header += url;
-	}
-	if (typeof status === 'number') {
-		header += (header ? '\n' : '') + 'Status: ' + status;
-	}
-	if (contentType) {
-		header += (header ? '\n' : '') + 'Content-Type: ' + contentType;
-	}
-	if (header) {
-		header += '\n\n';
-	}
-	st.content = header + body + (truncated ? '\n\n[Truncated]' : '');
+	st.url = String(message.url || st.url || '');
+	st.contentType = String(message.contentType || st.contentType || '');
+	st.status = (typeof message.status === 'number') ? message.status : (st.status ?? null);
+	st.kind = String(message.kind || '').toLowerCase();
+	st.truncated = !!message.truncated;
+	st.dataUri = String(message.dataUri || '');
+	st.body = (typeof message.body === 'string') ? message.body : '';
+	// Keep a simple fallback string for older rendering.
+	st.content = st.body || '';
 	updateUrlContent(boxId);
 }
 
