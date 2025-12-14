@@ -388,7 +388,16 @@ function applyKqlxState(state) {
 
 		const s = state && typeof state === 'object' ? state : { sections: [] };
 
-		if (typeof s.caretDocsEnabled === 'boolean') {
+		// Respect a global user preference (persisted in extension globalState) once it exists.
+		// Only fall back to document state if the user has never explicitly toggled the feature.
+		const userSet = (() => {
+			try {
+				return !!window.__kustoCaretDocsEnabledUserSet;
+			} catch {
+				return false;
+			}
+		})();
+		if (!userSet && typeof s.caretDocsEnabled === 'boolean') {
 			caretDocsEnabled = !!s.caretDocsEnabled;
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 		}

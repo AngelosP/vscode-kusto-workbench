@@ -215,6 +215,11 @@ window.addEventListener('message', event => {
 			lastDatabase = message.lastDatabase;
 			cachedDatabases = message.cachedDatabases || {};
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
+			try {
+				// Indicates whether the user has explicitly chosen a value (on/off) before.
+				// When true, document-level restore should not override this global preference.
+				window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
+			} catch { /* ignore */ }
 			updateConnectionSelects();
 			try {
 				if (typeof window.__kustoOnConnectionsUpdated === 'function') {

@@ -72,6 +72,12 @@ export class QueryEditorProvider {
 		this.panel = panel;
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
 
+		// Ensure messages from the webview are handled in all host contexts (including custom editors).
+		// openEditor() also wires this up for the standalone panel, but custom editors call initializeWebviewPanel().
+		this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+			return this.handleWebviewMessage(message);
+		});
+
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
 			this.panel = undefined;
@@ -650,7 +656,9 @@ export class QueryEditorProvider {
 	private async sendConnectionsData(): Promise<void> {
 		const connections = this.connectionManager.getConnections();
 		const cachedDatabases = this.getCachedDatabases();
-		const caretDocsEnabled = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled, true);
+		const caretDocsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled);
+		const caretDocsEnabled = typeof caretDocsEnabledStored === 'boolean' ? caretDocsEnabledStored : true;
+		const caretDocsEnabledUserSet = typeof caretDocsEnabledStored === 'boolean';
 
 		this.postMessage({
 			type: 'connectionsData',
@@ -658,7 +666,8 @@ export class QueryEditorProvider {
 			lastConnectionId: this.lastConnectionId,
 			lastDatabase: this.lastDatabase,
 			cachedDatabases,
-			caretDocsEnabled
+			caretDocsEnabled,
+			caretDocsEnabledUserSet
 		});
 	}
 
