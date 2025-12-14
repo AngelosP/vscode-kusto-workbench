@@ -326,6 +326,11 @@ function ensureMonaco() {
 					];
 
 					const KUSTO_FUNCTION_DOCS = {
+						'dcount': {
+							args: ['expr', 'accuracy?'],
+							returnType: 'long',
+							description: 'Returns the number of distinct values of expr.'
+						},
 						'dcountif': {
 							args: ['expr', 'predicate', 'accuracy?'],
 							returnType: 'long',
@@ -692,6 +697,10 @@ function ensureMonaco() {
 							const linePrefixRaw = lineContent.slice(0, position.column - 1);
 							const linePrefix = linePrefixRaw.toLowerCase();
 
+							const wordUntil = model.getWordUntilPosition(position);
+							const typedRaw = (wordUntil && typeof wordUntil.word === 'string') ? wordUntil.word : '';
+							const typed = typedRaw.toLowerCase();
+
 							// Prefer a range that includes '-' so mv-expand/project-away suggestions replace the whole token.
 							let replaceRange = null;
 							try {
@@ -705,9 +714,12 @@ function ensureMonaco() {
 								replaceRange = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
 							}
 
-							const isAfterPipe = /\|\s*[A-Za-z_\-]*$/i.test(linePrefixRaw) && /\|/i.test(linePrefixRaw);
-							if (isAfterPipe) {
+							const isPipeStatementStart = /^\s*\|\s*[A-Za-z_\-]*$/i.test(linePrefixRaw);
+							if (isPipeStatementStart) {
 								for (const op of KUSTO_PIPE_OPERATOR_SUGGESTIONS) {
+									if (typed && !op.label.toLowerCase().startsWith(typed)) {
+										continue;
+									}
 									pushSuggestion({
 										label: op.label,
 										kind: monaco.languages.CompletionItemKind.Keyword,
@@ -716,6 +728,8 @@ function ensureMonaco() {
 										range: replaceRange
 									}, 'op:' + op.label);
 								}
+								// At the beginning of a new pipe statement, only show Kusto pipe commands.
+								return { suggestions };
 							}
 
 							let boxId = null;
@@ -737,6 +751,18 @@ function ensureMonaco() {
 							}
 
 							const shouldSuggestColumns = /\|\s*(project|where|extend|summarize|order\s+by|sort\s+by|take|top)\b[^|]*$/i.test(linePrefix);
+
+							// Assignment RHS (e.g. "| summarize X = dco" or "| extend Y = Dev") should suggest only functions + columns.
+							const lastEq = linePrefixRaw.lastIndexOf('=');
+							const isAssignmentRhs = (() => {
+								if (lastEq < 0) return false;
+								// Only consider '=' that appears after a pipe operator clause begins.
+								if (linePrefixRaw.indexOf('|') < 0) return false;
+								const after = linePrefixRaw.slice(lastEq + 1);
+								if (!/^\s*[A-Za-z_\-]*$/i.test(after)) return false;
+								// Heuristic: this is the RHS of extend/summarize style assignments.
+								return /\|\s*(extend|summarize)\b/i.test(linePrefixRaw);
+							})();
 
 							const textUpToCursor = model.getValueInRange({
 								startLineNumber: 1,
@@ -800,22 +826,39 @@ function ensureMonaco() {
 											label: c,
 											kind: monaco.languages.CompletionItemKind.Field,
 											insertText: c,
-											sortText: '0' + c,
+											sortText: (isAssignmentRhs ? '1_' : '0') + c,
 											range
 										}, 'col:' + c);
 									}
 								}
 							}
 
-							// Tables: always suggest.
-							for (const t of schema.tables) {
-								pushSuggestion({
-									label: t,
-									kind: monaco.languages.CompletionItemKind.Class,
-									insertText: t,
-									sortText: (shouldSuggestColumns ? '1' : '0') + t,
-									range
-								}, 'tbl:' + t);
+							if (isAssignmentRhs) {
+								for (const fn of Object.keys(KUSTO_FUNCTION_DOCS)) {
+									if (typed && !fn.toLowerCase().startsWith(typed)) {
+										continue;
+									}
+									pushSuggestion({
+										label: fn,
+										kind: monaco.languages.CompletionItemKind.Function,
+										insertText: fn + '(',
+										sortText: '0_' + fn,
+										range
+									}, 'fn:' + fn);
+								}
+							}
+
+							// Tables: suggest unless we are in an assignment RHS context.
+							if (!isAssignmentRhs) {
+								for (const t of schema.tables) {
+									pushSuggestion({
+										label: t,
+										kind: monaco.languages.CompletionItemKind.Class,
+										insertText: t,
+										sortText: (shouldSuggestColumns ? '1' : '0') + t,
+										range
+									}, 'tbl:' + t);
+								}
 							}
 
 							return { suggestions };
