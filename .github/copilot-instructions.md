@@ -12,3 +12,9 @@ This is a VS Code extension that provides a notebook-like experience for Kusto Q
 ## Development Guidelines
 - Follow TypeScript best practices
 - Implement proper error handling for query execution
+
+## Application Behavior Guidelines
+
+- The application tries to handle error conditions, and error flows in a graceful manner and as polished as the happy path.
+
+- The application doesn't just show raw error messages from the backend or system. Instead, it provides user-friendly error messages that guide the user on how to resolve the issue or what steps to take next. We might even build entire features around helping the user recover from errors.
