@@ -120,17 +120,52 @@ function ensureMonaco() {
 		return monacoReadyPromise;
 	}
 
+	const waitForAmdLoader = () => {
+		return new Promise((resolve, reject) => {
+			let attempts = 0;
+			const tick = () => {
+				attempts++;
+				try {
+					const req = (typeof require !== 'undefined') ? require : (window && window.require ? window.require : undefined);
+					if (typeof req === 'function' && typeof req.config === 'function') {
+						resolve(req);
+						return;
+					}
+				} catch {
+					// ignore
+				}
+				if (attempts >= 60) {
+					reject(new Error('Monaco AMD loader (require.js) not available in webview.'));
+					return;
+				}
+				setTimeout(tick, 50);
+			};
+			tick();
+		});
+	};
+
 	monacoReadyPromise = new Promise((resolve, reject) => {
 		try {
-			// Monaco worker bootstrap
-			window.MonacoEnvironment = {
-				getWorkerUrl: function () {
-					return window.__kustoQueryEditorConfig.monacoVsUri + '/base/worker/workerMain.js';
+			waitForAmdLoader().then((req) => {
+				try {
+					// Monaco worker bootstrap
+					window.MonacoEnvironment = {
+						getWorkerUrl: function () {
+							return window.__kustoQueryEditorConfig.monacoVsUri + '/base/worker/workerMain.js';
+						}
+					};
+				} catch {
+					// ignore
 				}
-			};
 
-			require.config({ paths: { vs: window.__kustoQueryEditorConfig.monacoVsUri } });
-			require(['vs/editor/editor.main'], () => {
+				try {
+					req.config({ paths: { vs: window.__kustoQueryEditorConfig.monacoVsUri } });
+				} catch (e) {
+					reject(e);
+					return;
+				}
+
+				req(['vs/editor/editor.main'], () => {
 				try {
 					monaco.languages.register({ id: 'kusto' });
 
@@ -599,12 +634,36 @@ function ensureMonaco() {
 					reject(e);
 				}
 			});
+			}).catch((e) => reject(e));
 		} catch (e) {
 			reject(e);
 		}
 	});
 
+	// If Monaco init fails, allow retries within the same webview session.
+	monacoReadyPromise = monacoReadyPromise.catch((e) => {
+		try { monacoReadyPromise = null; } catch { /* ignore */ }
+		throw e;
+	});
+
 	return monacoReadyPromise;
+}
+
+// Proactively start loading Monaco as soon as this script is loaded.
+// This reduces the time the UI appears as a non-interactive placeholder before the editor mounts.
+try {
+	setTimeout(() => {
+		try {
+			const p = ensureMonaco();
+			if (p && typeof p.catch === 'function') {
+				p.catch(() => { /* ignore */ });
+			}
+		} catch {
+			// ignore
+		}
+	}, 0);
+} catch {
+	// ignore
 }
 
 // Auto-resize Monaco editor wrappers so the full content is visible (no inner scrollbars).
@@ -683,6 +742,50 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 	}
 }
 
+// VS Code webviews occasionally open in a state where Monaco's hidden textarea ends up readonly/disabled
+// due to focus/timing glitches. This helper aggressively forces the editor back into writable mode.
+function __kustoForceEditorWritable(editor) {
+	try {
+		if (!editor) return;
+		try {
+			if (typeof editor.updateOptions === 'function') {
+				editor.updateOptions({ readOnly: false });
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+			if (!dom) return;
+			const ta = dom.querySelector ? dom.querySelector('textarea') : null;
+			if (ta) {
+				try { ta.readOnly = false; } catch { /* ignore */ }
+				try { ta.disabled = false; } catch { /* ignore */ }
+				try { ta.removeAttribute && ta.removeAttribute('readonly'); } catch { /* ignore */ }
+				try { ta.removeAttribute && ta.removeAttribute('disabled'); } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoEnsureEditorWritableSoon(editor) {
+	try {
+		// Retry a few times; this avoids relying on a single timing point.
+		const delays = [0, 50, 250, 1000];
+		for (const d of delays) {
+			setTimeout(() => {
+				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
+			}, d);
+		}
+	} catch {
+		// ignore
+	}
+}
+
 function initQueryEditor(boxId) {
 	return ensureMonaco().then(monaco => {
 		const container = document.getElementById(boxId + '_query_editor');
@@ -691,6 +794,23 @@ function initQueryEditor(boxId) {
 		const resizer = document.getElementById(boxId + '_query_resizer');
 		if (!container) {
 			return;
+		}
+
+		// If an editor instance already exists, ensure it's still attached to this container.
+		// If it's stale (detached due to DOM teardown), dispose and recreate.
+		try {
+			const existing = queryEditors && queryEditors[boxId] ? queryEditors[boxId] : null;
+			if (existing) {
+				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
+				const attached = !!(dom && dom.isConnected && container.contains(dom));
+				if (attached) {
+					return;
+				}
+				try { existing.dispose(); } catch { /* ignore */ }
+				try { delete queryEditors[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
 		}
 
 		// Ensure flex sizing doesn't allow the editor container to expand with content.
@@ -731,6 +851,8 @@ function initQueryEditor(boxId) {
 		}
 
 		queryEditors[boxId] = editor;
+		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
+		try { __kustoEnsureEditorWritableSoon(editor); } catch { /* ignore */ }
 		// Auto-resize this editor to show full content, until the user manually resizes.
 		try { __kustoAttachAutoResizeToContent(editor, container); } catch { /* ignore */ }
 
@@ -961,6 +1083,7 @@ function initQueryEditor(boxId) {
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
+			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
 			scheduleDocUpdate();
@@ -970,6 +1093,7 @@ function initQueryEditor(boxId) {
 		try {
 			editor.onDidFocusEditorWidget(() => {
 				activeQueryEditorBoxId = boxId;
+				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 				syncPlaceholder();
 				scheduleDocUpdate();
 			});
@@ -1101,6 +1225,39 @@ function initQueryEditor(boxId) {
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
 			});
+		}
+	}).catch((e) => {
+		// If Monaco fails to initialize transiently, retry a few times so the editor
+		// doesn't get stuck in a non-interactive placeholder state until reopen.
+		try {
+			if (queryEditors && queryEditors[boxId]) {
+				return;
+			}
+		} catch {
+			// ignore
+		}
+
+		let attempt = 0;
+		try {
+			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
+			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+		} catch {
+			attempt = 1;
+		}
+
+		const delays = [50, 250, 1000, 2000, 4000];
+		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
+		if (attempt > delays.length) {
+			try { console.error('Monaco init failed (query editor).', e); } catch { /* ignore */ }
+			return;
+		}
+		try {
+			setTimeout(() => {
+				try { initQueryEditor(boxId); } catch { /* ignore */ }
+			}, delay);
+		} catch {
+			// ignore
 		}
 	});
 }

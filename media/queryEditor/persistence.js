@@ -9,6 +9,8 @@
 let __kustoPersistenceEnabled = false;
 let __kustoRestoreInProgress = false;
 let __kustoPersistTimer = null;
+let __kustoDocumentDataApplyCount = 0;
+let __kustoHasAppliedDocument = false;
 // Set by the extension host; true for globalStorage/session.kqlx.
 window.__kustoIsSessionFile = false;
 // Set by the extension host; true for .kql/.csl files.
@@ -511,6 +513,29 @@ function __kustoApplyPendingAdds() {
 }
 
 function handleDocumentDataMessage(message) {
+	__kustoDocumentDataApplyCount++;
+	try {
+		const sectionCount = Array.isArray(message && message.state && message.state.sections)
+			? message.state.sections.length
+			: 0;
+		console.log('[kusto] documentData', { count: __kustoDocumentDataApplyCount, ok: !!(message && message.ok), sections: sectionCount });
+	} catch {
+		// ignore
+	}
+
+	// The extension host should only send documentData in response to requestDocument.
+	// If we receive it more than once, re-applying causes noticeable flicker and can leave
+	// Monaco editors in a bad interactive state due to teardown/recreate races.
+	// So by default, only apply the first documentData payload.
+	try {
+		if (__kustoHasAppliedDocument && !(message && message.forceReload)) {
+			return;
+		}
+	} catch {
+		// ignore
+	}
+	__kustoHasAppliedDocument = true;
+
 	const ok = !!(message && message.ok);
 	if (!ok && message && message.error) {
 		try {

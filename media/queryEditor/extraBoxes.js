@@ -280,6 +280,22 @@ function initMarkdownEditor(boxId) {
 			return;
 		}
 
+		// If an editor exists, ensure it's still attached to this container.
+		try {
+			const existing = markdownEditors && markdownEditors[boxId] ? markdownEditors[boxId] : null;
+			if (existing) {
+				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
+				const attached = !!(dom && dom.isConnected && container.contains(dom));
+				if (attached) {
+					return;
+				}
+				try { existing.dispose(); } catch { /* ignore */ }
+				try { delete markdownEditors[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
 
@@ -318,11 +334,21 @@ function initMarkdownEditor(boxId) {
 			if (typeof editor.onDidFocusEditorText === 'function') {
 				editor.onDidFocusEditorText(() => {
 					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+					try {
+						if (typeof __kustoForceEditorWritable === 'function') {
+							__kustoForceEditorWritable(editor);
+						}
+					} catch { /* ignore */ }
 				});
 			}
 			if (typeof editor.onDidFocusEditorWidget === 'function') {
 				editor.onDidFocusEditorWidget(() => {
 					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+					try {
+						if (typeof __kustoForceEditorWritable === 'function') {
+							__kustoForceEditorWritable(editor);
+						}
+					} catch { /* ignore */ }
 				});
 			}
 		} catch {
@@ -330,6 +356,14 @@ function initMarkdownEditor(boxId) {
 		}
 
 		markdownEditors[boxId] = editor;
+		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
+		try {
+			if (typeof __kustoEnsureEditorWritableSoon === 'function') {
+				__kustoEnsureEditorWritableSoon(editor);
+			}
+		} catch {
+			// ignore
+		}
 		// Auto-resize editor to show full content, until the user manually resizes.
 		try {
 			if (typeof __kustoAttachAutoResizeToContent === 'function') {
@@ -395,6 +429,37 @@ function initMarkdownEditor(boxId) {
 		// Respect whichever tab is currently selected.
 		try {
 			setMarkdownTab(boxId, markdownTabByBoxId[boxId] || 'edit');
+		} catch {
+			// ignore
+		}
+	}).catch((e) => {
+		try {
+			if (markdownEditors && markdownEditors[boxId]) {
+				return;
+			}
+		} catch {
+			// ignore
+		}
+
+		let attempt = 0;
+		try {
+			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
+			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+		} catch {
+			attempt = 1;
+		}
+
+		const delays = [50, 250, 1000, 2000, 4000];
+		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
+		if (attempt > delays.length) {
+			try { console.error('Monaco init failed (markdown editor).', e); } catch { /* ignore */ }
+			return;
+		}
+		try {
+			setTimeout(() => {
+				try { initMarkdownEditor(boxId); } catch { /* ignore */ }
+			}, delay);
 		} catch {
 			// ignore
 		}
@@ -535,6 +600,22 @@ function initPythonEditor(boxId) {
 			return;
 		}
 
+		// If an editor exists, ensure it's still attached to this container.
+		try {
+			const existing = pythonEditors && pythonEditors[boxId] ? pythonEditors[boxId] : null;
+			if (existing) {
+				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
+				const attached = !!(dom && dom.isConnected && container.contains(dom));
+				if (attached) {
+					return;
+				}
+				try { existing.dispose(); } catch { /* ignore */ }
+				try { delete pythonEditors[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
 
@@ -573,11 +654,21 @@ function initPythonEditor(boxId) {
 			if (typeof editor.onDidFocusEditorText === 'function') {
 				editor.onDidFocusEditorText(() => {
 					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+					try {
+						if (typeof __kustoForceEditorWritable === 'function') {
+							__kustoForceEditorWritable(editor);
+						}
+					} catch { /* ignore */ }
 				});
 			}
 			if (typeof editor.onDidFocusEditorWidget === 'function') {
 				editor.onDidFocusEditorWidget(() => {
 					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+					try {
+						if (typeof __kustoForceEditorWritable === 'function') {
+							__kustoForceEditorWritable(editor);
+						}
+					} catch { /* ignore */ }
 				});
 			}
 		} catch {
@@ -585,6 +676,14 @@ function initPythonEditor(boxId) {
 		}
 
 		pythonEditors[boxId] = editor;
+		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
+		try {
+			if (typeof __kustoEnsureEditorWritableSoon === 'function') {
+				__kustoEnsureEditorWritableSoon(editor);
+			}
+		} catch {
+			// ignore
+		}
 		// Auto-resize editor to show full content, until the user manually resizes.
 		try {
 			if (typeof __kustoAttachAutoResizeToContent === 'function') {
@@ -643,6 +742,37 @@ function initPythonEditor(boxId) {
 					document.addEventListener('mouseup', onUp, true);
 				});
 			}
+		} catch {
+			// ignore
+		}
+	}).catch((e) => {
+		try {
+			if (pythonEditors && pythonEditors[boxId]) {
+				return;
+			}
+		} catch {
+			// ignore
+		}
+
+		let attempt = 0;
+		try {
+			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
+			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+		} catch {
+			attempt = 1;
+		}
+
+		const delays = [50, 250, 1000, 2000, 4000];
+		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
+		if (attempt > delays.length) {
+			try { console.error('Monaco init failed (python editor).', e); } catch { /* ignore */ }
+			return;
+		}
+		try {
+			setTimeout(() => {
+				try { initPythonEditor(boxId); } catch { /* ignore */ }
+			}, delay);
 		} catch {
 			// ignore
 		}
