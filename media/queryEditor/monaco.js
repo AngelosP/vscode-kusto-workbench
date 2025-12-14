@@ -194,8 +194,13 @@ function ensureMonaco() {
 					return;
 				}
 
-				req(['vs/editor/editor.main'], () => {
-				try {
+				req(
+					['vs/editor.api.001a2486'],
+					() => {
+						try {
+							if (typeof monaco === 'undefined' || !monaco || !monaco.editor) {
+								throw new Error('Monaco loaded but global `monaco` API is missing.');
+							}
 					monaco.languages.register({ id: 'kusto' });
 
 					const KUSTO_KEYWORD_DOCS = {
@@ -656,13 +661,15 @@ function ensureMonaco() {
 							}
 						});
 
-						// Expose a helper so the editor instance can decide whether to auto-show hover.
-						window.__kustoGetHoverInfoAt = getHoverInfoAt;
-					resolve(monaco);
-				} catch (e) {
-					reject(e);
-				}
-			});
+							// Expose a helper so the editor instance can decide whether to auto-show hover.
+							window.__kustoGetHoverInfoAt = getHoverInfoAt;
+							resolve(monaco);
+						} catch (e) {
+							reject(e);
+						}
+					},
+					(e) => reject(e)
+				);
 			}).catch((e) => reject(e));
 		} catch (e) {
 			reject(e);

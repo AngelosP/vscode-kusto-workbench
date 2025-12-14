@@ -147,6 +147,41 @@ function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 	}
 }
 
+function __kustoGetUrlOutputHeightPx(boxId) {
+	try {
+		const wrapper = document.getElementById(boxId + '_wrapper');
+		if (!wrapper) return undefined;
+		try {
+			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
+				return undefined;
+			}
+		} catch {
+			return undefined;
+		}
+		const inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		if (!inlineHeight || inlineHeight === 'auto') return undefined;
+		const m = inlineHeight.match(/^([0-9]+)px$/i);
+		if (!m) return undefined;
+		const px = parseInt(m[1], 10);
+		return Number.isFinite(px) ? Math.max(0, px) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function __kustoSetUrlOutputHeightPx(boxId, heightPx) {
+	try {
+		const wrapper = document.getElementById(boxId + '_wrapper');
+		if (!wrapper) return;
+		const h = Number(heightPx);
+		if (!Number.isFinite(h) || h <= 0) return;
+		wrapper.style.height = Math.round(h) + 'px';
+		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
 function getKqlxState() {
 	// Compatibility mode (.kql/.csl): only a single query section is supported.
 	try {
@@ -252,7 +287,8 @@ function getKqlxState() {
 			sections.push({
 				type: 'url',
 				url,
-				expanded
+				expanded,
+				outputHeightPx: __kustoGetUrlOutputHeightPx(id)
 			});
 			continue;
 		}
@@ -543,12 +579,19 @@ function applyKqlxState(state) {
 					urlStateByBoxId[boxId].dataUri = '';
 					urlStateByBoxId[boxId].body = '';
 					urlStateByBoxId[boxId].truncated = false;
+					try { __kustoSetUrlOutputHeightPx(boxId, section.outputHeightPx); } catch { /* ignore */ }
 					try {
 						if (typeof __kustoUpdateUrlToggleButton === 'function') {
 							__kustoUpdateUrlToggleButton(boxId);
 						}
 					} catch { /* ignore */ }
 					updateUrlContent(boxId);
+					// On open/restore: if the section is visible, automatically fetch its content.
+					try {
+						if (expanded && url && typeof requestUrlContent === 'function') {
+							requestUrlContent(boxId);
+						}
+					} catch { /* ignore */ }
 				} catch { /* ignore */ }
 				continue;
 			}

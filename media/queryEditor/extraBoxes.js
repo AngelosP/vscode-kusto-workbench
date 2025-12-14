@@ -901,7 +901,7 @@ function addUrlBox(options) {
 		'</svg>';
 
 	const boxHtml =
-		'<div class="query-box" id="' + id + '">' +
+		'<div class="query-box url-box" id="' + id + '">' +
 		'<div class="section-header-row url-section-header">' +
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
@@ -911,12 +911,61 @@ function addUrlBox(options) {
 		'<button class="refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
-		'<div class="url-output url-collapsed" id="' + id + '_content" aria-label="URL content"></div>' +
+		'<div class="url-output-wrapper" id="' + id + '_wrapper">' +
+		'<div class="url-output" id="' + id + '_content" aria-label="URL content"></div>' +
+		'<div class="query-editor-resizer" id="' + id + '_url_resizer" title="Drag to resize"></div>' +
+		'</div>' +
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	try { __kustoUpdateUrlToggleButton(id); } catch { /* ignore */ }
 	try { updateUrlContent(id); } catch { /* ignore */ }
+
+	// Drag handle resize for URL output.
+	try {
+		const wrapper = document.getElementById(id + '_wrapper');
+		const resizer = document.getElementById(id + '_url_resizer');
+		if (wrapper && resizer) {
+			resizer.addEventListener('mousedown', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+				} catch {
+					// ignore
+				}
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+
+				const startY = e.clientY;
+				const startHeight = wrapper.getBoundingClientRect().height;
+
+				const onMove = (moveEvent) => {
+					const delta = moveEvent.clientY - startY;
+					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					wrapper.style.height = nextHeight + 'px';
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove, true);
+					document.removeEventListener('mouseup', onUp, true);
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				};
+
+				document.addEventListener('mousemove', onMove, true);
+				document.addEventListener('mouseup', onUp, true);
+			});
+		}
+	} catch {
+		// ignore
+	}
+
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -958,6 +1007,9 @@ function onUrlChanged(boxId) {
 	urlStateByBoxId[boxId].dataUri = '';
 	urlStateByBoxId[boxId].body = '';
 	urlStateByBoxId[boxId].truncated = false;
+	try { urlStateByBoxId[boxId].__hasFetchedOnce = false; } catch { /* ignore */ }
+	try { urlStateByBoxId[boxId].__autoSizeImagePending = false; } catch { /* ignore */ }
+	try { urlStateByBoxId[boxId].__autoSizedImageOnce = false; } catch { /* ignore */ }
 	updateUrlContent(boxId);
 	if (urlStateByBoxId[boxId].expanded && url) {
 		requestUrlContent(boxId);
@@ -1045,6 +1097,54 @@ function __kustoRenderUrlContent(contentEl, st) {
 		const kind = String(st.kind || '').toLowerCase();
 		if (kind === 'image' && st.dataUri) {
 			const img = document.createElement('img');
+			// If this is the first fetch and the user hasn't resized, auto-size the wrapper to fit the image.
+			const boxId = (() => {
+				try {
+					const id = contentEl && contentEl.id ? String(contentEl.id) : '';
+					return id.endsWith('_content') ? id.slice(0, -('_content'.length)) : '';
+				} catch {
+					return '';
+				}
+			})();
+			try {
+				if (boxId && st.__autoSizeImagePending && !st.__autoSizedImageOnce) {
+					img.addEventListener('load', () => {
+						try {
+							const wrapper = document.getElementById(boxId + '_wrapper');
+							if (!wrapper) return;
+							// Don't override user-sized or restored heights.
+							try {
+								if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
+									st.__autoSizeImagePending = false;
+									st.__autoSizedImageOnce = true;
+									return;
+								}
+							} catch { /* ignore */ }
+
+							// Ensure layout is up to date before measuring.
+							setTimeout(() => {
+								try {
+									const resizer = document.getElementById(boxId + '_url_resizer');
+									const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+									const imgH = img.getBoundingClientRect().height;
+									if (!imgH || !isFinite(imgH)) return;
+									const minH = 120;
+									const maxH = 3000;
+									const nextH = Math.max(minH, Math.min(maxH, Math.ceil(imgH + resizerH)));
+									wrapper.style.height = nextH + 'px';
+									try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+									st.__autoSizeImagePending = false;
+									st.__autoSizedImageOnce = true;
+									try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+								} catch { /* ignore */ }
+							}, 0);
+						} catch { /* ignore */ }
+					}, { once: true });
+				}
+			} catch {
+				// ignore
+			}
+
 			img.src = String(st.dataUri);
 			img.alt = 'Image';
 			img.style.maxWidth = '100%';
@@ -1130,12 +1230,13 @@ function __kustoRenderUrlContent(contentEl, st) {
 }
 
 function updateUrlContent(boxId) {
+	const wrapperEl = document.getElementById(boxId + '_wrapper');
 	const contentEl = document.getElementById(boxId + '_content');
 	const st = urlStateByBoxId[boxId];
-	if (!contentEl || !st) {
+	if (!wrapperEl || !contentEl || !st) {
 		return;
 	}
-	contentEl.classList.toggle('url-collapsed', !st.expanded);
+	wrapperEl.classList.toggle('url-collapsed', !st.expanded);
 	if (!st.expanded) {
 		return;
 	}
@@ -1194,6 +1295,15 @@ function onUrlContent(message) {
 	st.truncated = !!message.truncated;
 	st.dataUri = String(message.dataUri || '');
 	st.body = (typeof message.body === 'string') ? message.body : '';
+	// Track first successful fetch; used for one-time auto-sizing of images.
+	try {
+		if (!st.__hasFetchedOnce) {
+			st.__hasFetchedOnce = true;
+			if (st.kind === 'image') {
+				st.__autoSizeImagePending = true;
+			}
+		}
+	} catch { /* ignore */ }
 	// Keep a simple fallback string for older rendering.
 	st.content = st.body || '';
 	updateUrlContent(boxId);
