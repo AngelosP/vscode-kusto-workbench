@@ -644,7 +644,7 @@
 			font-size: 12px;
 			line-height: 1.35;
 			box-shadow: none;
-			z-index: 1001 !important;
+			z-index: 2147483647;
 			pointer-events: none;
 			user-select: none;
 		}

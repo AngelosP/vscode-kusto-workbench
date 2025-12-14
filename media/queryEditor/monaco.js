@@ -263,8 +263,67 @@ function ensureMonaco() {
 						'mv-expand': {
 							signature: '| mv-expand Column',
 							description: 'Expands multi-value (array/dynamic) into multiple rows.'
+						},
+						'distinct': {
+							signature: '| distinct Column[, ...]',
+							description: 'Returns unique combinations of the specified columns.'
+						},
+						'limit': {
+							signature: '| limit N',
+							description: 'Returns up to N rows (alias of take in many contexts).'
+						},
+						'sample': {
+							signature: '| sample N',
+							description: 'Returns N random rows from the input.'
+						},
+						'union': {
+							signature: '| union Table[, ...]',
+							description: 'Combines results from multiple tables or subqueries.'
+						},
+						'search': {
+							signature: '| search "text"',
+							description: 'Searches for a term across columns (and optionally tables) in scope.'
+						},
+						'project-away': {
+							signature: '| project-away Column[, ...]',
+							description: 'Removes columns from the result set.'
+						},
+						'project-keep': {
+							signature: '| project-keep Column[, ...]',
+							description: 'Keeps only the specified columns (dropping others).'
+						},
+						'project-rename': {
+							signature: '| project-rename NewName = OldName[, ...]',
+							description: 'Renames columns.'
+						},
+						'order by': {
+							signature: '| order by Expression [asc|desc][, ...]',
+							description: 'Sorts rows by one or more expressions.'
+						},
+						'sort by': {
+							signature: '| sort by Expression [asc|desc][, ...]',
+							description: 'Sorts rows by one or more expressions (alias of order by).'
 						}
 					};
+
+					const KUSTO_PIPE_OPERATOR_SUGGESTIONS = [
+						{ label: 'where', insert: 'where ', docKey: 'where' },
+						{ label: 'extend', insert: 'extend ', docKey: 'extend' },
+						{ label: 'project', insert: 'project ', docKey: 'project' },
+						{ label: 'project-away', insert: 'project-away ', docKey: 'project-away' },
+						{ label: 'project-keep', insert: 'project-keep ', docKey: 'project-keep' },
+						{ label: 'project-rename', insert: 'project-rename ', docKey: 'project-rename' },
+						{ label: 'summarize', insert: 'summarize ', docKey: 'summarize' },
+						{ label: 'join', insert: 'join ', docKey: 'join' },
+						{ label: 'distinct', insert: 'distinct ', docKey: 'distinct' },
+						{ label: 'take', insert: 'take ', docKey: 'take' },
+						{ label: 'limit', insert: 'limit ', docKey: 'limit' },
+						{ label: 'top', insert: 'top ', docKey: 'top' },
+						{ label: 'order by', insert: 'order by ', docKey: 'order by' },
+						{ label: 'sort by', insert: 'sort by ', docKey: 'sort by' },
+						{ label: 'render', insert: 'render ', docKey: 'render' },
+						{ label: 'mv-expand', insert: 'mv-expand ', docKey: 'mv-expand' }
+					];
 
 					const KUSTO_FUNCTION_DOCS = {
 						'dcountif': {
@@ -289,8 +348,69 @@ function ensureMonaco() {
 						}
 					};
 
-					const isIdentChar = (ch) => /[A-Za-z0-9_]/.test(ch);
+					const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
 					const isIdentStart = (ch) => /[A-Za-z_]/.test(ch);
+
+					const getTokenAtPosition = (model, position) => {
+						try {
+							const lineNumber = position.lineNumber;
+							const line = model.getLineContent(lineNumber);
+							if (!line) {
+								return null;
+							}
+							// Monaco columns are 1-based; convert to 0-based index into the line string.
+							let idx = Math.min(Math.max(0, position.column - 1), line.length);
+							// If we're at end-of-line or on a non-word char, probe one character to the left.
+							if (idx > 0 && (idx === line.length || !isIdentChar(line[idx]))) {
+								idx = idx - 1;
+							}
+							if (idx < 0 || idx >= line.length || !isIdentChar(line[idx])) {
+								return null;
+							}
+							let start = idx;
+							while (start > 0 && isIdentChar(line[start - 1])) start--;
+							let end = idx + 1;
+							while (end < line.length && isIdentChar(line[end])) end++;
+							const word = line.slice(start, end);
+							if (!word) {
+								return null;
+							}
+							const range = new monaco.Range(lineNumber, start + 1, lineNumber, end + 1);
+							return { word, range };
+						} catch {
+							return null;
+						}
+					};
+
+					const getMultiWordOperatorAt = (model, position) => {
+						try {
+							const lineNumber = position.lineNumber;
+							const line = model.getLineContent(lineNumber);
+							const col = position.column;
+							if (!line) return null;
+
+							const checks = [
+								{ key: 'order by', re: /\border\s+by\b/ig },
+								{ key: 'sort by', re: /\bsort\s+by\b/ig }
+							];
+
+							for (const chk of checks) {
+								chk.re.lastIndex = 0;
+								let m;
+								while ((m = chk.re.exec(line)) !== null) {
+									const startCol = m.index + 1;
+									const endCol = m.index + m[0].length + 1;
+									if (col >= startCol && col <= endCol) {
+										return { key: chk.key, range: new monaco.Range(lineNumber, startCol, lineNumber, endCol) };
+									}
+								}
+							}
+
+							return null;
+						} catch {
+							return null;
+						}
+					};
 
 					const getWordRangeAt = (model, position) => {
 						try {
@@ -437,28 +557,31 @@ function ensureMonaco() {
 							}
 						}
 
-						// Otherwise, show keyword/function docs for the word under cursor.
-						let word = null;
-						try {
-							word = model.getWordAtPosition(position);
-						} catch {
-							word = null;
+						// Otherwise, show keyword/function docs for the token under cursor.
+						// Handle multi-word operators like "order by" / "sort by".
+						const multi = getMultiWordOperatorAt(model, position);
+						if (multi && multi.key && KUSTO_KEYWORD_DOCS[multi.key]) {
+							const doc = KUSTO_KEYWORD_DOCS[multi.key];
+							const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+							return { range: multi.range, markdown: md };
 						}
-						if (!word || !word.word) {
+
+						const token = getTokenAtPosition(model, position);
+						if (!token || !token.word) {
 							return null;
 						}
-						const w = String(word.word).toLowerCase();
+						const w = String(token.word).toLowerCase();
 						if (KUSTO_FUNCTION_DOCS[w]) {
 							const doc = KUSTO_FUNCTION_DOCS[w];
 							const md =
 								buildFunctionSignatureMarkdown(w, doc, -1) +
 								(doc.description ? `\n\n${doc.description}` : '');
-							return { range: getWordRangeAt(model, position), markdown: md };
+							return { range: token.range || getWordRangeAt(model, position), markdown: md };
 						}
 						if (KUSTO_KEYWORD_DOCS[w]) {
 							const doc = KUSTO_KEYWORD_DOCS[w];
 							const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
-							return { range: getWordRangeAt(model, position), markdown: md };
+							return { range: token.range || getWordRangeAt(model, position), markdown: md };
 						}
 
 						return null;
@@ -549,10 +672,52 @@ function ensureMonaco() {
 					monaco.editor.setTheme(isDarkTheme() ? 'vs-dark' : 'vs');
 					startMonacoThemeObserver(monaco);
 
-					// Autocomplete driven by cached schema (tables + columns).
+					// Autocomplete: pipe operators + (optionally) schema tables/columns.
 					monaco.languages.registerCompletionItemProvider('kusto', {
 						triggerCharacters: [' ', '|', '.'],
 						provideCompletionItems: function (model, position) {
+							const suggestions = [];
+							const seen = new Set();
+
+							const pushSuggestion = (item, key) => {
+								const k = key || item.label;
+								if (seen.has(k)) {
+									return;
+								}
+								seen.add(k);
+								suggestions.push(item);
+							};
+
+							const lineContent = model.getLineContent(position.lineNumber);
+							const linePrefixRaw = lineContent.slice(0, position.column - 1);
+							const linePrefix = linePrefixRaw.toLowerCase();
+
+							// Prefer a range that includes '-' so mv-expand/project-away suggestions replace the whole token.
+							let replaceRange = null;
+							try {
+								const token = getTokenAtPosition(model, position);
+								replaceRange = token && token.range ? token.range : null;
+							} catch {
+								replaceRange = null;
+							}
+							if (!replaceRange) {
+								const word = model.getWordUntilPosition(position);
+								replaceRange = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+							}
+
+							const isAfterPipe = /\|\s*[A-Za-z_\-]*$/i.test(linePrefixRaw) && /\|/i.test(linePrefixRaw);
+							if (isAfterPipe) {
+								for (const op of KUSTO_PIPE_OPERATOR_SUGGESTIONS) {
+									pushSuggestion({
+										label: op.label,
+										kind: monaco.languages.CompletionItemKind.Keyword,
+										insertText: op.insert,
+										sortText: '0_' + op.label,
+										range: replaceRange
+									}, 'op:' + op.label);
+								}
+							}
+
 							let boxId = null;
 							try {
 								if (model && model.uri) {
@@ -566,14 +731,11 @@ function ensureMonaco() {
 							}
 							const schema = boxId ? schemaByBoxId[boxId] : null;
 							if (!schema || !schema.tables) {
-								// Kick off a background fetch if schema isn't ready yet.
+								// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
 								ensureSchemaForBox(boxId);
-								return { suggestions: [] };
+								return { suggestions };
 							}
 
-							const word = model.getWordUntilPosition(position);
-							const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
-							const linePrefix = model.getLineContent(position.lineNumber).slice(0, position.column - 1).toLowerCase();
 							const shouldSuggestColumns = /\|\s*(project|where|extend|summarize|order\s+by|sort\s+by|take|top)\b[^|]*$/i.test(linePrefix);
 
 							const textUpToCursor = model.getValueInRange({
@@ -610,17 +772,10 @@ function ensureMonaco() {
 
 							let activeTable = inferActiveTable(textUpToCursor);
 
-							const suggestions = [];
-							const seen = new Set();
 
-							const pushSuggestion = (item, key) => {
-								const k = key || item.label;
-								if (seen.has(k)) {
-									return;
-								}
-								seen.add(k);
-								suggestions.push(item);
-							};
+							// For schema completions, use Monaco's default word range (tables/columns rarely include '-').
+							const word = model.getWordUntilPosition(position);
+							const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
 
 							// Columns first when in '| where' / '| project' etc.
 							if (shouldSuggestColumns) {
@@ -1055,7 +1210,8 @@ function initQueryEditor(boxId) {
 			dom.style.display = 'none';
 			// Use fixed positioning so the tooltip can render outside the editor bounds.
 			dom.style.position = 'fixed';
-			dom.style.zIndex = '2000';
+			// Render above Monaco suggest/hover widgets and our own banners/modals.
+			dom.style.zIndex = '2147483647';
 			dom.style.left = '0px';
 			dom.style.top = '0px';
 			let lastHtml = '';
@@ -1071,18 +1227,30 @@ function initQueryEditor(boxId) {
 			};
 
 			const update = () => {
-				try {
-					if (!caretDocsEnabled) {
-						hide();
-						return;
-					}
-					const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
-					const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
-					const isThisEditorActive = (activeQueryEditorBoxId === boxId) || hasWidgetFocus || hasTextFocus;
-					if (!isThisEditorActive) {
-						hide();
-						return;
-					}
+								try {
+									// Default to enabled if the global toggle hasn't been initialized yet.
+									try {
+										if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+											hide();
+											return;
+										}
+									} catch {
+										// ignore
+									}
+
+								// Prefer the explicit "active editor" tracking. In some Monaco builds,
+								// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
+								try {
+									const activeId = (typeof activeQueryEditorBoxId !== 'undefined' && activeQueryEditorBoxId)
+										? String(activeQueryEditorBoxId)
+										: null;
+									if (activeId && activeId !== String(boxId)) {
+										hide();
+										return;
+									}
+								} catch {
+									// ignore
+								}
 					const model = editor.getModel();
 					const pos = editor.getPosition();
 					const sel = editor.getSelection();
@@ -1090,19 +1258,8 @@ function initQueryEditor(boxId) {
 						hide();
 						return;
 					}
-					// If the caret is after a closing ')' (even with trailing whitespace), stop showing the custom tooltip.
-					try {
-						const fullText = model.getValue();
-						const caretOffset = model.getOffsetAt(pos);
-						let i = Math.min(Math.max(0, caretOffset - 1), fullText.length - 1);
-						while (i >= 0 && /\s/.test(fullText[i])) i--;
-						if (i >= 0 && fullText[i] === ')') {
-							hide();
-							return;
-						}
-					} catch {
-						// ignore
-					}
+									// Note: we intentionally do NOT hide the tooltip when the caret is after ')'
+									// so function docs still show for completed calls like dcountif().
 					const coords = typeof editor.getScrolledVisiblePosition === 'function' ? editor.getScrolledVisiblePosition(pos) : null;
 					if (!coords) {
 						hide();
@@ -1155,11 +1312,34 @@ function initQueryEditor(boxId) {
 						return;
 					}
 					const editorRect = editorDom.getBoundingClientRect();
+					// Monaco has changed what getScrolledVisiblePosition() is relative to across versions.
+					// Sometimes it's editor root; sometimes it's the scrollable element.
+					// Detect which coordinate-space we're in to keep the tooltip aligned.
+					let scrollableRect = null;
+					try {
+						const scrollable = editorDom.querySelector && editorDom.querySelector('.monaco-scrollable-element');
+						if (scrollable && typeof scrollable.getBoundingClientRect === 'function') {
+							scrollableRect = scrollable.getBoundingClientRect();
+						}
+					} catch {
+						scrollableRect = null;
+					}
+
+					let anchorRect = editorRect;
+					if (scrollableRect) {
+						const dx = scrollableRect.left - editorRect.left;
+						const dy = scrollableRect.top - editorRect.top;
+						// If coords are smaller than the gutter/padding offset, they're almost certainly
+						// relative to the scrollable element.
+						if (coords.left < Math.max(0, dx - 1) || coords.top < Math.max(0, dy - 1)) {
+							anchorRect = scrollableRect;
+						}
+					}
 
 					// Caret in viewport coordinates.
-					const caretX = editorRect.left + coords.left;
+					const caretX = anchorRect.left + coords.left;
 					const caretHeight = coords.height || 16;
-					const cursorY = editorRect.top + coords.top + caretHeight;
+					const cursorY = anchorRect.top + coords.top + caretHeight;
 
 					const margin = 6;
 					const clearance = 14; // keep tooltip bottom above the typing cursor (but not too high)
@@ -1186,8 +1366,46 @@ function initQueryEditor(boxId) {
 			return { update, hide };
 		};
 
-		const docOverlay = createDocOverlay();
-		try { caretDocOverlaysByBoxId[boxId] = docOverlay; } catch { /* ignore */ }
+					const docOverlay = createDocOverlay();
+					try {
+						if (typeof caretDocOverlaysByBoxId !== 'undefined' && caretDocOverlaysByBoxId) {
+							caretDocOverlaysByBoxId[boxId] = docOverlay;
+						}
+					} catch { /* ignore */ }
+
+					// Keep the overlay positioned correctly when the outer webview scrolls/resizes.
+					// Install once globally to avoid accumulating listeners per editor.
+					try {
+						if (!window.__kustoCaretDocsViewportListenersInstalled) {
+							window.__kustoCaretDocsViewportListenersInstalled = true;
+							const refreshActive = () => {
+								try {
+									if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+										return;
+									}
+									const overlays = typeof caretDocOverlaysByBoxId !== 'undefined' ? caretDocOverlaysByBoxId : null;
+									if (!overlays) {
+										return;
+									}
+									let activeId = null;
+									try {
+										activeId = typeof activeQueryEditorBoxId !== 'undefined' ? activeQueryEditorBoxId : null;
+									} catch {
+										activeId = null;
+									}
+									if (activeId && overlays[activeId] && typeof overlays[activeId].update === 'function') {
+										overlays[activeId].update();
+									}
+								} catch {
+									// ignore
+								}
+							};
+							window.addEventListener('scroll', refreshActive, true);
+							window.addEventListener('resize', refreshActive);
+						}
+					} catch {
+						// ignore
+					}
 
 		// Hide caret tooltip on Escape (without preventing Monaco default behavior).
 		try {
@@ -1268,11 +1486,22 @@ function initQueryEditor(boxId) {
 				scheduleDocUpdate();
 			});
 			editor.onDidBlurEditorWidget(() => {
-				try { docOverlay.hide(); } catch { /* ignore */ }
-				if (activeQueryEditorBoxId === boxId) {
-					activeQueryEditorBoxId = null;
-				}
-				syncPlaceholder();
+				// Some Monaco versions can fire blur(widget) while the suggest widget is opening/closing.
+				// Defer and only hide if the editor really isn't focused anymore.
+				setTimeout(() => {
+					try {
+						const stillFocused = isEditorFocused();
+						if (!stillFocused) {
+							try { docOverlay.hide(); } catch { /* ignore */ }
+							if (activeQueryEditorBoxId === boxId) {
+								activeQueryEditorBoxId = null;
+							}
+							syncPlaceholder();
+						}
+					} catch {
+						// ignore
+					}
+				}, 0);
 			});
 		} catch {
 			// ignore
