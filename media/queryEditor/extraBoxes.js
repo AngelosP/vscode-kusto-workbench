@@ -299,10 +299,23 @@ function initMarkdownEditor(boxId) {
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
 
+		// Avoid editor.setValue() during init; pass initial value into create() to reduce timing races.
+		let initialValue = '';
+		try {
+			const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
+			if (typeof pending === 'string') {
+				initialValue = pending;
+				try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		const editor = monaco.editor.create(container, {
-			value: '',
+			value: initialValue,
 			language: 'markdown',
 			readOnly: false,
+			domReadOnly: false,
 			automaticLayout: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
@@ -311,23 +324,6 @@ function initMarkdownEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
-
-		// Apply any pending restored markdown text (restore runs before Monaco is ready).
-		try {
-			const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
-			if (typeof pending === 'string') {
-				const prevRestore = (typeof __kustoRestoreInProgress === 'boolean') ? __kustoRestoreInProgress : false;
-				try {
-					__kustoRestoreInProgress = true;
-					editor.setValue(pending);
-				} finally {
-					__kustoRestoreInProgress = prevRestore;
-				}
-				try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
-			}
-		} catch {
-			// ignore
-		}
 
 		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
 		try {
@@ -361,6 +357,26 @@ function initMarkdownEditor(boxId) {
 			if (typeof __kustoEnsureEditorWritableSoon === 'function') {
 				__kustoEnsureEditorWritableSoon(editor);
 			}
+		} catch {
+			// ignore
+		}
+		try {
+			if (typeof __kustoInstallWritableGuard === 'function') {
+				__kustoInstallWritableGuard(editor);
+			}
+		} catch {
+			// ignore
+		}
+		// If the editor is stuck non-interactive on click, force writable before focusing.
+		try {
+			container.addEventListener('mousedown', () => {
+				try {
+					if (typeof __kustoForceEditorWritable === 'function') {
+						__kustoForceEditorWritable(editor);
+					}
+				} catch { /* ignore */ }
+				try { editor.focus(); } catch { /* ignore */ }
+			}, true);
 		} catch {
 			// ignore
 		}
@@ -619,10 +635,23 @@ function initPythonEditor(boxId) {
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
 
+		// Avoid editor.setValue() during init; pass initial value into create() to reduce timing races.
+		let initialValue = '';
+		try {
+			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
+			if (typeof pending === 'string') {
+				initialValue = pending;
+				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch {
+			// ignore
+		}
+
 		const editor = monaco.editor.create(container, {
-			value: '',
+			value: initialValue,
 			language: 'python',
 			readOnly: false,
+			domReadOnly: false,
 			automaticLayout: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
@@ -631,23 +660,6 @@ function initPythonEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
-
-		// Apply any pending restored python code (restore runs before Monaco is ready).
-		try {
-			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
-			if (typeof pending === 'string') {
-				const prevRestore = (typeof __kustoRestoreInProgress === 'boolean') ? __kustoRestoreInProgress : false;
-				try {
-					__kustoRestoreInProgress = true;
-					editor.setValue(pending);
-				} finally {
-					__kustoRestoreInProgress = prevRestore;
-				}
-				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
-			}
-		} catch {
-			// ignore
-		}
 
 		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
 		try {
@@ -681,6 +693,26 @@ function initPythonEditor(boxId) {
 			if (typeof __kustoEnsureEditorWritableSoon === 'function') {
 				__kustoEnsureEditorWritableSoon(editor);
 			}
+		} catch {
+			// ignore
+		}
+		try {
+			if (typeof __kustoInstallWritableGuard === 'function') {
+				__kustoInstallWritableGuard(editor);
+			}
+		} catch {
+			// ignore
+		}
+		// If the editor is stuck non-interactive on click, force writable before focusing.
+		try {
+			container.addEventListener('mousedown', () => {
+				try {
+					if (typeof __kustoForceEditorWritable === 'function') {
+						__kustoForceEditorWritable(editor);
+					}
+				} catch { /* ignore */ }
+				try { editor.focus(); } catch { /* ignore */ }
+			}, true);
 		} catch {
 			// ignore
 		}

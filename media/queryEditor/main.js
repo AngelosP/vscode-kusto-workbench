@@ -133,6 +133,60 @@ window.addEventListener('blur', () => {
 	} catch {
 		// ignore
 	}
+	// Also reset any stuck resize-drag interaction state.
+	try {
+		if (document && document.body) {
+			if (document.body.style && document.body.style.userSelect === 'none') {
+				document.body.style.userSelect = '';
+			}
+			if (document.body.style && document.body.style.cursor === 'ns-resize') {
+				document.body.style.cursor = '';
+			}
+		}
+		try {
+			(document.querySelectorAll('.query-editor-resizer.is-dragging') || []).forEach(el => el.classList.remove('is-dragging'));
+		} catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+});
+
+// When the webview becomes active again, Monaco can occasionally end up with its hidden
+// textarea stuck readonly/disabled. Re-assert writability for all editors.
+window.addEventListener('focus', () => {
+	try {
+		if (typeof __kustoEnsureAllEditorsWritableSoon === 'function') {
+			__kustoEnsureAllEditorsWritableSoon();
+		}
+	} catch {
+		// ignore
+	}
+});
+
+document.addEventListener('visibilitychange', () => {
+	try {
+		if (!document.hidden && typeof __kustoEnsureAllEditorsWritableSoon === 'function') {
+			__kustoEnsureAllEditorsWritableSoon();
+		}
+	} catch {
+		// ignore
+	}
+	// Reset any stuck drag state when the tab visibility changes.
+	try {
+		if (document && document.body) {
+			if (document.body.style && document.body.style.userSelect === 'none') {
+				document.body.style.userSelect = '';
+			}
+			if (document.body.style && document.body.style.cursor === 'ns-resize') {
+				document.body.style.cursor = '';
+			}
+		}
+		try {
+			(document.querySelectorAll('.query-editor-resizer.is-dragging') || []).forEach(el => el.classList.remove('is-dragging'));
+		} catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
 });
 
 // Request connections on load
