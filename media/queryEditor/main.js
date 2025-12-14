@@ -146,6 +146,11 @@ window.addEventListener('message', event => {
 			case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;
+						if (typeof __kustoSetCompatibilityMode === 'function') {
+							__kustoSetCompatibilityMode(!!message.compatibilityMode);
+						} else {
+							window.__kustoCompatibilityMode = !!message.compatibilityMode;
+						}
 				} catch {
 					// ignore
 				}

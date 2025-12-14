@@ -22,6 +22,19 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "kusto.kqlCompatEditor",
+        "displayName": "Kusto Query (Compatibility Mode)",
+        "selector": [
+          {
+            "filenamePattern": "*.kql"
+          },
+          {
+            "filenamePattern": "*.csl"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [

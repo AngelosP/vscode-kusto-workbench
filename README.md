@@ -6,7 +6,7 @@ A Visual Studio Code extension that provides a notebook-like experience for Kust
 
 - **Notebook Interface**: Create and manage Kusto queries in a familiar notebook format
 - **Cell-based Execution**: Write and execute KQL queries in individual cells
-- **Custom File Format**: Save your work as `.kusto-notebook` files
+- **Custom File Format**: Save your work as `.kqlx` files
 
 ## Getting Started
 

@@ -11,6 +11,40 @@ let __kustoRestoreInProgress = false;
 let __kustoPersistTimer = null;
 // Set by the extension host; true for globalStorage/session.kqlx.
 window.__kustoIsSessionFile = false;
+// Set by the extension host; true for .kql/.csl files.
+window.__kustoCompatibilityMode = false;
+
+function __kustoSetCompatibilityMode(enabled) {
+	try {
+		window.__kustoCompatibilityMode = !!enabled;
+		const msg = 'upgrade to .kqlx file type to get access to these';
+		const wrappers = document.querySelectorAll('.add-controls .add-control-wrapper');
+		for (const w of wrappers) {
+			try {
+				if (enabled) {
+					w.title = msg;
+				} else if (w.title === msg) {
+					w.title = '';
+				}
+			} catch {
+				// ignore
+			}
+		}
+		const buttons = document.querySelectorAll('.add-controls .add-control-btn');
+		for (const btn of buttons) {
+			try {
+				btn.disabled = !!enabled;
+				btn.setAttribute('aria-disabled', enabled ? 'true' : 'false');
+				// Tooltip is on wrapper span; avoid relying on disabled button tooltips.
+				if (btn.title === msg) btn.title = '';
+			} catch {
+				// ignore
+			}
+		}
+	} catch {
+		// ignore
+	}
+}
 
 // During restore, Monaco editors are created asynchronously.
 // Stash initial values here so init*Editor can apply them once the editor exists.
@@ -98,6 +132,33 @@ function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 }
 
 function getKqlxState() {
+	// Compatibility mode (.kql/.csl): only a single query section is supported.
+	try {
+		if (window.__kustoCompatibilityMode) {
+			let firstQueryBoxId = null;
+			try {
+				const ids = Array.isArray(queryBoxes) ? queryBoxes : [];
+				for (const id of ids) {
+					if (typeof id === 'string' && id.startsWith('query_')) {
+						firstQueryBoxId = id;
+						break;
+					}
+				}
+			} catch {
+				// ignore
+			}
+			const q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
+				? (queryEditors[firstQueryBoxId].getValue() || '')
+				: '';
+			return {
+				caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+				sections: [{ type: 'query', query: q }]
+			};
+		}
+	} catch {
+		// ignore
+	}
+
 	const sections = [];
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
@@ -267,6 +328,25 @@ function applyKqlxState(state) {
 		if (typeof s.caretDocsEnabled === 'boolean') {
 			caretDocsEnabled = !!s.caretDocsEnabled;
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+		}
+
+		// Compatibility mode (.kql/.csl): force exactly one query editor and ignore all other sections.
+		if (window.__kustoCompatibilityMode) {
+			let queryText = '';
+			try {
+				const sections = Array.isArray(s.sections) ? s.sections : [];
+				const first = sections.find(sec => sec && String(sec.type || '') === 'query');
+				queryText = first ? String(first.query || '') : '';
+			} catch {
+				// ignore
+			}
+			const boxId = addQueryBox();
+			try {
+				window.__kustoPendingQueryTextByBoxId[boxId] = queryText;
+			} catch {
+				// ignore
+			}
+			return;
 		}
 
 		const sections = Array.isArray(s.sections) ? s.sections : [];

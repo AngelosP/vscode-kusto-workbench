@@ -2,6 +2,7 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
+import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 
 // This method is called when your extension is activated
@@ -14,6 +15,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register .kqlx custom editor
 	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager));
+	// Register .kql/.csl compatibility custom editor
+	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 
 	// Register commands
 	context.subscriptions.push(
