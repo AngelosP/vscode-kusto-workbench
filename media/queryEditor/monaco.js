@@ -147,13 +147,42 @@ function ensureMonaco() {
 	monacoReadyPromise = new Promise((resolve, reject) => {
 		try {
 			waitForAmdLoader().then((req) => {
+				// Monaco worker bootstrap.
+				// Monaco 0.5x uses version-hashed worker assets under vs/assets. The extension host
+				// discovers them and passes them into __kustoQueryEditorConfig.monacoWorkers.
 				try {
-					// Monaco worker bootstrap
-					window.MonacoEnvironment = {
-						getWorkerUrl: function () {
-							return window.__kustoQueryEditorConfig.monacoVsUri + '/base/worker/workerMain.js';
+					const cfg = window && window.__kustoQueryEditorConfig ? window.__kustoQueryEditorConfig : {};
+					const workers = cfg && cfg.monacoWorkers ? cfg.monacoWorkers : null;
+					const cacheBuster = cfg && cfg.cacheBuster ? String(cfg.cacheBuster) : '';
+
+					const withCache = (url) => {
+						try {
+							if (!cacheBuster) return String(url);
+							const u = new URL(String(url));
+							u.searchParams.set('v', cacheBuster);
+							return u.toString();
+						} catch {
+							return String(url);
 						}
 					};
+
+					if (workers && (workers.editor || workers.ts || workers.json || workers.css || workers.html)) {
+						window.MonacoEnvironment = window.MonacoEnvironment || {};
+						window.MonacoEnvironment.getWorker = function (_moduleId, label) {
+							const l = String(label || '').toLowerCase();
+							let key = 'editor';
+							if (l === 'json') key = 'json';
+							else if (l === 'css' || l === 'scss' || l === 'less') key = 'css';
+							else if (l === 'html' || l === 'handlebars' || l === 'razor') key = 'html';
+							else if (l === 'typescript' || l === 'javascript') key = 'ts';
+
+							const url = workers[key] || workers.editor;
+							if (!url) {
+								throw new Error('Monaco worker asset URL not available for label: ' + label);
+							}
+							return new Worker(withCache(url));
+						};
+					}
 				} catch {
 					// ignore
 				}

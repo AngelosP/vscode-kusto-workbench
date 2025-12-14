@@ -6,7 +6,7 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 import { getQueryEditorHtml } from './queryEditorHtml';
 
-const OUTPUT_CHANNEL_NAME = 'Notebooks for Kusto';
+const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
 
 const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',

@@ -1,21 +1,14 @@
-# VS Code Extension: Notebooks for Kusto
+# VS Code Extension: Kusto Workbench
 
 ## Project Overview
-This is a VS Code extension that provides a notebook-like experience for Kusto Query Language (KQL), similar to Jupyter notebooks for Python.
+This is a VS Code extension that provides a notebook-like experience for Kusto Query Language (KQL), similar to Jupyter notebooks for Python, but better.
 
 ## Project Details
-- **Extension Name**: Notebooks for Kusto
-- **Internal Name**: vscode-kusto-notebooks
+- **Extension Name**: Kusto Workbench
+- **Internal Name**: vscode-kusto-workbench
 - **Language**: TypeScript
-- **Purpose**: Create and run Kusto queries in a notebook interface
-
-## Architecture
-- Uses VS Code's native notebook API
-- Implements notebook serializer for custom `.kusto-notebook` file format
-- Provides kernel for executing KQL queries against Azure Data Explorer clusters
+- **Purpose**: Create and run Kusto queries and more.
 
 ## Development Guidelines
 - Follow TypeScript best practices
-- Use VS Code's notebook API for all notebook operations
-- Keep notebook cell execution isolated and secure
 - Implement proper error handling for query execution
