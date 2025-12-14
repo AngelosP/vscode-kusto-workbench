@@ -9,6 +9,8 @@
 let __kustoPersistenceEnabled = false;
 let __kustoRestoreInProgress = false;
 let __kustoPersistTimer = null;
+// Set by the extension host; true for globalStorage/session.kqlx.
+window.__kustoIsSessionFile = false;
 
 // During restore, Monaco editors are created asynchronously.
 // Stash initial values here so init*Editor can apply them once the editor exists.
@@ -22,8 +24,14 @@ function __kustoGetWrapperHeightPx(boxId, suffix) {
 		if (!el) return undefined;
 		const wrapper = el.closest ? el.closest('.query-editor-wrapper') : null;
 		if (!wrapper) return undefined;
-		const h = wrapper.getBoundingClientRect().height;
-		return Number.isFinite(h) ? Math.max(0, Math.round(h)) : undefined;
+		// Only persist height if the user explicitly resized (wrapper has an inline height).
+		// Otherwise, default layout can vary by window size/theme and would cause spurious "dirty" writes.
+		const inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		if (!inlineHeight || inlineHeight === 'auto') return undefined;
+		const m = inlineHeight.match(/^([0-9]+)px$/i);
+		if (!m) return undefined;
+		const px = parseInt(m[1], 10);
+		return Number.isFinite(px) ? Math.max(0, px) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -146,6 +154,10 @@ function schedulePersist() {
 try {
 	window.addEventListener('beforeunload', () => {
 		try {
+			// Only force a final flush for the session file.
+			if (!window.__kustoIsSessionFile) {
+				return;
+			}
 			if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
 				return;
 			}

@@ -641,7 +641,13 @@ function initQueryEditor(boxId) {
 		try {
 			const pending = window.__kustoPendingQueryTextByBoxId && window.__kustoPendingQueryTextByBoxId[boxId];
 			if (typeof pending === 'string') {
-				editor.setValue(pending);
+				const prevRestore = (typeof __kustoRestoreInProgress === 'boolean') ? __kustoRestoreInProgress : false;
+				try {
+					__kustoRestoreInProgress = true;
+					editor.setValue(pending);
+				} finally {
+					__kustoRestoreInProgress = prevRestore;
+				}
 				try { delete window.__kustoPendingQueryTextByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch {

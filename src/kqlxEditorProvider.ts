@@ -4,6 +4,129 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 
+type ComparableSection =
+	| {
+			type: 'query';
+			name: string;
+			connectionId: string;
+			database: string;
+			query: string;
+			runMode: string;
+			cacheEnabled: boolean;
+			cacheValue: number;
+			cacheUnit: string;
+			editorHeightPx?: number;
+		}
+	| {
+			type: 'markdown';
+			title: string;
+			text: string;
+			tab: 'edit' | 'preview';
+			editorHeightPx?: number;
+		}
+	| {
+			type: 'python';
+			code: string;
+			output: string;
+			editorHeightPx?: number;
+		}
+	| {
+			type: 'url';
+			url: string;
+			expanded: boolean;
+		};
+
+type ComparableState = {
+	caretDocsEnabled: boolean;
+	sections: ComparableSection[];
+};
+
+const normalizeHeight = (v: unknown): number | undefined => {
+	const n = typeof v === 'number' ? v : undefined;
+	if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return undefined;
+	return Math.round(n);
+};
+
+const toComparableState = (s: KqlxStateV1): ComparableState => {
+	const caretDocsEnabled = typeof s.caretDocsEnabled === 'boolean' ? s.caretDocsEnabled : true;
+	const sections: ComparableSection[] = [];
+	for (const section of Array.isArray(s.sections) ? s.sections : []) {
+		const t = (section as any)?.type;
+		if (t === 'query') {
+			sections.push({
+				type: 'query',
+				name: String((section as any).name ?? ''),
+				connectionId: String((section as any).connectionId ?? ''),
+				database: String((section as any).database ?? ''),
+				query: String((section as any).query ?? ''),
+				runMode: String((section as any).runMode ?? 'take100'),
+				cacheEnabled: (typeof (section as any).cacheEnabled === 'boolean') ? (section as any).cacheEnabled : true,
+				cacheValue: Number.isFinite((section as any).cacheValue) ? Math.max(1, Math.trunc((section as any).cacheValue)) : 1,
+				cacheUnit: String((section as any).cacheUnit ?? 'days'),
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
+			});
+			continue;
+		}
+		if (t === 'markdown') {
+			sections.push({
+				type: 'markdown',
+				title: String((section as any).title ?? 'Markdown'),
+				text: String((section as any).text ?? ''),
+				tab: ((section as any).tab === 'preview') ? 'preview' : 'edit',
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
+			});
+			continue;
+		}
+		if (t === 'python') {
+			sections.push({
+				type: 'python',
+				code: String((section as any).code ?? ''),
+				output: String((section as any).output ?? ''),
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
+			});
+			continue;
+		}
+		if (t === 'url') {
+			sections.push({
+				type: 'url',
+				url: String((section as any).url ?? ''),
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : false
+			});
+			continue;
+		}
+		// Ignore unknown section types for comparison.
+	}
+	return { caretDocsEnabled, sections };
+};
+
+const deepEqual = (a: unknown, b: unknown): boolean => {
+	if (a === b) return true;
+	if (typeof a !== typeof b) return false;
+	if (a === null || b === null) return a === b;
+	if (typeof a !== 'object') return false;
+
+	if (Array.isArray(a) || Array.isArray(b)) {
+		if (!Array.isArray(a) || !Array.isArray(b)) return false;
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (!deepEqual(a[i], b[i])) return false;
+		}
+		return true;
+	}
+
+	const ao = a as Record<string, unknown>;
+	const bo = b as Record<string, unknown>;
+	const aKeys = Object.keys(ao).sort();
+	const bKeys = Object.keys(bo).sort();
+	if (aKeys.length !== bKeys.length) return false;
+	for (let i = 0; i < aKeys.length; i++) {
+		if (aKeys[i] !== bKeys[i]) return false;
+		const k = aKeys[i];
+		if (!deepEqual(ao[k], bo[k])) return false;
+	}
+	return true;
+};
+
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: KqlxStateV1; flush?: boolean }
@@ -54,6 +177,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return document.uri.toString() === sessionUri.toString();
 		})();
+
+		// Inform the webview whether it's operating in session mode.
+		try {
+			void webviewPanel.webview.postMessage({
+				type: 'persistenceMode',
+				isSessionFile
+			});
+		} catch {
+			// ignore
+		}
 		let saveTimer: NodeJS.Timeout | undefined;
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
@@ -137,6 +270,28 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
+
+					// If the incoming state is semantically identical to what is already in the document,
+					// do not rewrite the file (prevents "Save?" prompts due to JSON formatting/ordering).
+					try {
+						const parsedCurrent = parseKqlxText(document.getText());
+						if (parsedCurrent.ok) {
+							const currentComparable = toComparableState(parsedCurrent.file.state);
+							const incomingComparable = toComparableState(state);
+							if (deepEqual(currentComparable, incomingComparable)) {
+								if (isSessionFile && (message as any).flush) {
+									try {
+										await document.save();
+									} catch {
+										// ignore
+									}
+								}
+								return;
+							}
+						}
+					} catch {
+						// ignore
+					}
 
 					const file: KqlxFileV1 = {
 						kind: 'kqlx',

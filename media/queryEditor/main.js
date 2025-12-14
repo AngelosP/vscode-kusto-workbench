@@ -143,6 +143,13 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 window.addEventListener('message', event => {
 	const message = event.data;
 	switch (message.type) {
+			case 'persistenceMode':
+				try {
+					window.__kustoIsSessionFile = !!message.isSessionFile;
+				} catch {
+					// ignore
+				}
+				break;
 		case 'connectionsData':
 			connections = message.connections;
 			lastConnectionId = message.lastConnectionId;

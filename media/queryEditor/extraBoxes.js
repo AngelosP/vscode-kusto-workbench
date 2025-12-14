@@ -300,7 +300,13 @@ function initMarkdownEditor(boxId) {
 		try {
 			const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
 			if (typeof pending === 'string') {
-				editor.setValue(pending);
+				const prevRestore = (typeof __kustoRestoreInProgress === 'boolean') ? __kustoRestoreInProgress : false;
+				try {
+					__kustoRestoreInProgress = true;
+					editor.setValue(pending);
+				} finally {
+					__kustoRestoreInProgress = prevRestore;
+				}
 				try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch {
@@ -540,7 +546,13 @@ function initPythonEditor(boxId) {
 		try {
 			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
 			if (typeof pending === 'string') {
-				editor.setValue(pending);
+				const prevRestore = (typeof __kustoRestoreInProgress === 'boolean') ? __kustoRestoreInProgress : false;
+				try {
+					__kustoRestoreInProgress = true;
+					editor.setValue(pending);
+				} finally {
+					__kustoRestoreInProgress = prevRestore;
+				}
 				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch {
