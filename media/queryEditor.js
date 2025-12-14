@@ -3,14 +3,30 @@
 // The implementation is split into smaller files under media/queryEditor/.
 // This file remains as the stable entrypoint referenced by the webview HTML.
 (function bootstrapKustoQueryEditor() {
-	// If the user clicks "+ Add Query Box" before scripts are fully loaded,
+	// If the user clicks one of the add buttons before scripts are fully loaded,
 	// queue those clicks and replay them once initialization completes.
-	if (typeof window.__kustoQueryEditorPendingAdd !== 'number') {
-		window.__kustoQueryEditorPendingAdd = 0;
+	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
+		window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
 	}
+	const pendingAdds = window.__kustoQueryEditorPendingAdds;
 	if (typeof window.addQueryBox !== 'function') {
 		window.addQueryBox = function () {
-			window.__kustoQueryEditorPendingAdd++;
+			pendingAdds.query = (pendingAdds.query || 0) + 1;
+		};
+	}
+	if (typeof window.addMarkdownBox !== 'function') {
+		window.addMarkdownBox = function () {
+			pendingAdds.markdown = (pendingAdds.markdown || 0) + 1;
+		};
+	}
+	if (typeof window.addPythonBox !== 'function') {
+		window.addPythonBox = function () {
+			pendingAdds.python = (pendingAdds.python || 0) + 1;
+		};
+	}
+	if (typeof window.addUrlBox !== 'function') {
+		window.addUrlBox = function () {
+			pendingAdds.url = (pendingAdds.url || 0) + 1;
 		};
 	}
 
@@ -32,9 +48,12 @@
 		'queryEditor/vscode.js',
 		'queryEditor/state.js',
 		'queryEditor/utils.js',
+		'queryEditor/vendor/marked.min.js',
+		'queryEditor/vendor/purify.min.js',
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
 		'queryEditor/queryBoxes.js',
+		'queryEditor/extraBoxes.js',
 		'queryEditor/resultsTable.js',
 		'queryEditor/objectViewer.js',
 		'queryEditor/columnAnalysis.js',

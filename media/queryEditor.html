@@ -11,7 +11,12 @@
 
 <body>
 	<div id="queries-container"></div>
-	<button class="add-query" onclick="addQueryBox()">+ Add Query Box</button>
+	<div class="add-controls" role="group" aria-label="Add sections">
+		<button class="add-control-btn" onclick="addQueryBox()">Add Query</button>
+		<button class="add-control-btn" onclick="addMarkdownBox()">Add Markdown</button>
+		<button class="add-control-btn" onclick="addPythonBox()">Add Python</button>
+		<button class="add-control-btn" onclick="addUrlBox()">Add URL</button>
+	</div>
 
 	<!-- Object Viewer Modal -->
 	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">

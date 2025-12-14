@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import { spawn } from 'child_process';
+
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 
@@ -22,6 +24,8 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'showInfo'; message: string }
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
+	| { type: 'executePython'; boxId: string; code: string }
+	| { type: 'fetchUrl'; boxId: string; url: string }
 	| {
 		type: 'executeQuery';
 		query: string;
@@ -104,6 +108,12 @@ export class QueryEditorProvider {
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
 				return;
+			case 'executePython':
+				await this.executePythonFromWebview(message);
+				return;
+			case 'fetchUrl':
+				await this.fetchUrlFromWebview(message);
+				return;
 			case 'prefetchSchema':
 				await this.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh);
 				return;
@@ -116,6 +126,166 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private async executePythonFromWebview(
+		message: Extract<IncomingWebviewMessage, { type: 'executePython' }>
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		const code = String(message.code || '');
+		if (!boxId) {
+			return;
+		}
+
+		const timeoutMs = 15000;
+		const maxBytes = 200 * 1024;
+		const cwd = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
+
+		const runOnce = (cmd: string, args: string[]) => {
+			return new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve, reject) => {
+				let stdout = '';
+				let stderr = '';
+				let done = false;
+				let killedByTimeout = false;
+				const child = spawn(cmd, args, {
+					cwd,
+					shell: false,
+					stdio: ['pipe', 'pipe', 'pipe']
+				});
+
+				const timer = setTimeout(() => {
+					killedByTimeout = true;
+					try {
+						child.kill();
+					} catch {
+						// ignore
+					}
+				}, timeoutMs);
+
+				const append = (current: string, chunk: Buffer) => {
+					if (current.length >= maxBytes) {
+						return current;
+					}
+					const toAdd = chunk.toString('utf8');
+					const next = current + toAdd;
+					return next.length > maxBytes ? next.slice(0, maxBytes) : next;
+				};
+
+				child.stdout?.on('data', (d: Buffer) => {
+					stdout = append(stdout, d);
+				});
+				child.stderr?.on('data', (d: Buffer) => {
+					stderr = append(stderr, d);
+				});
+				child.on('error', (err) => {
+					if (done) {
+						return;
+					}
+					done = true;
+					clearTimeout(timer);
+					reject(err);
+				});
+				child.on('close', (exitCode) => {
+					if (done) {
+						return;
+					}
+					done = true;
+					clearTimeout(timer);
+					if (killedByTimeout) {
+						stderr = (stderr ? stderr + '\n' : '') + `Timed out after ${Math.round(timeoutMs / 1000)}s.`;
+					}
+					resolve({ stdout, stderr, exitCode: typeof exitCode === 'number' ? exitCode : -1 });
+				});
+
+				try {
+					child.stdin?.write(code);
+					child.stdin?.end();
+				} catch {
+					// ignore
+				}
+			});
+		};
+
+		const candidates: Array<{ cmd: string; args: string[] }> = [
+			{ cmd: 'python', args: ['-'] },
+			{ cmd: 'python3', args: ['-'] },
+			{ cmd: 'py', args: ['-'] }
+		];
+
+		let lastError: unknown = undefined;
+		for (const c of candidates) {
+			try {
+				const result = await runOnce(c.cmd, c.args);
+				this.postMessage({ type: 'pythonResult', boxId, ...result });
+				return;
+			} catch (e: any) {
+				lastError = e;
+				// Command not found: try the next candidate.
+				if (e && (e.code === 'ENOENT' || String(e.message || '').includes('ENOENT'))) {
+					continue;
+				}
+				// Other errors: stop early.
+				break;
+			}
+		}
+
+		const errMsg = lastError && typeof (lastError as any).message === 'string'
+			? (lastError as any).message
+			: 'Python execution failed (python not found?).';
+		this.postMessage({ type: 'pythonError', boxId, error: errMsg });
+	}
+
+	private async fetchUrlFromWebview(message: Extract<IncomingWebviewMessage, { type: 'fetchUrl' }>): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		const rawUrl = String(message.url || '').trim();
+		if (!boxId) {
+			return;
+		}
+		let url: URL;
+		try {
+			url = new URL(rawUrl);
+		} catch {
+			this.postMessage({ type: 'urlError', boxId, error: 'Invalid URL.' });
+			return;
+		}
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+			this.postMessage({ type: 'urlError', boxId, error: 'Only http/https URLs are supported.' });
+			return;
+		}
+
+		const timeoutMs = 15000;
+		const maxChars = 200000;
+		const ac = new AbortController();
+		const timer = setTimeout(() => ac.abort(), timeoutMs);
+		try {
+			const resp = await fetch(url.toString(), {
+				redirect: 'follow',
+				signal: ac.signal
+			});
+			const contentType = resp.headers.get('content-type') || '';
+			let body = await resp.text();
+			let truncated = false;
+			if (body.length > maxChars) {
+				body = body.slice(0, maxChars);
+				truncated = true;
+			}
+			this.postMessage({
+				type: 'urlContent',
+				boxId,
+				url: url.toString(),
+				contentType,
+				status: resp.status,
+				body,
+				truncated
+			});
+		} catch (e: any) {
+			const msg = e?.name === 'AbortError'
+				? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
+				: (typeof e?.message === 'string' ? e.message : 'Failed to fetch URL.');
+			this.postMessage({ type: 'urlError', boxId, error: msg });
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

@@ -133,6 +133,18 @@ window.addEventListener('message', event => {
 		case 'queryError':
 			displayError(message.error);
 			break;
+		case 'pythonResult':
+			try { if (typeof onPythonResult === 'function') onPythonResult(message); } catch { /* ignore */ }
+			break;
+		case 'pythonError':
+			try { if (typeof onPythonError === 'function') onPythonError(message); } catch { /* ignore */ }
+			break;
+		case 'urlContent':
+			try { if (typeof onUrlContent === 'function') onUrlContent(message); } catch { /* ignore */ }
+			break;
+		case 'urlError':
+			try { if (typeof onUrlError === 'function') onUrlError(message); } catch { /* ignore */ }
+			break;
 		case 'schemaData':
 			schemaByBoxId[message.boxId] = message.schema;
 			setSchemaLoading(message.boxId, false);
@@ -183,13 +195,19 @@ window.addEventListener('message', event => {
 	}
 });
 
-// Add initial query box (and handle any clicks that happened before load)
-const pending = window.__kustoQueryEditorPendingAdd || 0;
-window.__kustoQueryEditorPendingAdd = 0;
-if (pending > 0) {
-	for (let i = 0; i < pending; i++) {
-		addQueryBox();
-	}
+// Add initial content (and handle any add button clicks that happened before load)
+const pendingAdds = (window.__kustoQueryEditorPendingAdds && typeof window.__kustoQueryEditorPendingAdds === 'object')
+	? window.__kustoQueryEditorPendingAdds
+	: { query: 0, markdown: 0, python: 0, url: 0 };
+// Reset counts so they don't replay on reload.
+window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+
+const pendingTotal = (pendingAdds.query || 0) + (pendingAdds.markdown || 0) + (pendingAdds.python || 0) + (pendingAdds.url || 0);
+if (pendingTotal > 0) {
+	for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
+	for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();
+	for (let i = 0; i < (pendingAdds.python || 0); i++) addPythonBox();
+	for (let i = 0; i < (pendingAdds.url || 0); i++) addUrlBox();
 } else {
 	addQueryBox();
 }

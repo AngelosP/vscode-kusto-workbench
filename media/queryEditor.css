@@ -11,6 +11,122 @@
 			padding: 16px;
 		}
 
+		.add-controls {
+			width: 100%;
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+			justify-content: center;
+			align-items: center;
+			margin: 8px 0 16px;
+		}
+
+		.add-control-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.add-control-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		/* Generic section header row used by non-KQL boxes */
+		.section-header-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			justify-content: space-between;
+			margin-bottom: 8px;
+		}
+
+		.section-title {
+			font-size: 12px;
+			color: var(--vscode-foreground);
+			font-weight: 600;
+		}
+
+		.section-actions {
+			display: inline-flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.section-btn {
+			background: transparent;
+			border: 1px solid var(--vscode-input-border);
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 4px;
+		}
+
+		.section-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.markdown-viewer {
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 10px;
+			background: var(--vscode-editor-background);
+			min-height: 80px;
+			font-size: 13px;
+		}
+
+		.markdown-viewer code {
+			background: var(--vscode-textBlockQuote-background);
+			padding: 1px 3px;
+			border-radius: 3px;
+		}
+
+		.python-output,
+		.url-output {
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			background: var(--vscode-editor-background);
+			padding: 10px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			white-space: pre-wrap;
+			overflow: auto;
+			max-height: 320px;
+		}
+
+		.url-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex-wrap: wrap;
+			margin-bottom: 8px;
+		}
+
+		.url-input {
+			flex: 1 1 420px;
+			min-width: 220px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.url-input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.url-collapsed {
+			display: none;
+		}
+
 		.query-box {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;

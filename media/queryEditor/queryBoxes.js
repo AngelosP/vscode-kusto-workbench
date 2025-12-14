@@ -160,6 +160,14 @@ function addQueryBox() {
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
 	initQueryEditor(id);
+	try {
+		const controls = document.querySelector('.add-controls');
+		if (controls && typeof controls.scrollIntoView === 'function') {
+			controls.scrollIntoView({ block: 'end' });
+		}
+	} catch {
+		// ignore
+	}
 }
 
 function updateCaretDocsToggleButtons() {
