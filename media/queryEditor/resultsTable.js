@@ -1,4 +1,20 @@
 function displayResult(result) {
+	const searchIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<circle cx="7" cy="7" r="4.2" />' +
+		'<path d="M10.4 10.4L14 14" />' +
+		'</svg>';
+
+	const scrollToColumnIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 3.5h10" />' +
+		'<path d="M3 6.5h10" />' +
+		'<path d="M3 9.5h6" />' +
+		'<path d="M3 12.5h6" />' +
+		'<path d="M12.5 8v5" />' +
+		'<path d="M11 11.5l1.5 1.5 1.5-1.5" />' +
+		'</svg>';
+
 	const boxId = window.lastExecutedBox;
 	if (!boxId) { return; }
 
@@ -26,8 +42,8 @@ function displayResult(result) {
 		' (Execution time: ' + result.metadata.executionTime + ')' +
 		'</div>' +
 		'<div class="results-tools">' +
-		'<button class="tool-toggle-btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data">🔍</button>' +
-		'<button class="tool-toggle-btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column">📋</button>' +
+		'<button class="tool-toggle-btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
+		'<button class="tool-toggle-btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +

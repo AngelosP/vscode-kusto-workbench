@@ -11,6 +11,64 @@ function isDarkTheme() {
 	return luminance < 0.5;
 }
 
+let monacoThemeObserverStarted = false;
+let lastAppliedIsDarkTheme = null;
+
+function applyMonacoTheme(monaco) {
+	if (!monaco || !monaco.editor || typeof monaco.editor.setTheme !== 'function') {
+		return;
+	}
+	let dark = true;
+	try {
+		dark = isDarkTheme();
+	} catch {
+		dark = true;
+	}
+	if (lastAppliedIsDarkTheme === dark) {
+		return;
+	}
+	lastAppliedIsDarkTheme = dark;
+	try {
+		monaco.editor.setTheme(dark ? 'vs-dark' : 'vs');
+	} catch {
+		// ignore
+	}
+}
+
+function startMonacoThemeObserver(monaco) {
+	if (monacoThemeObserverStarted) {
+		return;
+	}
+	monacoThemeObserverStarted = true;
+
+	// Apply once now (safe even if ensureMonaco already set theme).
+	applyMonacoTheme(monaco);
+
+	let pending = false;
+	const schedule = () => {
+		if (pending) {
+			return;
+		}
+		pending = true;
+		setTimeout(() => {
+			pending = false;
+			applyMonacoTheme(monaco);
+		}, 0);
+	};
+
+	try {
+		const observer = new MutationObserver(() => schedule());
+		if (document && document.body) {
+			observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+		if (document && document.documentElement) {
+			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+	} catch {
+		// ignore
+	}
+}
+
 function ensureMonaco() {
 	if (monacoReadyPromise) {
 		return monacoReadyPromise;
@@ -350,6 +408,7 @@ function ensureMonaco() {
 					});
 
 					monaco.editor.setTheme(isDarkTheme() ? 'vs-dark' : 'vs');
+					startMonacoThemeObserver(monaco);
 
 					// Autocomplete driven by cached schema (tables + columns).
 					monaco.languages.registerCompletionItemProvider('kusto', {
