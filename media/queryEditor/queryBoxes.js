@@ -41,6 +41,15 @@ function addQueryBox(options) {
 		'<path d="M5.2 5.6h5.6"/>' +
 		'<path d="M5.2 7.8h4.2"/>' +
 		'</svg>';
+
+	const autocompleteIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 4.5h10"/>' +
+		'<path d="M3 7.5h6"/>' +
+		'<path d="M3 10.5h4"/>' +
+		'<path d="M10.2 9.2l2.3 2.3"/>' +
+		'<path d="M12.5 9.2v2.3h-2.3"/>' +
+		'</svg>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table">' +
@@ -69,6 +78,9 @@ function addQueryBox(options) {
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
+		'</button>' +
+		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
+		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
@@ -239,6 +251,17 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'format') {
 		return runMonacoAction(boxId, 'editor.action.formatDocument');
+	}
+	if (action === 'autocomplete') {
+		try {
+			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
+				return;
+			}
+		} catch {
+			// ignore
+		}
+		return runMonacoAction(boxId, 'editor.action.triggerSuggest');
 	}
 	if (action === 'doubleToSingle') {
 		return replaceAllInEditor(boxId, '"', "'");

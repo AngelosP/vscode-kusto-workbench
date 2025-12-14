@@ -1156,9 +1156,10 @@ function initQueryEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
-			suggestOnTriggerCharacters: true,
-			quickSuggestions: { other: true, comments: false, strings: false },
-			quickSuggestionsDelay: 200,
+			// Autocomplete should be manual-only (Ctrl+Space / toolbar) unless explicitly triggered by code.
+			suggestOnTriggerCharacters: false,
+			quickSuggestions: false,
+			quickSuggestionsDelay: 0,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
 			fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
@@ -1182,6 +1183,68 @@ function initQueryEditor(boxId) {
 				} catch {
 					// ignore
 				}
+			});
+		} catch {
+			// ignore
+		}
+
+		// Trigger suggest, then auto-hide it if Monaco has nothing to show.
+		const __kustoHideSuggestIfNoSuggestions = (ed) => {
+			try {
+				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
+				if (!root || typeof root.querySelector !== 'function') {
+					return;
+				}
+				const widget = root.querySelector('.suggest-widget');
+				if (!widget) {
+					return;
+				}
+				const text = String(widget.textContent || '').toLowerCase();
+				const hasNoSuggestionsText = text.includes('no suggestions');
+				const hasRows = !!(widget.querySelector && widget.querySelector('.monaco-list-row'));
+				if (hasNoSuggestionsText || !hasRows) {
+					try { ed.trigger('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
+					try { ed.trigger('keyboard', 'editor.action.hideSuggestWidget', {}); } catch { /* ignore */ }
+				}
+			} catch {
+				// ignore
+			}
+		};
+
+		const __kustoTriggerAutocomplete = (ed) => {
+			try {
+				if (!ed) return;
+				ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
+				// Run twice: immediate and after async providers settle.
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 0);
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 120);
+			} catch {
+				// ignore
+			}
+		};
+
+		// Expose for toolbar / other scripts.
+		try {
+			if (typeof window.__kustoTriggerAutocompleteForBoxId !== 'function') {
+				window.__kustoTriggerAutocompleteForBoxId = (id) => {
+					try {
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						if (ed) {
+							__kustoTriggerAutocomplete(ed);
+						}
+					} catch {
+						// ignore
+					}
+				};
+			}
+		} catch {
+			// ignore
+		}
+
+		// Ensure Ctrl+Space always triggers autocomplete inside the webview.
+		try {
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
+				__kustoTriggerAutocomplete(editor);
 			});
 		} catch {
 			// ignore
@@ -1572,22 +1635,8 @@ function initQueryEditor(boxId) {
 			// ignore
 		}
 
-		// Auto-trigger suggestions while typing once schema is loaded.
-		editor.onDidChangeModelContent(() => {
-			if (!schemaByBoxId[boxId]) {
-				return;
-			}
-			if (suggestDebounceTimers[boxId]) {
-				clearTimeout(suggestDebounceTimers[boxId]);
-			}
-			suggestDebounceTimers[boxId] = setTimeout(() => {
-				try {
-					editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
-				} catch {
-					// ignore
-				}
-			}, 180);
-		});
+		// Note: we intentionally do NOT auto-trigger Monaco suggestions on typing.
+		// Users can trigger via Ctrl+Space or the toolbar button.
 
 		// Keep Monaco laid out when the user resizes the wrapper.
 		if (wrapper && typeof ResizeObserver !== 'undefined') {
