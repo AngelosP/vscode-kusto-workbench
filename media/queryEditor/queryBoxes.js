@@ -43,7 +43,7 @@ function addQueryBox(options) {
 		'</svg>';
 
 	const autocompleteIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M3 4.5h10"/>' +
 		'<path d="M3 7.5h6"/>' +
 		'<path d="M3 10.5h4"/>' +
@@ -79,9 +79,6 @@ function addQueryBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
-		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
-		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
@@ -96,6 +93,9 @@ function addQueryBox(options) {
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Caret docs tooltip\nShows a persistent tooltip near the caret while typing" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
+		'</button>' +
+		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
+		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
 		'</div>';
 	const boxHtml =
