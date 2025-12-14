@@ -1,13 +1,59 @@
 function isDarkTheme() {
-	const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
-	const match = bg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/i);
-	if (!match) {
+	// VS Code webviews typically toggle these classes on theme changes.
+	try {
+		const cls = document && document.body && document.body.classList;
+		if (cls) {
+			if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) {
+				return false;
+			}
+			if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) {
+				return true;
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	const parseCssColorToRgb = (value) => {
+		const v = String(value || '').trim();
+		if (!v) {
+			return null;
+		}
+		// rgb()/rgba()
+		let m = v.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+)\s*)?\)/i);
+		if (m) {
+			return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10) };
+		}
+		// #RGB, #RRGGBB, #RRGGBBAA
+		m = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+		if (m) {
+			const hex = m[1];
+			if (hex.length === 3) {
+				const r = parseInt(hex[0] + hex[0], 16);
+				const g = parseInt(hex[1] + hex[1], 16);
+				const b = parseInt(hex[2] + hex[2], 16);
+				return { r, g, b };
+			}
+			const r = parseInt(hex.slice(0, 2), 16);
+			const g = parseInt(hex.slice(2, 4), 16);
+			const b = parseInt(hex.slice(4, 6), 16);
+			return { r, g, b };
+		}
+		return null;
+	};
+
+	let bg = '';
+	try {
+		bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
+	} catch {
+		bg = '';
+	}
+	const rgb = parseCssColorToRgb(bg);
+	if (!rgb) {
+		// Fall back to dark if we can't determine; better than flashing light.
 		return true;
 	}
-	const r = parseInt(match[1], 10);
-	const g = parseInt(match[2], 10);
-	const b = parseInt(match[3], 10);
-	const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+	const luminance = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
 	return luminance < 0.5;
 }
 
