@@ -180,7 +180,31 @@ function ensureMonaco() {
 							if (!url) {
 								throw new Error('Monaco worker asset URL not available for label: ' + label);
 							}
-							return new Worker(withCache(url));
+							const workerUrl = withCache(url);
+
+							// VS Code webviews can fail to construct a Worker directly from a vscode-webview:// URL
+							// (depending on Chromium/webview security restrictions). A common workaround is to
+							// create a Blob worker that importScripts() the actual worker URL.
+							try {
+								return new Worker(workerUrl);
+							} catch {
+								// ignore and fall back
+							}
+
+							try {
+								const blobSource = `/* Monaco Worker Wrapper */\nimportScripts(${JSON.stringify(workerUrl)});`;
+								const blob = new Blob([blobSource], { type: 'text/javascript' });
+								const blobUrl = URL.createObjectURL(blob);
+								const w = new Worker(blobUrl);
+								// Best-effort cleanup: revoke once the worker has had a chance to start.
+								setTimeout(() => {
+									try { URL.revokeObjectURL(blobUrl); } catch { /* ignore */ }
+								}, 30_000);
+								return w;
+							} catch (e) {
+								// If even the Blob worker fails, rethrow so Monaco can fall back to main thread.
+								throw e;
+							}
 						};
 					}
 				} catch {
