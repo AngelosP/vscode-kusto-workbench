@@ -1155,26 +1155,75 @@ function __kustoRenderUrlContent(contentEl, st) {
 		}
 
 		if (kind === 'csv' && typeof st.body === 'string') {
-			const rows = __kustoParseCsv(st.body);
+			const boxId = (() => {
+				try {
+					const id = contentEl && contentEl.id ? String(contentEl.id) : '';
+					return id.endsWith('_content') ? id.slice(0, -('_content'.length)) : '';
+				} catch {
+					return '';
+				}
+			})();
+
+			const csvRows = __kustoParseCsv(st.body);
+			let columns = [];
+			let dataRows = [];
+			if (csvRows.length > 0) {
+				columns = Array.isArray(csvRows[0]) ? csvRows[0].map((c) => String(c ?? '')) : [];
+				dataRows = csvRows.slice(1);
+			}
+
+			// Normalize ragged rows and ensure we have enough columns.
+			let maxCols = columns.length;
+			for (const r of dataRows) {
+				if (Array.isArray(r) && r.length > maxCols) {
+					maxCols = r.length;
+				}
+			}
+			for (let i = columns.length; i < maxCols; i++) {
+				columns.push('Column ' + (i + 1));
+			}
+			dataRows = dataRows.map((r) => {
+				const row = Array.isArray(r) ? r : [];
+				const out = new Array(maxCols);
+				for (let i = 0; i < maxCols; i++) {
+					out[i] = String(row[i] ?? '');
+				}
+				return out;
+			});
+
+			// Reuse the same tabular control as Kusto query results.
+			if (boxId && typeof displayResultForBox === 'function') {
+				const resultsDiv = document.createElement('div');
+				resultsDiv.className = 'results visible';
+				resultsDiv.id = boxId + '_results';
+				contentEl.appendChild(resultsDiv);
+
+				displayResultForBox(
+					{ columns: columns, rows: dataRows, metadata: {} },
+					boxId,
+					{ label: 'CSV', showExecutionTime: false, resultsDiv: resultsDiv }
+				);
+				return;
+			}
+
+			// Fallback: simple table if the tabular module isn't available.
 			const wrapper = document.createElement('div');
-			// Important: don't create a nested scroller; let the URL section container scroll.
 			wrapper.className = 'url-table-container';
 			const table = document.createElement('table');
 			const thead = document.createElement('thead');
 			const tbody = document.createElement('tbody');
 
-			const header = rows.length ? rows[0] : [];
 			const headerRow = document.createElement('tr');
-			for (const h of header) {
+			for (const h of columns) {
 				const th = document.createElement('th');
 				th.textContent = String(h ?? '');
 				headerRow.appendChild(th);
 			}
 			thead.appendChild(headerRow);
 
-			for (let i = 1; i < rows.length; i++) {
+			for (const r of dataRows) {
 				const tr = document.createElement('tr');
-				for (const cell of rows[i]) {
+				for (const cell of r) {
 					const td = document.createElement('td');
 					td.textContent = String(cell ?? '');
 					tr.appendChild(td);

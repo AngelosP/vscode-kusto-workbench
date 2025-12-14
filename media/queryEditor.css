@@ -946,6 +946,12 @@
 			border-radius: 0;
 		}
 
+		/* URL CSV previews using the shared tabular control: avoid nested scrollbars. */
+		.url-output .table-container {
+			max-height: none;
+			overflow: visible;
+		}
+
 		table {
 			width: max-content;
 			min-width: 100%;
@@ -975,7 +981,8 @@
 		}
 
 		th:not(.row-selector) {
-			position: relative;
+			/* Intentionally do not override `th { position: sticky; }`.
+			   This keeps all headers (including non-# columns) consistent while scrolling. */
 		}
 
 		.column-header-content {

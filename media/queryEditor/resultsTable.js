@@ -1,11 +1,14 @@
-function displayResult(result) {
-	const searchIconSvg =
+function __kustoGetSearchIconSvg() {
+	return (
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<circle cx="7" cy="7" r="4.2" />' +
 		'<path d="M10.4 10.4L14 14" />' +
-		'</svg>';
+		'</svg>'
+	);
+}
 
-	const scrollToColumnIconSvg =
+function __kustoGetScrollToColumnIconSvg() {
+	return (
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M3 3.5h10" />' +
 		'<path d="M3 6.5h10" />' +
@@ -13,33 +16,80 @@ function displayResult(result) {
 		'<path d="M3 12.5h6" />' +
 		'<path d="M12.5 8v5" />' +
 		'<path d="M11 11.5l1.5 1.5 1.5-1.5" />' +
-		'</svg>';
+		'</svg>'
+	);
+}
 
+function displayResult(result) {
 	const boxId = window.lastExecutedBox;
 	if (!boxId) { return; }
 
 	setQueryExecuting(boxId, false);
 
-	const resultsDiv = document.getElementById(boxId + '_results');
+	displayResultForBox(result, boxId, {
+		label: 'Results',
+		showExecutionTime: true
+	});
+}
+
+function __kustoEnsureResultsStateMap() {
+	if (!window.__kustoResultsByBoxId || typeof window.__kustoResultsByBoxId !== 'object') {
+		window.__kustoResultsByBoxId = {};
+	}
+	return window.__kustoResultsByBoxId;
+}
+
+function __kustoGetResultsState(boxId) {
+	if (!boxId) {
+		return null;
+	}
+	const map = __kustoEnsureResultsStateMap();
+	return map[boxId] || null;
+}
+
+function __kustoSetResultsState(boxId, state) {
+	if (!boxId) {
+		return;
+	}
+	const map = __kustoEnsureResultsStateMap();
+	map[boxId] = state;
+	// Backward-compat: keep the last rendered result as the "current" one.
+	try { window.currentResult = state; } catch { /* ignore */ }
+}
+
+function displayResultForBox(result, boxId, options) {
+	if (!boxId) { return; }
+	const resultsDiv = (options && options.resultsDiv) ? options.resultsDiv : document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
 
-	// Store result data for navigation
-	window.currentResult = {
+	const columns = Array.isArray(result && result.columns) ? result.columns : [];
+	const rows = Array.isArray(result && result.rows) ? result.rows : [];
+	const metadata = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
+
+	__kustoSetResultsState(boxId, {
 		boxId: boxId,
-		columns: result.columns,
-		rows: result.rows,
-		metadata: result.metadata,
+		columns: columns,
+		rows: rows,
+		metadata: metadata,
 		selectedCell: null,
 		selectedRows: new Set(),
 		searchMatches: [],
 		currentSearchIndex: -1
-	};
+	});
+
+	const label = (options && typeof options.label === 'string' && options.label) ? options.label : 'Results';
+	const showExecutionTime = !(options && options.showExecutionTime === false);
+	const execTime = metadata && typeof metadata.executionTime === 'string' ? metadata.executionTime : '';
+	const execPart = (showExecutionTime && execTime) ? (' (Execution time: ' + execTime + ')') : '';
+
+	const searchIconSvg = __kustoGetSearchIconSvg();
+	const scrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg();
 
 	let html =
 		'<div class="results-header">' +
 		'<div>' +
-		'<strong>Results:</strong> ' + (result.rows ? result.rows.length : 0) + ' rows / ' + (result.columns ? result.columns.length : 0) + ' columns' +
-		' (Execution time: ' + result.metadata.executionTime + ')' +
+		'<strong>' + label + ':</strong> ' + (rows ? rows.length : 0) + ' rows / ' + (columns ? columns.length : 0) + ' columns' +
+		execPart +
 		'</div>' +
 		'<div class="results-tools">' +
 		'<button class="tool-toggle-btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
@@ -66,7 +116,7 @@ function displayResult(result) {
 		'<table id="' + boxId + '_table">' +
 		'<thead><tr>' +
 		'<th class="row-selector">#</th>' +
-		result.columns.map((c, i) =>
+		columns.map((c, i) =>
 			'<th data-col="' + i + '">' +
 			'<div class="column-header-content">' +
 			'<span>' + c + '</span>' +
@@ -80,11 +130,10 @@ function displayResult(result) {
 		).join('') +
 		'</tr></thead>' +
 		'<tbody>' +
-		result.rows.map((row, rowIdx) =>
+		rows.map((row, rowIdx) =>
 			'<tr data-row="' + rowIdx + '">' +
 			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + boxId + '\')">' + (rowIdx + 1) + '</td>' +
 			row.map((cell, colIdx) => {
-				// Check if cell is an object with display and full properties
 				const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 				const displayValue = hasHover ? cell.display : cell;
 				const fullValue = hasHover ? cell.full : cell;
@@ -138,7 +187,8 @@ function displayCancelled() {
 }
 
 function selectCell(row, col, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	// Clear previous selection
 	const prevCell = document.querySelector('#' + boxId + '_table td.selected-cell');
@@ -150,7 +200,7 @@ function selectCell(row, col, boxId) {
 	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + row + '"][data-col="' + col + '"]');
 	if (cell) {
 		cell.classList.add('selected-cell');
-		window.currentResult.selectedCell = { row, col };
+		state.selectedCell = { row, col };
 
 		// Scroll cell into view
 		cell.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
@@ -164,16 +214,17 @@ function selectCell(row, col, boxId) {
 }
 
 function toggleRowSelection(row, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	const rowElement = document.querySelector('#' + boxId + '_table tr[data-row="' + row + '"]');
 	if (!rowElement) { return; }
 
-	if (window.currentResult.selectedRows.has(row)) {
-		window.currentResult.selectedRows.delete(row);
+	if (state.selectedRows.has(row)) {
+		state.selectedRows.delete(row);
 		rowElement.classList.remove('selected-row');
 	} else {
-		window.currentResult.selectedRows.add(row);
+		state.selectedRows.add(row);
 		rowElement.classList.add('selected-row');
 	}
 }
@@ -237,7 +288,8 @@ function toggleColumnTool(boxId) {
 }
 
 function searchData(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	const searchInput = document.getElementById(boxId + '_data_search');
 	const searchTerm = searchInput.value.toLowerCase();
@@ -251,8 +303,8 @@ function searchData(boxId) {
 			cell.classList.remove('search-match', 'search-match-current');
 		});
 
-	window.currentResult.searchMatches = [];
-	window.currentResult.currentSearchIndex = -1;
+	state.searchMatches = [];
+	state.currentSearchIndex = -1;
 
 	if (!searchTerm) {
 		infoSpan.textContent = '';
@@ -262,7 +314,7 @@ function searchData(boxId) {
 	}
 
 	// Search through all cells
-	window.currentResult.rows.forEach((row, rowIdx) => {
+	state.rows.forEach((row, rowIdx) => {
 		row.forEach((cell, colIdx) => {
 			let cellText = '';
 
@@ -280,20 +332,20 @@ function searchData(boxId) {
 
 			// Check if search term is in cell text
 			if (cellText.toLowerCase().includes(searchTerm)) {
-				window.currentResult.searchMatches.push({ row: rowIdx, col: colIdx });
+				state.searchMatches.push({ row: rowIdx, col: colIdx });
 			}
 		});
 	});
 
 	// Update UI
-	const matchCount = window.currentResult.searchMatches.length;
+	const matchCount = state.searchMatches.length;
 	if (matchCount > 0) {
 		infoSpan.textContent = matchCount + ' match' + (matchCount !== 1 ? 'es' : '');
 		prevBtn.disabled = false;
 		nextBtn.disabled = false;
 
 		// Highlight all matches
-		window.currentResult.searchMatches.forEach(match => {
+		state.searchMatches.forEach(match => {
 			const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
 			if (cell) {
 				cell.classList.add('search-match');
@@ -301,7 +353,7 @@ function searchData(boxId) {
 		});
 
 		// Jump to first match
-		window.currentResult.currentSearchIndex = 0;
+		state.currentSearchIndex = 0;
 		highlightCurrentSearchMatch(boxId);
 	} else {
 		infoSpan.textContent = 'No matches';
@@ -311,30 +363,33 @@ function searchData(boxId) {
 }
 
 function nextSearchMatch(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
-	const matches = window.currentResult.searchMatches;
+	const matches = state.searchMatches;
 	if (matches.length === 0) { return; }
 
-	window.currentResult.currentSearchIndex = (window.currentResult.currentSearchIndex + 1) % matches.length;
+	state.currentSearchIndex = (state.currentSearchIndex + 1) % matches.length;
 	highlightCurrentSearchMatch(boxId);
 }
 
 function previousSearchMatch(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
-	const matches = window.currentResult.searchMatches;
+	const matches = state.searchMatches;
 	if (matches.length === 0) { return; }
 
-	window.currentResult.currentSearchIndex = (window.currentResult.currentSearchIndex - 1 + matches.length) % matches.length;
+	state.currentSearchIndex = (state.currentSearchIndex - 1 + matches.length) % matches.length;
 	highlightCurrentSearchMatch(boxId);
 }
 
 function highlightCurrentSearchMatch(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
-	const matches = window.currentResult.searchMatches;
-	const currentIndex = window.currentResult.currentSearchIndex;
+	const matches = state.searchMatches;
+	const currentIndex = state.currentSearchIndex;
 
 	if (currentIndex < 0 || currentIndex >= matches.length) { return; }
 
@@ -370,7 +425,8 @@ function handleDataSearchKeydown(event, boxId) {
 }
 
 function handleTableKeydown(event, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	// Handle copy to clipboard (Ctrl+C or Cmd+C)
 	if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
@@ -379,7 +435,7 @@ function handleTableKeydown(event, boxId) {
 		return;
 	}
 
-	const cell = window.currentResult.selectedCell;
+	const cell = state.selectedCell;
 	if (!cell) {
 		// If no cell selected, select first cell
 		if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
@@ -391,8 +447,8 @@ function handleTableKeydown(event, boxId) {
 
 	let newRow = cell.row;
 	let newCol = cell.col;
-	const maxRow = window.currentResult.rows.length - 1;
-	const maxCol = window.currentResult.columns.length - 1;
+	const maxRow = state.rows.length - 1;
+	const maxCol = state.columns.length - 1;
 
 	switch (event.key) {
 		case 'ArrowRight':
@@ -447,7 +503,8 @@ function handleTableKeydown(event, boxId) {
 }
 
 function filterColumns(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	const input = document.getElementById(boxId + '_column_search');
 	const autocomplete = document.getElementById(boxId + '_column_autocomplete');
@@ -460,7 +517,7 @@ function filterColumns(boxId) {
 		return;
 	}
 
-	const matches = window.currentResult.columns
+	const matches = state.columns
 		.map((col, idx) => ({ name: col, index: idx }))
 		.filter(col => col.name.toLowerCase().includes(query));
 
@@ -523,7 +580,8 @@ function updateAutocompleteSelection(items) {
 }
 
 function scrollToColumn(colIndex, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	// Select first cell in that column first
 	selectCell(0, colIndex, boxId);
@@ -538,14 +596,15 @@ function scrollToColumn(colIndex, boxId) {
 }
 
 function copySelectionToClipboard(boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
 
 	// Check if any rows are selected
-	if (window.currentResult.selectedRows.size > 0) {
+	if (state.selectedRows.size > 0) {
 		// Copy selected rows in tab-delimited format
-		const rowIndices = Array.from(window.currentResult.selectedRows).sort((a, b) => a - b);
+		const rowIndices = Array.from(state.selectedRows).sort((a, b) => a - b);
 		const textToCopy = rowIndices.map(rowIdx => {
-			const row = window.currentResult.rows[rowIdx];
+			const row = state.rows[rowIdx];
 			return row.join('\t');
 		}).join('\n');
 
@@ -554,10 +613,10 @@ function copySelectionToClipboard(boxId) {
 		}).catch(err => {
 			console.error('Failed to copy rows:', err);
 		});
-	} else if (window.currentResult.selectedCell) {
+	} else if (state.selectedCell) {
 		// Copy single cell value
-		const cell = window.currentResult.selectedCell;
-		const value = window.currentResult.rows[cell.row][cell.col];
+		const cell = state.selectedCell;
+		const value = state.rows[cell.row][cell.col];
 
 		navigator.clipboard.writeText(value).then(() => {
 			console.log('Copied cell value to clipboard:', value);
