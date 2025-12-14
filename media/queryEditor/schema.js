@@ -53,6 +53,48 @@ function ensureSchemaForBox(boxId, forceRefresh) {
 	});
 }
 
+// Request database list for an arbitrary connectionId.
+// Uses the existing getDatabases/refreshDatabases message channel, but with a synthetic boxId.
+window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
+	const cid = String(connectionId || '').trim();
+	if (!cid) {
+		return [];
+	}
+	try {
+		const cached = cachedDatabases && cachedDatabases[cid];
+		if (!forceRefresh && Array.isArray(cached) && cached.length) {
+			return cached;
+		}
+	} catch {
+		// ignore
+	}
+
+	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
+	return await new Promise((resolve, reject) => {
+		try {
+			if (!databasesRequestResolversByBoxId || typeof databasesRequestResolversByBoxId !== 'object') {
+				databasesRequestResolversByBoxId = {};
+			}
+			databasesRequestResolversByBoxId[requestId] = { resolve, reject };
+		} catch {
+			// If we can't stash a resolver, just resolve empty.
+			resolve([]);
+			return;
+		}
+
+		try {
+			vscode.postMessage({
+				type: forceRefresh ? 'refreshDatabases' : 'getDatabases',
+				connectionId: cid,
+				boxId: requestId
+			});
+		} catch (e) {
+			try { delete databasesRequestResolversByBoxId[requestId]; } catch { /* ignore */ }
+			reject(e);
+		}
+	});
+};
+
 function onDatabaseChanged(boxId) {
 	// Clear any prior schema so it matches the newly selected DB.
 	delete schemaByBoxId[boxId];
@@ -70,4 +112,52 @@ function refreshSchema(boxId) {
 	lastSchemaRequestAtByBoxId[boxId] = 0;
 	setSchemaLoadedSummary(boxId, '', '', false);
 	ensureSchemaForBox(boxId, true);
+}
+
+// Request schema for an arbitrary (connectionId, database) pair.
+// Used by tools that need to resolve table names across DBs/clusters.
+async function __kustoRequestSchema(connectionId, database, forceRefresh) {
+	try {
+		const cid = String(connectionId || '').trim();
+		const db = String(database || '').trim();
+		if (!cid || !db) {
+			return null;
+		}
+		const key = cid + '|' + db;
+		try {
+			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) {
+				return schemaByConnDb[key];
+			}
+		} catch { /* ignore */ }
+
+		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		const p = new Promise((resolve, reject) => {
+			try {
+				schemaRequestResolversByBoxId[reqBoxId] = { resolve, reject, key };
+			} catch (e) {
+				reject(e);
+			}
+		});
+		try {
+			vscode.postMessage({
+				type: 'prefetchSchema',
+				connectionId: cid,
+				database: db,
+				boxId: reqBoxId,
+				forceRefresh: !!forceRefresh
+			});
+		} catch (e) {
+			try { delete schemaRequestResolversByBoxId[reqBoxId]; } catch { /* ignore */ }
+			throw e;
+		}
+		return await p;
+	} catch {
+		return null;
+	}
+}
+
+try {
+	window.__kustoRequestSchema = __kustoRequestSchema;
+} catch {
+	// ignore
 }

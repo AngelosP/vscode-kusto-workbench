@@ -57,7 +57,7 @@ function addQueryBox(options) {
 		'</svg>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table">' +
+		'<button type="button" class="query-editor-toolbar-btn" data-qe-action="qualifyTables" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table" aria-label="Fully qualify tables">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/></svg>' +
 		'</span>' +
@@ -297,7 +297,48 @@ function onQueryEditorToolbarAction(boxId, action) {
 		return exportQueryToPowerBI(boxId);
 	}
 	if (action === 'qualifyTables') {
-		return fullyQualifyTablesInEditor(boxId);
+		try {
+			if (qualifyTablesInFlightByBoxId && qualifyTablesInFlightByBoxId[boxId]) {
+				return;
+			}
+		} catch { /* ignore */ }
+		try { qualifyTablesInFlightByBoxId[boxId] = true; } catch { /* ignore */ }
+		try { setToolbarActionBusy(boxId, 'qualifyTables', true); } catch { /* ignore */ }
+		(async () => {
+			try {
+				await fullyQualifyTablesInEditor(boxId);
+			} finally {
+				try { qualifyTablesInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
+				try { setToolbarActionBusy(boxId, 'qualifyTables', false); } catch { /* ignore */ }
+			}
+		})();
+		return;
+	}
+}
+
+function setToolbarActionBusy(boxId, action, busy) {
+	try {
+		const root = document.getElementById(boxId);
+		if (!root) return;
+		const btn = root.querySelector('.query-editor-toolbar-btn[data-qe-action="' + action + '"]');
+		if (!btn) return;
+		if (busy) {
+			if (!btn.dataset.qePrevHtml) {
+				btn.dataset.qePrevHtml = btn.innerHTML;
+			}
+			btn.disabled = true;
+			btn.setAttribute('aria-busy', 'true');
+			btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
+		} else {
+			btn.disabled = false;
+			btn.removeAttribute('aria-busy');
+			if (btn.dataset.qePrevHtml) {
+				btn.innerHTML = btn.dataset.qePrevHtml;
+				delete btn.dataset.qePrevHtml;
+			}
+		}
+	} catch {
+		// ignore
 	}
 }
 
@@ -422,7 +463,7 @@ async function exportQueryToPowerBI(boxId) {
 	}
 }
 
-function fullyQualifyTablesInEditor(boxId) {
+async function fullyQualifyTablesInEditor(boxId) {
 	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
@@ -448,9 +489,9 @@ function fullyQualifyTablesInEditor(boxId) {
 		return;
 	}
 
-	const schema = schemaByBoxId ? schemaByBoxId[boxId] : null;
-	const tableList = schema && Array.isArray(schema.tables) ? schema.tables : null;
-	if (!tableList || tableList.length === 0) {
+	const currentSchema = schemaByBoxId ? schemaByBoxId[boxId] : null;
+	const currentTables = currentSchema && Array.isArray(currentSchema.tables) ? currentSchema.tables : null;
+	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
 		try { ensureSchemaForBox(boxId); } catch { /* ignore */ }
 		alert('Schema not loaded yet. Wait for “Schema loaded” then try again.');
@@ -458,7 +499,13 @@ function fullyQualifyTablesInEditor(boxId) {
 	}
 
 	const text = model.getValue() || '';
-	const next = qualifyTablesInText(text, tableList, clusterUrl, database);
+	const next = await qualifyTablesInTextPriority(text, {
+		boxId,
+		connectionId,
+		currentDatabase: database,
+		currentClusterUrl: clusterUrl,
+		currentTables
+	});
 	if (next === text) {
 		return;
 	}
@@ -470,7 +517,346 @@ function fullyQualifyTablesInEditor(boxId) {
 	}
 }
 
+async function qualifyTablesInTextPriority(text, opts) {
+	const normalizeClusterForKusto = (clusterUrl) => {
+		return String(clusterUrl || '')
+			.trim()
+			.replace(/^https?:\/\//i, '')
+			.replace(/\/+$/, '');
+	};
+
+	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
+	const currentTables = (opts.currentTables || []).map(t => String(t));
+	const currentTableLower = new Set(currentTables.map(t => t.toLowerCase()));
+	const skipNames = new Set();
+
+	// Very small lexer to detect let bindings and collect identifiers.
+	const tokens = [];
+	{
+		let i = 0;
+		let inS = false;
+		let inLineComment = false;
+		let inBlockComment = false;
+		while (i < text.length) {
+			const ch = text[i];
+			const next = text[i + 1];
+			if (inLineComment) {
+				if (ch === '\n') inLineComment = false;
+				i++;
+				continue;
+			}
+			if (inBlockComment) {
+				if (ch === '*' && next === '/') {
+					inBlockComment = false;
+					i += 2;
+					continue;
+				}
+				i++;
+				continue;
+			}
+			if (inS) {
+				if (ch === "'") {
+					inS = false;
+				}
+				i++;
+				continue;
+			}
+			if (ch === '/' && next === '/') {
+				inLineComment = true;
+				i += 2;
+				continue;
+			}
+			if (ch === '/' && next === '*') {
+				inBlockComment = true;
+				i += 2;
+				continue;
+			}
+			if (ch === "'") {
+				inS = true;
+				i++;
+				continue;
+			}
+			if ((ch === '_' || /[A-Za-z]/.test(ch)) && !inS) {
+				let j = i + 1;
+				while (j < text.length && isIdentChar(text[j])) j++;
+				const value = text.slice(i, j);
+				tokens.push({ value, start: i, end: j });
+				i = j;
+				continue;
+			}
+			i++;
+		}
+	}
+
+	for (let idx = 0; idx < tokens.length; idx++) {
+		const t = tokens[idx];
+		if (!t || String(t.value).toLowerCase() !== 'let') {
+			continue;
+		}
+		const nameTok = tokens[idx + 1];
+		if (!nameTok) continue;
+		let k = nameTok.end;
+		while (k < text.length && /\s/.test(text[k])) k++;
+		if (text[k] === '=') {
+			skipNames.add(nameTok.value);
+		}
+	}
+
+	const candidates = [];
+	for (const tok of tokens) {
+		if (skipNames.has(tok.value)) {
+			continue;
+		}
+		// Skip if already qualified (immediate '.' before name).
+		let p = tok.start - 1;
+		while (p >= 0 && text[p] === ' ') p--;
+		if (p >= 0 && text[p] === '.') {
+			continue;
+		}
+		// Skip if this looks like a function call.
+		let a = tok.end;
+		while (a < text.length && text[a] === ' ') a++;
+		if (text[a] === '(') {
+			continue;
+		}
+		candidates.push(tok);
+	}
+	if (!candidates.length) {
+		return text;
+	}
+
+	// Resolve each distinct candidate name to its best fully-qualified reference.
+	const unresolvedLower = new Set();
+	for (const c of candidates) {
+		unresolvedLower.add(String(c.value).toLowerCase());
+	}
+	const resolvedLocationByLower = new Map();
+	const fq = (clusterUrl, database, table) => {
+		const c = normalizeClusterForKusto(clusterUrl);
+		return "cluster('" + c + "').database('" + database + "')." + table;
+	};
+
+	const markResolved = (lowerName, clusterUrl, database) => {
+		if (!lowerName || resolvedLocationByLower.has(lowerName)) {
+			return;
+		}
+		resolvedLocationByLower.set(lowerName, {
+			clusterUrl: String(clusterUrl || ''),
+			database: String(database || '')
+		});
+		unresolvedLower.delete(lowerName);
+	};
+
+	// Priority 1: current DB (cached).
+	for (const lowerName of Array.from(unresolvedLower)) {
+		if (currentTableLower.has(lowerName)) {
+			markResolved(lowerName, opts.currentClusterUrl, opts.currentDatabase);
+		}
+	}
+
+	const requestSchema = async (connectionId, database) => {
+		try {
+			if (typeof window.__kustoRequestSchema === 'function') {
+				const sch = await window.__kustoRequestSchema(connectionId, database, false);
+				try {
+					const cid = String(connectionId || '').trim();
+					const db = String(database || '').trim();
+					if (cid && db && sch) {
+						schemaByConnDb[cid + '|' + db] = sch;
+					}
+				} catch { /* ignore */ }
+				return sch;
+			}
+		} catch {
+			// ignore
+		}
+		return null;
+	};
+
+	const requestDatabases = async (connectionId, forceRefresh) => {
+		try {
+			if (typeof window.__kustoRequestDatabases === 'function') {
+				return await window.__kustoRequestDatabases(connectionId, !!forceRefresh);
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			const cached = cachedDatabases && cachedDatabases[String(connectionId || '').trim()];
+			return Array.isArray(cached) ? cached : [];
+		} catch {
+			return [];
+		}
+	};
+
+	const schemaTablesLowerCache = new WeakMap();
+	const getSchemaTableLowerSet = (schema) => {
+		if (!schema || typeof schema !== 'object') return null;
+		try {
+			const cached = schemaTablesLowerCache.get(schema);
+			if (cached) return cached;
+			const tables = Array.isArray(schema.tables) ? schema.tables : [];
+			const setLower = new Set(tables.map(t => String(t).toLowerCase()));
+			schemaTablesLowerCache.set(schema, setLower);
+			return setLower;
+		} catch {
+			return null;
+		}
+	};
+
+	const scanCachedSchemasForMatches = (schemas, clusterUrl) => {
+		for (const entry of schemas) {
+			if (!entry) continue;
+			const dbName = String(entry.database || '').trim();
+			const schema = entry.schema;
+			if (!dbName || !schema) continue;
+			const tableLowerSet = getSchemaTableLowerSet(schema);
+			if (!tableLowerSet) continue;
+			for (const lowerName of Array.from(unresolvedLower)) {
+				if (tableLowerSet.has(lowerName)) {
+					markResolved(lowerName, clusterUrl, dbName);
+				}
+			}
+			if (unresolvedLower.size === 0) return;
+		}
+	};
+
+	const getCachedSchemasForConnection = (connectionId) => {
+		const cid = String(connectionId || '').trim();
+		if (!cid) return [];
+		const prefix = cid + '|';
+		const list = [];
+		try {
+			for (const key of Object.keys(schemaByConnDb || {})) {
+				if (!key || !key.startsWith(prefix)) continue;
+				const dbName = key.slice(prefix.length);
+				if (!dbName) continue;
+				list.push({ database: dbName, schema: schemaByConnDb[key] });
+			}
+		} catch { /* ignore */ }
+		list.sort((a, b) => String(a.database).toLowerCase().localeCompare(String(b.database).toLowerCase()));
+		return list;
+	};
+
+	// Step 2: search all cached schemas in priority order.
+	// Priority 2: current cluster (cached).
+	if (unresolvedLower.size > 0) {
+		const cachedCurrentConn = getCachedSchemasForConnection(opts.connectionId)
+			.filter(e => String(e.database) !== String(opts.currentDatabase));
+		scanCachedSchemasForMatches(cachedCurrentConn, opts.currentClusterUrl);
+	}
+
+	// Priority 3: across all clusters (cached).
+	if (unresolvedLower.size > 0) {
+		const connById = new Map();
+		try {
+			for (const c of (connections || [])) {
+				if (c && c.id) {
+					connById.set(String(c.id), c);
+				}
+			}
+		} catch { /* ignore */ }
+
+		// Deterministic: iterate connections sorted by display clusterUrl.
+		const otherConns = Array.from(connById.entries())
+			.filter(([cid]) => cid !== String(opts.connectionId || '').trim())
+			.map(([cid, c]) => ({ cid, clusterUrl: String((c && c.clusterUrl) || '').trim() }))
+			.filter(x => !!x.clusterUrl)
+			.sort((a, b) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
+
+		for (const c of otherConns) {
+			if (unresolvedLower.size === 0) break;
+			const cached = getCachedSchemasForConnection(c.cid);
+			scanCachedSchemasForMatches(cached, c.clusterUrl);
+		}
+	}
+
+	// Step 3: if still unmatched, fetch missing schemas, then repeat Step 2 against the newly-cached data.
+	if (unresolvedLower.size > 0) {
+		// Fetch missing schemas for current connection first.
+		const cid = String(opts.connectionId || '').trim();
+		let dbs = await requestDatabases(cid, false);
+		for (const db of (Array.isArray(dbs) ? dbs : [])) {
+			if (unresolvedLower.size === 0) break;
+			const dbName = String(db || '').trim();
+			if (!dbName || dbName === String(opts.currentDatabase)) continue;
+			const key = cid + '|' + dbName;
+			if (schemaByConnDb && schemaByConnDb[key]) continue;
+			await requestSchema(cid, dbName);
+		}
+
+		// Re-scan cached current cluster after fetch.
+		if (unresolvedLower.size > 0) {
+			const cachedCurrentConn = getCachedSchemasForConnection(cid)
+				.filter(e => String(e.database) !== String(opts.currentDatabase));
+			scanCachedSchemasForMatches(cachedCurrentConn, opts.currentClusterUrl);
+		}
+	}
+
+	if (unresolvedLower.size > 0) {
+		// Fetch missing schemas for other connections.
+		const connById = new Map();
+		try {
+			for (const c of (connections || [])) {
+				if (c && c.id) {
+					connById.set(String(c.id), c);
+				}
+			}
+		} catch { /* ignore */ }
+		const otherConns = Array.from(connById.entries())
+			.filter(([id]) => id !== String(opts.connectionId || '').trim())
+			.map(([id, c]) => ({ cid: id, clusterUrl: String((c && c.clusterUrl) || '').trim() }))
+			.filter(x => !!x.clusterUrl)
+			.sort((a, b) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
+
+		for (const c of otherConns) {
+			if (unresolvedLower.size === 0) break;
+			let dbs = await requestDatabases(c.cid, false);
+			for (const db of (Array.isArray(dbs) ? dbs : [])) {
+				if (unresolvedLower.size === 0) break;
+				const dbName = String(db || '').trim();
+				if (!dbName) continue;
+				const key = c.cid + '|' + dbName;
+				if (schemaByConnDb && schemaByConnDb[key]) continue;
+				await requestSchema(c.cid, dbName);
+			}
+
+			// Re-scan cached for this connection after fetch.
+			if (unresolvedLower.size > 0) {
+				const cached = getCachedSchemasForConnection(c.cid);
+				scanCachedSchemasForMatches(cached, c.clusterUrl);
+			}
+		}
+	}
+
+	// Apply replacements from end to start.
+	const replacements = [];
+	for (const tok of candidates) {
+		const lower = String(tok.value).toLowerCase();
+		const loc = resolvedLocationByLower.get(lower);
+		if (!loc || !loc.clusterUrl || !loc.database) continue;
+		replacements.push({ start: tok.start, end: tok.end, fq: fq(loc.clusterUrl, loc.database, String(tok.value)) });
+	}
+	if (!replacements.length) {
+		return text;
+	}
+
+	let out = text;
+	for (let i = replacements.length - 1; i >= 0; i--) {
+		const r = replacements[i];
+		out = out.slice(0, r.start) + r.fq + out.slice(r.end);
+	}
+	return out;
+}
+
 function qualifyTablesInText(text, tables, clusterUrl, database) {
+	const normalizeClusterForKusto = (value) => {
+		return String(value || '')
+			.trim()
+			.replace(/^https?:\/\//i, '')
+			.replace(/\/+$/, '');
+	};
+
 	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
 	const set = new Set((tables || []).map(t => String(t)));
 	const skipNames = new Set();
@@ -579,7 +965,7 @@ function qualifyTablesInText(text, tables, clusterUrl, database) {
 	let out = text;
 	for (let i = replacements.length - 1; i >= 0; i--) {
 		const r = replacements[i];
-		const fq = "cluster('" + clusterUrl + "').database('" + database + "')." + r.value;
+		const fq = "cluster('" + normalizeClusterForKusto(clusterUrl) + "').database('" + database + "')." + r.value;
 		out = out.slice(0, r.start) + fq + out.slice(r.end);
 	}
 	return out;

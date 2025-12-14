@@ -13,6 +13,18 @@ let schemaFetchInFlightByBoxId = {};
 let lastSchemaRequestAtByBoxId = {};
 let monacoReadyPromise = null;
 
+// In-flight state for long-running toolbar actions.
+let qualifyTablesInFlightByBoxId = {};
+
+// Cross-box schema cache (for tools like "fully qualify tables").
+// Key: `${connectionId}|${database}`
+let schemaByConnDb = {};
+// Pending schema requests keyed by request boxId.
+let schemaRequestResolversByBoxId = {};
+
+// Pending database list requests keyed by request boxId.
+let databasesRequestResolversByBoxId = {};
+
 // Missing cluster connections banner state
 let missingClusterDetectTimersByBoxId = {};
 let lastQueryTextByBoxId = {};

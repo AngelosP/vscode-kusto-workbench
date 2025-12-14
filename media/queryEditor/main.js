@@ -238,6 +238,35 @@ window.addEventListener('message', event => {
 			}
 			break;
 		case 'databasesData':
+			// Resolve pending database list request if this was a synthetic request id.
+			try {
+				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
+				if (r && typeof r.resolve === 'function') {
+					let cid = '';
+					try {
+						const prefix = '__kusto_dbreq__';
+						const bid = String(message.boxId || '');
+						if (bid.startsWith(prefix)) {
+							const rest = bid.slice(prefix.length);
+							const parts = rest.split('__');
+							cid = parts && parts.length ? decodeURIComponent(parts[0]) : '';
+						}
+					} catch { /* ignore */ }
+					const list = (Array.isArray(message.databases) ? message.databases : [])
+						.map(d => String(d || '').trim())
+						.filter(Boolean)
+						.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+					try {
+						if (cid) {
+							cachedDatabases[cid] = list;
+						}
+					} catch { /* ignore */ }
+					try { r.resolve(list); } catch { /* ignore */ }
+					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					break;
+				}
+			} catch { /* ignore */ }
+
 			updateDatabaseSelect(message.boxId, message.databases);
 			break;
 		case 'importConnectionsXmlText':
@@ -312,6 +341,25 @@ window.addEventListener('message', event => {
 			try { if (typeof onUrlError === 'function') onUrlError(message); } catch { /* ignore */ }
 			break;
 		case 'schemaData':
+			try {
+				const cid = String(message.connectionId || '').trim();
+				const db = String(message.database || '').trim();
+				if (cid && db) {
+					schemaByConnDb[cid + '|' + db] = message.schema;
+				}
+			} catch { /* ignore */ }
+
+			// Resolve pending schema request if this was a synthetic request id.
+			try {
+				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
+				if (r && typeof r.resolve === 'function') {
+					try { r.resolve(message.schema); } catch { /* ignore */ }
+					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					break;
+				}
+			} catch { /* ignore */ }
+
+			// Normal per-editor schema update (autocomplete).
 			schemaByBoxId[message.boxId] = message.schema;
 			setSchemaLoading(message.boxId, false);
 			{
@@ -328,6 +376,15 @@ window.addEventListener('message', event => {
 			}
 			break;
 		case 'schemaError':
+			// Resolve pending schema request if this was a synthetic request id.
+			try {
+				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
+				if (r && typeof r.reject === 'function') {
+					try { r.reject(new Error(message.error || 'Schema fetch failed')); } catch { /* ignore */ }
+					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					break;
+				}
+			} catch { /* ignore */ }
 			// Non-fatal; autocomplete will just not have schema.
 			setSchemaLoading(message.boxId, false);
 			setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
@@ -15,7 +16,8 @@ const STORAGE_KEYS = {
 	lastDatabase: 'kusto.lastDatabase',
 	cachedDatabases: 'kusto.cachedDatabases',
 	cachedSchemas: 'kusto.cachedSchemas',
-	caretDocsEnabled: 'kusto.caretDocsEnabled'
+	caretDocsEnabled: 'kusto.caretDocsEnabled',
+	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk'
 } as const;
 
 type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
@@ -66,6 +68,48 @@ export class QueryEditorProvider {
 		private readonly context: vscode.ExtensionContext
 	) {
 		this.loadLastSelection();
+		// Avoid storing large schema payloads in globalState (causes warnings and slows down).
+		// Best-effort migration of a small recent subset, then clear the legacy globalState cache.
+		void this.migrateCachedSchemasToDiskOnce();
+	}
+
+	private getSchemaCacheDirUri(): vscode.Uri {
+		return vscode.Uri.joinPath(this.context.globalStorageUri, 'schemaCache');
+	}
+
+	private getSchemaCacheFileUri(cacheKey: string): vscode.Uri {
+		const hash = crypto.createHash('sha1').update(cacheKey, 'utf8').digest('hex');
+		return vscode.Uri.joinPath(this.getSchemaCacheDirUri(), `${hash}.json`);
+	}
+
+	private async migrateCachedSchemasToDiskOnce(): Promise<void> {
+		try {
+			const already = this.context.globalState.get<boolean>(STORAGE_KEYS.cachedSchemasMigratedToDisk);
+			if (already) {
+				return;
+			}
+			const legacy = this.context.globalState.get<Record<string, CachedSchemaEntry> | undefined>(
+				STORAGE_KEYS.cachedSchemas
+			);
+			if (legacy && typeof legacy === 'object') {
+				const entries = Object.entries(legacy)
+					.filter(([, v]) => !!v && typeof v === 'object' && !!(v as any).schema)
+					.sort((a, b) => (b[1].timestamp ?? 0) - (a[1].timestamp ?? 0))
+					.slice(0, 25);
+				for (const [key, entry] of entries) {
+					try {
+						await this.saveCachedSchemaToDisk(key, entry);
+					} catch {
+						// ignore
+					}
+				}
+			}
+			// Clear legacy cache to stop VS Code "large extension state" warnings.
+			await this.context.globalState.update(STORAGE_KEYS.cachedSchemas, undefined);
+			await this.context.globalState.update(STORAGE_KEYS.cachedSchemasMigratedToDisk, true);
+		} catch {
+			// ignore
+		}
 	}
 
 	async initializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
@@ -618,21 +662,34 @@ export class QueryEditorProvider {
 		return this.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
 	}
 
-	private getCachedSchemas(): Record<string, CachedSchemaEntry> {
-		return this.context.globalState.get<Record<string, CachedSchemaEntry>>(STORAGE_KEYS.cachedSchemas, {});
+	private async getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined> {
+		try {
+			const fileUri = this.getSchemaCacheFileUri(cacheKey);
+			const buf = await vscode.workspace.fs.readFile(fileUri);
+			const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as CachedSchemaEntry;
+			if (!parsed || !parsed.schema || typeof parsed.timestamp !== 'number') {
+				return undefined;
+			}
+			return parsed;
+		} catch {
+			return undefined;
+		}
 	}
 
-	private async saveCachedSchema(cacheKey: string, entry: CachedSchemaEntry): Promise<void> {
-		const cached = this.getCachedSchemas();
-		cached[cacheKey] = entry;
-		await this.context.globalState.update(STORAGE_KEYS.cachedSchemas, cached);
+	private async saveCachedSchemaToDisk(cacheKey: string, entry: CachedSchemaEntry): Promise<void> {
+		const dir = this.getSchemaCacheDirUri();
+		await vscode.workspace.fs.createDirectory(dir);
+		const fileUri = this.getSchemaCacheFileUri(cacheKey);
+		const json = JSON.stringify(entry);
+		await vscode.workspace.fs.writeFile(fileUri, Buffer.from(json, 'utf8'));
 	}
 
-	private async deleteCachedSchema(cacheKey: string): Promise<void> {
-		const cached = this.getCachedSchemas();
-		if (cached[cacheKey]) {
-			delete cached[cacheKey];
-			await this.context.globalState.update(STORAGE_KEYS.cachedSchemas, cached);
+	private async deleteCachedSchemaFromDisk(cacheKey: string): Promise<void> {
+		try {
+			const fileUri = this.getSchemaCacheFileUri(cacheKey);
+			await vscode.workspace.fs.delete(fileUri, { useTrash: false });
+		} catch {
+			// ignore
 		}
 	}
 
@@ -805,7 +862,7 @@ export class QueryEditorProvider {
 
 		const cacheKey = `${connection.clusterUrl}|${database}`;
 		if (forceRefresh) {
-			await this.deleteCachedSchema(cacheKey);
+			await this.deleteCachedSchemaFromDisk(cacheKey);
 		}
 
 		try {
@@ -815,8 +872,7 @@ export class QueryEditorProvider {
 
 			// Default path: check persisted cache first (survives VS Code sessions).
 			if (!forceRefresh) {
-				const cachedSchemas = this.getCachedSchemas();
-				const cached = cachedSchemas[cacheKey];
+				const cached = await this.getCachedSchemaFromDisk(cacheKey);
 				if (cached && Date.now() - cached.timestamp < this.SCHEMA_CACHE_TTL_MS) {
 					const schema = cached.schema;
 					const tablesCount = schema.tables?.length ?? 0;
@@ -862,7 +918,7 @@ export class QueryEditorProvider {
 			const timestamp = result.fromCache
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
-			await this.saveCachedSchema(cacheKey, { schema, timestamp });
+			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp });
 			if (tablesCount === 0 || columnsCount === 0) {
 				const d = result.debug;
 				if (d) {
