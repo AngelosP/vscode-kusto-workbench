@@ -607,6 +607,82 @@ function ensureMonaco() {
 	return monacoReadyPromise;
 }
 
+// Auto-resize Monaco editor wrappers so the full content is visible (no inner scrollbars).
+// This only applies while the wrapper has NOT been manually resized by the user.
+// User resize is tracked via wrapper.dataset.kustoUserResized === 'true'.
+function __kustoAttachAutoResizeToContent(editor, containerEl) {
+	try {
+		if (!editor || !containerEl || !containerEl.closest) {
+			return;
+		}
+		const wrapper = containerEl.closest('.query-editor-wrapper');
+		if (!wrapper) {
+			return;
+		}
+
+		const apply = () => {
+			try {
+				if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
+					return;
+				}
+				// If this wrapper is in markdown preview mode, the editor is hidden and wrapper is auto.
+				try {
+					const box = wrapper.closest ? wrapper.closest('.query-box') : null;
+					if (box && box.classList && box.classList.contains('is-md-preview')) {
+						return;
+					}
+				} catch {
+					// ignore
+				}
+
+				const contentHeight = (typeof editor.getContentHeight === 'function') ? editor.getContentHeight() : 0;
+				if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) {
+					return;
+				}
+
+				// Wrapper total = fixed chrome (toolbars/resizers) + Monaco content height.
+				let chrome = 0;
+				try {
+					for (const child of Array.from(wrapper.children || [])) {
+						if (!child || !child.classList) continue;
+						if (child.classList.contains('query-editor')) continue;
+						chrome += (child.getBoundingClientRect ? child.getBoundingClientRect().height : 0);
+					}
+				} catch {
+					// ignore
+				}
+
+				const next = Math.max(120, Math.ceil(chrome + contentHeight));
+				wrapper.style.height = next + 'px';
+				try {
+					// Ensure Monaco re-layouts after the container changes.
+					editor.layout();
+				} catch {
+					// ignore
+				}
+			} catch {
+				// ignore
+			}
+		};
+
+		// Apply once soon, and then on every content size change.
+		try {
+			requestAnimationFrame(() => apply());
+		} catch {
+			setTimeout(() => apply(), 0);
+		}
+		try {
+			if (typeof editor.onDidContentSizeChange === 'function') {
+				editor.onDidContentSizeChange(() => apply());
+			}
+		} catch {
+			// ignore
+		}
+	} catch {
+		// ignore
+	}
+}
+
 function initQueryEditor(boxId) {
 	return ensureMonaco().then(monaco => {
 		const container = document.getElementById(boxId + '_query_editor');
@@ -655,6 +731,8 @@ function initQueryEditor(boxId) {
 		}
 
 		queryEditors[boxId] = editor;
+		// Auto-resize this editor to show full content, until the user manually resizes.
+		try { __kustoAttachAutoResizeToContent(editor, container); } catch { /* ignore */ }
 
 		// F1 should show docs hover (not the webview / VS Code default behavior).
 		try {
@@ -994,6 +1072,7 @@ function initQueryEditor(boxId) {
 			resizer.addEventListener('mousedown', (e) => {
 				e.preventDefault();
 				e.stopPropagation();
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 
 				resizer.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;

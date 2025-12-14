@@ -104,6 +104,15 @@ function __kustoGetWrapperHeightPx(boxId, suffix) {
 		if (!el) return undefined;
 		const wrapper = el.closest ? el.closest('.query-editor-wrapper') : null;
 		if (!wrapper) return undefined;
+		// Only persist heights that came from an explicit user resize (or a restored persisted height).
+		// Auto-resize can set an inline height too, but that should not get saved into .kqlx.
+		try {
+			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
+				return undefined;
+			}
+		} catch {
+			return undefined;
+		}
 		// Only persist height if the user explicitly resized (wrapper has an inline height).
 		// Otherwise, default layout can vary by window size/theme and would cause spurious "dirty" writes.
 		const inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
@@ -126,6 +135,11 @@ function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 		const h = Number(heightPx);
 		if (!Number.isFinite(h) || h <= 0) return;
 		wrapper.style.height = Math.round(h) + 'px';
+		try {
+			wrapper.dataset.kustoUserResized = 'true';
+		} catch {
+			// ignore
+		}
 	} catch {
 		// ignore
 	}

@@ -330,6 +330,14 @@ function initMarkdownEditor(boxId) {
 		}
 
 		markdownEditors[boxId] = editor;
+		// Auto-resize editor to show full content, until the user manually resizes.
+		try {
+			if (typeof __kustoAttachAutoResizeToContent === 'function') {
+				__kustoAttachAutoResizeToContent(editor, container);
+			}
+		} catch {
+			// ignore
+		}
 		try {
 			editor.onDidChangeModelContent(() => {
 				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
@@ -350,6 +358,7 @@ function initMarkdownEditor(boxId) {
 					} catch {
 						// ignore
 					}
+					try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 
 					resizer.classList.add('is-dragging');
 					const previousCursor = document.body.style.cursor;
@@ -576,6 +585,14 @@ function initPythonEditor(boxId) {
 		}
 
 		pythonEditors[boxId] = editor;
+		// Auto-resize editor to show full content, until the user manually resizes.
+		try {
+			if (typeof __kustoAttachAutoResizeToContent === 'function') {
+				__kustoAttachAutoResizeToContent(editor, container);
+			}
+		} catch {
+			// ignore
+		}
 		try {
 			editor.onDidChangeModelContent(() => {
 				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
@@ -596,6 +613,7 @@ function initPythonEditor(boxId) {
 					} catch {
 						// ignore
 					}
+					try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 
 					resizer.classList.add('is-dragging');
 					const previousCursor = document.body.style.cursor;
