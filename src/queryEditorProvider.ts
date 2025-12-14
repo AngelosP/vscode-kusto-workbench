@@ -148,6 +148,10 @@ export class QueryEditorProvider {
 		}
 	}
 
+	public async refreshConnectionsData(): Promise<void> {
+		await this.sendConnectionsData();
+	}
+
 	private cancelRunningQuery(boxId: string): void {
 		const id = String(boxId || '').trim();
 		if (!id) {
@@ -491,7 +495,11 @@ export class QueryEditorProvider {
 		}
 
 		try {
-			const databases = await this.kustoClient.getDatabases(connection, forceRefresh);
+			const databasesRaw = await this.kustoClient.getDatabases(connection, forceRefresh);
+			const databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
+				.map((d) => String(d || '').trim())
+				.filter(Boolean)
+				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 			await this.saveCachedDatabases(connectionId, databases);
 			this.postMessage({ type: 'databasesData', databases, boxId });
 		} catch (error) {

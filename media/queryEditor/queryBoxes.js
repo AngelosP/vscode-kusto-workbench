@@ -618,11 +618,39 @@ function formatClusterDisplayName(connection) {
 	return String(connection.name || connection.clusterUrl || '').trim();
 }
 
+function normalizeClusterUrlKey(url) {
+	try {
+		const raw = String(url || '').trim();
+		if (!raw) return '';
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+		const u = new URL(withScheme);
+		return (u.origin + u.pathname).replace(/\/+$/, '').toLowerCase();
+	} catch {
+		return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
+	}
+}
+
 function updateConnectionSelects() {
 	queryBoxes.forEach(id => {
 		const select = document.getElementById(id + '_connection');
 		if (select) {
 			const currentValue = select.value;
+			const desiredClusterUrl = (select.dataset && select.dataset.desiredClusterUrl) ? String(select.dataset.desiredClusterUrl) : '';
+			let resolvedDesiredId = '';
+			try {
+				if (!resolvedDesiredId && desiredClusterUrl) {
+					const target = normalizeClusterUrlKey(desiredClusterUrl);
+					for (const c of (connections || [])) {
+						if (!c) continue;
+						if (normalizeClusterUrlKey(c.clusterUrl || '') === target) {
+							resolvedDesiredId = String(c.id || '');
+							break;
+						}
+					}
+				}
+			} catch {
+				// ignore
+			}
 			const sortedConnections = (connections || []).slice().sort((a, b) => {
 				const an = String(formatClusterDisplayName(a) || '').toLowerCase();
 				const bn = String(formatClusterDisplayName(b) || '').toLowerCase();
@@ -636,10 +664,14 @@ function updateConnectionSelects() {
 					.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>')
 					.join('');
 
-			// Pre-fill with last selection if this is a new box
-			if (!currentValue && lastConnectionId) {
+			// Restore: prefer desired selection from persisted document state.
+			if (!currentValue && resolvedDesiredId) {
+				select.value = resolvedDesiredId;
+				try { delete select.dataset.desiredClusterUrl; } catch { /* ignore */ }
+				updateDatabaseField(id);
+			} else if (!currentValue && lastConnectionId) {
+				// Pre-fill with last selection if this is a new box.
 				select.value = lastConnectionId;
-				// Trigger database loading
 				updateDatabaseField(id);
 			} else if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
 				select.value = currentValue;
@@ -678,15 +710,47 @@ function updateDatabaseField(boxId) {
 		if (cached && cached.length > 0) {
 			// Use cached databases immediately
 			updateDatabaseSelect(boxId, cached);
+			// If we already have a selected DB (restore/last), start schema fetch right away.
+			try {
+				if (typeof ensureSchemaForBox === 'function') {
+					ensureSchemaForBox(boxId, false);
+				}
+			} catch {
+				// ignore
+			}
 			if (refreshBtn) {
 				refreshBtn.disabled = false;
 			}
 		} else {
 			// No cache, need to load from server
-			databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
+			let desired = '';
+			try {
+				desired = (databaseSelect.dataset && databaseSelect.dataset.desired)
+					? String(databaseSelect.dataset.desired || '')
+					: '';
+			} catch { /* ignore */ }
+
+			if (desired) {
+				const esc = (typeof escapeHtml === 'function') ? escapeHtml(desired) : desired;
+				databaseSelect.innerHTML =
+					'<option value="" disabled hidden>Select Database...</option>' +
+					'<option value="' + esc + '">' + esc + '</option>';
+				databaseSelect.value = desired;
+			} else {
+				databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
+			}
 			databaseSelect.disabled = true;
 			if (refreshBtn) {
 				refreshBtn.disabled = true;
+			}
+
+			// Start schema fetch immediately if we have a persisted DB selection.
+			try {
+				if (desired && typeof ensureSchemaForBox === 'function') {
+					ensureSchemaForBox(boxId, false);
+				}
+			} catch {
+				// ignore
 			}
 
 			// Request databases from the extension
@@ -871,30 +935,48 @@ function updateDatabaseSelect(boxId, databases) {
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 
 	if (databaseSelect) {
-		databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>' +
-			databases.map(db => '<option value="' + db + '">' + db + '</option>').join('');
+		const prevValue = String(databaseSelect.value || '');
+		const list = (Array.isArray(databases) ? databases : [])
+			.map(d => String(d || '').trim())
+			.filter(Boolean)
+			.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+		databaseSelect.innerHTML = '<option value="" disabled ' + ((prevValue && list.includes(prevValue)) ? 'hidden' : 'selected hidden') + '>Select Database...</option>' +
+			list.map(db => {
+				const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
+				return '<option value="' + esc + '">' + esc + '</option>';
+			}).join('');
 		databaseSelect.disabled = false;
 
 		// Update local cache with new databases
 		const connectionId = document.getElementById(boxId + '_connection').value;
 		if (connectionId) {
-			cachedDatabases[connectionId] = databases;
+			cachedDatabases[connectionId] = list;
 		}
 
-		// Prefer per-box desired selection (restore), else last selection.
+		// Prefer per-box desired selection (restore), else keep existing, else last selection.
+		let desired = '';
 		try {
-			const desired = (databaseSelect.dataset && databaseSelect.dataset.desired) ? String(databaseSelect.dataset.desired) : '';
-			if (desired && databases.includes(desired)) {
-				databaseSelect.value = desired;
-				onDatabaseChanged(boxId);
-				try { delete databaseSelect.dataset.desired; } catch { /* ignore */ }
-				return;
-			}
-		} catch {
-			// ignore
+			desired = (databaseSelect.dataset && databaseSelect.dataset.desired)
+				? String(databaseSelect.dataset.desired || '')
+				: '';
+		} catch { /* ignore */ }
+
+		const target = (desired && list.includes(desired))
+			? desired
+			: (prevValue && list.includes(prevValue))
+				? prevValue
+				: (lastDatabase && list.includes(lastDatabase))
+					? lastDatabase
+					: '';
+
+		if (target) {
+			databaseSelect.value = target;
 		}
-		if (lastDatabase && databases.includes(lastDatabase)) {
-			databaseSelect.value = lastDatabase;
+		try { if (desired && target === desired) delete databaseSelect.dataset.desired; } catch { /* ignore */ }
+
+		// Only trigger schema refresh if the selected DB actually changed.
+		if (target && target !== prevValue) {
 			onDatabaseChanged(boxId);
 		}
 	}

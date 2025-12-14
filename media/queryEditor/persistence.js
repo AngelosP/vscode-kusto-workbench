@@ -185,6 +185,15 @@ function getKqlxState() {
 		if (id.startsWith('query_')) {
 			const name = (document.getElementById(id + '_name') || {}).value || '';
 			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
+			let clusterUrl = '';
+			try {
+				if (connectionId && Array.isArray(connections)) {
+					const conn = (connections || []).find(c => c && String(c.id || '') === String(connectionId));
+					clusterUrl = conn ? String(conn.clusterUrl || '') : '';
+				}
+			} catch {
+				// ignore
+			}
 			const database = (document.getElementById(id + '_database') || {}).value || '';
 			const query = queryEditors && queryEditors[id] ? (queryEditors[id].getValue() || '') : '';
 			const resultJson = (window.__kustoQueryResultJsonByBoxId && window.__kustoQueryResultJsonByBoxId[id])
@@ -197,7 +206,7 @@ function getKqlxState() {
 			sections.push({
 				type: 'query',
 				name,
-				connectionId,
+				clusterUrl,
 				database,
 				query,
 				...(resultJson ? { resultJson } : {}),
@@ -366,6 +375,35 @@ function applyKqlxState(state) {
 		}
 
 		const sections = Array.isArray(s.sections) ? s.sections : [];
+		const normalizeClusterUrlKey = (url) => {
+			try {
+				const raw = String(url || '').trim();
+				if (!raw) return '';
+				const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+				const u = new URL(withScheme);
+				// Lowercase host, drop trailing slashes.
+				const out = (u.origin + u.pathname).replace(/\/+$/, '');
+				return out.toLowerCase();
+			} catch {
+				return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
+			}
+		};
+		const findConnectionIdByClusterUrl = (clusterUrl) => {
+			try {
+				const key = normalizeClusterUrlKey(clusterUrl);
+				if (!key) return '';
+				for (const c of (connections || [])) {
+					if (!c) continue;
+					const ck = normalizeClusterUrlKey(c.clusterUrl || '');
+					if (ck && ck === key) {
+						return String(c.id || '');
+					}
+				}
+			} catch {
+				// ignore
+			}
+			return '';
+		};
 		for (const section of sections) {
 			const t = section && section.type ? String(section.type) : '';
 			if (t === 'query') {
@@ -377,15 +415,37 @@ function applyKqlxState(state) {
 					if (nameEl) nameEl.value = String(section.name || '');
 				} catch { /* ignore */ }
 				try {
-					const conn = String(section.connectionId || '');
+					const desiredClusterUrl = String(section.clusterUrl || '');
+					const resolvedConnectionId = desiredClusterUrl ? findConnectionIdByClusterUrl(desiredClusterUrl) : '';
 					const db = String(section.database || '');
 					const connEl = document.getElementById(boxId + '_connection');
 					const dbEl = document.getElementById(boxId + '_database');
-					if (dbEl) dbEl.dataset.desired = db;
-					if (connEl && conn) {
-						connEl.value = conn;
-						connEl.dataset.prevValue = conn;
-						updateDatabaseField(boxId);
+					if (dbEl) {
+						dbEl.dataset.desired = db;
+						// Optimistic restore: show the persisted DB immediately, even before the DB list loads.
+						if (db) {
+							const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
+							dbEl.innerHTML =
+								'<option value="" disabled hidden>Select Database...</option>' +
+								'<option value="' + esc + '">' + esc + '</option>';
+							dbEl.value = db;
+						}
+					}
+					if (connEl) {
+						// Stash desired selection so updateConnectionSelects can apply it once
+						// connections are populated (connections may arrive after document restore).
+						if (desiredClusterUrl) {
+							connEl.dataset.desiredClusterUrl = desiredClusterUrl;
+						}
+
+						if (resolvedConnectionId) {
+							connEl.value = resolvedConnectionId;
+							connEl.dataset.prevValue = resolvedConnectionId;
+							updateDatabaseField(boxId);
+						} else {
+							// Try again after connections are populated.
+							try { updateConnectionSelects(); } catch { /* ignore */ }
+						}
 					}
 				} catch { /* ignore */ }
 				// Monaco editor may not exist yet; store pending text for initQueryEditor.

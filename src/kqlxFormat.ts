@@ -4,7 +4,8 @@ export type KqlxSectionV1 =
 	| {
 			type: 'query';
 			name?: string;
-			connectionId?: string;
+			// Persist the actual cluster URL so sessions are portable across machines.
+			clusterUrl?: string;
 			database?: string;
 			query?: string;
 			// Optional persisted query result for this box.

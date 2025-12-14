@@ -4,11 +4,35 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 
+const normalizeClusterUrlKey = (url: string): string => {
+	try {
+		const raw = String(url || '').trim();
+		if (!raw) return '';
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+		const u = new URL(withScheme);
+		// Lowercase host, drop trailing slashes.
+		return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
+	} catch {
+		return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
+	}
+};
+
+const getDefaultConnectionName = (clusterUrl: string): string => {
+	try {
+		const raw = String(clusterUrl || '').trim();
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+		const u = new URL(withScheme);
+		return u.hostname || raw;
+	} catch {
+		return String(clusterUrl || '').trim() || 'Kusto Cluster';
+	}
+};
+
 type ComparableSection =
 	| {
 			type: 'query';
 			name: string;
-			connectionId: string;
+			clusterUrl: string;
 			database: string;
 			query: string;
 			resultJson: string;
@@ -57,7 +81,7 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 			sections.push({
 				type: 'query',
 				name: String((section as any).name ?? ''),
-				connectionId: String((section as any).connectionId ?? ''),
+					clusterUrl: String((section as any).clusterUrl ?? ''),
 				database: String((section as any).database ?? ''),
 				query: String((section as any).query ?? ''),
 				resultJson: String((section as any).resultJson ?? ''),
@@ -210,7 +234,58 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 		};
 
-		const postDocument = () => {
+		const ensureConnectionsForState = async (state: KqlxStateV1): Promise<boolean> => {
+			const urls: string[] = [];
+			try {
+				for (const sec of Array.isArray(state.sections) ? state.sections : []) {
+					if (!sec || (sec as any).type !== 'query') {
+						continue;
+					}
+					const clusterUrl = String((sec as any).clusterUrl || '').trim();
+					if (clusterUrl) {
+						urls.push(clusterUrl);
+					}
+				}
+			} catch {
+				// ignore
+			}
+			const uniqueKeys = new Map<string, string>();
+			for (const u of urls) {
+				const k = normalizeClusterUrlKey(u);
+				if (k && !uniqueKeys.has(k)) {
+					uniqueKeys.set(k, u);
+				}
+			}
+
+			if (uniqueKeys.size === 0) {
+				return false;
+			}
+
+			const existing = this.connectionManager.getConnections();
+			const existingKeys = new Set(existing.map((c) => normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
+
+			let added = 0;
+			for (const [, originalUrl] of uniqueKeys) {
+				const key = normalizeClusterUrlKey(originalUrl);
+				if (!key || existingKeys.has(key)) {
+					continue;
+				}
+				let clusterUrl = String(originalUrl || '').trim();
+				if (clusterUrl && !/^https?:\/\//i.test(clusterUrl)) {
+					clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
+				}
+				await this.connectionManager.addConnection({
+					name: getDefaultConnectionName(clusterUrl || originalUrl),
+					clusterUrl: clusterUrl || originalUrl
+				});
+				existingKeys.add(key);
+				added++;
+			}
+
+			return added > 0;
+		};
+
+		const postDocument = async () => {
 			const parsed = parseKqlxText(document.getText());
 			if (!parsed.ok) {
 				void webviewPanel.webview.postMessage({
@@ -221,6 +296,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				});
 				return;
 			}
+
+			let connectionsChanged = false;
+			try {
+				connectionsChanged = await ensureConnectionsForState(parsed.file.state);
+			} catch {
+				// ignore
+			}
+			if (connectionsChanged) {
+				try {
+					await queryEditor.refreshConnectionsData();
+				} catch {
+					// ignore
+				}
+			}
+
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
@@ -263,7 +353,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			switch (message.type) {
 				case 'requestDocument':
 					// Only load from disk when explicitly requested by the webview.
-					postDocument();
+					await postDocument();
 					return;
 				case 'persistDocument': {
 					const rawState = (message as any).state;
