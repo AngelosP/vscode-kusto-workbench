@@ -978,9 +978,27 @@
 		}
 
 		/* URL CSV previews using the shared tabular control: avoid nested scrollbars. */
-		.url-output .table-container {
+		.url-output.url-csv-mode {
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+		}
+
+		.url-output.url-csv-mode .results {
+			flex: 1 1 auto;
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+			max-width: 100%;
+		}
+
+		/* In CSV mode, the table container is the scroller (like query results). */
+		.url-output.url-csv-mode .table-container {
+			flex: 1 1 auto;
+			min-height: 0;
 			max-height: none;
-			overflow: visible;
+			overflow: auto;
 		}
 
 		table {

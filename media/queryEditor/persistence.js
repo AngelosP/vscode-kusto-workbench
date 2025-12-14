@@ -151,6 +151,8 @@ function __kustoGetUrlOutputHeightPx(boxId) {
 	try {
 		const wrapper = document.getElementById(boxId + '_wrapper');
 		if (!wrapper) return undefined;
+		// Only persist heights that came from an explicit user resize (or a restored persisted height).
+		// Auto/default layout can vary and should not mark the document dirty.
 		try {
 			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
 				return undefined;

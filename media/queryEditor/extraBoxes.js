@@ -880,8 +880,8 @@ function onPythonError(message) {
 function addUrlBox(options) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
-	// Default to expanded (view on) so the section shows content immediately once a URL is entered.
-	urlStateByBoxId[id] = { url: '', expanded: true, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
+	// Default to collapsed (view off) so a new URL section is as small as possible.
+	urlStateByBoxId[id] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -920,6 +920,15 @@ function addUrlBox(options) {
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	try { __kustoUpdateUrlToggleButton(id); } catch { /* ignore */ }
 	try { updateUrlContent(id); } catch { /* ignore */ }
+
+	// Ensure an explicit minimum height is present so it round-trips through persistence.
+	// (When collapsed, the wrapper is display:none so it doesn't affect layout.)
+	try {
+		const wrapper = document.getElementById(id + '_wrapper');
+		if (wrapper && (!wrapper.style.height || wrapper.style.height === 'auto')) {
+			wrapper.style.height = '120px';
+		}
+	} catch { /* ignore */ }
 
 	// Drag handle resize for URL output.
 	try {
@@ -1093,6 +1102,11 @@ function __kustoRenderUrlContent(contentEl, st) {
 		__kustoClearElement(contentEl);
 		// Default for rich render.
 		try { contentEl.style.whiteSpace = 'normal'; } catch { /* ignore */ }
+		// Reset any mode-specific layout from previous renders.
+		try { contentEl.classList.remove('url-csv-mode'); } catch { /* ignore */ }
+		try { contentEl.style.overflow = ''; } catch { /* ignore */ }
+		try { contentEl.style.display = ''; } catch { /* ignore */ }
+		try { contentEl.style.flexDirection = ''; } catch { /* ignore */ }
 
 		const kind = String(st.kind || '').toLowerCase();
 		if (kind === 'image' && st.dataUri) {
@@ -1112,14 +1126,17 @@ function __kustoRenderUrlContent(contentEl, st) {
 						try {
 							const wrapper = document.getElementById(boxId + '_wrapper');
 							if (!wrapper) return;
-							// Don't override user-sized or restored heights.
-							try {
-								if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
-									st.__autoSizeImagePending = false;
-									st.__autoSizedImageOnce = true;
-									return;
-								}
-							} catch { /* ignore */ }
+
+							// Only auto-expand when the wrapper is still at the minimum height.
+							// This intentionally also covers "restored" heights that equal the minimum.
+							let currentH = 0;
+							try { currentH = wrapper.getBoundingClientRect().height; } catch { /* ignore */ }
+							const minH = 120;
+							if (currentH && currentH > (minH + 1)) {
+								st.__autoSizeImagePending = false;
+								st.__autoSizedImageOnce = true;
+								return;
+							}
 
 							// Ensure layout is up to date before measuring.
 							setTimeout(() => {
@@ -1128,7 +1145,6 @@ function __kustoRenderUrlContent(contentEl, st) {
 									const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
 									const imgH = img.getBoundingClientRect().height;
 									if (!imgH || !isFinite(imgH)) return;
-									const minH = 120;
 									const maxH = 3000;
 									const nextH = Math.max(minH, Math.min(maxH, Math.ceil(imgH + resizerH)));
 									wrapper.style.height = nextH + 'px';
@@ -1155,6 +1171,10 @@ function __kustoRenderUrlContent(contentEl, st) {
 		}
 
 		if (kind === 'csv' && typeof st.body === 'string') {
+			// Match the query-results UX: summary row stays fixed; table scrolls.
+			try {
+				contentEl.classList.add('url-csv-mode');
+			} catch { /* ignore */ }
 			const boxId = (() => {
 				try {
 					const id = contentEl && contentEl.id ? String(contentEl.id) : '';
@@ -1203,6 +1223,15 @@ function __kustoRenderUrlContent(contentEl, st) {
 					boxId,
 					{ label: 'CSV', showExecutionTime: false, resultsDiv: resultsDiv }
 				);
+
+				// Ensure only the table scrolls (not the whole URL output), just like query results.
+				try {
+					const tc = resultsDiv.querySelector('.table-container');
+					if (tc && tc.style) {
+						tc.style.maxHeight = 'none';
+						tc.style.overflow = 'auto';
+					}
+				} catch { /* ignore */ }
 				return;
 			}
 

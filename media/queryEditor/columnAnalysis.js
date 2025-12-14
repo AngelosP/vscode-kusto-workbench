@@ -32,16 +32,17 @@ function toggleColumnMenu(colIdx, boxId) {
 }
 
 function showUniqueValues(colIdx, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+	if (!state) { return; }
 
 	// Close menu
 	toggleColumnMenu(colIdx, boxId);
 
-	const columnName = window.currentResult.columns[colIdx];
+	const columnName = state.columns[colIdx];
 	const valueCounts = new Map();
 
 	// Count occurrences of each value
-	window.currentResult.rows.forEach(row => {
+	state.rows.forEach(row => {
 		const cell = row[colIdx];
 		let value;
 
@@ -55,7 +56,7 @@ function showUniqueValues(colIdx, boxId) {
 		valueCounts.set(value, (valueCounts.get(value) || 0) + 1);
 	});
 
-	const totalRows = window.currentResult.rows.length;
+	const totalRows = state.rows.length;
 
 	// Convert to array and sort by count (descending)
 	const sortedValues = Array.from(valueCounts.entries())
@@ -191,9 +192,10 @@ function drawPieChart(canvasId, data, total) {
 }
 
 function showDistinctCountPicker(colIdx, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+	if (!state) { return; }
 
-	const columnName = window.currentResult.columns[colIdx];
+	const columnName = state.columns[colIdx];
 	const modal = document.getElementById('columnAnalysisModal');
 	const title = document.getElementById('columnAnalysisTitle');
 	const body = document.getElementById('columnAnalysisBody');
@@ -206,7 +208,7 @@ function showDistinctCountPicker(colIdx, boxId) {
 	html += '<option value="">Select a column...</option>';
 
 	// Build sorted column list
-	const sortedColumns = window.currentResult.columns
+	const sortedColumns = state.columns
 		.map((col, idx) => ({ col, idx }))
 		.filter(item => item.idx !== colIdx)
 		.sort((a, b) => a.col.localeCompare(b.col));
@@ -224,18 +226,19 @@ function showDistinctCountPicker(colIdx, boxId) {
 }
 
 function calculateDistinctCount(groupByColIdx, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+	if (!state) { return; }
 
 	const targetColIdx = parseInt(document.getElementById('distinctCountTargetColumn').value);
 	if (isNaN(targetColIdx)) { return; }
 
-	const groupByColumnName = window.currentResult.columns[groupByColIdx];
-	const targetColumnName = window.currentResult.columns[targetColIdx];
+	const groupByColumnName = state.columns[groupByColIdx];
+	const targetColumnName = state.columns[targetColIdx];
 
 	// Map of groupBy value -> Set of target values
 	const groupedValues = new Map();
 
-	window.currentResult.rows.forEach(row => {
+	state.rows.forEach(row => {
 		const groupByCell = row[groupByColIdx];
 		const targetCell = row[targetColIdx];
 

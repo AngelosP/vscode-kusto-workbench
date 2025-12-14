@@ -35,6 +35,7 @@ export type KqlxSectionV1 =
 			type: 'url';
 			url?: string;
 			expanded?: boolean;
+			outputHeightPx?: number;
 		}
 	| {
 			type: string;

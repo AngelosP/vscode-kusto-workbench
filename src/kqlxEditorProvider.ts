@@ -87,6 +87,7 @@ type ComparableSection =
 			type: 'url';
 			url: string;
 			expanded: boolean;
+			outputHeightPx?: number;
 		};
 
 type ComparableState = {
@@ -144,7 +145,8 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 			sections.push({
 				type: 'url',
 				url: String((section as any).url ?? ''),
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : false
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : false,
+				outputHeightPx: normalizeHeight((section as any).outputHeightPx)
 			});
 			continue;
 		}
