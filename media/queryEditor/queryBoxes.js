@@ -50,6 +50,11 @@ function addQueryBox(options) {
 		'<path d="M10.2 9.2l2.3 2.3"/>' +
 		'<path d="M12.5 9.2v2.3h-2.3"/>' +
 		'</svg>';
+
+	const singleLineIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 8h12"/>' +
+		'</svg>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table">' +
@@ -74,10 +79,13 @@ function addQueryBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3zm9 2h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-2V5z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'format\')" title="Format code\nReformats the entire query">' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
+		'</button>' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleLine\')" title="Copy query as single line\nCopies a single-line version to your clipboard (does not modify the editor)">' +
+		'<span class="qe-icon" aria-hidden="true">' + singleLineIconSvg + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
@@ -249,8 +257,24 @@ function onQueryEditorToolbarAction(boxId, action) {
 	if (action === 'replace') {
 		return runMonacoAction(boxId, 'editor.action.startFindReplaceAction');
 	}
-	if (action === 'format') {
+	if (action === 'prettify') {
+		try {
+			if (typeof window.__kustoPrettifyQueryForBoxId === 'function') {
+				window.__kustoPrettifyQueryForBoxId(boxId);
+				return;
+			}
+		} catch { /* ignore */ }
+		// Fallback: at least run the basic formatter.
 		return runMonacoAction(boxId, 'editor.action.formatDocument');
+	}
+	if (action === 'singleLine') {
+		try {
+			if (typeof window.__kustoCopySingleLineQueryForBoxId === 'function') {
+				window.__kustoCopySingleLineQueryForBoxId(boxId);
+				return;
+			}
+		} catch { /* ignore */ }
+		return;
 	}
 	if (action === 'autocomplete') {
 		try {
