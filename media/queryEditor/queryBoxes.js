@@ -138,6 +138,13 @@ function addQueryBox() {
 		'<span class="query-spinner" aria-hidden="true"></span>' +
 		'<span id="' + id + '_exec_elapsed">0:00.0</span>' +
 		'</span>' +
+		'<button class="refresh-btn cancel-btn" id="' + id + '_cancel_btn" onclick="cancelQuery(\'' + id + '\')" style="display: none;" title="Cancel running query" aria-label="Cancel running query">' +
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<circle cx="8" cy="8" r="6" />' +
+		'<path d="M5.5 5.5l5 5" />' +
+		'<path d="M10.5 5.5l-5 5" />' +
+		'</svg>' +
+		'</button>' +
 		'</div>' +
 		'<div class="cache-controls">' +
 		'<label class="cache-checkbox">' +
@@ -935,6 +942,7 @@ function setQueryExecuting(boxId, executing) {
 	const runToggle = document.getElementById(boxId + '_run_toggle');
 	const status = document.getElementById(boxId + '_exec_status');
 	const elapsed = document.getElementById(boxId + '_exec_elapsed');
+	const cancelBtn = document.getElementById(boxId + '_cancel_btn');
 
 	if (queryExecutionTimers[boxId]) {
 		clearInterval(queryExecutionTimers[boxId]);
@@ -947,6 +955,10 @@ function setQueryExecuting(boxId, executing) {
 		}
 		if (runToggle) {
 			runToggle.disabled = true;
+		}
+		if (cancelBtn) {
+			cancelBtn.disabled = false;
+			cancelBtn.style.display = 'flex';
 		}
 		closeRunMenu(boxId);
 		if (status) {
@@ -971,8 +983,28 @@ function setQueryExecuting(boxId, executing) {
 	if (runToggle) {
 		runToggle.disabled = false;
 	}
+	if (cancelBtn) {
+		cancelBtn.disabled = true;
+		cancelBtn.style.display = 'none';
+	}
 	if (status) {
 		status.style.display = 'none';
+	}
+}
+
+function cancelQuery(boxId) {
+	try {
+		const cancelBtn = document.getElementById(boxId + '_cancel_btn');
+		if (cancelBtn) {
+			cancelBtn.disabled = true;
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		vscode.postMessage({ type: 'cancelQuery', boxId: boxId });
+	} catch {
+		// ignore
 	}
 }
 

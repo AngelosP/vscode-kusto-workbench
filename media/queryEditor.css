@@ -421,6 +421,12 @@
 			cursor: not-allowed;
 		}
 
+		/* Cancel button: reuse icon-button sizing but show an error-colored glyph */
+		.refresh-btn.cancel-btn {
+			border: none;
+			color: var(--vscode-errorForeground);
+		}
+
 		.select-wrapper.icon-only {
 			width: 40px;
 			min-width: 40px;
@@ -1312,10 +1318,11 @@
 			display: inline-flex;
 			align-items: center;
 			gap: 8px;
+			margin-bottom: 10px;
 		}
 
 		.query-run button {
-			margin-bottom: 10px;
+			margin-bottom: 0;
 		}
 
 		.query-exec-status {

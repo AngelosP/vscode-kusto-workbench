@@ -154,10 +154,38 @@ window.addEventListener('message', event => {
 			updateDatabaseSelect(message.boxId, message.databases);
 			break;
 		case 'queryResult':
+			try {
+				if (message.boxId) {
+					window.lastExecutedBox = message.boxId;
+				}
+			} catch {
+				// ignore
+			}
 			displayResult(message.result);
 			break;
 		case 'queryError':
+			try {
+				if (message.boxId) {
+					window.lastExecutedBox = message.boxId;
+				}
+			} catch {
+				// ignore
+			}
 			displayError(message.error);
+			break;
+		case 'queryCancelled':
+			try {
+				if (message.boxId) {
+					window.lastExecutedBox = message.boxId;
+				}
+			} catch {
+				// ignore
+			}
+			if (typeof displayCancelled === 'function') {
+				displayCancelled();
+			} else {
+				displayError('Cancelled');
+			}
 			break;
 		case 'pythonResult':
 			try { if (typeof onPythonResult === 'function') onPythonResult(message); } catch { /* ignore */ }

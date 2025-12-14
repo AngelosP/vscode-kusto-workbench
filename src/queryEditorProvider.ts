@@ -26,10 +26,12 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
+	| { type: 'cancelQuery'; boxId: string }
 	| {
 		type: 'executeQuery';
 		query: string;
 		connectionId: string;
+		boxId: string;
 		database?: string;
 		queryMode?: string;
 		cacheEnabled?: boolean;
@@ -51,6 +53,7 @@ export class QueryEditorProvider {
 	private lastDatabase?: string;
 	private readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void }>();
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -84,6 +87,7 @@ export class QueryEditorProvider {
 		});
 
 		this.panel.onDidDispose(() => {
+			this.cancelAllRunningQueries();
 			this.panel = undefined;
 		});
 	}
@@ -108,6 +112,9 @@ export class QueryEditorProvider {
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
 				return;
+			case 'cancelQuery':
+				this.cancelRunningQuery(message.boxId);
+				return;
 			case 'executePython':
 				await this.executePythonFromWebview(message);
 				return;
@@ -127,6 +134,33 @@ export class QueryEditorProvider {
 			default:
 				return;
 		}
+	}
+
+	private cancelRunningQuery(boxId: string): void {
+		const id = String(boxId || '').trim();
+		if (!id) {
+			return;
+		}
+		const running = this.runningQueriesByBoxId.get(id);
+		if (!running) {
+			return;
+		}
+		try {
+			running.cancel();
+		} catch {
+			// ignore
+		}
+	}
+
+	private cancelAllRunningQueries(): void {
+		for (const [, running] of this.runningQueriesByBoxId) {
+			try {
+				running.cancel();
+			} catch {
+				// ignore
+			}
+		}
+		this.runningQueriesByBoxId.clear();
 	}
 
 	private async executePythonFromWebview(
@@ -460,6 +494,12 @@ export class QueryEditorProvider {
 	): Promise<void> {
 		await this.saveLastSelection(message.connectionId, message.database);
 
+		const boxId = String(message.boxId || '').trim();
+		if (boxId) {
+			// If the user runs again in the same box, cancel the previous run.
+			this.cancelRunningQuery(boxId);
+		}
+
 		const connection = this.findConnection(message.connectionId);
 		if (!connection) {
 			vscode.window.showErrorMessage('Connection not found');
@@ -475,13 +515,29 @@ export class QueryEditorProvider {
 		const cacheDirective = this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
+		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery);
+		if (boxId) {
+			this.runningQueriesByBoxId.set(boxId, { cancel });
+		}
 		try {
-			const result = await this.kustoClient.executeQuery(connection, message.database, finalQuery);
-			this.postMessage({ type: 'queryResult', result });
+			const result = await promise;
+			this.postMessage({ type: 'queryResult', result, boxId });
 		} catch (error) {
+			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
+				this.postMessage({ type: 'queryCancelled', boxId });
+				return;
+			}
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			vscode.window.showErrorMessage(`Query execution failed: ${errorMessage}`);
-			this.postMessage({ type: 'queryError', error: errorMessage });
+			this.postMessage({ type: 'queryError', error: errorMessage, boxId });
+		} finally {
+			if (boxId) {
+				// Only clear if this is still the active run for the box.
+				const current = this.runningQueriesByBoxId.get(boxId);
+				if (current?.cancel === cancel) {
+					this.runningQueriesByBoxId.delete(boxId);
+				}
+			}
 		}
 	}
 

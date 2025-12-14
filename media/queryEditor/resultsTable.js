@@ -121,6 +121,22 @@ function displayError(error) {
 	resultsDiv.classList.add('visible');
 }
 
+function displayCancelled() {
+	const boxId = window.lastExecutedBox;
+	if (!boxId) { return; }
+
+	setQueryExecuting(boxId, false);
+
+	const resultsDiv = document.getElementById(boxId + '_results');
+	if (!resultsDiv) { return; }
+
+	resultsDiv.innerHTML =
+		'<div class="results-header">' +
+		'<strong>Cancelled.</strong>' +
+		'</div>';
+	resultsDiv.classList.add('visible');
+}
+
 function selectCell(row, col, boxId) {
 	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
 

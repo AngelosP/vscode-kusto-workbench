@@ -29,6 +29,14 @@ export interface DatabaseSchemaResult {
 	};
 }
 
+export class QueryCancelledError extends Error {
+	readonly isCancelled = true;
+	constructor(message: string = 'Query cancelled') {
+		super(message);
+		this.name = 'QueryCancelledError';
+	}
+}
+
 export class KustoQueryClient {
 	private clients: Map<string, any> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
@@ -60,6 +68,34 @@ export class KustoQueryClient {
 		const client = new Client(kcsb);
 		this.clients.set(connection.id, client);
 		return client;
+	}
+
+	private async createDedicatedClient(connection: KustoConnection): Promise<any> {
+		// Get access token using VS Code's built-in authentication
+		const session = await vscode.authentication.getSession(
+			'microsoft',
+			['https://kusto.kusto.windows.net/.default'],
+			{ createIfNone: true }
+		);
+		if (!session) {
+			throw new Error('Failed to authenticate with Microsoft');
+		}
+		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
+		const kcsb = KustoConnectionStringBuilder.withAccessToken(connection.clusterUrl, session.accessToken);
+		return new Client(kcsb);
+	}
+
+	private isLikelyCancellationError(error: unknown): boolean {
+		const anyErr = error as any;
+		if (anyErr?.isCancelled === true) {
+			return true;
+		}
+		// Axios cancel token errors commonly set __CANCEL or use messages like "canceled".
+		if (anyErr?.__CANCEL === true) {
+			return true;
+		}
+		const msg = typeof anyErr?.message === 'string' ? anyErr.message : '';
+		return /cancel(l)?ed|canceled|client closed|aborted/i.test(msg);
 	}
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
@@ -232,6 +268,123 @@ export class KustoQueryClient {
 			
 			throw new Error(`Query execution failed: ${errorMessage}`);
 		}
+	}
+
+	executeQueryCancelable(
+		connection: KustoConnection,
+		database: string,
+		query: string
+	): { promise: Promise<QueryResult>; cancel: () => void } {
+		let client: any | undefined;
+		let cancelled = false;
+		const cancel = () => {
+			cancelled = true;
+			try {
+				client?.close?.();
+			} catch {
+				// ignore
+			}
+		};
+
+		const promise = (async () => {
+			client = await this.createDedicatedClient(connection);
+			const startTime = Date.now();
+			try {
+				const result = await client.execute(database, query);
+				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
+
+				const primaryResults = result.primaryResults[0];
+				const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
+
+				const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
+					if (cell === null || cell === undefined) {
+						return { display: 'null', full: 'null' };
+					}
+					if (cell instanceof Date) {
+						const full = cell.toString();
+						const display = cell.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+						return { display, full };
+					}
+					if (typeof cell === 'object') {
+						try {
+							const isEmpty = Array.isArray(cell) ? cell.length === 0 : Object.keys(cell).length === 0;
+							if (isEmpty) {
+								const display = Array.isArray(cell) ? '[]' : '{}';
+								return { display, full: display };
+							}
+							const jsonStr = JSON.stringify(cell, null, 2);
+							return { display: '[object]', full: jsonStr, isObject: true, rawObject: cell };
+						} catch {
+							const str = String(cell);
+							return { display: str, full: str };
+						}
+					}
+
+					const str = String(cell);
+					const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+					if (isoDateRegex.test(str)) {
+						try {
+							const date = new Date(str);
+							if (!isNaN(date.getTime())) {
+								const full = date.toString();
+								const display = date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+								return { display, full };
+							}
+						} catch {
+							// ignore
+						}
+					}
+					return { display: str, full: str };
+				};
+
+				const rows: any[][] = [];
+				for (const row of primaryResults.rows()) {
+					const rowArray: any[] = [];
+					if (Array.isArray(row)) {
+						rowArray.push(...row);
+					} else {
+						for (const col of primaryResults.columns) {
+							const value = (row as any)[col.name] ?? (row as any)[col.ordinal];
+							rowArray.push(value);
+						}
+					}
+					rows.push(rowArray.map((cell: any) => formatCellValue(cell)));
+				}
+
+				return {
+					columns,
+					rows,
+					metadata: {
+						cluster: connection.clusterUrl,
+						database: database,
+						executionTime
+					}
+				};
+			} catch (error) {
+				if (cancelled || this.isLikelyCancellationError(error)) {
+					throw new QueryCancelledError();
+				}
+				console.error('Error executing query:', error);
+				let errorMessage = 'Unknown error';
+				if (error instanceof Error) {
+					errorMessage = error.message;
+					if ((error as any).response?.data) {
+						errorMessage = JSON.stringify((error as any).response.data);
+					}
+				} else {
+					errorMessage = String(error);
+				}
+				throw new Error(`Query execution failed: ${errorMessage}`);
+			} finally {
+				try {
+					client?.close?.();
+				} catch {
+					// ignore
+				}
+			}
+		})();
+
+		return { promise, cancel };
 	}
 
 	async getDatabaseSchema(
