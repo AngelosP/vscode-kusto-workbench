@@ -18,6 +18,52 @@ window.__kustoPendingQueryTextByBoxId = window.__kustoPendingQueryTextByBoxId ||
 window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
 window.__kustoPendingPythonCodeByBoxId = window.__kustoPendingPythonCodeByBoxId || {};
 
+// Optional persisted query results (per box), stored as JSON text.
+// This stays in-memory and is included in getKqlxState.
+window.__kustoQueryResultJsonByBoxId = window.__kustoQueryResultJsonByBoxId || {};
+
+const __kustoMaxPersistedResultBytes = 200 * 1024;
+
+function __kustoByteLengthUtf8(text) {
+	try {
+		if (typeof TextEncoder !== 'undefined') {
+			return new TextEncoder().encode(String(text)).length;
+		}
+		// Fallback: approximate (UTF-16 code units). Safe enough for a cap.
+		return String(text).length * 2;
+	} catch {
+		return Number.MAX_SAFE_INTEGER;
+	}
+}
+
+function __kustoTryStoreQueryResult(boxId, result) {
+	try {
+		if (!boxId) return;
+		let json = '';
+		try {
+			json = JSON.stringify(result ?? null);
+		} catch {
+			// If result isn't serializable, don't persist it.
+			delete window.__kustoQueryResultJsonByBoxId[boxId];
+			return;
+		}
+		const bytes = __kustoByteLengthUtf8(json);
+		if (bytes <= __kustoMaxPersistedResultBytes) {
+			window.__kustoQueryResultJsonByBoxId[boxId] = json;
+		} else {
+			delete window.__kustoQueryResultJsonByBoxId[boxId];
+		}
+	} catch {
+		// ignore
+	}
+}
+
+// Called by main.js when query results arrive.
+function __kustoOnQueryResult(boxId, result) {
+	__kustoTryStoreQueryResult(boxId, result);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
 function __kustoGetWrapperHeightPx(boxId, suffix) {
 	try {
 		const el = document.getElementById(boxId + suffix);
@@ -64,6 +110,9 @@ function getKqlxState() {
 			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
 			const database = (document.getElementById(id + '_database') || {}).value || '';
 			const query = queryEditors && queryEditors[id] ? (queryEditors[id].getValue() || '') : '';
+			const resultJson = (window.__kustoQueryResultJsonByBoxId && window.__kustoQueryResultJsonByBoxId[id])
+				? String(window.__kustoQueryResultJsonByBoxId[id])
+				: '';
 			const runMode = (runModesByBoxId && runModesByBoxId[id]) ? String(runModesByBoxId[id]) : 'take100';
 			const cacheEnabled = !!((document.getElementById(id + '_cache_enabled') || {}).checked);
 			const cacheValue = parseInt(((document.getElementById(id + '_cache_value') || {}).value || '1'), 10) || 1;
@@ -74,6 +123,7 @@ function getKqlxState() {
 				connectionId,
 				database,
 				query,
+				...(resultJson ? { resultJson } : {}),
 				runMode,
 				cacheEnabled,
 				cacheValue,
@@ -207,6 +257,9 @@ function applyKqlxState(state) {
 	try {
 		__kustoPersistenceEnabled = false;
 
+		// Reset persisted results when loading a new document.
+		try { window.__kustoQueryResultJsonByBoxId = {}; } catch { /* ignore */ }
+
 		__kustoClearAllSections();
 
 		const s = state && typeof state === 'object' ? state : { sections: [] };
@@ -242,6 +295,33 @@ function applyKqlxState(state) {
 				// Monaco editor may not exist yet; store pending text for initQueryEditor.
 				try {
 					window.__kustoPendingQueryTextByBoxId[boxId] = String(section.query || '');
+				} catch { /* ignore */ }
+				// Restore last result (if present + parseable).
+				try {
+					const rj = section.resultJson ? String(section.resultJson) : '';
+					if (rj) {
+						// Keep in-memory cache aligned with restored boxes.
+						window.__kustoQueryResultJsonByBoxId[boxId] = rj;
+						try {
+							const parsed = JSON.parse(rj);
+							if (parsed && typeof parsed === 'object') {
+								// displayResult expects columns/rows/metadata in the typical shape.
+								const p = parsed;
+								if (!p.metadata || typeof p.metadata !== 'object') {
+									p.metadata = { executionTime: '' };
+								} else if (typeof p.metadata.executionTime === 'undefined') {
+									p.metadata.executionTime = '';
+								}
+								window.lastExecutedBox = boxId;
+								if (typeof displayResult === 'function') {
+									displayResult(p);
+								}
+							}
+						} catch {
+							// If stored JSON is invalid, drop it.
+							delete window.__kustoQueryResultJsonByBoxId[boxId];
+						}
+					}
 				} catch { /* ignore */ }
 				try {
 					setRunMode(boxId, String(section.runMode || 'take100'));

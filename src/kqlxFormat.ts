@@ -7,6 +7,10 @@ export type KqlxSectionV1 =
 			connectionId?: string;
 			database?: string;
 			query?: string;
+			// Optional persisted query result for this box.
+			// Stored as JSON text to keep comparisons stable and cap size.
+			// Only present when <= 200KB.
+			resultJson?: string;
 			runMode?: string;
 			cacheEnabled?: boolean;
 			cacheValue?: number;

@@ -180,6 +180,13 @@ window.addEventListener('message', event => {
 				// ignore
 			}
 			displayResult(message.result);
+			try {
+				if (message.boxId && typeof __kustoOnQueryResult === 'function') {
+					__kustoOnQueryResult(message.boxId, message.result);
+				}
+			} catch {
+				// ignore
+			}
 			break;
 		case 'queryError':
 			try {

@@ -11,6 +11,7 @@ type ComparableSection =
 			connectionId: string;
 			database: string;
 			query: string;
+			resultJson: string;
 			runMode: string;
 			cacheEnabled: boolean;
 			cacheValue: number;
@@ -59,6 +60,7 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 				connectionId: String((section as any).connectionId ?? ''),
 				database: String((section as any).database ?? ''),
 				query: String((section as any).query ?? ''),
+				resultJson: String((section as any).resultJson ?? ''),
 				runMode: String((section as any).runMode ?? 'take100'),
 				cacheEnabled: (typeof (section as any).cacheEnabled === 'boolean') ? (section as any).cacheEnabled : true,
 				cacheValue: Number.isFinite((section as any).cacheValue) ? Math.max(1, Math.trunc((section as any).cacheValue)) : 1,

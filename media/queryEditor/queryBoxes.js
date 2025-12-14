@@ -536,6 +536,13 @@ function removeQueryBox(boxId) {
 	// Stop any running timer/spinner for this box
 	setQueryExecuting(boxId, false);
 	delete runModesByBoxId[boxId];
+	try {
+		if (window.__kustoQueryResultJsonByBoxId) {
+			delete window.__kustoQueryResultJsonByBoxId[boxId];
+		}
+	} catch {
+		// ignore
+	}
 
 	// Disconnect any resize observer
 	if (queryEditorResizeObservers[boxId]) {
