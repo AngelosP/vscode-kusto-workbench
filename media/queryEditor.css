@@ -279,10 +279,12 @@
 
 		.query-box {
 			border: 1px solid var(--vscode-input-border);
-			border-radius: 4px;
+			border-radius: 0;
 			padding: 12px;
 			margin-bottom: 16px;
 			background: var(--vscode-editor-background);
+			/* Uniform lift on all edges. */
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 		}
 
 		.query-header {
