@@ -12,7 +12,55 @@ let pythonEditors = {};
 
 let markdownRenderCacheByBoxId = {};
 let markdownTabByBoxId = {}; // 'edit' | 'preview'
+let markdownEditHeightByBoxId = {}; // number (px) - last editor wrapper height
 let urlStateByBoxId = {}; // { url, expanded, loading, loaded, content, error }
+
+let markdownMarkedResolvePromise = null;
+
+function ensureMarkedGlobal() {
+	// Marked may have registered itself as an AMD module (because Monaco installs `define.amd`)
+	// instead of attaching to `window.marked`. Preview rendering expects `marked` to exist,
+	// so if it's missing, try to resolve it from the AMD loader.
+	try {
+		if (typeof marked !== 'undefined' && marked) {
+			return Promise.resolve(marked);
+		}
+	} catch {
+		// ignore
+	}
+
+	if (markdownMarkedResolvePromise) {
+		return markdownMarkedResolvePromise;
+	}
+
+	markdownMarkedResolvePromise = new Promise((resolve) => {
+		try {
+			if (typeof require === 'function') {
+				require(
+					['marked'],
+					(m) => {
+						try {
+							if (typeof marked === 'undefined' || !marked) {
+								// Best-effort: make it available as a global for the existing renderer.
+								window.marked = m;
+							}
+						} catch {
+							// ignore
+						}
+						resolve(m);
+					},
+					() => resolve(null)
+				);
+				return;
+			}
+		} catch {
+			// ignore
+		}
+		resolve(null);
+	});
+
+	return markdownMarkedResolvePromise;
+}
 
 function autoSizeTitleInput(inputEl) {
 	if (!inputEl) {
@@ -73,13 +121,15 @@ function addMarkdownBox() {
 		'<path d="M10.4 3.4l2.2 2.2" />' +
 		'</svg>';
 
+	const previewIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>';
+
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="section-header-row md-section-header">' +
-		'<div class="md-tabs" role="tablist" aria-label="Markdown mode">' +
-		'<button class="md-tab is-active" id="' + id + '_tab_edit" type="button" role="tab" aria-selected="true" onclick="setMarkdownTab(\'' + id + '\', \'edit\')">Edit</button>' +
-		'<button class="md-tab" id="' + id + '_tab_preview" type="button" role="tab" aria-selected="false" onclick="setMarkdownTab(\'' + id + '\', \'preview\')">Preview</button>' +
-		'</div>' +
 		'<div class="md-header-center">' +
 		'<div class="section-title-edit">' +
 		'<input class="section-title-input" id="' + id + '_md_title" type="text" value="Markdown" size="8" oninput="onMarkdownTitleInput(\'' + id + '\')" aria-label="Section title" />' +
@@ -87,6 +137,10 @@ function addMarkdownBox() {
 		'</div>' +
 		'</div>' +
 		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="Markdown mode">' +
+		'<button class="md-tab is-active" id="' + id + '_tab_edit" type="button" role="tab" aria-selected="true" onclick="setMarkdownTab(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">' + editIconSvg + '</button>' +
+		'<button class="md-tab" id="' + id + '_tab_preview" type="button" role="tab" aria-selected="false" onclick="setMarkdownTab(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">' + previewIconSvg + '</button>' +
+		'</div>' +
 		'<button class="refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
@@ -122,6 +176,7 @@ function removeMarkdownBox(boxId) {
 	}
 	delete markdownRenderCacheByBoxId[boxId];
 	delete markdownTabByBoxId[boxId];
+	delete markdownEditHeightByBoxId[boxId];
 	markdownBoxes = markdownBoxes.filter(id => id !== boxId);
 	const box = document.getElementById(boxId);
 	if (box && box.parentNode) {
@@ -158,7 +213,23 @@ function setMarkdownTab(boxId, tab) {
 		return;
 	}
 
+	let wrapper = null;
+	try {
+		wrapper = editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+	} catch {
+		wrapper = null;
+	}
+
 	if (next === 'preview') {
+		// Remember current editor height (so returning to Edit keeps the user's resize).
+		try {
+			if (wrapper) {
+				markdownEditHeightByBoxId[boxId] = wrapper.getBoundingClientRect().height;
+				wrapper.style.height = 'auto';
+			}
+		} catch {
+			// ignore
+		}
 		try {
 			const editor = markdownEditors[boxId];
 			const markdown = editor && editor.getModel ? (editor.getModel() ? editor.getModel().getValue() : '') : '';
@@ -169,6 +240,20 @@ function setMarkdownTab(boxId, tab) {
 		editorEl.style.display = 'none';
 		viewerEl.style.display = '';
 		return;
+	}
+
+	// Returning to Edit: restore the last known height.
+	try {
+		if (wrapper) {
+			const saved = markdownEditHeightByBoxId[boxId];
+			if (typeof saved === 'number' && isFinite(saved) && saved > 0) {
+				wrapper.style.height = Math.round(saved) + 'px';
+			} else {
+				wrapper.style.height = '';
+			}
+		}
+	} catch {
+		// ignore
 	}
 
 	viewerEl.style.display = 'none';
@@ -205,6 +290,22 @@ function initMarkdownEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
+
+		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
+		try {
+			if (typeof editor.onDidFocusEditorText === 'function') {
+				editor.onDidFocusEditorText(() => {
+					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				});
+			}
+			if (typeof editor.onDidFocusEditorWidget === 'function') {
+				editor.onDidFocusEditorWidget(() => {
+					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				});
+			}
+		} catch {
+			// ignore
+		}
 
 		markdownEditors[boxId] = editor;
 
@@ -275,16 +376,53 @@ function renderMarkdownIntoViewer(boxId, markdown) {
 
 	// Use Marked + DOMPurify if available; otherwise fall back to plain text.
 	try {
-		if (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function' && typeof DOMPurify !== 'undefined') {
-			const html = marked.parse(text, {
-				mangle: false,
-				headerIds: false
-			});
-			const sanitized = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+		const hasMarked = (typeof marked !== 'undefined') && marked;
+		const parseFn = hasMarked ? (
+			(typeof marked.parse === 'function') ? marked.parse :
+			(typeof marked.marked === 'function') ? marked.marked :
+			(typeof marked === 'function') ? marked :
+			null
+		) : null;
+
+		let purifier = null;
+		if (typeof DOMPurify !== 'undefined' && DOMPurify) {
+			if (typeof DOMPurify.sanitize === 'function') {
+				purifier = DOMPurify;
+			} else if (typeof DOMPurify === 'function') {
+				// Some DOMPurify builds export a factory that needs the window.
+				try {
+					const maybe = DOMPurify(window);
+					if (maybe && typeof maybe.sanitize === 'function') {
+						purifier = maybe;
+					}
+				} catch {
+					// ignore
+				}
+			}
+		}
+
+		if (typeof parseFn === 'function') {
+			const html = parseFn(text, { mangle: false, headerIds: false });
+			const sanitized = purifier ? purifier.sanitize(html, { USE_PROFILES: { html: true } }) : html;
 			viewer.innerHTML = sanitized;
 			markdownRenderCacheByBoxId[boxId] = sanitized;
 			return;
 		}
+	} catch {
+		// ignore
+	}
+
+	// If Marked got captured as an AMD module, resolve it and retry (best-effort).
+	try {
+		ensureMarkedGlobal().then(() => {
+			try {
+				if ((markdownTabByBoxId[boxId] || 'edit') === 'preview') {
+					renderMarkdownIntoViewer(boxId, markdown);
+				}
+			} catch {
+				// ignore
+			}
+		});
 	} catch {
 		// ignore
 	}
@@ -370,6 +508,22 @@ function initPythonEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
+
+		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
+		try {
+			if (typeof editor.onDidFocusEditorText === 'function') {
+				editor.onDidFocusEditorText(() => {
+					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				});
+			}
+			if (typeof editor.onDidFocusEditorWidget === 'function') {
+				editor.onDidFocusEditorWidget(() => {
+					try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				});
+			}
+		} catch {
+			// ignore
+		}
 
 		pythonEditors[boxId] = editor;
 

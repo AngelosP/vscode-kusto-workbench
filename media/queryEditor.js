@@ -78,9 +78,66 @@
 			if (bust) {
 				url.searchParams.set('v', bust);
 			}
+
+			// Monaco registers an AMD loader (`define.amd`). Some vendor libs (Marked/DOMPurify)
+			// will detect AMD and register as modules instead of exposing globals.
+			// Our markdown renderer expects `window.marked` and `window.DOMPurify`, so for
+			// these specific scripts, temporarily disable AMD/CommonJS detection.
+			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js)$/i.test(relativePath);
+			let restore = null;
+			if (isVendorLib) {
+				try {
+					const saved = {
+						define: window.define,
+						defineAmd: window.define && window.define.amd,
+						module: window.module,
+						exports: window.exports
+					};
+
+					// Prefer minimally disabling AMD detection (define.amd) so UMD bundles
+					// take the globals path without breaking RequireJS itself.
+					try {
+						if (window.define && window.define.amd) {
+							window.define.amd = undefined;
+						}
+					} catch {
+						// ignore
+					}
+
+					// Also clear CommonJS detection for these bundles.
+					try {
+						window.module = undefined;
+						window.exports = undefined;
+					} catch {
+						// ignore
+					}
+
+					restore = () => {
+						try {
+							window.define = saved.define;
+							if (window.define) {
+								window.define.amd = saved.defineAmd;
+							}
+							window.module = saved.module;
+							window.exports = saved.exports;
+						} catch {
+							// ignore
+						}
+					};
+				} catch {
+					restore = null;
+				}
+			}
+
 			el.src = url.toString();
-			el.onload = () => resolve();
-			el.onerror = () => reject(new Error(`Failed to load ${relativePath}`));
+			el.onload = () => {
+				try { if (restore) restore(); } catch { /* ignore */ }
+				resolve();
+			};
+			el.onerror = () => {
+				try { if (restore) restore(); } catch { /* ignore */ }
+				reject(new Error(`Failed to load ${relativePath}`));
+			};
 			(document.head || document.documentElement).appendChild(el);
 		});
 	};

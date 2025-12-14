@@ -4,6 +4,10 @@
 			margin: 0;
 			padding: 0;
 		}
+
+		html {
+			scrollbar-gutter: stable;
+		}
 		
 		body {
 			font-family: var(--vscode-font-family);
@@ -47,17 +51,13 @@
 
 		.section-header-row.md-section-header {
 			display: grid;
-			grid-template-columns: auto 1fr auto;
+			grid-template-columns: 1fr auto 1fr;
 			align-items: center;
 			gap: 8px;
 		}
 
-		.section-header-row.md-section-header .md-tabs {
-			justify-self: start;
-			margin-left: 0;
-		}
-
 		.section-header-row.md-section-header .md-header-center {
+			grid-column: 2;
 			justify-self: center;
 			display: inline-flex;
 			align-items: center;
@@ -65,11 +65,39 @@
 		}
 
 		.query-box.is-md-preview .md-header-center {
+			visibility: hidden;
+			pointer-events: none;
+		}
+
+		.query-box.is-md-preview .query-editor-wrapper {
+			height: auto;
+			min-height: 0;
+			overflow: visible;
+			background: var(--vscode-editor-background);
+			border: none;
+		}
+
+		.query-box.is-md-preview .query-editor-resizer {
 			display: none;
 		}
 
+		.query-box.is-md-preview .markdown-viewer {
+			min-height: 0;
+			overflow: visible;
+			border: none;
+			background: transparent;
+			padding: 0;
+		}
+
+		.query-box.is-md-preview .markdown-viewer code,
+		.query-box.is-md-preview .markdown-viewer pre {
+			background: transparent;
+		}
+
 		.section-header-row.md-section-header .section-actions {
+			grid-column: 3;
 			justify-self: end;
+			gap: 2px;
 		}
 
 		.section-title {
@@ -153,26 +181,32 @@
 
 		.md-tabs {
 			display: inline-flex;
-			gap: 0;
+			gap: 2px;
 			align-items: center;
-			border: 1px solid var(--vscode-input-border);
-			border-radius: 6px;
-			overflow: hidden;
+			border: none;
+			border-radius: 0;
+			overflow: visible;
 			margin: 0;
-			background: var(--vscode-editorWidget-background);
+			background: transparent;
 		}
 
 		.md-tab {
 			background: transparent;
+			border: 1px solid transparent;
 			color: var(--vscode-foreground);
-			border: none;
-			padding: 6px 10px;
 			cursor: pointer;
-			font-size: 12px;
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
 		}
 
-		.md-tab + .md-tab {
-			border-left: 1px solid var(--vscode-input-border);
+		.md-tab svg {
+			display: block;
 		}
 
 		.md-tab:hover {

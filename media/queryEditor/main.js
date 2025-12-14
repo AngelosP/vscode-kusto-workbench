@@ -3,10 +3,36 @@ document.addEventListener('keydown', async (event) => {
 	if (!(event.ctrlKey || event.metaKey) || (event.key !== 'v' && event.key !== 'V')) {
 		return;
 	}
-	if (!activeQueryEditorBoxId) {
-		return;
+
+	// Prefer whichever Monaco editor actually has focus.
+	let editor = null;
+	try {
+		if (activeMonacoEditor && typeof activeMonacoEditor.hasTextFocus === 'function') {
+			const hasFocus = activeMonacoEditor.hasTextFocus() ||
+				(typeof activeMonacoEditor.hasWidgetFocus === 'function' && activeMonacoEditor.hasWidgetFocus());
+			if (hasFocus) {
+				editor = activeMonacoEditor;
+			}
+		}
+	} catch {
+		// ignore
 	}
-	const editor = queryEditors[activeQueryEditorBoxId];
+
+	// Fallback for older behavior: if a query editor is focused, use it.
+	if (!editor && activeQueryEditorBoxId) {
+		const qe = queryEditors[activeQueryEditorBoxId];
+		try {
+			if (qe && typeof qe.hasTextFocus === 'function') {
+				const hasFocus = qe.hasTextFocus() || (typeof qe.hasWidgetFocus === 'function' && qe.hasWidgetFocus());
+				if (hasFocus) {
+					editor = qe;
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}
+
 	if (!editor) {
 		return;
 	}
