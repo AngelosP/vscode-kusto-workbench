@@ -45,6 +45,33 @@
 			margin-bottom: 8px;
 		}
 
+		.section-header-row.md-section-header {
+			display: grid;
+			grid-template-columns: auto 1fr auto;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.section-header-row.md-section-header .md-tabs {
+			justify-self: start;
+			margin-left: 0;
+		}
+
+		.section-header-row.md-section-header .md-header-center {
+			justify-self: center;
+			display: inline-flex;
+			align-items: center;
+			min-width: 0;
+		}
+
+		.query-box.is-md-preview .md-header-center {
+			display: none;
+		}
+
+		.section-header-row.md-section-header .section-actions {
+			justify-self: end;
+		}
+
 		.section-title {
 			font-size: 12px;
 			color: var(--vscode-foreground);
@@ -55,6 +82,59 @@
 			display: inline-flex;
 			gap: 8px;
 			align-items: center;
+		}
+
+		.section-title-edit {
+			display: inline-flex;
+			gap: 2px;
+			align-items: center;
+			min-width: 0;
+		}
+
+		.md-header-left {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.section-title-input {
+			font-size: 12px;
+			font-weight: 600;
+			color: var(--vscode-foreground);
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 2px 4px;
+			min-width: 56px;
+			max-width: 320px;
+		}
+
+		.section-title-input:hover {
+			border-color: var(--vscode-input-border);
+		}
+
+		.section-title-input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.section-title-pen {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 2px 3px;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+		}
+
+		.section-title-pen:hover {
+			background: var(--vscode-list-hoverBackground);
+			border-color: var(--vscode-input-border);
 		}
 
 		.section-btn {
@@ -71,6 +151,39 @@
 			background: var(--vscode-list-hoverBackground);
 		}
 
+		.md-tabs {
+			display: inline-flex;
+			gap: 0;
+			align-items: center;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 6px;
+			overflow: hidden;
+			margin: 0;
+			background: var(--vscode-editorWidget-background);
+		}
+
+		.md-tab {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: none;
+			padding: 6px 10px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		.md-tab + .md-tab {
+			border-left: 1px solid var(--vscode-input-border);
+		}
+
+		.md-tab:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.md-tab.is-active {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
 		.markdown-viewer {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
@@ -78,6 +191,9 @@
 			background: var(--vscode-editor-background);
 			min-height: 80px;
 			font-size: 13px;
+			flex: 1 1 auto;
+			min-width: 0;
+			overflow: auto;
 		}
 
 		.markdown-viewer code {
