@@ -216,6 +216,11 @@ window.addEventListener('message', event => {
 			cachedDatabases = message.cachedDatabases || {};
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			updateConnectionSelects();
+			try {
+				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
+					window.__kustoOnConnectionsUpdated();
+				}
+			} catch { /* ignore */ }
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 			break;
 		case 'documentData':
@@ -334,6 +339,11 @@ window.addEventListener('message', event => {
 					lastDatabase = message.lastDatabase;
 				}
 				updateConnectionSelects();
+				try {
+					if (typeof window.__kustoOnConnectionsUpdated === 'function') {
+						window.__kustoOnConnectionsUpdated();
+					}
+				} catch { /* ignore */ }
 				try {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {

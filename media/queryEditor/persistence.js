@@ -424,6 +424,19 @@ function applyKqlxState(state) {
 				return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
 			}
 		};
+		const clusterShortNameKey = (url) => {
+			try {
+				const raw = String(url || '').trim();
+				if (!raw) return '';
+				const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+				const u = new URL(withScheme);
+				const host = String(u.hostname || '').trim();
+				const first = host ? host.split('.')[0] : '';
+				return String(first || host || raw).trim().toLowerCase();
+			} catch {
+				return String(url || '').trim().toLowerCase();
+			}
+		};
 		const findConnectionIdByClusterUrl = (clusterUrl) => {
 			try {
 				const key = normalizeClusterUrlKey(clusterUrl);
@@ -433,6 +446,17 @@ function applyKqlxState(state) {
 					const ck = normalizeClusterUrlKey(c.clusterUrl || '');
 					if (ck && ck === key) {
 						return String(c.id || '');
+					}
+				}
+				// Fallback: match by short-name key.
+				const sk = clusterShortNameKey(clusterUrl);
+				if (sk) {
+					for (const c of (connections || [])) {
+						if (!c) continue;
+						const ck2 = clusterShortNameKey(c.clusterUrl || '');
+						if (ck2 && ck2 === sk) {
+							return String(c.id || '');
+						}
 					}
 				}
 			} catch {

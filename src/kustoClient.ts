@@ -44,9 +44,49 @@ export class KustoQueryClient {
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 	private readonly SCHEMA_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
 
+	private normalizeClusterEndpoint(clusterUrl: string): string {
+		const raw = String(clusterUrl || '').trim();
+		if (!raw) {
+			return '';
+		}
+		try {
+			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+			const u = new URL(withScheme);
+			let host = String(u.hostname || '').trim();
+			// If we got a short name like "help" or "mycluster.westus", expand it.
+			// This intentionally targets the common public ADX domain.
+			if (host && !/\.kusto\./i.test(host)) {
+				host = `${host}.kusto.windows.net`;
+			}
+			const protocol = u.protocol && /^https?:$/i.test(u.protocol) ? u.protocol : 'https:';
+			return `${protocol}//${host}`;
+		} catch {
+			// Best-effort string fallback.
+			let v = raw;
+			if (!/^https?:\/\//i.test(v)) {
+				v = `https://${v.replace(/^\/+/, '')}`;
+			}
+			try {
+				const u2 = new URL(v);
+				let host = String(u2.hostname || '').trim();
+				if (host && !/\.kusto\./i.test(host)) {
+					host = `${host}.kusto.windows.net`;
+				}
+				return `${u2.protocol}//${host}`;
+			} catch {
+				return v;
+			}
+		}
+	}
+
 	private async getOrCreateClient(connection: KustoConnection): Promise<any> {
 		if (this.clients.has(connection.id)) {
 			return this.clients.get(connection.id)!;
+		}
+
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		if (!clusterEndpoint) {
+			throw new Error('Cluster URL is missing.');
 		}
 
 		// Get access token using VS Code's built-in authentication
@@ -61,7 +101,7 @@ export class KustoQueryClient {
 		
 		// Use Azure AD access token authentication
 		const kcsb = KustoConnectionStringBuilder.withAccessToken(
-			connection.clusterUrl,
+			clusterEndpoint,
 			session.accessToken
 		);
 		
@@ -71,6 +111,11 @@ export class KustoQueryClient {
 	}
 
 	private async createDedicatedClient(connection: KustoConnection): Promise<any> {
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		if (!clusterEndpoint) {
+			throw new Error('Cluster URL is missing.');
+		}
+
 		// Get access token using VS Code's built-in authentication
 		const session = await vscode.authentication.getSession(
 			'microsoft',
@@ -81,7 +126,7 @@ export class KustoQueryClient {
 			throw new Error('Failed to authenticate with Microsoft');
 		}
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-		const kcsb = KustoConnectionStringBuilder.withAccessToken(connection.clusterUrl, session.accessToken);
+		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
 		return new Client(kcsb);
 	}
 
@@ -100,16 +145,17 @@ export class KustoQueryClient {
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
 		try {
+			const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 			// Check cache first
 			if (!forceRefresh) {
-				const cached = this.databaseCache.get(connection.clusterUrl);
+				const cached = this.databaseCache.get(clusterEndpoint);
 				if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
-					console.log('Returning cached databases for:', connection.clusterUrl);
+					console.log('Returning cached databases for:', clusterEndpoint);
 					return cached.databases;
 				}
 			}
 
-			console.log('Fetching databases for cluster:', connection.clusterUrl);
+			console.log('Fetching databases for cluster:', clusterEndpoint);
 			const client = await this.getOrCreateClient(connection);
 			
 			console.log('Executing .show databases command');
@@ -133,7 +179,7 @@ export class KustoQueryClient {
 			console.log('Databases found:', databases);
 			
 			// Update cache
-			this.databaseCache.set(connection.clusterUrl, {
+			this.databaseCache.set(clusterEndpoint, {
 				databases,
 				timestamp: Date.now()
 			});
@@ -392,7 +438,8 @@ export class KustoQueryClient {
 		database: string,
 		forceRefresh: boolean = false
 	): Promise<DatabaseSchemaResult> {
-		const cacheKey = `${connection.clusterUrl}|${database}`;
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		const cacheKey = `${clusterEndpoint}|${database}`;
 		if (forceRefresh) {
 			this.schemaCache.delete(cacheKey);
 		}

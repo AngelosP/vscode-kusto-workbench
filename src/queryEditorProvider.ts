@@ -26,6 +26,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
+	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'executePython'; boxId: string; code: string }
@@ -112,6 +113,10 @@ export class QueryEditorProvider {
 			case 'getConnections':
 				await this.sendConnectionsData();
 				return;
+			case 'addConnectionsForClusters':
+				await this.addConnectionsForClusters(message.clusterUrls);
+				await this.sendConnectionsData();
+				return;
 			case 'promptImportConnectionsXml':
 				await this.promptImportConnectionsXml(message.boxId);
 				return;
@@ -151,6 +156,81 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private normalizeClusterUrlKey(url: string): string {
+		try {
+			const raw = String(url || '').trim();
+			if (!raw) {
+				return '';
+			}
+			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+			const u = new URL(withScheme);
+			return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
+		} catch {
+			return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
+		}
+	}
+
+	private ensureHttpsUrl(url: string): string {
+		const raw = String(url || '').trim();
+		if (!raw) {
+			return '';
+		}
+		if (/^https?:\/\//i.test(raw)) {
+			return raw;
+		}
+		return `https://${raw.replace(/^\/+/, '')}`;
+	}
+
+	private getDefaultConnectionName(clusterUrl: string): string {
+		try {
+			const withScheme = this.ensureHttpsUrl(clusterUrl);
+			const u = new URL(withScheme);
+			return u.hostname || withScheme;
+		} catch {
+			return String(clusterUrl || '').trim() || 'Kusto Cluster';
+		}
+	}
+
+	private getClusterShortNameKey(clusterUrl: string): string {
+		try {
+			const withScheme = this.ensureHttpsUrl(clusterUrl);
+			const u = new URL(withScheme);
+			const host = String(u.hostname || '').trim();
+			const first = host ? host.split('.')[0] : '';
+			return String(first || host || clusterUrl || '').trim().toLowerCase();
+		} catch {
+			return String(clusterUrl || '').trim().toLowerCase();
+		}
+	}
+
+	private async addConnectionsForClusters(clusterUrls: string[]): Promise<void> {
+		const urls = Array.isArray(clusterUrls) ? clusterUrls : [];
+		if (!urls.length) {
+			return;
+		}
+
+		const existing = this.connectionManager.getConnections();
+		const existingKeys = new Set(existing.map((c) => this.getClusterShortNameKey(c.clusterUrl || '')).filter(Boolean));
+
+		for (const u of urls) {
+			const original = String(u || '').trim();
+			if (!original) {
+				continue;
+			}
+			const key = this.getClusterShortNameKey(original);
+			if (!key || existingKeys.has(key)) {
+				continue;
+			}
+			const clusterUrl = this.ensureHttpsUrl(original);
+			await this.connectionManager.addConnection({
+				name: this.getDefaultConnectionName(clusterUrl),
+				clusterUrl,
+				database: undefined
+			});
+			existingKeys.add(key);
 		}
 	}
 

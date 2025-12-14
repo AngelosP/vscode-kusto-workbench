@@ -28,6 +28,34 @@ const getDefaultConnectionName = (clusterUrl: string): string => {
 	}
 };
 
+const getClusterShortName = (clusterUrl: string): string => {
+	try {
+		const raw = String(clusterUrl || '').trim();
+		if (!raw) {
+			return '';
+		}
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+		const u = new URL(withScheme);
+		const host = String(u.hostname || '').trim();
+		if (!host) {
+			return raw;
+		}
+		const first = host.split('.')[0];
+		return first || host;
+	} catch {
+		const raw = String(clusterUrl || '').trim();
+		const m = raw.match(/([a-z0-9-]+)(?:\.[a-z0-9.-]+)+/i);
+		if (m && m[1]) {
+			return m[1];
+		}
+		return raw;
+	}
+};
+
+const getClusterShortNameKey = (clusterUrl: string): string => {
+	return String(getClusterShortName(clusterUrl) || '').trim().toLowerCase();
+};
+
 type ComparableSection =
 	| {
 			type: 'query';
@@ -251,7 +279,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const uniqueKeys = new Map<string, string>();
 			for (const u of urls) {
-				const k = normalizeClusterUrlKey(u);
+				const k = getClusterShortNameKey(u);
 				if (k && !uniqueKeys.has(k)) {
 					uniqueKeys.set(k, u);
 				}
@@ -262,11 +290,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			const existing = this.connectionManager.getConnections();
-			const existingKeys = new Set(existing.map((c) => normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
+			const existingKeys = new Set(existing.map((c) => getClusterShortNameKey(c.clusterUrl || '')).filter(Boolean));
 
 			let added = 0;
 			for (const [, originalUrl] of uniqueKeys) {
-				const key = normalizeClusterUrlKey(originalUrl);
+				const key = getClusterShortNameKey(originalUrl);
 				if (!key || existingKeys.has(key)) {
 					continue;
 				}
@@ -275,7 +303,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
 				}
 				await this.connectionManager.addConnection({
-					name: getDefaultConnectionName(clusterUrl || originalUrl),
+					name: getClusterShortName(clusterUrl || originalUrl) || getDefaultConnectionName(clusterUrl || originalUrl),
 					clusterUrl: clusterUrl || originalUrl
 				});
 				existingKeys.add(key);

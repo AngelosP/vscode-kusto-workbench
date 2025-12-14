@@ -1242,6 +1242,13 @@ function initQueryEditor(boxId) {
 		editor.onDidChangeModelContent(() => {
 			syncPlaceholder();
 			scheduleDocUpdate();
+			try {
+				if (typeof window.__kustoOnQueryValueChanged === 'function') {
+					window.__kustoOnQueryValueChanged(boxId, editor.getValue());
+				}
+			} catch {
+				// ignore
+			}
 			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
@@ -1323,6 +1330,15 @@ function initQueryEditor(boxId) {
 			requestAnimationFrame(() => {
 				try { editor.layout(); } catch { /* ignore */ }
 			});
+		} catch {
+			// ignore
+		}
+
+		// Kick off missing-cluster detection for the initial value as well.
+		try {
+			if (typeof window.__kustoOnQueryValueChanged === 'function') {
+				window.__kustoOnQueryValueChanged(boxId, editor.getValue());
+			}
 		} catch {
 			// ignore
 		}

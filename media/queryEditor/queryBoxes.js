@@ -119,6 +119,12 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="query-editor-wrapper">' +
 		toolbarHtml +
+		'<div class="qe-missing-clusters-banner" id="' + id + '_missing_clusters" style="display:none;" role="status" aria-live="polite">' +
+		'<div class="qe-missing-clusters-text" id="' + id + '_missing_clusters_text"></div>' +
+		'<div class="qe-missing-clusters-actions">' +
+		'<button type="button" class="qe-missing-clusters-btn" onclick="addMissingClusterConnections(\'' + id + '\')">Add connections</button>' +
+		'</div>' +
+		'</div>' +
 		'<div class="query-editor" id="' + id + '_query_editor"></div>' +
 		'<div class="query-editor-placeholder" id="' + id + '_query_placeholder">Enter your KQL query here...</div>' +
 		'<div class="query-editor-resizer" id="' + id + '_query_resizer" title="Drag to resize editor"></div>' +
@@ -566,6 +572,14 @@ function removeQueryBox(boxId) {
 
 	// Remove from tracked list
 	queryBoxes = queryBoxes.filter(id => id !== boxId);
+	try { delete lastQueryTextByBoxId[boxId]; } catch { /* ignore */ }
+	try { delete missingClusterUrlsByBoxId[boxId]; } catch { /* ignore */ }
+	try {
+		if (missingClusterDetectTimersByBoxId && missingClusterDetectTimersByBoxId[boxId]) {
+			clearTimeout(missingClusterDetectTimersByBoxId[boxId]);
+			delete missingClusterDetectTimersByBoxId[boxId];
+		}
+	} catch { /* ignore */ }
 
 	// Clear any global pointers if they reference this box
 	if (window.lastExecutedBox === boxId) {
@@ -630,6 +644,249 @@ function normalizeClusterUrlKey(url) {
 	}
 }
 
+function formatClusterShortName(clusterUrl) {
+	const raw = String(clusterUrl || '').trim();
+	if (!raw) {
+		return '';
+	}
+	try {
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+		const u = new URL(withScheme);
+		const host = String(u.hostname || '').trim();
+		if (!host) {
+			return raw;
+		}
+		const first = host.split('.')[0];
+		return first || host;
+	} catch {
+		// Fall back to a best-effort host extraction
+		const m = raw.match(/([a-z0-9-]+)(?:\.[a-z0-9.-]+)+/i);
+		if (m && m[1]) {
+			return m[1];
+		}
+		return raw;
+	}
+}
+
+function clusterShortNameKey(clusterUrl) {
+	try {
+		return String(formatClusterShortName(clusterUrl) || '').trim().toLowerCase();
+	} catch {
+		return String(clusterUrl || '').trim().toLowerCase();
+	}
+}
+
+function extractClusterUrlsFromQueryText(queryText) {
+	const text = String(queryText || '');
+	if (!text) {
+		return [];
+	}
+	// Primary pattern: cluster('https://...') or cluster("...")
+	const urls = [];
+	try {
+		const re = /\bcluster\s*\(\s*(['"])([^'"\r\n]+?)\1\s*\)/ig;
+		let m;
+		while ((m = re.exec(text)) !== null) {
+			const u = String(m[2] || '').trim();
+			if (u) urls.push(u);
+		}
+	} catch {
+		// ignore
+	}
+	// Unique by cluster short-name key (case-insensitive)
+	const seen = new Set();
+	const out = [];
+	for (const u of urls) {
+		const key = clusterShortNameKey(u);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		out.push(u);
+	}
+	return out;
+}
+
+function extractClusterDatabaseHintsFromQueryText(queryText) {
+	const text = String(queryText || '');
+	const map = {};
+	if (!text) {
+		return map;
+	}
+	// Pattern: cluster('...').database('...') (case-insensitive, with whitespace)
+	try {
+		const re = /\bcluster\s*\(\s*(['"])([^'"\r\n]+?)\1\s*\)\s*\.\s*database\s*\(\s*(['"])([^'"\r\n]+?)\3\s*\)/ig;
+		let m;
+		while ((m = re.exec(text)) !== null) {
+			const clusterUrl = String(m[2] || '').trim();
+			const database = String(m[4] || '').trim();
+			if (!clusterUrl || !database) continue;
+			const key = clusterShortNameKey(clusterUrl);
+			if (!key) continue;
+			if (!map[key]) {
+				map[key] = database;
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return map;
+}
+
+function computeMissingClusterUrls(detectedClusterUrls) {
+	const detected = Array.isArray(detectedClusterUrls) ? detectedClusterUrls : [];
+	if (!detected.length) {
+		return [];
+	}
+	const existingKeys = new Set();
+	try {
+		for (const c of (connections || [])) {
+			if (!c) continue;
+			const key = clusterShortNameKey(c.clusterUrl || '');
+			if (key) existingKeys.add(key);
+		}
+	} catch {
+		// ignore
+	}
+	const missing = [];
+	for (const u of detected) {
+		const key = clusterShortNameKey(u);
+		if (!key) continue;
+		if (!existingKeys.has(key)) {
+			missing.push(u);
+		}
+	}
+	return missing;
+}
+
+function renderMissingClustersBanner(boxId, missingClusterUrls) {
+	const banner = document.getElementById(boxId + '_missing_clusters');
+	const textEl = document.getElementById(boxId + '_missing_clusters_text');
+	if (!banner || !textEl) {
+		return;
+	}
+	const missing = Array.isArray(missingClusterUrls) ? missingClusterUrls : [];
+	if (!missing.length) {
+		banner.style.display = 'none';
+		textEl.innerHTML = '';
+		return;
+	}
+	const shortNames = missing
+		.map(u => formatClusterShortName(u))
+		.filter(Boolean);
+	const label = shortNames.length
+		? ('Detected clusters not in your connections: <strong>' + escapeHtml(shortNames.join(', ')) + '</strong>.')
+		: 'Detected clusters not in your connections.';
+	textEl.innerHTML = label + ' Add them with one click.';
+	banner.style.display = 'flex';
+}
+
+function updateMissingClustersForBox(boxId, queryText) {
+	try {
+		lastQueryTextByBoxId[boxId] = String(queryText || '');
+	} catch { /* ignore */ }
+	try {
+		suggestedDatabaseByClusterKeyByBoxId[boxId] = extractClusterDatabaseHintsFromQueryText(queryText);
+	} catch { /* ignore */ }
+	const detected = extractClusterUrlsFromQueryText(queryText);
+	const missing = computeMissingClusterUrls(detected);
+	try { missingClusterUrlsByBoxId[boxId] = missing; } catch { /* ignore */ }
+	renderMissingClustersBanner(boxId, missing);
+}
+
+// Called by Monaco (media/queryEditor/monaco.js) on content changes.
+window.__kustoOnQueryValueChanged = function (boxId, queryText) {
+	const id = String(boxId || '').trim();
+	if (!id) {
+		return;
+	}
+	try { lastQueryTextByBoxId[id] = String(queryText || ''); } catch { /* ignore */ }
+	try {
+		if (missingClusterDetectTimersByBoxId[id]) {
+			clearTimeout(missingClusterDetectTimersByBoxId[id]);
+		}
+		missingClusterDetectTimersByBoxId[id] = setTimeout(() => {
+			try { updateMissingClustersForBox(id, lastQueryTextByBoxId[id] || ''); } catch { /* ignore */ }
+		}, 260);
+	} catch {
+		// ignore
+	}
+};
+
+// Called by main.js when the connections list changes.
+window.__kustoOnConnectionsUpdated = function () {
+	try {
+		for (const id of (queryBoxes || [])) {
+			updateMissingClustersForBox(id, lastQueryTextByBoxId[id] || '');
+		}
+	} catch {
+		// ignore
+	}
+};
+
+function addMissingClusterConnections(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) {
+		return;
+	}
+	const missing = missingClusterUrlsByBoxId[id];
+	const clusters = Array.isArray(missing) ? missing.slice() : [];
+	if (!clusters.length) {
+		return;
+	}
+	// If this query box has no cluster selected, auto-select the first newly-added cluster
+	// once connections refresh.
+	try {
+		const sel = document.getElementById(id + '_connection');
+		const hasSelection = !!(sel && String(sel.value || '').trim());
+		if (sel && !hasSelection) {
+			const hints = suggestedDatabaseByClusterKeyByBoxId && suggestedDatabaseByClusterKeyByBoxId[id]
+				? suggestedDatabaseByClusterKeyByBoxId[id]
+				: {};
+			let chosenClusterUrl = '';
+			let chosenDb = '';
+			for (const u of clusters) {
+				const key = clusterShortNameKey(u);
+				const db = key && hints ? String(hints[key] || '') : '';
+				if (db) {
+					chosenClusterUrl = String(u || '').trim();
+					chosenDb = db;
+					break;
+				}
+			}
+			if (!chosenClusterUrl) {
+				chosenClusterUrl = String(clusters[0] || '').trim();
+				const key0 = clusterShortNameKey(chosenClusterUrl);
+				chosenDb = key0 && hints ? String(hints[key0] || '') : '';
+			}
+			sel.dataset.desiredClusterUrl = chosenClusterUrl;
+
+			// If we detected a database for that same fully-qualified reference, stage it too.
+			if (chosenDb) {
+				const dbEl = document.getElementById(id + '_database');
+				if (dbEl) {
+					dbEl.dataset.desired = chosenDb;
+					// Optimistic restore: show the persisted DB immediately, even before the DB list loads.
+					const esc = (typeof escapeHtml === 'function') ? escapeHtml(chosenDb) : chosenDb;
+					dbEl.innerHTML =
+						'<option value="" disabled hidden>Select Database...</option>' +
+						'<option value="' + esc + '">' + esc + '</option>';
+					dbEl.value = chosenDb;
+				}
+			}
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		vscode.postMessage({
+			type: 'addConnectionsForClusters',
+			boxId: id,
+			clusterUrls: clusters
+		});
+	} catch {
+		// ignore
+	}
+}
+
 function updateConnectionSelects() {
 	queryBoxes.forEach(id => {
 		const select = document.getElementById(id + '_connection');
@@ -643,6 +900,18 @@ function updateConnectionSelects() {
 					for (const c of (connections || [])) {
 						if (!c) continue;
 						if (normalizeClusterUrlKey(c.clusterUrl || '') === target) {
+							resolvedDesiredId = String(c.id || '');
+							break;
+						}
+					}
+				}
+				// Fallback: match by short-name key (case-insensitive). Useful when persisted
+				// state stores only a short cluster name.
+				if (!resolvedDesiredId && desiredClusterUrl) {
+					const targetShort = clusterShortNameKey(desiredClusterUrl);
+					for (const c of (connections || [])) {
+						if (!c) continue;
+						if (clusterShortNameKey(c.clusterUrl || '') === targetShort) {
 							resolvedDesiredId = String(c.id || '');
 							break;
 						}

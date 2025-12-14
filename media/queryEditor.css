@@ -545,6 +545,37 @@
 			flex: 0 0 auto;
 		}
 
+		.qe-missing-clusters-banner {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 6px 8px;
+			border-bottom: 1px solid var(--vscode-input-border);
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			flex: 0 0 auto;
+			font-size: 12px;
+			line-height: 1.35;
+		}
+
+		.qe-missing-clusters-text {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.qe-missing-clusters-actions {
+			flex: 0 0 auto;
+			display: flex;
+			gap: 6px;
+		}
+
+		.qe-missing-clusters-btn {
+			padding: 4px 10px;
+			font-size: 12px;
+			border-radius: 2px;
+		}
+
 		.query-editor-toolbar-sep {
 			width: 1px;
 			height: 18px;
