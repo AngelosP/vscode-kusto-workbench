@@ -6,7 +6,7 @@ import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileV1,
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: KqlxStateV1 }
+	| { type: 'persistDocument'; state: KqlxStateV1; flush?: boolean }
 	| { type: string; [key: string]: unknown };
 
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
@@ -147,6 +147,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// If nothing changed, avoid toggling the dirty state.
 					try {
 						if (nextText === document.getText()) {
+							// For the session file, still attempt to save if explicitly flushing.
+							if (isSessionFile && (message as any).flush) {
+								try {
+									await document.save();
+								} catch {
+									// ignore
+								}
+							}
 							scheduleSave();
 							return;
 						}
@@ -165,8 +173,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					edit.replace(document.uri, fullRange, nextText);
 					await vscode.workspace.applyEdit(edit);
 
-					// Save shortly after the last change (debounced) so we don't flicker while typing.
-					scheduleSave();
+					if (isSessionFile) {
+						// For the persistent session file, always save promptly so VS Code never prompts on close.
+						try {
+							await document.save();
+						} catch {
+							// ignore
+						}
+					} else {
+						// For user-picked files, saving stays user-controlled (or governed by VS Code autosave settings).
+						scheduleSave();
+					}
 					return;
 				}
 				default:

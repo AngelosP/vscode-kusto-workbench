@@ -242,6 +242,7 @@ function setMarkdownTab(boxId, tab) {
 		}
 		editorEl.style.display = 'none';
 		viewerEl.style.display = '';
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 		return;
 	}
 
@@ -268,6 +269,7 @@ function setMarkdownTab(boxId, tab) {
 	} catch {
 		// ignore
 	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function initMarkdownEditor(boxId) {

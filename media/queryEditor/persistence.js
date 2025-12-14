@@ -150,7 +150,7 @@ try {
 				return;
 			}
 			const state = getKqlxState();
-			vscode.postMessage({ type: 'persistDocument', state });
+			vscode.postMessage({ type: 'persistDocument', state, flush: true });
 		} catch {
 			// ignore
 		}
