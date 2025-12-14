@@ -331,6 +331,26 @@ function ensureMonaco() {
 							returnType: 'long',
 							description: 'Returns the number of distinct values of expr.'
 						},
+						'isnotempty': {
+							args: ['expr'],
+							returnType: 'bool',
+							description: 'Returns true if expr is not empty.'
+						},
+						'isempty': {
+							args: ['expr'],
+							returnType: 'bool',
+							description: 'Returns true if expr is empty.'
+						},
+						'isnull': {
+							args: ['expr'],
+							returnType: 'bool',
+							description: 'Returns true if expr is null.'
+						},
+						'isnotnull': {
+							args: ['expr'],
+							returnType: 'bool',
+							description: 'Returns true if expr is not null.'
+						},
 						'dcountif': {
 							args: ['expr', 'predicate', 'accuracy?'],
 							returnType: 'long',
@@ -519,6 +539,39 @@ function ensureMonaco() {
 							return null;
 						}
 
+						const inferPipeOperatorHoverFromLine = () => {
+							try {
+								const lineNumber = position.lineNumber;
+								const line = model.getLineContent(lineNumber);
+								if (!line) return null;
+								const col0 = Math.max(0, Math.min(line.length, position.column - 1));
+								const before = line.slice(0, col0);
+								const pipeIdx = before.lastIndexOf('|');
+								if (pipeIdx < 0) return null;
+								// Only consider it a pipe clause if everything before the '|' is whitespace.
+								if (!/^\s*$/.test(before.slice(0, pipeIdx))) return null;
+
+								const afterPipe = line.slice(pipeIdx + 1);
+								// Match a known operator at the start of the pipe clause.
+								const m = afterPipe.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|mv-expand|where|extend|project|summarize|join|distinct|take|top|limit|render|union|search)\b/i);
+								if (!m) return null;
+								const key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								const doc = KUSTO_KEYWORD_DOCS[key];
+								if (!doc) return null;
+
+								// Range over the operator keyword (not the whole clause).
+								const ws = afterPipe.match(/^\s*/);
+								const leadingWsLen = ws ? ws[0].length : 0;
+								const opStartIdx = pipeIdx + 1 + leadingWsLen;
+								const opEndIdx = opStartIdx + m[0].trim().length;
+								const range = new monaco.Range(lineNumber, opStartIdx + 1, lineNumber, opEndIdx + 1);
+								const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+								return { range, markdown: md };
+							} catch {
+								return null;
+							}
+						};
+
 						// Prefer function-call context (cursor could be inside args).
 						// Note: when the caret is on '(' (or just before it), the backward scan starting at offset-1
 						// may miss the opening paren. Probe slightly forward so active-arg tracking works while typing.
@@ -573,7 +626,8 @@ function ensureMonaco() {
 
 						const token = getTokenAtPosition(model, position);
 						if (!token || !token.word) {
-							return null;
+							// Even if the caret isn't on a token, keep pipe-operator docs visible while typing the clause.
+							return inferPipeOperatorHoverFromLine();
 						}
 						const w = String(token.word).toLowerCase();
 						if (KUSTO_FUNCTION_DOCS[w]) {
@@ -589,7 +643,9 @@ function ensureMonaco() {
 							return { range: token.range || getWordRangeAt(model, position), markdown: md };
 						}
 
-						return null;
+						// If the token under the caret isn't itself a keyword/function, infer the active pipe operator
+						// for this clause so docs keep showing while the user types the rest of the statement.
+						return inferPipeOperatorHoverFromLine();
 					};
 					monaco.languages.setMonarchTokensProvider('kusto', {
 						keywords: [
