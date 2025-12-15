@@ -2138,6 +2138,120 @@ function initQueryEditor(boxId) {
 			renderLineHighlight: 'none'
 		});
 
+		// SEM0139 helper: auto-select term and open Find-with-selection.
+		try {
+			if (!window.__kustoAutoFindStateByBoxId || typeof window.__kustoAutoFindStateByBoxId !== 'object') {
+				window.__kustoAutoFindStateByBoxId = {};
+			}
+			if (typeof window.__kustoAutoFindInQueryEditor !== 'function') {
+				window.__kustoAutoFindInQueryEditor = async (boxId, term) => {
+					const bid = String(boxId || '').trim();
+					const t = String(term || '');
+					if (!bid || !t) return false;
+					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+					if (!ed) return false;
+					try {
+						const state = window.__kustoAutoFindStateByBoxId[bid];
+						if (state && state.term === t) {
+							return true;
+						}
+					} catch { /* ignore */ }
+					const model = (ed && typeof ed.getModel === 'function') ? ed.getModel() : null;
+					if (!model || typeof model.findMatches !== 'function') return false;
+					let match = null;
+					try {
+						const matches = model.findMatches(t, true, false, false, null, true, 1);
+						match = (matches && matches.length) ? matches[0] : null;
+					} catch { /* ignore */ }
+					if (!match || !match.range) {
+						return false;
+					}
+					try {
+						ed.focus();
+						ed.setSelection(match.range);
+						if (typeof ed.revealRangeInCenter === 'function') {
+							ed.revealRangeInCenter(match.range);
+						}
+					} catch { /* ignore */ }
+					try {
+						const action = ed.getAction && ed.getAction('actions.findWithSelection');
+						if (action && typeof action.run === 'function') {
+							await action.run();
+						} else {
+							// Best-effort fallback.
+							ed.trigger('keyboard', 'actions.find', {});
+						}
+					} catch { /* ignore */ }
+					try {
+						window.__kustoAutoFindStateByBoxId[bid] = { term: t, ts: Date.now() };
+					} catch { /* ignore */ }
+					return true;
+				};
+			}
+			if (typeof window.__kustoClearAutoFindInQueryEditor !== 'function') {
+				window.__kustoClearAutoFindInQueryEditor = (boxId) => {
+					const bid = String(boxId || '').trim();
+					if (!bid) return;
+					let had = false;
+					try { had = !!(window.__kustoAutoFindStateByBoxId && window.__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
+					if (!had) return;
+					try { delete window.__kustoAutoFindStateByBoxId[bid]; } catch { /* ignore */ }
+					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+					if (!ed) return;
+					try {
+						// Close find widget if it was opened by us.
+						ed.trigger('keyboard', 'closeFindWidget', {});
+					} catch { /* ignore */ }
+					try {
+						// Clear selection highlight.
+						const pos = (typeof ed.getPosition === 'function') ? ed.getPosition() : null;
+						if (pos) {
+							ed.setSelection({ startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column });
+						}
+					} catch { /* ignore */ }
+				};
+			}
+		} catch {
+			// ignore
+		}
+
+		// Right-click Cut/Copy in Monaco context menu uses Monaco actions (not DOM cut/copy events).
+		// Override those actions to use our clipboard workaround when possible.
+		try {
+			const tryOverride = (actionId, isCut) => {
+				try {
+					const action = editor.getAction && editor.getAction(actionId);
+					if (!action || typeof action.run !== 'function') {
+						return;
+					}
+					const originalRun = action.run.bind(action);
+					action.run = async () => {
+						try {
+							if (window && typeof window.__kustoCopyOrCutMonacoEditor === 'function') {
+								const ok = await window.__kustoCopyOrCutMonacoEditor(editor, !!isCut);
+								if (ok) {
+									return;
+								}
+							}
+						} catch {
+							// ignore and fall back
+						}
+						try {
+							return await originalRun();
+						} catch {
+							// ignore
+						}
+					};
+				} catch {
+					// ignore
+				}
+			};
+			tryOverride('editor.action.clipboardCutAction', true);
+			tryOverride('editor.action.clipboardCopyAction', false);
+		} catch {
+			// ignore
+		}
+
 		queryEditors[boxId] = editor;
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
 		try { __kustoEnsureEditorWritableSoon(editor); } catch { /* ignore */ }

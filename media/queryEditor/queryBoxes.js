@@ -3049,6 +3049,11 @@ function cancelQuery(boxId) {
 
 function executeQuery(boxId, mode) {
 	const effectiveMode = mode || getRunMode(boxId);
+	try {
+		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {
+			window.__kustoClearAutoFindInQueryEditor(boxId);
+		}
+	} catch { /* ignore */ }
 	const query = queryEditors[boxId] ? queryEditors[boxId].getValue() : '';
 	let connectionId = document.getElementById(boxId + '_connection').value;
 	let database = document.getElementById(boxId + '_database').value;
@@ -3091,6 +3096,16 @@ function executeQuery(boxId, mode) {
 
 	setQueryExecuting(boxId, true);
 	closeRunMenu(boxId);
+
+	// Track the effective cacheEnabled value for this run.
+	// When caching is enabled, the extension injects an extra (hidden) first line,
+	// so error line numbers need to be adjusted for the visible editor.
+	try {
+		if (!window.__kustoLastRunCacheEnabledByBoxId || typeof window.__kustoLastRunCacheEnabledByBoxId !== 'object') {
+			window.__kustoLastRunCacheEnabledByBoxId = {};
+		}
+		window.__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
+	} catch { /* ignore */ }
 
 	// Store the last executed box for result display
 	window.lastExecutedBox = boxId;

@@ -233,31 +233,373 @@ function displayResultForBox(result, boxId, options) {
 	resultsDiv.classList.add('visible');
 }
 
+function __kustoTryExtractJsonFromErrorText(raw) {
+	const text = String(raw || '');
+	const firstObj = text.indexOf('{');
+	const firstArr = text.indexOf('[');
+	let start = -1;
+	let end = -1;
+	if (firstObj >= 0 && (firstArr < 0 || firstObj < firstArr)) {
+		start = firstObj;
+		end = text.lastIndexOf('}');
+	} else if (firstArr >= 0) {
+		start = firstArr;
+		end = text.lastIndexOf(']');
+	}
+	if (start < 0 || end < 0 || end <= start) {
+		return null;
+	}
+	const candidate = text.slice(start, end + 1);
+	try {
+		return JSON.parse(candidate);
+	} catch {
+		// Best-effort: if the message contains extra trailing characters after JSON, try trimming.
+		try {
+			const trimmed = candidate.trim();
+			return JSON.parse(trimmed);
+		} catch {
+			// ignore
+		}
+		return null;
+	}
+}
+
+function __kustoExtractLinePosition(text) {
+	const s = String(text || '');
+	const m = s.match(/\[line:position\s*=\s*(\d+)\s*:\s*(\d+)\s*\]/i);
+	if (!m) {
+		return null;
+	}
+	const line = parseInt(m[1], 10);
+	const col = parseInt(m[2], 10);
+	if (!isFinite(line) || !isFinite(col) || line <= 0 || col <= 0) {
+		return null;
+	}
+	return { line, col, token: `[line:position=${line}:${col}]` };
+}
+
+function __kustoNormalizeBadRequestInnerMessage(msg) {
+	let s = String(msg || '').trim();
+	// Strip boilerplate prefixes commonly returned by Kusto.
+	s = s.replace(/^Request is invalid[^:]*:\s*/i, '');
+	s = s.replace(/^(Semantic error:|Syntax error:)\s*/i, '');
+	return s.trim();
+}
+
+function __kustoStripLinePositionTokens(text) {
+	let s = String(text || '');
+	// Remove any existing [line:position=...] tokens to avoid duplicating adjusted locations.
+	s = s.replace(/\s*\[line:position\s*=\s*\d+\s*:\s*\d+\s*\]\s*/gi, ' ');
+	// Normalize whitespace.
+	s = s.replace(/\s{2,}/g, ' ').trim();
+	return s;
+}
+
+function __kustoBuildErrorUxModel(rawError) {
+	const raw = (rawError === null || rawError === undefined) ? '' : String(rawError);
+	if (!raw.trim()) {
+		return { kind: 'none' };
+	}
+
+	const json = __kustoTryExtractJsonFromErrorText(raw);
+	if (json && json.error && typeof json.error === 'object') {
+		const code = String(json.error.code || '').trim();
+		if (code === 'General_BadRequest') {
+			const inner = (json.error.innererror && typeof json.error.innererror === 'object') ? json.error.innererror : null;
+			const candidateMsg =
+				(inner && (inner['@message'] || inner.message)) ||
+				(json.error['@message'] || json.error.message) ||
+				raw;
+			const normalized = __kustoNormalizeBadRequestInnerMessage(candidateMsg);
+			let loc = __kustoExtractLinePosition(candidateMsg) || __kustoExtractLinePosition(normalized) || __kustoExtractLinePosition(raw);
+			if (!loc && inner) {
+				try {
+					const line = parseInt(inner['@line'] || inner.line || '', 10);
+					const col = parseInt(inner['@pos'] || inner.pos || '', 10);
+					if (isFinite(line) && isFinite(col) && line > 0 && col > 0) {
+						loc = { line, col, token: `[line:position=${line}:${col}]` };
+					}
+				} catch { /* ignore */ }
+			}
+			let autoFindTerm = null;
+			try {
+				const msg = String(normalized || candidateMsg || '');
+				// Specific common cases (more precise patterns first).
+				let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*'([^']+)'/i);
+				if (!m) {
+					m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*'([^']+)'/i);
+				}
+				// Generic semantic error pattern: SEMxxxx ... 'token'
+				if (!m) {
+					m = msg.match(/\bSEM\d{4}\b[^']*'([^']+)'/i);
+				}
+				if (m && m[1]) {
+					const t = String(m[1]);
+					// Avoid pathological cases (huge extracted strings).
+					if (t.length > 0 && t.length <= 400) {
+						autoFindTerm = t;
+					}
+				}
+			} catch { /* ignore */ }
+			return { kind: 'badrequest', message: normalized || raw, location: loc || null, autoFindTerm };
+		}
+
+		try {
+			return { kind: 'json', pretty: JSON.stringify(json, null, 2) };
+		} catch {
+			// fall through
+		}
+	}
+
+	// Not JSON (or unparseable): display as wrapped text.
+	return { kind: 'text', text: raw };
+}
+
+function __kustoMaybeAdjustLocationForCacheLine(boxId, location) {
+	if (!location || typeof location !== 'object') {
+		return location;
+	}
+	const bid = String(boxId || '').trim();
+	if (!bid) {
+		return location;
+	}
+	let cacheEnabled = false;
+	try {
+		cacheEnabled = !!(window.__kustoLastRunCacheEnabledByBoxId && window.__kustoLastRunCacheEnabledByBoxId[bid]);
+	} catch {
+		cacheEnabled = false;
+	}
+	if (!cacheEnabled) {
+		return location;
+	}
+	const line = parseInt(String(location.line || ''), 10);
+	const col = parseInt(String(location.col || ''), 10);
+	if (!isFinite(line) || line <= 0) {
+		return location;
+	}
+	const nextLine = Math.max(1, line - 1);
+	return {
+		...location,
+		line: nextLine,
+		col: isFinite(col) && col > 0 ? col : location.col,
+		token: `[line:position=${nextLine}:${isFinite(col) && col > 0 ? col : (location.col || 1)}]`
+	};
+}
+
+function __kustoEscapeForHtml(s) {
+	return (typeof escapeHtml === 'function') ? escapeHtml(String(s || '')) : String(s || '');
+}
+
+function __kustoEscapeJsStringLiteral(s) {
+	return String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function __kustoEscapeForHtmlAttribute(s) {
+	// Attribute-safe escaping (quotes included).
+	return __kustoEscapeForHtml(s)
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+function __kustoRenderErrorUxHtml(boxId, model) {
+	if (!model || model.kind === 'none') {
+		return '';
+	}
+	const bid = String(boxId || '');
+	if (model.kind === 'badrequest') {
+		const msgEsc = __kustoEscapeForHtml(model.message);
+		let locHtml = '';
+		if (model.location && model.location.line && model.location.col) {
+			const line = model.location.line;
+			const col = model.location.col;
+			const tokenEsc = __kustoEscapeForHtml(model.location.token || `[line:position=${line}:${col}]`);
+			locHtml =
+				' <a href="#" class="kusto-error-location"' +
+				' data-boxid="' + __kustoEscapeForHtmlAttribute(bid) + '"' +
+				' data-line="' + String(line) + '"' +
+				' data-col="' + String(col) + '"' +
+				' title="Go to line ' + String(line) + ', column ' + String(col) + '">' +
+				tokenEsc +
+				'</a>';
+		}
+		return (
+			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+			'<div><strong>' + msgEsc + '</strong>' + locHtml + '</div>' +
+			'</div>'
+		);
+	}
+	if (model.kind === 'json') {
+		const pre = __kustoEscapeForHtml(model.pretty);
+		return (
+			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+			'<pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family);">' +
+			pre +
+			'</pre>' +
+			'</div>'
+		);
+	}
+	// text
+	const lines = String(model.text || '').split(/\r?\n/).map(__kustoEscapeForHtml).join('<br>');
+	return (
+		'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+		lines +
+		'</div>'
+	);
+}
+
+// Centralized error UX renderer (hidden when no error).
+try {
+	window.__kustoRenderErrorUx = function (boxId, error) {
+		const bid = String(boxId || '').trim();
+		if (!bid) return;
+		try { __kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
+		const resultsDiv = document.getElementById(bid + '_results');
+		if (!resultsDiv) return;
+		const model = __kustoBuildErrorUxModel(error);
+		try {
+			if (model && model.location) {
+				model.location = __kustoMaybeAdjustLocationForCacheLine(bid, model.location);
+			}
+		} catch { /* ignore */ }
+		try {
+			if (model && model.kind === 'badrequest' && model.location && model.message) {
+				model.message = __kustoStripLinePositionTokens(model.message);
+			}
+		} catch { /* ignore */ }
+		if (!model || model.kind === 'none') {
+			resultsDiv.innerHTML = '';
+			try {
+				if (resultsDiv.classList) {
+					resultsDiv.classList.remove('visible');
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof __kustoApplyResultsVisibility === 'function') {
+					__kustoApplyResultsVisibility(bid);
+				}
+			} catch { /* ignore */ }
+			return;
+		}
+		const html = __kustoRenderErrorUxHtml(bid, model);
+		resultsDiv.innerHTML = html;
+		resultsDiv.classList.add('visible');
+		try {
+			if (typeof __kustoApplyResultsVisibility === 'function') {
+				__kustoApplyResultsVisibility(bid);
+			}
+		} catch { /* ignore */ }
+		try {
+			if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+				window.__kustoClampResultsWrapperHeight(bid);
+			}
+		} catch { /* ignore */ }
+		// Special UX: on SEM0139, auto-find the unresolved expression in the query editor.
+		try {
+			if (model && model.autoFindTerm && typeof window.__kustoAutoFindInQueryEditor === 'function') {
+				setTimeout(() => {
+					try { window.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
+				}, 0);
+			}
+		} catch { /* ignore */ }
+	};
+} catch {
+	// ignore
+}
+
+// Navigate to a line/column in the query editor and scroll it into view.
+try {
+	window.__kustoNavigateToQueryLocation = function (event, boxId, line, col) {
+		try {
+			if (event && typeof event.preventDefault === 'function') {
+				event.preventDefault();
+			}
+			if (event && typeof event.stopPropagation === 'function') {
+				event.stopPropagation();
+			}
+		} catch { /* ignore */ }
+		const bid = String(boxId || '').trim();
+		const ln = parseInt(String(line), 10);
+		const cn = parseInt(String(col), 10);
+		if (!bid || !isFinite(ln) || !isFinite(cn) || ln <= 0 || cn <= 0) {
+			return;
+		}
+		try {
+			const boxEl = document.getElementById(bid);
+			if (boxEl && typeof boxEl.scrollIntoView === 'function') {
+				boxEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+			}
+		} catch { /* ignore */ }
+		try {
+			const editor = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+			if (!editor) return;
+			const pos = { lineNumber: ln, column: cn };
+			try { editor.focus(); } catch { /* ignore */ }
+			try { if (typeof editor.setPosition === 'function') editor.setPosition(pos); } catch { /* ignore */ }
+			try { if (typeof editor.revealPositionInCenter === 'function') editor.revealPositionInCenter(pos); } catch { /* ignore */ }
+			try {
+				if (typeof editor.setSelection === 'function') {
+					editor.setSelection({ startLineNumber: ln, startColumn: cn, endLineNumber: ln, endColumn: cn });
+				}
+			} catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
+	};
+} catch {
+	// ignore
+}
+
+// Delegated click handler for clickable error locations.
+try {
+	if (!window.__kustoErrorLocationClickHandlerInstalled) {
+		window.__kustoErrorLocationClickHandlerInstalled = true;
+		document.addEventListener('click', (event) => {
+			try {
+				const target = event && event.target ? event.target : null;
+				if (!target || typeof target.closest !== 'function') {
+					return;
+				}
+				const link = target.closest('a.kusto-error-location');
+				if (!link) {
+					return;
+				}
+				const boxId = String(link.getAttribute('data-boxid') || '').trim();
+				const line = parseInt(String(link.getAttribute('data-line') || ''), 10);
+				const col = parseInt(String(link.getAttribute('data-col') || ''), 10);
+				if (!boxId || !isFinite(line) || !isFinite(col)) {
+					return;
+				}
+				if (typeof window.__kustoNavigateToQueryLocation === 'function') {
+					window.__kustoNavigateToQueryLocation(event, boxId, line, col);
+					return;
+				}
+			} catch {
+				// ignore
+			}
+		}, true);
+	}
+} catch {
+	// ignore
+}
+
 function displayError(error) {
 	const boxId = window.lastExecutedBox;
 	if (!boxId) { return; }
 
 	setQueryExecuting(boxId, false);
 
+	try {
+		if (typeof window.__kustoRenderErrorUx === 'function') {
+			window.__kustoRenderErrorUx(boxId, error);
+			return;
+		}
+	} catch { /* ignore */ }
 	const resultsDiv = document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
-
 	const raw = (error === null || error === undefined) ? '' : String(error);
-	const escape = (s) => (typeof escapeHtml === 'function') ? escapeHtml(s) : s;
-	const esc = raw.split(/\r?\n/).map(escape).join('<br>');
-
-	resultsDiv.innerHTML =
-		'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
-		esc +
-		'</div>';
+	const esc = raw.split(/\r?\n/).map(__kustoEscapeForHtml).join('<br>');
+	resultsDiv.innerHTML = '<div class="results-header" style="color: var(--vscode-errorForeground);">' + esc + '</div>';
 	resultsDiv.classList.add('visible');
-	try {
-		if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
-			window.__kustoClampResultsWrapperHeight(boxId);
-		}
-	} catch {
-		// ignore
-	}
 }
 
 // Display a non-query error message in a specific box's results area.
@@ -266,24 +608,19 @@ try {
 	window.__kustoDisplayBoxError = function (boxId, error) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
+		try {
+			if (typeof window.__kustoRenderErrorUx === 'function') {
+				window.__kustoRenderErrorUx(bid, error);
+				return;
+			}
+		} catch { /* ignore */ }
 		try { __kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
 		const resultsDiv = document.getElementById(bid + '_results');
 		if (!resultsDiv) return;
 		const raw = (error === null || error === undefined) ? '' : String(error);
-		const escape = (s) => (typeof escapeHtml === 'function') ? escapeHtml(s) : s;
-		const esc = raw.split(/\r?\n/).map(escape).join('<br>');
-		resultsDiv.innerHTML =
-			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
-			esc +
-			'</div>';
+		const esc = raw.split(/\r?\n/).map(__kustoEscapeForHtml).join('<br>');
+		resultsDiv.innerHTML = '<div class="results-header" style="color: var(--vscode-errorForeground);">' + esc + '</div>';
 		resultsDiv.classList.add('visible');
-		try {
-			if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
-				window.__kustoClampResultsWrapperHeight(bid);
-			}
-		} catch {
-			// ignore
-		}
 	};
 } catch {
 	// ignore

@@ -54,6 +54,167 @@ document.addEventListener('keydown', async (event) => {
 	}
 }, true);
 
+function __kustoGetFocusedMonacoEditor() {
+	// Prefer whichever Monaco editor actually has focus.
+	let editor = null;
+	try {
+		if (activeMonacoEditor && typeof activeMonacoEditor.hasTextFocus === 'function') {
+			const hasFocus = activeMonacoEditor.hasTextFocus() ||
+				(typeof activeMonacoEditor.hasWidgetFocus === 'function' && activeMonacoEditor.hasWidgetFocus());
+			if (hasFocus) {
+				editor = activeMonacoEditor;
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	// Fallback for older behavior: if a query editor is focused, use it.
+	if (!editor && activeQueryEditorBoxId) {
+		const qe = queryEditors[activeQueryEditorBoxId];
+		try {
+			if (qe && typeof qe.hasTextFocus === 'function') {
+				const hasFocus = qe.hasTextFocus() || (typeof qe.hasWidgetFocus === 'function' && qe.hasWidgetFocus());
+				if (hasFocus) {
+					editor = qe;
+				}
+			}
+		} catch {
+			// ignore
+		}
+	}
+	return editor;
+}
+
+function __kustoGetSelectionOrCurrentLineRange(editor) {
+	try {
+		const selection = editor && typeof editor.getSelection === 'function' ? editor.getSelection() : null;
+		// If we have a non-empty selection, use it.
+		if (selection && (
+			(typeof selection.isEmpty === 'function' && !selection.isEmpty()) ||
+			(selection.startLineNumber !== selection.endLineNumber || selection.startColumn !== selection.endColumn)
+		)) {
+			return {
+				startLineNumber: selection.startLineNumber,
+				startColumn: selection.startColumn,
+				endLineNumber: selection.endLineNumber,
+				endColumn: selection.endColumn
+			};
+		}
+
+		// Otherwise, mimic editor behavior: operate on the current line.
+		const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+		const pos = editor && typeof editor.getPosition === 'function' ? editor.getPosition() : null;
+		if (!model || !pos || typeof pos.lineNumber !== 'number') {
+			return null;
+		}
+		const line = pos.lineNumber;
+		const lineCount = typeof model.getLineCount === 'function' ? model.getLineCount() : line;
+		if (line < 1) {
+			return null;
+		}
+		if (line < lineCount) {
+			// Include the newline by selecting to the start of the next line.
+			return { startLineNumber: line, startColumn: 1, endLineNumber: line + 1, endColumn: 1 };
+		}
+		const endCol = typeof model.getLineMaxColumn === 'function' ? model.getLineMaxColumn(line) : 1;
+		return { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: endCol };
+	} catch {
+		return null;
+	}
+}
+
+async function __kustoCopyOrCutFocusedMonaco(event, isCut) {
+	const editor = __kustoGetFocusedMonacoEditor();
+	if (!editor) {
+		return;
+	}
+	await __kustoCopyOrCutMonacoEditorImpl(editor, event, isCut);
+}
+
+async function __kustoCopyOrCutMonacoEditorImpl(editor, eventOrNull, isCut) {
+	if (!editor) {
+		return false;
+	}
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	if (!model || typeof model.getValueInRange !== 'function') {
+		return false;
+	}
+	const range = __kustoGetSelectionOrCurrentLineRange(editor);
+	if (!range) {
+		return false;
+	}
+	let text = '';
+	try {
+		text = model.getValueInRange(range);
+	} catch {
+		return false;
+	}
+	if (typeof text !== 'string' || text.length === 0) {
+		return false;
+	}
+
+	try {
+		await navigator.clipboard.writeText(text);
+		try {
+			if (eventOrNull && typeof eventOrNull.preventDefault === 'function') {
+				eventOrNull.preventDefault();
+			}
+			if (eventOrNull && typeof eventOrNull.stopPropagation === 'function') {
+				eventOrNull.stopPropagation();
+			}
+			if (eventOrNull && typeof eventOrNull.stopImmediatePropagation === 'function') {
+				eventOrNull.stopImmediatePropagation();
+			}
+		} catch {
+			// ignore
+		}
+		if (isCut) {
+			try {
+				editor.executeEdits('clipboard', [{ range, text: '' }]);
+			} catch { /* ignore */ }
+		}
+		try { editor.focus(); } catch { /* ignore */ }
+		return true;
+	} catch {
+		// If clipboard write isn't permitted, fall back to default behavior.
+		// (Do not preventDefault in this case.)
+		return false;
+	}
+}
+
+// Expose for Monaco context-menu action overrides.
+try {
+	window.__kustoCopyOrCutMonacoEditor = async function (editor, isCut) {
+		return await __kustoCopyOrCutMonacoEditorImpl(editor, null, !!isCut);
+	};
+} catch {
+	// ignore
+}
+
+// VS Code can intercept Ctrl/Cmd+X/C; provide reliable cut/copy paths for Monaco.
+document.addEventListener('keydown', (event) => {
+	if (!(event.ctrlKey || event.metaKey)) {
+		return;
+	}
+	if (event.key === 'x' || event.key === 'X') {
+		void __kustoCopyOrCutFocusedMonaco(event, true);
+		return;
+	}
+	if (event.key === 'c' || event.key === 'C') {
+		void __kustoCopyOrCutFocusedMonaco(event, false);
+		return;
+	}
+}, true);
+
+// Right-click context menu Cut/Copy often routes through these events.
+document.addEventListener('cut', (event) => {
+	void __kustoCopyOrCutFocusedMonaco(event, true);
+}, true);
+document.addEventListener('copy', (event) => {
+	void __kustoCopyOrCutFocusedMonaco(event, false);
+}, true);
+
 // Ctrl+Enter (Cmd+Enter on macOS) runs the active query box, same as clicking the main run button.
 document.addEventListener('keydown', (event) => {
 	if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') {
@@ -195,8 +356,9 @@ vscode.postMessage({ type: 'getConnections' });
 try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 window.addEventListener('message', event => {
-	const message = event.data;
-	switch (message.type) {
+	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
+	const messageType = String(message.type || '');
+	switch (messageType) {
 			case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;
@@ -355,13 +517,30 @@ window.addEventListener('message', event => {
 			break;
 		case 'queryError':
 			try {
-				if (message.boxId) {
+				if (message && message.boxId) {
 					window.lastExecutedBox = message.boxId;
 				}
 			} catch {
 				// ignore
 			}
-			displayError(message.error);
+			try {
+				const boxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
+				const err = (message && 'error' in message) ? message.error : 'Query execution failed.';
+				try {
+					if (boxId && typeof setQueryExecuting === 'function') {
+						setQueryExecuting(boxId, false);
+					}
+				} catch { /* ignore */ }
+				if (boxId && typeof window.__kustoRenderErrorUx === 'function') {
+					window.__kustoRenderErrorUx(boxId, err);
+				} else if (typeof displayError === 'function') {
+					displayError(err);
+				} else {
+					console.error('Query error (no error renderer available):', err);
+				}
+			} catch (e) {
+				console.error('Failed to render query error:', e);
+			}
 			break;
 		case 'queryCancelled':
 			try {
