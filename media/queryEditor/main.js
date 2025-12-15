@@ -882,3 +882,221 @@ vscode.postMessage({ type: 'getConnections' });
 try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 // Initial content is now driven by the .kqlx document state.
+
+// Drag-and-drop reorder for sections in .kqlx.
+// Reorders DOM children of #queries-container, then persistence saves the new order.
+(function __kustoInstallSectionReorder() {
+	const tryInstall = () => {
+		const container = document.getElementById('queries-container');
+		if (!container) {
+			setTimeout(tryInstall, 50);
+			return;
+		}
+		try {
+			if (container.dataset && container.dataset.kustoSectionReorder === 'true') {
+				return;
+			}
+			if (container.dataset) {
+				container.dataset.kustoSectionReorder = 'true';
+			}
+		} catch {
+			// ignore
+		}
+
+		let draggingId = '';
+		let draggingOriginalNextSibling = null;
+		let draggingDidDrop = false;
+
+		const resyncArraysFromDom = () => {
+			try {
+				const ids = Array.from(container.children || [])
+					.map((el) => (el && el.id ? String(el.id) : ''))
+					.filter(Boolean);
+				try { if (typeof queryBoxes !== 'undefined') queryBoxes = ids.filter((id) => id.startsWith('query_')); } catch { /* ignore */ }
+				try { if (typeof markdownBoxes !== 'undefined') markdownBoxes = ids.filter((id) => id.startsWith('markdown_')); } catch { /* ignore */ }
+				try { if (typeof pythonBoxes !== 'undefined') pythonBoxes = ids.filter((id) => id.startsWith('python_')); } catch { /* ignore */ }
+				try { if (typeof urlBoxes !== 'undefined') urlBoxes = ids.filter((id) => id.startsWith('url_')); } catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		};
+
+		const bestEffortRelayoutMovedEditors = (boxId) => {
+			try {
+				const q = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[boxId] : null;
+				const md = (typeof markdownEditors !== 'undefined' && markdownEditors) ? markdownEditors[boxId] : null;
+				const py = (typeof pythonEditors !== 'undefined' && pythonEditors) ? pythonEditors[boxId] : null;
+				const editors = [q, md, py].filter(Boolean);
+				if (!editors.length) return;
+				setTimeout(() => {
+					for (const ed of editors) {
+						try { if (ed && typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
+					}
+				}, 0);
+			} catch {
+				// ignore
+			}
+		};
+
+		container.addEventListener('dragstart', (e) => {
+			try {
+				// Only allow reordering in .kqlx mode.
+				if (window.__kustoCompatibilityMode) {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try { e.stopPropagation(); } catch { /* ignore */ }
+					return;
+				}
+			} catch {
+				// ignore
+			}
+
+			const handle = e && e.target && e.target.closest ? e.target.closest('.section-drag-handle') : null;
+			if (!handle) {
+				return;
+			}
+			const box = handle.closest ? handle.closest('.query-box') : null;
+			if (!box || !box.id) {
+				return;
+			}
+			draggingId = String(box.id);
+			draggingDidDrop = false;
+			try {
+				// Remember original position so we can revert if the drag is cancelled.
+				draggingOriginalNextSibling = box.nextElementSibling || null;
+			} catch {
+				draggingOriginalNextSibling = null;
+			}
+			try {
+				if (e.dataTransfer) {
+					e.dataTransfer.effectAllowed = 'move';
+					try { e.dataTransfer.setData('text/plain', draggingId); } catch { /* ignore */ }
+				}
+			} catch {
+				// ignore
+			}
+		});
+
+		container.addEventListener('dragover', (e) => {
+			if (!draggingId) {
+				return;
+			}
+			try {
+				e.preventDefault();
+				if (e.dataTransfer) {
+					e.dataTransfer.dropEffect = 'move';
+				}
+			} catch {
+				// ignore
+			}
+
+			// Live reorder as the mouse moves.
+			try {
+				const dragged = document.getElementById(draggingId);
+				if (!dragged) return;
+				const y = typeof e.clientY === 'number' ? e.clientY : null;
+				if (y === null) return;
+				const boxes = Array.from(container.children || [])
+					.filter((el) => el && el.classList && el.classList.contains('query-box') && el !== dragged);
+				if (boxes.length === 0) return;
+
+				let insertBeforeEl = null;
+				for (const box of boxes) {
+					let rect;
+					try { rect = box.getBoundingClientRect(); } catch { rect = null; }
+					if (!rect) continue;
+					const midY = rect.top + (rect.height / 2);
+					if (y < midY) {
+						insertBeforeEl = box;
+						break;
+					}
+				}
+				if (insertBeforeEl) {
+					if (dragged.nextElementSibling !== insertBeforeEl) {
+						container.insertBefore(dragged, insertBeforeEl);
+					}
+				} else {
+					if (container.lastElementChild !== dragged) {
+						container.appendChild(dragged);
+					}
+				}
+			} catch {
+				// ignore
+			}
+		});
+
+		container.addEventListener('drop', (e) => {
+			if (!draggingId) {
+				return;
+			}
+			try { e.preventDefault(); } catch { /* ignore */ }
+			draggingDidDrop = true;
+			const dragged = document.getElementById(draggingId);
+			if (!dragged) {
+				draggingId = '';
+				return;
+			}
+
+			// Compute insertion point based on the drop Y position.
+			// This is much more reliable when dropping in whitespace above the first or below the last section.
+			try {
+				const dropY = typeof e.clientY === 'number' ? e.clientY : null;
+				const boxes = Array.from(container.children || [])
+					.filter((el) => el && el.classList && el.classList.contains('query-box') && el !== dragged);
+
+				if (boxes.length === 0) {
+					container.appendChild(dragged);
+				} else if (dropY === null) {
+					container.appendChild(dragged);
+				} else {
+					let inserted = false;
+					for (const box of boxes) {
+						let rect;
+						try { rect = box.getBoundingClientRect(); } catch { rect = null; }
+						if (!rect) continue;
+						const midY = rect.top + (rect.height / 2);
+						if (dropY < midY) {
+							container.insertBefore(dragged, box);
+							inserted = true;
+							break;
+						}
+					}
+					if (!inserted) {
+						container.appendChild(dragged);
+					}
+				}
+			} catch {
+				try { container.appendChild(dragged); } catch { /* ignore */ }
+			}
+
+			resyncArraysFromDom();
+			bestEffortRelayoutMovedEditors(draggingId);
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			draggingId = '';
+			draggingOriginalNextSibling = null;
+		});
+
+		container.addEventListener('dragend', () => {
+			try {
+				if (draggingId && !draggingDidDrop) {
+					const dragged = document.getElementById(draggingId);
+					if (dragged) {
+						if (draggingOriginalNextSibling && draggingOriginalNextSibling.parentElement === container) {
+							container.insertBefore(dragged, draggingOriginalNextSibling);
+						} else {
+							container.appendChild(dragged);
+						}
+						resyncArraysFromDom();
+						bestEffortRelayoutMovedEditors(draggingId);
+					}
+				}
+			} catch {
+				// ignore
+			}
+			draggingId = '';
+			draggingOriginalNextSibling = null;
+			draggingDidDrop = false;
+		});
+	};
+
+	tryInstall();
+})();

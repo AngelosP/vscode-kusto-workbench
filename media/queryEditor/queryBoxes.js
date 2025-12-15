@@ -162,7 +162,10 @@ function addQueryBox(options) {
 		'<div class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '">' +
 		'<div class="query-header">' +
 		'<div class="query-header-row query-header-row-top">' +
+		'<div class="query-name-group">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
+		'</div>' +
 		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +

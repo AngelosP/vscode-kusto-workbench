@@ -461,12 +461,35 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						// ignore
 					}
 
-					const file: KqlxFileV1 = {
-						kind: 'kqlx',
-						version: 1,
-						state
-					};
-					const nextText = stringifyKqlxFile(file);
+
+					// If the incoming state matches what is currently saved on disk (even if the in-memory
+					// document has different formatting), restore the exact on-disk text. This allows VS Code
+					// to clear the dirty indicator when a user "returns" to the saved state.
+					let nextText = '';
+					try {
+						if (!isSessionFile && document.uri.scheme === 'file') {
+							const bytes = await vscode.workspace.fs.readFile(document.uri);
+							const diskText = new TextDecoder('utf-8').decode(bytes);
+							const parsedDisk = parseKqlxText(diskText);
+							if (parsedDisk.ok) {
+								const diskComparable = toComparableState(parsedDisk.file.state);
+								const incomingComparable = toComparableState(state);
+								if (deepEqual(diskComparable, incomingComparable)) {
+									nextText = diskText;
+								}
+							}
+						}
+					} catch {
+						// ignore
+					}
+					if (!nextText) {
+						const file: KqlxFileV1 = {
+							kind: 'kqlx',
+							version: 1,
+							state
+						};
+						nextText = stringifyKqlxFile(file);
+					}
 					// If nothing changed, avoid toggling the dirty state.
 					try {
 						if (nextText === document.getText()) {

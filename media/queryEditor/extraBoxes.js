@@ -143,6 +143,7 @@ function addMarkdownBox(options) {
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="section-header-row md-section-header">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<div class="md-header-center">' +
 		'<div class="section-title-edit">' +
 		'<input class="section-title-input" id="' + id + '_md_title" type="text" value="Markdown" size="8" oninput="onMarkdownTitleInput(\'' + id + '\')" aria-label="Section title" />' +
@@ -581,6 +582,7 @@ function addPythonBox(options) {
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="section-header-row">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<div class="section-title">Python</div>' +
 		'<div class="section-actions">' +
 		'<button class="section-btn" type="button" onclick="runPythonBox(\'' + id + '\')" title="Run Python">▶ Run</button>' +
@@ -903,6 +905,7 @@ function addUrlBox(options) {
 	const boxHtml =
 		'<div class="query-box url-box" id="' + id + '">' +
 		'<div class="section-header-row url-section-header">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
