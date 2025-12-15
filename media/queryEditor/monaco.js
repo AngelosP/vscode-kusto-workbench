@@ -2159,10 +2159,60 @@ function initQueryEditor(boxId) {
 					const model = (ed && typeof ed.getModel === 'function') ? ed.getModel() : null;
 					if (!model || typeof model.findMatches !== 'function') return false;
 					let match = null;
-					try {
-						const matches = model.findMatches(t, true, false, false, null, true, 1);
-						match = (matches && matches.length) ? matches[0] : null;
-					} catch { /* ignore */ }
+					let usedTerm = t;
+					const tryFind = (needle) => {
+						try {
+							const s = String(needle || '');
+							if (!s) return null;
+							const matches = model.findMatches(s, true, false, false, null, true, 1);
+							return (matches && matches.length) ? matches[0] : null;
+						} catch { /* ignore */ }
+						return null;
+					};
+
+					// Try exact first, then a few safe normalizations for bracket/dynamic access.
+					const candidates = (() => {
+						const list = [];
+						const push = (s) => {
+							try {
+								const v = String(s || '');
+								if (!v) return;
+								if (v.length > 400) return;
+								if (!list.includes(v)) list.push(v);
+							} catch { /* ignore */ }
+						};
+
+						push(t);
+						// obj.["prop"] -> obj["prop"]
+						push(t.replace(/\.\s*\[/g, '['));
+						// Swap quote styles inside brackets: ["x"] <-> ['x']
+						push(t.replace(/\[\s*"([^\"]+)"\s*\]/g, "['$1']"));
+						push(t.replace(/\[\s*'([^']+)'\s*\]/g, '["$1"]'));
+						// Extract inner property token from bracket access and try searching just that.
+						try {
+							const m = t.match(/\[\s*(?:"([^\"]+)"|'([^']+)')\s*\]/);
+							const prop = m ? String(m[1] || m[2] || '') : '';
+							if (prop) {
+								push(prop);
+								push('"' + prop + '"');
+								push("'" + prop + "'");
+								// obj.["prop"] -> obj.prop
+								push(t.replace(/\[\s*(?:"([^\"]+)"|'([^']+)')\s*\]/g, '.' + prop).replace(/\.\./g, '.'));
+							}
+						} catch { /* ignore */ }
+
+						return list;
+					})();
+
+					for (const c of candidates) {
+						const m = tryFind(c);
+						if (m && m.range) {
+							match = m;
+							usedTerm = c;
+							break;
+						}
+					}
+
 					if (!match || !match.range) {
 						return false;
 					}
@@ -2183,7 +2233,7 @@ function initQueryEditor(boxId) {
 						}
 					} catch { /* ignore */ }
 					try {
-						window.__kustoAutoFindStateByBoxId[bid] = { term: t, ts: Date.now() };
+						window.__kustoAutoFindStateByBoxId[bid] = { term: usedTerm, ts: Date.now() };
 					} catch { /* ignore */ }
 					return true;
 				};
