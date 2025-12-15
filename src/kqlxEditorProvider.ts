@@ -71,6 +71,7 @@ type ComparableSection =
 			cacheValue: number;
 			cacheUnit: string;
 			editorHeightPx?: number;
+			resultsHeightPx?: number;
 		}
 	| {
 			type: 'markdown';
@@ -122,7 +123,8 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 				cacheEnabled: (typeof (section as any).cacheEnabled === 'boolean') ? (section as any).cacheEnabled : true,
 				cacheValue: Number.isFinite((section as any).cacheValue) ? Math.max(1, Math.trunc((section as any).cacheValue)) : 1,
 				cacheUnit: String((section as any).cacheUnit ?? 'days'),
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx),
+				resultsHeightPx: normalizeHeight((section as any).resultsHeightPx)
 			});
 			continue;
 		}

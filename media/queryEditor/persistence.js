@@ -254,6 +254,63 @@ function __kustoSetUrlOutputHeightPx(boxId, heightPx) {
 	}
 }
 
+function __kustoGetQueryResultsOutputHeightPx(boxId) {
+	try {
+		const wrapper = document.getElementById(boxId + '_results_wrapper');
+		if (!wrapper) return undefined;
+		// Only persist heights that came from an explicit user resize (or a restored persisted height).
+		try {
+			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
+				return undefined;
+			}
+		} catch {
+			return undefined;
+		}
+		let inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		// If results were temporarily collapsed to auto, keep the user's last explicit height.
+		if (!inlineHeight || inlineHeight === 'auto') {
+			try {
+				const prev = (wrapper.dataset && wrapper.dataset.kustoPrevHeight) ? String(wrapper.dataset.kustoPrevHeight).trim() : '';
+				if (prev) {
+					inlineHeight = prev;
+				}
+			} catch {
+				// ignore
+			}
+		}
+		if (!inlineHeight || inlineHeight === 'auto') return undefined;
+		const m = inlineHeight.match(/^([0-9]+)px$/i);
+		if (!m) return undefined;
+		const px = parseInt(m[1], 10);
+		return Number.isFinite(px) ? Math.max(0, px) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function __kustoSetQueryResultsOutputHeightPx(boxId, heightPx) {
+	try {
+		const wrapper = document.getElementById(boxId + '_results_wrapper');
+		if (!wrapper) return;
+		const h = Number(heightPx);
+		if (!Number.isFinite(h) || h <= 0) return;
+		wrapper.style.height = Math.round(h) + 'px';
+		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+		// If this section currently has short non-table content (errors, etc.), clamp on next tick.
+		try {
+			setTimeout(() => {
+				try {
+					if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+						window.__kustoClampResultsWrapperHeight(boxId);
+					}
+				} catch { /* ignore */ }
+			}, 0);
+		} catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
 function getKqlxState() {
 	// Compatibility mode (.kql/.csl): only a single query section is supported.
 	try {
@@ -321,7 +378,8 @@ function getKqlxState() {
 				cacheEnabled,
 				cacheValue,
 				cacheUnit,
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_query_editor')
+				editorHeightPx: __kustoGetWrapperHeightPx(id, '_query_editor'),
+				resultsHeightPx: __kustoGetQueryResultsOutputHeightPx(id)
 			});
 			continue;
 		}
@@ -644,6 +702,7 @@ function applyKqlxState(state) {
 					try { toggleCacheControls(boxId); } catch { /* ignore */ }
 				} catch { /* ignore */ }
 				try { __kustoSetWrapperHeightPx(boxId, '_query_editor', section.editorHeightPx); } catch { /* ignore */ }
+				try { __kustoSetQueryResultsOutputHeightPx(boxId, section.resultsHeightPx); } catch { /* ignore */ }
 				continue;
 			}
 

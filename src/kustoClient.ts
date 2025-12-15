@@ -39,6 +39,10 @@ export class QueryCancelledError extends Error {
 
 export class KustoQueryClient {
 	private clients: Map<string, any> = new Map();
+	// Dedicated clients used for cancelable query execution. Keyed by box/run context to
+	// (a) support cancellation without impacting other editors, and (b) improve server-side
+	// query results cache hit rate by reusing the same underlying HTTP session.
+	private cancelableClientsByKey: Map<string, any> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -128,6 +132,16 @@ export class KustoQueryClient {
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
 		return new Client(kcsb);
+	}
+
+	private async getOrCreateCancelableClient(connection: KustoConnection, key: string): Promise<any> {
+		const existing = this.cancelableClientsByKey.get(key);
+		if (existing) {
+			return existing;
+		}
+		const created = await this.createDedicatedClient(connection);
+		this.cancelableClientsByKey.set(key, created);
+		return created;
 	}
 
 	private isLikelyCancellationError(error: unknown): boolean {
@@ -324,13 +338,17 @@ export class KustoQueryClient {
 	executeQueryCancelable(
 		connection: KustoConnection,
 		database: string,
-		query: string
+		query: string,
+		clientKey?: string
 	): { promise: Promise<QueryResult>; cancel: () => void } {
+		const key = String(clientKey || connection.id || '').trim() || 'default';
 		let client: any | undefined;
 		let cancelled = false;
 		const cancel = () => {
 			cancelled = true;
 			try {
+				// Evict the client for this key so the next run starts clean.
+				this.cancelableClientsByKey.delete(key);
 				client?.close?.();
 			} catch {
 				// ignore
@@ -338,9 +356,21 @@ export class KustoQueryClient {
 		};
 
 		const promise = (async () => {
-			client = await this.createDedicatedClient(connection);
+			// If this run was cancelled before we even started, bail out early.
+			if (cancelled) {
+				throw new QueryCancelledError();
+			}
+			client = await this.getOrCreateCancelableClient(connection, key);
+			// If we were cancelled while acquiring/creating the client, do not execute.
+			if (cancelled) {
+				throw new QueryCancelledError();
+			}
 			const startTime = Date.now();
 			try {
+				// Check again right before executing (cancellation can happen at any time).
+				if (cancelled) {
+					throw new QueryCancelledError();
+				}
 				const result = await client.execute(database, query);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 
@@ -415,6 +445,14 @@ export class KustoQueryClient {
 				if (cancelled || this.isLikelyCancellationError(error)) {
 					throw new QueryCancelledError();
 				}
+				// If we hit a non-cancellation error, evict+close this client so a subsequent run
+				// can recreate a fresh connection/session.
+				try {
+					this.cancelableClientsByKey.delete(key);
+					client?.close?.();
+				} catch {
+					// ignore
+				}
 				console.error('Error executing query:', error);
 				let errorMessage = 'Unknown error';
 				if (error instanceof Error) {
@@ -426,12 +464,6 @@ export class KustoQueryClient {
 					errorMessage = String(error);
 				}
 				throw new Error(errorMessage);
-			} finally {
-				try {
-					client?.close?.();
-				} catch {
-					// ignore
-				}
 			}
 		})();
 

@@ -17,6 +17,7 @@ export type KqlxSectionV1 =
 			cacheValue?: number;
 			cacheUnit?: string;
 			editorHeightPx?: number;
+			resultsHeightPx?: number;
 		}
 	| {
 			type: 'markdown';

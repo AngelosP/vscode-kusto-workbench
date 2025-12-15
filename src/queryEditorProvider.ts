@@ -1221,7 +1221,7 @@ ${query}
 		const cacheDirective = this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
-		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery);
+		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, boxId || connection.id);
 		const runSeq = ++this.queryRunSeq;
 		const isStillActiveRun = () => {
 			if (!boxId) {
