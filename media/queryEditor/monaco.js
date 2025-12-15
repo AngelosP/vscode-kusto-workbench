@@ -331,6 +331,11 @@ function ensureMonaco() {
 							returnType: 'long',
 							description: 'Returns the number of distinct values of expr.'
 						},
+						'count': {
+							args: ['expr?'],
+							returnType: 'long',
+							description: 'Counts rows (or non-empty values of expr if provided).'
+						},
 						'isnotempty': {
 							args: ['expr'],
 							returnType: 'bool',
@@ -370,6 +375,206 @@ function ensureMonaco() {
 							args: ['expr', 'predicate'],
 							returnType: 'real',
 							description: 'Averages expr over rows where predicate is true.'
+						},
+						'sum': {
+							args: ['expr'],
+							returnType: 'real',
+							description: 'Sums expr over the group.'
+						},
+						'avg': {
+							args: ['expr'],
+							returnType: 'real',
+							description: 'Averages expr over the group.'
+						},
+						'min': {
+							args: ['expr'],
+							returnType: 'scalar',
+							description: 'Returns the minimum value of expr over the group.'
+						},
+						'max': {
+							args: ['expr'],
+							returnType: 'scalar',
+							description: 'Returns the maximum value of expr over the group.'
+						},
+						'percentile': {
+							args: ['expr', 'percentile'],
+							returnType: 'real',
+							description: 'Returns the approximate percentile of expr over the group.'
+						},
+						'round': {
+							args: ['number', 'digits?'],
+							returnType: 'real',
+							description: 'Rounds number to the specified number of digits.'
+						},
+						'floor': {
+							args: ['number'],
+							returnType: 'real',
+							description: 'Rounds number down to the nearest integer.'
+						},
+						'ceiling': {
+							args: ['number'],
+							returnType: 'real',
+							description: 'Rounds number up to the nearest integer.'
+						},
+						'abs': {
+							args: ['number'],
+							returnType: 'real',
+							description: 'Returns the absolute value of number.'
+						},
+						'iff': {
+							args: ['condition', 'then', 'else'],
+							returnType: 'scalar',
+							description: 'Returns then if condition is true, else returns else.'
+						},
+						'iif': {
+							args: ['condition', 'then', 'else'],
+							returnType: 'scalar',
+							description: 'Returns then if condition is true, else returns else.'
+						},
+						'if': {
+							args: ['condition', 'then', 'else'],
+							returnType: 'scalar',
+							description: 'Conditional expression (use like iff/iif): returns then if condition is true, else returns else.'
+						},
+						'case': {
+							args: ['condition1', 'then1', '...', 'else'],
+							returnType: 'scalar',
+							description: 'Evaluates conditions in order and returns the matching then value; otherwise returns else.'
+						},
+						'tostring': {
+							args: ['value'],
+							returnType: 'string',
+							description: 'Converts value to a string.'
+						},
+						'toint': {
+							args: ['value'],
+							returnType: 'int',
+							description: 'Converts value to an int.'
+						},
+						'tolong': {
+							args: ['value'],
+							returnType: 'long',
+							description: 'Converts value to a long.'
+						},
+						'todouble': {
+							args: ['value'],
+							returnType: 'real',
+							description: 'Converts value to a double/real.'
+						},
+						'todatetime': {
+							args: ['value'],
+							returnType: 'datetime',
+							description: 'Converts value to a datetime.'
+						},
+						'totimespan': {
+							args: ['value'],
+							returnType: 'timespan',
+							description: 'Converts value to a timespan.'
+						},
+						'tolower': {
+							args: ['text'],
+							returnType: 'string',
+							description: 'Converts text to lowercase.'
+						},
+						'toupper': {
+							args: ['text'],
+							returnType: 'string',
+							description: 'Converts text to uppercase.'
+						},
+						'strlen': {
+							args: ['text'],
+							returnType: 'int',
+							description: 'Returns the length of text.'
+						},
+						'substring': {
+							args: ['text', 'start', 'length?'],
+							returnType: 'string',
+							description: 'Returns a substring of text.'
+						},
+						'strcat': {
+							args: ['arg1', 'arg2', '...'],
+							returnType: 'string',
+							description: 'Concatenates arguments into a single string.'
+						},
+						'replace_string': {
+							args: ['text', 'lookup', 'replacement'],
+							returnType: 'string',
+							description: 'Replaces all occurrences of lookup in text with replacement.'
+						},
+						'split': {
+							args: ['text', 'delimiter'],
+							returnType: 'dynamic',
+							description: 'Splits text by delimiter and returns an array.'
+						},
+						'trim': {
+							args: ['regex', 'text'],
+							returnType: 'string',
+							description: 'Trims characters matching regex from the start and end of text.'
+						},
+						'trim_start': {
+							args: ['regex', 'text'],
+							returnType: 'string',
+							description: 'Trims characters matching regex from the start of text.'
+						},
+						'trim_end': {
+							args: ['regex', 'text'],
+							returnType: 'string',
+							description: 'Trims characters matching regex from the end of text.'
+						},
+						'coalesce': {
+							args: ['arg1', 'arg2', '...'],
+							returnType: 'scalar',
+							description: 'Returns the first non-null (and non-empty, depending on type) argument.'
+						},
+						'parse_json': {
+							args: ['text'],
+							returnType: 'dynamic',
+							description: 'Parses a JSON string into a dynamic value.'
+						},
+						'extract': {
+							args: ['regex', 'captureGroup', 'text'],
+							returnType: 'string',
+							description: 'Extracts a substring using a regular expression capture group.'
+						},
+						'format_datetime': {
+							args: ['datetime', 'format'],
+							returnType: 'string',
+							description: 'Formats a datetime using a format string.'
+						},
+						'bin': {
+							args: ['value', 'roundTo'],
+							returnType: 'scalar',
+							description: 'Rounds value down to a multiple of roundTo (commonly used for time bucketing).' 
+						},
+						'ago': {
+							args: ['timespan'],
+							returnType: 'datetime',
+							description: 'Returns a datetime equal to now() minus the specified timespan.'
+						},
+						'datetime_add': {
+							args: ['part', 'value', 'datetime'],
+							returnType: 'datetime',
+							description: 'Adds a specified amount of time to a datetime.'
+						},
+						'datetime_diff': {
+							args: ['part', 'datetime1', 'datetime2'],
+							returnType: 'long',
+							description: 'Returns the difference between two datetimes in units of part.'
+						},
+						'datetime_part': {
+							args: ['part', 'datetime'],
+							returnType: 'long',
+							description: 'Extracts a specific part (like year/month/day) from a datetime.'
+						},
+						'isnan': {
+							args: ['number'],
+							returnType: 'bool',
+							description: 'Returns true if number is NaN (not a number).'
+						},
+						'isfinite': {
+							args: ['number'],
+							returnType: 'bool',
+							description: 'Returns true if number is finite (not NaN or infinity).'
 						}
 					};
 

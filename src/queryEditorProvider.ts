@@ -74,8 +74,114 @@ export class QueryEditorProvider {
 	private lastDatabase?: string;
 	private readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
-	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void }>();
+	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
+	private queryRunSeq = 0;
+
+	private getErrorMessage(error: unknown): string {
+		if (error instanceof Error) {
+			return error.message;
+		}
+		return String(error);
+	}
+
+	private formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string {
+		const raw = this.getErrorMessage(error);
+		const cleaned = raw.replace(/^Query execution failed:\s*/i, '').trim();
+		const lower = cleaned.toLowerCase();
+		const cluster = String(connection.clusterUrl || '').trim();
+		const dbSuffix = database ? ` (db: ${database})` : '';
+
+		if (lower.includes('failed to get cloud info')) {
+			return (
+				`Can't connect to cluster ${cluster}${dbSuffix}.\n` +
+				`This often happens when VPN is off, Wi‑Fi is down, or your network blocks outbound HTTPS.\n` +
+				`Next steps:\n` +
+				`- Turn on your VPN (if required)\n` +
+				`- Confirm you have internet access\n` +
+				`- Verify the cluster URL is correct\n` +
+				`- Try again\n` +
+				`\n` +
+				`Technical details: ${cleaned}`
+			);
+		}
+		if (lower.includes('etimedout') || lower.includes('timeout')) {
+			return (
+				`Connection timed out reaching ${cluster}${dbSuffix}.\n` +
+				`Next steps:\n` +
+				`- Turn on your VPN (if required)\n` +
+				`- Check Wi‑Fi / network connectivity\n` +
+				`- Try again\n` +
+				`\n` +
+				`Technical details: ${cleaned}`
+			);
+		}
+		if (lower.includes('enotfound') || lower.includes('eai_again') || lower.includes('getaddrinfo')) {
+			return (
+				`Couldn't resolve the cluster host for ${cluster}${dbSuffix}.\n` +
+				`Next steps:\n` +
+				`- Verify the cluster URL is correct\n` +
+				`- Turn on your VPN (if required)\n` +
+				`- Check DNS / network connectivity\n` +
+				`\n` +
+				`Technical details: ${cleaned}`
+			);
+		}
+		if (lower.includes('econnrefused') || lower.includes('connection refused')) {
+			return (
+				`Connection was refused by ${cluster}${dbSuffix}.\n` +
+				`Next steps:\n` +
+				`- Verify the cluster URL is correct\n` +
+				`- Check VPN / proxy / firewall rules\n` +
+				`- Try again\n` +
+				`\n` +
+				`Technical details: ${cleaned}`
+			);
+		}
+		if (lower.includes('aads') || lower.includes('aadsts') || lower.includes('unauthorized') || lower.includes('authentication')) {
+			return (
+				`Authentication failed connecting to ${cluster}${dbSuffix}.\n` +
+				`Next steps:\n` +
+				`- Re-authenticate (sign in again)\n` +
+				`- Confirm you have access to the database\n` +
+				`- Try again\n` +
+				`\n` +
+				`Technical details: ${cleaned}`
+			);
+		}
+
+		// For typical Kusto semantic/syntax errors, showing the first line is usually helpful.
+		const firstLine = cleaned.split(/\r?\n/)[0]?.trim() ?? '';
+		const isJsonLike = firstLine.startsWith('{') || firstLine.startsWith('[');
+		const isKustoQueryError = /\b(semantic|syntax)\s+error\b/i.test(firstLine);
+		const includeSnippet = !!firstLine && !isJsonLike && (isKustoQueryError || firstLine.length <= 160);
+
+		return includeSnippet
+			? `Query failed${dbSuffix}: ${firstLine}`
+			: `Query failed${dbSuffix}: ${cleaned || 'Unknown error'}`;
+	}
+
+	private logQueryExecutionError(error: unknown, connection: KustoConnection, database: string | undefined, boxId: string, query: string): void {
+		try {
+			const raw = this.getErrorMessage(error);
+			const cluster = String(connection.clusterUrl || '').trim();
+			this.output.appendLine(`[${new Date().toISOString()}] Query execution failed`);
+			this.output.appendLine(`  cluster: ${cluster}`);
+			if (database) {
+				this.output.appendLine(`  database: ${database}`);
+			}
+			if (boxId) {
+				this.output.appendLine(`  boxId: ${boxId}`);
+			}
+			this.output.appendLine('  query:');
+			this.output.appendLine(query);
+			this.output.appendLine('  error:');
+			this.output.appendLine(raw);
+			this.output.appendLine('');
+		} catch {
+			// ignore
+		}
+	}
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -1089,25 +1195,40 @@ ${query}
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
 		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery);
+		const runSeq = ++this.queryRunSeq;
+		const isStillActiveRun = () => {
+			if (!boxId) {
+				return true;
+			}
+			const current = this.runningQueriesByBoxId.get(boxId);
+			return !!current && current.cancel === cancel && current.runSeq === runSeq;
+		};
 		if (boxId) {
-			this.runningQueriesByBoxId.set(boxId, { cancel });
+			this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
 		}
 		try {
 			const result = await promise;
-			this.postMessage({ type: 'queryResult', result, boxId });
+			if (isStillActiveRun()) {
+				this.postMessage({ type: 'queryResult', result, boxId });
+			}
 		} catch (error) {
 			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
-				this.postMessage({ type: 'queryCancelled', boxId });
+				if (isStillActiveRun()) {
+					this.postMessage({ type: 'queryCancelled', boxId });
+				}
 				return;
 			}
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			vscode.window.showErrorMessage(`Query execution failed: ${errorMessage}`);
-			this.postMessage({ type: 'queryError', error: errorMessage, boxId });
+			if (isStillActiveRun()) {
+				this.logQueryExecutionError(error, connection, message.database, boxId, finalQuery);
+				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
+				vscode.window.showErrorMessage(userMessage);
+				this.postMessage({ type: 'queryError', error: userMessage, boxId });
+			}
 		} finally {
 			if (boxId) {
 				// Only clear if this is still the active run for the box.
 				const current = this.runningQueriesByBoxId.get(boxId);
-				if (current?.cancel === cancel) {
+				if (current?.cancel === cancel && current.runSeq === runSeq) {
 					this.runningQueriesByBoxId.delete(boxId);
 				}
 			}

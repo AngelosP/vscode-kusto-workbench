@@ -139,8 +139,13 @@ export class KustoQueryClient {
 		if (anyErr?.__CANCEL === true) {
 			return true;
 		}
+		// Avoid treating generic network aborts/disconnects as user cancellations.
+		// Only treat explicit cancellation signals as cancellations.
+		if (typeof anyErr?.name === 'string' && anyErr.name === 'AbortError') {
+			return true;
+		}
 		const msg = typeof anyErr?.message === 'string' ? anyErr.message : '';
-		return /cancel(l)?ed|canceled|client closed|aborted/i.test(msg);
+		return /\bcancel(l)?ed\b|\bcanceled\b/i.test(msg);
 	}
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
@@ -312,7 +317,7 @@ export class KustoQueryClient {
 				errorMessage = String(error);
 			}
 			
-			throw new Error(`Query execution failed: ${errorMessage}`);
+			throw new Error(errorMessage);
 		}
 	}
 
@@ -420,7 +425,7 @@ export class KustoQueryClient {
 				} else {
 					errorMessage = String(error);
 				}
-				throw new Error(`Query execution failed: ${errorMessage}`);
+				throw new Error(errorMessage);
 			} finally {
 				try {
 					client?.close?.();

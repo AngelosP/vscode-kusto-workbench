@@ -298,7 +298,23 @@ function addQueryBox(options) {
 
 				const onMove = (moveEvent) => {
 					const delta = moveEvent.clientY - startY;
-					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					let maxHeight = 900;
+					try {
+						const resultsEl = document.getElementById(id + '_results');
+						const hasTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
+						if (!hasTable && resultsEl) {
+							const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
+							const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
+							const overheadPx = Math.max(0, wrapperH - resultsClientH);
+							const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+							const contentPx = headerEl
+								? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0))
+								: Math.max(0, Math.ceil((resultsEl.firstElementChild ? resultsEl.firstElementChild.getBoundingClientRect().height : 0) || 0));
+							const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 10));
+							maxHeight = Math.min(900, desiredPx);
+						}
+					} catch { /* ignore */ }
+					const nextHeight = Math.max(120, Math.min(maxHeight, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 				};
 				const onUp = () => {
@@ -317,6 +333,47 @@ function addQueryBox(options) {
 	} catch {
 		// ignore
 	}
+
+	// Clamp the query results output wrapper height so it cannot be taller than its contents.
+	// This avoids blank slack below short error messages while still allowing the user to
+	// resize smaller than contents (scrolling).
+	try {
+		if (typeof window.__kustoClampResultsWrapperHeight !== 'function') {
+			window.__kustoClampResultsWrapperHeight = function (boxId) {
+				try {
+					const bid = String(boxId || '').trim();
+					if (!bid) return;
+					const w = document.getElementById(bid + '_results_wrapper');
+					const resultsEl = document.getElementById(bid + '_results');
+					if (!w || !resultsEl) return;
+					// If we have a table container, results are intentionally scrollable; don't clamp.
+					if (resultsEl.querySelector && resultsEl.querySelector('.table-container')) return;
+
+					const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+					if (!headerEl) return;
+
+					const wrapperH = Math.max(0, Math.ceil(w.getBoundingClientRect().height || 0));
+					const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
+					const overheadPx = Math.max(0, wrapperH - resultsClientH);
+					const headerH = Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0));
+					const desiredPx = Math.max(120, Math.ceil(overheadPx + headerH + 10));
+					if (!desiredPx) return;
+
+					if (wrapperH > (desiredPx + 1)) {
+						w.style.height = desiredPx + 'px';
+						w.style.minHeight = '0';
+						try {
+							if (w.dataset && w.dataset.kustoUserResized === 'true') {
+								w.dataset.kustoPrevHeight = w.style.height;
+							}
+						} catch { /* ignore */ }
+					}
+				} catch {
+					// ignore
+				}
+			};
+		}
+	} catch { /* ignore */ }
 	
 	// Set initial query text if provided
 	if (initialQuery) {

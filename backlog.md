@@ -1,6 +1,3 @@
-## Custom documentation query -> banner
-Our custom documentation tooltip is awesome, but a bit distracting. Let's keep the functionality and the contents and the triggers all the same, but let's change the presentation from a tooltip to a banner that shows at the top of the editor, for example like the one we show for the kusto clusters we detect in the query
-
 ## Error Handling
 Awesome! We have finished building most of our awesome features but we have neglected spending any of our UX time on error conditions, error handling, etc.
 

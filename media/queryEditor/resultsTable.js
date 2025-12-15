@@ -242,11 +242,22 @@ function displayError(error) {
 	const resultsDiv = document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
 
+	const raw = (error === null || error === undefined) ? '' : String(error);
+	const escape = (s) => (typeof escapeHtml === 'function') ? escapeHtml(s) : s;
+	const esc = raw.split(/\r?\n/).map(escape).join('<br>');
+
 	resultsDiv.innerHTML =
 		'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
-		'<strong>Error:</strong> ' + error +
+		esc +
 		'</div>';
 	resultsDiv.classList.add('visible');
+	try {
+		if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+			window.__kustoClampResultsWrapperHeight(boxId);
+		}
+	} catch {
+		// ignore
+	}
 }
 
 function displayCancelled() {
