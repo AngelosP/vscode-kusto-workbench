@@ -3,9 +3,9 @@
   "displayName": "Kusto Workbench",
   "description": "Notebook-like experience for Kusto Query Language (KQL) and more",
   "publisher": "angelos-petropoulos",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "license": "MIT",
-  "icon": "media/images/copilot-button-logo.png",
+  "icon": "media/images/kusto-workbench-logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/AngelosP/vscode-kusto-workbench.git"
