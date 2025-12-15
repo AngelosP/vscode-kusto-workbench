@@ -1020,6 +1020,14 @@ function ensureMonaco() {
 							const linePrefixRaw = lineContent.slice(0, position.column - 1);
 							const linePrefix = linePrefixRaw.toLowerCase();
 
+							const textUpToCursor = model.getValueInRange({
+								startLineNumber: 1,
+								startColumn: 1,
+								endLineNumber: position.lineNumber,
+								endColumn: position.column
+							});
+							const textUpToCursorLower = String(textUpToCursor || '').toLowerCase();
+
 							const wordUntil = model.getWordUntilPosition(position);
 							const typedRaw = (wordUntil && typeof wordUntil.word === 'string') ? wordUntil.word : '';
 							const typed = typedRaw.toLowerCase();
@@ -1073,7 +1081,9 @@ function ensureMonaco() {
 								return { suggestions };
 							}
 
-							const shouldSuggestColumns = /\|\s*(project|where|extend|summarize|order\s+by|sort\s+by|take|top)\b[^|]*$/i.test(linePrefix);
+							// IMPORTANT: use the full text up to the cursor so multi-line operators like
+							// "| summarize\n  X = count()\n  by" still produce column suggestions.
+							const shouldSuggestColumns = /\|\s*(project|where|extend|summarize|order\s+by|sort\s+by|take|top)\b[^|]*$/i.test(textUpToCursorLower);
 
 							// Assignment RHS (e.g. "| summarize X = dco" or "| extend Y = Dev") should suggest only functions + columns.
 							const lastEq = linePrefixRaw.lastIndexOf('=');
@@ -1086,13 +1096,6 @@ function ensureMonaco() {
 								// Heuristic: this is the RHS of extend/summarize style assignments.
 								return /\|\s*(extend|summarize)\b/i.test(linePrefixRaw);
 							})();
-
-							const textUpToCursor = model.getValueInRange({
-								startLineNumber: 1,
-								startColumn: 1,
-								endLineNumber: position.lineNumber,
-								endColumn: position.column
-							});
 
 							const inferActiveTable = (text) => {
 								// Prefer last explicit join/from target.
