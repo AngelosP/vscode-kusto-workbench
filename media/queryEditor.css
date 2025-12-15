@@ -963,6 +963,34 @@
 			min-width: 0;
 		}
 
+		/* Clickable error locations (line/column) */
+		.kusto-error-location {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			padding: 2px 8px;
+			border-radius: 999px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			border: 1px solid var(--vscode-button-border);
+			text-decoration: none;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			line-height: 18px;
+			cursor: pointer;
+			user-select: none;
+		}
+
+		.kusto-error-location:hover {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.kusto-error-location:focus-visible {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: 2px;
+		}
+
 		.results-visibility-toggle {
 			margin-left: 6px;
 		}

@@ -278,6 +278,45 @@ function addQueryBox(options) {
 		const wrapper = document.getElementById(id + '_results_wrapper');
 		const resizer = document.getElementById(id + '_results_resizer');
 		if (wrapper && resizer) {
+			const computeMaxHeightForNonTable = () => {
+				let maxHeight = 900;
+				try {
+					const resultsEl = document.getElementById(id + '_results');
+					const hasTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
+					if (hasTable || !resultsEl) {
+						return maxHeight;
+					}
+
+					const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
+					const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
+					const overheadPx = Math.max(0, wrapperH - resultsClientH);
+
+					let contentPx = 0;
+					const children = resultsEl.children ? Array.from(resultsEl.children) : [];
+					if (children.length) {
+						for (const child of children) {
+							try {
+								const rectH = Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
+								let margin = 0;
+								try {
+									const cs = getComputedStyle(child);
+									margin += parseFloat(cs.marginTop || '0') || 0;
+									margin += parseFloat(cs.marginBottom || '0') || 0;
+								} catch { /* ignore */ }
+								contentPx += rectH + Math.ceil(margin);
+							} catch { /* ignore */ }
+						}
+					} else {
+						const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+						contentPx = headerEl ? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0)) : 0;
+					}
+
+					const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 8));
+					maxHeight = Math.min(900, desiredPx);
+				} catch { /* ignore */ }
+				return maxHeight;
+			};
+
 			resizer.addEventListener('mousedown', (e) => {
 				try {
 					e.preventDefault();
@@ -298,22 +337,7 @@ function addQueryBox(options) {
 
 				const onMove = (moveEvent) => {
 					const delta = moveEvent.clientY - startY;
-					let maxHeight = 900;
-					try {
-						const resultsEl = document.getElementById(id + '_results');
-						const hasTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
-						if (!hasTable && resultsEl) {
-							const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
-							const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
-							const overheadPx = Math.max(0, wrapperH - resultsClientH);
-							const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
-							const contentPx = headerEl
-								? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0))
-								: Math.max(0, Math.ceil((resultsEl.firstElementChild ? resultsEl.firstElementChild.getBoundingClientRect().height : 0) || 0));
-							const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 10));
-							maxHeight = Math.min(900, desiredPx);
-						}
-					} catch { /* ignore */ }
+					const maxHeight = computeMaxHeightForNonTable();
 					const nextHeight = Math.max(120, Math.min(maxHeight, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 				};
@@ -323,6 +347,12 @@ function addQueryBox(options) {
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
+					try {
+						// Ensure we never leave slack after a drag on error-only content.
+						if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+							window.__kustoClampResultsWrapperHeight(id);
+						}
+					} catch { /* ignore */ }
 					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 				};
 
@@ -349,14 +379,31 @@ function addQueryBox(options) {
 					// If we have a table container, results are intentionally scrollable; don't clamp.
 					if (resultsEl.querySelector && resultsEl.querySelector('.table-container')) return;
 
-					const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
-					if (!headerEl) return;
-
 					const wrapperH = Math.max(0, Math.ceil(w.getBoundingClientRect().height || 0));
 					const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
 					const overheadPx = Math.max(0, wrapperH - resultsClientH);
-					const headerH = Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0));
-					const desiredPx = Math.max(120, Math.ceil(overheadPx + headerH + 10));
+
+					let contentPx = 0;
+					const children = resultsEl.children ? Array.from(resultsEl.children) : [];
+					if (children.length) {
+						for (const child of children) {
+							try {
+								const rectH = Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
+								let margin = 0;
+								try {
+									const cs = getComputedStyle(child);
+									margin += parseFloat(cs.marginTop || '0') || 0;
+									margin += parseFloat(cs.marginBottom || '0') || 0;
+								} catch { /* ignore */ }
+								contentPx += rectH + Math.ceil(margin);
+							} catch { /* ignore */ }
+						}
+					} else {
+						const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+						contentPx = headerEl ? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0)) : 0;
+					}
+
+					const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 8));
 					if (!desiredPx) return;
 
 					if (wrapperH > (desiredPx + 1)) {

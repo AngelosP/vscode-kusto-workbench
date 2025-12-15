@@ -329,6 +329,10 @@ function __kustoBuildErrorUxModel(rawError) {
 				if (!m) {
 					m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*'([^']+)'/i);
 				}
+				// SEM0100 and similar: the useful token is often the identifier in `named 'X'`.
+				if (!m) {
+					m = msg.match(/\bnamed\s*'([^']+)'/i);
+				}
 				// Generic semantic error pattern: SEMxxxx ... 'token'
 				if (!m) {
 					m = msg.match(/\bSEM\d{4}\b[^']*'([^']+)'/i);
@@ -412,7 +416,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 		if (model.location && model.location.line && model.location.col) {
 			const line = model.location.line;
 			const col = model.location.col;
-			const tokenEsc = __kustoEscapeForHtml(model.location.token || `[line:position=${line}:${col}]`);
+			const tokenEsc = __kustoEscapeForHtml(`Line ${line}, Col ${col}`);
 			locHtml =
 				' <a href="#" class="kusto-error-location"' +
 				' data-boxid="' + __kustoEscapeForHtmlAttribute(bid) + '"' +
