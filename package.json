@@ -2,7 +2,9 @@
   "name": "vscode-kusto-workbench",
   "displayName": "Kusto Workbench",
   "description": "Notebook-like experience for Kusto Query Language (KQL) and more",
+  "publisher": "angelosp",
   "version": "0.0.1",
+  "icon": "media/images/copilot-button-logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/AngelosP/vscode-kusto-workbench.git"
@@ -14,7 +16,14 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:kusto.openQueryEditor",
+    "onCommand:kusto.openKqlxFile",
+    "onCommand:kusto.saveKqlxAs",
+    "onCommand:kusto.manageConnections",
+    "onCustomEditor:kusto.kqlxEditor",
+    "onCustomEditor:kusto.kqlCompatEditor"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "languages": [
