@@ -3,6 +3,11 @@
   "displayName": "Kusto Workbench",
   "description": "Notebook-like experience for Kusto Query Language (KQL) and more",
   "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AngelosP/vscode-kusto-workbench.git"
+  },
+  "homepage": "https://github.com/AngelosP/vscode-kusto-workbench",
   "engines": {
     "vscode": "^1.107.0"
   },
