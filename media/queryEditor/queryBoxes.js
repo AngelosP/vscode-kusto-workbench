@@ -2777,6 +2777,17 @@ function refreshDatabases(boxId) {
 		databaseSelect.disabled = true;
 	}
 	if (refreshBtn) {
+		try {
+			if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
+				return;
+			}
+			if (refreshBtn.dataset) {
+				refreshBtn.dataset.kustoRefreshDbInFlight = '1';
+				refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
+			}
+			refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+			refreshBtn.setAttribute('aria-busy', 'true');
+		} catch { /* ignore */ }
 		refreshBtn.disabled = true;
 	}
 
@@ -2815,6 +2826,17 @@ function onDatabasesError(boxId, error) {
 			} catch { /* ignore */ }
 		}
 		if (refreshBtn) {
+			try {
+				if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
+					const prev = refreshBtn.dataset.kustoPrevHtml;
+					if (typeof prev === 'string' && prev) {
+						refreshBtn.innerHTML = prev;
+					}
+					try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+					try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+				}
+				refreshBtn.removeAttribute('aria-busy');
+			} catch { /* ignore */ }
 			refreshBtn.disabled = false;
 		}
 	} catch {
@@ -2880,6 +2902,17 @@ function updateDatabaseSelect(boxId, databases) {
 		}
 	}
 	if (refreshBtn) {
+		try {
+			if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
+				const prev = refreshBtn.dataset.kustoPrevHtml;
+				if (typeof prev === 'string' && prev) {
+					refreshBtn.innerHTML = prev;
+				}
+				try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+				try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+			}
+			refreshBtn.removeAttribute('aria-busy');
+		} catch { /* ignore */ }
 		refreshBtn.disabled = false;
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }

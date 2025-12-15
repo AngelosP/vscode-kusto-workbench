@@ -1,8 +1,41 @@
 function setSchemaLoading(boxId, loading) {
 	schemaFetchInFlightByBoxId[boxId] = !!loading;
 	const el = document.getElementById(boxId + '_schema_status');
+	// If the user explicitly clicked the refresh schema button, don't show the separate
+	// inline "Schema…" spinner/label; the button itself becomes the spinner.
+	let userRefreshInFlight = false;
+	try {
+		const btn = document.getElementById(boxId + '_schema_refresh');
+		userRefreshInFlight = !!(btn && btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1');
+	} catch { /* ignore */ }
 	if (el) {
-		el.style.display = loading ? 'inline-flex' : 'none';
+		el.style.display = (loading && !userRefreshInFlight) ? 'inline-flex' : 'none';
+	}
+	// If the user explicitly clicked the refresh schema button, show a spinner on that button
+	// only for the duration of the in-flight request.
+	try {
+		if (!loading) {
+			const btn = document.getElementById(boxId + '_schema_refresh');
+			if (btn && btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1') {
+				const prev = btn.dataset.kustoPrevHtml;
+				if (typeof prev === 'string' && prev) {
+					btn.innerHTML = prev;
+				}
+				try {
+					const prevTitle = btn.dataset.kustoPrevTitle;
+					if (typeof prevTitle === 'string') {
+						btn.title = prevTitle;
+					}
+				} catch { /* ignore */ }
+				try { delete btn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+				try { delete btn.dataset.kustoPrevTitle; } catch { /* ignore */ }
+				try { delete btn.dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
+				try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
+				btn.disabled = false;
+			}
+		}
+	} catch {
+		// ignore
 	}
 }
 
@@ -106,6 +139,27 @@ function onDatabaseChanged(boxId) {
 function refreshSchema(boxId) {
 	if (!boxId) {
 		return;
+	}
+	try {
+		const btn = document.getElementById(boxId + '_schema_refresh');
+		if (btn) {
+			if (btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1') {
+				return;
+			}
+			try {
+				if (btn.dataset) {
+					btn.dataset.kustoRefreshSchemaInFlight = '1';
+					btn.dataset.kustoPrevHtml = String(btn.innerHTML || '');
+					btn.dataset.kustoPrevTitle = String(btn.title || '');
+				}
+				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
+				btn.setAttribute('aria-busy', 'true');
+				btn.title = 'Refreshing schema…';
+			} catch { /* ignore */ }
+			btn.disabled = true;
+		}
+	} catch {
+		// ignore
 	}
 	// Force a refetch even if we fetched recently, but keep existing schema/summary
 	// so a transient connectivity failure doesn't wipe the UI.
