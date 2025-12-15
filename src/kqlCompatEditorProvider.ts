@@ -54,7 +54,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
-		await queryEditor.initializeWebviewPanel(webviewPanel);
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		// Inform the webview it's operating in compatibility mode.
 		try {

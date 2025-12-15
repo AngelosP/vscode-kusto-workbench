@@ -40,10 +40,16 @@ export async function getQueryEditorHtml(
 		const assetsUri = vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'assets');
 		const entries = await vscode.workspace.fs.readDirectory(assetsUri);
 		for (const [name, type] of entries) {
-			if (type !== vscode.FileType.File) continue;
-			if (!name.endsWith('.js')) continue;
+			if (type !== vscode.FileType.File) {
+				continue;
+			}
+			if (!name.endsWith('.js')) {
+				continue;
+			}
 			const m = name.match(/^(css|editor|html|json|ts)\.worker\.[0-9a-f]+\.js$/i);
-			if (!m) continue;
+			if (!m) {
+				continue;
+			}
 			const key = m[1].toLowerCase();
 			const uri = webview.asWebviewUri(vscode.Uri.joinPath(assetsUri, name)).toString();
 			monacoWorkers[key] = withCacheBuster(uri);

@@ -3,7 +3,7 @@
   "displayName": "Kusto Workbench",
   "description": "Notebook-like experience for Kusto Query Language (KQL) and more",
   "publisher": "angelos-petropoulos",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "MIT",
   "icon": "media/images/kusto-workbench-logo.png",
   "repository": {
@@ -104,6 +104,7 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "vsix": "npm run package && node scripts/package-vsix.mjs",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",

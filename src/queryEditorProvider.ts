@@ -233,7 +233,10 @@ export class QueryEditorProvider {
 		}
 	}
 
-	async initializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+	async initializeWebviewPanel(
+		panel: vscode.WebviewPanel,
+		options?: { registerMessageHandler?: boolean }
+	): Promise<void> {
 		this.panel = panel;
 		try {
 			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
@@ -244,11 +247,14 @@ export class QueryEditorProvider {
 		}
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
 
-		// Ensure messages from the webview are handled in all host contexts (including custom editors).
-		// openEditor() also wires this up for the standalone panel, but custom editors call initializeWebviewPanel().
-		this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
-			return this.handleWebviewMessage(message);
-		});
+		const shouldRegisterMessageHandler = options?.registerMessageHandler !== false;
+		if (shouldRegisterMessageHandler) {
+			// Ensure messages from the webview are handled in all host contexts (including custom editors).
+			// openEditor() also wires this up for the standalone panel, but custom editors call initializeWebviewPanel().
+			this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+				return this.handleWebviewMessage(message);
+			});
+		}
 
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
@@ -358,7 +364,9 @@ export class QueryEditorProvider {
 
 	private cancelOptimizeQuery(boxId: string): void {
 		const id = String(boxId || '').trim();
-		if (!id) return;
+		if (!id) {
+			return;
+		}
 		const running = this.runningOptimizeByBoxId.get(id);
 		if (!running) {
 			return;

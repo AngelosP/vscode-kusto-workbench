@@ -7,7 +7,9 @@ import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileV1,
 const normalizeClusterUrlKey = (url: string): string => {
 	try {
 		const raw = String(url || '').trim();
-		if (!raw) return '';
+		if (!raw) {
+			return '';
+		}
 		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
 		const u = new URL(withScheme);
 		// Lowercase host, drop trailing slashes.
@@ -97,7 +99,9 @@ type ComparableState = {
 
 const normalizeHeight = (v: unknown): number | undefined => {
 	const n = typeof v === 'number' ? v : undefined;
-	if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return undefined;
+	if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+		return undefined;
+	}
 	return Math.round(n);
 };
 
@@ -156,16 +160,30 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 };
 
 const deepEqual = (a: unknown, b: unknown): boolean => {
-	if (a === b) return true;
-	if (typeof a !== typeof b) return false;
-	if (a === null || b === null) return a === b;
-	if (typeof a !== 'object') return false;
+	if (a === b) {
+		return true;
+	}
+	if (typeof a !== typeof b) {
+		return false;
+	}
+	if (a === null || b === null) {
+		return a === b;
+	}
+	if (typeof a !== 'object') {
+		return false;
+	}
 
 	if (Array.isArray(a) || Array.isArray(b)) {
-		if (!Array.isArray(a) || !Array.isArray(b)) return false;
-		if (a.length !== b.length) return false;
+		if (!Array.isArray(a) || !Array.isArray(b)) {
+			return false;
+		}
+		if (a.length !== b.length) {
+			return false;
+		}
 		for (let i = 0; i < a.length; i++) {
-			if (!deepEqual(a[i], b[i])) return false;
+			if (!deepEqual(a[i], b[i])) {
+				return false;
+			}
 		}
 		return true;
 	}
@@ -174,11 +192,17 @@ const deepEqual = (a: unknown, b: unknown): boolean => {
 	const bo = b as Record<string, unknown>;
 	const aKeys = Object.keys(ao).sort();
 	const bKeys = Object.keys(bo).sort();
-	if (aKeys.length !== bKeys.length) return false;
+	if (aKeys.length !== bKeys.length) {
+		return false;
+	}
 	for (let i = 0; i < aKeys.length; i++) {
-		if (aKeys[i] !== bKeys[i]) return false;
+		if (aKeys[i] !== bKeys[i]) {
+			return false;
+		}
 		const k = aKeys[i];
-		if (!deepEqual(ao[k], bo[k])) return false;
+		if (!deepEqual(ao[k], bo[k])) {
+			return false;
+		}
 	}
 	return true;
 };
@@ -232,7 +256,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
-		await queryEditor.initializeWebviewPanel(webviewPanel);
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		// If we were just upgraded from .kql/.csl -> .kqlx as part of an add-section action,
 		// grab the pending add kind now and notify the webview once it is initialized.
