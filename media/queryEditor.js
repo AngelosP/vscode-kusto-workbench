@@ -9,6 +9,15 @@
 		window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
 	}
 	const pendingAdds = window.__kustoQueryEditorPendingAdds;
+	if (typeof window.__kustoRequestAddSection !== 'function') {
+		window.__kustoRequestAddSection = function (kind) {
+			const k = String(kind || '').trim();
+			if (!k) return;
+			if (k === 'query' || k === 'markdown' || k === 'python' || k === 'url') {
+				pendingAdds[k] = (pendingAdds[k] || 0) + 1;
+			}
+		};
+	}
 	if (typeof window.addQueryBox !== 'function') {
 		window.addQueryBox = function () {
 			pendingAdds.query = (pendingAdds.query || 0) + 1;

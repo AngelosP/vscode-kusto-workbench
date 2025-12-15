@@ -89,6 +89,10 @@
 			padding: 0;
 		}
 
+		.query-box.is-md-preview {
+			margin-bottom: 20px;
+		}
+
 		.query-box.is-md-preview .markdown-viewer code,
 		.query-box.is-md-preview .markdown-viewer pre {
 			background: transparent;

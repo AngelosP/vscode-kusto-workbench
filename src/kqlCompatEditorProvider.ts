@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: { sections?: Array<{ type?: string; query?: string }> } }
+	| { type: 'requestUpgradeToKqlx'; addKind?: string }
 	| { type: string; [key: string]: unknown };
 
 export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider {
@@ -27,6 +29,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager
 	) {}
+
+	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
+		return `kusto.pendingAddKind:${uri.toString()}`;
+	}
 
 	public async resolveCustomTextEditor(
 		document: vscode.TextDocument,
@@ -58,6 +64,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				compatibilityMode: true,
 				state: {
 					sections: [{ type: 'query', query: queryText }]
 				}
@@ -70,8 +77,23 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 			switch (message.type) {
 				case 'requestDocument':
+					// Re-send mode in response to a request (the webview is guaranteed to be listening).
+					try {
+						void webviewPanel.webview.postMessage({
+							type: 'persistenceMode',
+							isSessionFile: false,
+							compatibilityMode: true
+						});
+					} catch {
+						// ignore
+					}
 					postDocument();
 					return;
+				case 'requestUpgradeToKqlx': {
+					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
+					await this.upgradeToKqlxAndReopen(document, webviewPanel, addKind);
+					return;
+				}
 				case 'persistDocument': {
 					// Persist ONLY the first query section's text back into the plain-text document.
 					const sections = (message as any).state && Array.isArray((message as any).state.sections)
@@ -104,5 +126,133 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					await queryEditor.handleWebviewMessage(message as any);
 			}
 		});
+	}
+
+	private async upgradeToKqlxAndReopen(
+		document: vscode.TextDocument,
+		webviewPanel: vscode.WebviewPanel,
+		addKind: string
+	): Promise<void> {
+		// Only local disk files are upgradeable via rename.
+		if (document.uri.scheme !== 'file') {
+			void vscode.window.showWarningMessage('This file cannot be upgraded because it is not a local file.');
+			return;
+		}
+
+		const ext = (document.uri.path || '').toLowerCase();
+		const isCompat = ext.endsWith('.kql') || ext.endsWith('.csl');
+		if (!isCompat) {
+			return;
+		}
+
+		const choice = await vscode.window.showInformationMessage(
+			'To add sections (Query/Markdown/Python/URL), this file needs to be upgraded to the .kqlx format. This is a non-destructive change and it’s easy to go back later.',
+			{ modal: true },
+			'Upgrade to .kqlx'
+		);
+		if (choice !== 'Upgrade to .kqlx') {
+			return;
+		}
+
+		try {
+			// Ensure latest text is used.
+			if (document.isDirty) {
+				await document.save();
+			}
+		} catch {
+			// If save fails, still attempt to proceed using current in-memory text.
+		}
+
+		const oldUri = document.uri;
+		const newUri = oldUri.with({ path: oldUri.path.replace(/\.(kql|csl)$/i, '.kqlx') });
+		const normalizedAddKind = ['query', 'markdown', 'python', 'url'].includes(String(addKind)) ? String(addKind) : '';
+
+		// Build .kqlx content with the current query as the first section.
+		const queryText = document.getText();
+		const file: KqlxFileV1 = {
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				sections: [{ type: 'query', query: queryText }]
+			}
+		};
+		const newText = stringifyKqlxFile(file);
+
+		// Keep original .kql/.csl file on disk. Create a sibling .kqlx file.
+		try {
+			await vscode.workspace.fs.stat(newUri);
+			void vscode.window.showErrorMessage('A .kqlx file already exists for this document. Please open the existing .kqlx file or rename it before upgrading.');
+			return;
+		} catch {
+			// ok: does not exist
+		}
+		try {
+			await vscode.workspace.fs.writeFile(newUri, new TextEncoder().encode(newText));
+		} catch (e) {
+			void vscode.window.showErrorMessage(
+				'Failed to create the .kqlx file. ' + (e instanceof Error ? e.message : String(e))
+			);
+			return;
+		}
+
+		// Open the new .kqlx in the rich editor. Rename can dispose the current webview mid-flight,
+		// so avoid depending on the current panel and retry once on transient disposal errors.
+		const pendingKey = KqlCompatEditorProvider.pendingAddKindKeyForUri(newUri);
+		if (normalizedAddKind) {
+			try {
+				await this.context.workspaceState.update(pendingKey, normalizedAddKind);
+			} catch {
+				// ignore
+			}
+		}
+
+		const tryOpenWith = async (): Promise<void> => {
+			await vscode.commands.executeCommand('vscode.openWith', newUri, 'kusto.kqlxEditor', {
+				viewColumn: vscode.ViewColumn.Active
+			});
+		};
+
+		try {
+			await tryOpenWith();
+		} catch (e1) {
+			const msg1 = e1 instanceof Error ? e1.message : String(e1);
+			const looksTransient = /disposed/i.test(msg1);
+			if (looksTransient) {
+				try {
+					await new Promise((r) => setTimeout(r, 75));
+					await tryOpenWith();
+				} catch (e2) {
+					const msg2 = e2 instanceof Error ? e2.message : String(e2);
+					if (normalizedAddKind) {
+						try { await this.context.workspaceState.update(pendingKey, undefined); } catch { /* ignore */ }
+					}
+					void vscode.window.showErrorMessage(
+						'File was upgraded to .kqlx, but the editor could not be opened automatically. Please reopen the .kqlx file. Details: ' + msg2
+					);
+					return;
+				}
+			} else {
+				if (normalizedAddKind) {
+					try { await this.context.workspaceState.update(pendingKey, undefined); } catch { /* ignore */ }
+				}
+				void vscode.window.showErrorMessage(
+					'File was upgraded to .kqlx, but the editor could not be opened automatically. Please reopen the .kqlx file. Details: ' + msg1
+				);
+				return;
+			}
+		}
+
+		try {
+			void vscode.window.showInformationMessage('File upgraded to .kqlx.');
+		} catch {
+			// ignore
+		}
+
+		// Close the old compatibility editor panel (the old file no longer exists).
+		try {
+			webviewPanel.dispose();
+		} catch {
+			// ignore
+		}
 	}
 }

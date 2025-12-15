@@ -191,6 +191,10 @@ type IncomingWebviewMessage =
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlxEditor';
 
+	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
+		return `kusto.pendingAddKind:${uri.toString()}`;
+	}
+
 	public static register(
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
@@ -221,6 +225,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		await queryEditor.initializeWebviewPanel(webviewPanel);
 
+		// If we were just upgraded from .kql/.csl -> .kqlx as part of an add-section action,
+		// grab the pending add kind now and notify the webview once it is initialized.
+		let pendingAddKind = '';
+		try {
+			const k = this.context.workspaceState.get<string>(KqlxEditorProvider.pendingAddKindKeyForUri(document.uri));
+			if (typeof k === 'string') {
+				pendingAddKind = k;
+			}
+			await this.context.workspaceState.update(KqlxEditorProvider.pendingAddKindKeyForUri(document.uri), undefined);
+		} catch {
+			// ignore
+		}
+
 		const sessionUri = vscode.Uri.joinPath(this.context.globalStorageUri, 'session.kqlx');
 		const isSessionFile = (() => {
 			try {
@@ -240,6 +257,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				type: 'persistenceMode',
 				isSessionFile
 			});
+		} catch {
+			// ignore
+		}
+
+		// Tell the webview it can now perform the originally requested add.
+		try {
+			if (pendingAddKind) {
+				void webviewPanel.webview.postMessage({ type: 'upgradedToKqlx', addKind: pendingAddKind });
+			}
 		} catch {
 			// ignore
 		}

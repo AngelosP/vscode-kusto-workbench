@@ -2086,6 +2086,21 @@ function initQueryEditor(boxId) {
 			return;
 		}
 
+		const updatePlaceholderPosition = () => {
+			if (!placeholder) {
+				return;
+			}
+			try {
+				// The placeholder is absolutely positioned within .query-editor-wrapper.
+				// Use the Monaco container's offsetTop so it naturally accounts for any
+				// banners/toolbars above the editor (e.g., caret docs banner).
+				const top = (container.offsetTop || 0) + 10;
+				placeholder.style.top = Math.max(0, Math.round(top)) + 'px';
+			} catch {
+				// ignore
+			}
+		};
+
 		// If an editor instance already exists, ensure it's still attached to this container.
 		// If it's stale (detached due to DOM teardown), dispose and recreate.
 		try {
@@ -2550,6 +2565,7 @@ function initQueryEditor(boxId) {
 						banner.style.display = 'flex';
 					}
 				} catch { /* ignore */ }
+				try { updatePlaceholderPosition(); } catch { /* ignore */ }
 				try {
 					if (text) {
 						text.innerHTML =
@@ -2574,6 +2590,7 @@ function initQueryEditor(boxId) {
 				} catch {
 					// ignore
 				}
+				try { updatePlaceholderPosition(); } catch { /* ignore */ }
 			};
 
 			const update = () => {
@@ -2665,6 +2682,7 @@ function initQueryEditor(boxId) {
 					} catch {
 						// ignore
 					}
+					try { updatePlaceholderPosition(); } catch { /* ignore */ }
 				} catch {
 					// ignore
 				}
@@ -2765,6 +2783,7 @@ function initQueryEditor(boxId) {
 			if (!placeholder) {
 				return;
 			}
+			updatePlaceholderPosition();
 			// Hide placeholder while the editor is focused, even if empty.
 			const isFocused = activeQueryEditorBoxId === boxId;
 			placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';

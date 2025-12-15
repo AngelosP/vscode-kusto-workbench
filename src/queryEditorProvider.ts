@@ -235,6 +235,13 @@ export class QueryEditorProvider {
 
 	async initializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
 		this.panel = panel;
+		try {
+			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
+			const dark = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-dark.svg');
+			this.panel.iconPath = { light, dark };
+		} catch {
+			// ignore
+		}
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
 
 		// Ensure messages from the webview are handled in all host contexts (including custom editors).
@@ -265,6 +272,13 @@ export class QueryEditorProvider {
 				retainContextWhenHidden: true
 			}
 		);
+		try {
+			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
+			const dark = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-dark.svg');
+			this.panel.iconPath = { light, dark };
+		} catch {
+			// ignore
+		}
 
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
 

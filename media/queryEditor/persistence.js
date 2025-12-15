@@ -19,7 +19,7 @@ window.__kustoCompatibilityMode = false;
 function __kustoSetCompatibilityMode(enabled) {
 	try {
 		window.__kustoCompatibilityMode = !!enabled;
-		const msg = 'upgrade to .kqlx file type to get access to these';
+		const msg = 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
 		const wrappers = document.querySelectorAll('.add-controls .add-control-wrapper');
 		for (const w of wrappers) {
 			try {
@@ -35,10 +35,23 @@ function __kustoSetCompatibilityMode(enabled) {
 		const buttons = document.querySelectorAll('.add-controls .add-control-btn');
 		for (const btn of buttons) {
 			try {
-				btn.disabled = !!enabled;
-				btn.setAttribute('aria-disabled', enabled ? 'true' : 'false');
-				// Tooltip is on wrapper span; avoid relying on disabled button tooltips.
-				if (btn.title === msg) btn.title = '';
+				// Keep enabled; clicking will offer to upgrade.
+				btn.disabled = false;
+				btn.setAttribute('aria-disabled', 'false');
+				// Tooltip is on wrapper span.
+				btn.title = '';
+			} catch {
+				// ignore
+			}
+		}
+
+		// If we just entered compatibility mode, ensure any early queued add clicks don't
+		// accidentally create extra sections that can't be persisted.
+		if (enabled) {
+			try {
+				if (window.__kustoQueryEditorPendingAdds && typeof window.__kustoQueryEditorPendingAdds === 'object') {
+					window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+				}
 			} catch {
 				// ignore
 			}
@@ -46,6 +59,40 @@ function __kustoSetCompatibilityMode(enabled) {
 	} catch {
 		// ignore
 	}
+}
+
+function __kustoRequestAddSection(kind) {
+	const k = String(kind || '').trim();
+	if (!k) return;
+
+	// For .kql/.csl compatibility files: offer upgrade instead of adding sections.
+	try {
+		if (window.__kustoCompatibilityMode) {
+			try {
+				vscode.postMessage({ type: 'requestUpgradeToKqlx', addKind: k });
+			} catch {
+				// ignore
+			}
+			return;
+		}
+	} catch {
+		// ignore
+	}
+
+	// Normal .kqlx flow.
+	if (k === 'query') return addQueryBox();
+	if (k === 'markdown') return addMarkdownBox();
+	if (k === 'python') return addPythonBox();
+	if (k === 'url') return addUrlBox();
+}
+
+// Replace the early bootstrap stub (defined in queryEditor.js before all scripts load).
+// In some browsers, relying on a global function declaration is not enough to override
+// an existing window property, so assign explicitly.
+try {
+	window.__kustoRequestAddSection = __kustoRequestAddSection;
+} catch {
+	// ignore
 }
 
 // During restore, Monaco editors are created asynchronously.
@@ -703,6 +750,21 @@ function handleDocumentDataMessage(message) {
 		// ignore
 	}
 	__kustoHasAppliedDocument = true;
+
+	// Some host-to-webview messages can arrive before the webview registers its message listener.
+	// documentData is requested by the webview after initialization, so it is a reliable place
+	// to apply compatibility mode for .kql/.csl files.
+	try {
+		if (typeof message.compatibilityMode === 'boolean') {
+			if (typeof __kustoSetCompatibilityMode === 'function') {
+				__kustoSetCompatibilityMode(!!message.compatibilityMode);
+			} else {
+				window.__kustoCompatibilityMode = !!message.compatibilityMode;
+			}
+		}
+	} catch {
+		// ignore
+	}
 
 	const ok = !!(message && message.ok);
 	if (!ok && message && message.error) {

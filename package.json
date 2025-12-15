@@ -12,6 +12,22 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "kqlx",
+        "aliases": [
+          "Kusto Notebook",
+          "KQLX"
+        ],
+        "extensions": [
+          ".kqlx"
+        ],
+        "icon": {
+          "light": "./media/images/kusto-file-light.svg",
+          "dark": "./media/images/kusto-file-dark.svg"
+        }
+      }
+    ],
     "customEditors": [
       {
         "viewType": "kusto.kqlxEditor",
