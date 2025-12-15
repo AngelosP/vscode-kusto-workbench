@@ -2670,7 +2670,7 @@ function initQueryEditor(boxId) {
 				}
 			};
 
-			return { update, hide };
+			return { update, hide, showWatermark };
 		};
 
 					const docOverlay = createDocOverlay();
@@ -2721,7 +2721,13 @@ function initQueryEditor(boxId) {
 					if (!e) return;
 					// monaco.KeyCode.Escape === 9
 					if (e.keyCode === monaco.KeyCode.Escape) {
-						try { docOverlay.hide(); } catch { /* ignore */ }
+						try {
+							if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+								docOverlay.hide();
+							} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
+								docOverlay.showWatermark();
+							}
+						} catch { /* ignore */ }
 					}
 				} catch {
 					// ignore
@@ -2799,7 +2805,13 @@ function initQueryEditor(boxId) {
 					try {
 						const stillFocused = isEditorFocused();
 						if (!stillFocused) {
-							try { docOverlay.hide(); } catch { /* ignore */ }
+							try {
+								if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+									docOverlay.hide();
+								} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
+									docOverlay.showWatermark();
+								}
+							} catch { /* ignore */ }
 							if (activeQueryEditorBoxId === boxId) {
 								activeQueryEditorBoxId = null;
 							}
