@@ -303,6 +303,35 @@ window.addEventListener('message', event => {
 			} catch {
 				// ignore
 			}
+			// Check if this is a comparison box result
+			try {
+				if (message.boxId && optimizationMetadataByBoxId[message.boxId]) {
+					const metadata = optimizationMetadataByBoxId[message.boxId];
+					if (metadata.isComparison && metadata.sourceBoxId) {
+						// Check if source box has results too
+						const sourceState = __kustoGetResultsState(metadata.sourceBoxId);
+						const comparisonState = __kustoGetResultsState(message.boxId);
+						if (sourceState && comparisonState) {
+							displayComparisonSummary(metadata.sourceBoxId, message.boxId);
+						}
+					}
+				}
+			} catch (err) {
+				console.error('Error displaying comparison summary:', err);
+			}
+			// Also handle the inverse: source box result arrives after comparison
+			try {
+				if (message.boxId && optimizationMetadataByBoxId[message.boxId] && optimizationMetadataByBoxId[message.boxId].comparisonBoxId) {
+					const comparisonBoxId = optimizationMetadataByBoxId[message.boxId].comparisonBoxId;
+					const sourceState = __kustoGetResultsState(message.boxId);
+					const comparisonState = __kustoGetResultsState(comparisonBoxId);
+					if (sourceState && comparisonState) {
+						displayComparisonSummary(message.boxId, comparisonBoxId);
+					}
+				}
+			} catch {
+				// ignore
+			}
 			break;
 		case 'queryError':
 			try {
@@ -420,6 +449,138 @@ window.addEventListener('message', event => {
 					// ignore
 				}
 				break;
+		case 'copilotAvailability':
+			try {
+				const boxId = message.boxId || '';
+				const available = !!message.available;
+				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+				if (optimizeBtn) {
+					if (!available) {
+						optimizeBtn.disabled = true;
+						optimizeBtn.title = 'Optimize query performance\n\nGitHub Copilot is required for this feature. Please enable Copilot in VS Code to use query optimization.';
+					} else {
+						optimizeBtn.disabled = false;
+						optimizeBtn.title = 'Optimize query performance';
+					}
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'optimizeQueryReady':
+			try {
+				const sourceBoxId = message.boxId || '';
+				const optimizedQuery = message.optimizedQuery || '';
+				const queryName = message.queryName || '';
+				const connectionId = message.connectionId || '';
+				const database = message.database || '';
+				
+				// Check if a comparison box was already created for this source
+				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
+					console.log('Comparison box already exists for source box:', sourceBoxId);
+					// Just restore the button state
+					const optimizeBtn = document.getElementById(sourceBoxId + '_optimize_btn');
+					if (optimizeBtn) {
+						optimizeBtn.disabled = false;
+						if (optimizeBtn.dataset.originalContent) {
+							optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+							delete optimizeBtn.dataset.originalContent;
+						}
+					}
+					return;
+				}
+				
+				// Create a new query box below the source box for comparison
+				const comparisonBoxId = addQueryBox({ 
+					id: 'query_opt_' + Date.now(), 
+					initialQuery: optimizedQuery,
+					isComparison: true,
+					defaultResultsVisible: false
+				});
+				try {
+					if (typeof __kustoSetResultsVisible === 'function') {
+						__kustoSetResultsVisible(sourceBoxId, false);
+						__kustoSetResultsVisible(comparisonBoxId, false);
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof __kustoSetLinkedOptimizationMode === 'function') {
+						__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
+					}
+				} catch { /* ignore */ }
+				
+				// Store optimization metadata
+				optimizationMetadataByBoxId[comparisonBoxId] = {
+					sourceBoxId: sourceBoxId,
+					isComparison: true,
+					originalQuery: queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '',
+					optimizedQuery: optimizedQuery
+				};
+				optimizationMetadataByBoxId[sourceBoxId] = {
+					comparisonBoxId: comparisonBoxId
+				};
+				
+				// Position the comparison box right after the source box
+				try {
+					const sourceBox = document.getElementById(sourceBoxId);
+					const comparisonBox = document.getElementById(comparisonBoxId);
+					if (sourceBox && comparisonBox && sourceBox.parentNode && comparisonBox.parentNode) {
+						sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
+					}
+				} catch { /* ignore */ }
+				
+				// Set connection and database to match source
+				const comparisonConnSelect = document.getElementById(comparisonBoxId + '_connection');
+				const comparisonDbSelect = document.getElementById(comparisonBoxId + '_database');
+				if (comparisonConnSelect) {
+					comparisonConnSelect.value = connectionId;
+					comparisonConnSelect.dataset.prevValue = connectionId;
+					updateDatabaseField(comparisonBoxId);
+					
+					// After database field updates, set the database value
+					setTimeout(() => {
+						if (comparisonDbSelect) {
+							comparisonDbSelect.value = database;
+						}
+					}, 100);
+				}
+				
+				// Set the query name
+				const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
+				if (comparisonNameInput) {
+					comparisonNameInput.value = queryName + ' (Optimized)';
+				}
+				
+				// Execute both queries for comparison
+				executeQuery(sourceBoxId);
+				setTimeout(() => {
+					executeQuery(comparisonBoxId);
+				}, 100);
+				
+				// Restore the optimize button state on source box
+				const optimizeBtn = document.getElementById(sourceBoxId + '_optimize_btn');
+				if (optimizeBtn) {
+					optimizeBtn.disabled = false;
+					if (optimizeBtn.dataset.originalContent) {
+						optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+						delete optimizeBtn.dataset.originalContent;
+					}
+				}
+			} catch (err) {
+				console.error('Error creating comparison box:', err);
+			}
+			break;
+		case 'optimizeQueryError':
+			try {
+				const boxId = message.boxId || '';
+				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+				if (optimizeBtn) {
+					optimizeBtn.disabled = false;
+					if (optimizeBtn.dataset.originalContent) {
+						optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+						delete optimizeBtn.dataset.originalContent;
+					}
+				}
+			} catch { /* ignore */ }
+			break;
 	}
 });
 

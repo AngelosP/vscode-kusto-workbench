@@ -1,5 +1,9 @@
 function addQueryBox(options) {
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
+	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
+	const isComparison = !!(options && options.isComparison);
+	const defaultResultsVisible = (options && typeof options.defaultResultsVisible === 'boolean') ? !!options.defaultResultsVisible : true;
+	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
 	queryBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
@@ -55,6 +59,30 @@ function addQueryBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M2 8h12"/>' +
 		'</svg>';
+
+	const previewIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>';
+
+	const summaryIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<rect x="2" y="10" width="3" height="4"/>' +
+		'<rect x="6" y="6" width="3" height="8"/>' +
+		'<rect x="10" y="3" width="3" height="11"/>' +
+		'</svg>';
+
+	const optimizeOrAcceptHtml = isComparison
+		? ('<button class="accept-optimizations-btn" id="' + id + '_accept_btn" onclick="acceptOptimizations(\'' + id + '\')" disabled ' +
+			'title="Run both queries to compare results. This will be enabled only when results match." aria-label="Accept Optimizations">Accept Optimizations</button>')
+		: ('<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\')" ' +
+			'title="Optimize query performance" aria-label="Optimize query performance with Copilot">' +
+			'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+			'<path d="M8.75 1.5a.75.75 0 0 0-1.5 0v.58c-.57.18-1.02.57-1.36 1.01L4.64 2.35a.75.75 0 1 0-1.06 1.06l.73.73c-.2.3-.37.64-.49 1.01h-.57a.75.75 0 0 0 0 1.5h.57c.12.37.29.7.49 1.01l-.73.73a.75.75 0 1 0 1.06 1.06l1.25-.74c.34.44.79.83 1.36 1.01v.58a.75.75 0 0 0 1.5 0v-.58c.57-.18 1.02-.57 1.36-1.01l1.25.74a.75.75 0 1 0 1.06-1.06l-.73-.73c.2-.3.37-.64.49-1.01h.57a.75.75 0 0 0 0-1.5h-.57a4.07 4.07 0 0 0-.49-1.01l.73-.73a.75.75 0 1 0-1.06-1.06l-1.25.74A3.97 3.97 0 0 0 8.75 2.08V1.5zM8 9.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/>' +
+			'<path d="M4 12.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5z"/>' +
+			'</svg>' +
+			'</button>');
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
@@ -106,7 +134,7 @@ function addQueryBox(options) {
 		'</button>' +
 		'</div>';
 	const boxHtml =
-		'<div class="query-box" id="' + id + '">' +
+		'<div class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '">' +
 		'<div class="query-header">' +
 		'<div class="query-header-row query-header-row-top">' +
 		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
@@ -159,6 +187,8 @@ function addQueryBox(options) {
 		'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\'' + id + '\', \'sample100\'); executeQuery(\'' + id + '\'); closeRunMenu(\'' + id + '\');">Run Query (sample 100)</div>' +
 		'</div>' +
 		'</div>' +
+		optimizeOrAcceptHtml +
+		'' +
 		'<span class="query-exec-status" id="' + id + '_exec_status" style="display: none;">' +
 		'<span class="query-spinner" aria-hidden="true"></span>' +
 		'<span id="' + id + '_exec_elapsed">0:00.0</span>' +
@@ -184,7 +214,10 @@ function addQueryBox(options) {
 		'</select>' +
 		'</div>' +
 		'</div>' +
+		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;">' +
 		'<div class="results" id="' + id + '_results"></div>' +
+		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results"></div>' +
+		'</div>' +
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
@@ -192,6 +225,91 @@ function addQueryBox(options) {
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
 	initQueryEditor(id);
+
+	// Default visibility state (results + comparison summary)
+	try {
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
+		}
+		window.__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
+	} catch { /* ignore */ }
+	try {
+		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			window.__kustoComparisonSummaryVisibleByBoxId = {};
+		}
+		window.__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
+	} catch { /* ignore */ }
+	try { __kustoUpdateQueryResultsToggleButton(id); } catch { /* ignore */ }
+	try { __kustoUpdateComparisonSummaryToggleButton(id); } catch { /* ignore */ }
+	try { __kustoApplyResultsVisibility(id); } catch { /* ignore */ }
+	try { __kustoApplyComparisonSummaryVisibility(id); } catch { /* ignore */ }
+
+	// Drag handle resize for results output.
+	try {
+		const wrapper = document.getElementById(id + '_results_wrapper');
+		const resizer = document.getElementById(id + '_results_resizer');
+		if (wrapper && resizer) {
+			resizer.addEventListener('mousedown', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+				} catch {
+					// ignore
+				}
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+
+				const startY = e.clientY;
+				const startHeight = wrapper.getBoundingClientRect().height;
+
+				const onMove = (moveEvent) => {
+					const delta = moveEvent.clientY - startY;
+					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					wrapper.style.height = nextHeight + 'px';
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove, true);
+					document.removeEventListener('mouseup', onUp, true);
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				};
+
+				document.addEventListener('mousemove', onMove, true);
+				document.addEventListener('mouseup', onUp, true);
+			});
+		}
+	} catch {
+		// ignore
+	}
+	
+	// Set initial query text if provided
+	if (initialQuery) {
+		setTimeout(() => {
+			const editor = queryEditors[id];
+			if (editor) {
+				const model = editor.getModel();
+				if (model) {
+					model.setValue(initialQuery);
+				}
+			}
+		}, 50);
+	}
+	
+	// Check Copilot availability for this box
+	try {
+		vscode.postMessage({
+			type: 'checkCopilotAvailability',
+			boxId: id
+		});
+	} catch { /* ignore */ }
+	
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -202,6 +320,393 @@ function addQueryBox(options) {
 		// ignore
 	}
 	return id;
+}
+
+function __kustoSetResultsVisible(boxId, visible) {
+	try {
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
+		}
+		window.__kustoResultsVisibleByBoxId[boxId] = !!visible;
+	} catch { /* ignore */ }
+	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
+	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+}
+
+function __kustoLockCacheForBenchmark(boxId) {
+	const msg = 'When doing performance benchmarks we cannot use caching.';
+	try {
+		const checkbox = document.getElementById(boxId + '_cache_enabled');
+		const valueInput = document.getElementById(boxId + '_cache_value');
+		const unitSelect = document.getElementById(boxId + '_cache_unit');
+		if (checkbox) {
+			checkbox.checked = false;
+			checkbox.disabled = true;
+			checkbox.title = msg;
+			try {
+				const label = checkbox.closest('label');
+				if (label) {
+					label.title = msg;
+				}
+			} catch { /* ignore */ }
+		}
+		if (valueInput) {
+			valueInput.disabled = true;
+			valueInput.title = msg;
+		}
+		if (unitSelect) {
+			unitSelect.disabled = true;
+			unitSelect.title = msg;
+		}
+		try { toggleCacheControls(boxId); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoNormalizeCellForComparison(cell) {
+	try {
+		if (cell === null || cell === undefined) return ['n', null];
+		const t = typeof cell;
+		if (t === 'string' || t === 'number' || t === 'boolean') return ['p', t, cell];
+		if (t !== 'object') return ['p', t, String(cell)];
+		// Common table-cell wrapper used by this webview.
+		if ('display' in cell && 'full' in cell) {
+			return ['h', String(cell.display), String(cell.full), !!cell.isObject];
+		}
+		return ['o', JSON.stringify(cell)];
+	} catch {
+		try { return ['o', String(cell)]; } catch { return ['o', '[uncomparable]']; }
+	}
+}
+
+function __kustoAreResultsEquivalent(sourceState, comparisonState) {
+	try {
+		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
+		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
+		if (aCols.length !== bCols.length) return false;
+		for (let i = 0; i < aCols.length; i++) {
+			if (String(aCols[i]) !== String(bCols[i])) return false;
+		}
+
+		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
+		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
+		if (aRows.length !== bRows.length) return false;
+		for (let r = 0; r < aRows.length; r++) {
+			const ar = Array.isArray(aRows[r]) ? aRows[r] : [];
+			const br = Array.isArray(bRows[r]) ? bRows[r] : [];
+			if (ar.length !== br.length) return false;
+			for (let c = 0; c < ar.length; c++) {
+				const an = __kustoNormalizeCellForComparison(ar[c]);
+				const bn = __kustoNormalizeCellForComparison(br[c]);
+				if (JSON.stringify(an) !== JSON.stringify(bn)) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoUpdateAcceptOptimizationsButton(comparisonBoxId, enabled, tooltip) {
+	const btn = document.getElementById(comparisonBoxId + '_accept_btn');
+	if (!btn) {
+		return;
+	}
+	btn.disabled = !enabled;
+	btn.title = tooltip || (enabled ? 'Accept Optimizations' : 'Accept Optimizations is enabled only when results match.');
+	btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+}
+
+function acceptOptimizations(comparisonBoxId) {
+	try {
+		const meta = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) ? optimizationMetadataByBoxId[comparisonBoxId] : null;
+		const sourceBoxId = meta && meta.sourceBoxId ? meta.sourceBoxId : '';
+		const optimizedQuery = meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '';
+		if (!sourceBoxId || !optimizedQuery) {
+			return;
+		}
+		if (queryEditors[sourceBoxId] && typeof queryEditors[sourceBoxId].setValue === 'function') {
+			queryEditors[sourceBoxId].setValue(optimizedQuery);
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		}
+		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch { /* ignore */ }
+		// Remove comparison box and clear metadata links.
+		try { removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
+		try {
+			if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+				delete optimizationMetadataByBoxId[comparisonBoxId];
+				if (optimizationMetadataByBoxId[sourceBoxId]) {
+					delete optimizationMetadataByBoxId[sourceBoxId];
+				}
+			}
+		} catch { /* ignore */ }
+		try { vscode.postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoUpdateQueryResultsToggleButton(boxId) {
+	const btn = document.getElementById(boxId + '_results_toggle');
+	if (!btn) {
+		return;
+	}
+	let visible = true;
+	try {
+		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	btn.classList.toggle('is-active', visible);
+	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
+	btn.title = visible ? 'Hide results' : 'Show results';
+	btn.setAttribute('aria-label', visible ? 'Hide results' : 'Show results');
+}
+
+function __kustoUpdateComparisonSummaryToggleButton(boxId) {
+	const btn = document.getElementById(boxId + '_summary_toggle');
+	if (!btn) {
+		return;
+	}
+	let visible = true;
+	try {
+		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	btn.classList.toggle('is-active', visible);
+	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
+	btn.title = visible ? 'Hide comparison summary' : 'Show comparison summary';
+	btn.setAttribute('aria-label', visible ? 'Hide comparison summary' : 'Show comparison summary');
+}
+
+function __kustoApplyResultsVisibility(boxId) {
+	const wrapper = document.getElementById(boxId + '_results_wrapper');
+	if (!wrapper) {
+		// Support non-query-box results (e.g. URL CSV preview) that render a results block
+		// without the surrounding *_results_wrapper.
+		let visible = true;
+		try {
+			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+		} catch { /* ignore */ }
+		try {
+			const body = document.getElementById(boxId + '_results_body');
+			if (body) {
+				body.style.display = visible ? '' : 'none';
+			}
+		} catch { /* ignore */ }
+		try {
+			if (typeof __kustoSetResultsToolsVisible === 'function') {
+				__kustoSetResultsToolsVisible(boxId, visible);
+			}
+			if (!visible && typeof __kustoHideResultsTools === 'function') {
+				__kustoHideResultsTools(boxId);
+			}
+		} catch { /* ignore */ }
+		// URL CSV: make the outer URL section auto-fit its contents (no slack) when
+		// hiding/showing results.
+		try {
+			const urlWrapper = document.getElementById(boxId + '_wrapper');
+			const urlContent = document.getElementById(boxId + '_content');
+			if (urlWrapper && urlContent && urlContent.classList && urlContent.classList.contains('url-csv-mode')) {
+				urlWrapper.style.height = 'auto';
+				urlWrapper.style.minHeight = '0';
+			}
+		} catch { /* ignore */ }
+		return;
+	}
+	let visible = true;
+	try {
+		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	// Only show wrapper when there's content.
+	const resultsDiv = document.getElementById(boxId + '_results');
+	const hasContent = !!(resultsDiv && String(resultsDiv.innerHTML || '').trim());
+	wrapper.style.display = hasContent ? 'flex' : 'none';
+	if (hasContent) {
+		const body = document.getElementById(boxId + '_results_body');
+		if (body) {
+			body.style.display = visible ? '' : 'none';
+		}
+		try {
+			if (typeof __kustoSetResultsToolsVisible === 'function') {
+				__kustoSetResultsToolsVisible(boxId, visible);
+			}
+			if (!visible && typeof __kustoHideResultsTools === 'function') {
+				__kustoHideResultsTools(boxId);
+			}
+		} catch { /* ignore */ }
+		const resizer = document.getElementById(boxId + '_results_resizer');
+		if (resizer) {
+			resizer.style.display = visible ? '' : 'none';
+		}
+		try {
+			if (!visible) {
+				// Collapse to just the header (minimum height needed).
+				if (wrapper.style.height && wrapper.style.height !== 'auto') {
+					wrapper.dataset.kustoPreviousHeight = wrapper.style.height;
+				}
+				wrapper.style.height = 'auto';
+				wrapper.style.minHeight = '0';
+			} else {
+				// Ensure a usable height when showing results.
+				wrapper.style.minHeight = '120px';
+				if (!wrapper.style.height || wrapper.style.height === 'auto') {
+					if (wrapper.dataset.kustoPreviousHeight) {
+						wrapper.style.height = wrapper.dataset.kustoPreviousHeight;
+					} else {
+						wrapper.style.height = '240px';
+					}
+				}
+			}
+		} catch { /* ignore */ }
+	}
+}
+
+function __kustoApplyComparisonSummaryVisibility(boxId) {
+	const box = document.getElementById(boxId);
+	if (!box) {
+		return;
+	}
+	const banner = box.querySelector('.comparison-summary-banner');
+	if (!banner) {
+		return;
+	}
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
+			banner.style.display = '';
+			return;
+		}
+	} catch { /* ignore */ }
+	let visible = true;
+	try {
+		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	banner.style.display = visible ? '' : 'none';
+}
+
+function toggleQueryResultsVisibility(boxId) {
+	try {
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
+		}
+		const current = !(window.__kustoResultsVisibleByBoxId[boxId] === false);
+		window.__kustoResultsVisibleByBoxId[boxId] = !current;
+	} catch { /* ignore */ }
+	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
+	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function toggleComparisonSummaryVisibility(boxId) {
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
+			// Optimized sections always show summary.
+			return;
+		}
+	} catch { /* ignore */ }
+	try {
+		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			window.__kustoComparisonSummaryVisibleByBoxId = {};
+		}
+		const current = !(window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		window.__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
+	} catch { /* ignore */ }
+	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch { /* ignore */ }
+	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoEnsureCacheBackupMap() {
+	if (!window.__kustoCacheBackupByBoxId || typeof window.__kustoCacheBackupByBoxId !== 'object') {
+		window.__kustoCacheBackupByBoxId = {};
+	}
+	return window.__kustoCacheBackupByBoxId;
+}
+
+function __kustoBackupCacheSettings(boxId) {
+	if (!boxId) {
+		return;
+	}
+	const map = __kustoEnsureCacheBackupMap();
+	if (map[boxId]) {
+		return;
+	}
+	try {
+		const enabledEl = document.getElementById(boxId + '_cache_enabled');
+		const valueEl = document.getElementById(boxId + '_cache_value');
+		const unitEl = document.getElementById(boxId + '_cache_unit');
+		map[boxId] = {
+			enabled: enabledEl ? !!enabledEl.checked : true,
+			value: valueEl ? (parseInt(valueEl.value) || 1) : 1,
+			unit: unitEl ? String(unitEl.value || 'days') : 'days'
+		};
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoRestoreCacheSettings(boxId) {
+	if (!boxId) {
+		return;
+	}
+	const map = __kustoEnsureCacheBackupMap();
+	const backup = map[boxId];
+	if (!backup) {
+		// Ensure controls are re-enabled if we had disabled them.
+		try {
+			const enabledEl = document.getElementById(boxId + '_cache_enabled');
+			const valueEl = document.getElementById(boxId + '_cache_value');
+			const unitEl = document.getElementById(boxId + '_cache_unit');
+			if (enabledEl) { enabledEl.disabled = false; enabledEl.title = ''; }
+			if (valueEl) { valueEl.disabled = false; valueEl.title = ''; }
+			if (unitEl) { unitEl.disabled = false; unitEl.title = ''; }
+			try { toggleCacheControls(boxId); } catch { /* ignore */ }
+		} catch { /* ignore */ }
+		return;
+	}
+	try {
+		const enabledEl = document.getElementById(boxId + '_cache_enabled');
+		const valueEl = document.getElementById(boxId + '_cache_value');
+		const unitEl = document.getElementById(boxId + '_cache_unit');
+		if (enabledEl) {
+			enabledEl.checked = !!backup.enabled;
+			enabledEl.disabled = false;
+			enabledEl.title = '';
+			try {
+				const label = enabledEl.closest('label');
+				if (label) { label.title = ''; }
+			} catch { /* ignore */ }
+		}
+		if (valueEl) {
+			valueEl.value = String(backup.value || 1);
+			valueEl.disabled = false;
+			valueEl.title = '';
+		}
+		if (unitEl) {
+			unitEl.value = String(backup.unit || 'days');
+			unitEl.disabled = false;
+			unitEl.title = '';
+		}
+		try { toggleCacheControls(boxId); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+	try { delete map[boxId]; } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, active) {
+	const ids = [String(sourceBoxId || '').trim(), String(comparisonBoxId || '').trim()].filter(Boolean);
+	for (const id of ids) {
+		const el = document.getElementById(id);
+		if (!el) continue;
+		if (active) {
+			try { __kustoBackupCacheSettings(id); } catch { /* ignore */ }
+			el.classList.add('has-linked-optimization');
+		} else {
+			el.classList.remove('has-linked-optimization');
+			try { __kustoRestoreCacheSettings(id); } catch { /* ignore */ }
+		}
+	}
 }
 
 function updateCaretDocsToggleButtons() {
@@ -459,6 +964,193 @@ async function exportQueryToPowerBI(boxId) {
 		}
 	} catch {
 		alert('Failed to copy Power BI query to clipboard.');
+	}
+}
+
+function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
+	const sourceState = __kustoGetResultsState(sourceBoxId);
+	const comparisonState = __kustoGetResultsState(comparisonBoxId);
+	
+	if (!sourceState || !comparisonState) {
+		return;
+	}
+	
+	const sourceRows = sourceState.rows ? sourceState.rows.length : 0;
+	const comparisonRows = comparisonState.rows ? comparisonState.rows.length : 0;
+	const sourceCols = sourceState.columns ? sourceState.columns.length : 0;
+	const comparisonCols = comparisonState.columns ? comparisonState.columns.length : 0;
+	
+	// Extract execution times
+	const sourceExecTime = sourceState.metadata && sourceState.metadata.executionTime || '';
+	const comparisonExecTime = comparisonState.metadata && comparisonState.metadata.executionTime || '';
+	
+	// Parse execution times (e.g., "123ms" or "1.23s")
+	const parseExecTime = (timeStr) => {
+		if (!timeStr) return null;
+		const match = timeStr.match(/([\d.]+)\s*(ms|s)/);
+		if (!match) return null;
+		const value = parseFloat(match[1]);
+		const unit = match[2];
+		return unit === 's' ? value * 1000 : value; // Convert to ms
+	};
+	
+	const sourceMs = parseExecTime(sourceExecTime);
+	const comparisonMs = parseExecTime(comparisonExecTime);
+	
+	let perfMessage = '';
+	if (sourceMs !== null && comparisonMs !== null && sourceMs > 0) {
+		const diff = sourceMs - comparisonMs;
+		const percentChange = ((diff / sourceMs) * 100).toFixed(1);
+		if (diff > 0) {
+			perfMessage = `<span style="color: #89d185;">\u2713 ${percentChange}% faster (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
+		} else if (diff < 0) {
+			perfMessage = `<span style="color: #f48771;">\u26a0 ${Math.abs(percentChange)}% slower (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
+		} else {
+			perfMessage = `<span style="color: #cccccc;">\u2248 Same performance (${sourceExecTime})</span>`;
+		}
+	} else if (sourceExecTime && comparisonExecTime) {
+		perfMessage = `<span style="color: #cccccc;">${sourceExecTime} \u2192 ${comparisonExecTime}</span>`;
+	}
+	
+	// Check data consistency
+	const rowsMatch = sourceRows === comparisonRows;
+	const colsMatch = sourceCols === comparisonCols;
+	const deepMatch = __kustoAreResultsEquivalent(sourceState, comparisonState);
+	
+	let dataMessage = '';
+	if (deepMatch) {
+		dataMessage = '<span style="color: #89d185;">\u2713 Data matches: identical results</span>';
+	} else {
+		const parts = [];
+		if (!rowsMatch) {
+			parts.push(`rows: ${sourceRows} \u2192 ${comparisonRows}`);
+		}
+		if (!colsMatch) {
+			parts.push(`columns: ${sourceCols} \u2192 ${comparisonCols}`);
+		}
+		dataMessage = `<span style="color: #f48771;">\u26a0 Data differs${parts.length ? (' (' + parts.join(', ') + ')') : ''}</span>`;
+	}
+	
+	// Create or update comparison summary banner
+	const comparisonBox = document.getElementById(comparisonBoxId);
+	if (!comparisonBox) {
+		return;
+	}
+	
+	// Find or create the banner element
+	let banner = comparisonBox.querySelector('.comparison-summary-banner');
+	if (!banner) {
+		banner = document.createElement('div');
+		banner.className = 'comparison-summary-banner';
+		// Insert banner right before the editor wrapper (below the header).
+		const editorWrapper = comparisonBox.querySelector('.query-editor-wrapper');
+		if (editorWrapper && editorWrapper.parentNode) {
+			editorWrapper.parentNode.insertBefore(banner, editorWrapper);
+		}
+	}
+	
+	banner.innerHTML = `
+		<div class="comparison-summary-content">
+			<strong>\ud83d\udcca Optimization Comparison</strong>
+			<div class="comparison-metrics">
+				<div class="comparison-metric">\u26a1 Performance: ${perfMessage}</div>
+				<div class="comparison-metric">\ud83d\udccb Data: ${dataMessage}</div>
+			</div>
+		</div>
+	`;
+	try {
+		if (deepMatch) {
+			__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, true, 'Results match. Accept optimizations.');
+		} else {
+			__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, false, 'Results differ. Accept optimizations is disabled.');
+		}
+	} catch { /* ignore */ }
+	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch { /* ignore */ }
+}
+
+async function optimizeQueryWithCopilot(boxId) {
+	const editor = queryEditors[boxId];
+	if (!editor) {
+		return;
+	}
+	const model = editor.getModel();
+	if (!model) {
+		return;
+	}
+	
+	// Check if optimization is already in progress
+	const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+	if (optimizeBtn && optimizeBtn.disabled) {
+		console.log('Optimization already in progress for box:', boxId);
+		return;
+	}
+
+	// Hide results to keep the UI focused during optimization.
+	try { __kustoSetResultsVisible(boxId, false); } catch { /* ignore */ }
+	
+	const query = model.getValue() || '';
+	if (!query.trim()) {
+		alert('No query to optimize');
+		return;
+	}
+	
+	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
+	const database = (document.getElementById(boxId + '_database') || {}).value || '';
+	if (!connectionId) {
+		alert('Please select a cluster connection');
+		return;
+	}
+	if (!database) {
+		alert('Please select a database');
+		return;
+	}
+
+	// Check if query has a name, if not, set one
+	const nameInput = document.getElementById(boxId + '_name');
+	let queryName = nameInput ? nameInput.value.trim() : '';
+	if (!queryName) {
+		// Generate a random funny name
+		const adjectives = ['Sneaky', 'Dizzy', 'Bouncy', 'Grumpy', 'Fancy', 'Zippy', 'Wobbly', 'Quirky', 'Sleepy', 'Dancing', 'Giggling', 'Hungry', 'Sparkly', 'Fuzzy', 'Clever', 'Mighty', 'Turbo', 'Cosmic', 'Ninja', 'Jolly'];
+		const nouns = ['Penguin', 'Octopus', 'Banana', 'Unicorn', 'Dragon', 'Waffle', 'Narwhal', 'Llama', 'Hedgehog', 'Platypus', 'Flamingo', 'Koala', 'Pineapple', 'Dolphin', 'Raccoon', 'Capybara', 'Axolotl', 'Toucan', 'Gecko', 'Otter'];
+		const randomAdj = adjectives[Math.floor(Math.random() * adjectives.length)];
+		const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
+		const randomNum = Math.floor(Math.random() * 1000);
+		queryName = `${randomAdj} ${randomNoun} ${randomNum}`;
+		if (nameInput) {
+			nameInput.value = queryName;
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		}
+	}
+
+	// Show spinner and disable button
+	if (optimizeBtn) {
+		optimizeBtn.disabled = true;
+		const originalContent = optimizeBtn.innerHTML;
+		optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+		optimizeBtn.dataset.originalContent = originalContent;
+	}
+	
+	// Send the optimization request
+	try {
+		vscode.postMessage({
+			type: 'optimizeQuery',
+			query,
+			connectionId,
+			database,
+			boxId,
+			queryName
+		});
+	} catch (err) {
+		console.error('Error sending optimization request:', err);
+		alert('Failed to start query optimization');
+		// Restore button state
+		if (optimizeBtn) {
+			optimizeBtn.disabled = false;
+			if (optimizeBtn.dataset.originalContent) {
+				optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+				delete optimizeBtn.dataset.originalContent;
+			}
+		}
 	}
 }
 
@@ -989,6 +1681,25 @@ function qualifyTablesInText(text, tables, clusterUrl, database) {
 }
 
 function removeQueryBox(boxId) {
+	// If removing a linked optimized box, exit linked optimization mode and restore cache settings.
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				const sourceBoxId = meta.sourceBoxId;
+				try { __kustoSetLinkedOptimizationMode(sourceBoxId, boxId, false); } catch { /* ignore */ }
+				try { delete optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete optimizationMetadataByBoxId[sourceBoxId]; } catch { /* ignore */ }
+			} else if (meta && meta.comparisonBoxId) {
+				// If removing the source box, remove the comparison box too.
+				const comparisonBoxId = meta.comparisonBoxId;
+				try { __kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, false); } catch { /* ignore */ }
+				try { removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
+				try { delete optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+
 	// Stop any running timer/spinner for this box
 	setQueryExecuting(boxId, false);
 	delete runModesByBoxId[boxId];
@@ -1809,11 +2520,35 @@ function cancelQuery(boxId) {
 function executeQuery(boxId, mode) {
 	const effectiveMode = mode || getRunMode(boxId);
 	const query = queryEditors[boxId] ? queryEditors[boxId].getValue() : '';
-	const connectionId = document.getElementById(boxId + '_connection').value;
-	const database = document.getElementById(boxId + '_database').value;
-	const cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
+	let connectionId = document.getElementById(boxId + '_connection').value;
+	let database = document.getElementById(boxId + '_database').value;
+	let cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
 	const cacheValue = parseInt(document.getElementById(boxId + '_cache_value').value) || 1;
 	const cacheUnit = document.getElementById(boxId + '_cache_unit').value;
+
+	// In optimized/comparison sections, inherit connection/database from the source box.
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				const sourceBoxId = meta.sourceBoxId;
+				const sourceConn = document.getElementById(sourceBoxId + '_connection');
+				const sourceDb = document.getElementById(sourceBoxId + '_database');
+				if (sourceConn && sourceConn.value) {
+					connectionId = sourceConn.value;
+				}
+				if (sourceDb && sourceDb.value) {
+					database = sourceDb.value;
+				}
+			}
+			// While linked optimization exists, always disable caching for benchmark runs.
+			const hasLinkedOptimization = !!(meta && meta.isComparison)
+				|| !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
+			if (hasLinkedOptimization) {
+				cacheEnabled = false;
+			}
+		}
+	} catch { /* ignore */ }
 
 	if (!query.trim()) {
 		return;

@@ -20,6 +20,69 @@ function __kustoGetScrollToColumnIconSvg() {
 	);
 }
 
+function __kustoGetResultsVisibilityIconSvg() {
+	return (
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>'
+	);
+}
+
+function __kustoEnsureResultsShownForTool(boxId) {
+	try {
+		if (window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false) {
+			if (typeof __kustoSetResultsVisible === 'function') {
+				__kustoSetResultsVisible(boxId, true);
+			} else {
+				window.__kustoResultsVisibleByBoxId[boxId] = true;
+				try {
+					if (typeof __kustoApplyResultsVisibility === 'function') {
+						__kustoApplyResultsVisibility(boxId);
+					}
+				} catch { /* ignore */ }
+			}
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoSetResultsToolsVisible(boxId, visible) {
+	const searchBtn = document.getElementById(boxId + '_results_search_btn');
+	const columnBtn = document.getElementById(boxId + '_results_column_btn');
+	const display = visible ? '' : 'none';
+	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
+	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
+}
+
+function __kustoHideResultsTools(boxId) {
+	try {
+		const searchContainer = document.getElementById(boxId + '_data_search_container');
+		if (searchContainer) {
+			searchContainer.style.display = 'none';
+		}
+	} catch { /* ignore */ }
+	try {
+		const columnContainer = document.getElementById(boxId + '_column_search_container');
+		if (columnContainer) {
+			columnContainer.style.display = 'none';
+		}
+	} catch { /* ignore */ }
+	try {
+		const searchBtn = document.getElementById(boxId + '_results_search_btn');
+		if (searchBtn) {
+			searchBtn.classList.remove('active');
+		}
+	} catch { /* ignore */ }
+	try {
+		const columnBtn = document.getElementById(boxId + '_results_column_btn');
+		if (columnBtn) {
+			columnBtn.classList.remove('active');
+		}
+	} catch { /* ignore */ }
+}
+
 function displayResult(result) {
 	const boxId = window.lastExecutedBox;
 	if (!boxId) { return; }
@@ -84,18 +147,19 @@ function displayResultForBox(result, boxId, options) {
 
 	const searchIconSvg = __kustoGetSearchIconSvg();
 	const scrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg();
+	const resultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg();
 
 	let html =
 		'<div class="results-header">' +
-		'<div>' +
+		'<div class="results-title-row">' +
 		'<strong>' + label + ':</strong> ' + (rows ? rows.length : 0) + ' rows / ' + (columns ? columns.length : 0) + ' columns' +
 		execPart +
+		'<button class="md-tab results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
+		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
+		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'</div>' +
-		'<div class="results-tools">' +
-		'<button class="tool-toggle-btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
-		'<button class="tool-toggle-btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'</div>' +
-		'</div>' +
+		'<div class="results-body" id="' + boxId + '_results_body">' +
 		'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +
 		'<input type="text" placeholder="Search data..." id="' + boxId + '_data_search" ' +
 		'oninput="searchData(\'' + boxId + '\')" ' +
@@ -148,9 +212,24 @@ function displayResultForBox(result, boxId, options) {
 		).join('') +
 		'</tbody>' +
 		'</table>' +
+		'</div>' +
 		'</div>';
 
 	resultsDiv.innerHTML = html;
+	try {
+		if (typeof __kustoApplyResultsVisibility === 'function') {
+			__kustoApplyResultsVisibility(boxId);
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		if (typeof __kustoUpdateQueryResultsToggleButton === 'function') {
+			__kustoUpdateQueryResultsToggleButton(boxId);
+		}
+	} catch {
+		// ignore
+	}
 	resultsDiv.classList.add('visible');
 }
 
@@ -230,6 +309,7 @@ function toggleRowSelection(row, boxId) {
 }
 
 function toggleSearchTool(boxId) {
+	__kustoEnsureResultsShownForTool(boxId);
 	const container = document.getElementById(boxId + '_data_search_container');
 	const button = event.target.closest('.tool-toggle-btn');
 
@@ -259,6 +339,14 @@ function toggleSearchTool(boxId) {
 }
 
 function toggleColumnTool(boxId) {
+	__kustoEnsureResultsShownForTool(boxId);
+	const body = document.getElementById(boxId + '_results_body');
+	// If results were hidden, the body may still be display:none for a tick.
+	try {
+		if (body && body.style && body.style.display === 'none') {
+			body.style.display = '';
+		}
+	} catch { /* ignore */ }
 	const container = document.getElementById(boxId + '_column_search_container');
 	const button = event.target.closest('.tool-toggle-btn');
 

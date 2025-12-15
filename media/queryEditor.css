@@ -327,6 +327,77 @@
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 		}
 
+		/* Let the results resize bar sit flush to the section bottom. */
+		.query-box {
+			padding-bottom: 0;
+		}
+
+		.query-box.is-optimized-comparison {
+			background: var(--vscode-list-inactiveSelectionBackground);
+			border: 1px solid var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-foreground);
+		}
+
+		.query-box.is-optimized-comparison .query-header-row-bottom {
+			display: none;
+		}
+
+		.query-box.has-linked-optimization .cache-controls {
+			display: none;
+		}
+
+		.results-wrapper {
+			position: relative;
+			width: 100%;
+			min-height: 0;
+			margin: 8px 0 0;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			background: transparent;
+			/* Separator line between actions and results header */
+			border-top: 1px solid var(--vscode-panel-border);
+			border-radius: 0;
+		}
+
+		.results-wrapper .results {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			border: none;
+			border-radius: 0;
+			background: transparent;
+		}
+
+		/* Query results: the table container is the single scroller (avoid double scrollbars). */
+		.results-wrapper .table-container {
+			display: block;
+			flex: 1 1 auto;
+			min-height: 0;
+			min-width: 0;
+			width: 100%;
+			max-width: 100%;
+			max-height: none;
+			overflow-x: auto;
+			overflow-y: auto;
+			border: none;
+			border-radius: 0;
+			margin-bottom: 8px;
+		}
+
+		/* Add a bit of breathing room above the grabber. */
+		.results-wrapper .query-editor-resizer {
+			margin-top: 8px;
+		}
+
+		/* Put the grip at the very bottom for results resizing */
+		.results-wrapper .query-editor-resizer::after {
+			top: 100%;
+			transform: translate(-50%, -100%);
+		}
+
 		.query-header {
 			display: flex;
 			flex-direction: column;
@@ -804,6 +875,38 @@
 			display: block;
 		}
 
+		/* Query results inside our resizable wrapper use flex layout and the wrapper owns the separator line. */
+		.results-wrapper .results,
+		.results-wrapper .results.visible {
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+			min-width: 0;
+			overflow: hidden;
+			background: transparent;
+			border-top: none;
+			margin-top: 0;
+			padding: 8px 0 0;
+		}
+
+		/* Constrain the results body so the table container can scroll inside it. */
+		.results-wrapper .results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.results-wrapper .results-body > .data-search,
+		.results-wrapper .results-body > .column-search {
+			flex: 0 0 auto;
+		}
+
+		.results-wrapper .results-body > .table-container {
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
 		.results-header {
 			font-size: 12px;
 			color: var(--vscode-descriptionForeground);
@@ -815,6 +918,18 @@
 			align-items: center;
 			flex-wrap: wrap;
 			gap: 8px;
+		}
+
+		.results-title-row {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			flex-wrap: wrap;
+			min-width: 0;
+		}
+
+		.results-visibility-toggle {
+			margin-left: 6px;
 		}
 
 		.results-tools {
@@ -854,6 +969,8 @@
 			background: var(--vscode-editor-background);
 			border: 1px solid var(--vscode-panel-border);
 			border-radius: 2px;
+			position: relative;
+			z-index: 2;
 		}
 
 		.data-search input {
@@ -903,6 +1020,7 @@
 
 		.column-search {
 			position: relative;
+			z-index: 2;
 			min-width: 200px;
 			margin-bottom: 8px;
 			padding: 8px;
@@ -963,6 +1081,7 @@
 			position: relative;
 			border: 1px solid var(--vscode-panel-border);
 			border-radius: 2px;
+			margin-top: 5px;
 		}
 
 		.table-container:focus {
@@ -1430,6 +1549,103 @@
 		.query-run button {
 			margin-bottom: 0;
 		}
+
+		.optimize-query-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 10px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			min-width: 32px;
+			height: 28px;
+		}
+
+		.optimize-query-btn:hover:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.optimize-query-btn:active:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+			opacity: 0.8;
+		}
+
+		.optimize-query-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.optimize-query-btn svg {
+			width: 16px;
+			height: 16px;
+		}
+
+		.accept-optimizations-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 10px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			height: 28px;
+			white-space: nowrap;
+		}
+
+		.accept-optimizations-btn:hover:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.accept-optimizations-btn:active:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+			opacity: 0.8;
+		}
+
+		.accept-optimizations-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.comparison-summary-banner {
+			background: linear-gradient(135deg, rgba(58, 150, 221, 0.08) 0%, rgba(58, 150, 221, 0.04) 100%);
+			border-left: 3px solid var(--vscode-charts-blue);
+			padding: 10px 12px;
+			margin: 8px 12px 0 12px;
+			border-radius: 3px;
+			font-size: 12px;
+			line-height: 1.5;
+		}
+
+		.comparison-summary-content {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.comparison-summary-content strong {
+			display: block;
+			font-size: 13px;
+			margin-bottom: 4px;
+			color: var(--vscode-foreground);
+		}
+
+		.comparison-metrics {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+
+		.comparison-metric {
+			font-size: 12px;
+			padding-left: 4px;
+			color: var(--vscode-descriptionForeground);
+		}
+
 
 		.query-exec-status {
 			display: inline-flex;

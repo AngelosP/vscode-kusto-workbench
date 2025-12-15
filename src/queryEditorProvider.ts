@@ -34,6 +34,8 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
+	| { type: 'checkCopilotAvailability'; boxId: string }
+	| { type: 'optimizeQuery'; query: string; connectionId: string; database: string; boxId: string; queryName: string }
 	| {
 		type: 'executeQuery';
 		query: string;
@@ -181,6 +183,12 @@ export class QueryEditorProvider {
 				return;
 			case 'showInfo':
 				vscode.window.showInformationMessage(message.message);
+				return;
+			case 'checkCopilotAvailability':
+				await this.checkCopilotAvailability(message.boxId);
+				return;
+			case 'optimizeQuery':
+				await this.optimizeQueryWithCopilot(message);
 				return;
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
@@ -339,6 +347,127 @@ export class QueryEditorProvider {
 			running.cancel();
 		} catch {
 			// ignore
+		}
+	}
+
+	private async checkCopilotAvailability(boxId: string): Promise<void> {
+		try {
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			const available = models.length > 0;
+			
+			this.postMessage({
+				type: 'copilotAvailability',
+				boxId,
+				available
+			});
+		} catch (err) {
+			// Copilot not available
+			this.postMessage({
+				type: 'copilotAvailability',
+				boxId,
+				available: false
+			});
+		}
+	}
+
+	private async optimizeQueryWithCopilot(
+		message: Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>
+	): Promise<void> {
+		const { query, connectionId, database, boxId, queryName } = message;
+
+		try {
+			// Check if Copilot is available
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
+				this.postMessage({
+					type: 'optimizeQueryError',
+					boxId,
+					error: 'Copilot not available'
+				});
+				return;
+			}
+
+			const model = models[0];
+
+			// Craft the optimization prompt
+			const promptText = `You are a Kusto Query Language (KQL) expert. Optimize the following KQL query for performance without changing its functionality or results.
+
+Follow these optimization rules strictly:
+
+1. **Reorder WHERE clauses**: Move the most aggressive and performant filters first. Priority order:
+   - Date and numerical column filters (e.g., timestamp > ago(1d))
+   - Fast string operations: 'has', 'has_any'
+   - Slower string operations: 'contains'
+
+2. **Remove unused columns**: If the final result doesn't use certain columns, add | project statements to limit columns early, or use other techniques to reduce data volume.
+
+3. **Replace EXTEND with SUMMARIZE where possible**: If | extend statements can be reliably replaced by | summarize X by Y statements while producing identical results, make that change. This is especially beneficial if the query already has | summarize statements.
+
+4. **Replace CONTAINS with HAS**: Examine any 'contains' statements and determine if the search term can safely be replaced with 'has' (which is faster).
+
+**CRITICAL**: Only make changes that preserve the exact same query results. Do not take risks that might alter the data returned.
+
+Original query:
+\`\`\`kusto
+${query}
+\`\`\`
+
+Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no additional explanation or commentary.`;
+
+			const response = await model.sendRequest(
+				[vscode.LanguageModelChatMessage.User(promptText)],
+				{},
+				new vscode.CancellationTokenSource().token
+			);
+
+			let optimizedQuery = '';
+			for await (const fragment of response.text) {
+				optimizedQuery += fragment;
+			}
+
+			// Extract the query from markdown code block
+			const codeBlockMatch = optimizedQuery.match(/```(?:kusto|kql)?\s*\n([\s\S]*?)\n```/);
+			if (codeBlockMatch) {
+				optimizedQuery = codeBlockMatch[1].trim();
+			} else {
+				// If no code block, use the entire response trimmed
+				optimizedQuery = optimizedQuery.trim();
+			}
+
+			if (!optimizedQuery) {
+				throw new Error('Failed to extract optimized query from Copilot response');
+			}
+
+			// Return the optimized query to webview for comparison box creation
+			this.postMessage({
+				type: 'optimizeQueryReady',
+				boxId,
+				optimizedQuery,
+				queryName,
+				connectionId,
+				database
+			});
+
+		} catch (err: any) {
+			const errorMsg = err?.message || String(err);
+			console.error('Query optimization failed:', err);
+			
+			if (err instanceof vscode.LanguageModelError) {
+				if (err.cause instanceof Error && err.cause.message.includes('off_topic')) {
+					vscode.window.showWarningMessage('Copilot declined to optimize this query.');
+				} else {
+					vscode.window.showErrorMessage(`Copilot error: ${err.message}`);
+				}
+			} else {
+				vscode.window.showErrorMessage(`Failed to optimize query: ${errorMsg}`);
+			}
+
+			this.postMessage({
+				type: 'optimizeQueryError',
+				boxId,
+				error: errorMsg
+			});
 		}
 	}
 

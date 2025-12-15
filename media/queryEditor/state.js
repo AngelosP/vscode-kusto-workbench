@@ -29,6 +29,9 @@ let databasesRequestResolversByBoxId = {};
 let missingClusterDetectTimersByBoxId = {};
 let lastQueryTextByBoxId = {};
 let missingClusterUrlsByBoxId = {};
+
+// Performance optimization comparison metadata
+let optimizationMetadataByBoxId = {}; // { sourceBoxId, comparisonBoxId, originalQuery, optimizedQuery, ... }
 let suggestedDatabaseByClusterKeyByBoxId = {};
 
 // The Monaco editor instance that most recently received focus (query/markdown/python).
