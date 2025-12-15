@@ -271,6 +271,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		let pendingAddKindDelivered = false;
 		let saveTimer: NodeJS.Timeout | undefined;
+		let lastSavedText = document.getText();
+		let lastSavedEol = document.eol;
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
 			// For user-picked .kqlx files, saving should remain user-controlled (or governed by VS Code's autosave setting).
@@ -376,6 +378,28 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const subscriptions: vscode.Disposable[] = [];
+		subscriptions.push(
+			vscode.workspace.onDidSaveTextDocument((saved) => {
+				try {
+					if (saved.uri.toString() !== document.uri.toString()) {
+						return;
+					}
+					lastSavedText = saved.getText();
+					lastSavedEol = saved.eol;
+				} catch {
+					// ignore
+				}
+			})
+		);
+
+		const normalizeTextToEol = (text: string, eol: vscode.EndOfLine): string => {
+			try {
+				const lf = String(text ?? '').replace(/\r\n/g, '\n');
+				return eol === vscode.EndOfLine.CRLF ? lf.replace(/\n/g, '\r\n') : lf;
+			} catch {
+				return String(text ?? '');
+			}
+		};
 
 		webviewPanel.onDidDispose(() => {
 			// Best effort: ensure the session file hits disk even if the debounce hasn't fired yet.
@@ -432,6 +456,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					return;
 				case 'persistDocument': {
+					const persistReason = (() => {
+						try {
+							const r = (message as any)?.reason;
+							return typeof r === 'string' ? r : '';
+						} catch {
+							return '';
+						}
+					})();
 					const rawState = (message as any).state;
 					const state: KqlxStateV1 = {
 						caretDocsEnabled:
@@ -439,60 +471,125 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
 
-					// If the incoming state is semantically identical to what is already in the document,
-					// do not rewrite the file (prevents "Save?" prompts due to JSON formatting/ordering).
+					const incomingComparable = toComparableState(state);
+					const currentText = document.getText();
+
+					let incomingMatchesDisk = false;
+					let diskTextForMatch = '';
+
+					// If the incoming state matches what was last saved (even if the in-memory document has
+					// different formatting), restore that exact saved text. This allows VS Code to clear the
+					// dirty indicator when a user "returns" to the saved state.
+					let nextText = '';
 					try {
-						const parsedCurrent = parseKqlxText(document.getText());
-						if (parsedCurrent.ok) {
-							const currentComparable = toComparableState(parsedCurrent.file.state);
-							const incomingComparable = toComparableState(state);
-							if (deepEqual(currentComparable, incomingComparable)) {
-								if (isSessionFile && (message as any).flush) {
-									try {
-										await document.save();
-									} catch {
-										// ignore
-									}
-								}
-								return;
+						const parsedSaved = parseKqlxText(lastSavedText);
+						if (parsedSaved.ok) {
+							const savedComparable = toComparableState(parsedSaved.file.state);
+							if (deepEqual(savedComparable, incomingComparable)) {
+								nextText = normalizeTextToEol(lastSavedText, lastSavedEol);
 							}
 						}
 					} catch {
 						// ignore
 					}
 
-
-					// If the incoming state matches what is currently saved on disk (even if the in-memory
-					// document has different formatting), restore the exact on-disk text. This allows VS Code
-					// to clear the dirty indicator when a user "returns" to the saved state.
-					let nextText = '';
-					try {
-						if (!isSessionFile && document.uri.scheme === 'file') {
+					// Fallback: if we couldn't match the last-saved snapshot (e.g. it was never saved in this
+					// session), try reading from disk/workspace FS.
+					if (!nextText) {
+						try {
 							const bytes = await vscode.workspace.fs.readFile(document.uri);
-							const diskText = new TextDecoder('utf-8').decode(bytes);
+							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							const parsedDisk = parseKqlxText(diskText);
 							if (parsedDisk.ok) {
 								const diskComparable = toComparableState(parsedDisk.file.state);
-								const incomingComparable = toComparableState(state);
 								if (deepEqual(diskComparable, incomingComparable)) {
+									incomingMatchesDisk = true;
+									diskTextForMatch = diskText;
 									nextText = diskText;
 								}
 							}
+						} catch {
+							// ignore
 						}
-					} catch {
-						// ignore
 					}
+
+					// If we're handling a reorder persist and we matched lastSavedText, verify it's also
+					// identical to disk so we can safely clear VS Code's dirty flag without saving changes.
+					if (!incomingMatchesDisk && persistReason === 'reorder' && nextText) {
+						try {
+							const bytes = await vscode.workspace.fs.readFile(document.uri);
+							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
+							if (diskText && diskText === nextText) {
+								const parsedDisk = parseKqlxText(diskText);
+								if (parsedDisk.ok) {
+									const diskComparable = toComparableState(parsedDisk.file.state);
+									if (deepEqual(diskComparable, incomingComparable)) {
+										incomingMatchesDisk = true;
+										diskTextForMatch = diskText;
+									}
+								}
+							}
+						} catch {
+							// ignore
+						}
+					}
+
+					// If the incoming state is semantically identical to what is already in the in-memory document,
+					// and we didn't need to restore on-disk text, do not rewrite (prevents "Save?" prompts due to
+					// JSON formatting/ordering).
+					if (!nextText) {
+						try {
+							const parsedCurrent = parseKqlxText(currentText);
+							if (parsedCurrent.ok) {
+								const currentComparable = toComparableState(parsedCurrent.file.state);
+								if (deepEqual(currentComparable, incomingComparable)) {
+									// If this persist is from a reorder and the state matches disk, force a save to clear
+									// the dirty flag (VS Code sometimes keeps custom editors dirty even after reverting).
+									if (!isSessionFile && persistReason === 'reorder' && incomingMatchesDisk) {
+										try {
+											if (diskTextForMatch && diskTextForMatch === currentText && document.isDirty) {
+												await document.save();
+											}
+										} catch {
+											// ignore
+										}
+									}
+									if (isSessionFile && (message as any).flush) {
+										try {
+											await document.save();
+										} catch {
+											// ignore
+										}
+									}
+									scheduleSave();
+									return;
+								}
+							}
+						} catch {
+							// ignore
+						}
+					}
+
 					if (!nextText) {
 						const file: KqlxFileV1 = {
 							kind: 'kqlx',
 							version: 1,
 							state
 						};
-						nextText = stringifyKqlxFile(file);
+						nextText = normalizeTextToEol(stringifyKqlxFile(file), document.eol);
 					}
 					// If nothing changed, avoid toggling the dirty state.
 					try {
-						if (nextText === document.getText()) {
+						if (nextText === currentText) {
+							if (!isSessionFile && persistReason === 'reorder' && incomingMatchesDisk) {
+								try {
+									if (diskTextForMatch && diskTextForMatch === currentText && document.isDirty) {
+										await document.save();
+									}
+								} catch {
+									// ignore
+								}
+							}
 							// For the session file, still attempt to save if explicitly flushing.
 							if (isSessionFile && (message as any).flush) {
 								try {
@@ -509,15 +606,25 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 
 					const fullRange = new vscode.Range(
-						0,
-						0,
-						document.lineCount ? document.lineCount - 1 : 0,
-						document.lineCount ? document.lineAt(document.lineCount - 1).text.length : 0
+						document.positionAt(0),
+						document.positionAt(currentText.length)
 					);
 
 					const edit = new vscode.WorkspaceEdit();
 					edit.replace(document.uri, fullRange, nextText);
 					await vscode.workspace.applyEdit(edit);
+
+					// If we just restored the file back to the exact on-disk content due to a reorder undo,
+					// force a save to ensure VS Code clears the dirty flag.
+					if (!isSessionFile && persistReason === 'reorder' && incomingMatchesDisk) {
+						try {
+							if (diskTextForMatch && diskTextForMatch === nextText && document.isDirty) {
+								await document.save();
+							}
+						} catch {
+							// ignore
+						}
+					}
 
 					if (isSessionFile) {
 						// For the persistent session file, always save promptly so VS Code never prompts on close.

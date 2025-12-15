@@ -372,7 +372,9 @@ function getKqlxState() {
 	};
 }
 
-function schedulePersist() {
+var __kustoLastPersistSignature = '';
+
+function schedulePersist(reason) {
 	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
 		return;
 	}
@@ -380,10 +382,19 @@ function schedulePersist() {
 		if (__kustoPersistTimer) {
 			clearTimeout(__kustoPersistTimer);
 		}
+		const r = (typeof reason === 'string' && reason) ? reason : '';
 		__kustoPersistTimer = setTimeout(() => {
 			try {
 				const state = getKqlxState();
-				vscode.postMessage({ type: 'persistDocument', state });
+				let sig = '';
+				try { sig = JSON.stringify(state); } catch { sig = ''; }
+				if (sig && sig === __kustoLastPersistSignature) {
+					return;
+				}
+				if (sig) {
+					__kustoLastPersistSignature = sig;
+				}
+				vscode.postMessage({ type: 'persistDocument', state, reason: r });
 			} catch {
 				// ignore
 			}
@@ -406,7 +417,7 @@ try {
 				return;
 			}
 			const state = getKqlxState();
-			vscode.postMessage({ type: 'persistDocument', state, flush: true });
+			vscode.postMessage({ type: 'persistDocument', state, flush: true, reason: 'flush' });
 		} catch {
 			// ignore
 		}

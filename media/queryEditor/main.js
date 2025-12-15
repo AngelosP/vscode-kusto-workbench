@@ -906,6 +906,48 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 		let draggingId = '';
 		let draggingOriginalNextSibling = null;
 		let draggingDidDrop = false;
+		let globalDnDGuardsInstalled = false;
+
+		// While reordering, prevent the browser (and editors like Monaco) from treating this as a text drop.
+		// Without this, dropping over an input/textarea/editor surface can insert the drag payload and create
+		// a real edit, which then correctly leaves the document dirty.
+		const ensureGlobalDnDGuards = () => {
+			if (globalDnDGuardsInstalled) return;
+			globalDnDGuardsInstalled = true;
+			try {
+					const isInContainer = (eventTarget) => {
+						try {
+							return !!(container && eventTarget && container.contains && container.contains(eventTarget));
+						} catch {
+							return false;
+						}
+					};
+					document.addEventListener('dragenter', (e) => {
+						if (!draggingId) return;
+						try { e.preventDefault(); } catch { /* ignore */ }
+						// Only suppress drag events outside the container, so live reordering still works.
+						if (isInContainer(e.target)) return;
+						try { e.stopPropagation(); } catch { /* ignore */ }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+					}, true);
+				document.addEventListener('dragover', (e) => {
+					if (!draggingId) return;
+					try { e.preventDefault(); } catch { /* ignore */ }
+						// Allow container dragover to run so we can live-reorder.
+						if (isInContainer(e.target)) return;
+						try { e.stopPropagation(); } catch { /* ignore */ }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+				}, true);
+				document.addEventListener('drop', (e) => {
+					if (!draggingId) return;
+						// If the drop is inside the container, let the container's drop handler finish the reorder.
+						if (isInContainer(e.target)) return;
+						try { e.preventDefault(); } catch { /* ignore */ }
+						try { e.stopPropagation(); } catch { /* ignore */ }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+				}, true);
+			} catch { /* ignore */ }
+		};
 
 		const resyncArraysFromDom = () => {
 			try {
@@ -939,6 +981,7 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 		};
 
 		container.addEventListener('dragstart', (e) => {
+			ensureGlobalDnDGuards();
 			try {
 				// Only allow reordering in .kqlx mode.
 				if (window.__kustoCompatibilityMode) {
@@ -969,7 +1012,9 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 			try {
 				if (e.dataTransfer) {
 					e.dataTransfer.effectAllowed = 'move';
-					try { e.dataTransfer.setData('text/plain', draggingId); } catch { /* ignore */ }
+					// Keep the text payload empty so dropping over an editor/input can't insert meaningful text.
+					try { e.dataTransfer.setData('text/plain', ''); } catch { /* ignore */ }
+					try { e.dataTransfer.setData('application/x-kusto-section-reorder', draggingId); } catch { /* ignore */ }
 				}
 			} catch {
 				// ignore
@@ -1070,7 +1115,7 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 			resyncArraysFromDom();
 			bestEffortRelayoutMovedEditors(draggingId);
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { schedulePersist && schedulePersist('reorder'); } catch { /* ignore */ }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 		});
@@ -1087,6 +1132,10 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 						}
 						resyncArraysFromDom();
 						bestEffortRelayoutMovedEditors(draggingId);
+						// Important: if the drop landed outside the container (e.g. over an editor/input),
+						// the container 'drop' handler may not fire. Persist the reverted DOM order so
+						// users can drag back to the original ordering and clear the dirty state.
+						try { schedulePersist && schedulePersist('reorder'); } catch { /* ignore */ }
 					}
 				}
 			} catch {
