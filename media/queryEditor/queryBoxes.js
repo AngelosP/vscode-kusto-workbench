@@ -2769,7 +2769,11 @@ function refreshDatabases(boxId) {
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 
 	if (databaseSelect) {
-		databaseSelect.innerHTML = '<option value="">Refreshing...</option>';
+		try {
+			databaseSelect.dataset.kustoPrevHtml = String(databaseSelect.innerHTML || '');
+			databaseSelect.dataset.kustoPrevValue = String(databaseSelect.value || '');
+			databaseSelect.dataset.kustoRefreshInFlight = 'true';
+		} catch { /* ignore */ }
 		databaseSelect.disabled = true;
 	}
 	if (refreshBtn) {
@@ -2781,6 +2785,48 @@ function refreshDatabases(boxId) {
 		connectionId: connectionId,
 		boxId: boxId
 	});
+}
+
+function onDatabasesError(boxId, error) {
+	try {
+		const databaseSelect = document.getElementById(boxId + '_database');
+		const refreshBtn = document.getElementById(boxId + '_refresh');
+		if (databaseSelect) {
+			// Restore previous dropdown contents/value if we snapshotted them.
+			try {
+				if (databaseSelect.dataset && databaseSelect.dataset.kustoRefreshInFlight === 'true') {
+					const prevHtml = databaseSelect.dataset.kustoPrevHtml;
+					const prevValue = databaseSelect.dataset.kustoPrevValue;
+					if (typeof prevHtml === 'string' && prevHtml) {
+						databaseSelect.innerHTML = prevHtml;
+					}
+					if (typeof prevValue === 'string') {
+						databaseSelect.value = prevValue;
+					}
+				}
+			} catch { /* ignore */ }
+			databaseSelect.disabled = false;
+			try {
+				if (databaseSelect.dataset) {
+					delete databaseSelect.dataset.kustoRefreshInFlight;
+					delete databaseSelect.dataset.kustoPrevHtml;
+					delete databaseSelect.dataset.kustoPrevValue;
+				}
+			} catch { /* ignore */ }
+		}
+		if (refreshBtn) {
+			refreshBtn.disabled = false;
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		if (typeof window.__kustoDisplayBoxError === 'function') {
+			window.__kustoDisplayBoxError(boxId, error);
+		}
+	} catch {
+		// ignore
+	}
 }
 
 function updateDatabaseSelect(boxId, databases) {

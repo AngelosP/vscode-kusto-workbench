@@ -260,6 +260,35 @@ function displayError(error) {
 	}
 }
 
+// Display a non-query error message in a specific box's results area.
+// Used for auxiliary actions like refreshing databases.
+try {
+	window.__kustoDisplayBoxError = function (boxId, error) {
+		const bid = String(boxId || '').trim();
+		if (!bid) return;
+		try { __kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
+		const resultsDiv = document.getElementById(bid + '_results');
+		if (!resultsDiv) return;
+		const raw = (error === null || error === undefined) ? '' : String(error);
+		const escape = (s) => (typeof escapeHtml === 'function') ? escapeHtml(s) : s;
+		const esc = raw.split(/\r?\n/).map(escape).join('<br>');
+		resultsDiv.innerHTML =
+			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+			esc +
+			'</div>';
+		resultsDiv.classList.add('visible');
+		try {
+			if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+				window.__kustoClampResultsWrapperHeight(bid);
+			}
+		} catch {
+			// ignore
+		}
+	};
+} catch {
+	// ignore
+}
+
 function displayCancelled() {
 	const boxId = window.lastExecutedBox;
 	if (!boxId) { return; }

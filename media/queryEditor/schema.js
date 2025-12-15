@@ -107,10 +107,9 @@ function refreshSchema(boxId) {
 	if (!boxId) {
 		return;
 	}
-	// Force a refetch even if we fetched recently.
-	delete schemaByBoxId[boxId];
+	// Force a refetch even if we fetched recently, but keep existing schema/summary
+	// so a transient connectivity failure doesn't wipe the UI.
 	lastSchemaRequestAtByBoxId[boxId] = 0;
-	setSchemaLoadedSummary(boxId, '', '', false);
 	ensureSchemaForBox(boxId, true);
 }
 

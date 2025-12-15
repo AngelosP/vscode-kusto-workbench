@@ -269,6 +269,26 @@ window.addEventListener('message', event => {
 
 			updateDatabaseSelect(message.boxId, message.databases);
 			break;
+		case 'databasesError':
+			// Reject pending database list request if this was a synthetic request id.
+			try {
+				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
+				if (r && typeof r.reject === 'function') {
+					try { r.reject(new Error(message && message.error ? String(message.error) : 'Failed to load databases.')); } catch { /* ignore */ }
+					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					break;
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof onDatabasesError === 'function') {
+					onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
+				} else if (typeof window.__kustoDisplayBoxError === 'function') {
+					window.__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
+				}
+			} catch {
+				// ignore
+			}
+			break;
 		case 'importConnectionsXmlText':
 			try {
 				const text = (typeof message.text === 'string') ? message.text : '';
@@ -414,9 +434,25 @@ window.addEventListener('message', event => {
 					break;
 				}
 			} catch { /* ignore */ }
-			// Non-fatal; autocomplete will just not have schema.
+			// Non-fatal; keep any previously loaded schema + counts if present.
 			setSchemaLoading(message.boxId, false);
-			setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+			try {
+				const hasSchema = !!(schemaByBoxId && schemaByBoxId[message.boxId]);
+				if (!hasSchema) {
+					setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+				}
+			} catch {
+				try {
+					setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+				} catch { /* ignore */ }
+			}
+			try {
+				if (typeof window.__kustoDisplayBoxError === 'function') {
+					window.__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
+				}
+			} catch {
+				// ignore
+			}
 			break;
 			case 'connectionAdded':
 				// Refresh list and preselect the new connection in the originating box.

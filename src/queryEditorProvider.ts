@@ -1162,9 +1162,13 @@ ${query}
 			await this.saveCachedDatabases(connectionId, databases);
 			this.postMessage({ type: 'databasesData', databases, boxId });
 		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			vscode.window.showErrorMessage(`Failed to fetch databases: ${errorMessage}`);
-			this.postMessage({ type: 'databasesData', databases: [], boxId });
+			const userMessage = this.formatQueryExecutionErrorForUser(error, connection);
+			const action = forceRefresh ? 'refresh' : 'load';
+			this.postMessage({
+				type: 'databasesError',
+				boxId,
+				error: `Failed to ${action} database list.\n${userMessage}`
+			});
 		}
 	}
 
@@ -1380,9 +1384,17 @@ ${query}
 				}
 			});
 		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[schema] error db=${database}: ${errorMessage}`);
-			this.postMessage({ type: 'schemaError', boxId, connectionId, database, error: errorMessage });
+			const rawMessage = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[schema] error db=${database}: ${rawMessage}`);
+			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
+			const action = forceRefresh ? 'refresh' : 'load';
+			this.postMessage({
+				type: 'schemaError',
+				boxId,
+				connectionId,
+				database,
+				error: `Failed to ${action} schema.\n${userMessage}`
+			});
 		}
 	}
 
