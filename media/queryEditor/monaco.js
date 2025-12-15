@@ -1992,6 +1992,15 @@ function initQueryEditor(boxId) {
 					}
 				};
 			}
+			if (typeof window.__kustoPrettifyKustoText !== 'function') {
+				window.__kustoPrettifyKustoText = (text) => {
+					try {
+						return __kustoPrettifyKusto(String(text ?? ''));
+					} catch {
+						return String(text ?? '');
+					}
+				};
+			}
 			if (typeof window.__kustoCopySingleLineQueryForBoxId !== 'function') {
 				window.__kustoCopySingleLineQueryForBoxId = async (id) => {
 					try {

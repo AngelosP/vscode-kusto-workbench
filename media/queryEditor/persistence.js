@@ -160,7 +160,19 @@ function __kustoGetUrlOutputHeightPx(boxId) {
 		} catch {
 			return undefined;
 		}
-		const inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		let inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		// When URL CSV results are hidden we may collapse the wrapper to height:auto, but we still
+		// want to persist the user's last explicit height.
+		if (!inlineHeight || inlineHeight === 'auto') {
+			try {
+				const prev = (wrapper.dataset && wrapper.dataset.kustoPrevHeight) ? String(wrapper.dataset.kustoPrevHeight).trim() : '';
+				if (prev) {
+					inlineHeight = prev;
+				}
+			} catch {
+				// ignore
+			}
+		}
 		if (!inlineHeight || inlineHeight === 'auto') return undefined;
 		const m = inlineHeight.match(/^([0-9]+)px$/i);
 		if (!m) return undefined;

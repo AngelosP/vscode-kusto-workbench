@@ -952,10 +952,26 @@ function addUrlBox(options) {
 
 				const startY = e.clientY;
 				const startHeight = wrapper.getBoundingClientRect().height;
+				// If the wrapper was auto-sized (e.g. URL CSV fitting its contents), freeze the
+				// current pixel height so resizing doesn't immediately jump.
+				try {
+					wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
+				} catch { /* ignore */ }
+
+				let minH = 120;
+				try {
+					const contentEl = document.getElementById(id + '_content');
+					const isCsvMode = !!(contentEl && contentEl.classList && contentEl.classList.contains('url-csv-mode'));
+					if (isCsvMode) {
+						// Prevent a resize "jump" when auto-sized smaller than 120px, but still allow
+						// shrinking below the current height when the content is tall.
+						minH = Math.max(0, Math.min(120, Math.ceil(startHeight)));
+					}
+				} catch { /* ignore */ }
 
 				const onMove = (moveEvent) => {
 					const delta = moveEvent.clientY - startY;
-					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					const nextHeight = Math.max(minH, Math.min(900, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 				};
 				const onUp = () => {

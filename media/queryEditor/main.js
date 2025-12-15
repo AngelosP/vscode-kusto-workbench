@@ -468,10 +468,21 @@ window.addEventListener('message', event => {
 		case 'optimizeQueryReady':
 			try {
 				const sourceBoxId = message.boxId || '';
+				try {
+					if (typeof __kustoHideOptimizePromptForBox === 'function') {
+						__kustoHideOptimizePromptForBox(sourceBoxId);
+					}
+				} catch { /* ignore */ }
 				const optimizedQuery = message.optimizedQuery || '';
 				const queryName = message.queryName || '';
 				const connectionId = message.connectionId || '';
 				const database = message.database || '';
+				let prettifiedOptimizedQuery = optimizedQuery;
+				try {
+					if (typeof window.__kustoPrettifyKustoText === 'function') {
+						prettifiedOptimizedQuery = window.__kustoPrettifyKustoText(optimizedQuery);
+					}
+				} catch { /* ignore */ }
 				
 				// Check if a comparison box was already created for this source
 				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
@@ -491,7 +502,7 @@ window.addEventListener('message', event => {
 				// Create a new query box below the source box for comparison
 				const comparisonBoxId = addQueryBox({ 
 					id: 'query_opt_' + Date.now(), 
-					initialQuery: optimizedQuery,
+					initialQuery: prettifiedOptimizedQuery,
 					isComparison: true,
 					defaultResultsVisible: false
 				});
@@ -512,7 +523,7 @@ window.addEventListener('message', event => {
 					sourceBoxId: sourceBoxId,
 					isComparison: true,
 					originalQuery: queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '',
-					optimizedQuery: optimizedQuery
+					optimizedQuery: prettifiedOptimizedQuery
 				};
 				optimizationMetadataByBoxId[sourceBoxId] = {
 					comparisonBoxId: comparisonBoxId
@@ -568,9 +579,25 @@ window.addEventListener('message', event => {
 				console.error('Error creating comparison box:', err);
 			}
 			break;
+		case 'optimizeQueryOptions':
+			try {
+				const boxId = message.boxId || '';
+				const models = message.models || [];
+				const selectedModelId = message.selectedModelId || '';
+				const promptText = message.promptText || '';
+				if (typeof __kustoApplyOptimizeQueryOptions === 'function') {
+					__kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText);
+				}
+			} catch { /* ignore */ }
+			break;
 		case 'optimizeQueryError':
 			try {
 				const boxId = message.boxId || '';
+				try {
+					if (typeof __kustoHideOptimizePromptForBox === 'function') {
+						__kustoHideOptimizePromptForBox(boxId);
+					}
+				} catch { /* ignore */ }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
 				if (optimizeBtn) {
 					optimizeBtn.disabled = false;

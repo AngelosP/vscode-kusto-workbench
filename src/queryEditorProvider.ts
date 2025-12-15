@@ -35,7 +35,17 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
-	| { type: 'optimizeQuery'; query: string; connectionId: string; database: string; boxId: string; queryName: string }
+	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
+	| {
+			type: 'optimizeQuery';
+			query: string;
+			connectionId: string;
+			database: string;
+			boxId: string;
+			queryName: string;
+			modelId?: string;
+			promptText?: string;
+		}
 	| {
 		type: 'executeQuery';
 		query: string;
@@ -186,6 +196,9 @@ export class QueryEditorProvider {
 				return;
 			case 'checkCopilotAvailability':
 				await this.checkCopilotAvailability(message.boxId);
+				return;
+			case 'prepareOptimizeQuery':
+				await this.prepareOptimizeQuery(message);
 				return;
 			case 'optimizeQuery':
 				await this.optimizeQueryWithCopilot(message);
@@ -370,28 +383,19 @@ export class QueryEditorProvider {
 		}
 	}
 
-	private async optimizeQueryWithCopilot(
-		message: Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>
-	): Promise<void> {
-		const { query, connectionId, database, boxId, queryName } = message;
+	private formatCopilotModelLabel(model: vscode.LanguageModelChat): string {
+		const vendor = String((model as any).vendor ?? 'copilot');
+		const family = String((model as any).family ?? '').trim();
+		const version = String((model as any).version ?? '').trim();
+		const name = String((model as any).name ?? '').trim();
+		const id = String((model as any).id ?? '').trim();
 
-		try {
-			// Check if Copilot is available
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-			if (models.length === 0) {
-				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
-				this.postMessage({
-					type: 'optimizeQueryError',
-					boxId,
-					error: 'Copilot not available'
-				});
-				return;
-			}
+		const primary = name || [family, version].filter(Boolean).join(' ') || id || 'model';
+		return vendor && vendor !== 'copilot' ? `${vendor}: ${primary}` : primary;
+	}
 
-			const model = models[0];
-
-			// Craft the optimization prompt
-			const promptText = `You are a Kusto Query Language (KQL) expert. Optimize the following KQL query for performance without changing its functionality or results.
+	private buildOptimizeQueryPrompt(query: string): string {
+		return `You are a Kusto Query Language (KQL) expert. Optimize the following KQL query for performance without changing its functionality or results.
 
 Follow these optimization rules strictly:
 
@@ -414,9 +418,86 @@ ${query}
 \`\`\`
 
 Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no additional explanation or commentary.`;
+	}
+
+	private async prepareOptimizeQuery(
+		message: Extract<IncomingWebviewMessage, { type: 'prepareOptimizeQuery' }>
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		const query = String(message.query || '');
+		if (!boxId) {
+			return;
+		}
+
+		try {
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				this.postMessage({
+					type: 'optimizeQueryError',
+					boxId,
+					error: 'Copilot not available'
+				});
+				return;
+			}
+
+			const modelOptions = models
+				.map(m => ({ id: m.id, label: this.formatCopilotModelLabel(m) }))
+				.filter(m => !!m.id);
+
+			this.postMessage({
+				type: 'optimizeQueryOptions',
+				boxId,
+				models: modelOptions,
+				selectedModelId: modelOptions[0]?.id,
+				promptText: this.buildOptimizeQueryPrompt(query)
+			});
+		} catch (err: any) {
+			const errorMsg = err?.message || String(err);
+			console.error('Failed to prepare optimize query options:', err);
+			this.postMessage({
+				type: 'optimizeQueryError',
+				boxId,
+				error: errorMsg
+			});
+		}
+	}
+
+	private async optimizeQueryWithCopilot(
+		message: Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>
+	): Promise<void> {
+		const { query, connectionId, database, boxId, queryName, modelId, promptText } = message;
+
+		try {
+			let model: vscode.LanguageModelChat | undefined;
+			const requestedModelId = String(modelId || '').trim();
+			if (requestedModelId) {
+				try {
+					const byId = await vscode.lm.selectChatModels({ id: requestedModelId });
+					model = byId[0];
+				} catch {
+					// ignore
+				}
+			}
+
+			// Fallback: pick first Copilot model
+			if (!model) {
+				const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+				if (models.length === 0) {
+				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
+				this.postMessage({
+					type: 'optimizeQueryError',
+					boxId,
+					error: 'Copilot not available'
+				});
+				return;
+				}
+				model = models[0];
+			}
+
+			const effectivePromptText = String(promptText || '').trim() || this.buildOptimizeQueryPrompt(query);
 
 			const response = await model.sendRequest(
-				[vscode.LanguageModelChatMessage.User(promptText)],
+				[vscode.LanguageModelChatMessage.User(effectivePromptText)],
 				{},
 				new vscode.CancellationTokenSource().token
 			);

@@ -214,6 +214,7 @@ function addQueryBox(options) {
 		'</select>' +
 		'</div>' +
 		'</div>' +
+		'<div class="optimize-config" id="' + id + '_optimize_config" style="display: none;"></div>' +
 		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;">' +
 		'<div class="results" id="' + id + '_results"></div>' +
 		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results"></div>' +
@@ -494,6 +495,12 @@ function __kustoApplyResultsVisibility(boxId) {
 			}
 		} catch { /* ignore */ }
 		try {
+			const resultsDiv = document.getElementById(boxId + '_results');
+			if (resultsDiv && resultsDiv.classList) {
+				resultsDiv.classList.toggle('is-results-hidden', !visible);
+			}
+		} catch { /* ignore */ }
+		try {
 			if (typeof __kustoSetResultsToolsVisible === 'function') {
 				__kustoSetResultsToolsVisible(boxId, visible);
 			}
@@ -507,8 +514,41 @@ function __kustoApplyResultsVisibility(boxId) {
 			const urlWrapper = document.getElementById(boxId + '_wrapper');
 			const urlContent = document.getElementById(boxId + '_content');
 			if (urlWrapper && urlContent && urlContent.classList && urlContent.classList.contains('url-csv-mode')) {
-				urlWrapper.style.height = 'auto';
-				urlWrapper.style.minHeight = '0';
+				// When hiding results, always collapse to minimal height.
+				// If the user explicitly resized the URL section, remember that height and restore it
+				// when results are shown again.
+				const userResized = !!(urlWrapper.dataset && urlWrapper.dataset.kustoUserResized === 'true');
+				if (!visible) {
+					try {
+						if (userResized) {
+							const inlineHeight = (urlWrapper.style && typeof urlWrapper.style.height === 'string')
+								? urlWrapper.style.height.trim()
+								: '';
+							if (inlineHeight && inlineHeight !== 'auto') {
+								urlWrapper.dataset.kustoPrevHeight = inlineHeight;
+							} else {
+								// Best-effort: capture the rendered height.
+								urlWrapper.dataset.kustoPrevHeight = Math.max(0, Math.ceil(urlWrapper.getBoundingClientRect().height)) + 'px';
+							}
+						}
+					} catch { /* ignore */ }
+					urlWrapper.style.height = 'auto';
+					urlWrapper.style.minHeight = '0';
+				} else {
+					// Showing results: restore prior user height if present, otherwise auto-fit.
+					try {
+						if (userResized) {
+							const prev = (urlWrapper.dataset && urlWrapper.dataset.kustoPrevHeight) ? String(urlWrapper.dataset.kustoPrevHeight) : '';
+							if (prev && prev !== 'auto') {
+								urlWrapper.style.height = prev;
+							}
+							urlWrapper.style.minHeight = '';
+						} else {
+							urlWrapper.style.height = 'auto';
+							urlWrapper.style.minHeight = '0';
+						}
+					} catch { /* ignore */ }
+				}
 			}
 		} catch { /* ignore */ }
 		return;
@@ -694,6 +734,40 @@ function __kustoRestoreCacheSettings(boxId) {
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
+function __kustoEnsureRunModeBackupMap() {
+	if (!window.__kustoRunModeBackupByBoxId || typeof window.__kustoRunModeBackupByBoxId !== 'object') {
+		window.__kustoRunModeBackupByBoxId = {};
+	}
+	return window.__kustoRunModeBackupByBoxId;
+}
+
+function __kustoBackupRunMode(boxId) {
+	if (!boxId) return;
+	const map = __kustoEnsureRunModeBackupMap();
+	// Only back up once per optimization session.
+	if (map[boxId] && typeof map[boxId].mode === 'string') {
+		return;
+	}
+	try {
+		map[boxId] = { mode: String(getRunMode(boxId) || 'take100') };
+	} catch {
+		map[boxId] = { mode: 'take100' };
+	}
+}
+
+function __kustoRestoreRunMode(boxId) {
+	if (!boxId) return;
+	const map = __kustoEnsureRunModeBackupMap();
+	const backup = map[boxId];
+	if (!backup || typeof backup.mode !== 'string') {
+		return;
+	}
+	try {
+		setRunMode(boxId, String(backup.mode || 'take100'));
+	} catch { /* ignore */ }
+	try { delete map[boxId]; } catch { /* ignore */ }
+}
+
 function __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, active) {
 	const ids = [String(sourceBoxId || '').trim(), String(comparisonBoxId || '').trim()].filter(Boolean);
 	for (const id of ids) {
@@ -701,10 +775,13 @@ function __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, active) 
 		if (!el) continue;
 		if (active) {
 			try { __kustoBackupCacheSettings(id); } catch { /* ignore */ }
+			try { __kustoBackupRunMode(id); } catch { /* ignore */ }
+			try { setRunMode(id, 'plain'); } catch { /* ignore */ }
 			el.classList.add('has-linked-optimization');
 		} else {
 			el.classList.remove('has-linked-optimization');
 			try { __kustoRestoreCacheSettings(id); } catch { /* ignore */ }
+			try { __kustoRestoreRunMode(id); } catch { /* ignore */ }
 		}
 	}
 }
@@ -1068,6 +1145,161 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch { /* ignore */ }
 }
 
+function __kustoEnsureOptimizePrepByBoxId() {
+	try {
+		if (!window.__kustoOptimizePrepByBoxId || typeof window.__kustoOptimizePrepByBoxId !== 'object') {
+			window.__kustoOptimizePrepByBoxId = {};
+		}
+		return window.__kustoOptimizePrepByBoxId;
+	} catch {
+		return {};
+	}
+}
+
+function __kustoHideOptimizePromptForBox(boxId) {
+	const host = document.getElementById(boxId + '_optimize_config');
+	if (host) {
+		host.style.display = 'none';
+		host.innerHTML = '';
+	}
+	try {
+		const pending = __kustoEnsureOptimizePrepByBoxId();
+		delete pending[boxId];
+	} catch { /* ignore */ }
+
+	try {
+		const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+		if (optimizeBtn) {
+			optimizeBtn.disabled = false;
+			if (optimizeBtn.dataset && optimizeBtn.dataset.originalContent) {
+				optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+				delete optimizeBtn.dataset.originalContent;
+			}
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoShowOptimizePromptLoading(boxId) {
+	const host = document.getElementById(boxId + '_optimize_config');
+	if (!host) {
+		return;
+	}
+	host.style.display = 'block';
+	host.innerHTML =
+		'<div class="optimize-config-inner">' +
+		'<div class="optimize-config-loading">Loading optimization options…</div>' +
+		'<div class="optimize-config-actions">' +
+		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoHideOptimizePromptForBox(\'' + boxId + '\')">Cancel</button>' +
+		'</div>' +
+		'</div>';
+}
+
+function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText) {
+	const host = document.getElementById(boxId + '_optimize_config');
+	if (!host) {
+		return;
+	}
+
+	const safeModels = Array.isArray(models) ? models : [];
+	host.style.display = 'block';
+	host.innerHTML =
+		'<div class="optimize-config-inner">' +
+		'<div class="optimize-config-row">' +
+		'<label class="optimize-config-label" for="' + boxId + '_optimize_model">Model</label>' +
+		'<select class="optimize-config-select" id="' + boxId + '_optimize_model"></select>' +
+		'</div>' +
+		'<div class="optimize-config-row">' +
+		'<label class="optimize-config-label" for="' + boxId + '_optimize_prompt">Prompt</label>' +
+		'<textarea class="optimize-config-textarea" id="' + boxId + '_optimize_prompt" spellcheck="false"></textarea>' +
+		'</div>' +
+		'<div class="optimize-config-actions">' +
+		'<button type="button" class="optimize-config-run-btn" onclick="__kustoRunOptimizeQueryWithOverrides(\'' + boxId + '\')">Optimize</button>' +
+		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoHideOptimizePromptForBox(\'' + boxId + '\')">Cancel</button>' +
+		'</div>' +
+		'</div>';
+
+	const selectEl = document.getElementById(boxId + '_optimize_model');
+	if (selectEl) {
+		selectEl.innerHTML = '';
+		for (const m of safeModels) {
+			if (!m || !m.id) {
+				continue;
+			}
+			const opt = document.createElement('option');
+			opt.value = String(m.id);
+			opt.textContent = String(m.label || m.id);
+			selectEl.appendChild(opt);
+		}
+		if (selectedModelId) {
+			selectEl.value = String(selectedModelId);
+		}
+		if (!selectEl.value && selectEl.options && selectEl.options.length > 0) {
+			selectEl.selectedIndex = 0;
+		}
+	}
+
+	const promptEl = document.getElementById(boxId + '_optimize_prompt');
+	if (promptEl) {
+		promptEl.value = String(promptText || '');
+	}
+}
+
+function __kustoRunOptimizeQueryWithOverrides(boxId) {
+	const pending = __kustoEnsureOptimizePrepByBoxId();
+	const req = pending[boxId];
+	if (!req) {
+		alert('Optimization request is no longer available. Please try again.');
+		__kustoHideOptimizePromptForBox(boxId);
+		return;
+	}
+
+	const modelId = (document.getElementById(boxId + '_optimize_model') || {}).value || '';
+	const promptText = (document.getElementById(boxId + '_optimize_prompt') || {}).value || '';
+
+	// Close prompt UI and show spinner on the main optimize button
+	try {
+		const host = document.getElementById(boxId + '_optimize_config');
+		if (host) {
+			host.style.display = 'none';
+			host.innerHTML = '';
+		}
+	} catch { /* ignore */ }
+
+	const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+	if (optimizeBtn) {
+		optimizeBtn.disabled = true;
+		const originalContent = optimizeBtn.innerHTML;
+		optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+		optimizeBtn.dataset.originalContent = originalContent;
+	}
+
+	try {
+		vscode.postMessage({
+			type: 'optimizeQuery',
+			query: String(req.query || ''),
+			connectionId: String(req.connectionId || ''),
+			database: String(req.database || ''),
+			boxId,
+			queryName: String(req.queryName || ''),
+			modelId: String(modelId || ''),
+			promptText: String(promptText || '')
+		});
+		delete pending[boxId];
+	} catch (err) {
+		console.error('Error sending optimization request:', err);
+		alert('Failed to start query optimization');
+		// Restore button state
+		if (optimizeBtn) {
+			optimizeBtn.disabled = false;
+			if (optimizeBtn.dataset.originalContent) {
+				optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+				delete optimizeBtn.dataset.originalContent;
+			}
+		}
+		__kustoHideOptimizePromptForBox(boxId);
+	}
+}
+
 async function optimizeQueryWithCopilot(boxId) {
 	const editor = queryEditors[boxId];
 	if (!editor) {
@@ -1122,35 +1354,27 @@ async function optimizeQueryWithCopilot(boxId) {
 		}
 	}
 
-	// Show spinner and disable button
+	// Store pending request and ask the extension for available models + default prompt.
+	try {
+		const pending = __kustoEnsureOptimizePrepByBoxId();
+		pending[boxId] = { query, connectionId, database, queryName };
+	} catch { /* ignore */ }
+
 	if (optimizeBtn) {
 		optimizeBtn.disabled = true;
-		const originalContent = optimizeBtn.innerHTML;
-		optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
-		optimizeBtn.dataset.originalContent = originalContent;
 	}
-	
-	// Send the optimization request
+	__kustoShowOptimizePromptLoading(boxId);
+
 	try {
 		vscode.postMessage({
-			type: 'optimizeQuery',
-			query,
-			connectionId,
-			database,
+			type: 'prepareOptimizeQuery',
 			boxId,
-			queryName
+			query
 		});
 	} catch (err) {
-		console.error('Error sending optimization request:', err);
-		alert('Failed to start query optimization');
-		// Restore button state
-		if (optimizeBtn) {
-			optimizeBtn.disabled = false;
-			if (optimizeBtn.dataset.originalContent) {
-				optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
-				delete optimizeBtn.dataset.originalContent;
-			}
-		}
+		console.error('Error requesting optimize options:', err);
+		alert('Failed to prepare query optimization');
+		__kustoHideOptimizePromptForBox(boxId);
 	}
 }
 
