@@ -1617,17 +1617,20 @@
 		}
 
 		.optimize-cancel-btn {
-			background: var(--vscode-inputValidation-errorBackground);
-			color: var(--vscode-inputValidation-errorForeground);
-			border: 1px solid var(--vscode-inputValidation-errorBorder);
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: 1px solid transparent;
 			border-radius: 4px;
 			padding: 4px 6px;
 			height: 28px;
 			cursor: pointer;
 		}
 
-		.optimize-cancel-btn:hover:not(:disabled) {
-			filter: brightness(0.95);
+		.optimize-cancel-btn:hover:not(:disabled),
+		.optimize-cancel-btn:focus-visible:not(:disabled) {
+			background: var(--vscode-inputValidation-errorBackground);
+			color: var(--vscode-inputValidation-errorForeground);
+			border-color: var(--vscode-inputValidation-errorBorder);
 		}
 
 		.optimize-cancel-btn:disabled {
@@ -1796,8 +1799,10 @@
 		}
 
 		.query-spinner {
+			display: inline-block;
 			width: 14px;
 			height: 14px;
+			box-sizing: border-box;
 			border-radius: 50%;
 			border: 2px solid var(--vscode-editorWidget-border);
 			border-top-color: var(--vscode-progressBar-background);
@@ -1827,8 +1832,10 @@
 		}
 
 		.schema-spinner {
+			display: inline-block;
 			width: 12px;
 			height: 12px;
+			box-sizing: border-box;
 			border-radius: 50%;
 			border: 2px solid var(--vscode-editorWidget-border);
 			border-top-color: var(--vscode-progressBar-background);

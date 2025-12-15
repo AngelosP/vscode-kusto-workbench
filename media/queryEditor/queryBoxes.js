@@ -1278,6 +1278,37 @@ function __kustoShowOptimizePromptLoading(boxId) {
 		'</div>';
 }
 
+const __kustoOptimizeModelStorageKey = 'kusto.optimize.lastModelId';
+
+function __kustoGetLastOptimizeModelId() {
+	try {
+		const state = (typeof vscode !== 'undefined' && vscode && vscode.getState) ? (vscode.getState() || {}) : {};
+		if (state && state.lastOptimizeModelId) {
+			return String(state.lastOptimizeModelId);
+		}
+	} catch { /* ignore */ }
+	try {
+		return String(localStorage.getItem(__kustoOptimizeModelStorageKey) || '');
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoSetLastOptimizeModelId(modelId) {
+	const id = String(modelId || '');
+	try {
+		const state = (typeof vscode !== 'undefined' && vscode && vscode.getState) ? (vscode.getState() || {}) : {};
+		state.lastOptimizeModelId = id;
+		if (typeof vscode !== 'undefined' && vscode && vscode.setState) {
+			vscode.setState(state);
+		}
+	} catch { /* ignore */ }
+	try {
+		if (id) {
+			localStorage.setItem(__kustoOptimizeModelStorageKey, id);
+		}
+	} catch { /* ignore */ }
+}
+
 function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText) {
 	const host = document.getElementById(boxId + '_optimize_config');
 	if (!host) {
@@ -1314,7 +1345,21 @@ function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, prompt
 			opt.textContent = String(m.label || m.id);
 			selectEl.appendChild(opt);
 		}
-		if (selectedModelId) {
+
+		const preferredModelId = __kustoGetLastOptimizeModelId();
+		let preferredExists = false;
+		if (preferredModelId) {
+			for (let i = 0; i < selectEl.options.length; i++) {
+				if (selectEl.options[i].value === preferredModelId) {
+					preferredExists = true;
+					break;
+				}
+			}
+		}
+
+		if (preferredExists) {
+			selectEl.value = preferredModelId;
+		} else if (selectedModelId) {
 			selectEl.value = String(selectedModelId);
 		}
 		if (!selectEl.value && selectEl.options && selectEl.options.length > 0) {
@@ -1339,6 +1384,9 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 
 	const modelId = (document.getElementById(boxId + '_optimize_model') || {}).value || '';
 	const promptText = (document.getElementById(boxId + '_optimize_prompt') || {}).value || '';
+	try {
+		__kustoSetLastOptimizeModelId(modelId);
+	} catch { /* ignore */ }
 
 	// Close prompt UI and show spinner on the main optimize button
 	try {
