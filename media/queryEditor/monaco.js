@@ -2348,10 +2348,17 @@ function initQueryEditor(boxId) {
 				if (!widget) {
 					return;
 				}
+				// IMPORTANT:
+				// Don't hide merely because rows haven't rendered yet.
+				// Monaco can take a tick (or longer with async providers) to populate the list.
 				const text = String(widget.textContent || '').toLowerCase();
 				const hasNoSuggestionsText = text.includes('no suggestions');
 				const hasRows = !!(widget.querySelector && widget.querySelector('.monaco-list-row'));
-				if (hasNoSuggestionsText || !hasRows) {
+				const ariaHidden = String(widget.getAttribute && widget.getAttribute('aria-hidden') || '').toLowerCase();
+				const isVisible = ariaHidden !== 'true';
+				const hasProgress = !!(widget.querySelector && widget.querySelector('.monaco-progress-container'));
+				const hasLoadingText = text.includes('loading');
+				if (isVisible && hasNoSuggestionsText && !hasRows && !hasProgress && !hasLoadingText) {
 					try { ed.trigger('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
 					try { ed.trigger('keyboard', 'editor.action.hideSuggestWidget', {}); } catch { /* ignore */ }
 				}
@@ -2364,9 +2371,9 @@ function initQueryEditor(boxId) {
 			try {
 				if (!ed) return;
 				ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
-				// Run twice: immediate and after async providers settle.
-				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 0);
-				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 120);
+				// Let Monaco render and providers settle before we decide to hide.
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 250);
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 800);
 			} catch {
 				// ignore
 			}
