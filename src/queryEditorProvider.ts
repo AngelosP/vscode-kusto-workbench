@@ -1299,44 +1299,46 @@ ${query}
 		}
 
 		const cacheKey = `${connection.clusterUrl}|${database}`;
-		if (forceRefresh) {
-			await this.deleteCachedSchemaFromDisk(cacheKey);
-		}
+		// IMPORTANT: Never delete persisted schema cache up-front.
+		// If a refresh fails (e.g. offline/VPN), we want to keep using the cached schema
+		// for autocomplete until the next successful refresh.
 
 		try {
 			this.output.appendLine(
 				`[schema] request connectionId=${connectionId} db=${database} forceRefresh=${forceRefresh}`
 			);
 
-			// Default path: check persisted cache first (survives VS Code sessions).
-			if (!forceRefresh) {
-				const cached = await this.getCachedSchemaFromDisk(cacheKey);
-				if (cached && Date.now() - cached.timestamp < this.SCHEMA_CACHE_TTL_MS) {
-					const schema = cached.schema;
-					const tablesCount = schema.tables?.length ?? 0;
-					let columnsCount = 0;
-					for (const cols of Object.values(schema.columnsByTable || {})) {
-						columnsCount += cols.length;
-					}
+			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
+			const cached = await this.getCachedSchemaFromDisk(cacheKey);
+			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
+			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
 
-					this.output.appendLine(
-						`[schema] loaded (persisted cache) db=${database} tables=${tablesCount} columns=${columnsCount}`
-					);
-					this.postMessage({
-						type: 'schemaData',
-						boxId,
-						connectionId,
-						database,
-						schema,
-						schemaMeta: {
-							fromCache: true,
-							cacheAgeMs: Date.now() - cached.timestamp,
-							tablesCount,
-							columnsCount
-						}
-					});
-					return;
+			// Default path: use persisted cache when it's still fresh.
+			if (!forceRefresh && cached && cachedIsFresh) {
+				const schema = cached.schema;
+				const tablesCount = schema.tables?.length ?? 0;
+				let columnsCount = 0;
+				for (const cols of Object.values(schema.columnsByTable || {})) {
+					columnsCount += cols.length;
 				}
+
+				this.output.appendLine(
+					`[schema] loaded (persisted cache) db=${database} tables=${tablesCount} columns=${columnsCount}`
+				);
+				this.postMessage({
+					type: 'schemaData',
+					boxId,
+					connectionId,
+					database,
+					schema,
+					schemaMeta: {
+						fromCache: true,
+						cacheAgeMs: cachedAgeMs,
+						tablesCount,
+						columnsCount
+					}
+				});
+				return;
 			}
 
 			const result = await this.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
@@ -1386,6 +1388,53 @@ ${query}
 		} catch (error) {
 			const rawMessage = error instanceof Error ? error.message : String(error);
 			this.output.appendLine(`[schema] error db=${database}: ${rawMessage}`);
+
+			// If we have any cached schema (even stale), keep using it for autocomplete.
+			// For a user-initiated refresh we still show an error message, but we don't wipe the cache.
+			try {
+				const cached = await this.getCachedSchemaFromDisk(cacheKey);
+				if (cached && cached.schema) {
+					const schema = cached.schema;
+					const tablesCount = schema.tables?.length ?? 0;
+					let columnsCount = 0;
+					for (const cols of Object.values(schema.columnsByTable || {})) {
+						columnsCount += cols.length;
+					}
+
+					this.output.appendLine(
+						`[schema] using cached schema after failure db=${database} tables=${tablesCount} columns=${columnsCount}`
+					);
+					this.postMessage({
+						type: 'schemaData',
+						boxId,
+						connectionId,
+						database,
+						schema,
+						schemaMeta: {
+							fromCache: true,
+							cacheAgeMs: Date.now() - cached.timestamp,
+							tablesCount,
+							columnsCount
+						}
+					});
+
+					// Only show an in-UI error when the user explicitly requested a refresh.
+					if (forceRefresh) {
+						const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
+						this.postMessage({
+							type: 'schemaError',
+							boxId,
+							connectionId,
+							database,
+							error: `Failed to refresh schema. Using cached schema for autocomplete.\n${userMessage}`
+						});
+					}
+					return;
+				}
+			} catch {
+				// ignore and fall through to posting schemaError
+			}
+
 			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 			const action = forceRefresh ? 'refresh' : 'load';
 			this.postMessage({

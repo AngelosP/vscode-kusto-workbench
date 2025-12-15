@@ -1,38 +1,73 @@
 function setSchemaLoading(boxId, loading) {
 	schemaFetchInFlightByBoxId[boxId] = !!loading;
 	const el = document.getElementById(boxId + '_schema_status');
-	// If the user explicitly clicked the refresh schema button, don't show the separate
-	// inline "Schema…" spinner/label; the button itself becomes the spinner.
-	let userRefreshInFlight = false;
-	try {
-		const btn = document.getElementById(boxId + '_schema_refresh');
-		userRefreshInFlight = !!(btn && btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1');
-	} catch { /* ignore */ }
+	// We no longer show the separate inline "Schema…" spinner/label.
 	if (el) {
-		el.style.display = (loading && !userRefreshInFlight) ? 'inline-flex' : 'none';
+		el.style.display = 'none';
 	}
-	// If the user explicitly clicked the refresh schema button, show a spinner on that button
-	// only for the duration of the in-flight request.
-	try {
-		if (!loading) {
-			const btn = document.getElementById(boxId + '_schema_refresh');
-			if (btn && btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1') {
-				const prev = btn.dataset.kustoPrevHtml;
-				if (typeof prev === 'string' && prev) {
-					btn.innerHTML = prev;
+
+	const btn = document.getElementById(boxId + '_schema_refresh');
+	if (!btn) {
+		return;
+	}
+
+	const manual = !!(btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1');
+	const auto = !!(btn.dataset && btn.dataset.kustoSchemaAutoInFlight === '1');
+
+	// While loading, show the in-place spinner in the refresh button (unless manual mode already did).
+	if (loading) {
+		if (!manual && !auto) {
+			try {
+				if (btn.dataset) {
+					btn.dataset.kustoSchemaAutoInFlight = '1';
+					btn.dataset.kustoAutoPrevHtml = String(btn.innerHTML || '');
+					btn.dataset.kustoAutoPrevTitle = String(btn.title || '');
 				}
-				try {
-					const prevTitle = btn.dataset.kustoPrevTitle;
-					if (typeof prevTitle === 'string') {
-						btn.title = prevTitle;
-					}
-				} catch { /* ignore */ }
-				try { delete btn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-				try { delete btn.dataset.kustoPrevTitle; } catch { /* ignore */ }
-				try { delete btn.dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
-				try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
-				btn.disabled = false;
+				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
+				btn.setAttribute('aria-busy', 'true');
+				btn.title = 'Loading schema…';
+			} catch { /* ignore */ }
+			btn.disabled = true;
+		}
+		return;
+	}
+
+	// On completion: restore manual button state if this was a manual refresh; otherwise restore auto.
+	try {
+		if (manual) {
+			const prev = btn.dataset.kustoPrevHtml;
+			if (typeof prev === 'string' && prev) {
+				btn.innerHTML = prev;
 			}
+			try {
+				const prevTitle = btn.dataset.kustoPrevTitle;
+				if (typeof prevTitle === 'string') {
+					btn.title = prevTitle;
+				}
+			} catch { /* ignore */ }
+			try { delete btn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+			try { delete btn.dataset.kustoPrevTitle; } catch { /* ignore */ }
+			try { delete btn.dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
+			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
+			btn.disabled = false;
+			return;
+		}
+		if (auto) {
+			const prev = btn.dataset.kustoAutoPrevHtml;
+			if (typeof prev === 'string' && prev) {
+				btn.innerHTML = prev;
+			}
+			try {
+				const prevTitle = btn.dataset.kustoAutoPrevTitle;
+				if (typeof prevTitle === 'string') {
+					btn.title = prevTitle;
+				}
+			} catch { /* ignore */ }
+			try { delete btn.dataset.kustoAutoPrevHtml; } catch { /* ignore */ }
+			try { delete btn.dataset.kustoAutoPrevTitle; } catch { /* ignore */ }
+			try { delete btn.dataset.kustoSchemaAutoInFlight; } catch { /* ignore */ }
+			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
+			btn.disabled = false;
 		}
 	} catch {
 		// ignore
@@ -157,6 +192,16 @@ function refreshSchema(boxId) {
 				btn.title = 'Refreshing schema…';
 			} catch { /* ignore */ }
 			btn.disabled = true;
+		}
+	} catch {
+		// ignore
+	}
+	// Hide the separate inline "Schema…" loading label while the refresh button is acting as the spinner.
+	// This also covers the case where a schema fetch was already in-flight before the click.
+	try {
+		const el = document.getElementById(boxId + '_schema_status');
+		if (el) {
+			el.style.display = 'none';
 		}
 	} catch {
 		// ignore

@@ -445,9 +445,6 @@ export class KustoQueryClient {
 	): Promise<DatabaseSchemaResult> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const cacheKey = `${clusterEndpoint}|${database}`;
-		if (forceRefresh) {
-			this.schemaCache.delete(cacheKey);
-		}
 		if (!forceRefresh) {
 			const cached = this.schemaCache.get(cacheKey);
 			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {
