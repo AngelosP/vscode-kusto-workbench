@@ -22,6 +22,7 @@
     "onCommand:kusto.openKqlxFile",
     "onCommand:kusto.saveKqlxAs",
     "onCommand:kusto.manageConnections",
+    "onCommand:kusto.deleteAllConnections",
     "onCustomEditor:kusto.kqlxEditor",
     "onCustomEditor:kusto.kqlCompatEditor"
   ],
@@ -87,6 +88,11 @@
       {
         "command": "kusto.manageConnections",
         "title": "Manage Connections",
+        "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.deleteAllConnections",
+        "title": "Delete All Connections",
         "category": "Kusto Workbench"
       }
     ]

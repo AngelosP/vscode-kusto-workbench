@@ -1052,17 +1052,18 @@ ${query}
 		}
 
 		const existing = this.connectionManager.getConnections();
-		const existingByCluster = new Set(existing.map((c) => (c.clusterUrl || '').trim().toLowerCase()).filter(Boolean));
+		const existingByCluster = new Set(existing.map((c) => this.normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
 
 		let added = 0;
 		for (const c of incoming) {
 			const name = String(c?.name || '').trim();
-			const clusterUrl = String(c?.clusterUrl || '').trim();
+			const clusterUrlRaw = String(c?.clusterUrl || '').trim();
 			const database = c?.database ? String(c.database).trim() : undefined;
-			if (!clusterUrl) {
+			if (!clusterUrlRaw) {
 				continue;
 			}
-			const key = clusterUrl.toLowerCase();
+			const clusterUrl = this.ensureHttpsUrl(clusterUrlRaw).replace(/\/+$/g, '');
+			const key = this.normalizeClusterUrlKey(clusterUrl);
 			if (existingByCluster.has(key)) {
 				continue;
 			}

@@ -44,6 +44,23 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.deleteAllConnections', async () => {
+			const confirm = await vscode.window.showWarningMessage(
+				'Delete all saved Kusto connections?',
+				{ modal: true, detail: 'This removes all saved cluster connections from this machine.' },
+				'Delete'
+			);
+			if (confirm !== 'Delete') {
+				return;
+			}
+			const removed = await connectionManager.clearConnections();
+			void vscode.window.showInformationMessage(
+				removed > 0 ? `Deleted ${removed} connection${removed === 1 ? '' : 's'}.` : 'No saved connections to delete.'
+			);
+		})
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openKqlxFile', async () => {
 			const pick = await vscode.window.showOpenDialog({
 				canSelectMany: false,

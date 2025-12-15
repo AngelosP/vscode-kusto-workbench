@@ -48,6 +48,13 @@ export class ConnectionManager {
 		await this.saveConnections();
 	}
 
+	async clearConnections(): Promise<number> {
+		const removed = this.connections.length;
+		this.connections = [];
+		await this.saveConnections();
+		return removed;
+	}
+
 	async updateConnection(id: string, updates: Partial<KustoConnection>): Promise<void> {
 		const index = this.connections.findIndex(c => c.id === id);
 		if (index !== -1) {

@@ -2825,7 +2825,14 @@ function parseKustoExplorerConnectionsXml(xmlText) {
 	const seen = new Set();
 	const deduped = [];
 	for (const r of results) {
-		const key = (r.clusterUrl || '').toLowerCase();
+		let key = '';
+		try {
+			key = (typeof normalizeClusterUrlKey === 'function')
+				? normalizeClusterUrlKey(r.clusterUrl || '')
+				: String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
+		} catch {
+			key = String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
+		}
 		if (!key || seen.has(key)) {
 			continue;
 		}
