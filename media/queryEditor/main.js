@@ -350,11 +350,6 @@ document.addEventListener('visibilitychange', () => {
 	}
 });
 
-// Request connections on load
-vscode.postMessage({ type: 'getConnections' });
-// Request document state on load (.kqlx custom editor)
-try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
-
 window.addEventListener('message', event => {
 	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
 	const messageType = String(message.type || '');
@@ -611,10 +606,10 @@ window.addEventListener('message', event => {
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
 				const columnsCount = meta.columnsCount ?? 0;
-				const cacheTag = meta.fromCache ? ' (cache)' : '';
+				const cacheTag = meta.fromCache ? ' (cached)' : '';
 				setSchemaLoadedSummary(
 					message.boxId,
-					'Schema: ' + tablesCount + ' tables, ' + columnsCount + ' cols' + cacheTag,
+					tablesCount + ' tables, ' + columnsCount + ' cols' + cacheTag,
 					'Schema loaded for autocomplete' + cacheTag,
 					false
 				);
@@ -880,5 +875,10 @@ window.addEventListener('message', event => {
 			break;
 	}
 });
+
+// Request connections on load
+vscode.postMessage({ type: 'getConnections' });
+// Request document state on load (.kqlx custom editor)
+try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 // Initial content is now driven by the .kqlx document state.

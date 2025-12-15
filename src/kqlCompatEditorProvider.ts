@@ -31,6 +31,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 	) {}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
+		// On Windows, URI strings can differ in casing/encoding between APIs.
+		// Use fsPath for file URIs to keep the key stable across the upgrade/openWith flow.
+		try {
+			if (uri.scheme === 'file') {
+				return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
+			}
+		} catch {
+			// ignore
+		}
 		return `kusto.pendingAddKind:${uri.toString()}`;
 	}
 

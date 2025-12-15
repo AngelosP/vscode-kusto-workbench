@@ -192,6 +192,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlxEditor';
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
+		// On Windows, URI strings can differ in casing/encoding between APIs.
+		// Use fsPath for file URIs so the key matches what the compat editor stored.
+		try {
+			if (uri.scheme === 'file') {
+				return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
+			}
+		} catch {
+			// ignore
+		}
 		return `kusto.pendingAddKind:${uri.toString()}`;
 	}
 
@@ -233,7 +242,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (typeof k === 'string') {
 				pendingAddKind = k;
 			}
-			await this.context.workspaceState.update(KqlxEditorProvider.pendingAddKindKeyForUri(document.uri), undefined);
 		} catch {
 			// ignore
 		}
@@ -261,14 +269,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			// ignore
 		}
 
-		// Tell the webview it can now perform the originally requested add.
-		try {
-			if (pendingAddKind) {
-				void webviewPanel.webview.postMessage({ type: 'upgradedToKqlx', addKind: pendingAddKind });
-			}
-		} catch {
-			// ignore
-		}
+		let pendingAddKindDelivered = false;
 		let saveTimer: NodeJS.Timeout | undefined;
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
@@ -410,6 +411,25 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				case 'requestDocument':
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
+
+					// If we were upgraded from .kql/.csl and a specific "add" action triggered the upgrade,
+					// deliver that intent now (after the webview has definitely attached its message listener).
+					if (!pendingAddKindDelivered && pendingAddKind) {
+						try {
+							void webviewPanel.webview.postMessage({ type: 'upgradedToKqlx', addKind: pendingAddKind });
+							pendingAddKindDelivered = true;
+						} catch {
+							// ignore
+						}
+						try {
+							await this.context.workspaceState.update(
+								KqlxEditorProvider.pendingAddKindKeyForUri(document.uri),
+								undefined
+							);
+						} catch {
+							// ignore
+						}
+					}
 					return;
 				case 'persistDocument': {
 					const rawState = (message as any).state;
