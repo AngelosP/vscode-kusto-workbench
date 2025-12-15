@@ -632,6 +632,40 @@
 			line-height: 1.35;
 		}
 
+		.qe-caret-docs-banner {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 6px 8px;
+			border-bottom: 1px solid var(--vscode-input-border);
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			font-size: 12px;
+			line-height: 1.35;
+			user-select: none;
+			pointer-events: none;
+			position: absolute;
+			left: 0;
+			right: 0;
+			top: 0;
+			z-index: 5;
+		}
+
+		.qe-caret-docs-text {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.qe-caret-docs-text code {
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+		}
+
+		.qe-caret-docs-line {
+			margin-bottom: 2px;
+		}
+
 		.qe-missing-clusters-text {
 			flex: 1 1 auto;
 			min-width: 0;
@@ -1563,9 +1597,9 @@
 		}
 
 		.optimize-query-btn {
-			background: var(--vscode-button-secondaryBackground);
+			background: transparent;
 			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-input-border);
+			border: 1px solid transparent;
 			border-radius: 4px;
 			padding: 6px 10px;
 			cursor: pointer;
@@ -1577,12 +1611,20 @@
 		}
 
 		.optimize-query-btn:hover:not(:disabled) {
-			background: var(--vscode-button-secondaryHoverBackground);
+			background: var(--vscode-button-secondaryBackground);
+			border-color: var(--vscode-input-border);
 		}
 
 		.optimize-query-btn:active:not(:disabled) {
 			background: var(--vscode-button-secondaryHoverBackground);
-			opacity: 0.8;
+			border-color: var(--vscode-input-border);
+			opacity: 1;
+		}
+
+		.optimize-query-btn:focus-visible:not(:disabled) {
+			background: var(--vscode-button-secondaryBackground);
+			border-color: var(--vscode-focusBorder);
+			outline: none;
 		}
 
 		.optimize-query-btn:disabled {
@@ -1622,6 +1664,7 @@
 			border: 1px solid transparent;
 			border-radius: 4px;
 			padding: 4px 6px;
+			margin-top: 5px;
 			height: 28px;
 			cursor: pointer;
 		}

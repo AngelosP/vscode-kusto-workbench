@@ -17,7 +17,8 @@ const STORAGE_KEYS = {
 	cachedDatabases: 'kusto.cachedDatabases',
 	cachedSchemas: 'kusto.cachedSchemas',
 	caretDocsEnabled: 'kusto.caretDocsEnabled',
-	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk'
+	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
+	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId'
 } as const;
 
 type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
@@ -471,14 +472,20 @@ ${query}
 			}
 
 			const modelOptions = models
-				.map(m => ({ id: m.id, label: this.formatCopilotModelLabel(m) }))
+				.map(m => ({ id: String(m.id), label: this.formatCopilotModelLabel(m) }))
 				.filter(m => !!m.id);
+
+			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
+			const preferredModelId = String(lastModelId || '').trim();
+			const selectedModelId = preferredModelId && modelOptions.some(m => m.id === preferredModelId)
+				? preferredModelId
+				: (modelOptions[0]?.id || '');
 
 			this.postMessage({
 				type: 'optimizeQueryOptions',
 				boxId,
 				models: modelOptions,
-				selectedModelId: modelOptions[0]?.id,
+				selectedModelId,
 				promptText: this.buildOptimizeQueryPrompt(query)
 			});
 		} catch (err: any) {
@@ -541,6 +548,11 @@ ${query}
 			}
 			if (!model) {
 				model = models[0];
+			}
+			try {
+				await this.context.globalState.update(STORAGE_KEYS.lastOptimizeCopilotModelId, String(model.id));
+			} catch {
+				// ignore
 			}
 			try {
 				postStatus(`Using model: ${this.formatCopilotModelLabel(model)}`);

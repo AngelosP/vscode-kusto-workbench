@@ -455,11 +455,26 @@ window.addEventListener('message', event => {
 				const available = !!message.available;
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
 				if (optimizeBtn) {
+					try {
+						if (optimizeBtn.dataset) {
+							optimizeBtn.dataset.kustoCopilotAvailable = available ? '1' : '0';
+						}
+					} catch { /* ignore */ }
+
+					const optimizeInProgress = !!(optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeInProgress === '1');
 					if (!available) {
 						optimizeBtn.disabled = true;
+						try { if (optimizeBtn.dataset) optimizeBtn.dataset.kustoDisabledByCopilot = '1'; } catch { /* ignore */ }
 						optimizeBtn.title = 'Optimize query performance\n\nGitHub Copilot is required for this feature. Enable Copilot in VS Code to use query optimization.';
 					} else {
-						optimizeBtn.disabled = false;
+						// Only re-enable if we were disabled due to Copilot being unavailable.
+						const disabledByCopilot = !!(optimizeBtn.dataset && optimizeBtn.dataset.kustoDisabledByCopilot === '1');
+						if (disabledByCopilot) {
+							try { if (optimizeBtn.dataset) delete optimizeBtn.dataset.kustoDisabledByCopilot; } catch { /* ignore */ }
+							if (!optimizeInProgress) {
+								optimizeBtn.disabled = false;
+							}
+						}
 						optimizeBtn.title = 'Optimize query performance';
 					}
 				}

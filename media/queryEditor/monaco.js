@@ -572,6 +572,68 @@ function ensureMonaco() {
 							}
 						};
 
+						const inferPipeOperatorHoverFromContext = () => {
+							try {
+								// Fast path: same-line pipe clause.
+								const sameLine = inferPipeOperatorHoverFromLine();
+								if (sameLine) return sameLine;
+
+								// Multi-line clauses: scan upward for the most recent pipe clause start.
+								const maxScanLines = 30;
+								let pipeLine = -1;
+								let pipeIdx = -1;
+								for (let ln = position.lineNumber; ln >= 1 && (position.lineNumber - ln) <= maxScanLines; ln--) {
+									const line = model.getLineContent(ln);
+									if (typeof line !== 'string') continue;
+									const slice = (ln === position.lineNumber)
+										? line.slice(0, Math.max(0, Math.min(line.length, position.column - 1)))
+										: line;
+									const idx = slice.lastIndexOf('|');
+									if (idx < 0) continue;
+									// Only consider it a pipe clause if everything before the '|' is whitespace.
+									if (!/^\s*$/.test(slice.slice(0, idx))) continue;
+									pipeLine = ln;
+									pipeIdx = idx;
+									break;
+								}
+								if (pipeLine < 0 || pipeIdx < 0) return null;
+
+								// Build a small forward-looking snippet starting after the pipe, spanning multiple lines,
+								// so we can match operators even if they are placed on the next line.
+								const pipePos = new monaco.Position(pipeLine, pipeIdx + 1);
+								let startOffset;
+								try {
+									startOffset = model.getOffsetAt(pipePos) + 1; // after '|'
+								} catch {
+									return null;
+								}
+								const full = model.getValue();
+								if (!full || startOffset >= full.length) return null;
+								const snippet = full.slice(startOffset, Math.min(full.length, startOffset + 500));
+								const m = snippet.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|mv-expand|where|extend|project|summarize|join|distinct|take|top|limit|render|union|search)\b/i);
+								if (!m) return null;
+								const key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								const doc = KUSTO_KEYWORD_DOCS[key];
+								if (!doc) return null;
+
+								// Compute a reasonable range for the operator keyword.
+								let keywordStart = startOffset;
+								try {
+									while (keywordStart < full.length && /\s/.test(full[keywordStart])) keywordStart++;
+								} catch { /* ignore */ }
+								const firstWord = String(m[1] || '').split(/\s+/)[0] || String(m[1] || '');
+								const keywordEnd = Math.min(full.length, keywordStart + firstWord.length);
+								const startPos = model.getPositionAt(keywordStart);
+								const endPos = model.getPositionAt(keywordEnd);
+								const range = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+
+								const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+								return { range, markdown: md };
+							} catch {
+								return null;
+							}
+						};
+
 						// Prefer function-call context (cursor could be inside args).
 						// Note: when the caret is on '(' (or just before it), the backward scan starting at offset-1
 						// may miss the opening paren. Probe slightly forward so active-arg tracking works while typing.
@@ -627,7 +689,7 @@ function ensureMonaco() {
 						const token = getTokenAtPosition(model, position);
 						if (!token || !token.word) {
 							// Even if the caret isn't on a token, keep pipe-operator docs visible while typing the clause.
-							return inferPipeOperatorHoverFromLine();
+							return inferPipeOperatorHoverFromContext();
 						}
 						const w = String(token.word).toLowerCase();
 						if (KUSTO_FUNCTION_DOCS[w]) {
@@ -645,7 +707,7 @@ function ensureMonaco() {
 
 						// If the token under the caret isn't itself a keyword/function, infer the active pipe operator
 						// for this clause so docs keep showing while the user types the rest of the statement.
-						return inferPipeOperatorHoverFromLine();
+						return inferPipeOperatorHoverFromContext();
 					};
 					monaco.languages.setMonarchTokensProvider('kusto', {
 						keywords: [
@@ -2056,68 +2118,95 @@ function initQueryEditor(boxId) {
 
 		// Docs tooltip: keep visible while typing, even when Monaco autocomplete is open.
 		const renderDocMarkdownToHtml = (markdown) => {
-			const raw = String(markdown || '');
+			let raw = String(markdown || '');
 			if (!raw.trim()) {
 				return '';
 			}
-			const escaped = typeof escapeHtml === 'function' ? escapeHtml(raw) : raw;
-			return escaped
-				.replace(/\r\n/g, '\n')
-				.replace(/\n\n/g, '<br><br>')
-				.replace(/\n/g, '<br>')
-				.replace(/`([^`]+)`/g, '<code>$1</code>')
-				// Show literal **...** markers while also bolding the content.
-				.replace(/\*\*([^*]+)\*\*/g, '<strong>**$1**</strong>');
-		};
-
-		// Use a DOM overlay (instead of Monaco content widgets) for reliability in VS Code webviews.
-		const createDocOverlay = () => {
-			const dom = document.createElement('div');
-			dom.className = 'kusto-doc-widget kusto-doc-widget-overlay';
-			dom.style.display = 'none';
-			// Use fixed positioning so the tooltip can render outside the editor bounds.
-			dom.style.position = 'fixed';
-			// Render above Monaco suggest/hover widgets and our own banners/modals.
-			dom.style.zIndex = '2147483647';
-			dom.style.left = '0px';
-			dom.style.top = '0px';
-			let lastHtml = '';
-			let lastKey = '';
+			// Presentation tweak: remove the blank line between the signature (first line)
+			// and the documentation that follows.
 			try {
-				(document.body || document.documentElement).appendChild(dom);
+				const normalized = String(raw).replace(/\r\n/g, '\n');
+				const lines = normalized.split('\n');
+				let firstNonEmpty = -1;
+				for (let i = 0; i < lines.length; i++) {
+					if (String(lines[i] || '').trim().length > 0) {
+						firstNonEmpty = i;
+						break;
+					}
+				}
+				if (firstNonEmpty >= 0) {
+					const after = firstNonEmpty + 1;
+					if (after < lines.length && String(lines[after] || '').trim().length === 0) {
+						lines.splice(after, 1);
+						raw = lines.join('\n');
+					}
+				}
 			} catch {
 				// ignore
 			}
+			const escaped = typeof escapeHtml === 'function' ? escapeHtml(raw) : raw;
+			const html = escaped
+				.replace(/\r\n/g, '\n')
+				.replace(/`([^`]+)`/g, '<code>$1</code>')
+				// Show literal **...** markers while also bolding the content.
+				.replace(/\*\*([^*]+)\*\*/g, '<strong>**$1**</strong>');
+
+			// Use per-line block elements so CSS can add bottom spacing per line.
+			try {
+				const parts = String(html).split('\n');
+				return parts
+					.map((line) => {
+						const s = String(line ?? '');
+						return '<div class="qe-caret-docs-line">' + (s.trim() ? s : '&nbsp;') + '</div>';
+					})
+					.join('');
+			} catch {
+				return html;
+			}
+		};
+
+		// Render caret docs as a banner at the top of the editor (less distracting than a tooltip).
+		// Keep triggers/content logic the same; only change presentation.
+		const createDocOverlay = () => {
+			const banner = document.getElementById(boxId + '_caret_docs');
+			const text = document.getElementById(boxId + '_caret_docs_text') || banner;
+			let lastHtml = '';
+			let lastKey = '';
 
 			const hide = () => {
-				dom.style.display = 'none';
+				try {
+					if (banner) banner.style.display = 'none';
+				} catch {
+					// ignore
+				}
 			};
 
 			const update = () => {
-								try {
-									// Default to enabled if the global toggle hasn't been initialized yet.
-									try {
-										if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
-											hide();
-											return;
-										}
-									} catch {
-										// ignore
-									}
+				try {
+					// Default to enabled if the global toggle hasn't been initialized yet.
+					try {
+						if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+							hide();
+							return;
+						}
+					} catch {
+						// ignore
+					}
 
-								// Prefer the explicit "active editor" tracking. In some Monaco builds,
-								// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
-								try {
-									const activeId = (typeof activeQueryEditorBoxId !== 'undefined' && activeQueryEditorBoxId)
-										? String(activeQueryEditorBoxId)
-										: null;
-									if (activeId && activeId !== String(boxId)) {
-										hide();
-										return;
-									}
-								} catch {
-									// ignore
-								}
+					// Prefer the explicit "active editor" tracking. In some Monaco builds,
+					// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
+					try {
+						const activeId = (typeof activeQueryEditorBoxId !== 'undefined' && activeQueryEditorBoxId)
+							? String(activeQueryEditorBoxId)
+							: null;
+						if (activeId && activeId !== String(boxId)) {
+							hide();
+							return;
+						}
+					} catch {
+						// ignore
+					}
+
 					const model = editor.getModel();
 					const pos = editor.getPosition();
 					const sel = editor.getSelection();
@@ -2125,18 +2214,13 @@ function initQueryEditor(boxId) {
 						hide();
 						return;
 					}
-									// Note: we intentionally do NOT hide the tooltip when the caret is after ')'
-									// so function docs still show for completed calls like dcountif().
-					const coords = typeof editor.getScrolledVisiblePosition === 'function' ? editor.getScrolledVisiblePosition(pos) : null;
-					if (!coords) {
-						hide();
-						return;
-					}
+
 					const getter = window.__kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
 						hide();
 						return;
 					}
+
 					// Probe near the caret so we still show docs when the caret is on/near '(' or ')' or just after ')'.
 					// Keep the caret position first so active-argument detection stays accurate.
 					const probePositions = [pos];
@@ -2163,68 +2247,46 @@ function initQueryEditor(boxId) {
 						return;
 					}
 
+					// Keep the banner positioned so it overlays the first editor lines (no layout shift).
+					try {
+						if (banner) {
+							let top = 0;
+							const editorHost = document.getElementById(boxId + '_query_editor');
+							const wrapper = editorHost ? editorHost.parentElement : null;
+							if (wrapper && wrapper.querySelector) {
+								const toolbar = wrapper.querySelector('.query-editor-toolbar');
+								if (toolbar && typeof toolbar.offsetHeight === 'number') {
+									top += toolbar.offsetHeight;
+								}
+								const missing = document.getElementById(boxId + '_missing_clusters');
+								if (missing && missing.style && missing.style.display !== 'none' && typeof missing.offsetHeight === 'number') {
+									top += missing.offsetHeight;
+								}
+							}
+							banner.style.top = String(Math.max(0, top)) + 'px';
+						}
+					} catch {
+						// ignore
+					}
+
 					const key = `${pos.lineNumber}:${pos.column}:${html.slice(0, 120)}`;
 					if (html !== lastHtml) {
 						lastHtml = html;
-						dom.innerHTML = html;
+						try {
+							if (text) text.innerHTML = html;
+						} catch {
+							// ignore
+						}
 					}
 					if (key !== lastKey) {
 						lastKey = key;
 					}
 
-					dom.style.display = 'block';
-
-					const editorDom = editor.getDomNode();
-					if (!editorDom) {
-						return;
-					}
-					const editorRect = editorDom.getBoundingClientRect();
-					// Monaco has changed what getScrolledVisiblePosition() is relative to across versions.
-					// Sometimes it's editor root; sometimes it's the scrollable element.
-					// Detect which coordinate-space we're in to keep the tooltip aligned.
-					let scrollableRect = null;
 					try {
-						const scrollable = editorDom.querySelector && editorDom.querySelector('.monaco-scrollable-element');
-						if (scrollable && typeof scrollable.getBoundingClientRect === 'function') {
-							scrollableRect = scrollable.getBoundingClientRect();
-						}
+						if (banner) banner.style.display = 'flex';
 					} catch {
-						scrollableRect = null;
+						// ignore
 					}
-
-					let anchorRect = editorRect;
-					if (scrollableRect) {
-						const dx = scrollableRect.left - editorRect.left;
-						const dy = scrollableRect.top - editorRect.top;
-						// If coords are smaller than the gutter/padding offset, they're almost certainly
-						// relative to the scrollable element.
-						if (coords.left < Math.max(0, dx - 1) || coords.top < Math.max(0, dy - 1)) {
-							anchorRect = scrollableRect;
-						}
-					}
-
-					// Caret in viewport coordinates.
-					const caretX = anchorRect.left + coords.left;
-					const caretHeight = coords.height || 16;
-					const cursorY = anchorRect.top + coords.top + caretHeight;
-
-					const margin = 6;
-					const clearance = 14; // keep tooltip bottom above the typing cursor (but not too high)
-					const width = dom.offsetWidth;
-					const height = dom.offsetHeight;
-
-					// Prefer above cursor; allow outside editor bounds; clamp to viewport.
-					let left = caretX;
-					let top = cursorY - height - margin - clearance;
-
-					const viewportMargin = 6;
-					const maxLeft = Math.max(viewportMargin, window.innerWidth - width - viewportMargin);
-					left = Math.min(Math.max(viewportMargin, left), maxLeft);
-					const maxTop = Math.max(viewportMargin, window.innerHeight - height - viewportMargin);
-					top = Math.min(Math.max(viewportMargin, top), maxTop);
-
-					dom.style.left = `${Math.round(left)}px`;
-					dom.style.top = `${Math.round(top)}px`;
 				} catch {
 					// ignore
 				}

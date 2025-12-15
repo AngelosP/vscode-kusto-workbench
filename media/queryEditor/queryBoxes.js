@@ -191,6 +191,9 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="query-editor-wrapper">' +
 		toolbarHtml +
+		'<div class="qe-caret-docs-banner" id="' + id + '_caret_docs" style="display:none;" role="status" aria-live="polite">' +
+		'<div class="qe-caret-docs-text" id="' + id + '_caret_docs_text"></div>' +
+		'</div>' +
 		'<div class="qe-missing-clusters-banner" id="' + id + '_missing_clusters" style="display:none;" role="status" aria-live="polite">' +
 		'<div class="qe-missing-clusters-text" id="' + id + '_missing_clusters_text"></div>' +
 		'<div class="qe-missing-clusters-actions">' +
@@ -1221,18 +1224,51 @@ function __kustoSetOptimizeInProgress(boxId, inProgress, statusText) {
 	try {
 		const statusEl = document.getElementById(boxId + '_optimize_status');
 		const cancelBtn = document.getElementById(boxId + '_optimize_cancel');
+		const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
 		if (!statusEl || !cancelBtn) {
 			return;
 		}
 		const on = !!inProgress;
+		try {
+			if (optimizeBtn && optimizeBtn.dataset) {
+				if (on) {
+					optimizeBtn.dataset.kustoOptimizeInProgress = '1';
+					optimizeBtn.disabled = true;
+				} else {
+					delete optimizeBtn.dataset.kustoOptimizeInProgress;
+				}
+			}
+		} catch { /* ignore */ }
 		statusEl.style.display = on ? '' : 'none';
 		cancelBtn.style.display = on ? '' : 'none';
 		if (on) {
 			statusEl.textContent = String(statusText || 'Optimizing…');
 			cancelBtn.disabled = false;
+
+			try {
+				const text = String(statusText || '');
+				const shouldStartSpinner = /waiting\s+for\s+copilot\s+response/i.test(text);
+				const spinnerAlreadyOn = !!(optimizeBtn && optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeSpinnerActive === '1');
+				if (optimizeBtn && (shouldStartSpinner || spinnerAlreadyOn)) {
+					if (!optimizeBtn.dataset.originalContent) {
+						optimizeBtn.dataset.originalContent = optimizeBtn.innerHTML;
+					}
+					optimizeBtn.dataset.kustoOptimizeSpinnerActive = '1';
+					optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+				}
+			} catch { /* ignore */ }
 		} else {
 			statusEl.textContent = '';
 			cancelBtn.disabled = false;
+			try {
+				if (optimizeBtn && optimizeBtn.dataset) {
+					delete optimizeBtn.dataset.kustoOptimizeSpinnerActive;
+					if (optimizeBtn.dataset.originalContent) {
+						optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
+						delete optimizeBtn.dataset.originalContent;
+					}
+				}
+			} catch { /* ignore */ }
 		}
 	} catch {
 		// ignore
@@ -1401,7 +1437,6 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	if (optimizeBtn) {
 		optimizeBtn.disabled = true;
 		const originalContent = optimizeBtn.innerHTML;
-		optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
 		optimizeBtn.dataset.originalContent = originalContent;
 	}
 	try {
