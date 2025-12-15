@@ -2318,6 +2318,8 @@ function initQueryEditor(boxId) {
 		}
 
 		queryEditors[boxId] = editor;
+		// Allow other scripts to reliably map editor -> boxId (used for global key handlers).
+		try { editor.__kustoBoxId = boxId; } catch { /* ignore */ }
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
 		try { __kustoEnsureEditorWritableSoon(editor); } catch { /* ignore */ }
 		try { __kustoInstallWritableGuard(editor); } catch { /* ignore */ }
@@ -2810,6 +2812,7 @@ function initQueryEditor(boxId) {
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
+			try { activeMonacoEditor = editor; } catch { /* ignore */ }
 			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
@@ -2820,6 +2823,7 @@ function initQueryEditor(boxId) {
 		try {
 			editor.onDidFocusEditorWidget(() => {
 				activeQueryEditorBoxId = boxId;
+				try { activeMonacoEditor = editor; } catch { /* ignore */ }
 				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 				syncPlaceholder();
 				scheduleDocUpdate();
@@ -2858,6 +2862,7 @@ function initQueryEditor(boxId) {
 		const focusSoon = () => {
 			setTimeout(() => {
 				try { activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+				try { activeMonacoEditor = editor; } catch { /* ignore */ }
 				try { editor.focus(); } catch { /* ignore */ }
 			}, 0);
 		};

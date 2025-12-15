@@ -54,6 +54,57 @@ document.addEventListener('keydown', async (event) => {
 	}
 }, true);
 
+// VS Code can intercept Ctrl/Cmd+Space in webviews; provide a reliable autocomplete path for Monaco.
+document.addEventListener('keydown', (event) => {
+	try {
+		if (!(event.ctrlKey || event.metaKey)) {
+			return;
+		}
+		// Prefer event.code when available; fall back to key.
+		const isSpace = (event.code === 'Space') || (event.key === ' ');
+		if (!isSpace) {
+			return;
+		}
+		// Only handle when the key event originates from inside a Monaco editor.
+		try {
+			const t = event.target;
+			if (!t || !t.closest || !t.closest('.monaco-editor')) {
+				return;
+			}
+		} catch {
+			return;
+		}
+
+		const editor = __kustoGetFocusedMonacoEditor();
+		if (!editor) {
+			return;
+		}
+
+		// We are handling it; avoid double-triggering Monaco keybindings.
+		try { event.preventDefault(); } catch { /* ignore */ }
+		try { event.stopPropagation(); } catch { /* ignore */ }
+		try { event.stopImmediatePropagation(); } catch { /* ignore */ }
+
+		// Prefer the shared helper so we keep the "hide if no suggestions" behavior.
+		try {
+			const boxId = editor.__kustoBoxId;
+			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
+				return;
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+		} catch {
+			// ignore
+		}
+	} catch {
+		// ignore
+	}
+}, true);
+
 function __kustoGetFocusedMonacoEditor() {
 	// Prefer whichever Monaco editor actually has focus.
 	let editor = null;
