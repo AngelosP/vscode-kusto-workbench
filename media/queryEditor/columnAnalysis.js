@@ -69,22 +69,42 @@ function showUniqueValues(colIdx, boxId) {
 
 	title.textContent = 'Unique Values - ' + columnName;
 
-	let html = '<table class="column-analysis-table">';
-	html += '<thead><tr><th>Value</th><th>Count</th><th>%</th></tr></thead>';
-	html += '<tbody>';
-
-	sortedValues.forEach(([value, count]) => {
-		const percentage = ((count / totalRows) * 100).toFixed(2);
-		html += '<tr><td>' + escapeHtml(value) + '</td><td>' + count + '</td><td>' + percentage + '%</td></tr>';
-	});
-
-	html += '</tbody></table>';
+	const analysisBoxId = String(boxId) + '_col_' + String(colIdx) + '_unique_values';
+	const tableHostId = 'columnAnalysisTableHost';
+	let html = '';
+	// Host for reusing the main tabular results control.
+	html += '<div id="' + tableHostId + '"></div>';
+	// Keep the existing chart below the table.
 	html += '<div style="margin-top: 24px;">';
 	html += '<canvas id="uniqueValuesPieChart" style="width: 100%; height: 400px;"></canvas>';
 	html += '</div>';
-
 	body.innerHTML = html;
 	modal.classList.add('visible');
+
+	// Render the tabular control after the DOM is updated.
+	setTimeout(() => {
+		try {
+			const host = document.getElementById(tableHostId);
+			if (!host || typeof displayResultForBox !== 'function') {
+				return;
+			}
+			const rows = sortedValues.map(([value, count]) => {
+				const percentage = totalRows ? ((count / totalRows) * 100).toFixed(2) : '0.00';
+				return [escapeHtml(value), String(count), percentage + '%'];
+			});
+			displayResultForBox({
+				columns: ['Value', 'Count', '%'],
+				rows: rows,
+				metadata: {}
+			}, analysisBoxId, {
+				label: 'Unique Values',
+				showExecutionTime: false,
+				resultsDiv: host
+			});
+		} catch {
+			// ignore
+		}
+	}, 0);
 
 	// Draw pie chart after DOM is updated
 	setTimeout(() => {
@@ -195,12 +215,17 @@ function showDistinctCountPicker(colIdx, boxId) {
 	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
 	if (!state) { return; }
 
+	// Close menu
+	toggleColumnMenu(colIdx, boxId);
+
 	const columnName = state.columns[colIdx];
 	const modal = document.getElementById('columnAnalysisModal');
 	const title = document.getElementById('columnAnalysisTitle');
 	const body = document.getElementById('columnAnalysisBody');
 
 	title.textContent = 'Distinct Count - ' + columnName;
+	const analysisBoxId = String(boxId) + '_col_' + String(colIdx) + '_distinct_count';
+	const resultsHostId = 'distinctCountResultsHost';
 
 	let html = '<div class="column-picker">';
 	html += '<label>Count distinct values of:</label>';
@@ -219,7 +244,7 @@ function showDistinctCountPicker(colIdx, boxId) {
 
 	html += '</select>';
 	html += '</div>';
-	html += '<div id="distinctCountResults"></div>';
+	html += '<div id="' + resultsHostId + '" data-analysis-boxid="' + analysisBoxId + '"></div>';
 
 	body.innerHTML = html;
 	modal.classList.add('visible');
@@ -279,23 +304,29 @@ function calculateDistinctCount(groupByColIdx, boxId) {
 	});
 	const totalDistinctCount = totalDistinctValues.size;
 
-	// Display results
-	const resultsDiv = document.getElementById('distinctCountResults');
-
-	let html = '<table class="column-analysis-table">';
-	html += '<thead><tr><th>' + escapeHtml(groupByColumnName) + '</th><th>Distinct ' + escapeHtml(targetColumnName) + '</th><th>%</th></tr></thead>';
-	html += '<tbody>';
-
-	results.forEach(result => {
-		const percentage = ((result.distinctCount / totalDistinctCount) * 100).toFixed(2);
-		html += '<tr><td>' + escapeHtml(result.groupValue) + '</td><td>' + result.distinctCount + '</td><td>' + percentage + '%</td></tr>';
+	// Display results using the shared tabular results control.
+	const resultsHost = document.getElementById('distinctCountResultsHost');
+	if (!resultsHost || typeof displayResultForBox !== 'function') {
+		return;
+	}
+	const analysisBoxId = (resultsHost && resultsHost.dataset && resultsHost.dataset.analysisBoxid)
+		? String(resultsHost.dataset.analysisBoxid)
+		: (String(boxId) + '_col_' + String(groupByColIdx) + '_distinct_count');
+	const rows = results.map(r => {
+		const percentage = totalDistinctCount ? ((r.distinctCount / totalDistinctCount) * 100).toFixed(2) : '0.00';
+		return [escapeHtml(r.groupValue), String(r.distinctCount), percentage + '%'];
 	});
-
 	// Add total row
-	html += '<tr class="total-row"><td><strong>Total</strong></td><td><strong>' + totalDistinctCount + '</strong></td><td><strong>100.00%</strong></td></tr>';
-	html += '</tbody></table>';
-
-	resultsDiv.innerHTML = html;
+	rows.push(['<strong>Total</strong>', '<strong>' + String(totalDistinctCount) + '</strong>', '<strong>100.00%</strong>']);
+	displayResultForBox({
+		columns: [escapeHtml(groupByColumnName), 'Distinct ' + escapeHtml(targetColumnName), '%'],
+		rows: rows,
+		metadata: {}
+	}, analysisBoxId, {
+		label: 'Distinct Count',
+		showExecutionTime: false,
+		resultsDiv: resultsHost
+	});
 }
 
 function closeColumnAnalysis(event) {
