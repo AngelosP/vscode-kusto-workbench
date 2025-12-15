@@ -1117,7 +1117,8 @@
 			border: 1px solid var(--vscode-panel-border);
 			border-radius: 2px;
 			position: relative;
-			z-index: 2;
+			/* Keep tool UI above sticky table headers/first column (see th.row-selector z-index: 100). */
+			z-index: 2000;
 		}
 
 		.data-search input {
@@ -1167,7 +1168,8 @@
 
 		.column-search {
 			position: relative;
-			z-index: 2;
+			/* Keep tool UI above sticky table headers/first column (see th.row-selector z-index: 100). */
+			z-index: 2000;
 			min-width: 200px;
 			margin-bottom: 8px;
 			padding: 8px;
@@ -1202,7 +1204,8 @@
 			border: 1px solid var(--vscode-dropdown-border);
 			border-top: none;
 			border-radius: 0 0 4px 4px;
-			z-index: 1000;
+			/* Above the tool container, and above sticky table cells. */
+			z-index: 2001;
 			display: none;
 		}
 
