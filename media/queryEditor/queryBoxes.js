@@ -520,6 +520,16 @@ function __kustoNormalizeCellForComparison(cell) {
 	}
 }
 
+function __kustoRowKeyForComparison(row) {
+	try {
+		const r = Array.isArray(row) ? row : [];
+		const norm = r.map(__kustoNormalizeCellForComparison);
+		return JSON.stringify(norm);
+	} catch {
+		try { return String(row); } catch { return '[uncomparable-row]'; }
+	}
+}
+
 function __kustoAreResultsEquivalent(sourceState, comparisonState) {
 	try {
 		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
@@ -532,16 +542,28 @@ function __kustoAreResultsEquivalent(sourceState, comparisonState) {
 		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
 		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
 		if (aRows.length !== bRows.length) return false;
-		for (let r = 0; r < aRows.length; r++) {
-			const ar = Array.isArray(aRows[r]) ? aRows[r] : [];
-			const br = Array.isArray(bRows[r]) ? bRows[r] : [];
-			if (ar.length !== br.length) return false;
-			for (let c = 0; c < ar.length; c++) {
-				const an = __kustoNormalizeCellForComparison(ar[c]);
-				const bn = __kustoNormalizeCellForComparison(br[c]);
-				if (JSON.stringify(an) !== JSON.stringify(bn)) return false;
+
+		// Compare as an unordered multiset of rows:
+		// - row order may change
+		// - but content and multiplicity must match
+		const counts = new Map();
+		for (const row of aRows) {
+			const key = __kustoRowKeyForComparison(row);
+			counts.set(key, (counts.get(key) || 0) + 1);
+		}
+		for (const row of bRows) {
+			const key = __kustoRowKeyForComparison(row);
+			const prev = counts.get(key) || 0;
+			if (prev <= 0) {
+				return false;
+			}
+			if (prev === 1) {
+				counts.delete(key);
+			} else {
+				counts.set(key, prev - 1);
 			}
 		}
+		if (counts.size !== 0) return false;
 		return true;
 	} catch {
 		return false;
@@ -1301,7 +1323,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	
 	let dataMessage = '';
 	if (deepMatch) {
-		dataMessage = '<span style="color: #89d185;">\u2713 Data matches: identical results</span>';
+		dataMessage = '<span style="color: #89d185;">\u2713 Data matches (row order ignored)</span>';
 	} else {
 		const parts = [];
 		if (!rowsMatch) {
