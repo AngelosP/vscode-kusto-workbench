@@ -278,13 +278,14 @@ function addQueryBox(options) {
 		const wrapper = document.getElementById(id + '_results_wrapper');
 		const resizer = document.getElementById(id + '_results_resizer');
 		if (wrapper && resizer) {
-			const computeMaxHeightForNonTable = () => {
+			const computeResizeBounds = () => {
+				let minHeight = 120;
 				let maxHeight = 900;
 				try {
 					const resultsEl = document.getElementById(id + '_results');
 					const hasTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
 					if (hasTable || !resultsEl) {
-						return maxHeight;
+						return { minHeight, maxHeight };
 					}
 
 					const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
@@ -311,10 +312,11 @@ function addQueryBox(options) {
 						contentPx = headerEl ? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0)) : 0;
 					}
 
-					const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 8));
+					const desiredPx = Math.max(0, Math.ceil(overheadPx + contentPx + 8));
 					maxHeight = Math.min(900, desiredPx);
+					minHeight = Math.min(maxHeight, Math.max(24, Math.ceil(overheadPx + 8)));
 				} catch { /* ignore */ }
-				return maxHeight;
+				return { minHeight, maxHeight };
 			};
 
 			resizer.addEventListener('mousedown', (e) => {
@@ -337,8 +339,10 @@ function addQueryBox(options) {
 
 				const onMove = (moveEvent) => {
 					const delta = moveEvent.clientY - startY;
-					const maxHeight = computeMaxHeightForNonTable();
-					const nextHeight = Math.max(120, Math.min(maxHeight, startHeight + delta));
+					const bounds = computeResizeBounds();
+					const minHeight = (bounds && typeof bounds.minHeight === 'number') ? bounds.minHeight : 24;
+					const maxHeight = (bounds && typeof bounds.maxHeight === 'number') ? bounds.maxHeight : 900;
+					const nextHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 				};
 				const onUp = () => {
@@ -403,8 +407,7 @@ function addQueryBox(options) {
 						contentPx = headerEl ? Math.max(0, Math.ceil(headerEl.getBoundingClientRect().height || 0)) : 0;
 					}
 
-					const desiredPx = Math.max(120, Math.ceil(overheadPx + contentPx + 8));
-					if (!desiredPx) return;
+					const desiredPx = Math.max(0, Math.ceil(overheadPx + contentPx + 8));
 
 					if (wrapperH > (desiredPx + 1)) {
 						w.style.height = desiredPx + 'px';
@@ -701,6 +704,10 @@ function __kustoApplyResultsVisibility(boxId) {
 	// Only show wrapper when there's content.
 	const resultsDiv = document.getElementById(boxId + '_results');
 	const hasContent = !!(resultsDiv && String(resultsDiv.innerHTML || '').trim());
+	let hasTable = false;
+	try {
+		hasTable = !!(resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('.table-container'));
+	} catch { /* ignore */ }
 	wrapper.style.display = hasContent ? 'flex' : 'none';
 	if (hasContent) {
 		const body = document.getElementById(boxId + '_results_body');
@@ -717,7 +724,8 @@ function __kustoApplyResultsVisibility(boxId) {
 		} catch { /* ignore */ }
 		const resizer = document.getElementById(boxId + '_results_resizer');
 		if (resizer) {
-			resizer.style.display = visible ? '' : 'none';
+			// Cleaner UI: only show the resize handle when a successful results table is rendered.
+			resizer.style.display = (visible && hasTable) ? '' : 'none';
 		}
 		try {
 			if (!visible) {
@@ -727,12 +735,23 @@ function __kustoApplyResultsVisibility(boxId) {
 				}
 				wrapper.style.height = 'auto';
 				wrapper.style.minHeight = '0';
+			} else if (!hasTable) {
+				// Error-only (or non-table) content: hug content and hide resizer.
+				try {
+					if (wrapper.style.height && wrapper.style.height !== 'auto') {
+						wrapper.dataset.kustoPrevSuccessHeight = wrapper.style.height;
+					}
+				} catch { /* ignore */ }
+				wrapper.style.height = 'auto';
+				wrapper.style.minHeight = '0';
 			} else {
-				// Ensure a usable height when showing results.
+				// Successful results table: allow resizing.
 				wrapper.style.minHeight = '120px';
 				if (!wrapper.style.height || wrapper.style.height === 'auto') {
 					if (wrapper.dataset.kustoPreviousHeight) {
 						wrapper.style.height = wrapper.dataset.kustoPreviousHeight;
+					} else if (wrapper.dataset.kustoPrevSuccessHeight) {
+						wrapper.style.height = wrapper.dataset.kustoPrevSuccessHeight;
 					} else {
 						wrapper.style.height = '240px';
 					}

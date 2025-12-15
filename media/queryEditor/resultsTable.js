@@ -295,6 +295,34 @@ function __kustoStripLinePositionTokens(text) {
 	return s;
 }
 
+function __kustoTryExtractAutoFindTermFromMessage(message) {
+	try {
+		const msg = String(message || '');
+		if (!msg.trim()) return null;
+		// Specific common cases (more precise patterns first).
+		let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*'([^']+)'/i);
+		if (!m) {
+			m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*'([^']+)'/i);
+		}
+		// SEM0100 and similar: the useful token is often the identifier in `named 'X'`.
+		if (!m) {
+			m = msg.match(/\bnamed\s*'([^']+)'/i);
+		}
+		// Generic semantic error pattern: SEMxxxx ... 'token'
+		if (!m) {
+			m = msg.match(/\bSEM\d{4}\b[^']*'([^']+)'/i);
+		}
+		if (m && m[1]) {
+			const t = String(m[1]);
+			// Avoid pathological cases (huge extracted strings).
+			if (t.length > 0 && t.length <= 400) {
+				return t;
+			}
+		}
+	} catch { /* ignore */ }
+	return null;
+}
+
 function __kustoBuildErrorUxModel(rawError) {
 	const raw = (rawError === null || rawError === undefined) ? '' : String(rawError);
 	if (!raw.trim()) {
@@ -321,30 +349,7 @@ function __kustoBuildErrorUxModel(rawError) {
 					}
 				} catch { /* ignore */ }
 			}
-			let autoFindTerm = null;
-			try {
-				const msg = String(normalized || candidateMsg || '');
-				// Specific common cases (more precise patterns first).
-				let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*'([^']+)'/i);
-				if (!m) {
-					m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*'([^']+)'/i);
-				}
-				// SEM0100 and similar: the useful token is often the identifier in `named 'X'`.
-				if (!m) {
-					m = msg.match(/\bnamed\s*'([^']+)'/i);
-				}
-				// Generic semantic error pattern: SEMxxxx ... 'token'
-				if (!m) {
-					m = msg.match(/\bSEM\d{4}\b[^']*'([^']+)'/i);
-				}
-				if (m && m[1]) {
-					const t = String(m[1]);
-					// Avoid pathological cases (huge extracted strings).
-					if (t.length > 0 && t.length <= 400) {
-						autoFindTerm = t;
-					}
-				}
-			} catch { /* ignore */ }
+			const autoFindTerm = __kustoTryExtractAutoFindTermFromMessage(String(normalized || candidateMsg || ''));
 			return { kind: 'badrequest', message: normalized || raw, location: loc || null, autoFindTerm };
 		}
 
@@ -356,7 +361,11 @@ function __kustoBuildErrorUxModel(rawError) {
 	}
 
 	// Not JSON (or unparseable): display as wrapped text.
-	return { kind: 'text', text: raw };
+	return {
+		kind: 'text',
+		text: raw,
+		autoFindTerm: __kustoTryExtractAutoFindTermFromMessage(raw)
+	};
 }
 
 function __kustoMaybeAdjustLocationForCacheLine(boxId, location) {
@@ -427,7 +436,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 				'</a>';
 		}
 		return (
-			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+			'<div class="results-header kusto-error-ux" style="color: var(--vscode-errorForeground);">' +
 			'<div><strong>' + msgEsc + '</strong>' + locHtml + '</div>' +
 			'</div>'
 		);
@@ -435,7 +444,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 	if (model.kind === 'json') {
 		const pre = __kustoEscapeForHtml(model.pretty);
 		return (
-			'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+			'<div class="results-header kusto-error-ux" style="color: var(--vscode-errorForeground);">' +
 			'<pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family);">' +
 			pre +
 			'</pre>' +
@@ -445,7 +454,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 	// text
 	const lines = String(model.text || '').split(/\r?\n/).map(__kustoEscapeForHtml).join('<br>');
 	return (
-		'<div class="results-header" style="color: var(--vscode-errorForeground);">' +
+		'<div class="results-header kusto-error-ux" style="color: var(--vscode-errorForeground);">' +
 		lines +
 		'</div>'
 	);

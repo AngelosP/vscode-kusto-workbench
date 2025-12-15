@@ -955,6 +955,11 @@
 			gap: 8px;
 		}
 
+		/* Add a bit of space under the error UX so it doesn't visually collide with the bottom edge/handle. */
+		.results-header.kusto-error-ux {
+			margin-bottom: 10px;
+		}
+
 		.results-title-row {
 			display: inline-flex;
 			align-items: center;
