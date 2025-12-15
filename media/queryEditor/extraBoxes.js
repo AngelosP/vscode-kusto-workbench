@@ -959,6 +959,8 @@ function addUrlBox(options) {
 				} catch { /* ignore */ }
 
 				let minH = 120;
+				let maxH = 900;
+				let csvMaxH = null;
 				try {
 					const contentEl = document.getElementById(id + '_content');
 					const isCsvMode = !!(contentEl && contentEl.classList && contentEl.classList.contains('url-csv-mode'));
@@ -966,13 +968,32 @@ function addUrlBox(options) {
 						// Prevent a resize "jump" when auto-sized smaller than 120px, but still allow
 						// shrinking below the current height when the content is tall.
 						minH = Math.max(0, Math.min(120, Math.ceil(startHeight)));
+						// Also clamp the maximum height to the natural content height to avoid
+						// blank slack below short CSV results.
+						try {
+							const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
+							if (tableContainer && typeof tableContainer.scrollHeight === 'number') {
+								const overheadPx = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height) - (tableContainer.clientHeight || 0));
+								const desiredPx = Math.max(0, Math.ceil(overheadPx + tableContainer.scrollHeight + 10));
+								if (desiredPx > 0) {
+									csvMaxH = desiredPx;
+									maxH = Math.min(maxH, desiredPx);
+								}
+							}
+						} catch { /* ignore */ }
 					}
 				} catch { /* ignore */ }
 
 				const onMove = (moveEvent) => {
 					const delta = moveEvent.clientY - startY;
-					const nextHeight = Math.max(minH, Math.min(900, startHeight + delta));
+					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
+					// Best-effort: keep CSV wrappers from ever being taller than contents.
+					try {
+						if (csvMaxH && nextHeight > (csvMaxH + 1) && typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+							window.__kustoClampUrlCsvWrapperHeight(id);
+						}
+					} catch { /* ignore */ }
 				};
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
@@ -1113,6 +1134,47 @@ function __kustoParseCsv(text) {
 	return rows;
 }
 
+// Clamp the URL CSV output wrapper height so it cannot be taller than its contents.
+// This avoids blank slack below short CSV results while still allowing the user to
+// resize smaller than contents (scrolling).
+function __kustoClampUrlCsvWrapperHeight(boxId) {
+	try {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const wrapper = document.getElementById(id + '_wrapper');
+		const contentEl = document.getElementById(id + '_content');
+		if (!wrapper || !contentEl) return;
+		if (!(contentEl.classList && contentEl.classList.contains('url-csv-mode'))) return;
+		const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
+		if (!tableContainer) return;
+
+		const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
+		const tcClientH = Math.max(0, (tableContainer.clientHeight || 0));
+		const tcScrollH = Math.max(0, (tableContainer.scrollHeight || 0));
+		if (!tcScrollH) return;
+
+		const overheadPx = Math.max(0, wrapperH - tcClientH);
+		const desiredPx = Math.max(0, Math.ceil(overheadPx + tcScrollH + 10));
+		if (!desiredPx) return;
+
+		if (wrapperH > (desiredPx + 1)) {
+			wrapper.style.height = desiredPx + 'px';
+			wrapper.style.minHeight = '0';
+			try {
+				if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
+					wrapper.dataset.kustoPrevHeight = wrapper.style.height;
+				}
+			} catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+}
+
+try {
+	window.__kustoClampUrlCsvWrapperHeight = __kustoClampUrlCsvWrapperHeight;
+} catch { /* ignore */ }
+
 function __kustoRenderUrlContent(contentEl, st) {
 	try {
 		__kustoClearElement(contentEl);
@@ -1247,6 +1309,17 @@ function __kustoRenderUrlContent(contentEl, st) {
 						tc.style.maxHeight = 'none';
 						tc.style.overflow = 'auto';
 					}
+				} catch { /* ignore */ }
+
+				// If a persisted/manual height is larger than the CSV contents, clamp it.
+				try {
+					setTimeout(() => {
+						try {
+							if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+								window.__kustoClampUrlCsvWrapperHeight(boxId);
+							}
+						} catch { /* ignore */ }
+					}, 0);
 				} catch { /* ignore */ }
 				return;
 			}

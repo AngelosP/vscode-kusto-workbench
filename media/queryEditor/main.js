@@ -457,7 +457,7 @@ window.addEventListener('message', event => {
 				if (optimizeBtn) {
 					if (!available) {
 						optimizeBtn.disabled = true;
-						optimizeBtn.title = 'Optimize query performance\n\nGitHub Copilot is required for this feature. Please enable Copilot in VS Code to use query optimization.';
+						optimizeBtn.title = 'Optimize query performance\n\nGitHub Copilot is required for this feature. Enable Copilot in VS Code to use query optimization.';
 					} else {
 						optimizeBtn.disabled = false;
 						optimizeBtn.title = 'Optimize query performance';
@@ -465,9 +465,27 @@ window.addEventListener('message', event => {
 				}
 			} catch { /* ignore */ }
 			break;
+		case 'optimizeQueryStatus':
+			try {
+				const boxId = message.boxId || '';
+				const status = message.status || '';
+				try {
+					if (typeof __kustoSetOptimizeInProgress === 'function') {
+						__kustoSetOptimizeInProgress(boxId, true, status);
+					} else if (typeof __kustoUpdateOptimizeStatus === 'function') {
+						__kustoUpdateOptimizeStatus(boxId, status);
+					}
+				} catch { /* ignore */ }
+			} catch { /* ignore */ }
+			break;
 		case 'optimizeQueryReady':
 			try {
 				const sourceBoxId = message.boxId || '';
+				try {
+					if (typeof __kustoSetOptimizeInProgress === 'function') {
+						__kustoSetOptimizeInProgress(sourceBoxId, false, '');
+					}
+				} catch { /* ignore */ }
 				try {
 					if (typeof __kustoHideOptimizePromptForBox === 'function') {
 						__kustoHideOptimizePromptForBox(sourceBoxId);
@@ -593,6 +611,11 @@ window.addEventListener('message', event => {
 		case 'optimizeQueryError':
 			try {
 				const boxId = message.boxId || '';
+				try {
+					if (typeof __kustoSetOptimizeInProgress === 'function') {
+						__kustoSetOptimizeInProgress(boxId, false, '');
+					}
+				} catch { /* ignore */ }
 				try {
 					if (typeof __kustoHideOptimizePromptForBox === 'function') {
 						__kustoHideOptimizePromptForBox(boxId);

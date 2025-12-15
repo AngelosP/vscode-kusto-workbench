@@ -73,16 +73,41 @@ function addQueryBox(options) {
 		'<rect x="10" y="3" width="3" height="11"/>' +
 		'</svg>';
 
+	const copilotLogoUri = (() => {
+		try {
+			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
+				? String(window.__kustoQueryEditorConfig.copilotLogoUri)
+				: '';
+		} catch {
+			return '';
+		}
+	})();
+	const copilotLogoHtml = copilotLogoUri
+		? ('<img class="copilot-logo" src="' + copilotLogoUri + '" alt="" aria-hidden="true" />')
+		: (
+			'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+			'<rect x="3" y="3" width="10" height="9" rx="2" />' +
+			'<path d="M6 12v1" />' +
+			'<path d="M10 12v1" />' +
+			'<circle cx="6.5" cy="7" r=".8" fill="currentColor" stroke="none" />' +
+			'<circle cx="9.5" cy="7" r=".8" fill="currentColor" stroke="none" />' +
+			'<path d="M6.2 9.2c.6.5 1.2.8 1.8.8s1.2-.3 1.8-.8" />' +
+			'</svg>'
+		);
+
 	const optimizeOrAcceptHtml = isComparison
 		? ('<button class="accept-optimizations-btn" id="' + id + '_accept_btn" onclick="acceptOptimizations(\'' + id + '\')" disabled ' +
 			'title="Run both queries to compare results. This will be enabled only when results match." aria-label="Accept Optimizations">Accept Optimizations</button>')
-		: ('<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\')" ' +
-			'title="Optimize query performance" aria-label="Optimize query performance with Copilot">' +
-			'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-			'<path d="M8.75 1.5a.75.75 0 0 0-1.5 0v.58c-.57.18-1.02.57-1.36 1.01L4.64 2.35a.75.75 0 1 0-1.06 1.06l.73.73c-.2.3-.37.64-.49 1.01h-.57a.75.75 0 0 0 0 1.5h.57c.12.37.29.7.49 1.01l-.73.73a.75.75 0 1 0 1.06 1.06l1.25-.74c.34.44.79.83 1.36 1.01v.58a.75.75 0 0 0 1.5 0v-.58c.57-.18 1.02-.57 1.36-1.01l1.25.74a.75.75 0 1 0 1.06-1.06l-.73-.73c.2-.3.37-.64.49-1.01h.57a.75.75 0 0 0 0-1.5h-.57a4.07 4.07 0 0 0-.49-1.01l.73-.73a.75.75 0 1 0-1.06-1.06l-1.25.74A3.97 3.97 0 0 0 8.75 2.08V1.5zM8 9.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/>' +
-			'<path d="M4 12.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5z"/>' +
-			'</svg>' +
-			'</button>');
+		: (
+			'<span class="optimize-inline" id="' + id + '_optimize_inline">' +
+				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\')" ' +
+					'title="Optimize query performance" aria-label="Optimize query performance with Copilot">' +
+					copilotLogoHtml +
+				'</button>' +
+				'<span class="optimize-status" id="' + id + '_optimize_status" style="display:none;"></span>' +
+				'<button type="button" class="optimize-cancel-btn" id="' + id + '_optimize_cancel" style="display:none;" onclick="__kustoCancelOptimizeQuery(\'' + id + '\')" title="Cancel optimization" aria-label="Cancel optimization">Cancel</button>' +
+			'</span>'
+		);
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
@@ -543,6 +568,15 @@ function __kustoApplyResultsVisibility(boxId) {
 								urlWrapper.style.height = prev;
 							}
 							urlWrapper.style.minHeight = '';
+							try {
+								setTimeout(() => {
+									try {
+										if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+											window.__kustoClampUrlCsvWrapperHeight(boxId);
+										}
+									} catch { /* ignore */ }
+								}, 0);
+							} catch { /* ignore */ }
 						} else {
 							urlWrapper.style.height = 'auto';
 							urlWrapper.style.minHeight = '0';
@@ -1177,6 +1211,56 @@ function __kustoHideOptimizePromptForBox(boxId) {
 			}
 		}
 	} catch { /* ignore */ }
+
+	try {
+		__kustoSetOptimizeInProgress(boxId, false, '');
+	} catch { /* ignore */ }
+}
+
+function __kustoSetOptimizeInProgress(boxId, inProgress, statusText) {
+	try {
+		const statusEl = document.getElementById(boxId + '_optimize_status');
+		const cancelBtn = document.getElementById(boxId + '_optimize_cancel');
+		if (!statusEl || !cancelBtn) {
+			return;
+		}
+		const on = !!inProgress;
+		statusEl.style.display = on ? '' : 'none';
+		cancelBtn.style.display = on ? '' : 'none';
+		if (on) {
+			statusEl.textContent = String(statusText || 'Optimizing…');
+			cancelBtn.disabled = false;
+		} else {
+			statusEl.textContent = '';
+			cancelBtn.disabled = false;
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoUpdateOptimizeStatus(boxId, statusText) {
+	try {
+		const statusEl = document.getElementById(boxId + '_optimize_status');
+		if (!statusEl) return;
+		statusEl.textContent = String(statusText || '');
+	} catch { /* ignore */ }
+}
+
+function __kustoCancelOptimizeQuery(boxId) {
+	try {
+		__kustoUpdateOptimizeStatus(boxId, 'Canceling…');
+		const cancelBtn = document.getElementById(boxId + '_optimize_cancel');
+		if (cancelBtn) {
+			cancelBtn.disabled = true;
+		}
+	} catch { /* ignore */ }
+	try {
+		vscode.postMessage({
+			type: 'cancelOptimizeQuery',
+			boxId: String(boxId || '')
+		});
+	} catch { /* ignore */ }
 }
 
 function __kustoShowOptimizePromptLoading(boxId) {
@@ -1272,6 +1356,9 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 		optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
 		optimizeBtn.dataset.originalContent = originalContent;
 	}
+	try {
+		__kustoSetOptimizeInProgress(boxId, true, 'Starting optimization…');
+	} catch { /* ignore */ }
 
 	try {
 		vscode.postMessage({

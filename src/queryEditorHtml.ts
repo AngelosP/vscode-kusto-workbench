@@ -22,6 +22,10 @@ export async function getQueryEditorHtml(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.js')).toString()
 	);
 
+	const copilotLogoUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'images', 'copilot-button-logo.png')).toString()
+	);
+
 	const monacoVsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs')).toString();
 	const monacoLoaderUri = webview
 		.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'loader.js'))
@@ -51,6 +55,7 @@ export async function getQueryEditorHtml(
 	return template
 		.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
+		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
 		.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
 		.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))

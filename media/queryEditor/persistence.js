@@ -191,6 +191,17 @@ function __kustoSetUrlOutputHeightPx(boxId, heightPx) {
 		if (!Number.isFinite(h) || h <= 0) return;
 		wrapper.style.height = Math.round(h) + 'px';
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+		// If this is a URL CSV section and the persisted height is larger than its contents,
+		// clamp it once the DOM has finished laying out.
+		try {
+			setTimeout(() => {
+				try {
+					if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+						window.__kustoClampUrlCsvWrapperHeight(boxId);
+					}
+				} catch { /* ignore */ }
+			}, 0);
+		} catch { /* ignore */ }
 	} catch {
 		// ignore
 	}

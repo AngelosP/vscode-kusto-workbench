@@ -36,6 +36,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'cancelQuery'; boxId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
+	| { type: 'cancelOptimizeQuery'; boxId: string }
 	| {
 			type: 'optimizeQuery';
 			query: string;
@@ -73,6 +74,7 @@ export class QueryEditorProvider {
 	private readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void }>();
+	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -200,6 +202,9 @@ export class QueryEditorProvider {
 			case 'prepareOptimizeQuery':
 				await this.prepareOptimizeQuery(message);
 				return;
+			case 'cancelOptimizeQuery':
+				this.cancelOptimizeQuery(message.boxId);
+				return;
 			case 'optimizeQuery':
 				await this.optimizeQueryWithCopilot(message);
 				return;
@@ -227,6 +232,25 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private cancelOptimizeQuery(boxId: string): void {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const running = this.runningOptimizeByBoxId.get(id);
+		if (!running) {
+			return;
+		}
+		try {
+			this.postMessage({ type: 'optimizeQueryStatus', boxId: id, status: 'Canceling…' } as any);
+		} catch {
+			// ignore
+		}
+		try {
+			running.cancel();
+		} catch {
+			// ignore
 		}
 	}
 
@@ -395,29 +419,35 @@ export class QueryEditorProvider {
 	}
 
 	private buildOptimizeQueryPrompt(query: string): string {
-		return `You are a Kusto Query Language (KQL) expert. Optimize the following KQL query for performance without changing its functionality or results.
+		return `Role: You are a senior Kusto Query Language (KQL) performance engineer.
 
-Follow these optimization rules strictly:
+Task: Rewrite the KQL query below to improve performance while preserving **exactly** the same output rows and values (same schema, same grouping keys, same aggregations, same results).
 
-1. **Reorder WHERE clauses**: Move the most aggressive and performant filters first. Priority order:
-   - Date and numerical column filters (e.g., timestamp > ago(1d))
-   - Fast string operations: 'has', 'has_any'
-   - Slower string operations: 'contains'
+Hard constraints:
+- Do **not** change functionality, semantics, or returned results in any way.
+- If you are not 100% sure a change is equivalent, **do not** make it.
+- Keep the query readable and idiomatic KQL.
 
-2. **Remove unused columns**: If the final result doesn't use certain columns, add | project statements to limit columns early, or use other techniques to reduce data volume.
+Optimization rules (apply in this order, as applicable):
+1) Push the most selective filters as early as possible (ideally immediately after the table):
+	- Highest priority: time filters and numeric/boolean filters
+	- Next: fast string operators like \`has\`, \`has_any\`
+	- Last: slower string operators like \`contains\`, regex
+2) Consolidate transformations with \`summarize\` when equivalent:
+	- If \`extend\` outputs are only used as \`summarize by\` keys or aggregates, move/inline them into \`summarize\` instead of carrying them earlier.
+3) Project away unused columns early (especially before heavy operators):
+	- Add \`project\` / \`project-away\` to reduce carried columns, but only if it cannot affect semantics.
+	- For dynamic/JSON fields, prefer extracting only what is needed (and only when needed).
+4) Replace \`contains\` with \`has\` only when it is guaranteed to be equivalent for the given literal and data (no false negatives/positives).
 
-3. **Replace EXTEND with SUMMARIZE where possible**: If | extend statements can be reliably replaced by | summarize X by Y statements while producing identical results, make that change. This is especially beneficial if the query already has | summarize statements.
-
-4. **Replace CONTAINS with HAS**: Examine any 'contains' statements and determine if the search term can safely be replaced with 'has' (which is faster).
-
-**CRITICAL**: Only make changes that preserve the exact same query results. Do not take risks that might alter the data returned.
+Output format:
+- Return **ONLY** the optimized query in a single \`\`\`kusto\`\`\` code block.
+- No explanation, no bullets, no extra text.
 
 Original query:
 \`\`\`kusto
 ${query}
-\`\`\`
-
-Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no additional explanation or commentary.`;
+\`\`\``;
 	}
 
 	private async prepareOptimizeQuery(
@@ -466,46 +496,85 @@ Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no addi
 		message: Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>
 	): Promise<void> {
 		const { query, connectionId, database, boxId, queryName, modelId, promptText } = message;
+		const id = String(boxId || '').trim();
+		if (!id) {
+			return;
+		}
+
+		// Cancel any prior optimization for this box.
+		try {
+			const existing = this.runningOptimizeByBoxId.get(id);
+			if (existing) {
+				existing.cancel();
+				this.runningOptimizeByBoxId.delete(id);
+			}
+		} catch {
+			// ignore
+		}
+		const cts = new vscode.CancellationTokenSource();
+		this.runningOptimizeByBoxId.set(id, cts);
+
+		const postStatus = (status: string) => {
+			try {
+				this.postMessage({ type: 'optimizeQueryStatus', boxId: id, status } as any);
+			} catch {
+				// ignore
+			}
+		};
 
 		try {
-			let model: vscode.LanguageModelChat | undefined;
-			const requestedModelId = String(modelId || '').trim();
-			if (requestedModelId) {
-				try {
-					const byId = await vscode.lm.selectChatModels({ id: requestedModelId });
-					model = byId[0];
-				} catch {
-					// ignore
-				}
-			}
-
-			// Fallback: pick first Copilot model
-			if (!model) {
-				const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-				if (models.length === 0) {
+			postStatus('Selecting Copilot model…');
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
 				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
 				this.postMessage({
 					type: 'optimizeQueryError',
-					boxId,
+					boxId: id,
 					error: 'Copilot not available'
 				});
 				return;
-				}
+			}
+			const requestedModelId = String(modelId || '').trim();
+			let model: vscode.LanguageModelChat | undefined;
+			if (requestedModelId) {
+				model = models.find(m => m.id === requestedModelId);
+			}
+			if (!model) {
 				model = models[0];
 			}
+			try {
+				postStatus(`Using model: ${this.formatCopilotModelLabel(model)}`);
+			} catch {
+				// ignore
+			}
+
+			postStatus('Sending request to Copilot…');
 
 			const effectivePromptText = String(promptText || '').trim() || this.buildOptimizeQueryPrompt(query);
 
 			const response = await model.sendRequest(
 				[vscode.LanguageModelChatMessage.User(effectivePromptText)],
 				{},
-				new vscode.CancellationTokenSource().token
+				cts.token
 			);
 
+			postStatus('Waiting for Copilot response…');
+
 			let optimizedQuery = '';
+			let lastProgressUpdate = 0;
 			for await (const fragment of response.text) {
+				if (cts.token.isCancellationRequested) {
+					throw new Error('Optimization canceled');
+				}
 				optimizedQuery += fragment;
+				const now = Date.now();
+				if (now - lastProgressUpdate > 600) {
+					lastProgressUpdate = now;
+					postStatus(`Receiving response… (${optimizedQuery.length} chars)`);
+				}
 			}
+
+			postStatus('Parsing optimized query…');
 
 			// Extract the query from markdown code block
 			const codeBlockMatch = optimizedQuery.match(/```(?:kusto|kql)?\s*\n([\s\S]*?)\n```/);
@@ -520,10 +589,12 @@ Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no addi
 				throw new Error('Failed to extract optimized query from Copilot response');
 			}
 
+			postStatus('Done. Creating comparison…');
+
 			// Return the optimized query to webview for comparison box creation
 			this.postMessage({
 				type: 'optimizeQueryReady',
-				boxId,
+				boxId: id,
 				optimizedQuery,
 				queryName,
 				connectionId,
@@ -533,6 +604,15 @@ Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no addi
 		} catch (err: any) {
 			const errorMsg = err?.message || String(err);
 			console.error('Query optimization failed:', err);
+			const canceled = cts.token.isCancellationRequested || /cancel/i.test(errorMsg);
+			if (canceled) {
+				try {
+					this.postMessage({ type: 'optimizeQueryError', boxId: id, error: 'Optimization canceled' });
+				} catch {
+					// ignore
+				}
+				return;
+			}
 			
 			if (err instanceof vscode.LanguageModelError) {
 				if (err.cause instanceof Error && err.cause.message.includes('off_topic')) {
@@ -546,9 +626,20 @@ Provide ONLY the optimized query wrapped in \`\`\`kusto code block, with no addi
 
 			this.postMessage({
 				type: 'optimizeQueryError',
-				boxId,
+				boxId: id,
 				error: errorMsg
 			});
+		} finally {
+			try {
+				this.runningOptimizeByBoxId.delete(id);
+			} catch {
+				// ignore
+			}
+			try {
+				cts.dispose();
+			} catch {
+				// ignore
+			}
 		}
 	}
 

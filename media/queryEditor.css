@@ -1595,6 +1595,52 @@
 			height: 16px;
 		}
 
+		.optimize-query-btn img.copilot-logo {
+			width: 16px;
+			height: 16px;
+			display: block;
+		}
+
+		.optimize-inline {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.optimize-status {
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+			max-width: 360px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.optimize-cancel-btn {
+			background: var(--vscode-inputValidation-errorBackground);
+			color: var(--vscode-inputValidation-errorForeground);
+			border: 1px solid var(--vscode-inputValidation-errorBorder);
+			border-radius: 4px;
+			padding: 4px 6px;
+			height: 28px;
+			cursor: pointer;
+		}
+
+		.optimize-cancel-btn:hover:not(:disabled) {
+			filter: brightness(0.95);
+		}
+
+		.optimize-cancel-btn:disabled {
+			opacity: 0.6;
+			cursor: not-allowed;
+		}
+
+		body.vscode-dark .optimize-query-btn img.copilot-logo,
+		body.vscode-high-contrast .optimize-query-btn img.copilot-logo,
+		body.vscode-high-contrast-light .optimize-query-btn img.copilot-logo {
+			filter: invert(1);
+		}
+
 		.accept-optimizations-btn {
 			background: var(--vscode-button-secondaryBackground);
 			color: var(--vscode-button-secondaryForeground);
