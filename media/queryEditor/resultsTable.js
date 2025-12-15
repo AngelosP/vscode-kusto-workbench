@@ -299,6 +299,18 @@ function __kustoTryExtractAutoFindTermFromMessage(message) {
 	try {
 		const msg = String(message || '');
 		if (!msg.trim()) return null;
+		// Kusto common pitfall: calling notempty() with no args.
+		// Example: "SEM0219: notempty(): function expects 1 argument(s)."
+		// Auto-find "notempty" so users can quickly fix occurrences.
+		try {
+			const lower = msg.toLowerCase();
+			const looksLikeSem0219 = lower.includes('sem0219');
+			const looksLikeArity1 = lower.includes('function expects 1 argument');
+			const mentionsNotEmpty = /\bnotempty\b/i.test(msg);
+			if ((looksLikeSem0219 || looksLikeArity1) && mentionsNotEmpty) {
+				return 'notempty';
+			}
+		} catch { /* ignore */ }
 		// Specific common cases (more precise patterns first).
 		let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*(['"])(.*?)\1/i);
 		if (!m) {
