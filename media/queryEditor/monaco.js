@@ -2541,6 +2541,32 @@ function initQueryEditor(boxId) {
 			const text = document.getElementById(boxId + '_caret_docs_text') || banner;
 			let lastHtml = '';
 			let lastKey = '';
+			const watermarkTitle = 'Smart documentation tooltips';
+			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
+
+			const showWatermark = () => {
+				try {
+					if (banner) {
+						banner.style.display = 'flex';
+					}
+				} catch { /* ignore */ }
+				try {
+					if (text) {
+						text.innerHTML =
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-title">' +
+							watermarkTitle +
+							'</div>' +
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-body">' +
+							watermarkBody +
+							'</div>';
+						if (text.classList) {
+							text.classList.add('is-watermark');
+						}
+					}
+				} catch { /* ignore */ }
+				lastHtml = '';
+				lastKey = 'watermark';
+			};
 
 			const hide = () => {
 				try {
@@ -2569,7 +2595,7 @@ function initQueryEditor(boxId) {
 							? String(activeQueryEditorBoxId)
 							: null;
 						if (activeId && activeId !== String(boxId)) {
-							hide();
+							showWatermark();
 							return;
 						}
 					} catch {
@@ -2580,13 +2606,13 @@ function initQueryEditor(boxId) {
 					const pos = editor.getPosition();
 					const sel = editor.getSelection();
 					if (!model || !pos || !sel || !sel.isEmpty()) {
-						hide();
+						showWatermark();
 						return;
 					}
 
 					const getter = window.__kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
-						hide();
+						showWatermark();
 						return;
 					}
 
@@ -2612,37 +2638,20 @@ function initQueryEditor(boxId) {
 					}
 					const html = info && info.markdown ? renderDocMarkdownToHtml(info.markdown) : '';
 					if (!html) {
-						hide();
+						showWatermark();
 						return;
-					}
-
-					// Keep the banner positioned so it overlays the first editor lines (no layout shift).
-					try {
-						if (banner) {
-							let top = 0;
-							const editorHost = document.getElementById(boxId + '_query_editor');
-							const wrapper = editorHost ? editorHost.parentElement : null;
-							if (wrapper && wrapper.querySelector) {
-								const toolbar = wrapper.querySelector('.query-editor-toolbar');
-								if (toolbar && typeof toolbar.offsetHeight === 'number') {
-									top += toolbar.offsetHeight;
-								}
-								const missing = document.getElementById(boxId + '_missing_clusters');
-								if (missing && missing.style && missing.style.display !== 'none' && typeof missing.offsetHeight === 'number') {
-									top += missing.offsetHeight;
-								}
-							}
-							banner.style.top = String(Math.max(0, top)) + 'px';
-						}
-					} catch {
-						// ignore
 					}
 
 					const key = `${pos.lineNumber}:${pos.column}:${html.slice(0, 120)}`;
 					if (html !== lastHtml) {
 						lastHtml = html;
 						try {
-							if (text) text.innerHTML = html;
+							if (text) {
+								if (text.classList) {
+									text.classList.remove('is-watermark');
+								}
+								text.innerHTML = html;
+							}
 						} catch {
 							// ignore
 						}

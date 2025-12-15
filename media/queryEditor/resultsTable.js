@@ -300,20 +300,20 @@ function __kustoTryExtractAutoFindTermFromMessage(message) {
 		const msg = String(message || '');
 		if (!msg.trim()) return null;
 		// Specific common cases (more precise patterns first).
-		let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*'([^']+)'/i);
+		let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*(['"])(.*?)\1/i);
 		if (!m) {
-			m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*'([^']+)'/i);
+			m = msg.match(/\bSEM0260\b\s*:\s*Unknown\s+function\s*:\s*(['"])(.*?)\1/i);
 		}
 		// SEM0100 and similar: the useful token is often the identifier in `named 'X'`.
 		if (!m) {
-			m = msg.match(/\bnamed\s*'([^']+)'/i);
+			m = msg.match(/\bnamed\s*(['"])(.*?)\1/i);
 		}
 		// Generic semantic error pattern: SEMxxxx ... 'token'
 		if (!m) {
-			m = msg.match(/\bSEM\d{4}\b[^']*'([^']+)'/i);
+			m = msg.match(/\bSEM\d{4}\b[^\n\r]*?(['"])(.*?)\1/i);
 		}
-		if (m && m[1]) {
-			const t = String(m[1]);
+		if (m && m[2]) {
+			const t = String(m[2]);
 			// Avoid pathological cases (huge extracted strings).
 			if (t.length > 0 && t.length <= 400) {
 				return t;

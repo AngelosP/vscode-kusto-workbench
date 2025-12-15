@@ -140,7 +140,7 @@ function addQueryBox(options) {
 		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Caret docs tooltip\nShows a persistent tooltip near the caret while typing" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation tooltips\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
@@ -972,6 +972,48 @@ function toggleCaretDocsEnabled() {
 		} catch {
 			// ignore
 		}
+	} else {
+		// When turning on, show the banner immediately (watermark) without waiting for cursor movement.
+		try {
+			const watermarkTitle = 'Smart documentation tooltips';
+			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
+			for (const boxId of queryBoxes) {
+				try {
+					const banner = document.getElementById(boxId + '_caret_docs');
+					const text = document.getElementById(boxId + '_caret_docs_text') || banner;
+					if (banner) {
+						banner.style.display = 'flex';
+					}
+					if (text) {
+						text.innerHTML =
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-title">' +
+							watermarkTitle +
+							'</div>' +
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-body">' +
+							watermarkBody +
+							'</div>';
+						if (text.classList) {
+							text.classList.add('is-watermark');
+						}
+					}
+				} catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+
+		// Then refresh any Monaco-driven overlays so real docs content replaces the watermark.
+		try {
+			const overlays = (typeof caretDocOverlaysByBoxId !== 'undefined') ? caretDocOverlaysByBoxId : null;
+			if (overlays && typeof overlays === 'object') {
+				for (const key of Object.keys(overlays)) {
+					try {
+						const o = overlays[key];
+						if (o && typeof o.update === 'function') {
+							o.update();
+						}
+					} catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
 	}
 	try {
 		vscode.postMessage({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled });

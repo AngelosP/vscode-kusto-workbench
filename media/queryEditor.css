@@ -645,16 +645,29 @@
 			line-height: 1.35;
 			user-select: none;
 			pointer-events: none;
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: 0;
-			z-index: 5;
+			position: relative;
+			flex: 0 0 auto;
+			/* Keep the editor layout stable: reserve space for two lines of content. */
+			min-height: calc(2 * 1.35em + 12px);
 		}
 
 		.qe-caret-docs-text {
 			flex: 1 1 auto;
 			min-width: 0;
+			white-space: normal;
+		}
+
+		.qe-caret-docs-text.is-watermark {
+			opacity: 0.9;
+		}
+
+		.qe-caret-docs-text.is-watermark .qe-caret-docs-watermark-title {
+			color: var(--vscode-foreground);
+			font-weight: 600;
+		}
+
+		.qe-caret-docs-text.is-watermark .qe-caret-docs-watermark-body {
+			color: var(--vscode-descriptionForeground);
 		}
 
 		.qe-caret-docs-text code {
@@ -684,11 +697,20 @@
 		}
 
 		.query-editor-toolbar-sep {
-			width: 1px;
-			height: 18px;
-			background: var(--vscode-input-border);
-			margin: 0 4px;
+			width: auto;
+			height: auto;
+			background: transparent;
+			margin: 0 2px;
 			opacity: 0.9;
+			color: var(--vscode-descriptionForeground);
+			user-select: none;
+		}
+
+		.query-editor-toolbar-sep::before {
+			content: '|';
+			display: inline-block;
+			line-height: 18px;
+			padding: 0 2px;
 		}
 
 		.query-editor-toolbar-btn {
