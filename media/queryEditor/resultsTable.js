@@ -108,6 +108,19 @@ function __kustoGetSortIconSvg() {
 	);
 }
 
+function __kustoGetTrashIconSvg(size) {
+	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 14;
+	return (
+		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 4h10" />' +
+		'<path d="M6 4V3h4v1" />' +
+		'<path d="M5 4l.6 10h4.8L11 4" />' +
+		'<path d="M7 7v5" />' +
+		'<path d="M9 7v5" />' +
+		'</svg>'
+	);
+}
+
 function __kustoNormalizeSortDirection(dir) {
 	return (dir === 'desc') ? 'desc' : 'asc';
 }
@@ -316,14 +329,13 @@ function __kustoRenderSortDialog(boxId) {
 	const listEl = document.getElementById(boxId + '_sort_list');
 	if (!listEl) return;
 	const spec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
-
-	if (spec.length === 0) {
-		listEl.innerHTML = '<div class="kusto-sort-empty">No sort applied.</div>';
-		return;
-	}
-
 	const cols = Array.isArray(state.columns) ? state.columns : [];
-	listEl.innerHTML = spec.map((rule, idx) => {
+
+	const emptyHint = (spec.length === 0)
+		? '<div class="kusto-sort-empty">No sort applied.</div>'
+		: '';
+
+	const rulesHtml = spec.map((rule, idx) => {
 		const colIndex = rule.colIndex;
 		const dir = __kustoNormalizeSortDirection(rule.dir);
 		const options = cols.map((c, i) => {
@@ -331,21 +343,131 @@ function __kustoRenderSortDialog(boxId) {
 			return '<option value="' + String(i) + '"' + selected + '>' + __kustoEscapeForHtml(String(c ?? '')) + '</option>';
 		}).join('');
 		return (
-			'<div class="kusto-sort-row">' +
-			'<div class="kusto-sort-order">' + String(idx + 1) + '</div>' +
-				'<select class="kusto-sort-col" aria-label="Sort column" onchange="updateSortRuleColumn(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+			'<div class="kusto-sort-row" data-sort-idx="' + String(idx) + '">' +
+			'<button type="button" class="kusto-sort-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</button>' +
+			'<button type="button" class="kusto-sort-remove" onclick="removeSortRule(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Remove" aria-label="Remove" tabindex="0">' + __kustoGetTrashIconSvg(14) + '</button>' +
+			'<div class="kusto-sort-order" aria-hidden="true">' + String(idx + 1) + '</div>' +
+			'<select class="kusto-sort-col" aria-label="Sort column" onchange="updateSortRuleColumn(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 			options +
 			'</select>' +
-				'<select class="kusto-sort-dir" aria-label="Sort direction" onchange="updateSortRuleDirection(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+			'<select class="kusto-sort-dir" aria-label="Sort direction" onchange="updateSortRuleDirection(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+			'<option value="none">None</option>' +
 			'<option value="asc"' + (dir === 'asc' ? ' selected' : '') + '>Ascending</option>' +
 			'<option value="desc"' + (dir === 'desc' ? ' selected' : '') + '>Descending</option>' +
 			'</select>' +
-				'<button type="button" class="kusto-sort-move" onclick="moveSortRuleUp(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Move up" aria-label="Move up">↑</button>' +
-				'<button type="button" class="kusto-sort-move" onclick="moveSortRuleDown(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Move down" aria-label="Move down">↓</button>' +
-				'<button type="button" class="kusto-sort-remove" onclick="removeSortRule(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Remove" aria-label="Remove">✕</button>' +
 			'</div>'
 		);
 	}).join('');
+
+	const addOptions = cols.map((c, i) => {
+		return '<option value="' + String(i) + '">' + __kustoEscapeForHtml(String(c ?? '')) + '</option>';
+	}).join('');
+
+	const addRow = (
+		'<div class="kusto-sort-add-row">' +
+		'<div class="kusto-sort-add-label">Add sort</div>' +
+		'<select class="kusto-sort-col" id="' + boxId + '_sort_add_col" aria-label="Add sort column">' +
+		'<option value="" selected>Select a column…</option>' +
+		addOptions +
+		'</select>' +
+		'<select class="kusto-sort-dir" id="' + boxId + '_sort_add_dir" aria-label="Add sort direction">' +
+		'<option value="asc" selected>Ascending</option>' +
+		'<option value="desc">Descending</option>' +
+		'</select>' +
+		'<button type="button" class="kusto-sort-add-btn" onclick="__kustoAddSortRuleInline(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Add" aria-label="Add">+</button>' +
+		'</div>'
+	);
+
+	listEl.innerHTML = emptyHint + rulesHtml + addRow;
+	try { __kustoWireSortDialogDnD(boxId); } catch { /* ignore */ }
+}
+
+function __kustoAddSortRuleInline(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const colSel = document.getElementById(boxId + '_sort_add_col');
+	const dirSel = document.getElementById(boxId + '_sort_add_dir');
+	if (!colSel || !dirSel) return;
+	const colIndex = parseInt(String(colSel.value), 10);
+	if (!isFinite(colIndex) || colIndex < 0) return;
+	const dir = (String(dirSel.value) === 'desc') ? 'desc' : 'asc';
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	// Remove any existing rule for the column.
+	for (let i = spec.length - 1; i >= 0; i--) {
+		if (spec[i] && spec[i].colIndex === colIndex) {
+			spec.splice(i, 1);
+		}
+	}
+	spec.push({ colIndex: colIndex, dir: dir });
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function __kustoWireSortDialogDnD(boxId) {
+	const listEl = document.getElementById(boxId + '_sort_list');
+	if (!listEl) return;
+	const rows = Array.from(listEl.querySelectorAll('.kusto-sort-row[data-sort-idx]'));
+	if (rows.length === 0) return;
+
+	// Keep drag state on window to survive re-renders.
+	if (!window.__kustoSortDnD) {
+		window.__kustoSortDnD = { boxId: null, fromIdx: -1, dragEnabled: false };
+	}
+
+	for (const row of rows) {
+		row.draggable = true;
+		row.addEventListener('dragstart', (e) => {
+			const idx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
+			if (!isFinite(idx)) return;
+			const handle = e && e.target && e.target.closest ? e.target.closest('.kusto-sort-grab') : null;
+			if (!handle) {
+				// Only allow drag when starting from the grab handle.
+				try { e.preventDefault(); } catch { /* ignore */ }
+				return;
+			}
+			window.__kustoSortDnD.boxId = boxId;
+			window.__kustoSortDnD.fromIdx = idx;
+			row.classList.add('kusto-sort-dragging');
+			try {
+				e.dataTransfer.effectAllowed = 'move';
+				// Some browsers require data to be set.
+				e.dataTransfer.setData('text/plain', String(idx));
+			} catch { /* ignore */ }
+		});
+
+		row.addEventListener('dragend', () => {
+			row.classList.remove('kusto-sort-dragging');
+			for (const r of rows) r.classList.remove('kusto-sort-drop');
+		});
+
+		row.addEventListener('dragover', (e) => {
+			try { e.preventDefault(); } catch { /* ignore */ }
+			for (const r of rows) r.classList.remove('kusto-sort-drop');
+			row.classList.add('kusto-sort-drop');
+			try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+		});
+
+		row.addEventListener('drop', (e) => {
+			try { e.preventDefault(); } catch { /* ignore */ }
+			const fromIdx = window.__kustoSortDnD ? window.__kustoSortDnD.fromIdx : -1;
+			const toIdx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
+			if (!isFinite(fromIdx) || !isFinite(toIdx) || fromIdx === toIdx) return;
+			__kustoMoveSortRule(boxId, fromIdx, toIdx);
+		});
+	}
+}
+
+function __kustoMoveSortRule(boxId, fromIdx, toIdx) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	const f = parseInt(String(fromIdx), 10);
+	const t = parseInt(String(toIdx), 10);
+	if (!isFinite(f) || !isFinite(t) || f < 0 || t < 0 || f >= spec.length || t >= spec.length) return;
+	const item = spec.splice(f, 1)[0];
+	spec.splice(t, 0, item);
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
 }
 
 function addSortRule(boxId) {
@@ -400,6 +522,12 @@ function updateSortRuleDirection(ruleIndex, value, boxId) {
 	const idx = parseInt(String(ruleIndex), 10);
 	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
 	if (!isFinite(idx) || idx < 0 || idx >= spec.length) return;
+	if (String(value) === 'none') {
+		spec.splice(idx, 1);
+		__kustoSetSortSpecAndRerender(boxId, spec);
+		__kustoRenderSortDialog(boxId);
+		return;
+	}
 	const colIndex = spec[idx] ? spec[idx].colIndex : 0;
 	spec[idx] = { colIndex: colIndex, dir: __kustoNormalizeSortDirection(value) };
 	__kustoSetSortSpecAndRerender(boxId, spec);
@@ -686,16 +814,11 @@ function displayResultForBox(result, boxId, options) {
 		'<div class="kusto-sort-modal" id="' + boxId + '_sort_modal" onclick="closeSortDialogOnBackdrop(event, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 		'<div class="kusto-sort-dialog" onclick="event.stopPropagation();">' +
 		'<div class="kusto-sort-header">' +
+		'<button type="button" class="kusto-sort-close" onclick="closeSortDialog(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Close" aria-label="Close">' + __kustoGetTrashIconSvg(14) + '</button>' +
 		'<div><strong>Sort</strong></div>' +
-		'<button type="button" class="kusto-sort-close" onclick="closeSortDialog(\'' + boxId + '\')" aria-label="Close">✕</button>' +
 		'</div>' +
 		'<div class="kusto-sort-body">' +
 		'<div id="' + boxId + '_sort_list"></div>' +
-		'</div>' +
-		'<div class="kusto-sort-footer">' +
-		'<button type="button" class="kusto-sort-btn" onclick="addSortRule(\'' + boxId + '\')">Add</button>' +
-		'<button type="button" class="kusto-sort-btn" onclick="clearSort(\'' + boxId + '\')">Clear</button>' +
-		'<button type="button" class="kusto-sort-btn" onclick="closeSortDialog(\'' + boxId + '\')">Close</button>' +
 		'</div>' +
 		'</div>' +
 		'</div>';

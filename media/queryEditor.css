@@ -1377,20 +1377,31 @@
 			border-bottom: 1px solid var(--vscode-panel-border);
 			display: flex;
 			align-items: center;
-			justify-content: space-between;
+			justify-content: flex-start;
+			gap: 8px;
 		}
 
 		.kusto-sort-close {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border);
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
 			border-radius: 2px;
-			padding: 2px 8px;
+			color: var(--vscode-errorForeground);
 			cursor: pointer;
 		}
 
 		.kusto-sort-close:hover {
 			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-input-border);
+		}
+
+		.kusto-sort-close svg {
+			display: block;
 		}
 
 		.kusto-sort-body {
@@ -1406,10 +1417,52 @@
 
 		.kusto-sort-row {
 			display: grid;
-			grid-template-columns: 26px 1fr 140px 28px 28px 28px;
-			gap: 6px;
+			grid-template-columns: 24px 28px 26px 1fr 140px;
+			gap: 8px;
 			align-items: center;
-			padding: 6px 0;
+			padding: 6px 4px;
+			border-radius: 4px;
+		}
+
+		.kusto-sort-row:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-sort-row.kusto-sort-drop {
+			outline: 1px dashed var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.kusto-sort-row.kusto-sort-dragging {
+			opacity: 0.6;
+		}
+
+		.kusto-sort-grab {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-descriptionForeground);
+			border-radius: 4px;
+			width: 24px;
+			height: 28px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			cursor: grab;
+			font-size: 14px;
+			line-height: 1;
+			letter-spacing: -2px;
+			user-select: none;
+		}
+
+		.kusto-sort-grab:hover {
+			background: var(--vscode-editor-background);
+			border-color: var(--vscode-input-border);
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-sort-grab:active {
+			cursor: grabbing;
 		}
 
 		.kusto-sort-order {
@@ -1428,7 +1481,6 @@
 			font-size: 12px;
 		}
 
-		.kusto-sort-move,
 		.kusto-sort-remove,
 		.kusto-sort-btn {
 			background: var(--vscode-button-secondaryBackground);
@@ -1440,23 +1492,65 @@
 			font-size: 12px;
 		}
 
-		.kusto-sort-move,
 		.kusto-sort-remove {
-			padding: 2px 6px;
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border-color: transparent;
+			color: var(--vscode-errorForeground);
 		}
 
-		.kusto-sort-move:hover,
 		.kusto-sort-remove:hover,
 		.kusto-sort-btn:hover {
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 
-		.kusto-sort-footer {
-			padding: 10px 12px;
+		.kusto-sort-remove:hover {
+			border-color: var(--vscode-input-border);
+		}
+
+		.kusto-sort-remove svg {
+			display: block;
+		}
+
+		.kusto-sort-add-row {
+			display: grid;
+			grid-template-columns: 1fr 1fr 140px 32px;
+			gap: 8px;
+			align-items: center;
+			padding: 8px 4px 4px 4px;
 			border-top: 1px solid var(--vscode-panel-border);
-			display: flex;
-			gap: 6px;
-			justify-content: flex-end;
+			margin-top: 6px;
+		}
+
+		.kusto-sort-add-label {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-sort-add-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 4px;
+			width: 32px;
+			height: 28px;
+			cursor: pointer;
+			font-size: 16px;
+			line-height: 1;
+			padding: 0;
+		}
+
+		.kusto-sort-add-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-sort-footer {
+			display: none;
 		}
 
 		.column-menu-btn {
