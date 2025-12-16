@@ -22,7 +22,7 @@ function __kustoGetScrollToColumnIconSvg() {
 
 function __kustoGetResultsVisibilityIconSvg() {
 	return (
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+			'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
 		'<circle cx="8" cy="8" r="2.1" />' +
 		'</svg>'
@@ -51,9 +51,11 @@ function __kustoEnsureResultsShownForTool(boxId) {
 function __kustoSetResultsToolsVisible(boxId, visible) {
 	const searchBtn = document.getElementById(boxId + '_results_search_btn');
 	const columnBtn = document.getElementById(boxId + '_results_column_btn');
+	const sortBtn = document.getElementById(boxId + '_results_sort_btn');
 	const display = visible ? '' : 'none';
 	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
+	try { if (sortBtn) { sortBtn.style.display = display; } } catch { /* ignore */ }
 }
 
 function __kustoHideResultsTools(boxId) {
@@ -70,6 +72,12 @@ function __kustoHideResultsTools(boxId) {
 		}
 	} catch { /* ignore */ }
 	try {
+		const sortModal = document.getElementById(boxId + '_sort_modal');
+		if (sortModal) {
+			sortModal.classList.remove('visible');
+		}
+	} catch { /* ignore */ }
+	try {
 		const searchBtn = document.getElementById(boxId + '_results_search_btn');
 		if (searchBtn) {
 			searchBtn.classList.remove('active');
@@ -79,6 +87,442 @@ function __kustoHideResultsTools(boxId) {
 		const columnBtn = document.getElementById(boxId + '_results_column_btn');
 		if (columnBtn) {
 			columnBtn.classList.remove('active');
+		}
+	} catch { /* ignore */ }
+	try {
+		const sortBtn = document.getElementById(boxId + '_results_sort_btn');
+		if (sortBtn) {
+			sortBtn.classList.remove('active');
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoGetSortIconSvg() {
+	return (
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M5 3v10" />' +
+		'<path d="M3.5 5L5 3l1.5 2" />' +
+		'<path d="M11 13V3" />' +
+		'<path d="M9.5 11L11 13l1.5-2" />' +
+		'</svg>'
+	);
+}
+
+function __kustoNormalizeSortDirection(dir) {
+	return (dir === 'desc') ? 'desc' : 'asc';
+}
+
+function __kustoNormalizeSortSpec(spec, columnCount) {
+	const out = [];
+	const seen = new Set();
+	const list = Array.isArray(spec) ? spec : [];
+	for (const item of list) {
+		if (!item || typeof item !== 'object') continue;
+		const colIndex = parseInt(String(item.colIndex), 10);
+		if (!isFinite(colIndex) || colIndex < 0 || colIndex >= columnCount) continue;
+		if (seen.has(colIndex)) continue;
+		seen.add(colIndex);
+		out.push({ colIndex: colIndex, dir: __kustoNormalizeSortDirection(item.dir) });
+	}
+	return out;
+}
+
+function __kustoGetCellSortValue(cell) {
+	// Prefer underlying values over truncated display values.
+	try {
+			if (cell === null || cell === undefined) {
+			return { kind: 'null', v: null };
+		}
+		if (typeof cell === 'number') {
+			return { kind: 'number', v: cell };
+		}
+		if (typeof cell === 'boolean') {
+			return { kind: 'number', v: cell ? 1 : 0 };
+		}
+		if (typeof cell === 'object') {
+			if (cell && typeof cell === 'object' && 'full' in cell && cell.full !== undefined && cell.full !== null) {
+				return __kustoGetCellSortValue(cell.full);
+			}
+			if (cell && typeof cell === 'object' && 'display' in cell && cell.display !== undefined && cell.display !== null) {
+				return __kustoGetCellSortValue(cell.display);
+			}
+			// Objects: stringify to get deterministic ordering.
+			return { kind: 'string', v: JSON.stringify(cell) };
+		}
+		const s = String(cell);
+		// Numeric strings: sort as numbers.
+		const trimmed = s.trim();
+		if (/^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+			const num = parseFloat(trimmed);
+			if (isFinite(num)) {
+				return { kind: 'number', v: num };
+			}
+		}
+		return { kind: 'string', v: s };
+	} catch {
+		return { kind: 'string', v: String(cell) };
+	}
+}
+
+function __kustoCompareSortValues(a, b) {
+	// Nulls always last.
+	if (a.kind === 'null' && b.kind === 'null') return 0;
+	if (a.kind === 'null') return 1;
+	if (b.kind === 'null') return -1;
+	if (a.kind === 'number' && b.kind === 'number') {
+		if (a.v < b.v) return -1;
+		if (a.v > b.v) return 1;
+		return 0;
+	}
+	const as = String(a.v);
+	const bs = String(b.v);
+	try {
+		return as.localeCompare(bs, undefined, { numeric: true, sensitivity: 'base' });
+	} catch {
+		if (as < bs) return -1;
+		if (as > bs) return 1;
+		return 0;
+	}
+}
+
+function __kustoComputeSortedRowIndices(rows, sortSpec) {
+	const count = Array.isArray(rows) ? rows.length : 0;
+	const indices = [];
+	for (let i = 0; i < count; i++) indices.push(i);
+	const spec = Array.isArray(sortSpec) ? sortSpec : [];
+	if (spec.length === 0 || count <= 1) {
+		return indices;
+	}
+	// Stable sort by decorating with original index.
+	indices.sort((i1, i2) => {
+		for (const rule of spec) {
+			const colIndex = rule.colIndex;
+			const dir = rule.dir === 'desc' ? -1 : 1;
+			const r1 = rows[i1] || [];
+			const r2 = rows[i2] || [];
+			const v1 = __kustoGetCellSortValue(r1[colIndex]);
+			const v2 = __kustoGetCellSortValue(r2[colIndex]);
+			const cmp = __kustoCompareSortValues(v1, v2);
+			if (cmp !== 0) return dir * cmp;
+		}
+		return i1 - i2;
+	});
+	return indices;
+}
+
+function __kustoEnsureDisplayRowIndexMaps(state) {
+	if (!state) return;
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const sortSpec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
+	state.displayRowIndices = __kustoComputeSortedRowIndices(rows, sortSpec);
+	// Build inverse map: originalRow -> displayRow.
+	const inv = new Array(rows.length);
+	for (let displayIdx = 0; displayIdx < state.displayRowIndices.length; displayIdx++) {
+		inv[state.displayRowIndices[displayIdx]] = displayIdx;
+	}
+	state.rowIndexToDisplayIndex = inv;
+}
+
+function __kustoSetSortSpecAndRerender(boxId, nextSpec) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	state.sortSpec = __kustoNormalizeSortSpec(nextSpec, (state.columns || []).length);
+	__kustoEnsureDisplayRowIndexMaps(state);
+	__kustoRerenderResultsTable(boxId);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoGetSortRuleIndex(state, colIndex) {
+	if (!state || !Array.isArray(state.sortSpec)) return -1;
+	for (let i = 0; i < state.sortSpec.length; i++) {
+		if (state.sortSpec[i] && state.sortSpec[i].colIndex === colIndex) return i;
+	}
+	return -1;
+}
+
+function handleHeaderSortClick(event, colIndex, boxId) {
+	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const isMulti = !!(event && (event.shiftKey || event.ctrlKey || event.metaKey));
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	const idx = __kustoGetSortRuleIndex(state, colIndex);
+
+	if (!isMulti) {
+		// Single-column sort.
+		if (idx === 0 && spec.length === 1) {
+			spec[0] = { colIndex: colIndex, dir: (spec[0].dir === 'asc') ? 'desc' : 'asc' };
+		} else {
+			spec.length = 0;
+			spec.push({ colIndex: colIndex, dir: 'asc' });
+		}
+		__kustoSetSortSpecAndRerender(boxId, spec);
+		return;
+	}
+
+	// Multi-sort: add/toggle while preserving order.
+	if (idx >= 0) {
+		spec[idx] = { colIndex: colIndex, dir: (spec[idx].dir === 'asc') ? 'desc' : 'asc' };
+	} else {
+		spec.push({ colIndex: colIndex, dir: 'asc' });
+	}
+	__kustoSetSortSpecAndRerender(boxId, spec);
+}
+
+function sortColumnAscending(colIndex, boxId) {
+	__kustoSetSortSpecAndRerender(boxId, [{ colIndex: colIndex, dir: 'asc' }]);
+}
+
+function sortColumnDescending(colIndex, boxId) {
+	__kustoSetSortSpecAndRerender(boxId, [{ colIndex: colIndex, dir: 'desc' }]);
+}
+
+function toggleSortDialog(boxId) {
+	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
+	const modal = document.getElementById(boxId + '_sort_modal');
+	if (!modal) return;
+	const btn = document.getElementById(boxId + '_results_sort_btn');
+	const willOpen = !modal.classList.contains('visible');
+	if (willOpen) {
+		modal.classList.add('visible');
+		try { if (btn) btn.classList.add('active'); } catch { /* ignore */ }
+		__kustoRenderSortDialog(boxId);
+	} else {
+		modal.classList.remove('visible');
+		try { if (btn) btn.classList.remove('active'); } catch { /* ignore */ }
+	}
+}
+
+function closeSortDialog(boxId) {
+	const modal = document.getElementById(boxId + '_sort_modal');
+	if (!modal) return;
+	modal.classList.remove('visible');
+	try {
+		const btn = document.getElementById(boxId + '_results_sort_btn');
+		if (btn) btn.classList.remove('active');
+	} catch { /* ignore */ }
+}
+
+function closeSortDialogOnBackdrop(event, boxId) {
+	// Only close if the click hit the backdrop.
+	if (event && event.target && event.currentTarget && event.target === event.currentTarget) {
+		closeSortDialog(boxId);
+	}
+}
+
+function __kustoRenderSortDialog(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const listEl = document.getElementById(boxId + '_sort_list');
+	if (!listEl) return;
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
+
+	if (spec.length === 0) {
+		listEl.innerHTML = '<div class="kusto-sort-empty">No sort applied.</div>';
+		return;
+	}
+
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	listEl.innerHTML = spec.map((rule, idx) => {
+		const colIndex = rule.colIndex;
+		const dir = __kustoNormalizeSortDirection(rule.dir);
+		const options = cols.map((c, i) => {
+			const selected = (i === colIndex) ? ' selected' : '';
+			return '<option value="' + String(i) + '"' + selected + '>' + __kustoEscapeForHtml(String(c ?? '')) + '</option>';
+		}).join('');
+		return (
+			'<div class="kusto-sort-row">' +
+			'<div class="kusto-sort-order">' + String(idx + 1) + '</div>' +
+				'<select class="kusto-sort-col" aria-label="Sort column" onchange="updateSortRuleColumn(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+			options +
+			'</select>' +
+				'<select class="kusto-sort-dir" aria-label="Sort direction" onchange="updateSortRuleDirection(' + String(idx) + ', this.value, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+			'<option value="asc"' + (dir === 'asc' ? ' selected' : '') + '>Ascending</option>' +
+			'<option value="desc"' + (dir === 'desc' ? ' selected' : '') + '>Descending</option>' +
+			'</select>' +
+				'<button type="button" class="kusto-sort-move" onclick="moveSortRuleUp(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Move up" aria-label="Move up">↑</button>' +
+				'<button type="button" class="kusto-sort-move" onclick="moveSortRuleDown(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Move down" aria-label="Move down">↓</button>' +
+				'<button type="button" class="kusto-sort-remove" onclick="removeSortRule(' + String(idx) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Remove" aria-label="Remove">✕</button>' +
+			'</div>'
+		);
+	}).join('');
+}
+
+function addSortRule(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	if (cols.length === 0) return;
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	// Pick first unused column, else first.
+	let colIndex = 0;
+	const used = new Set(spec.map(r => r && r.colIndex));
+	for (let i = 0; i < cols.length; i++) {
+		if (!used.has(i)) { colIndex = i; break; }
+	}
+	spec.push({ colIndex: colIndex, dir: 'asc' });
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function clearSort(boxId) {
+	__kustoSetSortSpecAndRerender(boxId, []);
+	__kustoRenderSortDialog(boxId);
+}
+
+function updateSortRuleColumn(ruleIndex, value, boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const idx = parseInt(String(ruleIndex), 10);
+	const colIndex = parseInt(String(value), 10);
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	if (!isFinite(idx) || idx < 0 || idx >= spec.length) return;
+	if (!isFinite(colIndex)) return;
+	// Prevent duplicates by removing any existing rule for the chosen column.
+	for (let i = spec.length - 1; i >= 0; i--) {
+		if (i !== idx && spec[i] && spec[i].colIndex === colIndex) {
+			spec.splice(i, 1);
+			if (i < idx) {
+				// We removed an earlier item; the target index shifted.
+				return updateSortRuleColumn(idx - 1, value, boxId);
+			}
+		}
+	}
+	const dir = spec[idx] ? spec[idx].dir : 'asc';
+	spec[idx] = { colIndex: colIndex, dir: __kustoNormalizeSortDirection(dir) };
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function updateSortRuleDirection(ruleIndex, value, boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const idx = parseInt(String(ruleIndex), 10);
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	if (!isFinite(idx) || idx < 0 || idx >= spec.length) return;
+	const colIndex = spec[idx] ? spec[idx].colIndex : 0;
+	spec[idx] = { colIndex: colIndex, dir: __kustoNormalizeSortDirection(value) };
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function moveSortRuleUp(ruleIndex, boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const idx = parseInt(String(ruleIndex), 10);
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	if (!isFinite(idx) || idx <= 0 || idx >= spec.length) return;
+	const tmp = spec[idx - 1];
+	spec[idx - 1] = spec[idx];
+	spec[idx] = tmp;
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function moveSortRuleDown(ruleIndex, boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const idx = parseInt(String(ruleIndex), 10);
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	if (!isFinite(idx) || idx < 0 || idx >= (spec.length - 1)) return;
+	const tmp = spec[idx + 1];
+	spec[idx + 1] = spec[idx];
+	spec[idx] = tmp;
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function removeSortRule(ruleIndex, boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const idx = parseInt(String(ruleIndex), 10);
+	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
+	if (!isFinite(idx) || idx < 0 || idx >= spec.length) return;
+	spec.splice(idx, 1);
+	__kustoSetSortSpecAndRerender(boxId, spec);
+	__kustoRenderSortDialog(boxId);
+}
+
+function __kustoRerenderResultsTable(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const table = document.getElementById(boxId + '_table');
+	if (!table) return;
+
+	// Update sort indicators.
+	try {
+		const spec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
+		for (let i = 0; i < (state.columns || []).length; i++) {
+			const indicator = document.getElementById(boxId + '_sort_ind_' + i);
+			if (!indicator) continue;
+			const ruleIdx = spec.findIndex(r => r && r.colIndex === i);
+			if (ruleIdx < 0) {
+				indicator.innerHTML = '';
+				continue;
+			}
+			const dir = __kustoNormalizeSortDirection(spec[ruleIdx].dir);
+			const arrow = (dir === 'desc') ? '▼' : '▲';
+			const ord = spec.length > 1 ? ('<span class="kusto-sort-priority">' + String(ruleIdx + 1) + '</span>') : '';
+			indicator.innerHTML = arrow + ord;
+		}
+	} catch { /* ignore */ }
+
+	// Build fast lookup for search matches.
+	let matchSet = null;
+	let currentKey = null;
+	try {
+		const matches = Array.isArray(state.searchMatches) ? state.searchMatches : [];
+		if (matches.length > 0) {
+			matchSet = new Set();
+			for (const m of matches) {
+				if (!m) continue;
+				matchSet.add(String(m.row) + ',' + String(m.col));
+			}
+			const cur = (state.currentSearchIndex >= 0 && state.currentSearchIndex < matches.length) ? matches[state.currentSearchIndex] : null;
+			if (cur) currentKey = String(cur.row) + ',' + String(cur.col);
+		}
+	} catch { /* ignore */ }
+
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i);
+
+	const tbodyHtml = displayRowIndices.map((rowIdx, displayIdx) => {
+		const row = rows[rowIdx] || [];
+		const trClass = state.selectedRows && state.selectedRows.has(rowIdx) ? ' class="selected-row"' : '';
+		return (
+			'<tr data-row="' + rowIdx + '"' + trClass + '>' +
+			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' + (displayIdx + 1) + '</td>' +
+			row.map((cell, colIdx) => {
+				const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+				const displayValue = hasHover ? cell.display : cell;
+				const fullValue = hasHover ? cell.full : cell;
+				const isObject = cell && cell.isObject;
+				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
+				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">View</button>' : '';
+				let tdClass = '';
+				if (state.selectedCell && state.selectedCell.row === rowIdx && state.selectedCell.col === colIdx) {
+					tdClass += (tdClass ? ' ' : '') + 'selected-cell';
+				}
+				if (matchSet && matchSet.has(String(rowIdx) + ',' + String(colIdx))) {
+					tdClass += (tdClass ? ' ' : '') + 'search-match';
+					if (currentKey && currentKey === (String(rowIdx) + ',' + String(colIdx))) {
+						tdClass += ' search-match-current';
+					}
+				}
+				const classAttr = tdClass ? (' class="' + tdClass + '"') : '';
+				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+					displayValue + viewBtn +
+				'</td>';
+			}).join('') +
+			'</tr>'
+		);
+	}).join('');
+
+	try {
+		const tbody = table.querySelector('tbody');
+		if (tbody) {
+			tbody.innerHTML = tbodyHtml;
 		}
 	} catch { /* ignore */ }
 }
@@ -94,6 +538,11 @@ function displayResult(result) {
 		showExecutionTime: true
 	});
 }
+
+// Ensure these entrypoints are always accessible globally (some hosts/tooling can
+// make bare function declarations non-global).
+try { window.displayResult = displayResult; } catch { /* ignore */ }
+try { window.displayResultForBox = displayResultForBox; } catch { /* ignore */ }
 
 function __kustoEnsureResultsStateMap() {
 	if (!window.__kustoResultsByBoxId || typeof window.__kustoResultsByBoxId !== 'object') {
@@ -137,8 +586,17 @@ function displayResultForBox(result, boxId, options) {
 		selectedCell: null,
 		selectedRows: new Set(),
 		searchMatches: [],
-		currentSearchIndex: -1
+		currentSearchIndex: -1,
+		sortSpec: [],
+		displayRowIndices: null,
+		rowIndexToDisplayIndex: null
 	});
+	try {
+		const st = __kustoGetResultsState(boxId);
+		if (st) {
+			__kustoEnsureDisplayRowIndexMaps(st);
+		}
+	} catch { /* ignore */ }
 
 	const label = (options && typeof options.label === 'string' && options.label) ? options.label : 'Results';
 	const showExecutionTime = !(options && options.showExecutionTime === false);
@@ -148,6 +606,10 @@ function displayResultForBox(result, boxId, options) {
 	const searchIconSvg = __kustoGetSearchIconSvg();
 	const scrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg();
 	const resultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg();
+	const sortIconSvg = __kustoGetSortIconSvg();
+
+	const stateForRender = __kustoGetResultsState(boxId);
+	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_, i) => i);
 
 	let html =
 		'<div class="results-header">' +
@@ -155,6 +617,7 @@ function displayResultForBox(result, boxId, options) {
 		'<strong>' + label + ':</strong> ' + (rows ? rows.length : 0) + ' rows / ' + (columns ? columns.length : 0) + ' columns' +
 		execPart +
 		'<button class="tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
+		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'</div>' +
@@ -181,11 +644,16 @@ function displayResultForBox(result, boxId, options) {
 		'<thead><tr>' +
 		'<th class="row-selector">#</th>' +
 		columns.map((c, i) =>
-			'<th data-col="' + i + '">' +
+			'<th data-col="' + i + '" onclick="handleHeaderSortClick(event, ' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 			'<div class="column-header-content">' +
-			'<span>' + c + '</span>' +
-			'<button class="column-menu-btn" onclick="toggleColumnMenu(' + i + ', \'' + boxId + '\'); event.stopPropagation();">☰</button>' +
+			'<div class="column-header-left">' +
+			'<span class="column-name">' + c + '</span>' +
+			'<span class="kusto-sort-indicator" id="' + boxId + '_sort_ind_' + i + '"></span>' +
+			'</div>' +
+			'<button class="column-menu-btn" onclick="toggleColumnMenu(' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); event.stopPropagation();">☰</button>' +
 			'<div class="column-menu" id="' + boxId + '_col_menu_' + i + '">' +
+			'<div class="column-menu-item" onclick="sortColumnAscending(' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); toggleColumnMenu(' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); event.stopPropagation();">Sort ascending</div>' +
+			'<div class="column-menu-item" onclick="sortColumnDescending(' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); toggleColumnMenu(' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); event.stopPropagation();">Sort descending</div>' +
 			'<div class="column-menu-item" onclick="showUniqueValues(' + i + ', \'' + boxId + '\')">Unique values</div>' +
 			'<div class="column-menu-item" onclick="showDistinctCountPicker(' + i + ', \'' + boxId + '\')">Distinct count by column...</div>' +
 			'</div>' +
@@ -194,28 +662,46 @@ function displayResultForBox(result, boxId, options) {
 		).join('') +
 		'</tr></thead>' +
 		'<tbody>' +
-		rows.map((row, rowIdx) =>
-			'<tr data-row="' + rowIdx + '">' +
-			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + boxId + '\')">' + (rowIdx + 1) + '</td>' +
+		displayRowIndices.map((rowIdx, displayIdx) => {
+			const row = rows[rowIdx] || [];
+			return '<tr data-row="' + rowIdx + '">' +
+			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' + (displayIdx + 1) + '</td>' +
 			row.map((cell, colIdx) => {
 				const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 				const displayValue = hasHover ? cell.display : cell;
 				const fullValue = hasHover ? cell.full : cell;
 				const isObject = cell && cell.isObject;
-				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + fullValue + '"' : '';
+				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">View</button>' : '';
 				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
 					'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">' +
 					displayValue + viewBtn + '</td>';
 			}).join('') +
 			'</tr>'
-		).join('') +
+		}).join('') +
 		'</tbody>' +
 		'</table>' +
+		'</div>' +
+		'</div>' +
+		'<div class="kusto-sort-modal" id="' + boxId + '_sort_modal" onclick="closeSortDialogOnBackdrop(event, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
+		'<div class="kusto-sort-dialog" onclick="event.stopPropagation();">' +
+		'<div class="kusto-sort-header">' +
+		'<div><strong>Sort</strong></div>' +
+		'<button type="button" class="kusto-sort-close" onclick="closeSortDialog(\'' + boxId + '\')" aria-label="Close">✕</button>' +
+		'</div>' +
+		'<div class="kusto-sort-body">' +
+		'<div id="' + boxId + '_sort_list"></div>' +
+		'</div>' +
+		'<div class="kusto-sort-footer">' +
+		'<button type="button" class="kusto-sort-btn" onclick="addSortRule(\'' + boxId + '\')">Add</button>' +
+		'<button type="button" class="kusto-sort-btn" onclick="clearSort(\'' + boxId + '\')">Clear</button>' +
+		'<button type="button" class="kusto-sort-btn" onclick="closeSortDialog(\'' + boxId + '\')">Close</button>' +
+		'</div>' +
 		'</div>' +
 		'</div>';
 
 	resultsDiv.innerHTML = html;
+	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
 	try {
 		if (typeof __kustoApplyResultsVisibility === 'function') {
 			__kustoApplyResultsVisibility(boxId);
@@ -416,7 +902,10 @@ function __kustoEscapeForHtml(s) {
 }
 
 function __kustoEscapeJsStringLiteral(s) {
-	return String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+	return String(s || '')
+		.replace(/\\/g, '\\\\')
+		.replace(/'/g, "\\'")
+		.replace(/"/g, '\\"');
 }
 
 function __kustoEscapeForHtmlAttribute(s) {
@@ -930,14 +1419,21 @@ function handleTableKeydown(event, boxId) {
 		// If no cell selected, select first cell
 		if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
 			event.preventDefault();
-			selectCell(0, 0, boxId);
+			// First displayed row (respects current sort)
+			const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+			const firstRow = (disp && disp.length > 0) ? disp[0] : 0;
+			selectCell(firstRow, 0, boxId);
 		}
 		return;
 	}
 
 	let newRow = cell.row;
 	let newCol = cell.col;
-	const maxRow = state.rows.length - 1;
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const inv = Array.isArray(state.rowIndexToDisplayIndex) ? state.rowIndexToDisplayIndex : null;
+	const currentDisplayRow = (disp && inv && isFinite(inv[cell.row])) ? inv[cell.row] : cell.row;
+	const maxDisplayRow = (disp && disp.length > 0) ? (disp.length - 1) : (rows.length - 1);
 	const maxCol = state.columns.length - 1;
 
 	switch (event.key) {
@@ -954,20 +1450,22 @@ function handleTableKeydown(event, boxId) {
 			}
 			break;
 		case 'ArrowDown':
-			if (newRow < maxRow) {
-				newRow++;
+				if (currentDisplayRow < maxDisplayRow) {
+					const nextDisplay = currentDisplayRow + 1;
+					newRow = (disp && disp.length > 0) ? disp[nextDisplay] : (cell.row + 1);
 				event.preventDefault();
 			}
 			break;
 		case 'ArrowUp':
-			if (newRow > 0) {
-				newRow--;
+				if (currentDisplayRow > 0) {
+					const prevDisplay = currentDisplayRow - 1;
+					newRow = (disp && disp.length > 0) ? disp[prevDisplay] : (cell.row - 1);
 				event.preventDefault();
 			}
 			break;
 		case 'Home':
 			if (event.ctrlKey) {
-				newRow = 0;
+					newRow = (disp && disp.length > 0) ? disp[0] : 0;
 				newCol = 0;
 			} else {
 				newCol = 0;
@@ -976,7 +1474,7 @@ function handleTableKeydown(event, boxId) {
 			break;
 		case 'End':
 			if (event.ctrlKey) {
-				newRow = maxRow;
+					newRow = (disp && disp.length > 0) ? disp[maxDisplayRow] : maxDisplayRow;
 				newCol = maxCol;
 			} else {
 				newCol = maxCol;
@@ -1072,13 +1570,17 @@ function updateAutocompleteSelection(items) {
 function scrollToColumn(colIndex, boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	if (rows.length === 0) { return; }
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const firstRow = (disp && disp.length > 0) ? disp[0] : 0;
 
 	// Select first cell in that column first
-	selectCell(0, colIndex, boxId);
+	selectCell(firstRow, colIndex, boxId);
 
 	// Then scroll the container to center the column
 	setTimeout(() => {
-		const cell = document.querySelector('#' + boxId + '_table td[data-row="0"][data-col="' + colIndex + '"]');
+		const cell = document.querySelector('#' + boxId + '_table td[data-row="' + firstRow + '"][data-col="' + colIndex + '"]');
 		if (cell) {
 			cell.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
 		}

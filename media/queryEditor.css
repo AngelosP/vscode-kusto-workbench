@@ -1316,6 +1316,149 @@
 			gap: 4px;
 		}
 
+		.column-header-left {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.column-name {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-sort-indicator {
+			font-size: 11px;
+			opacity: 0.85;
+			line-height: 1;
+			user-select: none;
+		}
+
+		.kusto-sort-priority {
+			margin-left: 2px;
+			font-size: 10px;
+			opacity: 0.9;
+		}
+
+		.kusto-sort-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-sort-modal.visible {
+			display: flex;
+		}
+
+		.kusto-sort-dialog {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 520px;
+			max-width: calc(100% - 24px);
+			max-height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.kusto-sort-header {
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		}
+
+		.kusto-sort-close {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			padding: 2px 8px;
+			cursor: pointer;
+		}
+
+		.kusto-sort-close:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-sort-body {
+			padding: 10px 12px;
+			overflow: auto;
+		}
+
+		.kusto-sort-empty {
+			color: var(--vscode-descriptionForeground);
+			font-size: 12px;
+			padding: 6px 2px;
+		}
+
+		.kusto-sort-row {
+			display: grid;
+			grid-template-columns: 26px 1fr 140px 28px 28px 28px;
+			gap: 6px;
+			align-items: center;
+			padding: 6px 0;
+		}
+
+		.kusto-sort-order {
+			text-align: right;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-sort-col,
+		.kusto-sort-dir {
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+			padding: 4px 6px;
+			font-size: 12px;
+		}
+
+		.kusto-sort-move,
+		.kusto-sort-remove,
+		.kusto-sort-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			padding: 4px 8px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		.kusto-sort-move,
+		.kusto-sort-remove {
+			padding: 2px 6px;
+		}
+
+		.kusto-sort-move:hover,
+		.kusto-sort-remove:hover,
+		.kusto-sort-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-sort-footer {
+			padding: 10px 12px;
+			border-top: 1px solid var(--vscode-panel-border);
+			display: flex;
+			gap: 6px;
+			justify-content: flex-end;
+		}
+
 		.column-menu-btn {
 			padding: 2px 6px;
 			height: 18px;

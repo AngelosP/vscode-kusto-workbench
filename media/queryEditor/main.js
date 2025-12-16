@@ -645,7 +645,21 @@ window.addEventListener('message', event => {
 			} catch {
 				// ignore
 			}
-			displayResult(message.result);
+			try {
+				if (typeof displayResult === 'function') {
+					displayResult(message.result);
+				} else if (typeof window.displayResult === 'function') {
+					window.displayResult(message.result);
+				} else if (message.boxId && typeof displayResultForBox === 'function') {
+					displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+				} else if (message.boxId && typeof window.displayResultForBox === 'function') {
+					window.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+				} else {
+					console.error('Query result received, but no results renderer is available (displayResult/displayResultForBox).');
+				}
+			} catch (e) {
+				console.error('Failed to render query results:', e);
+			}
 			try {
 				if (message.boxId && typeof __kustoOnQueryResult === 'function') {
 					__kustoOnQueryResult(message.boxId, message.result);
