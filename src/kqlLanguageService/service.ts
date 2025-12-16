@@ -527,6 +527,7 @@ export class KqlLanguageService {
 		type LetSource = { nameLower: string; sourceLower: string };
 		const letTabularSources: LetSource[] = [];
 		const letDeclaredNames = new Set<string>();
+		const letDeclaredNamesByLower = new Map<string, string>();
 		const extractTabularSourceLower = (rhsText: string): string | null => {
 			const rhs = String(rhsText ?? '').trim();
 			if (!rhs) return null;
@@ -577,6 +578,9 @@ export class KqlLanguageService {
 				if (!m?.[1] || !m?.[2]) continue;
 				const letNameLower = String(m[1]).toLowerCase();
 				letDeclaredNames.add(letNameLower);
+				if (!letDeclaredNamesByLower.has(letNameLower)) {
+					letDeclaredNamesByLower.set(letNameLower, String(m[1]));
+				}
 				let rhs = String(m[2]).trim();
 				const sourceLower = extractTabularSourceLower(rhs);
 				if (!sourceLower) continue;
@@ -586,8 +590,29 @@ export class KqlLanguageService {
 			// ignore
 		}
 
+		const tabularNameCandidates = (() => {
+			try {
+				const byLower = new Map<string, string>();
+				for (const t of tables) {
+					const s = String(t);
+					byLower.set(s.toLowerCase(), s);
+				}
+				for (const v of letDeclaredNamesByLower.values()) {
+					const s = String(v);
+					byLower.set(s.toLowerCase(), s);
+				}
+				return Array.from(byLower.values());
+			} catch {
+				return tables.slice();
+			}
+		})();
+
 		const reportUnknown = (code: string, what: 'table' | 'column', name: string, startOffset: number, endOffset: number, candidates: string[]) => {
-			const best = bestMatches(name, candidates, 5);
+			const prefixLower = String(name || '').toLowerCase();
+			const filtered = prefixLower
+				? (candidates || []).filter((c) => String(c || '').toLowerCase().startsWith(prefixLower))
+				: (candidates || []);
+			const best = bestMatches(name, filtered, 5);
 			const didYouMean = best.length ? ` Did you mean: ${best.map((s) => `\`${s}\``).join(', ')}?` : '';
 			diagnostics.push({
 				range: toRange(lineStarts, startOffset, endOffset),
@@ -699,7 +724,7 @@ export class KqlLanguageService {
 							if (tables.length && !tables.some((t) => sameLower(String(t), name))) {
 								const localStart = line.indexOf(name);
 								if (localStart >= 0) {
-									reportUnknown('KW_UNKNOWN_TABLE', 'table', name, runningOffset + localStart, runningOffset + localStart + name.length, tables);
+									reportUnknown('KW_UNKNOWN_TABLE', 'table', name, runningOffset + localStart, runningOffset + localStart + name.length, tabularNameCandidates);
 								}
 							}
 						} else if (nameLower === 'let') {
@@ -736,7 +761,7 @@ export class KqlLanguageService {
 								if (tables.length && !tables.some((t) => sameLower(String(t), rhsTable))) {
 									const localStart = line.toLowerCase().indexOf(rhsLower);
 									if (localStart >= 0) {
-										reportUnknown('KW_UNKNOWN_TABLE', 'table', rhsTable, runningOffset + localStart, runningOffset + localStart + rhsTable.length, tables);
+										reportUnknown('KW_UNKNOWN_TABLE', 'table', rhsTable, runningOffset + localStart, runningOffset + localStart + rhsTable.length, tabularNameCandidates);
 									}
 								}
 								statementHasLeadingId = true;
@@ -773,6 +798,9 @@ export class KqlLanguageService {
 						const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
 						if (mName?.[1]) return mName[1];
 					}
+					// While typing the subquery, the closing ')' may not exist yet.
+					const openParen = seg.match(/\(\s*([A-Za-z_][\w-]*)\b/);
+					if (openParen?.[1]) return openParen[1];
 					const afterOp = String(seg).replace(/^(join|lookup)\b/i, '').trim();
 					const withoutOpts = afterOp
 						.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/gi, ' ')
@@ -813,7 +841,7 @@ export class KqlLanguageService {
 					if (tables.length && !tables.some((t) => sameLower(String(t), name))) {
 						const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
 						const startOffset = baseOffset + idx + Math.max(0, localStart);
-						reportUnknown('KW_UNKNOWN_TABLE', 'table', name, startOffset, startOffset + String(name).length, tables);
+						reportUnknown('KW_UNKNOWN_TABLE', 'table', name, startOffset, startOffset + String(name).length, tabularNameCandidates);
 					}
 				}
 			}

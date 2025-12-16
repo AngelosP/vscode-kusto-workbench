@@ -1111,7 +1111,21 @@ function ensureMonaco() {
 								replaceRange = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
 							}
 
-							const isPipeStatementStart = /^\s*\|\s*[A-Za-z_\-]*$/i.test(linePrefixRaw);
+							// Offer pipe-operator keyword completions after a top-level `|`, even when it appears mid-line
+							// (e.g. `Table | <cursor>`), not just when the line starts with `|`.
+							const isPipeStatementStart = (() => {
+								try {
+									const stmt = String(statementTextUpToCursor || '');
+									const lastPipe = stmt.lastIndexOf('|');
+									if (lastPipe < 0) {
+										return /^\s*\|\s*[A-Za-z_\-]*$/i.test(linePrefixRaw);
+									}
+									const after = stmt.slice(lastPipe + 1);
+									return /^\s*[A-Za-z_\-]*$/i.test(after);
+								} catch {
+									return false;
+								}
+							})();
 							if (isPipeStatementStart) {
 								for (const op of KUSTO_PIPE_OPERATOR_SUGGESTIONS) {
 									if (typed && !op.label.toLowerCase().startsWith(typed)) {
@@ -2160,6 +2174,15 @@ function ensureMonaco() {
 									if (!/^\s*=/.test(after)) continue;
 									byLower.set(String(nameTok.value).toLowerCase(), String(nameTok.value));
 								}
+								// Fallback: regex-based extraction (more tolerant of tokenization edge cases).
+								try {
+									for (const m of prefix.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
+										if (!m || !m[2]) continue;
+										const original = String(m[2]);
+										const lower = original.toLowerCase();
+										if (!byLower.has(lower)) byLower.set(lower, original);
+									}
+								} catch { /* ignore */ }
 								__kustoLetNamesByLower = byLower;
 							} catch {
 								__kustoLetNamesByLower = null;
@@ -2661,11 +2684,37 @@ function ensureMonaco() {
 						// Any declared `let` identifier is considered a valid tabular reference for diagnostics purposes,
 						// even if we can't resolve it back to a schema table.
 						const __kustoDeclaredLetNames = new Set();
+						const __kustoDeclaredLetNamesOriginal = [];
 						try {
 							for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
-								if (m && m[2]) __kustoDeclaredLetNames.add(String(m[2]).toLowerCase());
+								if (m && m[2]) {
+									const original = String(m[2]);
+									const lower = original.toLowerCase();
+									if (!__kustoDeclaredLetNames.has(lower)) {
+										__kustoDeclaredLetNames.add(lower);
+										__kustoDeclaredLetNamesOriginal.push(original);
+									}
+								}
 							}
 						} catch { /* ignore */ }
+
+						// Candidates for unknown-table suggestions: schema tables + declared `let` variables.
+						const __kustoTabularNameCandidates = (() => {
+							try {
+								const byLower = new Map();
+								for (const t of (tables || [])) {
+									const s = String(t);
+									byLower.set(s.toLowerCase(), s);
+								}
+								for (const v of (__kustoDeclaredLetNamesOriginal || [])) {
+									const s = String(v);
+									byLower.set(s.toLowerCase(), s);
+								}
+								return Array.from(byLower.values());
+							} catch {
+								return (tables || []).slice();
+							}
+						})();
 
 						const __kustoResolveTabularLetToTable = (() => {
 							const tablesByLower = {};
@@ -2738,7 +2787,11 @@ function ensureMonaco() {
 						const reportUnknownName = (code, name, startOffset, endOffset, candidates, what) => {
 							const start = __kustoOffsetToPosition(lineStarts, startOffset);
 							const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, endOffset));
-							const best = __kustoBestMatches(name, candidates, 5);
+													const prefixLower = String(name || '').toLowerCase();
+													const filtered = prefixLower
+														? (candidates || []).filter((c) => String(c || '').toLowerCase().startsWith(prefixLower))
+														: (candidates || []);
+													const best = __kustoBestMatches(name, filtered, 5);
 							const didYouMean = best.length ? (' Did you mean: ' + best.map(s => '`' + s + '`').join(', ') + '?') : '';
 							markers.push({
 								severity: monaco.MarkerSeverity.Error,
@@ -2839,7 +2892,7 @@ function ensureMonaco() {
 																if (tables.length && !tables.some(t => String(t).toLowerCase() === srcName.toLowerCase())) {
 																	const localStart = line.toLowerCase().indexOf(srcName.toLowerCase());
 																	if (localStart >= 0) {
-																		reportUnknownName('KW_UNKNOWN_TABLE', srcName, runningOffset + localStart, runningOffset + localStart + srcName.length, tables, 'table');
+																		reportUnknownName('KW_UNKNOWN_TABLE', srcName, runningOffset + localStart, runningOffset + localStart + srcName.length, __kustoTabularNameCandidates, 'table');
 																	}
 																}
 																return { handled: true, ok: true };
@@ -2859,7 +2912,7 @@ function ensureMonaco() {
 												if (tables.length && !tables.some(t => String(t).toLowerCase() === name.toLowerCase())) {
 													const localStart = line.indexOf(name);
 													if (localStart >= 0) {
-														reportUnknownName('KW_UNKNOWN_TABLE', name, runningOffset + localStart, runningOffset + localStart + name.length, tables, 'table');
+														reportUnknownName('KW_UNKNOWN_TABLE', name, runningOffset + localStart, runningOffset + localStart + name.length, __kustoTabularNameCandidates, 'table');
 													}
 												}
 											}
@@ -2940,6 +2993,8 @@ function ensureMonaco() {
 											const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
 											if (mName && mName[1]) return mName[1];
 										}
+										const openParen = clause.match(/\(\s*([A-Za-z_][\w-]*)\b/);
+										if (openParen && openParen[1]) return openParen[1];
 										const afterOp = clause.replace(/^(join|lookup)\b/i, '').trim();
 										const withoutOpts = afterOp
 											.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
@@ -2979,7 +3034,7 @@ function ensureMonaco() {
 									if (tables.length && !tables.some(t => String(t).toLowerCase() === String(name).toLowerCase())) {
 										const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
 										const startOffset = baseOffset + idx + Math.max(0, localStart);
-										reportUnknownName('KW_UNKNOWN_TABLE', name, startOffset, startOffset + String(name).length, tables, 'table');
+										reportUnknownName('KW_UNKNOWN_TABLE', name, startOffset, startOffset + String(name).length, __kustoTabularNameCandidates, 'table');
 									}
 								}
 							} catch { /* ignore */ }
