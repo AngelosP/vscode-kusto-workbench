@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
+import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
@@ -65,7 +66,13 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 			type: 'importConnectionsFromXml';
 			connections: Array<{ name: string; clusterUrl: string; database?: string }>;
 			boxId?: string;
-		};
+		}
+	| {
+		type: 'kqlLanguageRequest';
+		requestId: string;
+		method: 'textDocument/diagnostic' | 'kusto/findTableReferences';
+		params: { text: string; connectionId?: string; database?: string; boxId?: string; uri?: string };
+	};
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -77,6 +84,7 @@ export class QueryEditorProvider {
 	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
 	private queryRunSeq = 0;
+	private readonly kqlLanguageHost: KqlLanguageServiceHost;
 
 	private getErrorMessage(error: unknown): string {
 		if (error instanceof Error) {
@@ -188,6 +196,7 @@ export class QueryEditorProvider {
 		private readonly connectionManager: ConnectionManager,
 		private readonly context: vscode.ExtensionContext
 	) {
+		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.loadLastSelection();
 		// Avoid storing large schema payloads in globalState (causes warnings and slows down).
 		// Best-effort migration of a small recent subset, then clear the legacy globalState cache.
@@ -357,8 +366,52 @@ export class QueryEditorProvider {
 			case 'promptAddConnection':
 				await this.promptAddConnection(message.boxId);
 				return;
+			case 'kqlLanguageRequest':
+				await this.handleKqlLanguageRequest(message);
+				return;
 			default:
 				return;
+		}
+	}
+
+	private async handleKqlLanguageRequest(
+		message: Extract<IncomingWebviewMessage, { type: 'kqlLanguageRequest' }>
+	): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		if (!requestId) {
+			return;
+		}
+		try {
+			const params = message.params && typeof message.params === 'object' ? message.params : { text: '' };
+			switch (message.method) {
+				case 'textDocument/diagnostic': {
+					const result = await this.kqlLanguageHost.getDiagnostics(params);
+					this.postMessage({ type: 'kqlLanguageResponse', requestId, ok: true, result });
+					return;
+				}
+				case 'kusto/findTableReferences': {
+					const result = await this.kqlLanguageHost.findTableReferences(params);
+					this.postMessage({ type: 'kqlLanguageResponse', requestId, ok: true, result });
+					return;
+				}
+				default:
+					this.postMessage({
+						type: 'kqlLanguageResponse',
+						requestId,
+						ok: false,
+						error: { message: 'Unsupported method.' }
+					});
+					return;
+			}
+		} catch (error) {
+			const raw = this.getErrorMessage(error);
+			this.output.appendLine(`[kql-ls] request failed: ${raw}`);
+			this.postMessage({
+				type: 'kqlLanguageResponse',
+				requestId,
+				ok: false,
+				error: { message: 'KQL language service failed to process the request.' }
+			});
 		}
 	}
 

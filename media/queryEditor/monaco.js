@@ -236,6 +236,14 @@ function ensureMonaco() {
 							signature: '| where Predicate',
 							description: 'Filters rows using a boolean predicate.'
 						},
+						'filter': {
+							signature: '| filter Predicate',
+							description: 'Filters rows using a boolean predicate (alias of where in many contexts).'
+						},
+						'count': {
+							signature: '| count',
+							description: 'Counts the number of records in the input and returns a single row (typically with a Count column).'
+						},
 						'extend': {
 							signature: '| extend Column = Expression[, ...]',
 							description: 'Adds calculated columns to the result set.'
@@ -244,9 +252,21 @@ function ensureMonaco() {
 							signature: '| project Column[, ...]',
 							description: 'Selects and optionally renames columns.'
 						},
+						'project-reorder': {
+							signature: '| project-reorder Column[, ...]',
+							description: 'Reorders columns in the result set (and can also project/select columns depending on usage).'
+						},
+						'project-smart': {
+							signature: '| project-smart Column[, ...]',
+							description: 'Projects columns while keeping some additional useful columns (best-effort behavior; exact semantics depend on Kusto implementation).'
+						},
 						'join': {
 							signature: '| join kind=... (RightTable) on Key',
 							description: 'Combines rows from two tables using a matching key.'
+						},
+						'lookup': {
+							signature: '| lookup kind=... (RightTable) on Key',
+							description: 'Performs a lookup (a specialized join) to bring columns from a right-side table into the left-side results.'
 						},
 						'take': {
 							signature: '| take N',
@@ -263,6 +283,18 @@ function ensureMonaco() {
 						'mv-expand': {
 							signature: '| mv-expand Column',
 							description: 'Expands multi-value (array/dynamic) into multiple rows.'
+						},
+						'parse': {
+							signature: '| parse Expression with Pattern',
+							description: 'Extracts values from a string expression into new columns based on a pattern.'
+						},
+						'parse-where': {
+							signature: '| parse-where Expression with Pattern',
+							description: 'Like parse, but keeps only rows that match the pattern.'
+						},
+						'make-series': {
+							signature: '| make-series ...',
+							description: 'Creates time series from input data by aggregating values into a range of bins (commonly over time).'
 						},
 						'distinct': {
 							signature: '| distinct Column[, ...]',
@@ -308,21 +340,32 @@ function ensureMonaco() {
 
 					const KUSTO_PIPE_OPERATOR_SUGGESTIONS = [
 						{ label: 'where', insert: 'where ', docKey: 'where' },
+						{ label: 'filter', insert: 'filter ', docKey: 'where' },
 						{ label: 'extend', insert: 'extend ', docKey: 'extend' },
 						{ label: 'project', insert: 'project ', docKey: 'project' },
 						{ label: 'project-away', insert: 'project-away ', docKey: 'project-away' },
 						{ label: 'project-keep', insert: 'project-keep ', docKey: 'project-keep' },
 						{ label: 'project-rename', insert: 'project-rename ', docKey: 'project-rename' },
+						{ label: 'project-reorder', insert: 'project-reorder ', docKey: 'project-reorder' },
+						{ label: 'project-smart', insert: 'project-smart ', docKey: 'project-smart' },
 						{ label: 'summarize', insert: 'summarize ', docKey: 'summarize' },
+						{ label: 'count', insert: 'count', docKey: 'count' },
 						{ label: 'join', insert: 'join ', docKey: 'join' },
+						{ label: 'lookup', insert: 'lookup ', docKey: 'lookup' },
 						{ label: 'distinct', insert: 'distinct ', docKey: 'distinct' },
 						{ label: 'take', insert: 'take ', docKey: 'take' },
 						{ label: 'limit', insert: 'limit ', docKey: 'limit' },
+						{ label: 'sample', insert: 'sample ', docKey: 'sample' },
 						{ label: 'top', insert: 'top ', docKey: 'top' },
 						{ label: 'order by', insert: 'order by ', docKey: 'order by' },
 						{ label: 'sort by', insert: 'sort by ', docKey: 'sort by' },
+						{ label: 'union', insert: 'union ', docKey: 'union' },
+						{ label: 'search', insert: 'search ', docKey: 'search' },
 						{ label: 'render', insert: 'render ', docKey: 'render' },
-						{ label: 'mv-expand', insert: 'mv-expand ', docKey: 'mv-expand' }
+						{ label: 'mv-expand', insert: 'mv-expand ', docKey: 'mv-expand' },
+						{ label: 'parse', insert: 'parse ', docKey: 'parse' },
+						{ label: 'parse-where', insert: 'parse-where ', docKey: 'parse' },
+						{ label: 'make-series', insert: 'make-series ', docKey: 'make-series' }
 					];
 
 					const KUSTO_FUNCTION_DOCS = {
@@ -758,9 +801,11 @@ function ensureMonaco() {
 
 								const afterPipe = line.slice(pipeIdx + 1);
 								// Match a known operator at the start of the pipe clause.
-								const m = afterPipe.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|mv-expand|where|extend|project|summarize|join|distinct|take|top|limit|render|union|search)\b/i);
+								const m = afterPipe.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|project-reorder|project-smart|mv-expand|where|filter|extend|project|summarize|count|join|lookup|distinct|take|top|limit|sample|render|union|search|parse|parse-where|make-series)\b/i);
 								if (!m) return null;
-								const key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								let key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								if (key === 'filter') key = 'where';
+								if (key === 'parse-where') key = 'parse';
 								const doc = KUSTO_KEYWORD_DOCS[key];
 								if (!doc) return null;
 
@@ -815,9 +860,11 @@ function ensureMonaco() {
 								const full = model.getValue();
 								if (!full || startOffset >= full.length) return null;
 								const snippet = full.slice(startOffset, Math.min(full.length, startOffset + 500));
-								const m = snippet.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|mv-expand|where|extend|project|summarize|join|distinct|take|top|limit|render|union|search)\b/i);
+								const m = snippet.match(/^\s*(order\s+by|sort\s+by|project-away|project-keep|project-rename|project-reorder|project-smart|mv-expand|where|filter|extend|project|summarize|count|join|lookup|distinct|take|top|limit|sample|render|union|search|parse|parse-where|make-series)\b/i);
 								if (!m) return null;
-								const key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								let key = String(m[1] || '').toLowerCase().replace(/\s+/g, ' ').trim();
+								if (key === 'filter') key = 'where';
+								if (key === 'parse-where') key = 'parse';
 								const doc = KUSTO_KEYWORD_DOCS[key];
 								if (!doc) return null;
 
@@ -1003,7 +1050,7 @@ function ensureMonaco() {
 					// Autocomplete: pipe operators + (optionally) schema tables/columns.
 					monaco.languages.registerCompletionItemProvider('kusto', {
 						triggerCharacters: [' ', '|', '.'],
-						provideCompletionItems: function (model, position) {
+						provideCompletionItems: async function (model, position) {
 							const suggestions = [];
 							const seen = new Set();
 
@@ -1028,9 +1075,28 @@ function ensureMonaco() {
 							});
 							const textUpToCursorLower = String(textUpToCursor || '').toLowerCase();
 
+							// Support multi-statement scripts separated by ';' by scoping
+							// completion heuristics to the current statement (but still allowing earlier `let` variables).
+							// NOTE: Build this from `textUpToCursor` to avoid any offset/EOL mismatches.
+							const statementStartInCursorText = __kustoGetStatementStartAtOffset(textUpToCursor, textUpToCursor.length);
+							const statementTextUpToCursor = String(textUpToCursor || '').slice(statementStartInCursorText);
+							const statementTextUpToCursorLower = String(statementTextUpToCursor || '').toLowerCase();
+
 							const wordUntil = model.getWordUntilPosition(position);
 							const typedRaw = (wordUntil && typeof wordUntil.word === 'string') ? wordUntil.word : '';
 							const typed = typedRaw.toLowerCase();
+
+							// If the cursor is inside a function call argument list, completions should include columns
+							// even when the operator context regex would otherwise be too strict (e.g. `summarize ... dcount(`).
+							let __kustoIsInFunctionArgs = false;
+							try {
+								const off = model.getOffsetAt(position);
+								let call = findEnclosingFunctionCall(model, off);
+								if (!call) {
+									call = findEnclosingFunctionCall(model, off + 1);
+								}
+								__kustoIsInFunctionArgs = !!call;
+							} catch { /* ignore */ }
 
 							// Prefer a range that includes '-' so mv-expand/project-away suggestions replace the whole token.
 							let replaceRange = null;
@@ -1051,17 +1117,49 @@ function ensureMonaco() {
 									if (typed && !op.label.toLowerCase().startsWith(typed)) {
 										continue;
 									}
+									let detail = undefined;
+									let documentation = undefined;
+									try {
+										const d = (op && op.docKey) ? (KUSTO_KEYWORD_DOCS[op.docKey] || null) : null;
+										if (d) {
+											detail = d.signature ? String(d.signature) : undefined;
+											documentation = d.description ? { value: String(d.description) } : undefined;
+										}
+									} catch { /* ignore */ }
 									pushSuggestion({
 										label: op.label,
 										kind: monaco.languages.CompletionItemKind.Keyword,
 										insertText: op.insert,
 										sortText: '0_' + op.label,
-										range: replaceRange
+										range: replaceRange,
+										detail,
+										documentation
 									}, 'op:' + op.label);
 								}
 								// At the beginning of a new pipe statement, only show Kusto pipe commands.
 								return { suggestions };
 							}
+
+							// IMPORTANT: use the full text up to the cursor so multi-line operators like
+							// "| summarize\n  X = count()\n  by" still produce column suggestions.
+							// Based on KQL operator syntax (KQL quick reference), these operators accept column names and/or expressions.
+							const shouldSuggestColumns = /\|\s*(where|filter|project|project-away|project-keep|project-rename|project-reorder|project-smart|extend|summarize|distinct|mv-expand|parse|parse-where|make-series|order\s+by|sort\s+by|take|limit|top)\b[^|]*$/i.test(statementTextUpToCursorLower)
+								|| (__kustoIsInFunctionArgs && statementTextUpToCursorLower.indexOf('|') >= 0);
+
+							// Assignment RHS (e.g. "| summarize X = dco" or "| extend Y = Dev") should suggest only functions + columns.
+							const lastEq = linePrefixRaw.lastIndexOf('=');
+							const isAssignmentRhs = (() => {
+								if (lastEq < 0) return false;
+								// Only consider '=' that appears after a pipe operator clause begins.
+								if (linePrefixRaw.indexOf('|') < 0) return false;
+								const after = linePrefixRaw.slice(lastEq + 1);
+								if (!/^\s*[A-Za-z_\-]*$/i.test(after)) return false;
+								// Heuristic: this is the RHS of extend/summarize style assignments.
+								return /\|\s*(extend|summarize)\b/i.test(linePrefixRaw);
+							})();
+
+							// Completion is manual-only, so it's OK to include functions broadly when in an expression.
+							const shouldSuggestFunctions = shouldSuggestColumns || isAssignmentRhs || /\|\s*(where|extend|project|summarize)\b/i.test(statementTextUpToCursorLower);
 
 							let boxId = null;
 							try {
@@ -1078,31 +1176,300 @@ function ensureMonaco() {
 							if (!schema || !schema.tables) {
 								// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
 								ensureSchemaForBox(boxId);
+
+								// Even without schema, we can still suggest earlier `let` variables (multi-statement scripts).
+								try {
+									const prefix = String(textUpToCursor || '');
+									const toks = __kustoScanIdentifiers(prefix);
+									const byLower = new Map();
+									for (let i = 0; i < toks.length; i++) {
+										const t = toks[i];
+										if (!t || t.type !== 'ident' || t.depth !== 0) continue;
+										if (String(t.value || '').toLowerCase() !== 'let') continue;
+										let nameTok = null;
+										for (let j = i + 1; j < toks.length; j++) {
+											const tt = toks[j];
+											if (!tt || tt.depth !== 0) continue;
+											if (tt.type === 'ident') { nameTok = tt; break; }
+											if (tt.type === 'pipe') break;
+										}
+										if (!nameTok || !nameTok.value) continue;
+										const after = prefix.slice(nameTok.endOffset, Math.min(prefix.length, nameTok.endOffset + 64));
+										if (!/^\s*=/.test(after)) continue;
+										byLower.set(String(nameTok.value).toLowerCase(), String(nameTok.value));
+									}
+									for (const [nl, name] of byLower.entries()) {
+										if (typed && !nl.startsWith(typed)) continue;
+										pushSuggestion({
+											label: name,
+											kind: monaco.languages.CompletionItemKind.Variable,
+											insertText: name,
+											sortText: '0_' + name,
+											range: replaceRange
+										}, 'let:' + nl);
+									}
+								} catch { /* ignore */ }
+
+								// Still provide function suggestions so Ctrl+Space isn't empty while schema loads.
+								if (shouldSuggestFunctions) {
+									// Use the full token/word range so selecting an item replaces the rest of the word.
+									const range = replaceRange;
+									const __kustoBuildFnInsertText = (fnName, fnDoc) => {
+										const args = (fnDoc && Array.isArray(fnDoc.args)) ? fnDoc.args : [];
+										const required = args.filter(a => typeof a === 'string' && !a.endsWith('?'));
+										if (required.length === 0) {
+											return { insertText: fnName + '()', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
+										}
+										const snippetArgs = required.map((a, i) => '${' + (i + 1) + ':' + a + '}').join(', ');
+										return { insertText: fnName + '(' + snippetArgs + ')', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
+									};
+									for (const fn of Object.keys(KUSTO_FUNCTION_DOCS)) {
+										if (typed && !fn.toLowerCase().startsWith(typed)) {
+											continue;
+										}
+										const doc = KUSTO_FUNCTION_DOCS[fn];
+										const detail = doc && doc.returnType ? String(doc.returnType) : undefined;
+										const documentation = doc && doc.description ? { value: String(doc.description) } : undefined;
+										const insert = __kustoBuildFnInsertText(fn, doc);
+										pushSuggestion({
+											label: fn,
+											kind: monaco.languages.CompletionItemKind.Function,
+											detail,
+											documentation,
+											insertText: insert.insertText,
+											insertTextRules: insert.insertTextRules,
+											sortText: '1_' + fn,
+											range
+										}, 'fn:' + fn);
+									}
+								}
+
 								return { suggestions };
 							}
 
-							// IMPORTANT: use the full text up to the cursor so multi-line operators like
-							// "| summarize\n  X = count()\n  by" still produce column suggestions.
-							const shouldSuggestColumns = /\|\s*(project|where|extend|summarize|order\s+by|sort\s+by|take|top)\b[^|]*$/i.test(textUpToCursorLower);
+							const __kustoNormalizeClusterForKusto = (clusterUrl) => {
+								let s = String(clusterUrl || '')
+									.trim()
+									.replace(/^https?:\/\//i, '')
+									.replace(/\/+$/, '')
+									.replace(/:\d+$/, '');
+								// Azure Data Explorer public cloud clusters
+								s = s.replace(/\.kusto\.windows\.net$/i, '');
+								return s;
+							};
 
-							// Assignment RHS (e.g. "| summarize X = dco" or "| extend Y = Dev") should suggest only functions + columns.
-							const lastEq = linePrefixRaw.lastIndexOf('=');
-							const isAssignmentRhs = (() => {
-								if (lastEq < 0) return false;
-								// Only consider '=' that appears after a pipe operator clause begins.
-								if (linePrefixRaw.indexOf('|') < 0) return false;
-								const after = linePrefixRaw.slice(lastEq + 1);
-								if (!/^\s*[A-Za-z_\-]*$/i.test(after)) return false;
-								// Heuristic: this is the RHS of extend/summarize style assignments.
-								return /\|\s*(extend|summarize)\b/i.test(linePrefixRaw);
+							const __kustoParseFullyQualifiedTableExpr = (text) => {
+								try {
+									const s = String(text || '');
+									// cluster('X').database('Y').Table
+									const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+									if (m && m[1] && m[2] && m[3]) {
+										return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
+									}
+									return null;
+								} catch {
+									return null;
+								}
+							};
+
+							const __kustoFindConnectionIdByClusterName = (clusterName) => {
+								try {
+									const target = __kustoNormalizeClusterForKusto(clusterName).toLowerCase();
+									if (!target) return null;
+									for (const c of (connections || [])) {
+										if (!c || !c.id) continue;
+										const url = String(c.clusterUrl || '').trim();
+										if (!url) continue;
+										const norm = __kustoNormalizeClusterForKusto(url).toLowerCase();
+										if (norm === target) {
+											return String(c.id);
+										}
+									}
+								} catch { /* ignore */ }
+								return null;
+							};
+
+							const __kustoEnsureSchemaForClusterDb = async (clusterName, databaseName) => {
+								try {
+									const cid = __kustoFindConnectionIdByClusterName(clusterName);
+									const db = String(databaseName || '').trim();
+									if (!cid || !db) return null;
+									const key = cid + '|' + db;
+									try {
+										if (schemaByConnDb && schemaByConnDb[key]) {
+											return schemaByConnDb[key];
+										}
+									} catch { /* ignore */ }
+									if (typeof window.__kustoRequestSchema === 'function') {
+										const sch = await window.__kustoRequestSchema(cid, db, false);
+										try {
+											if (sch && schemaByConnDb) {
+												schemaByConnDb[key] = sch;
+											}
+										} catch { /* ignore */ }
+										return sch;
+									}
+								} catch { /* ignore */ }
+								return null;
+							};
+
+							// Special context: inside `| join ... on ...` or `| lookup ... on ...` we want columns (not tables).
+							const __kustoBuildLetTabularResolverForCompletion = (text) => {
+								const tablesByLower = {};
+								try {
+									for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
+										tablesByLower[String(t).toLowerCase()] = String(t);
+									}
+								} catch { /* ignore */ }
+								const letSources = {};
+								const extractSourceLower = (rhsText) => {
+									const rhs = String(rhsText || '').trim();
+									if (!rhs) return null;
+									try {
+										const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+										if (m && m[1]) return String(m[1]).toLowerCase();
+									} catch { /* ignore */ }
+									try {
+										const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+										if (m && m[1]) return String(m[1]).toLowerCase();
+									} catch { /* ignore */ }
+									try {
+										const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+										return (m && m[1]) ? String(m[1]).toLowerCase() : null;
+									} catch { return null; }
+								};
+								try {
+									const lines = String(text || '').split(/\r?\n/);
+									for (let i = 0; i < lines.length; i++) {
+										const trimmed = lines[i].trim();
+										if (!/^let\s+/i.test(trimmed)) continue;
+										let stmt = lines[i];
+										while (i + 1 < lines.length && stmt.indexOf(';') === -1) {
+											i++;
+											stmt += '\n' + lines[i];
+										}
+										const m = stmt.match(/^\s*let\s+([A-Za-z_][\w-]*)\s*=\s*([\s\S]*?)(;|$)/i);
+										if (!m || !m[1] || !m[2]) continue;
+										const letNameLower = String(m[1]).toLowerCase();
+										let rhs = String(m[2]).trim();
+										const srcLower = extractSourceLower(rhs);
+										if (!srcLower) continue;
+										letSources[letNameLower] = srcLower;
+									}
+								} catch { /* ignore */ }
+								const resolve = (name) => {
+									let cur = String(name || '').toLowerCase();
+									for (let depth = 0; depth < 8; depth++) {
+										if (tablesByLower[cur]) return tablesByLower[cur];
+										if (!letSources[cur]) return null;
+										cur = letSources[cur];
+									}
+									return null;
+								};
+								return resolve;
+							};
+							const __kustoResolveToSchemaTableNameForCompletion = (() => {
+								const resolveLet = __kustoBuildLetTabularResolverForCompletion(model.getValue());
+								return (name) => __kustoFindSchemaTableName(name) || (resolveLet ? resolveLet(name) : null);
 							})();
 
-							const inferActiveTable = (text) => {
-								// Prefer last explicit join/from target.
-								const joinFromMatches = Array.from(text.matchAll(/\b(join|from)\s+([A-Za-z_][\w-]*)\b/gi));
-								if (joinFromMatches.length > 0) {
-									return joinFromMatches[joinFromMatches.length - 1][2];
+							const __kustoGetLastTopLevelStageText = (text, offset) => {
+								try {
+									const before = String(text || '').slice(0, Math.max(0, offset));
+									// Best-effort: last pipe in the raw text (joins in parentheses are uncommon, but this is still heuristic).
+									const idx = before.lastIndexOf('|');
+									if (idx < 0) return before.trim();
+									return before.slice(idx + 1).trim();
+								} catch {
+									return '';
 								}
+							};
+
+							const __kustoIsJoinOrLookupOnContext = (() => {
+								try {
+									const lastPipe = statementTextUpToCursorLower.lastIndexOf('|');
+									if (lastPipe < 0) return false;
+									const clause = statementTextUpToCursorLower.slice(lastPipe);
+									if (!/^\|\s*(join|lookup)\b/i.test(clause)) return false;
+									return /\bon\b/i.test(clause);
+								} catch {
+									return false;
+								}
+							})();
+
+							const shouldSuggestColumnsOrJoinOn = shouldSuggestColumns || __kustoIsJoinOrLookupOnContext;
+							const shouldSuggestFunctionsOrJoinOn = shouldSuggestFunctions || __kustoIsJoinOrLookupOnContext;
+
+							const __kustoExtractJoinOrLookupRightTable = (clauseText) => {
+								try {
+									const clause = String(clauseText || '');
+									// Prefer (RightTable)
+									const paren = clause.match(/\(([^)]*)\)/);
+									if (paren && paren[1]) {
+										const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
+										if (mName && mName[1]) return mName[1];
+									}
+									// If the user is still typing the right-side subquery, the closing ')' may not exist yet.
+									// Handle `join ... (RightTable | where ...`.
+									const openParen = clause.match(/\(\s*([A-Za-z_][\w-]*)\b/);
+									if (openParen && openParen[1]) return openParen[1];
+									// Otherwise strip common options and take the first identifier.
+									const afterOp = clause.replace(/^(join|lookup)\b/i, '').trim();
+									const withoutOpts = afterOp
+										.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+										.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+										.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+										.trim();
+									const mName = withoutOpts.match(/^([A-Za-z_][\w-]*)\b/);
+									return mName && mName[1] ? mName[1] : null;
+								} catch {
+									return null;
+								}
+							};
+
+							let __kustoActiveTabularContext = null;
+							const inferActiveTable = (text) => {
+								__kustoActiveTabularContext = null;
+								// Prefer last explicit join/lookup/from target.
+								try {
+									const refs = [];
+									for (const m of String(text || '').matchAll(/\b(join|lookup|from)\b/gi)) {
+										const kw = String(m[1] || '').toLowerCase();
+										const idx = (typeof m.index === 'number') ? m.index : -1;
+										if (idx < 0) continue;
+										// Limit parsing to the rest of the current line/stage.
+										let end = String(text || '').indexOf('\n', idx);
+										if (end < 0) end = String(text || '').length;
+										const seg = String(text || '').slice(idx, end);
+										if (kw === 'from') {
+											// from cluster('X').database('Y').T
+											const fq = __kustoParseFullyQualifiedTableExpr(seg);
+											if (fq) {
+												refs.push(fq.table);
+												continue;
+											}
+											const mm = seg.match(/^from\s+([A-Za-z_][\w-]*)\b/i);
+											if (mm && mm[1]) refs.push(mm[1]);
+											continue;
+										}
+										const right = __kustoExtractJoinOrLookupRightTable(seg);
+										if (right) refs.push(right);
+									}
+									if (refs.length > 0) return refs[refs.length - 1];
+								} catch { /* ignore */ }
+
+								// Handle `let Name = <tabular>` by looking at the RHS after '='.
+								try {
+									const mLet = String(text || '').match(/^\s*let\s+[A-Za-z_][\w-]*\s*=([\s\S]*)$/i);
+									if (mLet && mLet[1]) {
+										let rhs = String(mLet[1]).trim();
+										rhs = rhs.replace(/^\(\s*/g, '').trim();
+										const src = rhs.match(/^([A-Za-z_][\w-]*)\b/);
+										if (src && src[1]) {
+											return src[1];
+										}
+									}
+								} catch { /* ignore */ }
 
 								// Otherwise, find the first "source" line (not a pipe/operator line).
 								const lines = text.split(/\r?\n/);
@@ -1114,6 +1481,12 @@ function ensureMonaco() {
 									if (line.startsWith('|') || line.startsWith('.') || line.startsWith('//')) {
 										continue;
 									}
+									// Fully-qualified source line.
+									const fq = __kustoParseFullyQualifiedTableExpr(line);
+									if (fq) {
+										__kustoActiveTabularContext = { kind: 'fq', cluster: fq.cluster, database: fq.database, table: fq.table };
+										return fq.table;
+									}
 									const m = line.match(/^([A-Za-z_][\w-]*)\b/);
 									if (m) {
 										return m[1];
@@ -1122,28 +1495,728 @@ function ensureMonaco() {
 								return null;
 							};
 
-							let activeTable = inferActiveTable(textUpToCursor);
+							let activeTable = inferActiveTable(statementTextUpToCursor);
+
+							const __kustoFindSchemaTableName = (name) => {
+								if (!name || !schema || !Array.isArray(schema.tables)) return null;
+								const lower = String(name).toLowerCase();
+								for (const t of schema.tables) {
+									if (String(t).toLowerCase() === lower) return t;
+								}
+								return null;
+							};
+
+							// Normalize to the canonical schema table name when possible.
+							try {
+								activeTable = __kustoFindSchemaTableName(activeTable) || activeTable;
+							} catch { /* ignore */ }
+
+							const __kustoSplitCommaList = (s) => {
+								if (!s) return [];
+								return String(s)
+									.split(',')
+									.map(x => x.trim())
+									.filter(Boolean);
+							};
+
+							const __kustoComputeAvailableColumnsAtOffset = async (fullText, offset) => {
+								if (!schema || !schema.columnsByTable) return null;
+
+								const __kustoSplitPipelineStagesDeep = (text) => {
+									// Split at top-level pipes (not inside parentheses/brackets/braces, strings, or comments).
+									const s = String(text || '');
+									const parts = [];
+									let start = 0;
+									let depth = 0;
+									let inSingle = false;
+									let inDouble = false;
+									let inLineComment = false;
+									let inBlockComment = false;
+									for (let i = 0; i < s.length; i++) {
+										const ch = s[i];
+										const next = s[i + 1];
+										if (inLineComment) {
+											if (ch === '\n') inLineComment = false;
+											continue;
+										}
+										if (inBlockComment) {
+											if (ch === '*' && next === '/') {
+												inBlockComment = false;
+												i++;
+											}
+											continue;
+										}
+										if (inSingle) {
+											if (ch === "'") {
+												// Kusto escape for single quote: ''
+												if (next === "'") { i++; continue; }
+												inSingle = false;
+											}
+											continue;
+										}
+										if (inDouble) {
+											if (ch === '\\') { i++; continue; }
+											if (ch === '"') inDouble = false;
+											continue;
+										}
+										if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+										if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+										if (ch === "'") { inSingle = true; continue; }
+										if (ch === '"') { inDouble = true; continue; }
+										if (ch === '(' || ch === '[' || ch === '{') depth++;
+										else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+										else if (ch === '|' && depth === 0) {
+											parts.push(s.slice(start, i));
+											start = i + 1;
+										}
+									}
+									parts.push(s.slice(start));
+									return parts;
+								};
+
+								const __kustoParseJoinKind = (stageText) => {
+									try {
+										const m = String(stageText || '').match(/\bkind\s*=\s*([A-Za-z_][\w-]*)\b/i);
+										return m && m[1] ? String(m[1]).toLowerCase() : '';
+									} catch { return ''; }
+								};
+
+								const __kustoJoinOutputMode = (kindLower) => {
+									const k = String(kindLower || '').toLowerCase();
+									if (!k) return 'union';
+									if (k.includes('leftanti') || k.includes('leftsemi') || k === 'anti' || k === 'semi') return 'left';
+									if (k.includes('rightanti') || k.includes('rightsemi')) return 'right';
+									return 'union';
+								};
+
+								const __kustoExtractFirstParenGroup = (text) => {
+									// Returns the content of the first (...) group at top-level.
+									try {
+										const s = String(text || '');
+										let depth = 0;
+										let inSingle = false;
+										let inDouble = false;
+										for (let i = 0; i < s.length; i++) {
+											const ch = s[i];
+											const next = s[i + 1];
+											if (inSingle) {
+												if (ch === "'") {
+													if (next === "'") { i++; continue; }
+													inSingle = false;
+												}
+												continue;
+											}
+											if (inDouble) {
+												if (ch === '\\') { i++; continue; }
+												if (ch === '"') inDouble = false;
+												continue;
+											}
+											if (ch === "'") { inSingle = true; continue; }
+											if (ch === '"') { inDouble = true; continue; }
+											if (ch === '(') {
+												if (depth === 0) {
+													const start = i + 1;
+													depth = 1;
+													for (let j = start; j < s.length; j++) {
+														const cj = s[j];
+														const nj = s[j + 1];
+														if (inSingle) {
+															if (cj === "'") {
+																if (nj === "'") { j++; continue; }
+																inSingle = false;
+															}
+															continue;
+														}
+														if (inDouble) {
+															if (cj === '\\') { j++; continue; }
+															if (cj === '"') inDouble = false;
+															continue;
+														}
+														if (cj === "'") { inSingle = true; continue; }
+														if (cj === '"') { inDouble = true; continue; }
+														if (cj === '(') depth++;
+														else if (cj === ')') {
+															depth--;
+															if (depth === 0) {
+																return s.slice(start, j);
+															}
+														}
+													}
+													return null;
+												}
+												depth++;
+											}
+										}
+									} catch { return null; }
+									return null;
+								};
+
+								// Build a best-effort map of let-name -> rhs-text in scope (up to cursor).
+								const __kustoLetRhsByLower = new Map();
+								try {
+									const prefix = String(fullText || '').slice(0, Math.max(0, offset));
+									const stmts = (typeof __kustoSplitTopLevelStatements === 'function')
+										? __kustoSplitTopLevelStatements(prefix)
+										: [{ startOffset: 0, text: prefix }];
+									for (const st of (stmts || [])) {
+										const t = String(st && st.text ? st.text : '').trim();
+										if (!/^let\s+/i.test(t)) continue;
+										const m = String(st.text || '').match(/^\s*let\s+([A-Za-z_][\w-]*)\s*=\s*([\s\S]*?)\s*$/i);
+										if (!m || !m[1] || !m[2]) continue;
+										const nameLower = String(m[1]).toLowerCase();
+										const rhs = String(m[2] || '').replace(/;\s*$/g, '').trim();
+										__kustoLetRhsByLower.set(nameLower, rhs);
+									}
+								} catch { /* ignore */ }
+
+								const __kustoLetColsMemo = new Map();
+								const __kustoLetInProgress = new Set();
+
+								const __kustoInferSourceFromText = (text) => {
+									const lines = String(text || '').split(/\r?\n/);
+									for (const raw of lines) {
+										const line = String(raw || '').trim();
+										if (!line) continue;
+										if (line.startsWith('|') || line.startsWith('.') || line.startsWith('//')) continue;
+										const fq = __kustoParseFullyQualifiedTableExpr(line);
+										if (fq) return { kind: 'fq', cluster: fq.cluster, database: fq.database, table: fq.table };
+										const m = line.match(/^([A-Za-z_][\w-]*)\b/);
+										if (m && m[1]) return { kind: 'ident', name: m[1] };
+									}
+									return null;
+								};
+
+								const __kustoComputeColumnsForPipelineText = async (pipelineText) => {
+									const parts = __kustoSplitPipelineStagesDeep(String(pipelineText || ''));
+									if (!parts || parts.length === 0) return null;
+									const src = __kustoInferSourceFromText(parts[0]);
+									let cols = null;
+									if (src && src.kind === 'fq') {
+										const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
+										if (otherSchema && otherSchema.columnsByTable && otherSchema.columnsByTable[src.table]) {
+											cols = Array.from(otherSchema.columnsByTable[src.table]);
+										}
+									} else if (src && src.kind === 'ident') {
+										const t = __kustoFindSchemaTableName(src.name);
+										if (t && schema.columnsByTable && schema.columnsByTable[t]) {
+											cols = Array.from(schema.columnsByTable[t]);
+										} else {
+										const lower = String(src.name).toLowerCase();
+										cols = await __kustoComputeLetColumns(lower);
+										if (cols) cols = Array.from(cols);
+									}
+									}
+									if (!cols) return null;
+
+									for (let i = 1; i < parts.length; i++) {
+										const stage = String(parts[i] || '').trim();
+										if (!stage) continue;
+										const lower = stage.toLowerCase();
+										if (lower.startsWith('where ') || lower === 'where') continue;
+										if (lower.startsWith('take ') || lower.startsWith('top ') || lower.startsWith('limit ')) continue;
+										if (lower.startsWith('order by ') || lower.startsWith('sort by ')) continue;
+										if (lower.startsWith('distinct ')) {
+											const afterKw = stage.replace(/^distinct\s+/i, '');
+											const nextCols = [];
+											for (const item of __kustoSplitCommaList(afterKw)) {
+												const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+												if (mId && mId[1]) nextCols.push(mId[1]);
+											}
+											if (nextCols.length) cols = nextCols;
+											continue;
+										}
+										if (lower.startsWith('project ')) {
+											const afterKw = stage.replace(/^project\s+/i, '');
+											const nextCols = [];
+											for (const item of __kustoSplitCommaList(afterKw)) {
+												const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
+												if (mAssign && mAssign[1]) { nextCols.push(mAssign[1]); continue; }
+												const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+												if (mId && mId[1]) nextCols.push(mId[1]);
+											}
+											if (nextCols.length) cols = nextCols;
+											continue;
+										}
+										if (lower.startsWith('join ') || lower === 'join' || lower.startsWith('lookup ') || lower === 'lookup') {
+											const kind = __kustoParseJoinKind(stage);
+											const mode = __kustoJoinOutputMode(kind);
+											let rightExpr = __kustoExtractFirstParenGroup(stage);
+											if (!rightExpr) {
+												let afterOp = String(stage).replace(/^(join|lookup)\b/i, '').trim();
+												afterOp = afterOp
+													.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+													.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+													.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+													.trim();
+												const mName = afterOp.match(/^([A-Za-z_][\w-]*)\b/);
+												rightExpr = (mName && mName[1]) ? mName[1] : null;
+											}
+											const rightCols = rightExpr ? await __kustoComputeColumnsForPipelineText(rightExpr) : null;
+											if (mode === 'right' && rightCols) { cols = Array.from(rightCols); continue; }
+											if (mode === 'left') { continue; }
+											if (rightCols) {
+												const set = new Set(cols);
+												for (const c of rightCols) if (!set.has(c)) set.add(c);
+												cols = Array.from(set);
+											}
+											continue;
+										}
+									}
+
+									return cols;
+								};
+
+								const __kustoComputeLetColumns = async (letNameLower) => {
+									const key = String(letNameLower || '').toLowerCase();
+									if (!key) return null;
+									if (__kustoLetColsMemo.has(key)) return __kustoLetColsMemo.get(key);
+									if (__kustoLetInProgress.has(key)) return null;
+									const rhs = __kustoLetRhsByLower.get(key);
+									if (!rhs) return null;
+									__kustoLetInProgress.add(key);
+									try {
+										const cols = await __kustoComputeColumnsForPipelineText(rhs);
+										__kustoLetColsMemo.set(key, cols);
+										return cols;
+									} finally {
+										__kustoLetInProgress.delete(key);
+									}
+								};
+
+								const __kustoBuildLetTabularResolver = (text) => {
+									const tablesByLower = {};
+									try {
+										for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
+											tablesByLower[String(t).toLowerCase()] = String(t);
+										}
+									} catch { /* ignore */ }
+
+									const letSources = {};
+									const extractSourceLower = (rhsText) => {
+										const rhs = String(rhsText || '').trim();
+										if (!rhs) return null;
+										try {
+											const fq = __kustoParseFullyQualifiedTableExpr(rhs);
+											if (fq) {
+												return { tableLower: String(fq.table).toLowerCase(), cluster: fq.cluster, database: fq.database, table: fq.table };
+											}
+										} catch { /* ignore */ }
+										try {
+											const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+											if (m && m[1]) return { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) };
+										} catch { /* ignore */ }
+										try {
+											const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+											if (m && m[1]) return { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) };
+										} catch { /* ignore */ }
+										try {
+											const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+											return (m && m[1]) ? { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) } : null;
+										} catch { return null; }
+									};
+									try {
+										const lines = String(text || '').split(/\r?\n/);
+										for (let i = 0; i < lines.length; i++) {
+											const trimmed = lines[i].trim();
+											if (!/^let\s+/i.test(trimmed)) continue;
+											let stmt = lines[i];
+											while (i + 1 < lines.length && stmt.indexOf(';') === -1) {
+												i++;
+												stmt += '\n' + lines[i];
+											}
+											const m = stmt.match(/^\s*let\s+([A-Za-z_][\w-]*)\s*=\s*([\s\S]*?)(;|$)/i);
+											if (!m || !m[1] || !m[2]) continue;
+											const letNameLower = String(m[1]).toLowerCase();
+											let rhs = String(m[2]).trim();
+											const src = extractSourceLower(rhs);
+											if (!src) continue;
+											letSources[letNameLower] = src;
+										}
+									} catch { /* ignore */ }
+
+									const resolveToContext = async (name) => {
+										let cur = String(name || '').toLowerCase();
+										for (let depth = 0; depth < 8; depth++) {
+											if (tablesByLower[cur]) {
+												return { schema, table: tablesByLower[cur] };
+											}
+											const src = letSources[cur];
+											if (!src) return null;
+											// src can carry cross-cluster/db context
+											if (src && typeof src === 'object' && src.tableLower) {
+												if (src.cluster && src.database) {
+													const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
+													if (otherSchema && otherSchema.columnsByTable) {
+														// Best-effort: keep original case as written in query
+														return { schema: otherSchema, table: src.table || String(src.tableLower) };
+													}
+												}
+												cur = String(src.tableLower);
+												continue;
+											}
+											cur = String(src).toLowerCase();
+										}
+										return null;
+									};
+									return resolveToContext;
+								};
+
+								const resolveTabularNameToContext = __kustoBuildLetTabularResolver(fullText);
+								const __kustoResolveToSchemaTableName = (name) => __kustoFindSchemaTableName(name);
+								const statementStart = __kustoGetStatementStartAtOffset(fullText, offset);
+								const before = String(fullText || '').slice(statementStart, Math.max(statementStart, Math.max(0, offset)));
+								let resolvedCtx = null;
+								// If the statement source is a fully-qualified cluster/database expression, prefer that schema.
+								const fq = __kustoParseFullyQualifiedTableExpr(before);
+								if (fq) {
+									const otherSchema = await __kustoEnsureSchemaForClusterDb(fq.cluster, fq.database);
+									if (otherSchema) {
+										resolvedCtx = { schema: otherSchema, table: fq.table };
+									}
+								}
+								if (!resolvedCtx) {
+									// Resolve normal table name or let-bound tabular var.
+									try {
+										const srcName = inferActiveTable(before);
+										if (srcName && resolveTabularNameToContext) {
+											resolvedCtx = await resolveTabularNameToContext(srcName);
+										}
+									} catch { /* ignore */ }
+								}
+								if (!resolvedCtx) {
+									// Final fallback: current schema + canonical table name
+									const t = __kustoResolveToSchemaTableName(inferActiveTable(before));
+									if (t) resolvedCtx = { schema, table: t };
+								}
+								if (!resolvedCtx && schema.tables && schema.tables.length === 1) {
+									resolvedCtx = { schema, table: schema.tables[0] };
+								}
+								const activeSchema = resolvedCtx ? resolvedCtx.schema : schema;
+								let table = resolvedCtx ? resolvedCtx.table : null;
+								let cols = (table && activeSchema && activeSchema.columnsByTable && activeSchema.columnsByTable[table])
+									? Array.from(activeSchema.columnsByTable[table])
+									: null;
+								// If the active source is a let-bound tabular variable, override columns with its projected shape.
+								try {
+									const srcName = inferActiveTable(before);
+									const letCols = srcName ? await __kustoComputeLetColumns(String(srcName).toLowerCase()) : null;
+									if (letCols && Array.isArray(letCols) && letCols.length) {
+										cols = Array.from(letCols);
+									}
+								} catch { /* ignore */ }
+								if (!cols) {
+									return null;
+								}
+
+								const __kustoSplitPipelineStages = __kustoSplitPipelineStagesDeep;
+
+								// Apply very lightweight pipeline transforms up to (but not including) the stage the cursor is currently in.
+								// This keeps completions inside `| project ...` / `| summarize ...` using input columns.
+								const parts = __kustoSplitPipelineStages(before);
+								for (let i = 1; i < Math.max(1, parts.length - 1); i++) {
+									const stage = parts[i].trim();
+									if (!stage) continue;
+									const lower = stage.toLowerCase();
+
+									if (lower.startsWith('where ') || lower === 'where') {
+										continue;
+									}
+									if (lower.startsWith('take ') || lower.startsWith('top ') || lower.startsWith('limit ')) {
+										continue;
+									}
+
+									if (lower === 'count' || lower.startsWith('count ')) {
+										// `count` operator returns a single column (best-effort name).
+										cols = ['Count'];
+										continue;
+									}
+									if (lower.startsWith('order by ') || lower.startsWith('sort by ')) {
+										continue;
+									}
+
+									if (lower.startsWith('union ') || lower === 'union') {
+										// union T1, T2 ...  => available columns are the union of referenced tables + current columns
+										const unionBody = stage.replace(/^union\s*/i, '');
+										const set = new Set(cols);
+										for (const m of unionBody.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+											const t = __kustoResolveToSchemaTableName(m[1]);
+											if (t && schema.columnsByTable[t]) {
+												for (const c of schema.columnsByTable[t]) set.add(c);
+											}
+										}
+										cols = Array.from(set);
+										continue;
+									}
+
+														if (lower.startsWith('join ') || lower === 'join' || lower.startsWith('lookup ') || lower === 'lookup') {
+															const kind = __kustoParseJoinKind(stage);
+															const mode = __kustoJoinOutputMode(kind);
+															let rightExpr = __kustoExtractFirstParenGroup(stage);
+															if (!rightExpr) {
+																let afterOp = String(stage).replace(/^(join|lookup)\b/i, '').trim();
+																afterOp = afterOp
+																	.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+																	.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+																	.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+																	.trim();
+																const mName = afterOp.match(/^([A-Za-z_][\w-]*)\b/);
+																rightExpr = (mName && mName[1]) ? mName[1] : null;
+															}
+															const rightCols = rightExpr ? await __kustoComputeColumnsForPipelineText(rightExpr) : null;
+															if (mode === 'right' && rightCols) {
+																cols = Array.from(rightCols);
+																continue;
+															}
+															if (mode === 'left') {
+																continue;
+															}
+															if (rightCols) {
+																const set = new Set(cols);
+																for (const c of rightCols) if (!set.has(c)) set.add(c);
+																cols = Array.from(set);
+															}
+															continue;
+														}
+
+									if (lower.startsWith('extend ') || lower.startsWith('project-reorder ') || lower.startsWith('project-smart ')) {
+										const afterKw = stage.replace(/^\w[\w-]*\s+/i, '');
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const m = item.match(/^([A-Za-z_][\w]*)\s*=/);
+											if (m && m[1] && !cols.includes(m[1])) {
+												cols.push(m[1]);
+											}
+										}
+										continue;
+									}
+
+									if (lower.startsWith('project-away ')) {
+										const afterKw = stage.replace(/^project-away\s+/i, '');
+										const toRemove = new Set();
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const m = item.match(/^([A-Za-z_][\w]*)\b/);
+											if (m && m[1]) toRemove.add(m[1]);
+										}
+										cols = cols.filter(c => !toRemove.has(c));
+										continue;
+									}
+
+									if (lower.startsWith('project-keep ')) {
+										const afterKw = stage.replace(/^project-keep\s+/i, '');
+										const keep = new Set();
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const m = item.match(/^([A-Za-z_][\w]*)\b/);
+											if (m && m[1]) keep.add(m[1]);
+										}
+										cols = cols.filter(c => keep.has(c));
+										continue;
+									}
+
+									if (lower.startsWith('project-rename ')) {
+										const afterKw = stage.replace(/^project-rename\s+/i, '');
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const m = item.match(/^([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)\b/);
+											if (m && m[1] && m[2]) {
+												cols = cols.filter(c => c !== m[2]);
+												if (!cols.includes(m[1])) cols.push(m[1]);
+											}
+										}
+										continue;
+									}
+
+									if (lower.startsWith('project ')) {
+										const afterKw = stage.replace(/^project\s+/i, '');
+										const nextCols = [];
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
+											if (mAssign && mAssign[1]) {
+												nextCols.push(mAssign[1]);
+												continue;
+											}
+											const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+											if (mId && mId[1]) nextCols.push(mId[1]);
+										}
+										if (nextCols.length > 0) cols = nextCols;
+										continue;
+									}
+
+									if (lower.startsWith('distinct ')) {
+										const afterKw = stage.replace(/^distinct\s+/i, '');
+										const nextCols = [];
+										for (const item of __kustoSplitCommaList(afterKw)) {
+											const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+											if (mId && mId[1]) nextCols.push(mId[1]);
+										}
+										if (nextCols.length > 0) cols = nextCols;
+										continue;
+									}
+
+									if (lower.startsWith('parse ') || lower.startsWith('parse-where ') || lower === 'parse' || lower === 'parse-where') {
+										// parse/parse-where extends the table with extracted columns.
+										try {
+											const set = new Set(cols);
+											// Heuristic: after `with`, patterns often include string constants followed by a column name.
+											const withIdx = stage.toLowerCase().indexOf(' with ');
+											if (withIdx >= 0) {
+												const body = stage.slice(withIdx + 6);
+												for (const m of body.matchAll(/(?:"[^"]*"|'[^']*'|\*)\s*([A-Za-z_][\w]*)\s*(?::\s*[A-Za-z_][\w]*)?/g)) {
+													const name = m && m[1] ? String(m[1]) : '';
+													if (!name) continue;
+													const nl = name.toLowerCase();
+													if (nl === 'kind' || nl === 'flags' || nl === 'with') continue;
+													set.add(name);
+												}
+											}
+											cols = Array.from(set);
+										} catch { /* ignore */ }
+										continue;
+									}
+
+									if (lower.startsWith('mv-expand ') || lower === 'mv-expand') {
+										// mv-expand can introduce a new column name when using `Name = ArrayExpression`.
+										try {
+											const set = new Set(cols);
+											const body = stage.replace(/^mv-expand\s*/i, '');
+											const body2 = body.split(/\blimit\b/i)[0] || body;
+											for (const part of __kustoSplitCommaList(body2)) {
+												const mAssign = part.match(/^([A-Za-z_][\w]*)\s*=/);
+												if (mAssign && mAssign[1]) set.add(mAssign[1]);
+											}
+											cols = Array.from(set);
+										} catch { /* ignore */ }
+										continue;
+									}
+
+									if (lower.startsWith('make-series ') || lower === 'make-series') {
+										// make-series output: axis column + assigned series columns + by columns (best-effort).
+										try {
+											const next = new Set();
+											// Axis: `on AxisColumn`
+											const mOn = stage.match(/\bon\s+([A-Za-z_][\w]*)\b/i);
+											if (mOn && mOn[1]) next.add(mOn[1]);
+											// Assigned series columns: `Name = Aggregation`
+											const preOn = stage.split(/\bon\b/i)[0] || stage;
+											for (const m of preOn.matchAll(/\b([A-Za-z_][\w]*)\s*=/g)) {
+												if (m && m[1]) next.add(String(m[1]));
+											}
+											// by columns
+											const mBy = stage.match(/\bby\b([\s\S]*)$/i);
+											if (mBy && mBy[1]) {
+												for (const item of __kustoSplitCommaList(mBy[1])) {
+													const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+													if (mId && mId[1]) next.add(mId[1]);
+												}
+											}
+											if (next.size > 0) cols = Array.from(next);
+										} catch { /* ignore */ }
+										continue;
+									}
+
+									if (lower.startsWith('summarize ') || lower === 'summarize') {
+										const summarizeBody = stage.replace(/^summarize\s*/i, '');
+										const parts2 = summarizeBody.split(/\bby\b/i);
+										const aggPart = parts2[0] || '';
+										const byPart = parts2.length > 1 ? parts2.slice(1).join('by') : '';
+
+										const nextCols = [];
+										for (const item of __kustoSplitCommaList(byPart)) {
+											const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+											if (mId && mId[1]) nextCols.push(mId[1]);
+										}
+										for (const item of __kustoSplitCommaList(aggPart)) {
+											const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
+											if (mAssign && mAssign[1]) nextCols.push(mAssign[1]);
+										}
+										if (nextCols.length > 0) cols = nextCols;
+										continue;
+									}
+								}
+
+								return cols;
+							};
 
 
-							// For schema completions, use Monaco's default word range (tables/columns rarely include '-').
-							const word = model.getWordUntilPosition(position);
-							const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+							// For schema completions, use the full token/word range so selecting an item replaces the rest of the word.
+							const range = replaceRange;
+
+							// In multi-statement scripts, earlier `let` variables remain in scope. Collect them once.
+							let __kustoLetNamesByLower = null;
+							try {
+								const prefix = String(textUpToCursor || '');
+								const toks = __kustoScanIdentifiers(prefix);
+								const byLower = new Map();
+								for (let i = 0; i < toks.length; i++) {
+									const t = toks[i];
+									if (!t || t.type !== 'ident' || t.depth !== 0) continue;
+									if (String(t.value || '').toLowerCase() !== 'let') continue;
+									let nameTok = null;
+									for (let j = i + 1; j < toks.length; j++) {
+										const tt = toks[j];
+										if (!tt || tt.depth !== 0) continue;
+										if (tt.type === 'ident') { nameTok = tt; break; }
+										if (tt.type === 'pipe') break;
+									}
+									if (!nameTok || !nameTok.value) continue;
+									const after = prefix.slice(nameTok.endOffset, Math.min(prefix.length, nameTok.endOffset + 64));
+									if (!/^\s*=/.test(after)) continue;
+									byLower.set(String(nameTok.value).toLowerCase(), String(nameTok.value));
+								}
+								__kustoLetNamesByLower = byLower;
+							} catch {
+								__kustoLetNamesByLower = null;
+							}
 
 							// Columns first when in '| where' / '| project' etc.
-							if (shouldSuggestColumns) {
+							if (shouldSuggestColumnsOrJoinOn) {
 								let columns = null;
-								if (activeTable && schema.columnsByTable && schema.columnsByTable[activeTable]) {
-									columns = schema.columnsByTable[activeTable];
-								} else if (schema.tables && schema.tables.length === 1 && schema.columnsByTable && schema.columnsByTable[schema.tables[0]]) {
+								try {
+									columns = await __kustoComputeAvailableColumnsAtOffset(model.getValue(), model.getOffsetAt(position));
+								} catch {
+									columns = null;
+								}
+
+								// If inside `join/lookup ... on`, union left + right columns.
+								if (__kustoIsJoinOrLookupOnContext) {
+									try {
+										const stmt = String(statementTextUpToCursor || '');
+										const stage = __kustoGetLastTopLevelStageText(stmt, stmt.length);
+										let rightName = null;
+										const paren = stage.match(/\(([^)]*)\)/);
+										if (paren && paren[1]) {
+											const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
+											if (mName && mName[1]) rightName = mName[1];
+										}
+																if (!rightName) {
+																	// Strip common join/lookup options so we don't accidentally treat 'kind' as a table.
+																	const afterOp = String(stage)
+																		.replace(/^(join|lookup)\b/i, '')
+																		.trim();
+																	const withoutOpts = afterOp
+																		.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+																		.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+																		.trim();
+																	const mName = withoutOpts.match(/^([A-Za-z_][\w-]*)\b/);
+																	if (mName && mName[1]) rightName = mName[1];
+																}
+										const resolvedRight = __kustoResolveToSchemaTableNameForCompletion(rightName);
+										const rightCols = (resolvedRight && schema.columnsByTable && schema.columnsByTable[resolvedRight]) ? schema.columnsByTable[resolvedRight] : null;
+										const set = new Set(Array.isArray(columns) ? columns : []);
+										if (rightCols) {
+											for (const c of rightCols) set.add(c);
+										}
+										columns = Array.from(set);
+									} catch { /* ignore */ }
+								}
+								if (!columns && activeTable) {
+									const resolved = __kustoFindSchemaTableName(activeTable);
+									const key = resolved || activeTable;
+									if (schema.columnsByTable && schema.columnsByTable[key]) {
+										columns = schema.columnsByTable[key];
+										activeTable = key;
+									}
+								}
+								if (!columns && schema.tables && schema.tables.length === 1 && schema.columnsByTable && schema.columnsByTable[schema.tables[0]]) {
 									activeTable = schema.tables[0];
 									columns = schema.columnsByTable[activeTable];
-								} else if (schema.columnsByTable) {
-									// Fallback: suggest the union of columns across tables (deduped).
-									const set = new Set();
-									for (const cols of Object.values(schema.columnsByTable)) {
-										for (const c of cols) set.add(c);
-									}
-									columns = Array.from(set).sort((a, b) => a.localeCompare(b)).slice(0, 500);
 								}
 
 								if (columns) {
@@ -1152,30 +2225,85 @@ function ensureMonaco() {
 											label: c,
 											kind: monaco.languages.CompletionItemKind.Field,
 											insertText: c,
-											sortText: (isAssignmentRhs ? '1_' : '0') + c,
+											filterText: (__kustoIsInFunctionArgs && typedRaw) ? typedRaw : undefined,
+											sortText: '0_' + String(c).toLowerCase(),
 											range
 										}, 'col:' + c);
 									}
 								}
+
+									// Suggest `let` variables alongside columns in expression contexts.
+									try {
+										if (__kustoLetNamesByLower) {
+											for (const [nl, name] of __kustoLetNamesByLower.entries()) {
+												if (typed && !nl.startsWith(typed)) continue;
+												pushSuggestion({
+													label: name,
+													kind: monaco.languages.CompletionItemKind.Variable,
+													insertText: name,
+													sortText: '1_' + nl,
+													range
+											}, 'let:' + nl);
+										}
+										}
+									} catch { /* ignore */ }
 							}
 
-							if (isAssignmentRhs) {
+							if (shouldSuggestFunctionsOrJoinOn) {
+								const __kustoBuildFnInsertText = (fnName, fnDoc) => {
+									const args = (fnDoc && Array.isArray(fnDoc.args)) ? fnDoc.args : [];
+									const required = args.filter(a => typeof a === 'string' && !a.endsWith('?'));
+									if (required.length === 0) {
+										return { insertText: fnName + '()', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
+									}
+									const snippetArgs = required.map((a, i) => '${' + (i + 1) + ':' + a + '}').join(', ');
+									return { insertText: fnName + '(' + snippetArgs + ')', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
+								};
+
 								for (const fn of Object.keys(KUSTO_FUNCTION_DOCS)) {
 									if (typed && !fn.toLowerCase().startsWith(typed)) {
 										continue;
 									}
+
+									const doc = KUSTO_FUNCTION_DOCS[fn];
+									const signature = `${fn}(${(doc && doc.args) ? doc.args.join(', ') : ''})`;
+									const detail = (doc && doc.returnType) ? `${signature} -> ${doc.returnType}` : signature;
+									const documentation = (doc && doc.description)
+										? { value: `**${signature}**\n\n${doc.description}` }
+										: undefined;
+
+									const insert = __kustoBuildFnInsertText(fn, doc);
 									pushSuggestion({
 										label: fn,
 										kind: monaco.languages.CompletionItemKind.Function,
-										insertText: fn + '(',
-										sortText: '0_' + fn,
+										detail,
+										documentation,
+										insertText: insert.insertText,
+										insertTextRules: insert.insertTextRules,
+										sortText: (shouldSuggestColumnsOrJoinOn ? '2_' : '1_') + fn.toLowerCase(),
 										range
 									}, 'fn:' + fn);
 								}
 							}
 
 							// Tables: suggest unless we are in an assignment RHS context.
-							if (!isAssignmentRhs) {
+							// Also suppress table suggestions inside a pipe clause (e.g. after `| where`), since only columns/functions make sense there.
+							if (!isAssignmentRhs && !shouldSuggestColumnsOrJoinOn) {
+								// At statement start / script end, include `let`-declared tabular variables as table-like suggestions.
+								try {
+									if (__kustoLetNamesByLower) {
+										for (const [nl, name] of __kustoLetNamesByLower.entries()) {
+											if (typed && !nl.startsWith(typed)) continue;
+											pushSuggestion({
+												label: name,
+												kind: monaco.languages.CompletionItemKind.Variable,
+												insertText: name,
+												sortText: '0_' + name,
+												range
+										}, 'let:' + nl);
+									}
+								}
+								} catch { /* ignore */ }
 								for (const t of schema.tables) {
 									pushSuggestion({
 										label: t,
@@ -1191,27 +2319,1095 @@ function ensureMonaco() {
 						}
 					});
 
-						// Hover docs for keywords/functions, including argument tracking for function calls.
-						monaco.languages.registerHoverProvider('kusto', {
-							provideHover: function (model, position) {
+					// --- Live diagnostics (markers) + quick fixes ---
+					const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
+
+					const __kustoClamp = (n, min, max) => Math.max(min, Math.min(max, n));
+
+					const __kustoSplitTopLevelStatements = (text) => {
+						// Split on ';' when not inside strings/comments/brackets.
+						const raw = String(text || '');
+						const out = [];
+						let start = 0;
+						let depth = 0;
+						let inLineComment = false;
+						let inBlockComment = false;
+						let inSingle = false;
+						let inDouble = false;
+						for (let i = 0; i < raw.length; i++) {
+							const ch = raw[i];
+							const next = raw[i + 1];
+							if (inLineComment) {
+								if (ch === '\n') {
+									inLineComment = false;
+								}
+								continue;
+							}
+							if (inBlockComment) {
+								if (ch === '*' && next === '/') {
+									inBlockComment = false;
+									i++;
+								}
+								continue;
+							}
+							if (inSingle) {
+								if (ch === "'") {
+									// Kusto escape for single quotes: ''
+									if (next === "'") {
+										i++;
+										continue;
+									}
+									inSingle = false;
+								}
+								continue;
+							}
+							if (inDouble) {
+								if (ch === '\\') {
+									i++;
+									continue;
+								}
+								if (ch === '"') {
+									inDouble = false;
+								}
+								continue;
+							}
+
+							// Enter comments
+							if (ch === '/' && next === '/') {
+								inLineComment = true;
+								i++;
+								continue;
+							}
+							if (ch === '/' && next === '*') {
+								inBlockComment = true;
+								i++;
+								continue;
+							}
+
+							// Enter strings
+							if (ch === "'") {
+								inSingle = true;
+								continue;
+							}
+							if (ch === '"') {
+								inDouble = true;
+								continue;
+							}
+
+							// Track bracket depth
+							if (ch === '(' || ch === '[' || ch === '{') {
+								depth++;
+								continue;
+							}
+							if (ch === ')' || ch === ']' || ch === '}') {
+								depth = Math.max(0, depth - 1);
+								continue;
+							}
+
+							// Statement delimiter
+							if (ch === ';' && depth === 0) {
+								out.push({ startOffset: start, text: raw.slice(start, i) });
+								start = i + 1;
+								continue;
+							}
+						}
+						out.push({ startOffset: start, text: raw.slice(start) });
+						return out.filter(s => String(s.text || '').trim().length > 0);
+					};
+
+					const __kustoGetStatementStartAtOffset = (text, offset) => {
+						const raw = String(text || '');
+						const end = Math.max(0, Math.min(raw.length, Number(offset) || 0));
+						let last = -1;
+						let depth = 0;
+						let inLineComment = false;
+						let inBlockComment = false;
+						let inSingle = false;
+						let inDouble = false;
+						for (let i = 0; i < end; i++) {
+							const ch = raw[i];
+							const next = raw[i + 1];
+							if (inLineComment) {
+								if (ch === '\n') inLineComment = false;
+								continue;
+							}
+							if (inBlockComment) {
+								if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+								continue;
+							}
+							if (inSingle) {
+								if (ch === "'") {
+									if (next === "'") { i++; continue; }
+									inSingle = false;
+								}
+								continue;
+							}
+							if (inDouble) {
+								if (ch === '\\') { i++; continue; }
+								if (ch === '"') inDouble = false;
+								continue;
+							}
+							if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+							if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+							if (ch === "'") { inSingle = true; continue; }
+							if (ch === '"') { inDouble = true; continue; }
+							if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+							if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
+							if (ch === ';' && depth === 0) { last = i; continue; }
+						}
+						return last + 1;
+					};
+
+					const __kustoBuildLineStarts = (text) => {
+						const starts = [0];
+						for (let i = 0; i < text.length; i++) {
+							const ch = text.charCodeAt(i);
+							if (ch === 10 /* \n */) {
+								starts.push(i + 1);
+							}
+						}
+						return starts;
+					};
+
+					const __kustoOffsetToPosition = (lineStarts, offset) => {
+						const off = __kustoClamp(offset, 0, Number.MAX_SAFE_INTEGER);
+						let lo = 0;
+						let hi = lineStarts.length - 1;
+						while (lo <= hi) {
+							const mid = (lo + hi) >> 1;
+							const start = lineStarts[mid];
+							const nextStart = (mid + 1 < lineStarts.length) ? lineStarts[mid + 1] : Number.MAX_SAFE_INTEGER;
+							if (off < start) {
+								hi = mid - 1;
+							} else if (off >= nextStart) {
+								lo = mid + 1;
+							} else {
+								return { lineNumber: mid + 1, column: (off - start) + 1 };
+							}
+						}
+						// Fallback
+						const lastLine = Math.max(1, lineStarts.length);
+						const start = lineStarts[lastLine - 1] || 0;
+						return { lineNumber: lastLine, column: (off - start) + 1 };
+					};
+
+					const __kustoIsIdentStart = (ch) => {
+						return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95; // A-Z a-z _
+					};
+					const __kustoIsIdentPart = (ch) => {
+						return __kustoIsIdentStart(ch) || (ch >= 48 && ch <= 57) || ch === 45; // 0-9 -
+					};
+
+					const __kustoScanIdentifiers = (text) => {
+						// Lightweight lexer that returns identifier tokens with offsets.
+						const tokens = [];
+						let i = 0;
+						let depth = 0;
+						while (i < text.length) {
+							const ch = text.charCodeAt(i);
+							// Newlines/whitespace
+							if (ch === 10 || ch === 13 || ch === 9 || ch === 32) {
+								i++;
+								continue;
+							}
+							// Line comments
+							if (ch === 47 /* / */ && text.charCodeAt(i + 1) === 47) {
+								while (i < text.length && text.charCodeAt(i) !== 10) i++;
+								continue;
+							}
+							// Block comments
+							if (ch === 47 /* / */ && text.charCodeAt(i + 1) === 42 /* * */) {
+								i += 2;
+								while (i < text.length) {
+									if (text.charCodeAt(i) === 42 && text.charCodeAt(i + 1) === 47) {
+										i += 2;
+										break;
+									}
+									i++;
+								}
+								continue;
+							}
+							// Strings (single or double)
+							if (ch === 39 /* ' */ || ch === 34 /* \" */) {
+								const quote = ch;
+								i++;
+								while (i < text.length) {
+									const c = text.charCodeAt(i);
+									if (c === quote) {
+										// Kusto single-quote escaping: ''
+										if (quote === 39 && text.charCodeAt(i + 1) === 39) {
+											i += 2;
+											continue;
+										}
+										i++;
+										break;
+									}
+									// Basic escape support for double quotes
+									if (quote === 34 && c === 92 /* \\ */) {
+										i += 2;
+										continue;
+									}
+									i++;
+								}
+								continue;
+							}
+							// Track depth so we can skip nested pipelines in v1.
+							if (ch === 40 /* ( */ || ch === 91 /* [ */ || ch === 123 /* { */) {
+								depth++;
+								i++;
+								continue;
+							}
+							if (ch === 41 /* ) */ || ch === 93 /* ] */ || ch === 125 /* } */) {
+								depth = Math.max(0, depth - 1);
+								i++;
+								continue;
+							}
+							// Identifiers
+							if (__kustoIsIdentStart(ch)) {
+								const start = i;
+								i++;
+								while (i < text.length && __kustoIsIdentPart(text.charCodeAt(i))) {
+									i++;
+								}
+								const value = text.slice(start, i);
+								tokens.push({ type: 'ident', value, offset: start, endOffset: i, depth });
+								continue;
+							}
+							// Pipe
+							if (ch === 124 /* | */) {
+								tokens.push({ type: 'pipe', value: '|', offset: i, endOffset: i + 1, depth });
+								i++;
+								continue;
+							}
+							// Other
+							i++;
+						}
+						return tokens;
+					};
+
+					const __kustoLevenshtein = (a, b) => {
+						const s = String(a || '');
+						const t = String(b || '');
+						if (s === t) return 0;
+						if (!s) return t.length;
+						if (!t) return s.length;
+						const n = s.length;
+						const m = t.length;
+						const prev = new Array(m + 1);
+						const cur = new Array(m + 1);
+						for (let j = 0; j <= m; j++) prev[j] = j;
+						for (let i = 1; i <= n; i++) {
+							cur[0] = i;
+							const sc = s.charCodeAt(i - 1);
+							for (let j = 1; j <= m; j++) {
+								const cost = (sc === t.charCodeAt(j - 1)) ? 0 : 1;
+								cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+							}
+							for (let j = 0; j <= m; j++) prev[j] = cur[j];
+						}
+						return prev[m];
+					};
+
+					const __kustoBestMatches = (needle, candidates, maxCount) => {
+						const n = String(needle || '');
+						const nl = n.toLowerCase();
+						const out = [];
+						const seen = new Set();
+						const max = Math.max(1, maxCount || 5);
+						for (const c of (Array.isArray(candidates) ? candidates : [])) {
+							const cand = String(c || '');
+							if (!cand) continue;
+							const cl = cand.toLowerCase();
+							const dist = __kustoLevenshtein(nl, cl);
+							const prefixBoost = cl.startsWith(nl) ? -2 : 0;
+							const score = dist + prefixBoost;
+							out.push({ cand, score });
+						}
+						out.sort((a, b) => a.score - b.score || a.cand.localeCompare(b.cand));
+						const best = [];
+						for (const it of out) {
+							if (best.length >= max) break;
+							const key = it.cand.toLowerCase();
+							if (seen.has(key)) continue;
+							seen.add(key);
+							best.push(it.cand);
+						}
+						return best;
+					};
+
+					const __kustoGetSchemaForModel = (model) => {
+						let boxId = null;
+						try {
+							boxId = model && model.uri ? (queryEditorBoxByModelUri[model.uri.toString()] || null) : null;
+						} catch { boxId = null; }
+						if (!boxId) {
+							boxId = activeQueryEditorBoxId;
+						}
+						return { boxId, schema: boxId ? (schemaByBoxId[boxId] || null) : null };
+					};
+
+					const __kustoComputeDiagnostics = (text, schema) => {
+						const markers = [];
+						const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+						if (!raw.trim()) {
+							return markers;
+						}
+						const lineStarts = __kustoBuildLineStarts(raw);
+
+						const tables = (schema && Array.isArray(schema.tables)) ? schema.tables : [];
+						const columnsByTable = (schema && schema.columnsByTable && typeof schema.columnsByTable === 'object') ? schema.columnsByTable : null;
+						const columnTypesByTable = (schema && schema.columnTypesByTable && typeof schema.columnTypesByTable === 'object') ? schema.columnTypesByTable : null;
+
+						// Any declared `let` identifier is considered a valid tabular reference for diagnostics purposes,
+						// even if we can't resolve it back to a schema table.
+						const __kustoDeclaredLetNames = new Set();
+						try {
+							for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
+								if (m && m[2]) __kustoDeclaredLetNames.add(String(m[2]).toLowerCase());
+							}
+						} catch { /* ignore */ }
+
+						const __kustoResolveTabularLetToTable = (() => {
+							const tablesByLower = {};
+							try {
+								for (const t of tables) {
+									tablesByLower[String(t).toLowerCase()] = String(t);
+								}
+							} catch { /* ignore */ }
+							const letSources = {};
+							const extractSourceLower = (rhsText) => {
+								const rhs = String(rhsText || '').trim();
+								if (!rhs) return null;
 								try {
-									const info = getHoverInfoAt(model, position);
-									if (!info) {
+									const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+									if (m && m[1]) return String(m[1]).toLowerCase();
+								} catch { /* ignore */ }
+								try {
+									const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+									if (m && m[1]) return String(m[1]).toLowerCase();
+								} catch { /* ignore */ }
+								try {
+									const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+									return (m && m[1]) ? String(m[1]).toLowerCase() : null;
+								} catch { return null; }
+							};
+							try {
+								const lines = raw.split('\n');
+								for (let i = 0; i < lines.length; i++) {
+									const trimmed = lines[i].trim();
+									if (!/^let\s+/i.test(trimmed)) continue;
+									let stmt = lines[i];
+									while (i + 1 < lines.length && stmt.indexOf(';') === -1) {
+										i++;
+										stmt += '\n' + lines[i];
+									}
+									const m = stmt.match(/^\s*let\s+([A-Za-z_][\w-]*)\s*=\s*([\s\S]*?)(;|$)/i);
+									if (!m || !m[1] || !m[2]) continue;
+									const letNameLower = String(m[1]).toLowerCase();
+									let rhs = String(m[2]).trim();
+									const srcLower = extractSourceLower(rhs);
+									if (!srcLower) continue;
+									letSources[letNameLower] = srcLower;
+								}
+							} catch { /* ignore */ }
+							return (nameLower) => {
+								let cur = String(nameLower || '').toLowerCase();
+								for (let depth = 0; depth < 8; depth++) {
+									if (tablesByLower[cur]) return tablesByLower[cur];
+									if (!letSources[cur]) return null;
+									cur = letSources[cur];
+								}
+								return null;
+							};
+						})();
+
+												const __kustoParseFullyQualifiedTableExpr = (text) => {
+													try {
+														const s = String(text || '');
+														const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+														if (m && m[1] && m[2] && m[3]) {
+															return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
+														}
+														return null;
+													} catch {
+														return null;
+													}
+												};
+
+												// Unknown table checks: (1) statement-first identifier; (2) join/from identifier.
+						const reportUnknownName = (code, name, startOffset, endOffset, candidates, what) => {
+							const start = __kustoOffsetToPosition(lineStarts, startOffset);
+							const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, endOffset));
+							const best = __kustoBestMatches(name, candidates, 5);
+							const didYouMean = best.length ? (' Did you mean: ' + best.map(s => '`' + s + '`').join(', ') + '?') : '';
+							markers.push({
+								severity: monaco.MarkerSeverity.Error,
+								startLineNumber: start.lineNumber,
+								startColumn: start.column,
+								endLineNumber: end.lineNumber,
+								endColumn: end.column,
+								message: 'Unknown ' + what + ' `' + name + '`.' + didYouMean,
+								code
+							});
+						};
+
+						const statements = __kustoSplitTopLevelStatements(raw);
+						const stmts = (statements && statements.length) ? statements : [{ startOffset: 0, text: raw }];
+						for (const st of stmts) {
+							const stmtText = String(st && st.text ? st.text : '');
+							const baseOffset = Number(st && st.startOffset) || 0;
+
+							// First identifier on a statement line (best-effort).
+							try {
+														const lines = stmtText.split('\n');
+														let runningOffset = baseOffset;
+														let statementHasLeadingId = false;
+														for (let li = 0; li < lines.length; li++) {
+															const line = lines[li];
+									const trimmed = line.trim();
+									if (!trimmed) {
+										statementHasLeadingId = false;
+										runningOffset += line.length + 1;
+										continue;
+									}
+									if (trimmed.startsWith('|') || trimmed.startsWith('.') || trimmed.startsWith('//')) {
+										runningOffset += line.length + 1;
+										continue;
+									}
+									if (statementHasLeadingId) {
+										runningOffset += line.length + 1;
+										continue;
+									}
+														// Fully-qualified tabular expression at statement start.
+														try {
+															const fq = __kustoParseFullyQualifiedTableExpr(line);
+															if (fq) {
+																statementHasLeadingId = true;
+																runningOffset += line.length + 1;
+																continue;
+															}
+														} catch { /* ignore */ }
+									const m = line.match(/^\s*([A-Za-z_][\w-]*)\b/);
+									if (m && m[1]) {
+										const name = m[1];
+										const ignore = new Set(['let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata']);
+														const nameLower = name.toLowerCase();
+														const tryValidateLetRhsTable = () => {
+															try {
+																// Supports:
+																//  - let X = Table
+																//  - let X =\n  Table
+																const letLine = String(line || '');
+																if (!/^\s*let\s+/i.test(letLine)) return { handled: false };
+																const eqIdx = letLine.indexOf('=');
+																let rhsText = '';
+																if (eqIdx >= 0) {
+																	rhsText = letLine.slice(eqIdx + 1);
+																}
+																let rhs = String(rhsText || '').trim();
+																	if (!rhs) {
+																		// Multiline `let X =` – peek next non-empty, non-pipe/comment line.
+																		for (let k = li + 1; k < lines.length; k++) {
+																			const cand = String(lines[k] || '');
+																			const tr = cand.trim();
+																			if (!tr) continue;
+																			if (tr === ';') continue;
+																			if (tr.startsWith('|') || tr.startsWith('.') || tr.startsWith('//')) continue;
+																			rhs = tr;
+																			break;
+																		}
+																}
+
+																// Fully-qualified RHS
+																try {
+																	const fq2 = __kustoParseFullyQualifiedTableExpr(rhs);
+																	if (fq2) {
+																		return { handled: true, ok: true };
+																	}
+																} catch { /* ignore */ }
+																const mSrc = rhs.match(/^([A-Za-z_][\w-]*)\b/);
+																if (!mSrc || !mSrc[1]) return { handled: true, ok: true };
+																const srcName = String(mSrc[1]);
+																// Ignore scalar function calls: datetime(...), now(), etc.
+																try {
+																	const after = rhs.slice(mSrc[0].length);
+																	if (/^\s*\(/.test(after)) return { handled: true, ok: true };
+																} catch { /* ignore */ }
+																// Let-declared names are always valid identifiers.
+																if (__kustoDeclaredLetNames.has(srcName.toLowerCase())) return { handled: true, ok: true };
+																if (__kustoResolveTabularLetToTable(srcName.toLowerCase())) return { handled: true, ok: true };
+																if (tables.length && !tables.some(t => String(t).toLowerCase() === srcName.toLowerCase())) {
+																	const localStart = line.toLowerCase().indexOf(srcName.toLowerCase());
+																	if (localStart >= 0) {
+																		reportUnknownName('KW_UNKNOWN_TABLE', srcName, runningOffset + localStart, runningOffset + localStart + srcName.length, tables, 'table');
+																	}
+																}
+																return { handled: true, ok: true };
+															} catch {
+																return { handled: false };
+															}
+														};
+
+														if (!ignore.has(nameLower)) {
+											if (__kustoDeclaredLetNames.has(String(name).toLowerCase())) {
+												statementHasLeadingId = true;
+												runningOffset += line.length + 1;
+												continue;
+											}
+											const resolvedLet = __kustoResolveTabularLetToTable(name.toLowerCase());
+											if (!resolvedLet) {
+												if (tables.length && !tables.some(t => String(t).toLowerCase() === name.toLowerCase())) {
+													const localStart = line.indexOf(name);
+													if (localStart >= 0) {
+														reportUnknownName('KW_UNKNOWN_TABLE', name, runningOffset + localStart, runningOffset + localStart + name.length, tables, 'table');
+													}
+												}
+											}
+										}
+																statementHasLeadingId = true;
+																// If this was a `let` line, we still allow the RHS source line to be picked up when the RHS is on the next line.
+																if (nameLower === 'let') {
+																	const handled = tryValidateLetRhsTable();
+																	if (handled && handled.handled) {
+																		statementHasLeadingId = true;
+																	} else {
+																		// Don't block scanning: let RHS might be on the next line.
+																		statementHasLeadingId = false;
+																	}
+																}
+									}
+									runningOffset += line.length + 1;
+								}
+							} catch { /* ignore */ }
+
+							// Basic syntax-ish check: once a statement has started piping, any subsequent non-empty line
+							// should either start with '|' or be an indented continuation of a multiline operator (e.g. summarize).
+							try {
+								const lines = stmtText.split('\n');
+								let runningOffset = baseOffset;
+								let sawPipe = false;
+								let allowIndentedContinuation = false;
+								for (const line of lines) {
+									const trimmed = line.trim();
+										if (!trimmed || trimmed === ';') {
+										sawPipe = false;
+										allowIndentedContinuation = false;
+										runningOffset += line.length + 1;
+										continue;
+									}
+									if (trimmed.startsWith('//')) {
+										runningOffset += line.length + 1;
+										continue;
+									}
+										if (trimmed.startsWith('|')) {
+										sawPipe = true;
+											allowIndentedContinuation = /^\|\s*(where|filter|summarize|extend|project\b|project-rename\b|project-away\b|project-keep\b|project-reorder\b|project-smart\b)\b/i.test(trimmed);
+										runningOffset += line.length + 1;
+										continue;
+									}
+									if (sawPipe) {
+										const isIndented = /^\s+/.test(line);
+										if (allowIndentedContinuation && isIndented) {
+											runningOffset += line.length + 1;
+											continue;
+										}
+										const localStart = line.search(/\S/);
+										const startOffset = runningOffset + Math.max(0, localStart);
+										const firstToken = (localStart >= 0 ? line.slice(localStart).match(/^([A-Za-z_][\w-]*)/) : null);
+										const tokLen = firstToken && firstToken[1] ? firstToken[1].length : 1;
+										const start = __kustoOffsetToPosition(lineStarts, startOffset);
+										const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, startOffset + tokLen));
+										markers.push({
+											severity: monaco.MarkerSeverity.Error,
+											startLineNumber: start.lineNumber,
+											startColumn: start.column,
+											endLineNumber: end.lineNumber,
+											endColumn: end.column,
+											message: 'Unexpected text after a pipe operator. Did you forget to prefix this line with `|`?',
+											code: 'KW_EXPECTED_PIPE'
+										});
+									}
+									runningOffset += line.length + 1;
+								}
+							} catch { /* ignore */ }
+
+							try {
+								const extractJoinOrLookupRightTable = (seg) => {
+									try {
+										const clause = String(seg || '');
+										const paren = clause.match(/\(([^)]*)\)/);
+										if (paren && paren[1]) {
+											const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
+											if (mName && mName[1]) return mName[1];
+										}
+										const afterOp = clause.replace(/^(join|lookup)\b/i, '').trim();
+										const withoutOpts = afterOp
+											.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+											.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+											.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+											.trim();
+										const mName = withoutOpts.match(/^([A-Za-z_][\w-]*)\b/);
+										return mName && mName[1] ? mName[1] : null;
+									} catch {
 										return null;
 									}
-									return {
-										range: info.range || undefined,
-										contents: [{ value: info.markdown }]
-									};
-								} catch {
-									return null;
+								};
+
+								for (const m of stmtText.matchAll(/\b(join|lookup|from)\b/gi)) {
+									const kw = String(m[1] || '').toLowerCase();
+									const idx = (typeof m.index === 'number') ? m.index : -1;
+									if (idx < 0) continue;
+									let end = stmtText.indexOf('\n', idx);
+									if (end < 0) end = stmtText.length;
+									const seg = stmtText.slice(idx, end);
+									let name = null;
+									if (kw === 'from') {
+										const mm = seg.match(/^from\s+([A-Za-z_][\w-]*)\b/i);
+										name = mm && mm[1] ? mm[1] : null;
+									} else {
+										name = extractJoinOrLookupRightTable(seg);
+									}
+									if (!name) continue;
+															// If the segment contains a fully-qualified table expression, skip unknown-table checks.
+															try {
+																if (__kustoParseFullyQualifiedTableExpr(seg)) {
+																	continue;
+																}
+															} catch { /* ignore */ }
+									if (__kustoDeclaredLetNames.has(String(name).toLowerCase())) continue;
+									if (__kustoResolveTabularLetToTable(String(name).toLowerCase())) continue;
+									if (tables.length && !tables.some(t => String(t).toLowerCase() === String(name).toLowerCase())) {
+										const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
+										const startOffset = baseOffset + idx + Math.max(0, localStart);
+										reportUnknownName('KW_UNKNOWN_TABLE', name, startOffset, startOffset + String(name).length, tables, 'table');
+									}
+								}
+							} catch { /* ignore */ }
+						}
+
+						// Column checks: best-effort pipeline simulation at top-level (depth 0).
+						if (tables.length && columnsByTable) {
+							const isDynamicType = (t) => {
+								const v = String(t ?? '').trim().toLowerCase();
+								return v === 'dynamic' || v.includes('dynamic') || v === 'system.object' || v.includes('system.object') || v === 'object';
+							};
+							const getDynamicColumnsForTable = (table) => {
+								const set = new Set();
+								if (!table || !columnTypesByTable) return set;
+								const types = columnTypesByTable[table];
+								if (!types || typeof types !== 'object') return set;
+								for (const [col, typ] of Object.entries(types)) {
+									if (isDynamicType(typ)) set.add(String(col));
+								}
+								return set;
+							};
+							const getDotChainRoot = (s, identStart) => {
+								let currentIdentStart = identStart;
+								if (currentIdentStart <= 0 || s[currentIdentStart - 1] !== '.') return null;
+								let root = null;
+								while (currentIdentStart > 0 && s[currentIdentStart - 1] === '.') {
+									let p = currentIdentStart - 2;
+									while (p >= 0 && /\s/.test(s[p])) p--;
+									const end = p + 1;
+									while (p >= 0 && /[\w-]/.test(s[p])) p--;
+									const start = p + 1;
+									const seg = s.slice(start, end);
+									if (!seg || !/^[A-Za-z_]/.test(seg)) break;
+									root = seg;
+									currentIdentStart = start;
+								}
+								return root;
+							};
+							const letNames = new Set();
+							try {
+								for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
+									if (m && m[2]) letNames.add(String(m[2]).toLowerCase());
+								}
+							} catch { /* ignore */ }
+
+												const kw = new Set([
+													'let','set','declare','print','range','datatable','externaldata',
+													'where','project','extend','summarize','order','sort','by','take','top','distinct','join','from','on','kind','as',
+													'and','or','not','in','has','contains','startswith','endswith','between','matches','true','false','null','case','then','else'
+												]);
+							const fnNames = new Set(Object.keys(KUSTO_FUNCTION_DOCS || {}).map(s => String(s).toLowerCase()));
+
+							for (const st of stmts) {
+								const stmtRaw = String(st && st.text ? st.text : '');
+								const baseOffset = Number(st && st.startOffset) || 0;
+								if (!stmtRaw.trim()) continue;
+
+								// Statement-local string ranges (so semicolons don't confuse offsets).
+								const stringRanges = [];
+								try {
+									let quote = null;
+									let start = -1;
+									for (let i = 0; i < stmtRaw.length; i++) {
+										const ch = stmtRaw[i];
+										if (quote) {
+											if (ch === '\\') { i++; continue; }
+											if (ch === quote) {
+												stringRanges.push([start, i + 1]);
+												quote = null;
+												start = -1;
+												continue;
+											}
+											continue;
+										}
+										if (ch === '"' || ch === "'") {
+											quote = ch;
+											start = i;
+										}
+									}
+								} catch { /* ignore */ }
+								let stringRangeIdx = 0;
+								const isInStringLiteral = (localOffset) => {
+									while (stringRangeIdx < stringRanges.length && stringRanges[stringRangeIdx][1] <= localOffset) {
+										stringRangeIdx++;
+									}
+									const r = stringRanges[stringRangeIdx];
+									return !!r && r[0] <= localOffset && localOffset < r[1];
+								};
+
+								const tokens = __kustoScanIdentifiers(stmtRaw);
+
+								// Infer active table from the statement (supports `let X = Table`).
+								let activeTable = null;
+								try {
+									const ignore = new Set(['let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata']);
+									const lines = stmtRaw.split('\n');
+									const mLet = stmtRaw.match(/^\s*let\s+[A-Za-z_][\w-]*\s*=([\s\S]*)$/i);
+									let letSource = null;
+									if (mLet && mLet[1]) {
+										let rhs = String(mLet[1]).trim();
+										rhs = rhs.replace(/^\(\s*/g, '').trim();
+										const src = rhs.match(/^([A-Za-z_][\w-]*)\b/);
+										if (src && src[1]) letSource = src[1];
+									}
+									if (letSource) {
+										const found = tables.find(t => String(t).toLowerCase() === String(letSource).toLowerCase());
+										if (found && columnsByTable[found]) {
+											activeTable = found;
+										}
+										if (!activeTable) {
+											const resolvedLet = __kustoResolveTabularLetToTable(String(letSource).toLowerCase());
+											if (resolvedLet && columnsByTable[resolvedLet]) {
+												activeTable = resolvedLet;
+											}
+										}
+									}
+									if (!activeTable) {
+										for (const line of lines) {
+											const trimmed = line.trim();
+											if (!trimmed) continue;
+											if (trimmed.startsWith('|') || trimmed.startsWith('.') || trimmed.startsWith('//')) continue;
+											const m = line.match(/^\s*([A-Za-z_][\w-]*)\b/);
+											if (!m || !m[1]) continue;
+											const name = m[1];
+											if (ignore.has(name.toLowerCase())) continue;
+											const found = tables.find(t => String(t).toLowerCase() === String(name).toLowerCase());
+											if (found && columnsByTable[found]) { activeTable = found; break; }
+											const resolvedLet = __kustoResolveTabularLetToTable(String(name).toLowerCase());
+											if (resolvedLet && columnsByTable[resolvedLet]) { activeTable = resolvedLet; break; }
+										}
+									}
+								} catch { activeTable = null; }
+
+								let colSet = null;
+								let dynamicRootCols = new Set();
+								if (activeTable) {
+									colSet = new Set((columnsByTable[activeTable] || []).map(c => String(c)));
+									dynamicRootCols = getDynamicColumnsForTable(activeTable);
+								}
+
+								const reportUnknownColumn = (name, localStartOffset, localEndOffset, candidates) => {
+									reportUnknownName('KW_UNKNOWN_COLUMN', name, baseOffset + localStartOffset, baseOffset + localEndOffset, candidates, 'column');
+								};
+
+								const currentColumns = () => {
+									if (!colSet) return [];
+									return Array.from(colSet);
+								};
+
+								const isFunctionCall = (idx) => {
+									try {
+										const t = tokens[idx];
+										if (!t || t.type !== 'ident') return false;
+										const after = stmtRaw.slice(t.endOffset, Math.min(stmtRaw.length, t.endOffset + 6));
+										return /^\s*\(/.test(after);
+									} catch {
+										return false;
+									}
+								};
+
+								for (let i = 0; i < tokens.length; i++) {
+									const t = tokens[i];
+									if (!t || t.depth !== 0) continue;
+									if (t.type !== 'pipe') continue;
+
+									let opTok = null;
+									for (let j = i + 1; j < tokens.length; j++) {
+										const tt = tokens[j];
+										if (!tt || tt.depth !== 0) continue;
+										if (tt.type === 'ident') { opTok = tt; break; }
+										if (tt.type === 'pipe') break;
+									}
+									if (!opTok) continue;
+									const op = String(opTok.value || '').toLowerCase();
+									if (!colSet) continue;
+
+									let clauseStart = opTok.endOffset;
+									let clauseEnd = stmtRaw.length;
+									for (let j = i + 1; j < tokens.length; j++) {
+										const tt = tokens[j];
+										if (!tt || tt.depth !== 0) continue;
+										if (tt.type === 'pipe' && tt.offset > opTok.offset) { clauseEnd = tt.offset; break; }
+									}
+
+									const clauseText = stmtRaw.slice(clauseStart, clauseEnd);
+								// Operators that change column set (best-effort)
+								const inputColSet = colSet ? new Set(colSet) : null;
+								let nextColSet = null;
+								if (op === 'extend') {
+									// Add assigned columns: Name =
+									for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+										try { colSet.add(m[1]); } catch { /* ignore */ }
+									}
+								}
+								if (op === 'project') {
+									// Project outputs only mentioned columns/aliases.
+									const next = new Set();
+									for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+										const name = m[1];
+										if (!name) continue;
+										const nl = name.toLowerCase();
+										if (kw.has(nl)) continue;
+										// If it's an alias assignment "X = Y", include X.
+										const after = clauseText.slice(m.index + name.length);
+										if (/^\s*=/.test(after)) {
+											next.add(name);
+											continue;
+										}
+										// Otherwise include it only if it existed previously.
+										if (inputColSet && inputColSet.has(name)) {
+											next.add(name);
+										}
+									}
+									nextColSet = next;
+								}
+								if (op === 'summarize') {
+									// Output = group-by keys + assigned aggregates (X = count())
+									const next = new Set();
+									// by keys (multiline-friendly): locate the last `by` token within this clause.
+									try {
+										let byTok = null;
+										for (let j = 0; j < tokens.length; j++) {
+											const tt = tokens[j];
+											if (!tt || tt.depth !== 0) continue;
+											if (tt.type !== 'ident') continue;
+											if (tt.offset < clauseStart || tt.offset >= clauseEnd) continue;
+											if (String(tt.value || '').toLowerCase() === 'by') {
+												byTok = tt;
+											}
+										}
+										if (byTok) {
+											const byText = stmtRaw.slice(byTok.endOffset, clauseEnd);
+											for (const m of byText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+												const name = m[1];
+												if (name && inputColSet && inputColSet.has(name)) next.add(name);
+											}
+										}
+									} catch { /* ignore */ }
+									// assigned aggregates
+									for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+										try { next.add(m[1]); } catch { /* ignore */ }
+									}
+									nextColSet = next;
+								}
+
+								// Validate identifiers in certain clauses.
+								const shouldValidateColumns = (op === 'where' || op === 'project' || op === 'extend' || op === 'summarize' || op === 'distinct' || op === 'take' || op === 'top' || op === 'order' || op === 'sort');
+								if (!shouldValidateColumns) {
+									continue;
+								}
+								const validateSet = (op === 'project' || op === 'summarize') ? (inputColSet || colSet) : colSet;
+								// Scan identifiers in clauseText.
+								for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+									const name = m[1];
+									if (!name) continue;
+									const nl = name.toLowerCase();
+									if (kw.has(nl)) continue;
+									if (fnNames.has(nl)) continue;
+									// Skip assignment LHS (X = ...)
+									try {
+										const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
+										if (/^\s*=/.test(afterLocal)) continue;
+									} catch { /* ignore */ }
+											// Skip if it's inside a string literal (statement-local offsets).
+											const localOffset = clauseStart + (typeof m.index === 'number' ? m.index : 0);
+											if (isInStringLiteral(localOffset)) {
+										continue;
+									}
+									if (letNames.has(nl)) {
+										continue;
+									}
+									try {
+												const after = stmtRaw.slice(localOffset + name.length, Math.min(stmtRaw.length, localOffset + name.length + 6));
+										if (/^\s*\(/.test(after)) {
+											continue;
+										}
+									} catch { /* ignore */ }
+									// Allow `dynamicColumn.any.property.chain` when the root is a known dynamic column.
+									try {
+										const localIndex = (typeof m.index === 'number') ? m.index : 0;
+										const root = getDotChainRoot(clauseText, localIndex);
+										if (root && validateSet && validateSet.has(root) && dynamicRootCols.has(root)) {
+											continue;
+										}
+									} catch { /* ignore */ }
+											if (validateSet && !validateSet.has(name)) {
+												reportUnknownColumn(name, localOffset, localOffset + name.length, currentColumns());
+									}
+								}
+
+								if (nextColSet) {
+									colSet = nextColSet;
 								}
 							}
-						});
+						}
+					}
+					return markers;
+				};
 
-							// Expose a helper so the editor instance can decide whether to auto-show hover.
-							window.__kustoGetHoverInfoAt = getHoverInfoAt;
-							resolve(monaco);
+				window.__kustoScheduleKustoDiagnostics = function (boxId, delayMs) {
+						try {
+							const id = String(boxId || '');
+							if (!id) return;
+							window.__kustoDiagnosticsTimersByBoxId = window.__kustoDiagnosticsTimersByBoxId || {};
+							const timers = window.__kustoDiagnosticsTimersByBoxId;
+							if (timers[id]) {
+								clearTimeout(timers[id]);
+								timers[id] = null;
+							}
+							const ms = (typeof delayMs === 'number') ? delayMs : 250;
+							timers[id] = setTimeout(() => {
+								(async () => {
+									try {
+										if (!queryEditors || !queryEditors[id]) return;
+										const editor = queryEditors[id];
+										const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+										if (!model) return;
+
+										// IMPORTANT: Updating markers can close Monaco's quick-fix/lightbulb menu.
+										// If it's open, defer diagnostics updates so the user can interact with it.
+										try {
+											const dom = editor && typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+											const menu = dom && dom.querySelector ? dom.querySelector('.context-view .monaco-menu-container') : null;
+											if (menu) {
+												const r = menu.getBoundingClientRect();
+												const visible = (r && (r.width || 0) > 2 && (r.height || 0) > 2);
+												if (visible) {
+													// Reschedule shortly and bail.
+													try { window.__kustoScheduleKustoDiagnostics(id, 350); } catch { /* ignore */ }
+													return;
+												}
+											}
+										} catch { /* ignore */ }
+
+										const schema = schemaByBoxId ? (schemaByBoxId[id] || null) : null;
+										const text = model.getValue();
+
+										// Prefer extension-host language service when available.
+										try {
+											if (typeof window.__kustoRequestKqlDiagnostics === 'function') {
+												let connectionId = '';
+												let database = '';
+												try {
+													const c = document.getElementById(id + '_connection');
+													const d = document.getElementById(id + '_database');
+													connectionId = c ? String(c.value || '') : '';
+													database = d ? String(d.value || '') : '';
+												} catch { /* ignore */ }
+
+											const remote = await window.__kustoRequestKqlDiagnostics({ boxId: id, text, connectionId, database });
+											const diags = remote && remote.diagnostics;
+											if (Array.isArray(diags)) {
+												const markers = diags.map(d => {
+													const sev = d && typeof d.severity === 'number' ? d.severity : 1;
+													const s = d && d.range && d.range.start ? d.range.start : { line: 0, character: 0 };
+													const e = d && d.range && d.range.end ? d.range.end : { line: s.line, character: s.character + 1 };
+													return {
+														severity: (sev === 2) ? monaco.MarkerSeverity.Warning : (sev === 3) ? monaco.MarkerSeverity.Info : (sev === 4) ? monaco.MarkerSeverity.Hint : monaco.MarkerSeverity.Error,
+														startLineNumber: (s.line || 0) + 1,
+														startColumn: (s.character || 0) + 1,
+														endLineNumber: (e.line || 0) + 1,
+														endColumn: (e.character || 0) + 1,
+														message: String((d && d.message) || ''),
+														code: d && d.code ? String(d.code) : undefined
+												};
+											});
+												monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
+												return;
+											}
+										}
+										} catch { /* ignore */ }
+
+										const markers = __kustoComputeDiagnostics(text, schema);
+										monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
+									} catch { /* ignore */ }
+								})();
+							}, ms);
+						} catch {
+							// ignore
+						}
+					};
+
+					// Hover provider for diagnostics (shown on red underline hover).
+					monaco.languages.registerHoverProvider('kusto', {
+						provideHover: function (model, position) {
+							try {
+								const markers = monaco.editor.getModelMarkers({ owner: KUSTO_DIAGNOSTICS_OWNER, resource: model.uri });
+								if (!markers || !markers.length) return null;
+								const line = position.lineNumber;
+								const col = position.column;
+								const hit = markers.filter(m =>
+									m.startLineNumber <= line && m.endLineNumber >= line &&
+									(m.startLineNumber < line || m.startColumn <= col) &&
+									(m.endLineNumber > line || m.endColumn >= col)
+								);
+								if (!hit.length) return null;
+								const m = hit[0];
+								return {
+									range: new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn),
+									contents: [{ value: '**Kusto syntax issue**\n\n' + String(m.message || '') }]
+								};
+							} catch {
+								return null;
+							}
+						}
+					});
+
+					// Hover docs for keywords/functions, including argument tracking for function calls.
+					monaco.languages.registerHoverProvider('kusto', {
+						provideHover: function (model, position) {
+							try {
+								const info = getHoverInfoAt(model, position);
+								if (!info) {
+									return null;
+								}
+								return {
+									range: info.range || undefined,
+									contents: [{ value: info.markdown }]
+								};
+							} catch {
+								return null;
+							}
+						}
+					});
+
+					// Expose a helper so the editor instance can decide whether to auto-show hover.
+					window.__kustoGetHoverInfoAt = getHoverInfoAt;
+					resolve(monaco);
 						} catch (e) {
 							reject(e);
 						}
@@ -2144,10 +4340,16 @@ function initQueryEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			// Monaco's built-in hover UI shows multiple stacked hover blocks (markers + providers)
+			// and an action bar ("View Problem") that isn't useful in our webview.
+			// We provide a single custom diagnostics tooltip instead.
+			hover: { enabled: false },
 			// Autocomplete should be manual-only (Ctrl+Space / toolbar) unless explicitly triggered by code.
 			suggestOnTriggerCharacters: false,
 			quickSuggestions: false,
 			quickSuggestionsDelay: 0,
+			// We don't use Monaco quick-fix/lightbulb UX in this webview.
+			lightbulb: { enabled: false },
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
 			fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
@@ -2155,6 +4357,370 @@ function initQueryEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
+
+		// Single diagnostics tooltip (replaces Monaco's default hover widget).
+		try {
+			const DIAG_OWNER = 'kusto-diagnostics';
+			const DIAG_HOVER_SHOW_DELAY_MS = 1000;
+			let diagHoverEl = null;
+			let diagHoverLastKey = '';
+			let diagHoverHideTimer = null;
+			let diagHoverShowTimer = null;
+			let diagHoverPending = null;
+			let diagHoverLastMouse = { at: 0, clientX: 0, clientY: 0, position: null };
+			let diagHoverLastCursor = { at: 0, position: null };
+			let diagHoverActiveSource = null; // 'mouse' | 'cursor'
+
+			const ensureDiagHoverEl = () => {
+				if (diagHoverEl) return diagHoverEl;
+				const el = document.createElement('div');
+				el.className = 'kusto-doc-widget kusto-diagnostics-hover';
+				el.style.position = 'fixed';
+				el.style.display = 'none';
+				el.style.pointerEvents = 'none';
+				// Keep above the editor but below Monaco context widgets (quick fix / lightbulb menu).
+				el.style.zIndex = '1000';
+				document.body.appendChild(el);
+				diagHoverEl = el;
+				return el;
+			};
+
+			const hideDiagHover = (immediate) => {
+				try {
+					if (diagHoverShowTimer) {
+						clearTimeout(diagHoverShowTimer);
+						diagHoverShowTimer = null;
+					}
+					diagHoverPending = null;
+					if (diagHoverHideTimer) {
+						clearTimeout(diagHoverHideTimer);
+						diagHoverHideTimer = null;
+					}
+					if (immediate) {
+						if (diagHoverEl) diagHoverEl.style.display = 'none';
+						return;
+					}
+					diagHoverHideTimer = setTimeout(() => {
+						try {
+							if (diagHoverEl) diagHoverEl.style.display = 'none';
+						} catch { /* ignore */ }
+					}, 50);
+				} catch { /* ignore */ }
+			};
+
+			const getDiagnosticAt = (model, position) => {
+				try {
+					if (!model || !position) return null;
+					const markers = monaco.editor.getModelMarkers({ owner: DIAG_OWNER, resource: model.uri });
+					if (!markers || !markers.length) return null;
+					const line = position.lineNumber;
+					const col = position.column;
+					for (const m of markers) {
+						if (!m) continue;
+						if (m.startLineNumber > line || m.endLineNumber < line) continue;
+						if (m.startLineNumber === line && m.startColumn > col) continue;
+						if (m.endLineNumber === line && m.endColumn < col) continue;
+						return m;
+					}
+					return null;
+				} catch {
+					return null;
+				}
+			};
+
+			const formatDiagMessageHtml = (msg) => {
+				const raw = String(msg || '').trim();
+				const esc = (typeof escapeHtml === 'function') ? escapeHtml(raw) : raw;
+				// Minimal markdown-ish formatting: `code` + newlines.
+				const withCode = String(esc)
+					.replace(/`([^`]+)`/g, '<code>$1</code>')
+					.replace(/\n/g, '<br/>');
+				return (
+					'<div style="font-weight:600; margin-bottom:6px;">Kusto syntax issue</div>' +
+					'<div style="opacity:0.95;">' + withCode + '</div>'
+				);
+			};
+
+			const isMonacoContextMenuVisible = () => {
+				try {
+					const dom = editor && typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+					if (!dom) return false;
+					// Monaco renders quick-fix/lightbulb menus inside a context-view container.
+					const menu = dom.querySelector('.context-view .monaco-menu-container');
+					if (menu) {
+						const r = menu.getBoundingClientRect();
+						if ((r.width || 0) > 2 && (r.height || 0) > 2) return true;
+					}
+					return false;
+				} catch {
+					return false;
+				}
+			};
+
+			const positionDiagHover = (el, clientX, clientY) => {
+				try {
+					const pad = 12;
+					const maxW = 560;
+					el.style.maxWidth = maxW + 'px';
+					el.style.left = '0px';
+					el.style.top = '0px';
+					el.style.display = 'block';
+					// Measure now that it's visible.
+					const rect = el.getBoundingClientRect();
+					const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+					const vh = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+					let x = (Number(clientX) || 0) + pad;
+					// Prefer above the pointer/caret.
+					let y = (Number(clientY) || 0) - (rect.height || 0) - pad;
+					if (y < 6) {
+						y = (Number(clientY) || 0) + pad;
+					}
+					if (vw && rect.width && x + rect.width > vw - 6) {
+						x = Math.max(6, vw - rect.width - 6);
+					}
+					if (vh && rect.height && y + rect.height > vh - 6) {
+						// Clamp within viewport.
+						y = Math.max(6, vh - rect.height - 6);
+					}
+					el.style.left = Math.round(x) + 'px';
+					el.style.top = Math.round(y) + 'px';
+				} catch { /* ignore */ }
+			};
+
+			const getClientPointForCursor = (pos) => {
+				try {
+					if (!pos) return null;
+					const dom = editor && typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+					if (!dom) return null;
+					const r = dom.getBoundingClientRect();
+					const v = editor.getScrolledVisiblePosition(pos);
+					if (!v) return null;
+					// Place near the caret. +2 so it doesn't overlap the glyph.
+					return {
+						clientX: Math.round(r.left + (v.left || 0) + 2),
+						clientY: Math.round(r.top + (v.top || 0) + 2)
+					};
+				} catch {
+					return null;
+				}
+			};
+
+			const showDiagHover = (marker, mouseEventOrPoint) => {
+				try {
+					if (!marker) {
+						hideDiagHover(false);
+						return;
+					}
+					// Don't show our tooltip while Monaco is displaying a context menu (e.g. lightbulb quick fix).
+					if (isMonacoContextMenuVisible()) {
+						hideDiagHover(true);
+						return;
+					}
+					const el = ensureDiagHoverEl();
+					const key = String(marker.code || '') + '|' + String(marker.message || '') + '|' + marker.startLineNumber + ':' + marker.startColumn + '-' + marker.endLineNumber + ':' + marker.endColumn;
+					if (key !== diagHoverLastKey) {
+						diagHoverLastKey = key;
+						el.innerHTML = formatDiagMessageHtml(marker.message || '');
+					}
+					el.style.display = 'block';
+					const be = mouseEventOrPoint && mouseEventOrPoint.browserEvent ? mouseEventOrPoint.browserEvent : null;
+					const cx = be ? be.clientX : (mouseEventOrPoint && typeof mouseEventOrPoint.clientX === 'number' ? mouseEventOrPoint.clientX : 0);
+					const cy = be ? be.clientY : (mouseEventOrPoint && typeof mouseEventOrPoint.clientY === 'number' ? mouseEventOrPoint.clientY : 0);
+					positionDiagHover(el, cx, cy);
+				} catch { /* ignore */ }
+			};
+
+			const scheduleDiagHover = (marker, point, source) => {
+				try {
+					if (!marker) {
+						hideDiagHover(false);
+						return;
+					}
+					// If a context menu is visible, never schedule.
+					if (isMonacoContextMenuVisible()) {
+						hideDiagHover(true);
+						return;
+					}
+					const key = String(marker.code || '') + '|' + String(marker.message || '') + '|' + marker.startLineNumber + ':' + marker.startColumn + '-' + marker.endLineNumber + ':' + marker.endColumn;
+					diagHoverPending = { key, marker, point, source, at: Date.now() };
+					if (diagHoverShowTimer) {
+						clearTimeout(diagHoverShowTimer);
+						diagHoverShowTimer = null;
+					}
+					diagHoverShowTimer = setTimeout(() => {
+						try {
+							if (!diagHoverPending) return;
+							// If a Monaco context menu is now visible, abort.
+							if (isMonacoContextMenuVisible()) {
+								hideDiagHover(true);
+								return;
+							}
+							const pending = diagHoverPending;
+							// Only show if the pending marker is still the most recent.
+							if (!pending || !pending.marker) return;
+							// Avoid showing stale tooltips if the user moved away.
+							if (pending.source === 'mouse') {
+								if (computeActiveSource() !== 'mouse') return;
+								const model = editor.getModel();
+								const pos = diagHoverLastMouse.position;
+								if (!model || !pos) return;
+								const current = getDiagnosticAt(model, pos);
+								if (!current) return;
+								const curKey = String(current.code || '') + '|' + String(current.message || '') + '|' + current.startLineNumber + ':' + current.startColumn + '-' + current.endLineNumber + ':' + current.endColumn;
+								if (curKey !== pending.key) return;
+								showDiagHover(current, pending.point);
+								return;
+							}
+							// cursor
+							try {
+								if (!editor.hasTextFocus()) return;
+							} catch { /* ignore */ }
+							if (computeActiveSource() !== 'cursor') return;
+							const model = editor.getModel();
+							const pos = editor.getPosition();
+							if (!model || !pos) return;
+							const current = getDiagnosticAt(model, pos);
+							if (!current) return;
+							const curKey = String(current.code || '') + '|' + String(current.message || '') + '|' + current.startLineNumber + ':' + current.startColumn + '-' + current.endLineNumber + ':' + current.endColumn;
+							if (curKey !== pending.key) return;
+							showDiagHover(current, pending.point);
+						} catch { /* ignore */ }
+					}, DIAG_HOVER_SHOW_DELAY_MS);
+				} catch { /* ignore */ }
+			};
+
+			const computeActiveSource = () => {
+				const m = diagHoverLastMouse.at || 0;
+				const c = diagHoverLastCursor.at || 0;
+				return (m >= c) ? 'mouse' : 'cursor';
+			};
+
+			const refreshDiagHoverFromActiveSource = () => {
+				try {
+					const model = editor.getModel();
+					if (!model) {
+						hideDiagHover(false);
+						return;
+					}
+
+					const source = computeActiveSource();
+					diagHoverActiveSource = source;
+
+					if (source === 'mouse') {
+						const pos = diagHoverLastMouse.position;
+						if (!pos) {
+							hideDiagHover(false);
+							return;
+						}
+						const marker = getDiagnosticAt(model, pos);
+						if (!marker) {
+							hideDiagHover(false);
+							return;
+						}
+						scheduleDiagHover(marker, { clientX: diagHoverLastMouse.clientX, clientY: diagHoverLastMouse.clientY }, 'mouse');
+						return;
+					}
+
+					// cursor
+					// Only show cursor-driven tooltip when editor is focused.
+					try {
+						if (!editor.hasTextFocus()) {
+							hideDiagHover(false);
+							return;
+						}
+					} catch { /* ignore */ }
+					const pos = editor.getPosition();
+					if (!pos) {
+						hideDiagHover(false);
+						return;
+					}
+					const marker = getDiagnosticAt(model, pos);
+					if (!marker) {
+						hideDiagHover(false);
+						return;
+					}
+					const pt = getClientPointForCursor(pos) || { clientX: 0, clientY: 0 };
+					scheduleDiagHover(marker, pt, 'cursor');
+				} catch {
+					hideDiagHover(false);
+				}
+			};
+
+			// Hook mouse move to show diagnostics on hover.
+			try {
+				editor.onMouseMove((e) => {
+					try {
+						const now = Date.now();
+						diagHoverLastMouse.at = now;
+						if (!e || !e.target) {
+							hideDiagHover(false);
+							return;
+						}
+						const pos = e.target.position;
+						const model = editor.getModel();
+						if (!pos || !model) {
+							hideDiagHover(false);
+							return;
+						}
+						// Only treat as mouse-driven when the mouse actually moved.
+						try {
+							const be = e && e.event && e.event.browserEvent ? e.event.browserEvent : null;
+							if (be) {
+								diagHoverLastMouse.clientX = be.clientX;
+								diagHoverLastMouse.clientY = be.clientY;
+							}
+						} catch { /* ignore */ }
+						diagHoverLastMouse.position = pos;
+						const marker = getDiagnosticAt(model, pos);
+						if (!marker) {
+							// If mouse is the active source, hide; otherwise leave cursor tooltip alone.
+							if (computeActiveSource() === 'mouse') {
+								hideDiagHover(false);
+							}
+							return;
+						}
+						if (computeActiveSource() === 'mouse') {
+							scheduleDiagHover(marker, { clientX: diagHoverLastMouse.clientX, clientY: diagHoverLastMouse.clientY }, 'mouse');
+						}
+					} catch {
+						hideDiagHover(false);
+					}
+				});
+			} catch { /* ignore */ }
+
+			// Hook cursor moves (keyboard or programmatic) to show diagnostics at caret.
+			try {
+				editor.onDidChangeCursorPosition((e) => {
+					try {
+						diagHoverLastCursor.at = Date.now();
+						diagHoverLastCursor.position = e && e.position ? e.position : null;
+						refreshDiagHoverFromActiveSource();
+					} catch {
+						// ignore
+					}
+				});
+			} catch { /* ignore */ }
+
+			// If mouse is the active source, refresh when we scroll.
+			try {
+				editor.onDidScrollChange(() => {
+					try {
+						if (computeActiveSource() === 'cursor') {
+							refreshDiagHoverFromActiveSource();
+						}
+					} catch { /* ignore */ }
+				});
+			} catch { /* ignore */ }
+
+			try {
+				editor.onMouseLeave(() => hideDiagHover(true));
+			} catch { /* ignore */ }
+			try {
+				editor.onDidBlurEditorText(() => hideDiagHover(true));
+			} catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
 
 		// SEM0139 helper: auto-select term and open Find-with-selection.
 		try {
@@ -2343,8 +4909,35 @@ function initQueryEditor(boxId) {
 		}
 
 		// Trigger suggest, then auto-hide it if Monaco has nothing to show.
-		const __kustoHideSuggestIfNoSuggestions = (ed) => {
+		// NOTE: Be conservative here; hiding too early can suppress real suggestions.
+		const __kustoHideSuggestIfNoSuggestions = (ed, expectedModelVersionId) => {
 			try {
+				const __kustoSafeEditorTrigger = (editor, commandId) => {
+					try {
+						if (!editor || !commandId) return;
+						const result = editor.trigger('keyboard', commandId, {});
+						// Some Monaco commands return a Promise; avoid unhandled rejections.
+						if (result && typeof result.then === 'function') {
+							result.catch(() => { /* ignore */ });
+						}
+					} catch {
+						// ignore
+					}
+				};
+
+				try {
+					if (typeof expectedModelVersionId === 'number') {
+						const model = ed && ed.getModel && ed.getModel();
+						const current = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+						// If the user typed or the model changed, don't auto-hide.
+						if (typeof current === 'number' && current !== expectedModelVersionId) {
+							return;
+						}
+					}
+				} catch {
+					// ignore
+				}
+
 				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
 				if (!root || typeof root.querySelector !== 'function') {
 					return;
@@ -2364,8 +4957,8 @@ function initQueryEditor(boxId) {
 				const hasProgress = !!(widget.querySelector && widget.querySelector('.monaco-progress-container'));
 				const hasLoadingText = text.includes('loading');
 				if (isVisible && hasNoSuggestionsText && !hasRows && !hasProgress && !hasLoadingText) {
-					try { ed.trigger('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
-					try { ed.trigger('keyboard', 'editor.action.hideSuggestWidget', {}); } catch { /* ignore */ }
+					// Use the built-in internal command; don't call non-existent editor actions.
+					__kustoSafeEditorTrigger(ed, 'hideSuggestWidget');
 				}
 			} catch {
 				// ignore
@@ -2375,10 +4968,16 @@ function initQueryEditor(boxId) {
 		const __kustoTriggerAutocomplete = (ed) => {
 			try {
 				if (!ed) return;
+				let versionId = null;
+				try {
+					const model = ed.getModel && ed.getModel();
+					versionId = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+				} catch { /* ignore */ }
 				ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
 				// Let Monaco render and providers settle before we decide to hide.
-				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 250);
-				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed), 800);
+				// Use longer delays and only hide if the model didn't change.
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 1200);
+				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 2500);
 			} catch {
 				// ignore
 			}
@@ -2811,6 +5410,11 @@ function initQueryEditor(boxId) {
 			} catch {
 				// ignore
 			}
+			try {
+				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
+					window.__kustoScheduleKustoDiagnostics(boxId, 250);
+				}
+			} catch { /* ignore */ }
 			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
@@ -2820,6 +5424,11 @@ function initQueryEditor(boxId) {
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
 			scheduleDocUpdate();
+			try {
+				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
+					window.__kustoScheduleKustoDiagnostics(boxId, 0);
+				}
+			} catch { /* ignore */ }
 		});
 		// When the suggest widget opens, Monaco may blur the text area while the editor widget
 		// still has focus. Track focus at the editor-widget level so our docs widget stays visible.

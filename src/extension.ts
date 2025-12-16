@@ -4,6 +4,8 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
+import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
+import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -12,6 +14,92 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
+	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
+
+	// Best-effort diagnostics for plain text editors ("Reopen With" → Text Editor)
+	// Uses last selected connection/database from the notebook experience.
+	const kqlDiagnostics = vscode.languages.createDiagnosticCollection('kusto-workbench');
+	context.subscriptions.push(kqlDiagnostics);
+	const diagTimers = new Map<string, NodeJS.Timeout>();
+	const isKqlDoc = (doc: vscode.TextDocument): boolean => {
+		const lang = String(doc.languageId || '').toLowerCase();
+		if (lang === 'kql') {
+			return true;
+		}
+		const p = String(doc.uri?.path || '').toLowerCase();
+		return p.endsWith('.kql') || p.endsWith('.csl');
+	};
+	const scheduleDiagnostics = (doc: vscode.TextDocument, delayMs: number = 250): void => {
+		if (!isKqlDoc(doc)) {
+			return;
+		}
+		const key = doc.uri.toString();
+		const existing = diagTimers.get(key);
+		if (existing) {
+			clearTimeout(existing);
+		}
+		diagTimers.set(
+			key,
+			setTimeout(async () => {
+				try {
+					const result = await kqlLanguageHost.getDiagnostics({ text: doc.getText(), uri: doc.uri.toString() });
+					const vsDiagnostics = (result.diagnostics || []).map((d) => {
+						const range = new vscode.Range(
+							d.range.start.line,
+							d.range.start.character,
+							d.range.end.line,
+							d.range.end.character
+						);
+						const severity =
+							d.severity === KqlDiagnosticSeverity.Error
+							? vscode.DiagnosticSeverity.Error
+							: d.severity === KqlDiagnosticSeverity.Warning
+								? vscode.DiagnosticSeverity.Warning
+								: d.severity === KqlDiagnosticSeverity.Information
+									? vscode.DiagnosticSeverity.Information
+									: vscode.DiagnosticSeverity.Hint;
+						const diag = new vscode.Diagnostic(range, d.message, severity);
+						if (d.code) {
+							diag.code = d.code;
+						}
+						if (d.source) {
+							diag.source = d.source;
+						}
+						return diag;
+					});
+					kqlDiagnostics.set(doc.uri, vsDiagnostics);
+				} catch {
+					// Non-fatal: avoid spamming users with background errors.
+				}
+			}, delayMs)
+		);
+	};
+
+	context.subscriptions.push(
+		vscode.workspace.onDidOpenTextDocument((doc) => scheduleDiagnostics(doc, 0))
+	);
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeTextDocument((e) => scheduleDiagnostics(e.document, 250))
+	);
+	context.subscriptions.push(
+		vscode.workspace.onDidCloseTextDocument((doc) => {
+			try {
+				kqlDiagnostics.delete(doc.uri);
+			} catch {
+				// ignore
+			}
+			const key = doc.uri.toString();
+			const t = diagTimers.get(key);
+			if (t) {
+				clearTimeout(t);
+			}
+			diagTimers.delete(key);
+		})
+	);
+	// Also run for already-open documents on activation.
+	for (const doc of vscode.workspace.textDocuments) {
+		scheduleDiagnostics(doc, 0);
+	}
 
 	// Register .kqlx custom editor
 	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager));

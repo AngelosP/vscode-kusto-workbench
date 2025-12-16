@@ -17,18 +17,25 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:kusto.openQueryEditor",
-    "onCommand:kusto.openKqlxFile",
-    "onCommand:kusto.saveKqlxAs",
-    "onCommand:kusto.manageConnections",
-    "onCommand:kusto.deleteAllConnections",
-    "onCustomEditor:kusto.kqlxEditor",
-    "onCustomEditor:kusto.kqlCompatEditor"
-  ],
   "main": "./dist/extension.js",
   "contributes": {
     "languages": [
+      {
+        "id": "kql",
+        "aliases": [
+          "Kusto Query",
+          "KQL",
+          "Kusto"
+        ],
+        "extensions": [
+          ".kql",
+          ".csl"
+        ],
+        "icon": {
+          "light": "./media/images/kusto-file-light.svg",
+          "dark": "./media/images/kusto-file-dark.svg"
+        }
+      },
       {
         "id": "kqlx",
         "aliases": [

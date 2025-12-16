@@ -1810,102 +1810,125 @@ async function qualifyTablesInTextPriority(text, opts) {
 		return s;
 	};
 
-	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
 	const currentTables = (opts.currentTables || []).map(t => String(t));
 	const currentTableLower = new Set(currentTables.map(t => t.toLowerCase()));
-	const skipNames = new Set();
 
-	// Very small lexer to detect let bindings and collect identifiers.
-	const tokens = [];
-	{
-		let i = 0;
-		let inS = false;
-		let inLineComment = false;
-		let inBlockComment = false;
-		while (i < text.length) {
-			const ch = text[i];
-			const next = text[i + 1];
-			if (inLineComment) {
-				if (ch === '\n') inLineComment = false;
-				i++;
-				continue;
+	// Prefer language service to find true table-reference ranges (instead of regex/lexer guessing).
+	let candidates = [];
+	try {
+		if (typeof window.__kustoRequestKqlTableReferences === 'function') {
+			const res = await window.__kustoRequestKqlTableReferences({
+				text,
+				connectionId: opts.connectionId,
+				database: opts.currentDatabase,
+				boxId: opts.boxId
+			});
+			const refs = res && Array.isArray(res.references) ? res.references : null;
+			if (refs && refs.length) {
+				candidates = refs
+					.map(r => ({ value: String(r.name || ''), start: Number(r.startOffset), end: Number(r.endOffset) }))
+					.filter(r => r.value && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
 			}
-			if (inBlockComment) {
-				if (ch === '*' && next === '/') {
-					inBlockComment = false;
+		}
+	} catch {
+		// ignore and fall back
+	}
+
+	// Fallback: previous best-effort lexer (kept for resilience).
+	if (!candidates.length) {
+		const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
+		const skipNames = new Set();
+		const tokens = [];
+		{
+			let i = 0;
+			let inS = false;
+			let inLineComment = false;
+			let inBlockComment = false;
+			while (i < text.length) {
+				const ch = text[i];
+				const next = text[i + 1];
+				if (inLineComment) {
+					if (ch === '\n') inLineComment = false;
+					i++;
+					continue;
+				}
+				if (inBlockComment) {
+					if (ch === '*' && next === '/') {
+						inBlockComment = false;
+						i += 2;
+						continue;
+					}
+					i++;
+					continue;
+				}
+				if (inS) {
+					if (ch === "'") {
+						inS = false;
+					}
+					i++;
+					continue;
+				}
+				if (ch === '/' && next === '/') {
+					inLineComment = true;
 					i += 2;
 					continue;
 				}
-				i++;
-				continue;
-			}
-			if (inS) {
+				if (ch === '/' && next === '*') {
+					inBlockComment = true;
+					i += 2;
+					continue;
+				}
 				if (ch === "'") {
-					inS = false;
+					inS = true;
+					i++;
+					continue;
+				}
+				if ((ch === '_' || /[A-Za-z]/.test(ch)) && !inS) {
+					let j = i + 1;
+					while (j < text.length && isIdentChar(text[j])) j++;
+					const value = text.slice(i, j);
+					tokens.push({ value, start: i, end: j });
+					i = j;
+					continue;
 				}
 				i++;
+			}
+		}
+
+		for (let idx = 0; idx < tokens.length; idx++) {
+			const t = tokens[idx];
+			if (!t || String(t.value).toLowerCase() !== 'let') {
 				continue;
 			}
-			if (ch === '/' && next === '/') {
-				inLineComment = true;
-				i += 2;
+			const nameTok = tokens[idx + 1];
+			if (!nameTok) continue;
+			let k = nameTok.end;
+			while (k < text.length && /\s/.test(text[k])) k++;
+			if (text[k] === '=') {
+				skipNames.add(nameTok.value);
+			}
+		}
+
+		for (const tok of tokens) {
+			if (skipNames.has(tok.value)) {
 				continue;
 			}
-			if (ch === '/' && next === '*') {
-				inBlockComment = true;
-				i += 2;
+			// Skip if already qualified (immediate '.' before name).
+			let p = tok.start - 1;
+			while (p >= 0 && text[p] === ' ') p--;
+			if (p >= 0 && text[p] === '.') {
 				continue;
 			}
-			if (ch === "'") {
-				inS = true;
-				i++;
+			// Skip if this looks like a function call.
+			let a = tok.end;
+			while (a < text.length && text[a] === ' ') a++;
+			if (text[a] === '(') {
 				continue;
 			}
-			if ((ch === '_' || /[A-Za-z]/.test(ch)) && !inS) {
-				let j = i + 1;
-				while (j < text.length && isIdentChar(text[j])) j++;
-				const value = text.slice(i, j);
-				tokens.push({ value, start: i, end: j });
-				i = j;
-				continue;
-			}
-			i++;
+			candidates.push(tok);
 		}
 	}
 
-	for (let idx = 0; idx < tokens.length; idx++) {
-		const t = tokens[idx];
-		if (!t || String(t.value).toLowerCase() !== 'let') {
-			continue;
-		}
-		const nameTok = tokens[idx + 1];
-		if (!nameTok) continue;
-		let k = nameTok.end;
-		while (k < text.length && /\s/.test(text[k])) k++;
-		if (text[k] === '=') {
-			skipNames.add(nameTok.value);
-		}
-	}
-
-	const candidates = [];
-	for (const tok of tokens) {
-		if (skipNames.has(tok.value)) {
-			continue;
-		}
-		// Skip if already qualified (immediate '.' before name).
-		let p = tok.start - 1;
-		while (p >= 0 && text[p] === ' ') p--;
-		if (p >= 0 && text[p] === '.') {
-			continue;
-		}
-		// Skip if this looks like a function call.
-		let a = tok.end;
-		while (a < text.length && text[a] === ' ') a++;
-		if (text[a] === '(') {
-			continue;
-		}
-		candidates.push(tok);
-	}
 	if (!candidates.length) {
 		return text;
 	}

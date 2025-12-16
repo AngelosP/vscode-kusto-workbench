@@ -105,6 +105,99 @@ document.addEventListener('keydown', (event) => {
 	}
 }, true);
 
+// --- KQL language service bridge (webview -> extension host) ---
+// Used to share a single semantic engine between the webview Monaco editor and VS Code text editors.
+// If the bridge is unavailable or times out, callers should fall back to local heuristics.
+let __kustoKqlLanguageRequestResolversById = {};
+
+try {
+	window.__kustoRequestKqlDiagnostics = async function (args) {
+		const text = (args && typeof args.text === 'string') ? args.text : '';
+		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
+		const database = (args && typeof args.database === 'string') ? args.database : '';
+		const boxId = (args && typeof args.boxId === 'string') ? args.boxId : '';
+		if (!vscode || typeof vscode.postMessage !== 'function') {
+			return null;
+		}
+		const requestId = 'kqlreq_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		return await new Promise((resolve) => {
+			let timer = null;
+			try {
+				timer = setTimeout(() => {
+					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+					resolve(null);
+				}, 1500);
+			} catch { /* ignore */ }
+
+			__kustoKqlLanguageRequestResolversById[requestId] = {
+				resolve: (result) => {
+					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					resolve(result);
+				}
+			};
+
+			try {
+				vscode.postMessage({
+					type: 'kqlLanguageRequest',
+					requestId,
+					method: 'textDocument/diagnostic',
+					params: { text, connectionId, database, boxId }
+				});
+			} catch {
+				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				resolve(null);
+			}
+		});
+	};
+} catch {
+	// ignore
+}
+
+try {
+	window.__kustoRequestKqlTableReferences = async function (args) {
+		const text = (args && typeof args.text === 'string') ? args.text : '';
+		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
+		const database = (args && typeof args.database === 'string') ? args.database : '';
+		const boxId = (args && typeof args.boxId === 'string') ? args.boxId : '';
+		if (!vscode || typeof vscode.postMessage !== 'function') {
+			return null;
+		}
+		const requestId = 'kqlreq_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		return await new Promise((resolve) => {
+			let timer = null;
+			try {
+				timer = setTimeout(() => {
+					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+					resolve(null);
+				}, 1500);
+			} catch { /* ignore */ }
+
+			__kustoKqlLanguageRequestResolversById[requestId] = {
+				resolve: (result) => {
+					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					resolve(result);
+				}
+			};
+
+			try {
+				vscode.postMessage({
+					type: 'kqlLanguageRequest',
+					requestId,
+					method: 'kusto/findTableReferences',
+					params: { text, connectionId, database, boxId }
+				});
+			} catch {
+				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				resolve(null);
+			}
+		});
+	};
+} catch {
+	// ignore
+}
+
 function __kustoGetFocusedMonacoEditor() {
 	// Prefer whichever Monaco editor actually has focus.
 	let editor = null;
@@ -462,6 +555,18 @@ window.addEventListener('message', event => {
 				// ignore
 			}
 			break;
+		case 'kqlLanguageResponse':
+			try {
+				const reqId = String(message.requestId || '');
+				const r = __kustoKqlLanguageRequestResolversById && __kustoKqlLanguageRequestResolversById[reqId];
+				if (r && typeof r.resolve === 'function') {
+					try {
+						r.resolve(message.ok ? (message.result || null) : null);
+					} catch { /* ignore */ }
+					try { delete __kustoKqlLanguageRequestResolversById[reqId]; } catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+			break;
 		case 'databasesData':
 			// Resolve pending database list request if this was a synthetic request id.
 			try {
@@ -653,6 +758,11 @@ window.addEventListener('message', event => {
 			// Normal per-editor schema update (autocomplete).
 			schemaByBoxId[message.boxId] = message.schema;
 			setSchemaLoading(message.boxId, false);
+			try {
+				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
+					window.__kustoScheduleKustoDiagnostics(message.boxId, 0);
+				}
+			} catch { /* ignore */ }
 			{
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
