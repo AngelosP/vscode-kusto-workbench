@@ -2953,11 +2953,17 @@ function initQueryEditor(boxId) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startY = e.clientY;
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 				const startHeight = wrapper.getBoundingClientRect().height;
 
 				const onMove = (moveEvent) => {
-					const delta = moveEvent.clientY - startY;
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
 					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 					try { editor.layout(); } catch { /* ignore */ }

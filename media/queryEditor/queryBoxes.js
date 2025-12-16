@@ -337,11 +337,17 @@ function addQueryBox(options) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startY = e.clientY;
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 				const startHeight = wrapper.getBoundingClientRect().height;
 
 				const onMove = (moveEvent) => {
-					const delta = moveEvent.clientY - startY;
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
 					const bounds = computeResizeBounds();
 					const minHeight = (bounds && typeof bounds.minHeight === 'number') ? bounds.minHeight : 24;
 					const maxHeight = (bounds && typeof bounds.maxHeight === 'number') ? bounds.maxHeight : 900;
