@@ -96,7 +96,16 @@ function autoSizeInputToValue(inputEl, minPx, maxPx) {
 
 function onUrlNameInput(boxId) {
 	const input = document.getElementById(boxId + '_name');
-	autoSizeInputToValue(input, 25, 250);
+	let minPx = 25;
+	try {
+		const v = input ? String(input.value || '') : '';
+		if (!v.trim()) {
+			minPx = 140;
+		}
+	} catch {
+		// ignore
+	}
+	autoSizeInputToValue(input, minPx, 250);
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
