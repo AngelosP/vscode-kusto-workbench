@@ -1337,6 +1337,26 @@
 			user-select: none;
 		}
 
+		.kusto-filter-link-host {
+			margin-left: 6px;
+			min-width: 0;
+		}
+
+		.kusto-filtered-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 11px;
+			opacity: 0.95;
+		}
+
+		.kusto-filtered-link:hover {
+			text-decoration: underline;
+		}
+
+		.kusto-filtered-link:active {
+			color: var(--vscode-textLink-activeForeground);
+		}
+
 		.kusto-sort-priority {
 			margin-left: 2px;
 			font-size: 10px;
@@ -1603,6 +1623,493 @@
 
 		.column-menu-item:hover {
 			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-filter-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10002;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-filter-modal.visible {
+			display: flex;
+		}
+
+		.kusto-filter-dialog {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 6px;
+			width: 760px;
+			max-width: calc(100% - 24px);
+			max-height: 85vh;
+			overflow: hidden;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+			display: flex;
+			flex-direction: column;
+		}
+
+		.kusto-filter-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 10px 10px 8px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.kusto-filter-title {
+			font-size: 12px;
+			font-weight: 600;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			padding-right: 8px;
+		}
+
+		.kusto-filter-close {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			width: 24px;
+			height: 24px;
+			border-radius: 4px;
+			font-size: 16px;
+			line-height: 1;
+		}
+
+		.kusto-filter-close-btn {
+			min-width: 28px;
+			width: 28px;
+			height: 28px;
+			margin: 0;
+		}
+
+		.kusto-filter-modes {
+			display: flex;
+			gap: 0;
+			padding: 8px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			align-items: center;
+			justify-content: flex-start;
+		}
+
+		.kusto-filter-modes-bar {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding-right: 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.kusto-filter-modes-bar .kusto-filter-modes {
+			padding-right: 0;
+			border-bottom: none;
+		}
+
+		.kusto-filter-rules-combine {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			flex: 0 0 auto;
+			min-height: 28px;
+		}
+
+		.kusto-filter-rules-combine-label {
+			font-size: 12px;
+			opacity: 0.9;
+			user-select: none;
+		}
+
+		.kusto-filter-pill-toggle {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 999px;
+			padding: 4px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.9;
+			min-width: 52px;
+			text-align: center;
+		}
+
+		.kusto-filter-pill-toggle:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-pill-toggle.on {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-pill-toggle.on:hover {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.kusto-filter-mode-btn {
+			flex: 0 0 auto;
+			min-width: 120px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 0;
+			padding: 6px 8px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+
+		.kusto-filter-mode-btn:first-child {
+			border-top-left-radius: 0;
+			border-bottom-left-radius: 0;
+		}
+
+		.kusto-filter-mode-btn:last-child {
+			border-top-right-radius: 0;
+			border-bottom-right-radius: 0;
+			border-left: none;
+		}
+
+		.kusto-filter-mode-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-mode-btn.active {
+			opacity: 1;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-body {
+			padding: 10px;
+			flex: 1;
+			overflow: auto;
+			max-height: none;
+		}
+
+		.kusto-filter-section {
+			display: flex;
+			gap: 10px;
+			flex-wrap: wrap;
+			margin-bottom: 10px;
+		}
+
+		.kusto-filter-rules-toolbar {
+			align-items: center;
+			justify-content: flex-start;
+		}
+
+		.kusto-filter-rules-join {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: nowrap;
+		}
+
+		.kusto-filter-rules-join-label {
+			font-size: 12px;
+			opacity: 0.9;
+			user-select: none;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-seg {
+			display: inline-flex;
+			align-items: stretch;
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 999px;
+			overflow: hidden;
+		}
+
+		.kusto-filter-seg-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: none;
+			padding: 4px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.9;
+		}
+
+		.kusto-filter-seg-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-seg-btn.active {
+			opacity: 1;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-inline {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			user-select: none;
+		}
+
+		.kusto-filter-search {
+			width: 100%;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-values-toolbar {
+			flex-wrap: nowrap;
+			align-items: center;
+		}
+
+		.kusto-filter-values-search {
+			flex: 1;
+			min-width: 220px;
+			max-width: 420px;
+		}
+
+		.kusto-filter-mini-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 6px;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			opacity: 0.85;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-mini-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-mini-btn-icon {
+			display: inline-flex;
+		}
+
+		.kusto-filter-values {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 0;
+			padding: 6px;
+			max-height: 220px;
+			overflow: auto;
+		}
+
+		.kusto-filter-value {
+			display: grid;
+			grid-template-columns: 16px 1fr auto;
+			align-items: center;
+			gap: 8px;
+			padding: 4px 6px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 12px;
+			user-select: none;
+		}
+
+		.kusto-filter-value:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-filter-value-text {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-value-count {
+			font-size: 11px;
+			opacity: 0.75;
+			padding-left: 8px;
+		}
+
+		.kusto-filter-note {
+			font-size: 11px;
+			opacity: 0.8;
+			margin-top: 6px;
+		}
+
+		.kusto-filter-rule select,
+		.kusto-filter-rule input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-rules {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-row select,
+		.kusto-filter-rule-row input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-rule-op {
+			min-width: 210px;
+		}
+
+		.kusto-filter-rule-inputs {
+			display: flex;
+			gap: 8px;
+			flex: 1;
+			align-items: center;
+			flex-wrap: wrap;
+		}
+
+		.kusto-filter-rule-last {
+			display: inline-flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.kusto-filter-rule-del,
+		.kusto-filter-rule-del-spacer {
+			width: 28px;
+			min-width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-filter-rule-del {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			cursor: pointer;
+			padding: 0;
+			opacity: 0.85;
+		}
+
+		.kusto-filter-rule-del:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-rule {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-inputs {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.kusto-filter-last {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.kusto-filter-footer {
+			display: flex;
+			gap: 8px;
+			padding: 10px;
+			border-top: 1px solid var(--vscode-panel-border);
+			justify-content: flex-end;
+		}
+
+		.kusto-filter-btn {
+			flex: 0 0 auto;
+			min-width: 140px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+		}
+
+		.kusto-filter-btn-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+		}
+
+		.kusto-filter-btn-icon svg {
+			display: block;
+		}
+
+		.kusto-filter-btn:hover {
+			background: var(--vscode-button-hoverBackground);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-btn.secondary {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+		}
+
+		.kusto-filter-btn.secondary:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-btn.danger {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+		}
+
+		.kusto-filter-btn.danger:hover {
+			background: var(--vscode-inputValidation-errorBackground);
+			color: var(--vscode-inputValidation-errorForeground);
+			border-color: var(--vscode-inputValidation-errorBorder);
+			opacity: 0.95;
 		}
 
 		.column-analysis-modal {

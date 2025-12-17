@@ -1,34 +1,75 @@
 function toggleColumnMenu(colIdx, boxId) {
-	console.log('toggleColumnMenu called:', colIdx, boxId);
-
 	// Close all other menus
-	document.querySelectorAll('.column-menu').forEach(menu => {
-		if (menu.id !== boxId + '_col_menu_' + colIdx) {
-			menu.classList.remove('visible');
+	const menuId = boxId + '_col_menu_' + colIdx;
+	document.querySelectorAll('.column-menu.visible').forEach(other => {
+		if (other && other.id !== menuId) {
+			other.classList.remove('visible');
 		}
 	});
 
-	// Toggle this menu
-	const menuId = boxId + '_col_menu_' + colIdx;
 	const menu = document.getElementById(menuId);
-	console.log('Menu element:', menu, 'ID:', menuId);
-	if (menu) {
-		const isVisible = menu.classList.contains('visible');
+	if (!menu) return;
 
-		if (!isVisible) {
-			// Position the menu using fixed positioning
-			const button = menu.previousElementSibling;
-			if (button) {
-				const rect = button.getBoundingClientRect();
-				menu.style.position = 'fixed';
-				menu.style.top = (rect.bottom + 2) + 'px';
-				menu.style.left = rect.left + 'px';
-			}
-		}
-
-		menu.classList.toggle('visible');
-		console.log('Menu classes after toggle:', menu.className);
+	const isVisible = menu.classList.contains('visible');
+	if (isVisible) {
+		menu.classList.remove('visible');
+		return;
 	}
+
+	// Position the menu using fixed positioning, clamped to viewport.
+	const button = menu.previousElementSibling;
+	if (!button || typeof button.getBoundingClientRect !== 'function') {
+		menu.classList.add('visible');
+		return;
+	}
+
+	const margin = 8;
+	const buttonRect = button.getBoundingClientRect();
+
+	// Make it visible for measurement without flashing.
+	menu.style.position = 'fixed';
+	menu.style.visibility = 'hidden';
+	menu.style.left = '0px';
+	menu.style.top = '0px';
+	menu.classList.add('visible');
+
+	const menuRect = menu.getBoundingClientRect();
+	const viewportW = Math.max(0, window.innerWidth || 0);
+	const viewportH = Math.max(0, window.innerHeight || 0);
+
+	let left = buttonRect.left;
+	let top = buttonRect.bottom + 2;
+
+	// If it would overflow bottom, prefer opening upwards.
+	if (top + menuRect.height + margin > viewportH && buttonRect.top - 2 - menuRect.height >= margin) {
+		top = buttonRect.top - 2 - menuRect.height;
+	}
+
+	// Clamp to viewport bounds.
+	left = Math.min(left, viewportW - menuRect.width - margin);
+	left = Math.max(margin, left);
+	if (!isFinite(left)) left = margin;
+
+	top = Math.min(top, viewportH - menuRect.height - margin);
+	top = Math.max(margin, top);
+	if (!isFinite(top)) top = margin;
+
+	menu.style.left = left + 'px';
+	menu.style.top = top + 'px';
+	menu.style.visibility = '';
+}
+
+function __kustoGetVisibleRowIndices(state) {
+	if (!state || !Array.isArray(state.rows)) {
+		return [];
+	}
+	if (Array.isArray(state.filteredRowIndices)) {
+		return state.filteredRowIndices;
+	}
+	if (Array.isArray(state.displayRowIndices)) {
+		return state.displayRowIndices;
+	}
+	return state.rows.map((_, idx) => idx);
 }
 
 function showUniqueValues(colIdx, boxId) {
@@ -40,9 +81,12 @@ function showUniqueValues(colIdx, boxId) {
 
 	const columnName = state.columns[colIdx];
 	const valueCounts = new Map();
+	const rowIndices = __kustoGetVisibleRowIndices(state);
 
-	// Count occurrences of each value
-	state.rows.forEach(row => {
+	// Count occurrences of each value (respect current filters)
+	rowIndices.forEach(rowIdx => {
+		const row = state.rows[rowIdx];
+		if (!row) { return; }
 		const cell = row[colIdx];
 		let value;
 
@@ -56,7 +100,7 @@ function showUniqueValues(colIdx, boxId) {
 		valueCounts.set(value, (valueCounts.get(value) || 0) + 1);
 	});
 
-	const totalRows = state.rows.length;
+	const totalRows = rowIndices.length;
 
 	// Convert to array and sort by count (descending)
 	const sortedValues = Array.from(valueCounts.entries())
@@ -120,6 +164,7 @@ function showUniqueValues(colIdx, boxId) {
 function drawPieChart(canvasId, data, total) {
 	const canvas = document.getElementById(canvasId);
 	if (!canvas) return;
+	if (!total || total <= 0) return;
 
 	const ctx = canvas.getContext('2d');
 	// Calculate dimensions based on canvas width
@@ -262,8 +307,11 @@ function calculateDistinctCount(groupByColIdx, boxId) {
 
 	// Map of groupBy value -> Set of target values
 	const groupedValues = new Map();
+	const rowIndices = __kustoGetVisibleRowIndices(state);
 
-	state.rows.forEach(row => {
+	rowIndices.forEach(rowIdx => {
+		const row = state.rows[rowIdx];
+		if (!row) { return; }
 		const groupByCell = row[groupByColIdx];
 		const targetCell = row[targetColIdx];
 
