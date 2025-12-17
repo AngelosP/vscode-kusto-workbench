@@ -62,6 +62,7 @@ type ComparableSection =
 	| {
 			type: 'query';
 			name: string;
+			expanded: boolean;
 			clusterUrl: string;
 			database: string;
 			query: string;
@@ -115,6 +116,7 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 			sections.push({
 				type: 'query',
 				name: String((section as any).name ?? ''),
+					expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
 					clusterUrl: String((section as any).clusterUrl ?? ''),
 				database: String((section as any).database ?? ''),
 				query: String((section as any).query ?? ''),

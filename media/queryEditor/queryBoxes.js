@@ -4,6 +4,7 @@ function addQueryBox(options) {
 	const isComparison = !!(options && options.isComparison);
 	const defaultResultsVisible = (options && typeof options.defaultResultsVisible === 'boolean') ? !!options.defaultResultsVisible : true;
 	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
+	const defaultExpanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
 	queryBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
@@ -166,7 +167,12 @@ function addQueryBox(options) {
 		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
 		'</div>' +
+		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
+		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'</div>' +
 		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
+		'</div>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +
 		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
@@ -265,12 +271,21 @@ function addQueryBox(options) {
 		}
 		window.__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
 	} catch { /* ignore */ }
+	// Default section visibility state (expanded/collapsed)
+	try {
+		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
+			window.__kustoQueryExpandedByBoxId = {};
+		}
+		window.__kustoQueryExpandedByBoxId[id] = defaultExpanded;
+	} catch { /* ignore */ }
 	try {
 		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
 			window.__kustoComparisonSummaryVisibleByBoxId = {};
 		}
 		window.__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
 	} catch { /* ignore */ }
+	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch { /* ignore */ }
+	try { __kustoApplyQueryBoxVisibility(id); } catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(id); } catch { /* ignore */ }
 	try { __kustoUpdateComparisonSummaryToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(id); } catch { /* ignore */ }
@@ -465,6 +480,61 @@ function addQueryBox(options) {
 		// ignore
 	}
 	return id;
+}
+
+function __kustoUpdateQueryVisibilityToggleButton(boxId) {
+	const btn = document.getElementById(boxId + '_toggle');
+	if (!btn) {
+		return;
+	}
+	let expanded = true;
+	try {
+		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	btn.classList.toggle('is-active', expanded);
+	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
+	btn.title = expanded ? 'Hide' : 'Show';
+	btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
+}
+
+function __kustoApplyQueryBoxVisibility(boxId) {
+	const box = document.getElementById(boxId);
+	if (!box) {
+		return;
+	}
+	let expanded = true;
+	try {
+		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	try {
+		box.classList.toggle('is-collapsed', !expanded);
+	} catch { /* ignore */ }
+	// Monaco often needs a layout pass after being hidden/shown.
+	if (expanded) {
+		try {
+			setTimeout(() => {
+				try {
+					const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[boxId] : null;
+					if (ed && typeof ed.layout === 'function') {
+						ed.layout();
+					}
+				} catch { /* ignore */ }
+			}, 0);
+		} catch { /* ignore */ }
+	}
+}
+
+function toggleQueryBoxVisibility(boxId) {
+	try {
+		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
+			window.__kustoQueryExpandedByBoxId = {};
+		}
+		const current = !(window.__kustoQueryExpandedByBoxId[boxId] === false);
+		window.__kustoQueryExpandedByBoxId[boxId] = !current;
+	} catch { /* ignore */ }
+	try { __kustoUpdateQueryVisibilityToggleButton(boxId); } catch { /* ignore */ }
+	try { __kustoApplyQueryBoxVisibility(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoSetResultsVisible(boxId, visible) {

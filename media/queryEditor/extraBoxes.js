@@ -80,6 +80,26 @@ function autoSizeTitleInput(inputEl) {
 	}
 }
 
+function autoSizeInputToValue(inputEl, minPx, maxPx) {
+	if (!inputEl) {
+		return;
+	}
+	try {
+		inputEl.style.width = '1px';
+		const pad = 2;
+		const w = Math.max(minPx, Math.min(maxPx, (inputEl.scrollWidth || 0) + pad));
+		inputEl.style.width = w + 'px';
+	} catch {
+		// ignore
+	}
+}
+
+function onUrlNameInput(boxId) {
+	const input = document.getElementById(boxId + '_name');
+	autoSizeInputToValue(input, 25, 250);
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
 function focusMarkdownTitle(boxId) {
 	const input = document.getElementById(boxId + '_md_title');
 	if (!input) {
@@ -918,6 +938,7 @@ function addUrlBox(options) {
 		'<div class="query-box url-box" id="' + id + '">' +
 		'<div class="section-header-row url-section-header">' +
 		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+		'<input class="query-name url-name" id="' + id + '_name" type="text" placeholder="URL name (optional)" oninput="onUrlNameInput(\'' + id + '\')" />' +
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
@@ -935,6 +956,7 @@ function addUrlBox(options) {
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	try { __kustoUpdateUrlToggleButton(id); } catch { /* ignore */ }
 	try { updateUrlContent(id); } catch { /* ignore */ }
+	try { onUrlNameInput(id); } catch { /* ignore */ }
 
 	// Ensure an explicit minimum height is present so it round-trips through persistence.
 	// (When collapsed, the wrapper is display:none so it doesn't affect layout.)
@@ -1418,12 +1440,18 @@ function __kustoRenderUrlContent(contentEl, st) {
 }
 
 function updateUrlContent(boxId) {
+	const boxEl = document.getElementById(boxId);
 	const wrapperEl = document.getElementById(boxId + '_wrapper');
 	const contentEl = document.getElementById(boxId + '_content');
 	const st = urlStateByBoxId[boxId];
 	if (!wrapperEl || !contentEl || !st) {
 		return;
 	}
+	try {
+		if (boxEl && boxEl.classList) {
+			boxEl.classList.toggle('is-url-collapsed', !st.expanded);
+		}
+	} catch { /* ignore */ }
 	wrapperEl.classList.toggle('url-collapsed', !st.expanded);
 	if (!st.expanded) {
 		return;

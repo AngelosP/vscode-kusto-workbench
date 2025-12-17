@@ -349,6 +349,10 @@ function getKqlxState() {
 		if (id.startsWith('query_')) {
 			const name = (document.getElementById(id + '_name') || {}).value || '';
 			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
+			let expanded = true;
+			try {
+				expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[id] === false);
+			} catch { /* ignore */ }
 			let clusterUrl = '';
 			try {
 				if (connectionId && Array.isArray(connections)) {
@@ -373,6 +377,7 @@ function getKqlxState() {
 				clusterUrl,
 				database,
 				query,
+				expanded,
 				...(resultJson ? { resultJson } : {}),
 				runMode,
 				cacheEnabled,
@@ -412,10 +417,12 @@ function getKqlxState() {
 
 		if (id.startsWith('url_')) {
 			const st = (urlStateByBoxId && urlStateByBoxId[id]) ? urlStateByBoxId[id] : null;
+			const name = (document.getElementById(id + '_name') || {}).value || '';
 			const url = st ? (String(st.url || '')) : ((document.getElementById(id + '_input') || {}).value || '');
 			const expanded = !!(st && st.expanded);
 			sections.push({
 				type: 'url',
+				name,
 				url,
 				expanded,
 				outputHeightPx: __kustoGetUrlOutputHeightPx(id)
@@ -618,7 +625,8 @@ function applyKqlxState(state) {
 			const t = section && section.type ? String(section.type) : '';
 			if (t === 'query') {
 				const boxId = addQueryBox({
-					id: (section.id ? String(section.id) : undefined)
+					id: (section.id ? String(section.id) : undefined),
+					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true
 				});
 				try {
 					const nameEl = document.getElementById(boxId + '_name');
@@ -735,6 +743,16 @@ function applyKqlxState(state) {
 
 			if (t === 'url') {
 				const boxId = addUrlBox({ id: (section.id ? String(section.id) : undefined) });
+				try {
+					const name = String(section.name || '');
+					const nameInput = document.getElementById(boxId + '_name');
+					if (nameInput) nameInput.value = name;
+					try {
+						if (typeof onUrlNameInput === 'function') {
+							onUrlNameInput(boxId);
+						}
+					} catch { /* ignore */ }
+				} catch { /* ignore */ }
 				try {
 					const url = String(section.url || '');
 					const expanded = !!section.expanded;

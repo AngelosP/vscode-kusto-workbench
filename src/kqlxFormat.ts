@@ -4,6 +4,7 @@ export type KqlxSectionV1 =
 	| {
 			type: 'query';
 			name?: string;
+			expanded?: boolean;
 			// Persist the actual cluster URL so sessions are portable across machines.
 			clusterUrl?: string;
 			database?: string;
@@ -34,6 +35,7 @@ export type KqlxSectionV1 =
 		}
 	| {
 			type: 'url';
+			name?: string;
 			url?: string;
 			expanded?: boolean;
 			outputHeightPx?: number;

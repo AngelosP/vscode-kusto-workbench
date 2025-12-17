@@ -169,6 +169,15 @@
 			gap: 8px;
 		}
 
+		.section-header-row.url-section-header .url-name {
+			/* Keep the URL name tight to the drag handle (remove the flex gap just for this pair). */
+			margin-left: -8px;
+			flex: 0 0 auto;
+			min-width: 25px;
+			max-width: 250px;
+			width: 25px;
+		}
+
 		.section-header-row.url-section-header .url-input {
 			flex: 1 1 auto;
 			min-width: 220px;
@@ -280,6 +289,16 @@
 			color: var(--vscode-list-activeSelectionForeground);
 		}
 
+		/* Query section collapse: keep only the top header row (name + buttons). */
+		.query-box.is-collapsed .query-header-row-bottom,
+		.query-box.is-collapsed .query-editor-wrapper,
+		.query-box.is-collapsed .query-actions,
+		.query-box.is-collapsed .optimize-config,
+		.query-box.is-collapsed .results-wrapper,
+		.query-box.is-collapsed .comparison-summary-banner {
+			display: none !important;
+		}
+
 		.markdown-viewer {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
@@ -338,6 +357,11 @@
 		/* URL boxes: no extra gap below the resize grip. */
 		.query-box.url-box {
 			padding-bottom: 0;
+		}
+
+		/* When the URL section is hidden/collapsed, give it a bit more breathing room. */
+		.query-box.url-box.is-url-collapsed {
+			margin-bottom: 26px;
 		}
 
 		.url-row {
