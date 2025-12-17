@@ -4348,7 +4348,8 @@ function initQueryEditor(boxId) {
 				// The placeholder is absolutely positioned within .query-editor-wrapper.
 				// Use the Monaco container's offsetTop so it naturally accounts for any
 				// banners/toolbars above the editor (e.g., caret docs banner).
-				const top = (container.offsetTop || 0) + 10;
+				// Align to the first line number baseline.
+				const top = (container.offsetTop || 0) + 1;
 				placeholder.style.top = Math.max(0, Math.round(top)) + 'px';
 			} catch {
 				// ignore
