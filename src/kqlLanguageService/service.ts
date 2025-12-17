@@ -983,7 +983,7 @@ export class KqlLanguageService {
 					}
 					if (sawPipe) {
 						const isIndented = /^\s+/.test(line);
-						if (allowIndentedContinuation && isIndented) {
+						if (allowIndentedContinuation && (isIndented || trimmed.startsWith('(') || trimmed.startsWith(')'))) {
 							runningOffset += line.length + 1;
 							continue;
 						}
@@ -1152,6 +1152,7 @@ export class KqlLanguageService {
 			const kw = new Set([
 				'let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata',
 				'where', 'project', 'extend', 'summarize', 'order', 'sort', 'by', 'take', 'top', 'distinct', 'join', 'from', 'on', 'kind', 'as',
+				'asc', 'desc',
 				'and', 'or', 'not', 'in', 'has', 'contains', 'startswith', 'endswith', 'between', 'matches', 'true', 'false', 'null', 'case', 'then', 'else'
 			]);
 			const fnNames = KNOWN_FUNCTION_NAMES;
