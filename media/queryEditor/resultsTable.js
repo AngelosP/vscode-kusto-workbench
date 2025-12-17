@@ -3070,6 +3070,19 @@ function updateAutocompleteSelection(items) {
 }
 
 function scrollToColumn(colIndex, boxId) {
+	// When selecting a column via keyboard or mouse, always close the autocomplete dropdown.
+	try {
+		const autocomplete = document.getElementById(boxId + '_column_autocomplete');
+		if (autocomplete) {
+			autocomplete.classList.remove('visible');
+		}
+		const input = document.getElementById(boxId + '_column_search');
+		if (input) {
+			input.value = '';
+		}
+		window.currentAutocompleteIndex = 0;
+	} catch { /* ignore */ }
+
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 	const rows = Array.isArray(state.rows) ? state.rows : [];
