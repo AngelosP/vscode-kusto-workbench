@@ -64,6 +64,108 @@ const offsetToPosition = (lineStarts: number[], offset: number): KqlPosition => 
 const isIdentStart = (ch: number) => (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95;
 const isIdentPart = (ch: number) => isIdentStart(ch) || (ch >= 48 && ch <= 57) || ch === 45;
 
+type TextRange = { start: number; end: number };
+
+const buildCommentRanges = (text: string): TextRange[] => {
+	const raw = String(text ?? '');
+	const ranges: TextRange[] = [];
+	let inLineComment = false;
+	let inBlockComment = false;
+	let inSingle = false;
+	let inDouble = false;
+	let rangeStart = -1;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		const next = raw[i + 1];
+		if (inLineComment) {
+			if (ch === '\n') {
+				ranges.push({ start: rangeStart, end: i });
+				inLineComment = false;
+				rangeStart = -1;
+			}
+			continue;
+		}
+		if (inBlockComment) {
+			if (ch === '*' && next === '/') {
+				ranges.push({ start: rangeStart, end: i + 2 });
+				inBlockComment = false;
+				rangeStart = -1;
+				i++;
+			}
+			continue;
+		}
+		if (inSingle) {
+			if (ch === "'") {
+				// Kusto escape for single quotes: ''
+				if (next === "'") {
+					i++;
+					continue;
+				}
+				inSingle = false;
+			}
+			continue;
+		}
+		if (inDouble) {
+			if (ch === '\\') {
+				i++;
+				continue;
+			}
+			if (ch === '"') {
+				inDouble = false;
+			}
+			continue;
+		}
+
+		if (ch === '/' && next === '/') {
+			inLineComment = true;
+			rangeStart = i;
+			i++;
+			continue;
+		}
+		if (ch === '/' && next === '*') {
+			inBlockComment = true;
+			rangeStart = i;
+			i++;
+			continue;
+		}
+		if (ch === "'") {
+			inSingle = true;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			continue;
+		}
+	}
+	// If we ended inside a comment, close it at EOF.
+	if (inLineComment && rangeStart >= 0) {
+		ranges.push({ start: rangeStart, end: raw.length });
+	}
+	if (inBlockComment && rangeStart >= 0) {
+		ranges.push({ start: rangeStart, end: raw.length });
+	}
+	return ranges;
+};
+
+const isInRanges = (ranges: TextRange[], offset: number): boolean => {
+	let lo = 0;
+	let hi = ranges.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		const r = ranges[mid];
+		if (offset < r.start) {
+			hi = mid - 1;
+			continue;
+		}
+		if (offset >= r.end) {
+			lo = mid + 1;
+			continue;
+		}
+		return true;
+	}
+	return false;
+};
+
 const scanTokens = (text: string): Token[] => {
 	const tokens: Token[] = [];
 	let i = 0;
@@ -986,6 +1088,7 @@ export class KqlLanguageService {
 			};
 
 			const tokens = scanTokens(raw);
+			const commentRanges = buildCommentRanges(raw);
 
 			// Column validation must be statement-scoped in multi-statement scripts.
 			// Otherwise, an operator clause (e.g. `| distinct ...`) could accidentally consume the next statement
@@ -1180,6 +1283,7 @@ export class KqlLanguageService {
 					}
 
 					const absoluteOffset = clauseStart + (typeof m.index === 'number' ? m.index : 0);
+					if (commentRanges.length && isInRanges(commentRanges, absoluteOffset)) continue;
 					if (isInStringLiteral(absoluteOffset)) continue;
 					if (letNames.has(nl)) continue;
 					try {
