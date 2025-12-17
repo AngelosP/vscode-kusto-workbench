@@ -638,6 +638,12 @@ function applyKqlxState(state) {
 					const db = String(section.database || '');
 					const connEl = document.getElementById(boxId + '_connection');
 					const dbEl = document.getElementById(boxId + '_database');
+					// If this saved selection exists in favorites, switch to Favorites mode by default.
+					try {
+						if (desiredClusterUrl && db && typeof window.__kustoSetAutoEnterFavoritesForBox === 'function') {
+							window.__kustoSetAutoEnterFavoritesForBox(boxId, desiredClusterUrl, db);
+						}
+					} catch { /* ignore */ }
 					if (dbEl) {
 						dbEl.dataset.desired = db;
 						// Optimistic restore: show the persisted DB immediately, even before the DB list loads.
@@ -665,6 +671,11 @@ function applyKqlxState(state) {
 							try { updateConnectionSelects(); } catch { /* ignore */ }
 						}
 					}
+					try {
+						if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+							window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
+						}
+					} catch { /* ignore */ }
 				} catch { /* ignore */ }
 				// Monaco editor may not exist yet; store pending text for initQueryEditor.
 				try {

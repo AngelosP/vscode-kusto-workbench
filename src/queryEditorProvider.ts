@@ -34,6 +34,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
+	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
@@ -323,6 +324,9 @@ export class QueryEditorProvider {
 				return;
 			case 'removeFavorite':
 				await this.removeFavorite(message.clusterUrl, message.database);
+				return;
+			case 'confirmRemoveFavorite':
+				await this.confirmRemoveFavorite(message);
 				return;
 			case 'addConnectionsForClusters':
 				await this.addConnectionsForClusters(message.clusterUrls);
@@ -1358,6 +1362,40 @@ ${query}
 		const current = this.getFavorites();
 		const next = current.filter((f) => this.favoriteKey(f.clusterUrl, f.database) !== key);
 		await this.setFavorites(next);
+	}
+
+	private async confirmRemoveFavorite(
+		message: Extract<IncomingWebviewMessage, { type: 'confirmRemoveFavorite' }>
+	): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const clusterUrl = this.normalizeFavoriteClusterUrl(String(message.clusterUrl || '').trim());
+		const database = String(message.database || '').trim();
+		const label = String(message.label || '').trim();
+		if (!requestId) {
+			return;
+		}
+
+		let ok = false;
+		try {
+			const display = label || (clusterUrl && database ? `${clusterUrl} (${database})` : 'this favorite');
+			const choice = await vscode.window.showWarningMessage(
+				`Remove "${display}" from favorites?`,
+				{ modal: true },
+				'Remove'
+			);
+			ok = choice === 'Remove';
+		} catch {
+			ok = false;
+		}
+
+		this.postMessage({
+			type: 'confirmRemoveFavoriteResult',
+			requestId,
+			ok,
+			clusterUrl,
+			database,
+			boxId: message.boxId
+		});
 	}
 
 	private async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean): Promise<void> {

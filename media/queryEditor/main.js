@@ -546,6 +546,11 @@ window.addEventListener('message', event => {
 				}
 			} catch { /* ignore */ }
 			try {
+				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
+				}
+			} catch { /* ignore */ }
+			try {
 				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
 					window.__kustoOnConnectionsUpdated();
 				}
@@ -559,6 +564,11 @@ window.addEventListener('message', event => {
 					window.__kustoUpdateFavoritesUiForAllBoxes();
 				}
 			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
+				}
+			} catch { /* ignore */ }
 			// If this update came from an "Add favorite" action in a specific box, automatically
 			// switch that box into Favorites mode.
 			try {
@@ -567,6 +577,13 @@ window.addEventListener('message', event => {
 					if (typeof window.__kustoEnterFavoritesModeForBox === 'function') {
 						window.__kustoEnterFavoritesModeForBox(boxId);
 					}
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'confirmRemoveFavoriteResult':
+			try {
+				if (typeof window.__kustoOnConfirmRemoveFavoriteResult === 'function') {
+					window.__kustoOnConfirmRemoveFavoriteResult(message);
 				}
 			} catch { /* ignore */ }
 			break;
