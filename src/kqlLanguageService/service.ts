@@ -977,13 +977,14 @@ export class KqlLanguageService {
 					}
 					if (trimmed.startsWith('|')) {
 						sawPipe = true;
-						allowIndentedContinuation = /^\|\s*(where|filter|summarize|extend|project\b|project-rename\b|project-away\b|project-keep\b|project-reorder\b|project-smart\b)\b/i.test(trimmed);
+						allowIndentedContinuation = /^\|\s*(where|filter|summarize|extend|project\b|project-rename\b|project-away\b|project-keep\b|project-reorder\b|project-smart\b|distinct\b)\b/i.test(trimmed);
 						runningOffset += line.length + 1;
 						continue;
 					}
 					if (sawPipe) {
 						const isIndented = /^\s+/.test(line);
-						if (allowIndentedContinuation && (isIndented || trimmed.startsWith('(') || trimmed.startsWith(')'))) {
+						const isCommaLedContinuation = trimmed.startsWith(',');
+						if (allowIndentedContinuation && (isIndented || isCommaLedContinuation || trimmed.startsWith('(') || trimmed.startsWith(')'))) {
 							runningOffset += line.length + 1;
 							continue;
 						}

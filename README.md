@@ -6,11 +6,14 @@ Kusto Workbench is built for the tight loop of writing queries, running them, in
 
 ## Screenshots
 
-![VS Code command pallete for Kusto Workbench](marketplace-media/command-pallete.png)
-
+### Modern editor with a bunch of features
 ![Kusto query editor](marketplace-media/kusto-query-editor.png)
 
+### Support for Kusto, CSV, Images, Markdown, Python
 ![Support for additional data in .kqlx files](marketplace-media/kusto-kqlx-files.png)
+
+### Favorites
+![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
 
 ## Key features
 
@@ -104,6 +107,7 @@ If you want to turn that session into a real file in your workspace later, use `
 - `Kusto Workbench: Open .kqlx File`
 - `Kusto Workbench: Save Session As... (.kqlx)`
 - `Kusto Workbench: Manage Connections`
+- `Kusto Workbench: Delete All Connections`
 
 ## Importing connections from Kusto Explorer (connections.xml)
 

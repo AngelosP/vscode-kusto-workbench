@@ -1536,58 +1536,6 @@ function ensureMonaco() {
 							const __kustoComputeAvailableColumnsAtOffset = async (fullText, offset) => {
 								if (!schema || !schema.columnsByTable) return null;
 
-								const __kustoSplitPipelineStagesDeep = (text) => {
-									// Split at top-level pipes (not inside parentheses/brackets/braces, strings, or comments).
-									const s = String(text || '');
-									const parts = [];
-									let start = 0;
-									let depth = 0;
-									let inSingle = false;
-									let inDouble = false;
-									let inLineComment = false;
-									let inBlockComment = false;
-									for (let i = 0; i < s.length; i++) {
-										const ch = s[i];
-										const next = s[i + 1];
-										if (inLineComment) {
-											if (ch === '\n') inLineComment = false;
-											continue;
-										}
-										if (inBlockComment) {
-											if (ch === '*' && next === '/') {
-												inBlockComment = false;
-												i++;
-											}
-											continue;
-										}
-										if (inSingle) {
-											if (ch === "'") {
-												// Kusto escape for single quote: ''
-												if (next === "'") { i++; continue; }
-												inSingle = false;
-											}
-											continue;
-										}
-										if (inDouble) {
-											if (ch === '\\') { i++; continue; }
-											if (ch === '"') inDouble = false;
-											continue;
-										}
-										if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
-										if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
-										if (ch === "'") { inSingle = true; continue; }
-										if (ch === '"') { inDouble = true; continue; }
-										if (ch === '(' || ch === '[' || ch === '{') depth++;
-										else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
-										else if (ch === '|' && depth === 0) {
-											parts.push(s.slice(start, i));
-											start = i + 1;
-										}
-									}
-									parts.push(s.slice(start));
-									return parts;
-								};
-
 								const __kustoParseJoinKind = (stageText) => {
 									try {
 										const m = String(stageText || '').match(/\bkind\s*=\s*([A-Za-z_][\w-]*)\b/i);
@@ -2438,6 +2386,187 @@ function ensureMonaco() {
 						return out.filter(s => String(s.text || '').trim().length > 0);
 					};
 
+					const __kustoSplitPipelineStagesDeep = (text) => {
+						// Split at top-level pipes (not inside parentheses/brackets/braces, strings, or comments).
+						const s = String(text || '');
+						const parts = [];
+						let start = 0;
+						let depth = 0;
+						let inSingle = false;
+						let inDouble = false;
+						let inLineComment = false;
+						let inBlockComment = false;
+						for (let i = 0; i < s.length; i++) {
+							const ch = s[i];
+							const next = s[i + 1];
+							if (inLineComment) {
+								if (ch === '\n') inLineComment = false;
+								continue;
+							}
+							if (inBlockComment) {
+								if (ch === '*' && next === '/') {
+									inBlockComment = false;
+									i++;
+								}
+								continue;
+							}
+							if (inSingle) {
+								if (ch === "'") {
+									// Kusto escape for single quote: ''
+									if (next === "'") { i++; continue; }
+									inSingle = false;
+								}
+								continue;
+							}
+							if (inDouble) {
+								if (ch === '\\') { i++; continue; }
+								if (ch === '"') inDouble = false;
+								continue;
+							}
+							if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+							if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+							if (ch === "'") { inSingle = true; continue; }
+							if (ch === '"') { inDouble = true; continue; }
+							if (ch === '(' || ch === '[' || ch === '{') depth++;
+							else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+							else if (ch === '|' && depth === 0) {
+								parts.push(s.slice(start, i));
+								start = i + 1;
+							}
+						}
+						parts.push(s.slice(start));
+						return parts;
+					};
+
+					const __kustoFindLastTopLevelPipeBeforeOffset = (text, offset) => {
+						// Returns the offset of the last top-level '|' before `offset` (exclusive), or -1.
+						try {
+							const s = String(text || '');
+							const end = Math.max(0, Math.min(s.length, Number(offset) || 0));
+							let last = -1;
+							let depth = 0;
+							let inLineComment = false;
+							let inBlockComment = false;
+							let inSingle = false;
+							let inDouble = false;
+							for (let i = 0; i < end; i++) {
+								const ch = s[i];
+								const next = s[i + 1];
+								if (inLineComment) { if (ch === '\n') inLineComment = false; continue; }
+								if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i++; } continue; }
+								if (inSingle) {
+									if (ch === "'") {
+										if (next === "'") { i++; continue; }
+										inSingle = false;
+									}
+									continue;
+								}
+								if (inDouble) { if (ch === '\\') { i++; continue; } if (ch === '"') inDouble = false; continue; }
+								if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+								if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+								if (ch === "'") { inSingle = true; continue; }
+								if (ch === '"') { inDouble = true; continue; }
+								if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+								if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
+								if (ch === '|' && depth === 0) { last = i; continue; }
+							}
+							return last;
+						} catch {
+							return -1;
+						}
+					};
+
+					const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText, offsetInStmt) => {
+						try {
+							const s = String(stmtText || '');
+							const pipeIdx = __kustoFindLastTopLevelPipeBeforeOffset(s, offsetInStmt);
+							if (pipeIdx < 0) return null;
+							const lineAfterPipe = s.slice(pipeIdx + 1).split('\n')[0] || '';
+							const after = String(lineAfterPipe).trim();
+							if (!after) return null;
+							const lower = after.toLowerCase();
+							let key = null;
+							let rest = '';
+							if (lower.startsWith('order by')) {
+								key = 'order by';
+								rest = after.slice('order by'.length);
+							} else if (lower.startsWith('sort by')) {
+								key = 'sort by';
+								rest = after.slice('sort by'.length);
+							} else {
+								const m = after.match(/^([A-Za-z_][\w-]*)\b/);
+								if (!m || !m[1]) return null;
+								key = String(m[1]).toLowerCase();
+								rest = after.slice(m[0].length);
+								if (key === 'filter') key = 'where';
+								if (key === 'parse-where') key = 'parse';
+							}
+							const headerHasArgs = /\S/.test(String(rest || ''));
+							return { key, headerHasArgs, pipeIdx };
+						} catch {
+							return null;
+						}
+					};
+
+					const __kustoParsePipeHeaderFromLine = (trimmedPipeLine) => {
+						try {
+							const t = String(trimmedPipeLine || '').trim();
+							if (!t.startsWith('|')) return null;
+							const after = t.slice(1).trim();
+							if (!after) return null;
+							const lower = after.toLowerCase();
+							if (lower.startsWith('order by')) {
+								return { key: 'order by', rest: after.slice('order by'.length) };
+							}
+							if (lower.startsWith('sort by')) {
+								return { key: 'sort by', rest: after.slice('sort by'.length) };
+							}
+							const m = after.match(/^([A-Za-z_][\w-]*)\b/);
+							if (!m || !m[1]) return null;
+							let key = String(m[1]).toLowerCase();
+							let rest = after.slice(m[0].length);
+							if (key === 'filter') key = 'where';
+							if (key === 'parse-where') key = 'parse';
+							return { key, rest };
+						} catch {
+							return null;
+						}
+					};
+
+					const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader) => {
+						try {
+							if (!pipeHeader || !pipeHeader.key) return false;
+							const key = String(pipeHeader.key).toLowerCase();
+							const rest = String(pipeHeader.rest || '');
+							const restTrim = rest.trim();
+
+							// Always multiline (common patterns where the next line can be part of the same clause).
+							if (key === 'where' || key === 'summarize' || key === 'join' || key === 'lookup') return true;
+
+							// Multiline list forms: header-only, then items.
+							if (key === 'extend' || key === 'project' || key === 'project-rename' || key === 'project-away' || key === 'project-keep' || key === 'project-reorder' || key === 'project-smart' || key === 'distinct') {
+								return restTrim.length === 0;
+							}
+
+							// order/sort: allow a multiline form when no columns are provided on the header line.
+							if (key === 'order by' || key === 'sort by') {
+								return restTrim.length === 0;
+							}
+
+							// top: allow multiline when it ends with `by` and no columns follow.
+							if (key === 'top') {
+								// Examples:
+								//  | top 5 by
+								//      Col1 desc,
+								const lower = (key + ' ' + restTrim).toLowerCase();
+								return /\bby\s*$/.test(lower);
+							}
+							return false;
+						} catch {
+							return false;
+						}
+					};
+
 					const __kustoGetStatementStartAtOffset = (text, offset) => {
 						const raw = String(text || '');
 						const end = Math.max(0, Math.min(raw.length, Number(offset) || 0));
@@ -2934,17 +3063,19 @@ function ensureMonaco() {
 							} catch { /* ignore */ }
 
 							// Basic syntax-ish check: once a statement has started piping, any subsequent non-empty line
-							// should either start with '|' or be an indented continuation of a multiline operator (e.g. summarize).
+							// should either start with '|' or be a continuation of a multiline operator.
 							try {
 								const lines = stmtText.split('\n');
 								let runningOffset = baseOffset;
 								let sawPipe = false;
 								let allowIndentedContinuation = false;
+								let lastPipeHeader = null;
 								for (const line of lines) {
 									const trimmed = line.trim();
 										if (!trimmed || trimmed === ';') {
 										sawPipe = false;
 										allowIndentedContinuation = false;
+										lastPipeHeader = null;
 										runningOffset += line.length + 1;
 										continue;
 									}
@@ -2954,13 +3085,23 @@ function ensureMonaco() {
 									}
 										if (trimmed.startsWith('|')) {
 										sawPipe = true;
-											allowIndentedContinuation = /^\|\s*(where|filter|summarize|extend|project\b|project-rename\b|project-away\b|project-keep\b|project-reorder\b|project-smart\b)\b/i.test(trimmed);
+										lastPipeHeader = __kustoParsePipeHeaderFromLine(trimmed);
+										allowIndentedContinuation = __kustoPipeHeaderAllowsIndentedContinuation(lastPipeHeader);
+										__kustoDiagLog('pipe line', {
+											stmtStartOffset: baseOffset,
+											lineRaw: line,
+											pipeHeader: lastPipeHeader,
+											allowContinuation: allowIndentedContinuation
+										});
 										runningOffset += line.length + 1;
 										continue;
 									}
 									if (sawPipe) {
-										const isIndented = /^\s+/.test(line);
-										if (allowIndentedContinuation && isIndented) {
+										const tLower = String(trimmed || '').toLowerCase();
+										// Allow indented continuation lines for multiline operators.
+										// Also allow common clause keywords (by/on) when multiline summarize/join is active.
+										// Note: we do NOT require indentation; in KQL, newlines are whitespace.
+										if (allowIndentedContinuation || tLower === 'by' || tLower === 'on') {
 											runningOffset += line.length + 1;
 											continue;
 										}
@@ -3958,6 +4099,7 @@ function __kustoPrettifyWhereClause(rawAfterWhere) {
 	let depth = 0;
 	let inSingle = false;
 	let inDouble = false;
+	let pendingOp = null;
 	let lastWasSpace = false;
 	const pushCondChar = (ch) => {
 		if (!inSingle && !inDouble && /\s/.test(ch)) {
@@ -3972,9 +4114,10 @@ function __kustoPrettifyWhereClause(rawAfterWhere) {
 	};
 	const flushCond = () => {
 		const t = cond.replace(/\s+/g, ' ').trim();
-		if (t) items.push({ type: 'cond', text: t });
+		if (t) items.push({ type: 'cond', op: pendingOp, text: t });
 		cond = '';
 		lastWasSpace = false;
+		pendingOp = null;
 	};
 
 	for (let i = 0; i < raw.length; i++) {
@@ -4019,13 +4162,17 @@ function __kustoPrettifyWhereClause(rawAfterWhere) {
 			if (ch === '(' || ch === '[' || ch === '{') depth++;
 			else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
 			if (depth === 0) {
-				// Detect top-level 'and' keyword.
-				if ((ch === 'a' || ch === 'A') && i + 3 <= raw.length && raw.slice(i, i + 3).toLowerCase() === 'and') {
+				// Detect top-level 'and' / 'or' keywords.
+				const slice3 = i + 3 <= raw.length ? raw.slice(i, i + 3).toLowerCase() : '';
+				const slice2 = i + 2 <= raw.length ? raw.slice(i, i + 2).toLowerCase() : '';
+				const kw = (slice3 === 'and') ? 'and' : ((slice2 === 'or') ? 'or' : '');
+				if (kw) {
 					const before = i > 0 ? raw[i - 1] : ' ';
-					const after = i + 3 < raw.length ? raw[i + 3] : ' ';
+					const after = i + kw.length < raw.length ? raw[i + kw.length] : ' ';
 					if (!/[A-Za-z0-9_\-]/.test(before) && !/[A-Za-z0-9_\-]/.test(after)) {
 						flushCond();
-						i += 2;
+						pendingOp = kw;
+						i += (kw.length - 1);
 						continue;
 					}
 				}
@@ -4137,7 +4284,8 @@ function __kustoPrettifyKusto(input) {
 						out.push('| where ' + it.text);
 						emittedFirst = true;
 					} else {
-						out.push('    and ' + it.text);
+						const op = String(it.op || 'and').toLowerCase();
+						out.push('    ' + op + ' ' + it.text);
 					}
 				}
 			}
@@ -4148,6 +4296,38 @@ function __kustoPrettifyKusto(input) {
 			}
 			i = j;
 			continue;
+		}
+
+		{
+			const m = trimmed.match(/^\|\s*(extend|project|project-away|project-keep|project-rename|project-reorder|project-smart|distinct)\b/i);
+			if (m) {
+				const clause = String(m[1] || '').toLowerCase();
+				const block = [];
+				let j = i;
+				for (; j < lines.length; j++) {
+					const t = String(lines[j] || '').trim();
+					if (j !== i && t.startsWith('|')) break;
+					block.push(lines[j]);
+				}
+				const joined = block.join(' ').replace(/\s+/g, ' ').trim();
+				const after = joined.replace(/^\|\s*[^\s]+\b/i, '').trim();
+				const parts = __kustoSplitTopLevel(after, ',')
+					.map((s) => String(s || '').trim())
+					.map((s) => s.replace(/^,\s*/, '').replace(/,$/, '').trim())
+					.filter(Boolean);
+				if (parts.length <= 1) {
+					const rest = [clause, after].filter(Boolean).join(' ');
+					out.push('| ' + rest);
+				} else {
+					out.push('| ' + clause);
+					for (let k = 0; k < parts.length; k++) {
+						const comma = (k < parts.length - 1) ? ',' : '';
+						out.push('    ' + parts[k] + comma);
+					}
+				}
+				i = j;
+				continue;
+			}
 		}
 
 		if (isCreateFn) {
@@ -4328,6 +4508,102 @@ function __kustoPrettifyKusto(input) {
 	while (out.length && !String(out[0]).trim()) out.shift();
 	while (out.length && !String(out[out.length - 1]).trim()) out.pop();
 	return out.join('\n');
+}
+
+function __kustoSplitKustoStatementsBySemicolon(text) {
+	const raw = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+	/** @type {{ statement: string, hasSemicolonAfter: boolean }[]} */
+	const segments = [];
+	let start = 0;
+	let inSingle = false;
+	let inDouble = false;
+	let inLineComment = false;
+	let inBlockComment = false;
+
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		const next = (i + 1 < raw.length) ? raw[i + 1] : '';
+		const prev = (i > 0) ? raw[i - 1] : '';
+
+		if (inLineComment) {
+			if (ch === '\n') {
+				inLineComment = false;
+			}
+			continue;
+		}
+		if (inBlockComment) {
+			if (ch === '*' && next === '/') {
+				inBlockComment = false;
+				i++;
+			}
+			continue;
+		}
+
+		if (!inSingle && !inDouble) {
+			if (ch === '/' && next === '/') {
+				inLineComment = true;
+				i++;
+				continue;
+			}
+			if (ch === '/' && next === '*') {
+				inBlockComment = true;
+				i++;
+				continue;
+			}
+		}
+
+		if (!inDouble && ch === "'") {
+			if (prev !== '\\') inSingle = !inSingle;
+			continue;
+		}
+		if (!inSingle && ch === '"') {
+			if (prev !== '\\') inDouble = !inDouble;
+			continue;
+		}
+
+		if (!inSingle && !inDouble && ch === ';') {
+			segments.push({ statement: raw.slice(start, i), hasSemicolonAfter: true });
+			start = i + 1;
+		}
+	}
+	segments.push({ statement: raw.slice(start), hasSemicolonAfter: false });
+	return segments;
+}
+
+function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
+	const raw = String(text ?? '');
+	const segments = __kustoSplitKustoStatementsBySemicolon(raw);
+	const hasMultipleStatements = segments.some((s) => s && s.hasSemicolonAfter);
+	if (!hasMultipleStatements) {
+		// Preserve exact behavior for single-statement queries.
+		return __kustoPrettifyKusto(raw);
+	}
+
+	const outLines = [];
+	for (const seg of segments) {
+		if (!seg) continue;
+		const statementText = String(seg.statement ?? '');
+		const formattedStatement = (() => {
+			// Avoid calling the formatter on pure-whitespace fragments.
+			if (!statementText.trim()) return '';
+			try {
+				return __kustoPrettifyKusto(statementText);
+			} catch {
+				return statementText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+			}
+		})();
+		if (formattedStatement) {
+			outLines.push(...String(formattedStatement).split('\n'));
+		}
+		if (seg.hasSemicolonAfter) {
+			outLines.push(';');
+		}
+	}
+
+	// Trim leading/trailing blank lines.
+	while (outLines.length && !String(outLines[0]).trim()) outLines.shift();
+	while (outLines.length && !String(outLines[outLines.length - 1]).trim()) outLines.pop();
+	return outLines.join('\n');
 }
 
 function initQueryEditor(boxId) {
@@ -5098,7 +5374,7 @@ function initQueryEditor(boxId) {
 						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
 						const v = ed.getValue ? ed.getValue() : '';
-						const next = __kustoPrettifyKusto(v);
+						const next = __kustoPrettifyKustoTextWithSemicolonStatements(v);
 						__kustoReplaceAllText(ed, next, 'kusto-prettify');
 					} catch {
 						// ignore
@@ -5108,7 +5384,7 @@ function initQueryEditor(boxId) {
 			if (typeof window.__kustoPrettifyKustoText !== 'function') {
 				window.__kustoPrettifyKustoText = (text) => {
 					try {
-						return __kustoPrettifyKusto(String(text ?? ''));
+						return __kustoPrettifyKustoTextWithSemicolonStatements(String(text ?? ''));
 					} catch {
 						return String(text ?? '');
 					}
