@@ -47,6 +47,8 @@ export class KustoQueryClient {
 	// Dedicated clients used for cancelable query execution. Keyed by box/run context to
 	// (a) support cancellation without impacting other editors, and (b) improve server-side
 	// query results cache hit rate by reusing the same underlying HTTP session.
+	// IMPORTANT: The key must include connection identity (e.g. boxId + connection.id).
+	// Otherwise switching clusters in the same box would reuse the previous cluster's client.
 	private cancelableClientsByKey: Map<string, any> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();

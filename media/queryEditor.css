@@ -544,6 +544,90 @@
 			max-width: 210px;
 		}
 
+		/* Favorites dropdown replaces: cluster (210) + database (210) + refresh (28) = 448px */
+		.select-wrapper.kusto-favorites-combo {
+			flex: 0 0 448px;
+			width: 448px;
+			max-width: 448px;
+		}
+
+		.kusto-favorites-btn {
+			width: 100%;
+			display: inline-flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+			padding: 4px 8px;
+			font-size: 12px;
+			cursor: pointer;
+			text-align: left;
+		}
+
+		.kusto-favorites-btn:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.kusto-favorites-btn-text {
+			display: inline-flex;
+			align-items: baseline;
+			gap: 6px;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-favorites-primary {
+			color: var(--vscode-dropdown-foreground);
+			font-weight: 600;
+		}
+
+		.kusto-favorites-secondary {
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-favorites-btn-caret {
+			color: var(--vscode-descriptionForeground);
+			flex: 0 0 auto;
+		}
+
+		.kusto-favorites-menu {
+			position: absolute;
+			left: 0;
+			top: calc(100% + 4px);
+			width: 100%;
+			max-height: 280px;
+			overflow: auto;
+			z-index: 50;
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-input-border);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+		}
+
+		.kusto-favorites-item {
+			padding: 6px 8px;
+			cursor: pointer;
+			font-size: 12px;
+			line-height: 1.4;
+			user-select: none;
+			white-space: nowrap;
+		}
+
+		.kusto-favorites-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-favorites-empty {
+			padding: 8px;
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+		}
+
 		.select-wrapper select {
 			background: var(--vscode-dropdown-background);
 			color: var(--vscode-dropdown-foreground);
@@ -585,6 +669,22 @@
 
 		.refresh-btn.close-btn {
 			border: none;
+		}
+
+		.refresh-btn.favorite-btn {
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.refresh-btn.favorite-btn svg {
+			fill: none;
+		}
+
+		.refresh-btn.favorite-btn.is-favorite {
+			color: var(--vscode-charts-yellow);
+		}
+
+		.refresh-btn.favorite-btn.is-favorite svg {
+			fill: currentColor;
 		}
 
 		.schema-area {
@@ -632,11 +732,24 @@
 			color: var(--vscode-dropdown-foreground);
 		}
 
-		@media (max-width: 700px) {
+		@media (max-width: 775px) {
 			.select-wrapper {
 				flex: 0 0 40px;
 				width: 40px;
 				min-width: 40px;
+			}
+
+			.select-wrapper.kusto-favorites-combo {
+				flex: 0 0 108px;
+				width: 108px;
+				min-width: 108px;
+				max-width: 108px;
+			}
+
+			/* In responsive mode, allow the expanded menu to grow to fit content */
+			.kusto-favorites-menu {
+				width: max-content;
+				min-width: 100%;
 			}
 
 			.select-wrapper.half-width {
@@ -655,6 +768,8 @@
 			.select-wrapper.has-icon select {
 				padding-left: 8px;
 			}
+
+			/* (favorites button no longer uses a left icon) */
 			
 			.select-wrapper select option {
 				text-indent: 0;

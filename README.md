@@ -18,9 +18,15 @@ Kusto Workbench is built for the tight loop of writing queries, running them, in
 
 - Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
 
-- Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts). Many more features to come.
+- Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based).
 
 - Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come.
+
+- You can hide / show query sections (similar to URL sections) to keep long notebooks manageable.
+
+- Diagnostics: red squiggles and context-aware auto-complete (multi-line aware and variable aware) that aligns with diagnostics behavior.
+
+- Favorites: save cluster + database pairs in your VS Code profile, then quickly switch the editor to a favorite connection.
 
 - Automatically improve query performance using GitHub Copilot, with side-by-side comparison tools to make sure the before and the after produce the same results and actually save query execution time.
 

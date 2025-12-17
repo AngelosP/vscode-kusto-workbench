@@ -34,6 +34,21 @@ function addQueryBox(options) {
 		'<polyline points="4.7 13.3 4.7 10.6 7.4 10.6"/>' +
 		'</svg>';
 
+	const favoriteStarIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3.8 4.6L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
+		'</svg>';
+
+	const favoritesListIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M4 4h9" />' +
+		'<path d="M4 8h9" />' +
+		'<path d="M4 12h9" />' +
+		'<path d="M2.5 4h.2" />' +
+		'<path d="M2.5 8h.2" />' +
+		'<path d="M2.5 12h.2" />' +
+		'</svg>';
+
 	const closeIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M4 4l8 8"/>' +
@@ -175,6 +190,13 @@ function addQueryBox(options) {
 		'</div>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +
+		'<div class="kusto-favorites-combo select-wrapper" id="' + id + '_favorites_wrapper" style="display:none;" title="Favorites">' +
+		'<button type="button" class="kusto-favorites-btn" id="' + id + '_favorites_btn" onclick="toggleFavoritesDropdown(\'' + id + '\'); event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+		'<span class="kusto-favorites-btn-text" id="' + id + '_favorites_btn_text">Select favorite...</span>' +
+		'<span class="kusto-favorites-btn-caret" aria-hidden="true">▾</span>' +
+		'</button>' +
+		'<div class="kusto-favorites-menu" id="' + id + '_favorites_menu" role="listbox" style="display:none;"></div>' +
+		'</div>' +
 		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
 		'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
 		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
@@ -188,6 +210,8 @@ function addQueryBox(options) {
 		'</select>' +
 		'</div>' +
 		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
+		'<button class="refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
+		'<button class="refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
 		'<div class="schema-area" aria-label="Schema status">' +
 		'<span class="schema-status" id="' + id + '_schema_status" style="display: none;" title="Loading schema for autocomplete...">' +
 		'<span class="schema-spinner" aria-hidden="true"></span>' +
@@ -2664,7 +2688,459 @@ window.__kustoOnConnectionsUpdated = function () {
 	} catch {
 		// ignore
 	}
+	// Apply any pending favorite selections now that connections may exist.
+	try {
+		for (const id of (queryBoxes || [])) {
+			try {
+				if (pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]) {
+					__kustoTryApplyPendingFavoriteSelectionForBox(id);
+				}
+			} catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+			window.__kustoUpdateFavoritesUiForAllBoxes();
+		}
+	} catch { /* ignore */ }
 };
+
+function __kustoFavoriteKey(clusterUrl, database) {
+	const c = normalizeClusterUrlKey(String(clusterUrl || '').trim());
+	const d = String(database || '').trim().toLowerCase();
+	return c + '|' + d;
+}
+
+function __kustoGetCurrentClusterUrlForBox(boxId) {
+	try {
+		const sel = document.getElementById(boxId + '_connection');
+		const cid = sel ? String(sel.value || '').trim() : '';
+		if (!cid) return '';
+		const conn = (connections || []).find(c => c && String(c.id || '') === cid);
+		return conn ? String(conn.clusterUrl || '').trim() : '';
+	} catch {
+		return '';
+	}
+}
+
+function __kustoGetCurrentDatabaseForBox(boxId) {
+	try {
+		const sel = document.getElementById(boxId + '_database');
+		return sel ? String(sel.value || '').trim() : '';
+	} catch {
+		return '';
+	}
+}
+
+function __kustoFindFavorite(clusterUrl, database) {
+	const key = __kustoFavoriteKey(clusterUrl, database);
+	const list = Array.isArray(kustoFavorites) ? kustoFavorites : [];
+	for (const f of list) {
+		if (!f) continue;
+		const fk = __kustoFavoriteKey(f.clusterUrl, f.database);
+		if (fk === key) return f;
+	}
+	return null;
+}
+
+function __kustoGetFavoritesSorted() {
+	const list = (Array.isArray(kustoFavorites) ? kustoFavorites : []).slice();
+	list.sort((a, b) => {
+		const an = String((a && a.name) || '').toLowerCase();
+		const bn = String((b && b.name) || '').toLowerCase();
+		return an.localeCompare(bn);
+	});
+	return list;
+}
+
+function __kustoFindConnectionIdForClusterUrl(clusterUrl) {
+	try {
+		const key = normalizeClusterUrlKey(String(clusterUrl || '').trim());
+		if (!key) return '';
+		for (const c of (connections || [])) {
+			if (!c) continue;
+			if (normalizeClusterUrlKey(c.clusterUrl || '') === key) {
+				return String(c.id || '').trim();
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return '';
+}
+
+// For optimized/comparison boxes, execution inherits cluster/db from the source box.
+// Expose this so schema/autocomplete and favorites selection can follow the same path.
+window.__kustoGetSelectionOwnerBoxId = function (boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return '';
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[id];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				return String(meta.sourceBoxId || '').trim() || id;
+			}
+		}
+	} catch { /* ignore */ }
+	return id;
+};
+
+function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return false;
+	let pending = null;
+	try {
+		pending = pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]
+			? pendingFavoriteSelectionByBoxId[id]
+			: null;
+	} catch { /* ignore */ }
+	if (!pending) return false;
+
+	const clusterUrl = String(pending.clusterUrl || '').trim();
+	const database = String(pending.database || '').trim();
+	if (!clusterUrl || !database) {
+		try { delete pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+		return false;
+	}
+
+	const connectionId = __kustoFindConnectionIdForClusterUrl(clusterUrl);
+	if (!connectionId) {
+		return false;
+	}
+
+	// Apply to the effective selection owner (matches execution behavior).
+	let ownerId = id;
+	try {
+		ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
+			? (window.__kustoGetSelectionOwnerBoxId(id) || id)
+			: id;
+	} catch { ownerId = id; }
+
+	const applyToBox = (targetBoxId) => {
+		const tid = String(targetBoxId || '').trim();
+		if (!tid) return;
+		const connSel = document.getElementById(tid + '_connection');
+		const dbSel = document.getElementById(tid + '_database');
+		try {
+			if (connSel && connSel.dataset) {
+				connSel.dataset.desiredClusterUrl = clusterUrl;
+			}
+			if (dbSel && dbSel.dataset) {
+				dbSel.dataset.desired = database;
+			}
+		} catch { /* ignore */ }
+		try {
+			if (connSel) {
+				connSel.value = connectionId;
+			}
+			updateDatabaseField(tid);
+		} catch { /* ignore */ }
+		try { if (connSel && connSel.dataset) delete connSel.dataset.desiredClusterUrl; } catch { /* ignore */ }
+	};
+
+	applyToBox(ownerId);
+	// Keep the originating box UI in sync if it's different.
+	if (ownerId !== id) {
+		applyToBox(id);
+	}
+
+	try { delete pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+	return true;
+}
+
+function __kustoSetElementDisplay(el, display) {
+	try {
+		if (!el) return;
+		el.style.display = display;
+	} catch { /* ignore */ }
+}
+
+function __kustoApplyFavoritesMode(boxId, enabled) {
+	favoritesModeByBoxId = favoritesModeByBoxId || {};
+	favoritesModeByBoxId[boxId] = !!enabled;
+	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
+	const clusterWrap = document.getElementById(boxId + '_connection')
+		? document.getElementById(boxId + '_connection').closest('.select-wrapper')
+		: null;
+	const dbWrap = document.getElementById(boxId + '_database')
+		? document.getElementById(boxId + '_database').closest('.select-wrapper')
+		: null;
+	const refreshBtn = document.getElementById(boxId + '_refresh');
+
+	if (enabled) {
+		__kustoSetElementDisplay(clusterWrap, 'none');
+		__kustoSetElementDisplay(dbWrap, 'none');
+		__kustoSetElementDisplay(refreshBtn, 'none');
+		__kustoSetElementDisplay(favWrap, 'flex');
+		try { renderFavoritesMenuForBox(boxId); } catch { /* ignore */ }
+	} else {
+		__kustoSetElementDisplay(favWrap, 'none');
+		__kustoSetElementDisplay(clusterWrap, 'flex');
+		__kustoSetElementDisplay(dbWrap, 'flex');
+		__kustoSetElementDisplay(refreshBtn, 'flex');
+		try { closeFavoritesDropdown(boxId); } catch { /* ignore */ }
+	}
+}
+
+// Called by main.js when a favorite was just added from a specific query box.
+window.__kustoEnterFavoritesModeForBox = function (boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+		if (!hasAny) return;
+		__kustoApplyFavoritesMode(id, true);
+		__kustoUpdateFavoritesUiForBox(id);
+	} catch { /* ignore */ }
+};
+
+function __kustoFormatFavoriteDisplayHtml(fav) {
+	const name = (typeof escapeHtml === 'function') ? escapeHtml(String((fav && fav.name) || '')) : String((fav && fav.name) || '');
+	let clusterShort = '';
+	try {
+		clusterShort = (typeof formatClusterShortName === 'function')
+			? String(formatClusterShortName(String((fav && fav.clusterUrl) || '')) || '')
+			: '';
+	} catch { /* ignore */ }
+	if (!clusterShort) {
+		try {
+			clusterShort = String((fav && fav.clusterUrl) || '').trim();
+		} catch { /* ignore */ }
+	}
+	const cluster = (typeof escapeHtml === 'function') ? escapeHtml(clusterShort) : clusterShort;
+	const db = (typeof escapeHtml === 'function') ? escapeHtml(String((fav && fav.database) || '')) : String((fav && fav.database) || '');
+	return '<span class="kusto-favorites-primary">' + name + '</span> <span class="kusto-favorites-secondary">[cluster: ' + cluster + ', database:' + db + ']</span>';
+}
+
+function __kustoUpdateFavoritesUiForBox(boxId) {
+	const favBtn = document.getElementById(boxId + '_favorite_toggle');
+	const showBtn = document.getElementById(boxId + '_favorites_show');
+	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
+	const btnText = document.getElementById(boxId + '_favorites_btn_text');
+
+	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+	__kustoSetElementDisplay(showBtn, hasAny ? 'flex' : 'none');
+
+	// If we have no favorites anymore, force exit favorites mode.
+	try {
+		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[boxId]);
+		if (enabled && !hasAny) {
+			__kustoApplyFavoritesMode(boxId, false);
+		}
+	} catch { /* ignore */ }
+
+	// Star state for current selection.
+	const clusterUrl = __kustoGetCurrentClusterUrlForBox(boxId);
+	const db = __kustoGetCurrentDatabaseForBox(boxId);
+	const fav = (clusterUrl && db) ? __kustoFindFavorite(clusterUrl, db) : null;
+	if (favBtn) {
+		const isFav = !!fav;
+		favBtn.classList.toggle('is-favorite', isFav);
+		favBtn.title = isFav ? 'Remove from favorites' : 'Add to favorites';
+		favBtn.setAttribute('aria-label', favBtn.title);
+	}
+
+	// Favorites dropdown current label.
+	if (btnText) {
+		if (fav) {
+			btnText.innerHTML = __kustoFormatFavoriteDisplayHtml(fav);
+		} else {
+			btnText.textContent = 'Select favorite...';
+		}
+	}
+
+	// Keep wrapper hidden unless favorites mode is enabled.
+	try {
+		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[boxId]);
+		if (favWrap && favWrap.style.display !== (enabled ? 'flex' : 'none')) {
+			// Don't stomp if a restore is in progress; only adjust when explicitly toggled.
+			// (The row gets rebuilt on restore anyway.)
+		}
+	} catch { /* ignore */ }
+}
+
+window.__kustoUpdateFavoritesUiForAllBoxes = function () {
+	try {
+		for (const id of (queryBoxes || [])) {
+			__kustoUpdateFavoritesUiForBox(id);
+		}
+	} catch { /* ignore */ }
+};
+
+function toggleFavoriteForBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
+	const database = __kustoGetCurrentDatabaseForBox(id);
+	if (!clusterUrl || !database) {
+		try {
+			vscode.postMessage({ type: 'showInfo', message: 'Select a cluster and database first.' });
+		} catch { /* ignore */ }
+		return;
+	}
+	const existing = __kustoFindFavorite(clusterUrl, database);
+	if (existing) {
+		// Optimistic UI update.
+		try {
+			kustoFavorites = (Array.isArray(kustoFavorites) ? kustoFavorites : []).filter(f => __kustoFavoriteKey(f.clusterUrl, f.database) !== __kustoFavoriteKey(clusterUrl, database));
+		} catch { /* ignore */ }
+		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+		try {
+			vscode.postMessage({ type: 'removeFavorite', clusterUrl, database, boxId: id });
+		} catch { /* ignore */ }
+		return;
+	}
+
+	const connShort = (typeof formatClusterShortName === 'function') ? formatClusterShortName(clusterUrl) : '';
+	const defaultName = (connShort ? connShort : clusterUrl) + '.' + database;
+	try {
+		vscode.postMessage({ type: 'requestAddFavorite', clusterUrl, database, defaultName, boxId: id });
+	} catch { /* ignore */ }
+}
+
+function toggleFavoritesMode(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+	if (!hasAny) return;
+	const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
+	__kustoApplyFavoritesMode(id, !enabled);
+}
+
+function closeFavoritesDropdown(boxId) {
+	const menu = document.getElementById(boxId + '_favorites_menu');
+	const btn = document.getElementById(boxId + '_favorites_btn');
+	if (menu) {
+		menu.style.display = 'none';
+	}
+	if (btn) {
+		btn.setAttribute('aria-expanded', 'false');
+	}
+}
+
+function closeAllFavoritesDropdowns() {
+	try {
+		for (const id of (queryBoxes || [])) {
+			closeFavoritesDropdown(id);
+		}
+	} catch { /* ignore */ }
+}
+
+function toggleFavoritesDropdown(boxId) {
+	const id = String(boxId || '').trim();
+	const menu = document.getElementById(id + '_favorites_menu');
+	const btn = document.getElementById(id + '_favorites_btn');
+	if (!menu || !btn) return;
+	const next = menu.style.display === 'block' ? 'none' : 'block';
+	closeAllRunMenus();
+	closeAllFavoritesDropdowns();
+	if (next === 'block') {
+		try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
+	}
+	menu.style.display = next;
+	btn.setAttribute('aria-expanded', next === 'block' ? 'true' : 'false');
+}
+
+function renderFavoritesMenuForBox(boxId) {
+	const menu = document.getElementById(boxId + '_favorites_menu');
+	if (!menu) return;
+	const list = __kustoGetFavoritesSorted();
+	if (!list.length) {
+		menu.innerHTML = '<div class="kusto-favorites-empty">No favorites yet.</div>';
+		return;
+	}
+	menu.innerHTML = list.map(f => {
+		const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
+		return (
+			'<div class="kusto-favorites-item" role="option" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
+			__kustoFormatFavoriteDisplayHtml(f) +
+			'</div>'
+		);
+	}).join('') +
+		'<div class="kusto-favorites-item" role="option" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
+		'<span class="kusto-favorites-primary">Other...</span>' +
+		'</div>';
+}
+
+function __kustoLog(boxId, event, message, data, level) {
+	// Diagnostics logging disabled.
+	return;
+	try {
+		if (!vscode || typeof vscode.postMessage !== 'function') return;
+		vscode.postMessage({
+			type: 'log',
+			level: level || 'info',
+			boxId: boxId ? String(boxId) : undefined,
+			event: event ? String(event) : undefined,
+			message: message ? String(message) : undefined,
+			data
+		});
+	} catch { /* ignore */ }
+}
+
+function selectFavoriteForBox(boxId, encodedKey) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	__kustoLog(id, 'favorites.select', 'User selected favorite item', { encodedKey: String(encodedKey || '') });
+	if (String(encodedKey || '') === '__other__') {
+		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
+		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+		closeFavoritesDropdown(id);
+		return;
+	}
+	let key = '';
+	try { key = decodeURIComponent(String(encodedKey || '')); } catch { key = String(encodedKey || ''); }
+	if (key === '__other__') {
+		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
+		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+		closeFavoritesDropdown(id);
+		return;
+	}
+	const list = __kustoGetFavoritesSorted();
+	const fav = list.find(f => __kustoFavoriteKey(f.clusterUrl, f.database) === key);
+	if (!fav) {
+		__kustoLog(id, 'favorites.select', 'Favorite not found for key', { key });
+		closeFavoritesDropdown(id);
+		return;
+	}
+
+	const clusterUrl = String(fav.clusterUrl || '').trim();
+	const database = String(fav.database || '').trim();
+	if (!clusterUrl || !database) {
+		__kustoLog(id, 'favorites.select', 'Favorite missing clusterUrl/database', { clusterUrl, database }, 'warn');
+		closeFavoritesDropdown(id);
+		return;
+	}
+	__kustoLog(id, 'favorites.stage', 'Staging favorite selection', { clusterUrl, database });
+
+	// Always stage the selection; apply immediately if possible, otherwise apply on the next connections refresh.
+	try {
+		pendingFavoriteSelectionByBoxId = pendingFavoriteSelectionByBoxId || {};
+		pendingFavoriteSelectionByBoxId[id] = { clusterUrl, database };
+	} catch { /* ignore */ }
+
+	let applied = false;
+	try {
+		applied = __kustoTryApplyPendingFavoriteSelectionForBox(id);
+	} catch { /* ignore */ }
+	__kustoLog(id, 'favorites.apply', applied ? 'Applied immediately' : 'Not applied immediately', { clusterUrl, database, applied });
+
+	if (!applied) {
+		// Ensure the cluster exists in connections; if not, request it.
+		try {
+			vscode.postMessage({ type: 'addConnectionsForClusters', boxId: id, clusterUrls: [clusterUrl] });
+		} catch { /* ignore */ }
+		__kustoLog(id, 'favorites.addConnection', 'Requested addConnectionsForClusters', { clusterUrl });
+		// Refresh cluster dropdowns so desiredClusterUrl can be resolved when available.
+		try { updateConnectionSelects(); } catch { /* ignore */ }
+	}
+
+	try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	closeFavoritesDropdown(id);
+}
 
 function addMissingClusterConnections(boxId) {
 	const id = String(boxId || '').trim();
@@ -2815,6 +3291,24 @@ function updateDatabaseField(boxId) {
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 	// Connection changed: clear schema so it doesn't mismatch.
 	delete schemaByBoxId[boxId];
+	// Also clear in-flight/throttle state so a new schema request can start immediately.
+	try {
+		if (schemaFetchInFlightByBoxId) {
+			schemaFetchInFlightByBoxId[boxId] = false;
+		}
+		if (lastSchemaRequestAtByBoxId) {
+			lastSchemaRequestAtByBoxId[boxId] = 0;
+		}
+		if (window && window.__kustoSchemaRequestTokenByBoxId) {
+			delete window.__kustoSchemaRequestTokenByBoxId[boxId];
+		}
+		if (databaseSelect && databaseSelect.dataset) {
+			delete databaseSelect.dataset.kustoDesiredRefreshAttempted;
+		}
+		if (typeof setSchemaLoading === 'function') {
+			setSchemaLoading(boxId, false);
+		}
+	} catch { /* ignore */ }
 
 	if (connectionId && databaseSelect) {
 		// Check if we have cached databases for this connection
@@ -2836,34 +3330,13 @@ function updateDatabaseField(boxId) {
 			}
 		} else {
 			// No cache, need to load from server
-			let desired = '';
-			try {
-				desired = (databaseSelect.dataset && databaseSelect.dataset.desired)
-					? String(databaseSelect.dataset.desired || '')
-					: '';
-			} catch { /* ignore */ }
-
-			if (desired) {
-				const esc = (typeof escapeHtml === 'function') ? escapeHtml(desired) : desired;
-				databaseSelect.innerHTML =
-					'<option value="" disabled hidden>Select Database...</option>' +
-					'<option value="' + esc + '">' + esc + '</option>';
-				databaseSelect.value = desired;
-			} else {
-				databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
-			}
+			// Keep the dropdown in a loading state and do not replace its contents with a synthetic
+			// single-option list. If `dataset.desired` is set, updateDatabaseSelect will apply it
+			// once the real database list arrives.
+			databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
 			databaseSelect.disabled = true;
 			if (refreshBtn) {
 				refreshBtn.disabled = true;
-			}
-
-			// Start schema fetch immediately if we have a persisted DB selection.
-			try {
-				if (desired && typeof ensureSchemaForBox === 'function') {
-					ensureSchemaForBox(boxId, false);
-				}
-			} catch {
-				// ignore
 			}
 
 			// Request databases from the extension
@@ -2880,6 +3353,9 @@ function updateDatabaseField(boxId) {
 			refreshBtn.disabled = true;
 		}
 	}
+	try {
+		__kustoUpdateFavoritesUiForBox(boxId);
+	} catch { /* ignore */ }
 }
 
 function promptAddConnectionFromDropdown(boxId) {
@@ -3122,18 +3598,56 @@ function updateDatabaseSelect(boxId, databases) {
 				: '';
 		} catch { /* ignore */ }
 
-		const target = (desired && list.includes(desired))
-			? desired
-			: (prevValue && list.includes(prevValue))
+		const desiredInList = !!(desired && list.includes(desired));
+		let target = '';
+		if (desired) {
+			// When a favorite/restore is trying to pick a specific DB, never silently fall back
+			// to a previous/last DB (that can cause runs to hit the wrong database/cluster).
+			if (desiredInList) {
+				target = desired;
+			} else {
+				target = '';
+			}
+		} else {
+			// Normal behavior for manual selection.
+			target = (prevValue && list.includes(prevValue))
 				? prevValue
 				: (lastDatabase && list.includes(lastDatabase))
 					? lastDatabase
 					: '';
+		}
 
 		if (target) {
 			databaseSelect.value = target;
 		}
-		try { if (desired && target === desired) delete databaseSelect.dataset.desired; } catch { /* ignore */ }
+		__kustoLog(boxId, 'db.select', 'Resolved database selection', {
+			connectionId: document.getElementById(boxId + '_connection') ? document.getElementById(boxId + '_connection').value : '',
+			desired,
+			desiredInList,
+			prevValue,
+			target,
+			listCount: list.length
+		});
+		// If we successfully applied the desired selection, clear the desired marker and refresh-attempt flag.
+		try {
+			if (desired && target === desired) {
+				delete databaseSelect.dataset.desired;
+				delete databaseSelect.dataset.kustoDesiredRefreshAttempted;
+			}
+		} catch { /* ignore */ }
+
+		// If we couldn't find the desired DB, auto-refresh the DB list once.
+		try {
+			if (desired && !desiredInList && databaseSelect.dataset) {
+				const attempted = databaseSelect.dataset.kustoDesiredRefreshAttempted === '1';
+				if (!attempted) {
+					databaseSelect.dataset.kustoDesiredRefreshAttempted = '1';
+					// Kick a refresh; keep selection empty until the real list arrives.
+					__kustoLog(boxId, 'db.refresh', 'Desired DB missing; auto-refreshing databases once', { desired, connectionId: document.getElementById(boxId + '_connection') ? document.getElementById(boxId + '_connection').value : '' }, 'warn');
+					try { refreshDatabases(boxId); } catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
 
 		// Only trigger schema refresh if the selected DB actually changed.
 		if (target && target !== prevValue) {
@@ -3205,6 +3719,7 @@ function toggleRunMenu(boxId) {
 
 document.addEventListener('click', () => {
 	closeAllRunMenus();
+	closeAllFavoritesDropdowns();
 });
 
 function formatElapsed(ms) {
@@ -3324,6 +3839,25 @@ function executeQuery(boxId, mode) {
 		}
 	} catch { /* ignore */ }
 
+	// Safety: if a favorites switch is still pending/applying, do not run.
+	try {
+		const pending = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[boxId]);
+		const dbEl = document.getElementById(boxId + '_database');
+		const desiredPending = !!(dbEl && dbEl.dataset && dbEl.dataset.desired);
+		const dbDisabled = !!(dbEl && dbEl.disabled);
+		if (pending || desiredPending || dbDisabled) {
+			__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', {
+				pending,
+				desiredPending,
+				dbDisabled,
+				connectionId,
+				database
+			}, 'warn');
+			try { vscode.postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch { /* ignore */ }
+			return;
+		}
+	} catch { /* ignore */ }
+
 	if (!query.trim()) {
 		return;
 	}
@@ -3332,6 +3866,7 @@ function executeQuery(boxId, mode) {
 		alert('Please select a cluster connection');
 		return;
 	}
+	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
 
 	setQueryExecuting(boxId, true);
 	closeRunMenu(boxId);

@@ -103,8 +103,14 @@ function ensureSchemaForBox(boxId, forceRefresh) {
 	}
 	lastSchemaRequestAtByBoxId[boxId] = now;
 
-	const connectionSelect = document.getElementById(boxId + '_connection');
-	const databaseSelect = document.getElementById(boxId + '_database');
+	let ownerId = boxId;
+	try {
+		if (window && typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
+			ownerId = window.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+		}
+	} catch { /* ignore */ }
+	const connectionSelect = document.getElementById(ownerId + '_connection');
+	const databaseSelect = document.getElementById(ownerId + '_database');
 	const connectionId = connectionSelect ? connectionSelect.value : '';
 	const database = databaseSelect ? databaseSelect.value : '';
 	if (!connectionId || !database) {
@@ -112,12 +118,21 @@ function ensureSchemaForBox(boxId, forceRefresh) {
 	}
 
 	setSchemaLoading(boxId, true);
+	let requestToken = '';
+	try {
+		if (!window.__kustoSchemaRequestTokenByBoxId || typeof window.__kustoSchemaRequestTokenByBoxId !== 'object') {
+			window.__kustoSchemaRequestTokenByBoxId = {};
+		}
+		requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		window.__kustoSchemaRequestTokenByBoxId[boxId] = requestToken;
+	} catch { /* ignore */ }
 	vscode.postMessage({
 		type: 'prefetchSchema',
 		connectionId,
 		database,
 		boxId,
-		forceRefresh: !!forceRefresh
+		forceRefresh: !!forceRefresh,
+		requestToken
 	});
 }
 
@@ -166,8 +181,27 @@ window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
 function onDatabaseChanged(boxId) {
 	// Clear any prior schema so it matches the newly selected DB.
 	delete schemaByBoxId[boxId];
+	// Clear request throttling/in-flight so we can fetch immediately for the new DB.
+	try {
+		if (schemaFetchInFlightByBoxId) {
+			schemaFetchInFlightByBoxId[boxId] = false;
+		}
+		if (lastSchemaRequestAtByBoxId) {
+			lastSchemaRequestAtByBoxId[boxId] = 0;
+		}
+		if (window && window.__kustoSchemaRequestTokenByBoxId) {
+			delete window.__kustoSchemaRequestTokenByBoxId[boxId];
+		}
+	} catch { /* ignore */ }
 	setSchemaLoadedSummary(boxId, '', '', false);
 	ensureSchemaForBox(boxId, false);
+	try {
+		if (typeof __kustoUpdateFavoritesUiForBox === 'function') {
+			__kustoUpdateFavoritesUiForBox(boxId);
+		} else if (window && typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+			window.__kustoUpdateFavoritesUiForAllBoxes();
+		}
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

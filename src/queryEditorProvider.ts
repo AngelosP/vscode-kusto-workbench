@@ -19,8 +19,11 @@ const STORAGE_KEYS = {
 	cachedSchemas: 'kusto.cachedSchemas',
 	caretDocsEnabled: 'kusto.caretDocsEnabled',
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
-	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId'
+	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
+	favorites: 'kusto.favorites'
 } as const;
+
+type KustoFavorite = { name: string; clusterUrl: string; database: string };
 
 type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
 
@@ -29,6 +32,8 @@ type CacheUnit = 'minutes' | 'hours' | 'days';
 type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
+	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
@@ -60,7 +65,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 		cacheValue?: number;
 		cacheUnit?: CacheUnit | string;
 	}
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| {
 			type: 'importConnectionsFromXml';
@@ -313,6 +318,12 @@ export class QueryEditorProvider {
 			case 'getConnections':
 				await this.sendConnectionsData();
 				return;
+			case 'requestAddFavorite':
+				await this.promptAddFavorite(message);
+				return;
+			case 'removeFavorite':
+				await this.removeFavorite(message.clusterUrl, message.database);
+				return;
 			case 'addConnectionsForClusters':
 				await this.addConnectionsForClusters(message.clusterUrls);
 				await this.sendConnectionsData();
@@ -357,7 +368,7 @@ export class QueryEditorProvider {
 				await this.fetchUrlFromWebview(message);
 				return;
 			case 'prefetchSchema':
-				await this.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh);
+				await this.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken);
 				return;
 			case 'importConnectionsFromXml':
 				await this.importConnectionsFromXml(message.connections);
@@ -1153,6 +1164,66 @@ ${query}
 		this.lastDatabase = this.context.globalState.get<string>(STORAGE_KEYS.lastDatabase);
 	}
 
+	private getFavorites(): KustoFavorite[] {
+		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		const out: KustoFavorite[] = [];
+		for (const item of raw) {
+			if (!item || typeof item !== 'object') {
+				continue;
+			}
+			const maybe = item as Partial<KustoFavorite>;
+			const name = String(maybe.name || '').trim();
+			const clusterUrl = String(maybe.clusterUrl || '').trim();
+			const database = String(maybe.database || '').trim();
+			if (!name || !clusterUrl || !database) {
+				continue;
+			}
+			out.push({ name, clusterUrl, database });
+		}
+		return out;
+	}
+
+	private normalizeFavoriteClusterUrl(clusterUrl: string): string {
+		const normalized = this.ensureHttpsUrl(String(clusterUrl || '').trim());
+		return normalized.replace(/\/+$/g, '');
+	}
+
+	private favoriteKey(clusterUrl: string, database: string): string {
+		const c = this.normalizeClusterUrlKey(clusterUrl);
+		const d = String(database || '').trim().toLowerCase();
+		return `${c}|${d}`;
+	}
+
+	private getClusterShortName(clusterUrl: string): string {
+		try {
+			const withScheme = this.ensureHttpsUrl(clusterUrl);
+			const u = new URL(withScheme);
+			const host = String(u.hostname || '').trim();
+			if (!host) {
+				return this.getDefaultConnectionName(clusterUrl);
+			}
+			return host.split('.')[0] || host;
+		} catch {
+			return this.getDefaultConnectionName(clusterUrl);
+		}
+	}
+
+	private async setFavorites(favorites: KustoFavorite[], boxId?: string): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+		await this.sendFavoritesData(boxId);
+	}
+
+	private async sendFavoritesData(boxId?: string): Promise<void> {
+		const payload: any = { type: 'favoritesData', favorites: this.getFavorites() };
+		if (boxId) {
+			payload.boxId = boxId;
+		}
+		this.postMessage(payload);
+	}
+
 	private getCachedDatabases(): Record<string, string[]> {
 		return this.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
 	}
@@ -1211,6 +1282,7 @@ ${query}
 		const caretDocsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled);
 		const caretDocsEnabled = typeof caretDocsEnabledStored === 'boolean' ? caretDocsEnabledStored : true;
 		const caretDocsEnabledUserSet = typeof caretDocsEnabledStored === 'boolean';
+		const favorites = this.getFavorites();
 
 		this.postMessage({
 			type: 'connectionsData',
@@ -1218,9 +1290,74 @@ ${query}
 			lastConnectionId: this.lastConnectionId,
 			lastDatabase: this.lastDatabase,
 			cachedDatabases,
+			favorites,
 			caretDocsEnabled,
 			caretDocsEnabledUserSet
 		});
+	}
+
+	private async promptAddFavorite(
+		message: Extract<IncomingWebviewMessage, { type: 'requestAddFavorite' }>
+	): Promise<void> {
+		const clusterUrlRaw = String(message.clusterUrl || '').trim();
+		const databaseRaw = String(message.database || '').trim();
+		if (!clusterUrlRaw || !databaseRaw) {
+			return;
+		}
+		const clusterUrl = this.normalizeFavoriteClusterUrl(clusterUrlRaw);
+		const database = databaseRaw;
+		const defaultName =
+			String(message.defaultName || '').trim() || `${this.getClusterShortName(clusterUrl)}.${database}`;
+
+		const picked = await vscode.window.showInputBox({
+			title: 'Add to favorites',
+			prompt: 'Enter a friendly name for this cluster + database',
+			value: defaultName,
+			ignoreFocusOut: true
+		});
+		const name = typeof picked === 'string' ? picked.trim() : '';
+		if (!name) {
+			return;
+		}
+		await this.addOrUpdateFavorite({ name, clusterUrl, database }, message.boxId);
+	}
+
+	private async addOrUpdateFavorite(favorite: KustoFavorite, boxId?: string): Promise<void> {
+		const name = String(favorite.name || '').trim();
+		const clusterUrl = this.normalizeFavoriteClusterUrl(String(favorite.clusterUrl || '').trim());
+		const database = String(favorite.database || '').trim();
+		if (!name || !clusterUrl || !database) {
+			return;
+		}
+		const key = this.favoriteKey(clusterUrl, database);
+		const current = this.getFavorites();
+		const next: KustoFavorite[] = [];
+		let replaced = false;
+		for (const f of current) {
+			const fk = this.favoriteKey(f.clusterUrl, f.database);
+			if (fk === key) {
+				next.push({ name, clusterUrl, database });
+				replaced = true;
+			} else {
+				next.push(f);
+			}
+		}
+		if (!replaced) {
+			next.push({ name, clusterUrl, database });
+		}
+		await this.setFavorites(next, boxId);
+	}
+
+	private async removeFavorite(clusterUrlRaw: string, databaseRaw: string): Promise<void> {
+		const clusterUrl = this.normalizeFavoriteClusterUrl(String(clusterUrlRaw || '').trim());
+		const database = String(databaseRaw || '').trim();
+		if (!clusterUrl || !database) {
+			return;
+		}
+		const key = this.favoriteKey(clusterUrl, database);
+		const current = this.getFavorites();
+		const next = current.filter((f) => this.favoriteKey(f.clusterUrl, f.database) !== key);
+		await this.setFavorites(next);
 	}
 
 	private async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean): Promise<void> {
@@ -1274,7 +1411,8 @@ ${query}
 		const cacheDirective = this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
-		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, boxId || connection.id);
+		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
+		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, cancelClientKey);
 		const runSeq = ++this.queryRunSeq;
 		const isStillActiveRun = () => {
 			if (!boxId) {
@@ -1367,7 +1505,8 @@ ${query}
 		connectionId: string,
 		database: string,
 		boxId: string,
-		forceRefresh: boolean
+		forceRefresh: boolean,
+		requestToken?: string
 	): Promise<void> {
 		const connection = this.findConnection(connectionId);
 		if (!connection || !database) {
@@ -1406,6 +1545,7 @@ ${query}
 					boxId,
 					connectionId,
 					database,
+					requestToken,
 					schema,
 					schemaMeta: {
 						fromCache: true,
@@ -1452,6 +1592,7 @@ ${query}
 				boxId,
 				connectionId,
 				database,
+				requestToken,
 				schema,
 				schemaMeta: {
 					fromCache: result.fromCache,
@@ -1485,6 +1626,7 @@ ${query}
 						boxId,
 						connectionId,
 						database,
+						requestToken,
 						schema,
 						schemaMeta: {
 							fromCache: true,
@@ -1502,6 +1644,7 @@ ${query}
 							boxId,
 							connectionId,
 							database,
+							requestToken,
 							error: `Failed to refresh schema. Using cached schema for autocomplete.\n${userMessage}`
 						});
 					}
@@ -1518,6 +1661,7 @@ ${query}
 				boxId,
 				connectionId,
 				database,
+				requestToken,
 				error: `Failed to ${action} schema.\n${userMessage}`
 			});
 		}

@@ -532,6 +532,7 @@ window.addEventListener('message', event => {
 			lastConnectionId = message.lastConnectionId;
 			lastDatabase = message.lastDatabase;
 			cachedDatabases = message.cachedDatabases || {};
+			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			try {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
@@ -540,11 +541,34 @@ window.addEventListener('message', event => {
 			} catch { /* ignore */ }
 			updateConnectionSelects();
 			try {
+				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+					window.__kustoUpdateFavoritesUiForAllBoxes();
+				}
+			} catch { /* ignore */ }
+			try {
 				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
 					window.__kustoOnConnectionsUpdated();
 				}
 			} catch { /* ignore */ }
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+			break;
+		case 'favoritesData':
+			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
+			try {
+				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+					window.__kustoUpdateFavoritesUiForAllBoxes();
+				}
+			} catch { /* ignore */ }
+			// If this update came from an "Add favorite" action in a specific box, automatically
+			// switch that box into Favorites mode.
+			try {
+				const boxId = message && typeof message.boxId === 'string' ? message.boxId : '';
+				if (boxId && Array.isArray(kustoFavorites) && kustoFavorites.length > 0) {
+					if (typeof window.__kustoEnterFavoritesModeForBox === 'function') {
+						window.__kustoEnterFavoritesModeForBox(boxId);
+					}
+				}
+			} catch { /* ignore */ }
 			break;
 		case 'documentData':
 			try {
@@ -751,6 +775,16 @@ window.addEventListener('message', event => {
 			try { if (typeof onUrlError === 'function') onUrlError(message); } catch { /* ignore */ }
 			break;
 		case 'schemaData':
+			// Drop late responses from older selections (e.g., user switched favorites quickly).
+			try {
+				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
+				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
+					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
+					if (expected && expected !== tok) {
+						break;
+					}
+				}
+			} catch { /* ignore */ }
 			try {
 				const cid = String(message.connectionId || '').trim();
 				const db = String(message.database || '').trim();
@@ -791,6 +825,16 @@ window.addEventListener('message', event => {
 			}
 			break;
 		case 'schemaError':
+			// Drop late responses from older selections (e.g., user switched favorites quickly).
+			try {
+				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
+				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
+					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
+					if (expected && expected !== tok) {
+						break;
+					}
+				}
+			} catch { /* ignore */ }
 			// Resolve pending schema request if this was a synthetic request id.
 			try {
 				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
