@@ -908,7 +908,9 @@
 			color: var(--vscode-dropdown-foreground);
 			border: 1px solid var(--vscode-dropdown-border);
 			border-radius: 2px;
-			padding: 4px 24px 4px 8px;
+			/* Slightly taller than native <select> so it aligns with adjacent icon buttons. */
+			padding: 6px 24px 6px 8px;
+			min-height: 27px;
 			font-size: 12px;
 			cursor: pointer;
 			text-align: left;

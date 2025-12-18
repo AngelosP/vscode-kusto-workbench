@@ -3001,6 +3001,12 @@ function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
 			if (connSel) {
 				connSel.value = connectionId;
 			}
+			// Keep the unified dropdown button text in sync when selection is applied programmatically.
+			try {
+				if (window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
+					window.__kustoDropdown.syncSelectBackedDropdown(tid + '_connection');
+				}
+			} catch { /* ignore */ }
 			updateDatabaseField(tid);
 		} catch { /* ignore */ }
 		try { if (connSel && connSel.dataset) delete connSel.dataset.desiredClusterUrl; } catch { /* ignore */ }
@@ -3050,6 +3056,14 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 		__kustoSetElementDisplay(dbWrap, 'flex');
 		__kustoSetElementDisplay(refreshBtn, 'flex');
 		__kustoSetElementDisplay(favToggleBtn, 'flex');
+		// When switching from favorites -> cluster/database view, the selection may have been set
+		// programmatically; ensure the unified dropdown buttons reflect the current hidden <select> values.
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
+				window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_connection');
+				window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database');
+			}
+		} catch { /* ignore */ }
 		try { closeFavoritesDropdown(boxId); } catch { /* ignore */ }
 	}
 }
@@ -3453,12 +3467,14 @@ function toggleFavoritesMode(boxId) {
 function closeFavoritesDropdown(boxId) {
 	const menu = document.getElementById(boxId + '_favorites_menu');
 	const btn = document.getElementById(boxId + '_favorites_btn');
-	if (menu) {
-		menu.style.display = 'none';
-	}
-	if (btn) {
-		btn.setAttribute('aria-expanded', 'false');
-	}
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
+			window.__kustoDropdown.closeMenuDropdown(boxId + '_favorites_btn', boxId + '_favorites_menu');
+			return;
+		}
+	} catch { /* ignore */ }
+	if (menu) menu.style.display = 'none';
+	if (btn) btn.setAttribute('aria-expanded', 'false');
 }
 
 function closeAllFavoritesDropdowns() {
@@ -3474,6 +3490,22 @@ function toggleFavoritesDropdown(boxId) {
 	const menu = document.getElementById(id + '_favorites_menu');
 	const btn = document.getElementById(id + '_favorites_btn');
 	if (!menu || !btn) return;
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
+			window.__kustoDropdown.toggleMenuDropdown({
+				buttonId: id + '_favorites_btn',
+				menuId: id + '_favorites_menu',
+				beforeOpen: () => {
+					try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
+				},
+				afterOpen: () => {
+					// Shared dropdown helper wires keyboard navigation for all menus.
+				}
+			});
+			return;
+		}
+	} catch { /* ignore */ }
+	// Fallback (legacy behavior)
 	const next = menu.style.display === 'block' ? 'none' : 'block';
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
@@ -3484,8 +3516,6 @@ function toggleFavoritesDropdown(boxId) {
 	btn.setAttribute('aria-expanded', next === 'block' ? 'true' : 'false');
 	if (next === 'block') {
 		try { __kustoWireFavoritesMenuInteractions(id); } catch { /* ignore */ }
-		// Do not auto-activate the first option; only show the trash icon
-		// when the user hovers or navigates with arrow keys.
 		try { menu.focus(); } catch { /* ignore */ }
 	}
 }

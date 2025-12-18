@@ -199,6 +199,235 @@
 		} catch { /* ignore */ }
 	};
 
+	// Generic close for a specific dropdown button/menu by element id.
+	window.__kustoDropdown.closeMenuDropdown = function (buttonId, menuId) {
+		const bid = String(buttonId || '').trim();
+		const mid = String(menuId || '').trim();
+		if (!bid || !mid) return;
+		try {
+			const menu = document.getElementById(mid);
+			if (menu) menu.style.display = 'none';
+		} catch { /* ignore */ }
+		try {
+			const btn = document.getElementById(bid);
+			if (btn) btn.setAttribute('aria-expanded', 'false');
+		} catch { /* ignore */ }
+	};
+
+	// Generic toggle for a dropdown button/menu by element id.
+	// opts: { buttonId, menuId, beforeOpen?: () => void, afterOpen?: () => void }
+	window.__kustoDropdown.toggleMenuDropdown = function (opts) {
+		const o = (opts && typeof opts === 'object') ? opts : {};
+		const bid = String(o.buttonId || '').trim();
+		const mid = String(o.menuId || '').trim();
+		if (!bid || !mid) return;
+		const btn = document.getElementById(bid);
+		const menu = document.getElementById(mid);
+		if (!btn || !menu) return;
+		try {
+			if (btn.disabled) return;
+		} catch { /* ignore */ }
+
+		const wasOpen = String(menu.style.display || '') === 'block';
+		try { if (typeof closeAllRunMenus === 'function') closeAllRunMenus(); } catch { /* ignore */ }
+		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+
+		if (wasOpen) {
+			return;
+		}
+
+		try {
+			if (typeof o.beforeOpen === 'function') {
+				o.beforeOpen();
+			}
+		} catch { /* ignore */ }
+
+		try {
+			menu.style.display = 'block';
+			btn.setAttribute('aria-expanded', 'true');
+		} catch { /* ignore */ }
+
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.wireMenuInteractions === 'function') {
+				window.__kustoDropdown.wireMenuInteractions(menu);
+			}
+		} catch { /* ignore */ }
+
+		try {
+			if (typeof o.afterOpen === 'function') {
+				o.afterOpen();
+			}
+		} catch { /* ignore */ }
+
+		try { menu.focus(); } catch { /* ignore */ }
+	};
+
+	const getMenuItems = (menuEl) => {
+		try {
+			if (!menuEl) return [];
+			const all = Array.from(menuEl.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
+			return all.filter((el) => {
+				try {
+					if (!el) return false;
+					if (el.classList && el.classList.contains('is-disabled')) return false;
+					const ariaDis = el.getAttribute && el.getAttribute('aria-disabled');
+					return ariaDis !== 'true';
+				} catch {
+					return false;
+				}
+			});
+		} catch {
+			return [];
+		}
+	};
+
+	const setActiveMenuItem = (menuEl, itemEl) => {
+		if (!menuEl || !itemEl) return;
+		try {
+			const items = getMenuItems(menuEl);
+			for (const it of items) {
+				try { it.classList.remove('is-active'); } catch { /* ignore */ }
+			}
+			try { itemEl.classList.add('is-active'); } catch { /* ignore */ }
+			try { itemEl.focus(); } catch { /* ignore */ }
+			try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
+			try {
+				const idx = items.indexOf(itemEl);
+				if (idx >= 0 && menuEl.dataset) {
+					menuEl.dataset.kustoActiveIndex = String(idx);
+				}
+			} catch { /* ignore */ }
+		} catch { /* ignore */ }
+	};
+
+	const getInitialActiveItem = (menuEl) => {
+		const items = getMenuItems(menuEl);
+		if (!items.length) return null;
+		// Prefer selected item if present.
+		try {
+			for (const it of items) {
+				try {
+					if (it.getAttribute && it.getAttribute('aria-selected') === 'true') {
+						return it;
+					}
+				} catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		return items[0];
+	};
+
+	// Wires keyboard navigation (ArrowUp/ArrowDown/Enter/Escape) and hover/focus active state.
+	// Safe to call multiple times; it will only attach listeners once per menu.
+	window.__kustoDropdown.wireMenuInteractions = function (menuEl) {
+		if (!menuEl) return;
+		try {
+			if (menuEl.dataset && menuEl.dataset.kustoMenuWired === '1') {
+				// Still refresh initial active item if nothing is active.
+				const items = getMenuItems(menuEl);
+				const hasActive = items.some((it) => it.classList && it.classList.contains('is-active'));
+				if (!hasActive) {
+					const initial = getInitialActiveItem(menuEl);
+					if (initial) setActiveMenuItem(menuEl, initial);
+				}
+				return;
+			}
+		} catch { /* ignore */ }
+
+		try {
+			if (menuEl.dataset) {
+				menuEl.dataset.kustoMenuWired = '1';
+			}
+		} catch { /* ignore */ }
+
+		// Ensure menu itself can receive focus.
+		try { menuEl.setAttribute('tabindex', '-1'); } catch { /* ignore */ }
+
+		// Hover/focus drives active item.
+		try {
+			menuEl.addEventListener('mouseenter', (ev) => {
+				try {
+					const target = ev && ev.target ? ev.target.closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') : null;
+					if (target) setActiveMenuItem(menuEl, target);
+				} catch { /* ignore */ }
+			}, true);
+			menuEl.addEventListener('focusin', (ev) => {
+				try {
+					const target = ev && ev.target ? ev.target.closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') : null;
+					if (target) setActiveMenuItem(menuEl, target);
+				} catch { /* ignore */ }
+			}, true);
+		} catch { /* ignore */ }
+
+		menuEl.addEventListener('keydown', (ev) => {
+			const e = ev || window.event;
+			const key = String(e && e.key ? e.key : '');
+			if (!key) return;
+			const items = getMenuItems(menuEl);
+			if (!items.length) return;
+
+			let idx = -1;
+			try {
+				if (menuEl.dataset && typeof menuEl.dataset.kustoActiveIndex === 'string') {
+					idx = parseInt(menuEl.dataset.kustoActiveIndex, 10);
+				}
+			} catch { /* ignore */ }
+			if (!(idx >= 0 && idx < items.length)) {
+				idx = Math.max(0, items.findIndex((it) => it.classList && it.classList.contains('is-active')));
+				if (idx < 0) idx = 0;
+			}
+
+			const prevent = () => {
+				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.stopPropagation(); } catch { /* ignore */ }
+			};
+
+			switch (key) {
+				case 'ArrowDown': {
+					prevent();
+					const next = (idx + 1) % items.length;
+					setActiveMenuItem(menuEl, items[next]);
+					break;
+				}
+				case 'ArrowUp': {
+					prevent();
+					const next = (idx - 1 + items.length) % items.length;
+					setActiveMenuItem(menuEl, items[next]);
+					break;
+				}
+				case 'Home': {
+					prevent();
+					setActiveMenuItem(menuEl, items[0]);
+					break;
+				}
+				case 'End': {
+					prevent();
+					setActiveMenuItem(menuEl, items[items.length - 1]);
+					break;
+				}
+				case 'Enter':
+				case ' ': {
+					prevent();
+					const active = items[idx] || items[0];
+					try { active && active.click && active.click(); } catch { /* ignore */ }
+					break;
+				}
+				case 'Escape': {
+					prevent();
+					try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+					break;
+				}
+				default:
+					break;
+			}
+		});
+
+		// Initialize active item.
+		try {
+			const initial = getInitialActiveItem(menuEl);
+			if (initial) setActiveMenuItem(menuEl, initial);
+		} catch { /* ignore */ }
+	};
+
 	// Syncs a menu dropdown from its hidden backing <select>.
 	// selectId is the DOM id of the <select>.
 	window.__kustoDropdown.syncSelectBackedDropdown = function (selectId) {
@@ -318,21 +547,20 @@
 		if (!menu || !btn) return;
 		if (btn.disabled) return;
 
-		const wasOpen = menu.style.display === 'block';
 		try {
-			if (typeof closeAllRunMenus === 'function') closeAllRunMenus();
-		} catch { /* ignore */ }
-		try {
-			if (typeof closeAllFavoritesDropdowns === 'function') closeAllFavoritesDropdowns();
-		} catch { /* ignore */ }
-		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
-
-		if (wasOpen) {
-			return;
+			window.__kustoDropdown.toggleMenuDropdown({
+				buttonId: btn.id,
+				menuId: menu.id,
+				beforeOpen: () => {
+					try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
+				}
+			});
+		} catch {
+			// Fallback: older behavior
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
+			menu.style.display = 'block';
+			btn.setAttribute('aria-expanded', 'true');
+			try { menu.focus(); } catch { /* ignore */ }
 		}
-		try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
-		menu.style.display = 'block';
-		btn.setAttribute('aria-expanded', 'true');
-		try { menu.focus(); } catch { /* ignore */ }
 	};
 })();
