@@ -4616,6 +4616,14 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				return null;
 			}
 		};
+		const getWrapperDom = () => {
+			try {
+				const dom = getEditorDom();
+				return (dom && dom.closest) ? dom.closest('.query-editor-wrapper') : null;
+			} catch {
+				return null;
+			}
+		};
 		const getBoundsDom = () => {
 			try {
 				if (typeof editor.getContainerDomNode === 'function') {
@@ -4646,17 +4654,20 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			return 22;
 		};
 
-		// Use Monaco's supported configuration for suggest height rather than forcing DOM heights.
-		// This keeps keyboard navigation and list scrolling consistent.
+		// Use Monaco's supported configuration for suggest height when possible.
+		// Fall back to DOM clamp + internal relayout poke only when needed.
 		const DEFAULT_MAX_VISIBLE = 12;
+		const MIN_DROPDOWN_PX = 50;
 		let lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null };
 		let pendingAdjustTimer = null;
 		let rafScheduled = false;
 		let lastRelayoutAt = 0;
+		let lastAutoExpandAt = 0;
+		let lastAutoExpandNeedPx = null;
 		const clearInjectedSuggestStyles = (suggest) => {
 			try {
 				if (!suggest) return;
-				// Clear any previous DOM sizing we might have applied in older iterations.
+				// Clear any DOM sizing we might have applied in fallback mode.
 				suggest.style.maxHeight = '';
 				suggest.style.height = '';
 				suggest.style.overflow = '';
@@ -4674,6 +4685,44 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 					}
 				} catch { /* ignore */ }
 			} catch { /* ignore */ }
+		};
+
+		const ensureMinimumDropdownSpace = (availablePx) => {
+			try {
+				const avail = Math.floor(Number(availablePx) || 0);
+				if (!isFinite(avail)) return false;
+				if (avail >= MIN_DROPDOWN_PX) return false;
+
+				const need = Math.max(0, MIN_DROPDOWN_PX - avail);
+				if (!need) return false;
+
+				// Avoid tight loops if layout can't satisfy the requirement.
+				try {
+					const now = Date.now();
+					if (now - lastAutoExpandAt < 150 && lastAutoExpandNeedPx === need) {
+						return false;
+					}
+					lastAutoExpandAt = now;
+					lastAutoExpandNeedPx = need;
+				} catch { /* ignore */ }
+
+				const wrapper = getWrapperDom();
+				if (!wrapper || typeof wrapper.getBoundingClientRect !== 'function') return false;
+				const current = Math.max(0, Math.round(wrapper.getBoundingClientRect().height || 0));
+				if (!current) return false;
+
+				const MIN_WRAPPER = 120;
+				const MAX_WRAPPER = 900;
+				const next = Math.max(MIN_WRAPPER, Math.min(MAX_WRAPPER, current + need));
+				if (next <= current) return false;
+				wrapper.style.height = next + 'px';
+
+				// Help Monaco react immediately.
+				try { editor.layout(); } catch { /* ignore */ }
+				return true;
+			} catch {
+				return false;
+			}
 		};
 
 		const applyDomClampFallback = (suggest, availablePx) => {
@@ -4806,16 +4855,18 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				const suggest = root.querySelector('.suggest-widget');
 				if (!suggest || typeof suggest.getBoundingClientRect !== 'function') return;
 
-				// Do not rely on forced DOM sizing; ensure any old styles are cleared.
-				clearInjectedSuggestStyles(suggest);
-
 				// Only apply when visible.
 				const ariaHidden = String((suggest.getAttribute && suggest.getAttribute('aria-hidden')) || '').toLowerCase();
 				const isVisible = ariaHidden !== 'true';
 				if (!isVisible) {
+					// When hidden, clear any fallback styles we may have applied.
+					clearInjectedSuggestStyles(suggest);
 					// When hidden, keep lastApplied.maxVisible; we'll recompute on next open.
 					return;
 				}
+
+				// Clear any fallback styles before recalculating.
+				clearInjectedSuggestStyles(suggest);
 
 				const boundsRect = boundsDom.getBoundingClientRect();
 				const suggestRect = suggest.getBoundingClientRect();
@@ -4824,6 +4875,17 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				if (!isFinite(availablePx) || availablePx <= 0) {
 					return;
 				}
+
+				// If the dropdown would be too small, expand the whole editor section so we can
+				// always show a usable menu (minimum 50px).
+				try {
+					if (ensureMinimumDropdownSpace(availablePx)) {
+						// Layout changed; recompute on next frame.
+						scheduleClamp();
+						return;
+					}
+				} catch { /* ignore */ }
+
 				const rowHeightPx = getRowHeightPx(suggest);
 				const maxVisible = computeMaxVisibleFromAvailablePx(availablePx, rowHeightPx);
 				if (lastApplied.availablePx !== availablePx || lastApplied.rowHeightPx !== rowHeightPx) {
