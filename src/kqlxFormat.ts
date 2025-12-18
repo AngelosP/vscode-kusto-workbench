@@ -54,8 +54,10 @@ export interface KqlxStateV1 {
 	sections: KqlxSectionV1[];
 }
 
+export type KqlxFileKind = 'kqlx' | 'mdx';
+
 export interface KqlxFileV1 {
-	kind: 'kqlx';
+	kind: KqlxFileKind;
 	version: 1;
 	state: KqlxStateV1;
 }
@@ -63,11 +65,28 @@ export interface KqlxFileV1 {
 export type KqlxParseResult =	| { ok: true; file: KqlxFileV1 }
 	| { ok: false; error: string };
 
+export type ParseKqlxTextOptions = {
+	/**
+	 * Which `kind` values are accepted for this document.
+	 * If omitted, defaults to ['kqlx'] for backward-compatible strictness.
+	 */
+	allowedKinds?: readonly KqlxFileKind[];
+	/**
+	 * When the document is empty, which kind should be assumed.
+	 * If omitted, defaults to 'kqlx'.
+	 */
+	defaultKind?: KqlxFileKind;
+};
+
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 export function createEmptyKqlxFile(): KqlxFileV1 {
+	return createEmptyKqlxOrMdxFile('kqlx');
+}
+
+export function createEmptyKqlxOrMdxFile(kind: KqlxFileKind): KqlxFileV1 {
 	return {
-		kind: 'kqlx',
+		kind,
 		version: 1,
 		state: {
 			sections: []
@@ -75,10 +94,12 @@ export function createEmptyKqlxFile(): KqlxFileV1 {
 	};
 }
 
-export function parseKqlxText(text: string): KqlxParseResult {
+
+export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): KqlxParseResult {
 	const raw = String(text ?? '').trim();
 	if (!raw) {
-		return { ok: true, file: createEmptyKqlxFile() };
+		const defaultKind: KqlxFileKind = options?.defaultKind ?? 'kqlx';
+		return { ok: true, file: createEmptyKqlxOrMdxFile(defaultKind) };
 	}
 
 	let parsed: unknown;
@@ -92,13 +113,18 @@ export function parseKqlxText(text: string): KqlxParseResult {
 		return { ok: false, error: 'Invalid .kqlx: root must be a JSON object.' };
 	}
 
+	const allowedKinds: readonly KqlxFileKind[] =
+		Array.isArray(options?.allowedKinds) && options?.allowedKinds.length > 0
+			? options!.allowedKinds
+			: ['kqlx'];
+
 	const kind = parsed.kind;
 	const version = parsed.version;
-	if (kind !== 'kqlx') {
-		return { ok: false, error: 'Invalid .kqlx: missing or invalid "kind".' };
+	if (typeof kind !== 'string' || !allowedKinds.includes(kind as any)) {
+		return { ok: false, error: 'Invalid session file: missing or invalid "kind".' };
 	}
 	if (version !== 1) {
-		return { ok: false, error: `Unsupported .kqlx version: ${String(version)}` };
+		return { ok: false, error: `Unsupported session file version: ${String(version)}` };
 	}
 
 	const state = (parsed as any).state;
@@ -113,7 +139,7 @@ export function parseKqlxText(text: string): KqlxParseResult {
 	return {
 		ok: true,
 		file: {
-			kind: 'kqlx',
+			kind: kind as KqlxFileKind,
 			version: 1,
 			state: {
 				caretDocsEnabled,

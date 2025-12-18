@@ -4,6 +4,8 @@ A modern, notebook-like workflow for Kusto Query Language (KQL) in VS Code.
 
 Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly—without forcing you to abandon existing `.kql` / `.csl` files.
 
+It has advanced markdown capabilities (thanks to the amazing folks at [toastui](https://ui.toast.com/)), so you could even just use it as a better markdown editor for VS Code. Open existing .md files, or make new empty .mdx file and give it a go.  
+
 ## Screenshots
 
 ### Modern editor with a bunch of features
@@ -17,21 +19,17 @@ Kusto Workbench is built for the tight loop of writing queries, running them, in
 
 ## Key features
 
-- Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. 
+- Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
 
 - Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > <anyfilename>.kqlx and you are good to go just the same.
 
+- No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).
+
+- Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based). It's pretty much all you'll need for quick explorations in one place and new features are being added all the time.
+
+- Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come. [Make a request](https://github.com/AngelosP/vscode-kusto-workbench/issues) for what you'd like to see next. With .kqlx files you also get the ability to save the query results in the file itself, creating a snapshot in time and something you can easily share with others.
+
 - Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
-
-- Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based).
-
-- Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come.
-
-- You can hide / show query sections (similar to URL sections) to keep long notebooks manageable.
-
-- Diagnostics: red squiggles and context-aware auto-complete (multi-line aware and variable aware) that aligns with diagnostics behavior.
-
-- Favorites: save cluster + database pairs in your VS Code profile, then quickly switch the editor to a favorite connection.
 
 - Automatically improve query performance using GitHub Copilot, with side-by-side comparison tools to make sure the before and the after produce the same results and actually save query execution time.
 
@@ -41,29 +39,15 @@ Kusto Workbench is built for the tight loop of writing queries, running them, in
 2. Run `Kusto Workbench: Open Query Editor`.
 3. Add a connection, pick a database, and run a query.
 
-To open an existing file:
+To open a file:
 
-- `.kqlx`: open it normally, or run `Kusto Workbench: Open .kqlx File`
 - `.kql` / `.csl`: open it normally (opens in compatibility mode)
-
-## Query optimization (Copilot)
-
-Use the query toolbar to optimize the current query with GitHub Copilot.
-
-The optimization workflow is designed to be safe and practical:
-
-- Copilot proposes a performance-improved query while preserving results
-- A comparison section can be created to run both queries and compare outputs
-- When results match, you can accept the optimizations back into the original query
-
-Notes:
-
-- Copilot optimization requires GitHub Copilot to be available in VS Code
-- The prompt is intentionally strict about preserving semantics
+- `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
+- `.mdx`: create an empty file and open it normally
 
 ## Drag & drop section reordering
 
-In `.kqlx` files, each section has a drag handle. Drag sections to reorder your notebook.
+In `.kqlx` and in `.mdx` files, each section has a drag handle. Drag sections to reorder the contents of your files and optionally give them friendly names to remind yourself what they are.
 
 ## Prettify query
 
@@ -103,10 +87,26 @@ Run `Kusto Workbench: Open Query Editor` and the extension opens a global, persi
 
 If you want to turn that session into a real file in your workspace later, use `Kusto Workbench: Save Session As... (.kqlx)`.
 
+## Query optimization (Copilot)
+
+Use the query toolbar to optimize the current query with GitHub Copilot.
+
+The optimization workflow is designed to be safe and practical:
+
+- Copilot proposes a performance-improved query while preserving results
+- A comparison section can be created to run both queries and compare outputs
+- When results match, you can accept the optimizations back into the original query
+
+Notes:
+
+- Copilot optimization requires GitHub Copilot to be available in VS Code
+- The prompt is intentionally strict about preserving semantics
+
 ## Commands
 
 - `Kusto Workbench: Open Query Editor`
 - `Kusto Workbench: Open .kqlx File`
+- `Kusto Workbench: Open .mdx File`
 - `Kusto Workbench: Save Session As... (.kqlx)`
 - `Kusto Workbench: Manage Connections`
 - `Kusto Workbench: Delete All Connections`

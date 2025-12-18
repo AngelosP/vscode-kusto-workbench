@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
+import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 
@@ -105,6 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager));
 	// Register .kql/.csl compatibility custom editor
 	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
+	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
+	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 
 	// Register commands
 	context.subscriptions.push(
@@ -154,6 +157,22 @@ export function activate(context: vscode.ExtensionContext) {
 				canSelectMany: false,
 				openLabel: 'Open .kqlx',
 				filters: { 'Kusto Session': ['kqlx'] }
+			});
+			if (!pick || pick.length === 0) {
+				return;
+			}
+			await vscode.commands.executeCommand('vscode.openWith', pick[0], KqlxEditorProvider.viewType, {
+				viewColumn: vscode.ViewColumn.One
+			});
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.openMdxFile', async () => {
+			const pick = await vscode.window.showOpenDialog({
+				canSelectMany: false,
+				openLabel: 'Open .mdx',
+				filters: { 'Markdown Notebook': ['mdx'] }
 			});
 			if (!pick || pick.length === 0) {
 				return;

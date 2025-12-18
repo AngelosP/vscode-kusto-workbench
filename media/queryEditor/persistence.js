@@ -16,10 +16,46 @@ window.__kustoIsSessionFile = false;
 // Set by the extension host; true for .kql/.csl files.
 window.__kustoCompatibilityMode = false;
 
+// Document capabilities (set by extension host via the persistenceMode message).
+// - allowedSectionKinds controls which add buttons are shown/enabled.
+// - defaultSectionKind controls which section we create for an empty document.
+// - upgradeRequestType controls which message we send when in compatibility mode.
+window.__kustoAllowedSectionKinds = window.__kustoAllowedSectionKinds || ['query', 'markdown', 'python', 'url'];
+window.__kustoDefaultSectionKind = window.__kustoDefaultSectionKind || 'query';
+window.__kustoCompatibilitySingleKind = window.__kustoCompatibilitySingleKind || 'query';
+window.__kustoUpgradeRequestType = window.__kustoUpgradeRequestType || 'requestUpgradeToKqlx';
+window.__kustoCompatibilityTooltip = window.__kustoCompatibilityTooltip || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
+window.__kustoDocumentKind = window.__kustoDocumentKind || '';
+
+function __kustoApplyDocumentCapabilities() {
+	try {
+		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
+			? window.__kustoAllowedSectionKinds.map(k => String(k))
+			: ['query', 'markdown', 'python', 'url'];
+		const btns = document.querySelectorAll('.add-controls .add-control-btn');
+		for (const btn of btns) {
+			try {
+				const kind = btn && btn.getAttribute ? String(btn.getAttribute('data-add-kind') || '') : '';
+				const wrapper = btn && btn.parentElement ? btn.parentElement : null;
+				const visible = !kind || allowed.includes(kind);
+				if (wrapper) {
+					wrapper.style.display = visible ? '' : 'none';
+				} else {
+					btn.style.display = visible ? '' : 'none';
+				}
+			} catch {
+				// ignore
+			}
+		}
+	} catch {
+		// ignore
+	}
+}
+
 function __kustoSetCompatibilityMode(enabled) {
 	try {
 		window.__kustoCompatibilityMode = !!enabled;
-		const msg = 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
+		const msg = String(window.__kustoCompatibilityTooltip || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.');
 		const wrappers = document.querySelectorAll('.add-controls .add-control-wrapper');
 		for (const w of wrappers) {
 			try {
@@ -45,6 +81,9 @@ function __kustoSetCompatibilityMode(enabled) {
 			}
 		}
 
+		// Apply visibility of add buttons based on allowed kinds.
+		try { __kustoApplyDocumentCapabilities(); } catch { /* ignore */ }
+
 		// If we just entered compatibility mode, ensure any early queued add clicks don't
 		// accidentally create extra sections that can't be persisted.
 		if (enabled) {
@@ -65,11 +104,24 @@ function __kustoRequestAddSection(kind) {
 	const k = String(kind || '').trim();
 	if (!k) return;
 
+	// Respect allowed section kinds.
+	try {
+		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
+			? window.__kustoAllowedSectionKinds.map(v => String(v))
+			: ['query', 'markdown', 'python', 'url'];
+		if (allowed.length > 0 && !allowed.includes(k)) {
+			return;
+		}
+	} catch {
+		// ignore
+	}
+
 	// For .kql/.csl compatibility files: offer upgrade instead of adding sections.
 	try {
 		if (window.__kustoCompatibilityMode) {
 			try {
-				vscode.postMessage({ type: 'requestUpgradeToKqlx', addKind: k });
+				const upgradeType = String(window.__kustoUpgradeRequestType || 'requestUpgradeToKqlx');
+				vscode.postMessage({ type: upgradeType, addKind: k });
 			} catch {
 				// ignore
 			}
@@ -312,9 +364,43 @@ function __kustoSetQueryResultsOutputHeightPx(boxId, heightPx) {
 }
 
 function getKqlxState() {
-	// Compatibility mode (.kql/.csl): only a single query section is supported.
+	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
 	try {
 		if (window.__kustoCompatibilityMode) {
+			const singleKind = String(window.__kustoCompatibilitySingleKind || 'query');
+			if (singleKind === 'markdown') {
+				let firstMarkdownBoxId = null;
+				try {
+					const ids = Array.isArray(markdownBoxes) ? markdownBoxes : [];
+					for (const id of ids) {
+						if (typeof id === 'string' && id.startsWith('markdown_')) {
+							firstMarkdownBoxId = id;
+							break;
+						}
+					}
+				} catch { /* ignore */ }
+				let text = '';
+				try {
+					text = (firstMarkdownBoxId && markdownEditors && markdownEditors[firstMarkdownBoxId])
+						? (markdownEditors[firstMarkdownBoxId].getValue() || '')
+						: '';
+				} catch { /* ignore */ }
+				if (!text) {
+					try {
+						const pending = window.__kustoPendingMarkdownTextByBoxId && firstMarkdownBoxId
+							? window.__kustoPendingMarkdownTextByBoxId[firstMarkdownBoxId]
+							: undefined;
+						if (typeof pending === 'string') {
+							text = pending;
+						}
+					} catch { /* ignore */ }
+				}
+				return {
+					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+					sections: [{ type: 'markdown', text }]
+				};
+			}
+
 			let firstQueryBoxId = null;
 			try {
 				const ids = Array.isArray(queryBoxes) ? queryBoxes : [];
@@ -324,9 +410,7 @@ function getKqlxState() {
 						break;
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch { /* ignore */ }
 			const q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
 				? (queryEditors[firstQueryBoxId].getValue() || '')
 				: '';
@@ -592,19 +676,31 @@ function applyKqlxState(state) {
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 		}
 
-		// Compatibility mode (.kql/.csl): force exactly one query editor and ignore all other sections.
+		// Compatibility mode (single-section plain text files): force exactly one editor and ignore all other sections.
 		if (window.__kustoCompatibilityMode) {
-			let queryText = '';
+			const singleKind = String(window.__kustoCompatibilitySingleKind || 'query');
+			let singleText = '';
 			try {
 				const sections = Array.isArray(s.sections) ? s.sections : [];
-				const first = sections.find(sec => sec && String(sec.type || '') === 'query');
-				queryText = first ? String(first.query || '') : '';
+				const first = sections.find(sec => sec && String(sec.type || '') === singleKind);
+				if (singleKind === 'markdown') {
+					singleText = first ? String(first.text || '') : '';
+				} else {
+					singleText = first ? String(first.query || '') : '';
+				}
 			} catch {
 				// ignore
 			}
+			if (singleKind === 'markdown') {
+				// IMPORTANT: pass text via options so addMarkdownBox can stash it before
+				// initializing the TOAST UI editor (which triggers an immediate schedulePersist).
+				const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+				addMarkdownBox({ text: singleText, maximizeOnLoad: isPlainMd });
+				return;
+			}
 			const boxId = addQueryBox();
 			try {
-				window.__kustoPendingQueryTextByBoxId[boxId] = queryText;
+				window.__kustoPendingQueryTextByBoxId[boxId] = singleText;
 			} catch {
 				// ignore
 			}
@@ -885,10 +981,21 @@ function __kustoApplyPendingAdds() {
 	if (pendingTotal <= 0) {
 		return false;
 	}
-	for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
-	for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();
-	for (let i = 0; i < (pendingAdds.python || 0); i++) addPythonBox();
-	for (let i = 0; i < (pendingAdds.url || 0); i++) addUrlBox();
+	const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
+		? window.__kustoAllowedSectionKinds.map(v => String(v))
+		: ['query', 'markdown', 'python', 'url'];
+	if (allowed.includes('query')) {
+		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
+	}
+	if (allowed.includes('markdown')) {
+		for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();
+	}
+	if (allowed.includes('python')) {
+		for (let i = 0; i < (pendingAdds.python || 0); i++) addPythonBox();
+	}
+	if (allowed.includes('url')) {
+		for (let i = 0; i < (pendingAdds.url || 0); i++) addUrlBox();
+	}
 	return true;
 }
 
@@ -931,6 +1038,36 @@ function handleDocumentDataMessage(message) {
 		// ignore
 	}
 
+	// Capabilities can arrive either via persistenceMode or (for robustness) piggybacked on documentData.
+	// This prevents restore issues when messages arrive out-of-order.
+	try {
+		if (Array.isArray(message.allowedSectionKinds)) {
+			window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map(k => String(k));
+		}
+		if (typeof message.documentKind === 'string') {
+			window.__kustoDocumentKind = String(message.documentKind);
+		}
+		if (typeof message.defaultSectionKind === 'string') {
+			window.__kustoDefaultSectionKind = String(message.defaultSectionKind);
+		}
+		if (typeof message.compatibilitySingleKind === 'string') {
+			window.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+		}
+		if (typeof message.upgradeRequestType === 'string') {
+			window.__kustoUpgradeRequestType = String(message.upgradeRequestType);
+		}
+		if (typeof message.compatibilityTooltip === 'string') {
+			window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+		}
+		try {
+			if (typeof __kustoApplyDocumentCapabilities === 'function') {
+				__kustoApplyDocumentCapabilities();
+			}
+		} catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+
 	const ok = !!(message && message.ok);
 	if (!ok && message && message.error) {
 		try {
@@ -949,7 +1086,12 @@ function handleDocumentDataMessage(message) {
 		if (!hasAny) {
 			const applied = __kustoApplyPendingAdds();
 			if (!applied) {
-				addQueryBox();
+				const k = String(window.__kustoDefaultSectionKind || 'query');
+				if (k === 'markdown') {
+					addMarkdownBox();
+				} else {
+					addQueryBox();
+				}
 			}
 		}
 	} catch {

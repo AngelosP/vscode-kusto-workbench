@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
-import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
+import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 
 const normalizeClusterUrlKey = (url: string): string => {
 	try {
@@ -232,6 +232,37 @@ type IncomingWebviewMessage =
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlxEditor';
 
+	private static getDocumentKind(document: vscode.TextDocument): KqlxFileKind {
+		try {
+			const p = String(document.uri?.path || '').toLowerCase();
+			if (p.endsWith('.mdx')) {
+				return 'mdx';
+			}
+		} catch {
+			// ignore
+		}
+		return 'kqlx';
+	}
+
+	private static getAllowedSectionKinds(kind: KqlxFileKind): Array<'query' | 'markdown' | 'python' | 'url'> {
+		return kind === 'mdx' ? ['markdown', 'url'] : ['query', 'markdown', 'python', 'url'];
+	}
+
+	private static sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
+		if (kind !== 'mdx') {
+			return state;
+		}
+		const sections = Array.isArray(state.sections) ? state.sections : [];
+		const filtered = sections.filter((s) => {
+			const t = (s as any)?.type;
+			return t === 'markdown' || t === 'url';
+		});
+		return {
+			caretDocsEnabled: state.caretDocsEnabled,
+			sections: filtered
+		};
+	}
+
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
 		// On Windows, URI strings can differ in casing/encoding between APIs.
 		// Use fsPath for file URIs so the key matches what the compat editor stored.
@@ -275,7 +306,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
-		// If we were just upgraded from .kql/.csl -> .kqlx as part of an add-section action,
+		const documentKind = KqlxEditorProvider.getDocumentKind(document);
+		const allowedSectionKinds = KqlxEditorProvider.getAllowedSectionKinds(documentKind);
+		const defaultSectionKind: 'query' | 'markdown' = documentKind === 'mdx' ? 'markdown' : 'query';
+
+		// If we were just upgraded from a single-section format to a rich format as part of an add-section action,
 		// grab the pending add kind now and notify the webview once it is initialized.
 		let pendingAddKind = '';
 		try {
@@ -300,15 +335,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return document.uri.toString() === sessionUri.toString();
 		})();
 
-		// Inform the webview whether it's operating in session mode.
-		try {
-			void webviewPanel.webview.postMessage({
-				type: 'persistenceMode',
-				isSessionFile
-			});
-		} catch {
-			// ignore
-		}
+		// Inform the webview whether it's operating in session mode, and which section kinds are allowed.
+		const postPersistenceMode = () => {
+			try {
+				void webviewPanel.webview.postMessage({
+					type: 'persistenceMode',
+					isSessionFile,
+					compatibilityMode: false,
+					documentKind,
+					allowedSectionKinds,
+					defaultSectionKind
+				});
+			} catch {
+				// ignore
+			}
+		};
+		postPersistenceMode();
 
 		let pendingAddKindDelivered = false;
 		let saveTimer: NodeJS.Timeout | undefined;
@@ -386,7 +428,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const postDocument = async () => {
-			const parsed = parseKqlxText(document.getText());
+			const parsed = parseKqlxText(document.getText(), {
+				allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+				defaultKind: documentKind
+			});
 			if (!parsed.ok) {
 				void webviewPanel.webview.postMessage({
 					type: 'documentData',
@@ -397,9 +442,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 
+			const sanitizedState = KqlxEditorProvider.sanitizeStateForKind(documentKind, parsed.file.state);
+
 			let connectionsChanged = false;
 			try {
-				connectionsChanged = await ensureConnectionsForState(parsed.file.state);
+				connectionsChanged = await ensureConnectionsForState(sanitizedState);
 			} catch {
 				// ignore
 			}
@@ -414,7 +461,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
-				state: parsed.file.state
+				state: sanitizedState
 			});
 		};
 
@@ -474,10 +521,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			switch (message.type) {
 				case 'requestDocument':
+					// Re-send mode/capabilities in response to a request (the webview is guaranteed to be listening).
+					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
 
-					// If we were upgraded from .kql/.csl and a specific "add" action triggered the upgrade,
+					// If we were upgraded and a specific "add" action triggered the upgrade,
 					// deliver that intent now (after the webview has definitely attached its message listener).
 					if (!pendingAddKindDelivered && pendingAddKind) {
 						try {
@@ -506,11 +555,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					})();
 					const rawState = (message as any).state;
-					const state: KqlxStateV1 = {
+					const incomingState: KqlxStateV1 = {
 						caretDocsEnabled:
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
+					const state = KqlxEditorProvider.sanitizeStateForKind(documentKind, incomingState);
 
 					const incomingComparable = toComparableState(state);
 					const currentText = document.getText();
@@ -523,7 +573,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// dirty indicator when a user "returns" to the saved state.
 					let nextText = '';
 					try {
-						const parsedSaved = parseKqlxText(lastSavedText);
+						const parsedSaved = parseKqlxText(lastSavedText, {
+							allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+							defaultKind: documentKind
+						});
 						if (parsedSaved.ok) {
 							const savedComparable = toComparableState(parsedSaved.file.state);
 							if (deepEqual(savedComparable, incomingComparable)) {
@@ -540,7 +593,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						try {
 							const bytes = await vscode.workspace.fs.readFile(document.uri);
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
-							const parsedDisk = parseKqlxText(diskText);
+							const parsedDisk = parseKqlxText(diskText, {
+								allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+								defaultKind: documentKind
+							});
 							if (parsedDisk.ok) {
 								const diskComparable = toComparableState(parsedDisk.file.state);
 								if (deepEqual(diskComparable, incomingComparable)) {
@@ -561,7 +617,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							const bytes = await vscode.workspace.fs.readFile(document.uri);
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							if (diskText && diskText === nextText) {
-								const parsedDisk = parseKqlxText(diskText);
+								const parsedDisk = parseKqlxText(diskText, {
+									allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+									defaultKind: documentKind
+								});
 								if (parsedDisk.ok) {
 									const diskComparable = toComparableState(parsedDisk.file.state);
 									if (deepEqual(diskComparable, incomingComparable)) {
@@ -580,7 +639,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// JSON formatting/ordering).
 					if (!nextText) {
 						try {
-							const parsedCurrent = parseKqlxText(currentText);
+							const parsedCurrent = parseKqlxText(currentText, {
+								allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+								defaultKind: documentKind
+							});
 							if (parsedCurrent.ok) {
 								const currentComparable = toComparableState(parsedCurrent.file.state);
 								if (deepEqual(currentComparable, incomingComparable)) {
@@ -613,7 +675,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 					if (!nextText) {
 						const file: KqlxFileV1 = {
-							kind: 'kqlx',
+							kind: documentKind,
 							version: 1,
 							state
 						};

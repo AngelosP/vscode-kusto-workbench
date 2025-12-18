@@ -585,11 +585,38 @@ window.addEventListener('message', event => {
 			case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;
-						if (typeof __kustoSetCompatibilityMode === 'function') {
-							__kustoSetCompatibilityMode(!!message.compatibilityMode);
-						} else {
-							window.__kustoCompatibilityMode = !!message.compatibilityMode;
-						}
+						try {
+							if (typeof message.documentKind === 'string') {
+								window.__kustoDocumentKind = String(message.documentKind);
+							}
+						} catch { /* ignore */ }
+						try {
+							if (Array.isArray(message.allowedSectionKinds)) {
+								window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map(k => String(k));
+							}
+							if (typeof message.defaultSectionKind === 'string') {
+								window.__kustoDefaultSectionKind = String(message.defaultSectionKind);
+							}
+							if (typeof message.compatibilitySingleKind === 'string') {
+								window.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+							}
+							if (typeof message.upgradeRequestType === 'string') {
+								window.__kustoUpgradeRequestType = String(message.upgradeRequestType);
+							}
+							if (typeof message.compatibilityTooltip === 'string') {
+								window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+							}
+						} catch { /* ignore */ }
+							if (typeof __kustoSetCompatibilityMode === 'function') {
+								__kustoSetCompatibilityMode(!!message.compatibilityMode);
+							} else {
+								window.__kustoCompatibilityMode = !!message.compatibilityMode;
+							}
+						try {
+							if (typeof __kustoApplyDocumentCapabilities === 'function') {
+								__kustoApplyDocumentCapabilities();
+							}
+						} catch { /* ignore */ }
 				} catch {
 					// ignore
 				}

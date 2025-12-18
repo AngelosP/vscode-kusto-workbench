@@ -54,13 +54,26 @@
     "customEditors": [
       {
         "viewType": "kusto.kqlxEditor",
-        "displayName": "Kusto Session (.kqlx)",
+        "displayName": "Kusto Session (.kqlx/.mdx)",
         "selector": [
           {
             "filenamePattern": "*.kqlx"
+          },
+          {
+            "filenamePattern": "*.mdx"
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "kusto.mdCompatEditor",
+        "displayName": "Kusto Markdown (.md)",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
       },
       {
         "viewType": "kusto.kqlCompatEditor",
@@ -85,6 +98,11 @@
       {
         "command": "kusto.openKqlxFile",
         "title": "Open .kqlx File",
+        "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.openMdxFile",
+        "title": "Open .mdx File",
         "category": "Kusto Workbench"
       },
       {

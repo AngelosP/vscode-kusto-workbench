@@ -641,6 +641,25 @@ function addMarkdownBox(options) {
 	try { __kustoApplyMarkdownEditorMode(id); } catch { /* ignore */ }
 	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
+	try {
+		// For plain .md files (compat mode), maximize the section height after the markdown
+		// editor is initialized and content is loaded.
+		if (options && options.maximizeOnLoad && String(window.__kustoDocumentKind || '') === 'md') {
+			const editorEl = document.getElementById(id + '_md_editor');
+			const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+			const alreadyUserResized = !!(wrapper && wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
+			const alreadyAutoMax = !!(wrapper && wrapper.dataset && wrapper.dataset.kustoAutoMaximizedMd === 'true');
+			if (wrapper && wrapper.dataset) {
+				try { wrapper.dataset.kustoAutoMaximizedMd = 'true'; } catch { /* ignore */ }
+			}
+			if (!alreadyUserResized && !alreadyAutoMax) {
+				// Defer a tick so layout is stable.
+				setTimeout(() => {
+					try { __kustoMaximizeMarkdownBox(id); } catch { /* ignore */ }
+				}, 0);
+			}
+		}
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -651,6 +670,89 @@ function addMarkdownBox(options) {
 		// ignore
 	}
 	return id;
+}
+
+function __kustoAutoFitMarkdownBoxHeight(boxId) {
+	const tryFit = () => {
+		try {
+			const container = document.getElementById(boxId + '_md_editor');
+			if (!container || !container.closest) {
+				return false;
+			}
+			const wrapper = container.closest('.query-editor-wrapper');
+			if (!wrapper) {
+				return false;
+			}
+			// Never override user resizing.
+			try {
+				if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
+					return true;
+				}
+			} catch { /* ignore */ }
+
+			const ui = container.querySelector('.toastui-editor-defaultUI');
+			if (!ui) {
+				return false;
+			}
+			const toolbar = ui.querySelector('.toastui-editor-defaultUI-toolbar');
+			const toolbarH = toolbar && toolbar.getBoundingClientRect ? toolbar.getBoundingClientRect().height : 0;
+
+			let contentH = 0;
+			const prose = ui.querySelector('.toastui-editor-main .ProseMirror');
+			if (prose && typeof prose.scrollHeight === 'number') {
+				contentH = prose.scrollHeight;
+			}
+			if (!contentH) {
+				const contents = ui.querySelector('.toastui-editor-contents');
+				if (contents && typeof contents.scrollHeight === 'number') {
+					contentH = contents.scrollHeight;
+				}
+			}
+			if (!contentH) {
+				return false;
+			}
+
+			const resizerH = 12;
+			const minH = 120;
+			const maxH = (() => {
+				try {
+					const vh = typeof window !== 'undefined' ? (window.innerHeight || 0) : 0;
+					if (vh > 0) {
+						return Math.max(240, Math.min(640, Math.floor(vh * 0.7)));
+					}
+				} catch { /* ignore */ }
+				return 520;
+			})();
+
+			// Add a small padding to avoid clipping the last line.
+			const padding = 18;
+			const desired = Math.min(maxH, Math.max(minH, Math.ceil(toolbarH + contentH + resizerH + padding)));
+			wrapper.style.height = desired + 'px';
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	// Toast UI initializes asynchronously; retry a few times.
+	let attempt = 0;
+	const delays = [0, 50, 150, 300, 600, 1200];
+	const step = () => {
+		attempt++;
+		const ok = tryFit();
+		if (ok) {
+			return;
+		}
+		if (attempt >= delays.length) {
+			return;
+		}
+		try {
+			setTimeout(step, delays[attempt]);
+		} catch {
+			// ignore
+		}
+	};
+	step();
 }
 
 function removeMarkdownBox(boxId) {
