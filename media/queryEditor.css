@@ -18,6 +18,42 @@
 		/* Plain .md files: maximize usable width and simplify section chrome. */
 		body[data-kusto-document-kind="md"] {
 			padding: 0;
+			height: 100vh;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+		}
+
+		/* Plain .md files: the page itself should not scroll.
+		   Keep header controls + toolbar visible and scroll the editor surface instead. */
+		body[data-kusto-document-kind="md"] #queries-container {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-header {
+			flex: 0 0 auto;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
+			flex: 1 1 auto;
+			min-height: 0;
+			height: auto;
+			overflow: hidden;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor {
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: auto;
 		}
 
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] {
@@ -88,6 +124,7 @@
 			border: none;
 			background: transparent;
 		}
+
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-contents,

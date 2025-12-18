@@ -795,7 +795,10 @@ function addMarkdownBox(options) {
 	// Apply any persisted height before initializing the editor/mode.
 	try {
 		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
-		if (typeof h === 'number' && Number.isFinite(h) && h > 0) {
+		// For plain .md files we use a fixed viewport layout (internal editor scrolling),
+		// so ignore any persisted wrapper height.
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+		if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
 			const editorEl = document.getElementById(id + '_md_editor');
 			const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 			if (wrapper) {
@@ -811,14 +814,8 @@ function addMarkdownBox(options) {
 	try { __kustoApplyMarkdownEditorMode(id); } catch { /* ignore */ }
 	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
-	try {
-		// For plain .md files: auto-expand to show full content (no max cap, no resize grip).
-		if (options && options.mdAutoExpand && String(window.__kustoDocumentKind || '') === 'md') {
-			setTimeout(() => {
-				try { __kustoAutoExpandMarkdownBoxToContent(id); } catch { /* ignore */ }
-			}, 0);
-		}
-	} catch { /* ignore */ }
+	// Plain .md files: do not auto-expand the box to content; keep the toolbar visible and
+	// scroll inside the editor surface instead.
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -1225,7 +1222,6 @@ function initMarkdownEditor(boxId) {
 			events: {
 				change: () => {
 					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-					try { __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
 				}
 			}
 		};

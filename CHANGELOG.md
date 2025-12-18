@@ -4,28 +4,32 @@ All notable changes to the "vscode-kusto-workbench" extension will be documented
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [Unreleased]
+## [unreleased]
 
-- Markdown section massively improved thanks to the folks @ toast-ui who have built an awesome control!
-- Created re-usable drop-down control and ... then well ... re-used it.
-- Made the Kusto editor's autocomplete drop-down be smarter in terms of its size and overall behavior
--  
+* Fixed the glaring issue with the editing toolbar in the markdown section not staying always visible as you scroll (oops, sorry!)
+* Fixed the incosistent behavior of drop down menus (should be able to navigate with keyboard now as well)
+* First attempt at trying to handle different authentication for different connections (will it work first try?)
+
+## [0.0.8]
+
+* Markdown section massively improved thanks to the folks @ toast-ui who have built an awesome control!
+* Created re-usable drop-down control and ... then well ... re-used it.
+* Made the Kusto editor's autocomplete drop-down be smarter in terms of its size and overall behavior
 
 ## [0.0.7]
 
-- Tables sorting (even advanced multi-column scenarios are supported)
-- Table filtering (both value based and rule based supported).
-- Kusto query sections can now be hidden / viewed just like URL sections.
-- Red squiggly line support for Kusto editor.
-- Auto-complete for Kusto editor is now context aware, multi-line aware, variable aware and their suggestions are expected to match the red squiggly line behavior.
-- New ability to add cluster + database connection pairs as favorites and pick them.
-- Fix: Switching favorites across clusters no longer reuses the wrong cluster client.
-
+* Tables sorting (even advanced multi-column scenarios are supported)
+* Table filtering (both value based and rule based supported).
+* Kusto query sections can now be hidden / viewed just like URL sections.
+* Red squiggly line support for Kusto editor.
+* Auto-complete for Kusto editor is now context aware, multi-line aware, variable aware and their suggestions are expected to match the red squiggly line behavior.
+* New ability to add cluster + database connection pairs as favorites and pick them.
+* Fix: Switching favorites across clusters no longer reuses the wrong cluster client.
 
 ## [0.0.6]
 
-- Bug fixes and UX improvements
+* Bug fixes and UX improvements
 
 ## [0.0.5]
 
-- Initial release
+* Initial release
