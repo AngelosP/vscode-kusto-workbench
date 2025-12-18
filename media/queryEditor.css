@@ -414,6 +414,20 @@
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button {
 			background-color: transparent;
 			color: inherit;
+			width: 32px;
+			height: 32px;
+			margin: 2px 2px;
+			padding: 0;
+			border: 1px solid transparent;
+			border-radius: 0;
+			line-height: 0;
+			box-sizing: border-box;
+		}
+
+		/* Keep hit-target size, but shrink the actual glyphs/icons ~25%. */
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons {
+			transform: scale(0.75);
+			transform-origin: center;
 		}
 
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button:hover {

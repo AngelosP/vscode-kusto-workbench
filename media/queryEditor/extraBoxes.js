@@ -11,9 +11,140 @@ let markdownEditors = {};
 let markdownViewers = {};
 let pythonEditors = {};
 
+let toastUiThemeObserverStarted = false;
+let lastAppliedToastUiIsDarkTheme = null;
+
 let urlStateByBoxId = {}; // { url, expanded, loading, loaded, content, error, kind, contentType, status, dataUri, body, truncated }
 
 let markdownMarkedResolvePromise = null;
+
+function __kustoIsDarkTheme() {
+	// Prefer the body classes VS Code toggles on theme change.
+	try {
+		const cls = document && document.body && document.body.classList;
+		if (cls) {
+			if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) {
+				return false;
+			}
+			if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) {
+				return true;
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	// Fall back to luminance of the editor background.
+	const parseCssColorToRgb = (value) => {
+		const v = String(value || '').trim();
+		if (!v) return null;
+		let m = v.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+		if (m) {
+			return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10) };
+		}
+		m = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+		if (m) {
+			const hex = m[1];
+			if (hex.length === 3) {
+				const r = parseInt(hex[0] + hex[0], 16);
+				const g = parseInt(hex[1] + hex[1], 16);
+				const b = parseInt(hex[2] + hex[2], 16);
+				return { r, g, b };
+			}
+			const r = parseInt(hex.slice(0, 2), 16);
+			const g = parseInt(hex.slice(2, 4), 16);
+			const b = parseInt(hex.slice(4, 6), 16);
+			return { r, g, b };
+		}
+		return null;
+	};
+
+	let bg = '';
+	try {
+		bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
+		if (!bg) {
+			bg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-background').trim();
+		}
+	} catch {
+		bg = '';
+	}
+	const rgb = parseCssColorToRgb(bg);
+	if (!rgb) {
+		return true;
+	}
+	const luminance = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+	return luminance < 0.5;
+}
+
+function __kustoApplyToastUiThemeToHost(hostEl, isDark) {
+	if (!hostEl || !hostEl.querySelectorAll) {
+		return;
+	}
+	try {
+		const roots = hostEl.querySelectorAll('.toastui-editor-defaultUI');
+		for (const el of roots) {
+			try {
+				if (el && el.classList) {
+					el.classList.toggle('toastui-editor-dark', !!isDark);
+				}
+			} catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoApplyToastUiThemeAll() {
+	let isDark = true;
+	try { isDark = __kustoIsDarkTheme(); } catch { isDark = true; }
+	if (lastAppliedToastUiIsDarkTheme === isDark) {
+		return;
+	}
+	lastAppliedToastUiIsDarkTheme = isDark;
+
+	try {
+		for (const boxId of markdownBoxes || []) {
+			const editorHost = document.getElementById(String(boxId) + '_md_editor');
+			const viewerHost = document.getElementById(String(boxId) + '_md_viewer');
+			__kustoApplyToastUiThemeToHost(editorHost, isDark);
+			__kustoApplyToastUiThemeToHost(viewerHost, isDark);
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoStartToastUiThemeObserver() {
+	if (toastUiThemeObserverStarted) {
+		return;
+	}
+	toastUiThemeObserverStarted = true;
+
+	// Apply once now.
+	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+
+	let pending = false;
+	const schedule = () => {
+		if (pending) return;
+		pending = true;
+		setTimeout(() => {
+			pending = false;
+			try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+		}, 0);
+	};
+
+	try {
+		const observer = new MutationObserver(() => schedule());
+		if (document && document.body) {
+			observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+		if (document && document.documentElement) {
+			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+	} catch {
+		// ignore
+	}
+}
 
 function __kustoMaximizeMarkdownBox(boxId) {
 	const id = String(boxId || '').trim();
@@ -697,6 +828,10 @@ function initMarkdownViewer(boxId, initialValue) {
 			}
 		}
 	};
+
+	// Ensure theme switches (dark/light) are reflected without recreating the viewer.
+	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }
+	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
 }
 
 function initMarkdownEditor(boxId) {
@@ -888,6 +1023,10 @@ function initMarkdownEditor(boxId) {
 
 	markdownEditors[boxId] = api;
 	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
+
+	// Ensure theme switches (dark/light) are reflected without recreating the editor.
+	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }
+	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
 
 	// Drag handle resize (same pattern as the KQL editor).
 	try {
