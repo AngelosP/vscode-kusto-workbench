@@ -15,6 +15,120 @@
 			padding: 16px;
 		}
 
+		/* Plain .md files: maximize usable width and simplify section chrome. */
+		body[data-kusto-document-kind="md"] {
+			padding: 0;
+		}
+
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] {
+			border: none;
+			box-shadow: none;
+			background: transparent;
+			padding: 0;
+			margin: 0;
+		}
+
+		/* Hide controls that aren't useful in single-section .md files. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .close-btn,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_toggle"] {
+			display: none !important;
+		}
+
+		/* Hide the Markdown name input (not functional for .md mode). */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name {
+			display: none !important;
+		}
+
+		/* Remove the now-empty left header group so controls can align left. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name-group {
+			display: none !important;
+		}
+
+		/* In .md mode, tighten header spacing since the name input is hidden. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-header {
+			margin-bottom: 0;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
+			margin: 0;
+		}
+
+		/* Hide the reorder grip/handle for single-section .md files. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .section-drag-handle {
+			display: none !important;
+		}
+
+		/* Hide maximize button + resize grip in .md mode (always auto-expands). */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-max-btn,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-resizer {
+			display: none !important;
+		}
+
+		/* Mode buttons: add a little top margin in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-mode-btn {
+			margin-top: 10px;
+			margin-bottom: 10px;
+		}
+
+		/* Remove the leftover divider line next to the mode buttons in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs-divider {
+			display: none !important;
+		}
+
+		/* Align the mode buttons to the left and match the toolbar left margin. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs {
+			margin-left: 10px;
+		}
+		/* Undo any prior per-button alignment tweaks now that the group is left-aligned. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_md_mode_wysiwyg"] {
+			margin-right: 0 !important;
+		}
+
+		/* Remove any remaining border/chrome around the editor surface in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
+			border: none;
+			background: transparent;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-contents,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
+			border: none !important;
+			outline: none !important;
+			box-shadow: none !important;
+			background: transparent;
+		}
+
+		/* Toast UI toolbar: keep a border just around the toolbar in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
+			border: 1px solid var(--vscode-input-border) !important;
+			box-shadow: none !important;
+			margin-left: 10px;
+			margin-right: 10px;
+			margin-bottom: 0 !important;
+		}
+
+		/* Remove the extra vertical gap between the toolbar and the editor surface in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
+			margin-top: 0 !important;
+			padding-top: 0 !important;
+		}
+
+		/* Preview viewer: remove border for full-width docs feel in .md mode. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer {
+			border: none;
+			background: transparent;
+		}
+
+		/* .md Preview mode: add extra left/right gutter around the viewer. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer {
+			margin-left: 10px;
+			margin-right: 10px;
+			margin-top: -30px;
+		}
+
 		.add-controls {
 			width: 100%;
 			display: flex;

@@ -260,6 +260,103 @@ function __kustoMaximizeMarkdownBox(boxId) {
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
+function __kustoAutoExpandMarkdownBoxToContent(boxId) {
+	try {
+		if (String(window.__kustoDocumentKind || '') !== 'md') {
+			return;
+		}
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const editorHost = document.getElementById(id + '_md_editor');
+		const wrapper = editorHost && editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
+		if (!wrapper) return;
+
+		const computeDesired = () => {
+			try {
+				const ui = editorHost.querySelector ? editorHost.querySelector('.toastui-editor-defaultUI') : null;
+				if (!ui) return undefined;
+				const toolbar = ui.querySelector('.toastui-editor-defaultUI-toolbar');
+				const toolbarH = toolbar && toolbar.getBoundingClientRect ? toolbar.getBoundingClientRect().height : 0;
+				const mode = (typeof __kustoGetMarkdownMode === 'function') ? String(__kustoGetMarkdownMode(id) || '') : 'wysiwyg';
+				let contentH = 0;
+				if (mode === 'wysiwyg') {
+					const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
+					if (wwContents && typeof wwContents.scrollHeight === 'number') {
+						contentH = Math.max(contentH, wwContents.scrollHeight);
+					}
+					const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
+					if (prose && typeof prose.scrollHeight === 'number') {
+						contentH = Math.max(contentH, prose.scrollHeight);
+					}
+				} else if (mode === 'markdown') {
+					const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
+					if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
+						contentH = Math.max(contentH, cmScroll.scrollHeight);
+					}
+					const mdContents = ui.querySelector('.toastui-editor-md-container .toastui-editor-contents');
+					if (mdContents && typeof mdContents.scrollHeight === 'number') {
+						contentH = Math.max(contentH, mdContents.scrollHeight);
+					}
+				}
+				if (!contentH) {
+					const anyContents = ui.querySelector('.toastui-editor-contents');
+					if (anyContents && typeof anyContents.scrollHeight === 'number') {
+						contentH = Math.max(contentH, anyContents.scrollHeight);
+					}
+				}
+				if (!contentH) return undefined;
+				const padding = 18;
+				return Math.max(120, Math.ceil(toolbarH + contentH + padding));
+			} catch {
+				return undefined;
+			}
+		};
+
+		const apply = () => {
+			try {
+				const desired = computeDesired();
+				if (typeof desired === 'number' && Number.isFinite(desired) && desired > 0) {
+					wrapper.style.height = Math.round(desired) + 'px';
+					// Do NOT mark user resized; this is automatic.
+					try {
+						const ed = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
+						if (ed && typeof ed.layout === 'function') {
+							ed.layout();
+						}
+					} catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+		};
+
+		apply();
+		setTimeout(apply, 50);
+		setTimeout(apply, 150);
+		setTimeout(apply, 350);
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoScheduleMdAutoExpand(boxId) {
+	try {
+		if (String(window.__kustoDocumentKind || '') !== 'md') {
+			return;
+		}
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		window.__kustoMdAutoExpandTimersByBoxId = window.__kustoMdAutoExpandTimersByBoxId || {};
+		const map = window.__kustoMdAutoExpandTimersByBoxId;
+		if (map[id]) {
+			try { clearTimeout(map[id]); } catch { /* ignore */ }
+		}
+		map[id] = setTimeout(() => {
+			try { __kustoAutoExpandMarkdownBoxToContent(id); } catch { /* ignore */ }
+		}, 80);
+	} catch {
+		// ignore
+	}
+}
+
 function __kustoMaximizePythonBox(boxId) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -336,6 +433,7 @@ function __kustoSetMarkdownMode(boxId, mode) {
 		// ignore
 	}
 	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
+	try { __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
@@ -714,22 +812,11 @@ function addMarkdownBox(options) {
 	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
 	try {
-		// For plain .md files (compat mode), maximize the section height after the markdown
-		// editor is initialized and content is loaded.
-		if (options && options.maximizeOnLoad && String(window.__kustoDocumentKind || '') === 'md') {
-			const editorEl = document.getElementById(id + '_md_editor');
-			const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
-			const alreadyUserResized = !!(wrapper && wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
-			const alreadyAutoMax = !!(wrapper && wrapper.dataset && wrapper.dataset.kustoAutoMaximizedMd === 'true');
-			if (wrapper && wrapper.dataset) {
-				try { wrapper.dataset.kustoAutoMaximizedMd = 'true'; } catch { /* ignore */ }
-			}
-			if (!alreadyUserResized && !alreadyAutoMax) {
-				// Defer a tick so layout is stable.
-				setTimeout(() => {
-					try { __kustoMaximizeMarkdownBox(id); } catch { /* ignore */ }
-				}, 0);
-			}
+		// For plain .md files: auto-expand to show full content (no max cap, no resize grip).
+		if (options && options.mdAutoExpand && String(window.__kustoDocumentKind || '') === 'md') {
+			setTimeout(() => {
+				try { __kustoAutoExpandMarkdownBoxToContent(id); } catch { /* ignore */ }
+			}, 0);
 		}
 	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
@@ -1138,6 +1225,7 @@ function initMarkdownEditor(boxId) {
 			events: {
 				change: () => {
 					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
 				}
 			}
 		};

@@ -695,7 +695,7 @@ function applyKqlxState(state) {
 				// IMPORTANT: pass text via options so addMarkdownBox can stash it before
 				// initializing the TOAST UI editor (which triggers an immediate schedulePersist).
 				const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
-				addMarkdownBox({ text: singleText, maximizeOnLoad: isPlainMd });
+				addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
 				return;
 			}
 			const boxId = addQueryBox();
@@ -1046,6 +1046,11 @@ function handleDocumentDataMessage(message) {
 		}
 		if (typeof message.documentKind === 'string') {
 			window.__kustoDocumentKind = String(message.documentKind);
+			try {
+				if (document && document.body && document.body.dataset) {
+					document.body.dataset.kustoDocumentKind = String(message.documentKind);
+				}
+			} catch { /* ignore */ }
 		}
 		if (typeof message.defaultSectionKind === 'string') {
 			window.__kustoDefaultSectionKind = String(message.defaultSectionKind);

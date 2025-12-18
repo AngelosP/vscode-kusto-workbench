@@ -588,6 +588,11 @@ window.addEventListener('message', event => {
 						try {
 							if (typeof message.documentKind === 'string') {
 								window.__kustoDocumentKind = String(message.documentKind);
+								try {
+									if (document && document.body && document.body.dataset) {
+										document.body.dataset.kustoDocumentKind = String(message.documentKind);
+									}
+								} catch { /* ignore */ }
 							}
 						} catch { /* ignore */ }
 						try {
