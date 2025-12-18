@@ -4606,6 +4606,341 @@ function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
 	return outLines.join('\n');
 }
 
+function __kustoInstallSmartSuggestWidgetSizing(editor) {
+	try {
+		if (!editor) return () => { };
+		const getEditorDom = () => {
+			try {
+				return (typeof editor.getDomNode === 'function') ? editor.getDomNode() : null;
+			} catch {
+				return null;
+			}
+		};
+		const getBoundsDom = () => {
+			try {
+				if (typeof editor.getContainerDomNode === 'function') {
+					return editor.getContainerDomNode();
+				}
+			} catch { /* ignore */ }
+			const dom = getEditorDom();
+			return dom ? (dom.parentElement || dom) : null;
+		};
+
+		const getRowHeightPx = (suggestWidget) => {
+			try {
+				const row = suggestWidget && suggestWidget.querySelector
+					? suggestWidget.querySelector('.monaco-list-row')
+					: null;
+				if (row) {
+					const r = row.getBoundingClientRect();
+					const h = Math.round(r.height || 0);
+					if (h > 0) return h;
+					const cs = getComputedStyle(row);
+					const lh = Math.round(parseFloat(cs.height || cs.lineHeight || '0') || 0);
+					if (lh > 0) return lh;
+				}
+			} catch {
+				// ignore
+			}
+			// Monaco defaults are typically ~22px per row; keep a safe fallback.
+			return 22;
+		};
+
+		// Use Monaco's supported configuration for suggest height rather than forcing DOM heights.
+		// This keeps keyboard navigation and list scrolling consistent.
+		const DEFAULT_MAX_VISIBLE = 12;
+		let lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null };
+		let pendingAdjustTimer = null;
+		let rafScheduled = false;
+		let lastRelayoutAt = 0;
+		const clearInjectedSuggestStyles = (suggest) => {
+			try {
+				if (!suggest) return;
+				// Clear any previous DOM sizing we might have applied in older iterations.
+				suggest.style.maxHeight = '';
+				suggest.style.height = '';
+				suggest.style.overflow = '';
+				try {
+					const injected = suggest.querySelectorAll
+						? suggest.querySelectorAll('[data-kusto-suggest-clamp="1"]')
+						: [];
+					for (const el of injected) {
+						try {
+							el.style.height = '';
+							el.style.maxHeight = '';
+							el.style.overflowY = '';
+							delete el.dataset.kustoSuggestClamp;
+						} catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+			} catch { /* ignore */ }
+		};
+
+		const applyDomClampFallback = (suggest, availablePx) => {
+			try {
+				if (!suggest) return;
+				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
+				if (!avail) return;
+				suggest.style.maxHeight = avail + 'px';
+				suggest.style.height = avail + 'px';
+				suggest.style.overflow = 'hidden';
+				try {
+					if (suggest.dataset) suggest.dataset.kustoSuggestClamp = '1';
+				} catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		};
+
+		const tryRelayoutSuggestWidget = (availablePx) => {
+			// Best-effort poke of Monaco internals so keyboard navigation uses the updated height.
+			// All accesses are optional and guarded.
+			try {
+				const now = Date.now();
+				if (now - lastRelayoutAt < 16) return;
+				lastRelayoutAt = now;
+			} catch { /* ignore */ }
+			try {
+				if (!editor || typeof editor.getContribution !== 'function') return;
+				const ctrl = editor.getContribution('editor.contrib.suggestController');
+				if (!ctrl) return;
+
+				const candidates = [];
+				try { if (ctrl._widget) candidates.push(ctrl._widget); } catch { /* ignore */ }
+				try { if (ctrl.widget) candidates.push(ctrl.widget); } catch { /* ignore */ }
+				try { if (ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch { /* ignore */ }
+				try { if (ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch { /* ignore */ }
+
+				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
+				for (const w0 of candidates) {
+					const w = (w0 && w0.value) ? w0.value : w0;
+					if (!w) continue;
+					try {
+						if (typeof w.layout === 'function') {
+							// Some implementations accept (dimension) or no args.
+							try { w.layout(); } catch { /* ignore */ }
+							try { if (avail) w.layout({ height: avail }); } catch { /* ignore */ }
+							try { if (avail) w.layout(avail); } catch { /* ignore */ }
+						}
+					} catch { /* ignore */ }
+					try { if (typeof w._layout === 'function') w._layout(); } catch { /* ignore */ }
+					try { if (typeof w._resize === 'function') w._resize(); } catch { /* ignore */ }
+					try { if (w._tree && typeof w._tree.layout === 'function' && avail) w._tree.layout(avail); } catch { /* ignore */ }
+					try { if (w._list && typeof w._list.layout === 'function' && avail) w._list.layout(avail); } catch { /* ignore */ }
+				}
+			} catch {
+				// ignore
+			}
+		};
+
+		const applyMaxVisibleSuggestions = (maxVisible) => {
+			try {
+				const mv = Math.max(1, Math.floor(Number(maxVisible) || 0));
+				if (lastApplied.maxVisible === mv) {
+					return;
+				}
+				lastApplied.maxVisible = mv;
+				// Monaco supports nested updateOptions for suggest.
+				// Keep other suggest config untouched.
+				editor.updateOptions({ suggest: { maxVisibleSuggestions: mv } });
+			} catch {
+				// ignore
+			}
+		};
+
+		const computeMaxVisibleFromAvailablePx = (availablePx, rowHeightPx) => {
+			try {
+				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
+				const rh = Math.max(1, Math.floor(Number(rowHeightPx) || 0));
+				// Suggest widget has borders/padding/header; subtract a small constant overhead.
+				const overhead = 12;
+				const usable = Math.max(0, avail - overhead);
+				return Math.max(1, Math.floor(usable / rh));
+			} catch {
+				return 1;
+			}
+		};
+
+		const schedulePostLayoutAdjust = (root, boundsDom, suggest) => {
+			try {
+				if (pendingAdjustTimer) return;
+				pendingAdjustTimer = setTimeout(() => {
+					pendingAdjustTimer = null;
+					try {
+						if (!root || !boundsDom || !suggest) return;
+						const ariaHidden = String((suggest.getAttribute && suggest.getAttribute('aria-hidden')) || '').toLowerCase();
+						if (ariaHidden === 'true') return;
+						const boundsRect = boundsDom.getBoundingClientRect();
+						const suggestRect = suggest.getBoundingClientRect();
+						const pad = 4;
+						const overflow = Math.ceil((suggestRect.bottom || 0) - ((boundsRect.bottom || 0) - pad));
+						if (!isFinite(overflow) || overflow <= 0) return;
+						const rowHeight = getRowHeightPx(suggest);
+						const reduceBy = Math.max(1, Math.ceil(overflow / Math.max(1, rowHeight)));
+						const next = Math.max(1, (lastApplied.maxVisible || DEFAULT_MAX_VISIBLE) - reduceBy);
+						applyMaxVisibleSuggestions(next);
+						// If Monaco still overflows, apply DOM clamp and relayout as a fallback.
+						try {
+							const boundsRect2 = boundsDom.getBoundingClientRect();
+							const suggestRect2 = suggest.getBoundingClientRect();
+							const availablePx = Math.floor((boundsRect2.bottom || 0) - (suggestRect2.top || 0) - pad);
+							if (isFinite(availablePx) && availablePx > 0 && (suggestRect2.height || 0) > availablePx + 2) {
+								applyDomClampFallback(suggest, availablePx);
+								tryRelayoutSuggestWidget(availablePx);
+							}
+						} catch { /* ignore */ }
+					} catch { /* ignore */ }
+				}, 0);
+			} catch {
+				pendingAdjustTimer = null;
+			}
+		};
+
+		const clampNow = () => {
+			rafScheduled = false;
+			try {
+				const root = getEditorDom();
+				if (!root || typeof root.querySelector !== 'function') return;
+				const boundsDom = getBoundsDom();
+				if (!boundsDom || typeof boundsDom.getBoundingClientRect !== 'function') return;
+				const suggest = root.querySelector('.suggest-widget');
+				if (!suggest || typeof suggest.getBoundingClientRect !== 'function') return;
+
+				// Do not rely on forced DOM sizing; ensure any old styles are cleared.
+				clearInjectedSuggestStyles(suggest);
+
+				// Only apply when visible.
+				const ariaHidden = String((suggest.getAttribute && suggest.getAttribute('aria-hidden')) || '').toLowerCase();
+				const isVisible = ariaHidden !== 'true';
+				if (!isVisible) {
+					// When hidden, keep lastApplied.maxVisible; we'll recompute on next open.
+					return;
+				}
+
+				const boundsRect = boundsDom.getBoundingClientRect();
+				const suggestRect = suggest.getBoundingClientRect();
+				const pad = 4;
+				let availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
+				if (!isFinite(availablePx) || availablePx <= 0) {
+					return;
+				}
+				const rowHeightPx = getRowHeightPx(suggest);
+				const maxVisible = computeMaxVisibleFromAvailablePx(availablePx, rowHeightPx);
+				if (lastApplied.availablePx !== availablePx || lastApplied.rowHeightPx !== rowHeightPx) {
+					lastApplied.availablePx = availablePx;
+					lastApplied.rowHeightPx = rowHeightPx;
+				}
+				applyMaxVisibleSuggestions(maxVisible);
+				// If applying maxVisibleSuggestions doesn't affect actual widget height in this Monaco build,
+				// clamp the DOM as a fallback and force a relayout so keyboard navigation uses the new viewport.
+				try {
+					if ((suggestRect.height || 0) > availablePx + 2) {
+						applyDomClampFallback(suggest, availablePx);
+						tryRelayoutSuggestWidget(availablePx);
+					}
+				} catch { /* ignore */ }
+				// After Monaco applies the option, validate we didn't still overflow and reduce if needed.
+				schedulePostLayoutAdjust(root, boundsDom, suggest);
+			} catch {
+				// ignore
+			}
+		};
+
+		const scheduleClamp = () => {
+			if (rafScheduled) return;
+			rafScheduled = true;
+			try {
+				requestAnimationFrame(clampNow);
+			} catch {
+				setTimeout(clampNow, 0);
+			}
+		};
+
+		let mo = null;
+		try {
+			const root = getEditorDom();
+			if (root && typeof MutationObserver !== 'undefined') {
+				mo = new MutationObserver(() => scheduleClamp());
+				mo.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'aria-hidden'] });
+			}
+		} catch {
+			mo = null;
+		}
+
+		let disposables = [];
+		const safeOn = (fn) => {
+			try {
+				if (fn && typeof fn.dispose === 'function') disposables.push(fn);
+			} catch { /* ignore */ }
+		};
+		try { safeOn(editor.onDidLayoutChange(() => scheduleClamp())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidScrollChange(() => scheduleClamp())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidChangeCursorPosition(() => scheduleClamp())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidFocusEditorWidget(() => scheduleClamp())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidFocusEditorText(() => scheduleClamp())); } catch { /* ignore */ }
+
+		// Install one global viewport listener to update all visible suggest widgets across editors.
+		try {
+			if (!window.__kustoSuggestWidgetViewportListenersInstalled) {
+				window.__kustoSuggestWidgetViewportListenersInstalled = true;
+				window.__kustoClampAllSuggestWidgets = () => {
+					try {
+						if (typeof queryEditors === 'undefined' || !queryEditors) return;
+						for (const id of Object.keys(queryEditors)) {
+							const ed = queryEditors[id];
+							if (ed && typeof ed.__kustoScheduleSuggestClamp === 'function') {
+								ed.__kustoScheduleSuggestClamp();
+							}
+						}
+					} catch { /* ignore */ }
+				};
+				window.addEventListener('resize', () => {
+					try { window.__kustoClampAllSuggestWidgets && window.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+				});
+				window.addEventListener('scroll', () => {
+					try { window.__kustoClampAllSuggestWidgets && window.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+				}, true);
+			}
+		} catch {
+			// ignore
+		}
+
+		// Expose per-editor scheduler so the global listener can update all editors.
+		try { editor.__kustoScheduleSuggestClamp = scheduleClamp; } catch { /* ignore */ }
+		// Clamp once soon (handles cases where suggest widget is already open).
+		scheduleClamp();
+
+		const dispose = () => {
+			try { if (mo) mo.disconnect(); } catch { /* ignore */ }
+			try { mo = null; } catch { /* ignore */ }
+			try { lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null }; } catch { /* ignore */ }
+			try {
+				if (pendingAdjustTimer) {
+					clearTimeout(pendingAdjustTimer);
+					pendingAdjustTimer = null;
+				}
+			} catch { /* ignore */ }
+			try {
+				for (const d of disposables) {
+					try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+			disposables = [];
+			try { delete editor.__kustoScheduleSuggestClamp; } catch { /* ignore */ }
+		};
+
+		try {
+			if (typeof editor.onDidDispose === 'function') {
+				editor.onDidDispose(() => dispose());
+			}
+		} catch { /* ignore */ }
+
+		return dispose;
+	} catch {
+		return () => { };
+	}
+}
+
 function initQueryEditor(boxId) {
 	return ensureMonaco().then(monaco => {
 		const container = document.getElementById(boxId + '_query_editor');
@@ -4689,6 +5024,9 @@ function initQueryEditor(boxId) {
 			lineNumbers: 'on',
 			renderLineHighlight: 'none'
 		});
+
+		// Keep Monaco's suggest widget usable inside the editor bounds.
+		try { __kustoInstallSmartSuggestWidgetSizing(editor); } catch { /* ignore */ }
 
 		// Single diagnostics tooltip (replaces Monaco's default hover widget).
 		try {

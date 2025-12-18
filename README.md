@@ -19,6 +19,8 @@ Kusto Workbench is built for the tight loop of writing queries, running them, in
 
 - Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. 
 
+- Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > <anyfilename>.kqlx and you are good to go just the same.
+
 - Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
 
 - Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based).
