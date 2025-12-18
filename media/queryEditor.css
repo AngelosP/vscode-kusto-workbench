@@ -517,10 +517,22 @@
 			color: var(--vscode-foreground);
 			height: 36px;
 			padding: 0 10px;
+			align-items: center;
 		}
 
 		.kusto-markdown-editor .toastui-editor-toolbar {
 			height: 36px;
+		}
+
+		/* Toast UI renders each toolbar control inside a wrapper div. Normalizing that wrapper
+		   is the most reliable way to keep <button> and the scroll-sync <label> aligned. */
+		.kusto-markdown-editor .toastui-editor-toolbar-item-wrapper {
+			display: flex;
+			align-items: center;
+			height: 32px;
+			margin: 2px 2px;
+			line-height: 0;
+			box-sizing: border-box;
 		}
 
 		/* Avoid global webview button styling from clobbering Toast UI toolbar icons.
@@ -530,12 +542,45 @@
 			color: inherit;
 			width: 32px;
 			height: 32px;
-			margin: 2px 2px;
+			margin: 0;
 			padding: 0;
 			border: 1px solid transparent;
 			border-radius: 0;
 			line-height: 0;
 			box-sizing: border-box;
+		}
+
+		/* Toast UI's "Scroll" sync toggle is a <label> (not a <button>). Our toolbar uses
+		   tighter spacing than Toast UI's defaults, so we restyle it to behave like a normal
+		   32px toolbar item and let flexbox handle vertical alignment. */
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .scroll-sync {
+			display: inline-flex;
+			align-items: center;
+			justify-content: space-between;
+			box-sizing: border-box;
+			position: relative;
+			width: 70px;
+			height: 32px;
+			margin: 0;
+			padding: 0 6px;
+			line-height: normal;
+			vertical-align: middle;
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .scroll-sync::before {
+			position: static;
+			left: auto;
+			transform: none;
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .scroll-sync .switch {
+			position: relative;
+			top: auto;
+			left: auto;
+			right: auto;
+			bottom: auto;
+			width: 25px;
+			height: 10px;
 		}
 
 		/* Keep hit-target size, but shrink the actual glyphs/icons ~25%. */
