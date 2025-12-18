@@ -78,7 +78,11 @@ type ComparableSection =
 			type: 'markdown';
 			title: string;
 			text: string;
+			expanded: boolean;
+			// Back-compat: older files use `tab`.
 			tab: 'edit' | 'preview';
+			// Newer files store an explicit mode.
+			mode: 'preview' | 'markdown' | 'wysiwyg';
 			editorHeightPx?: number;
 		}
 	| {
@@ -131,11 +135,20 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 			continue;
 		}
 		if (t === 'markdown') {
+			const rawMode = String((section as any).mode ?? '').toLowerCase();
+			const rawTab = String((section as any).tab ?? '').toLowerCase();
+			const mode: 'preview' | 'markdown' | 'wysiwyg' =
+				rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg'
+					? (rawMode as any)
+					: (rawTab === 'preview' ? 'preview' : 'wysiwyg');
+			const tab: 'edit' | 'preview' = (rawTab === 'preview' || mode === 'preview') ? 'preview' : 'edit';
 			sections.push({
 				type: 'markdown',
 				title: String((section as any).title ?? 'Markdown'),
 				text: String((section as any).text ?? ''),
-				tab: ((section as any).tab === 'preview') ? 'preview' : 'edit',
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
+				tab,
+				mode,
 				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
 			});
 			continue;

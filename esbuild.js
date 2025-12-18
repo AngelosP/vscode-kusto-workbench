@@ -42,6 +42,48 @@ async function main() {
 		console.warn('[watch] failed to copy Monaco assets:', e && e.message ? e.message : e);
 	}
 
+	// TOAST UI Editor assets are used directly by the webview.
+	// Copy/bundle them into media so they are included in the VSIX (node_modules is excluded).
+	const toastuiSrcDir = path.join(__dirname, 'node_modules', '@toast-ui', 'editor', 'dist');
+	const toastuiDestDir = path.join(__dirname, 'media', 'queryEditor', 'vendor', 'toastui-editor');
+	try {
+		await fs.promises.mkdir(toastuiDestDir, { recursive: true });
+		await fs.promises.copyFile(
+			path.join(toastuiSrcDir, 'toastui-editor.css'),
+			path.join(toastuiDestDir, 'toastui-editor.css')
+		);
+		await fs.promises.copyFile(
+			path.join(toastuiSrcDir, 'theme', 'toastui-editor-dark.css'),
+			path.join(toastuiDestDir, 'toastui-editor-dark.css')
+		);
+
+		// TOAST UI Editor plugins/assets
+		await fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', '@toast-ui', 'editor-plugin-color-syntax', 'dist', 'toastui-editor-plugin-color-syntax.css'),
+			path.join(toastuiDestDir, 'toastui-editor-plugin-color-syntax.css')
+		);
+		await fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', 'tui-color-picker', 'dist', 'tui-color-picker.css'),
+			path.join(toastuiDestDir, 'tui-color-picker.css')
+		);
+
+		// The package's dist/toastui-editor.js is a UMD build with external dependencies
+		// (prosemirror-*). It is not directly usable via <script> in our webview.
+		// Bundle a browser-ready script that attaches `window.toastui.Editor`.
+		await esbuild.build({
+			entryPoints: [path.join(__dirname, 'scripts', 'toastui-editor-webview-entry.js')],
+			bundle: true,
+			platform: 'browser',
+			format: 'iife',
+			minify: production,
+			sourcemap: false,
+			outfile: path.join(toastuiDestDir, 'toastui-editor.webview.js'),
+			logLevel: 'silent'
+		});
+	} catch (e) {
+		console.warn('[watch] failed to copy TOAST UI Editor assets:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'

@@ -82,6 +82,14 @@ function addQueryBox(options) {
 		'<circle cx="8" cy="8" r="2.1" />' +
 		'</svg>';
 
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
 	const summaryIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
 		'<rect x="2" y="10" width="3" height="4"/>' +
@@ -184,6 +192,7 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
 		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
@@ -504,6 +513,23 @@ function addQueryBox(options) {
 		// ignore
 	}
 	return id;
+}
+
+function __kustoMaximizeQueryBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const editorEl = document.getElementById(id + '_query_editor');
+	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+	if (!wrapper) return;
+	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
+	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	try {
+		const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
+		if (ed && typeof ed.layout === 'function') {
+			ed.layout();
+		}
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoUpdateQueryVisibilityToggleButton(boxId) {

@@ -60,6 +60,7 @@
 		'queryEditor/utils.js',
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
+		'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
 		'queryEditor/queryBoxes.js',
@@ -89,11 +90,13 @@
 				url.searchParams.set('v', bust);
 			}
 
-			// Monaco registers an AMD loader (`define.amd`). Some vendor libs (Marked/DOMPurify)
-			// will detect AMD and register as modules instead of exposing globals.
-			// Our markdown renderer expects `window.marked` and `window.DOMPurify`, so for
-			// these specific scripts, temporarily disable AMD/CommonJS detection.
-			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js)$/i.test(relativePath);
+			// Monaco registers an AMD loader (`define.amd`). Some UMD bundles will detect AMD and
+			// register as modules instead of exposing globals.
+			// - Our markdown preview expects `window.marked` and `window.DOMPurify`.
+			// - Our markdown editor expects `window.toastui.Editor`.
+			// For these scripts, temporarily disable AMD/CommonJS detection so they take the
+			// globals path.
+			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath);
 			let restore = null;
 			if (isVendorLib) {
 				try {

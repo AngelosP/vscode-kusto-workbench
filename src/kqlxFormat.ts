@@ -24,7 +24,11 @@ export type KqlxSectionV1 =
 			type: 'markdown';
 			title?: string;
 			text?: string;
+			// Back-compat with older webview builds.
 			tab?: 'edit' | 'preview';
+			// Newer markdown UI state.
+			expanded?: boolean;
+			mode?: 'preview' | 'markdown' | 'wysiwyg';
 			editorHeightPx?: number;
 		}
 	| {

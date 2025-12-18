@@ -390,15 +390,59 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('markdown_')) {
-			const title = (document.getElementById(id + '_md_title') || {}).value || 'Markdown';
-			const text = markdownEditors && markdownEditors[id] ? (markdownEditors[id].getValue() || '') : '';
-			const tab = (markdownTabByBoxId && markdownTabByBoxId[id]) ? String(markdownTabByBoxId[id]) : 'edit';
+			const title = (document.getElementById(id + '_name') || {}).value || '';
+			let text = '';
+			try {
+				text = markdownEditors && markdownEditors[id] ? (markdownEditors[id].getValue() || '') : '';
+			} catch { /* ignore */ }
+			// If the editor hasn't initialized yet (e.g. TOAST UI still loading), don't lose content:
+			// use the pending restore buffer.
+			if (!text) {
+				try {
+					const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[id];
+					if (typeof pending === 'string' && pending) {
+						text = pending;
+					}
+				} catch { /* ignore */ }
+			}
+			let mode = '';
+			try {
+				const m = (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object')
+					? String(window.__kustoMarkdownModeByBoxId[id] || '').toLowerCase()
+					: '';
+				if (m === 'preview' || m === 'markdown' || m === 'wysiwyg') {
+					mode = m;
+				}
+			} catch { /* ignore */ }
+			const tab = (mode === 'preview') ? 'preview' : 'edit';
+			let expanded = true;
+			try {
+				expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[id] === false);
+			} catch { /* ignore */ }
+			let editorHeightPx = __kustoGetWrapperHeightPx(id, '_md_editor');
+			// If we're currently in Preview we may temporarily clear inline height; keep the last px height if present.
+			if (typeof editorHeightPx === 'undefined') {
+				try {
+					const host = document.getElementById(id + '_md_editor');
+					const wrapper = host && host.closest ? host.closest('.query-editor-wrapper') : null;
+					const prev = (wrapper && wrapper.dataset && wrapper.dataset.kustoPrevHeightMd) ? String(wrapper.dataset.kustoPrevHeightMd || '').trim() : '';
+					const m = prev.match(/^([0-9]+)px$/i);
+					if (m) {
+						const px = parseInt(m[1], 10);
+						if (Number.isFinite(px)) {
+							editorHeightPx = Math.max(0, px);
+						}
+					}
+				} catch { /* ignore */ }
+			}
 			sections.push({
 				type: 'markdown',
 				title,
 				text,
-				tab: (tab === 'preview') ? 'preview' : 'edit',
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_md_editor')
+				tab,
+				...(mode ? { mode } : {}),
+				expanded,
+				editorHeightPx
 			});
 			continue;
 		}
@@ -726,18 +770,40 @@ function applyKqlxState(state) {
 			}
 
 			if (t === 'markdown') {
-				const boxId = addMarkdownBox({ id: (section.id ? String(section.id) : undefined) });
+				let mode = '';
 				try {
-					const titleEl = document.getElementById(boxId + '_md_title');
-					if (titleEl) titleEl.value = String(section.title || 'Markdown');
-					try { onMarkdownTitleInput(boxId); } catch { /* ignore */ }
+					const m = String(section.mode || '').toLowerCase();
+					if (m === 'preview' || m === 'markdown' || m === 'wysiwyg') {
+						mode = m;
+					}
 				} catch { /* ignore */ }
-				// Monaco editor may not exist yet; store pending markdown for initMarkdownEditor.
+				// Back-compat: if this .kqlx uses the older `tab` field, treat preview tab as Preview mode.
+				if (!mode) {
+					try {
+						const tab = String(section.tab || '').toLowerCase();
+						if (tab === 'preview') {
+							mode = 'preview';
+						}
+					} catch { /* ignore */ }
+				}
+				const boxId = addMarkdownBox({
+					id: (section.id ? String(section.id) : undefined),
+					text: String(section.text || ''),
+					editorHeightPx: section.editorHeightPx,
+					...(mode ? { mode } : {})
+				});
 				try {
-					window.__kustoPendingMarkdownTextByBoxId[boxId] = String(section.text || '');
+					const titleEl = document.getElementById(boxId + '_name');
+					if (titleEl) titleEl.value = String(section.title || '');
 				} catch { /* ignore */ }
-				try { setMarkdownTab(boxId, (section.tab === 'preview') ? 'preview' : 'edit'); } catch { /* ignore */ }
-				try { __kustoSetWrapperHeightPx(boxId, '_md_editor', section.editorHeightPx); } catch { /* ignore */ }
+				try {
+					if (!window.__kustoMarkdownExpandedByBoxId || typeof window.__kustoMarkdownExpandedByBoxId !== 'object') {
+						window.__kustoMarkdownExpandedByBoxId = {};
+					}
+					window.__kustoMarkdownExpandedByBoxId[boxId] = (section.expanded !== false);
+				} catch { /* ignore */ }
+				try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch { /* ignore */ }
+				try { __kustoApplyMarkdownBoxVisibility(boxId); } catch { /* ignore */ }
 				continue;
 			}
 

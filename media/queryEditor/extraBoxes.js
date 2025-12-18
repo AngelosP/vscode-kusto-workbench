@@ -8,14 +8,319 @@ let pythonBoxes = [];
 let urlBoxes = [];
 
 let markdownEditors = {};
+let markdownViewers = {};
 let pythonEditors = {};
 
-let markdownRenderCacheByBoxId = {};
-let markdownTabByBoxId = {}; // 'edit' | 'preview'
-let markdownEditHeightByBoxId = {}; // number (px) - last editor wrapper height
 let urlStateByBoxId = {}; // { url, expanded, loading, loaded, content, error, kind, contentType, status, dataUri, body, truncated }
 
 let markdownMarkedResolvePromise = null;
+
+function __kustoMaximizeMarkdownBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const editorHost = document.getElementById(id + '_md_editor');
+	const viewerHost = document.getElementById(id + '_md_viewer');
+	const wrapper = editorHost && editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
+	if (!wrapper) return;
+
+	const mode = __kustoGetMarkdownMode(id);
+	if (mode === 'preview') {
+		// Max for preview is the full rendered content: use auto-expand.
+		try {
+			wrapper.style.height = '';
+			if (wrapper.dataset) {
+				try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
+				try { delete wrapper.dataset.kustoPrevHeightMd; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		try { __kustoUpdateMarkdownPreviewSizing(id); } catch { /* ignore */ }
+		try {
+			// Ensure viewer is up-to-date before measuring/laying out.
+			if (viewerHost && viewerHost.style && viewerHost.style.display !== 'none') {
+				const md = markdownEditors && markdownEditors[id] ? String(markdownEditors[id].getValue() || '') : '';
+				initMarkdownViewer(id, md);
+			}
+		} catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		return;
+	}
+
+	// Markdown/WYSIWYG: max is the editing cap.
+	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
+	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	try {
+		const ed = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
+		if (ed && typeof ed.layout === 'function') {
+			ed.layout();
+		}
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoMaximizePythonBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const editorEl = document.getElementById(id + '_py_editor');
+	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+	if (!wrapper) return;
+	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
+	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	try {
+		const ed = (typeof pythonEditors === 'object' && pythonEditors) ? pythonEditors[id] : null;
+		if (ed && typeof ed.layout === 'function') {
+			ed.layout();
+		}
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoMaximizeUrlBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const wrapper = document.getElementById(id + '_wrapper');
+	if (!wrapper) return;
+	try {
+		wrapper.style.height = '900px';
+		if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true';
+	} catch { /* ignore */ }
+	// If this is a URL CSV section, clamp slack once layout settles.
+	try {
+		setTimeout(() => {
+			try {
+				if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+					window.__kustoClampUrlCsvWrapperHeight(id);
+				}
+			} catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoEnsureMarkdownModeMap() {
+	try {
+		if (!window.__kustoMarkdownModeByBoxId || typeof window.__kustoMarkdownModeByBoxId !== 'object') {
+			window.__kustoMarkdownModeByBoxId = {};
+		}
+	} catch {
+		// ignore
+	}
+	return window.__kustoMarkdownModeByBoxId;
+}
+
+function __kustoGetMarkdownMode(boxId) {
+	try {
+		const map = __kustoEnsureMarkdownModeMap();
+		const v = map && boxId ? String(map[boxId] || '') : '';
+		if (v === 'preview' || v === 'markdown' || v === 'wysiwyg') {
+			return v;
+		}
+	} catch {
+		// ignore
+	}
+	return 'wysiwyg';
+}
+
+function __kustoSetMarkdownMode(boxId, mode) {
+	const m = (String(mode || '').toLowerCase() === 'preview')
+		? 'preview'
+		: (String(mode || '').toLowerCase() === 'markdown')
+			? 'markdown'
+			: 'wysiwyg';
+	try {
+		const map = __kustoEnsureMarkdownModeMap();
+		map[boxId] = m;
+	} catch {
+		// ignore
+	}
+	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoUpdateMarkdownModeButtons(boxId) {
+	const mode = __kustoGetMarkdownMode(boxId);
+	const ids = {
+		preview: boxId + '_md_mode_preview',
+		markdown: boxId + '_md_mode_markdown',
+		wysiwyg: boxId + '_md_mode_wysiwyg'
+	};
+	for (const key of Object.keys(ids)) {
+		const btn = document.getElementById(ids[key]);
+		if (!btn) continue;
+		const active = key === mode;
+		try { btn.classList.toggle('is-active', active); } catch { /* ignore */ }
+		try { btn.setAttribute('aria-selected', active ? 'true' : 'false'); } catch { /* ignore */ }
+	}
+}
+
+function __kustoUpdateMarkdownPreviewSizing(boxId) {
+	const box = document.getElementById(boxId);
+	const editorHost = document.getElementById(boxId + '_md_editor');
+	if (!box || !editorHost) {
+		return;
+	}
+	const mode = __kustoGetMarkdownMode(boxId);
+	if (mode !== 'preview') {
+		try { box.classList.remove('is-md-preview-auto'); } catch { /* ignore */ }
+		try { box.classList.remove('is-md-preview-fixed'); } catch { /* ignore */ }
+		return;
+	}
+	let wrapper = null;
+	try {
+		wrapper = editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
+	} catch {
+		wrapper = null;
+	}
+	if (!wrapper) {
+		return;
+	}
+
+	let userResized = false;
+	let hasInlinePx = false;
+	try {
+		userResized = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
+	} catch { /* ignore */ }
+	try {
+		const h = String(wrapper.style && wrapper.style.height ? wrapper.style.height : '').trim();
+		hasInlinePx = /^\d+px$/i.test(h);
+	} catch { /* ignore */ }
+
+	// Treat an explicit inline px height as a fixed size (even if dataset isn't set yet).
+	const fixed = userResized || hasInlinePx;
+	try { box.classList.toggle('is-md-preview-fixed', fixed); } catch { /* ignore */ }
+	try { box.classList.toggle('is-md-preview-auto', !fixed); } catch { /* ignore */ }
+}
+
+function __kustoApplyMarkdownEditorMode(boxId) {
+	__kustoUpdateMarkdownModeButtons(boxId);
+
+	const box = document.getElementById(boxId);
+	const editorHost = document.getElementById(boxId + '_md_editor');
+	const viewerHost = document.getElementById(boxId + '_md_viewer');
+	if (!box || !editorHost || !viewerHost) {
+		return;
+	}
+
+	const mode = __kustoGetMarkdownMode(boxId);
+	const isPreview = mode === 'preview';
+
+	// Preview sizing behavior:
+	// - if user has resized (or we have an explicit px height), keep it fixed and make the viewer scroll
+	// - otherwise, clear inline height so it can auto-expand to full content
+	try {
+		const wrapper = editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
+		if (wrapper && wrapper.style) {
+			if (isPreview) {
+				let fixed = false;
+				try {
+					fixed = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
+				} catch { /* ignore */ }
+				if (!fixed) {
+					try {
+						const h = String(wrapper.style.height || '').trim();
+						fixed = /^\d+px$/i.test(h);
+						// If it was set via restore or older flows, mark as user-resized so behavior stays consistent.
+						if (fixed) {
+							try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+						}
+					} catch { /* ignore */ }
+				}
+				if (!fixed) {
+					// Auto-expand: remove inline height so CSS can size to content.
+					wrapper.style.height = '';
+				}
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	try { box.classList.toggle('is-md-preview', isPreview); } catch { /* ignore */ }
+	try { viewerHost.style.display = isPreview ? '' : 'none'; } catch { /* ignore */ }
+	try { editorHost.style.display = isPreview ? 'none' : ''; } catch { /* ignore */ }
+	try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
+
+	if (isPreview) {
+		let md = '';
+		try {
+			md = markdownEditors && markdownEditors[boxId] ? String(markdownEditors[boxId].getValue() || '') : '';
+		} catch {
+			md = '';
+		}
+		try { initMarkdownViewer(boxId, md); } catch { /* ignore */ }
+		return;
+	}
+
+	// Editor modes (Markdown/WYSIWYG)
+	let toastEditor = null;
+	try {
+		toastEditor = markdownEditors && markdownEditors[boxId] ? markdownEditors[boxId]._toastui : null;
+	} catch {
+		toastEditor = null;
+	}
+	if (!toastEditor || typeof toastEditor.changeMode !== 'function') {
+		return;
+	}
+	try {
+		toastEditor.changeMode(mode, true);
+	} catch { /* ignore */ }
+	try {
+		if (markdownEditors[boxId] && typeof markdownEditors[boxId].layout === 'function') {
+			markdownEditors[boxId].layout();
+		}
+	} catch { /* ignore */ }
+}
+
+function isLikelyDarkTheme() {
+	try {
+		const value = getComputedStyle(document.documentElement)
+			.getPropertyValue('--vscode-editor-background')
+			.trim();
+		if (!value) {
+			return false;
+		}
+		let r, g, b;
+		if (value.startsWith('#')) {
+			const hex = value.slice(1);
+			if (hex.length === 3) {
+				r = parseInt(hex[0] + hex[0], 16);
+				g = parseInt(hex[1] + hex[1], 16);
+				b = parseInt(hex[2] + hex[2], 16);
+			} else if (hex.length === 6) {
+				r = parseInt(hex.slice(0, 2), 16);
+				g = parseInt(hex.slice(2, 4), 16);
+				b = parseInt(hex.slice(4, 6), 16);
+			} else {
+				return false;
+			}
+		} else {
+			const m = value.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+			if (!m) {
+				return false;
+			}
+			r = parseInt(m[1], 10);
+			g = parseInt(m[2], 10);
+			b = parseInt(m[3], 10);
+		}
+		const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		return luma < 128;
+	} catch {
+		return false;
+	}
+}
+
+function getToastUiPlugins(ToastEditor) {
+	try {
+		const colorSyntax = ToastEditor && ToastEditor.plugin && typeof ToastEditor.plugin.colorSyntax === 'function'
+			? ToastEditor.plugin.colorSyntax
+			: null;
+		if (colorSyntax) {
+			return [[colorSyntax, {}]];
+		}
+	} catch {
+		// ignore
+	}
+	return [];
+}
 
 function ensureMarkedGlobal() {
 	// Marked may have registered itself as an AMD module (because Monaco installs `define.amd`)
@@ -62,24 +367,6 @@ function ensureMarkedGlobal() {
 	return markdownMarkedResolvePromise;
 }
 
-function autoSizeTitleInput(inputEl) {
-	if (!inputEl) {
-		return;
-	}
-	// Use pixel sizing based on scrollWidth so the input hugs its contents
-	// (the `size` attribute tends to leave visible extra whitespace).
-	try {
-		inputEl.style.width = '1px';
-		const pad = 1; // small breathing room (keep tight)
-		const minPx = 56;
-		const maxPx = 320;
-		const w = Math.max(minPx, Math.min(maxPx, (inputEl.scrollWidth || 0) + pad));
-		inputEl.style.width = w + 'px';
-	} catch {
-		// ignore
-	}
-}
-
 function autoSizeInputToValue(inputEl, minPx, maxPx) {
 	if (!inputEl) {
 		return;
@@ -109,24 +396,6 @@ function onUrlNameInput(boxId) {
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
-function focusMarkdownTitle(boxId) {
-	const input = document.getElementById(boxId + '_md_title');
-	if (!input) {
-		return;
-	}
-	try {
-		input.focus();
-		input.select();
-	} catch {
-		// ignore
-	}
-}
-
-function onMarkdownTitleInput(boxId) {
-	const input = document.getElementById(boxId + '_md_title');
-	autoSizeTitleInput(input);
-}
-
 function __kustoUpdateUrlToggleButton(boxId) {
 	const btn = document.getElementById(boxId + '_toggle');
 	const st = urlStateByBoxId[boxId];
@@ -143,7 +412,28 @@ function __kustoUpdateUrlToggleButton(boxId) {
 function addMarkdownBox(options) {
 	const id = (options && options.id) ? String(options.id) : ('markdown_' + Date.now());
 	markdownBoxes.push(id);
-	markdownTabByBoxId[id] = 'edit';
+
+	// Allow restore/persistence to set an initial mode before the editor/viewer initializes.
+	try {
+		const rawMode = options && typeof options.mode !== 'undefined' ? String(options.mode || '').toLowerCase() : '';
+		if (rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg') {
+			const map = __kustoEnsureMarkdownModeMap();
+			map[id] = rawMode;
+		}
+	} catch {
+		// ignore
+	}
+
+	// Ensure initial markdown text is available before TOAST UI initializes.
+	try {
+		const initialText = options && typeof options.text === 'string' ? options.text : undefined;
+		if (typeof initialText === 'string') {
+			window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
+			window.__kustoPendingMarkdownTextByBoxId[id] = initialText;
+		}
+	} catch {
+		// ignore
+	}
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -156,52 +446,70 @@ function addMarkdownBox(options) {
 		'<path d="M12 4L4 12"/>' +
 		'</svg>';
 
-	const editIconSvg =
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M11.6 2.2l2.2 2.2" />' +
-		'<path d="M4 12l-1 3 3-1 7.7-7.7-2.2-2.2L4 12z" />' +
-		'<path d="M10.4 3.4l2.2 2.2" />' +
-		'</svg>';
-
 	const previewIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
 		'<circle cx="8" cy="8" r="2.1" />' +
 		'</svg>';
 
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M6 3H3v3" opacity="0" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
-		'<div class="section-header-row md-section-header">' +
+		'<div class="query-header">' +
+		'<div class="query-header-row query-header-row-top">' +
+		'<div class="query-name-group">' +
 		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<div class="md-header-center">' +
-		'<div class="section-title-edit">' +
-		'<input class="section-title-input" id="' + id + '_md_title" type="text" value="Markdown" size="8" oninput="onMarkdownTitleInput(\'' + id + '\')" aria-label="Section title" />' +
-		'<button class="section-title-pen" type="button" onclick="focusMarkdownTitle(\'' + id + '\')" title="Rename" aria-label="Rename">' + editIconSvg + '</button>' +
-		'</div>' +
+		'<input type="text" class="query-name" placeholder="Markdown name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
 		'</div>' +
 		'<div class="section-actions">' +
-		'<div class="md-tabs" role="tablist" aria-label="Markdown mode">' +
-		'<button class="md-tab is-active" id="' + id + '_tab_edit" type="button" role="tab" aria-selected="true" onclick="setMarkdownTab(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">' + editIconSvg + '</button>' +
-		'<button class="md-tab" id="' + id + '_tab_preview" type="button" role="tab" aria-selected="false" onclick="setMarkdownTab(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">' + previewIconSvg + '</button>' +
+		'<div class="md-tabs" role="tablist" aria-label="Markdown visibility">' +
+		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
+		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
+		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_wysiwyg" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\')" title="WYSIWYG" aria-label="WYSIWYG">WYSIWYG</button>' +
+		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleMarkdownBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
+		'</div>' +
 		'<div class="query-editor-wrapper">' +
-		'<div class="query-editor" id="' + id + '_md_editor"></div>' +
+		'<div class="query-editor kusto-markdown-editor" id="' + id + '_md_editor"></div>' +
 		'<div class="markdown-viewer" id="' + id + '_md_viewer" style="display:none;"></div>' +
 		'<div class="query-editor-resizer" id="' + id + '_md_resizer" title="Drag to resize"></div>' +
 		'</div>' +
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+
+	// Apply any persisted height before initializing the editor/mode.
 	try {
-		onMarkdownTitleInput(id);
+		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
+		if (typeof h === 'number' && Number.isFinite(h) && h > 0) {
+			const editorEl = document.getElementById(id + '_md_editor');
+			const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+			if (wrapper) {
+				wrapper.style.height = Math.round(h) + 'px';
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			}
+		}
 	} catch {
 		// ignore
 	}
+
 	initMarkdownEditor(id);
-	setMarkdownTab(id, 'edit');
+	try { __kustoApplyMarkdownEditorMode(id); } catch { /* ignore */ }
+	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
+	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -219,384 +527,433 @@ function removeMarkdownBox(boxId) {
 		try { markdownEditors[boxId].dispose(); } catch { /* ignore */ }
 		delete markdownEditors[boxId];
 	}
-	delete markdownRenderCacheByBoxId[boxId];
-	delete markdownTabByBoxId[boxId];
-	delete markdownEditHeightByBoxId[boxId];
+	if (markdownViewers[boxId]) {
+		try { markdownViewers[boxId].dispose(); } catch { /* ignore */ }
+		delete markdownViewers[boxId];
+	}
 	markdownBoxes = markdownBoxes.filter(id => id !== boxId);
 	const box = document.getElementById(boxId);
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
+			delete window.__kustoMarkdownModeByBoxId[boxId];
+		}
+	} catch { /* ignore */ }
 }
 
-function setMarkdownTab(boxId, tab) {
-	const next = (tab === 'preview') ? 'preview' : 'edit';
-	markdownTabByBoxId[boxId] = next;
-	try {
-		const box = document.getElementById(boxId);
-		if (box) {
-			box.classList.toggle('is-md-preview', next === 'preview');
-		}
-	} catch {
-		// ignore
-	}
-
-	const tabEdit = document.getElementById(boxId + '_tab_edit');
-	const tabPreview = document.getElementById(boxId + '_tab_preview');
-	if (tabEdit) {
-		tabEdit.classList.toggle('is-active', next === 'edit');
-		tabEdit.setAttribute('aria-selected', next === 'edit' ? 'true' : 'false');
-	}
-	if (tabPreview) {
-		tabPreview.classList.toggle('is-active', next === 'preview');
-		tabPreview.setAttribute('aria-selected', next === 'preview' ? 'true' : 'false');
-	}
-
-	const editorEl = document.getElementById(boxId + '_md_editor');
-	const viewerEl = document.getElementById(boxId + '_md_viewer');
-	if (!editorEl || !viewerEl) {
+function __kustoUpdateMarkdownVisibilityToggleButton(boxId) {
+	const btn = document.getElementById(boxId + '_toggle');
+	if (!btn) {
 		return;
 	}
-
-	let wrapper = null;
+	let expanded = true;
 	try {
-		wrapper = editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
-	} catch {
-		wrapper = null;
-	}
+		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
+	} catch { /* ignore */ }
+	btn.classList.toggle('is-active', expanded);
+	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
+	btn.title = expanded ? 'Hide' : 'Show';
+	btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
+}
 
-	if (next === 'preview') {
-		// Remember current editor height (so returning to Edit keeps the user's resize).
-		try {
-			if (wrapper) {
-				markdownEditHeightByBoxId[boxId] = wrapper.getBoundingClientRect().height;
-				wrapper.style.height = 'auto';
-			}
-		} catch {
-			// ignore
-		}
-		try {
-			const editor = markdownEditors[boxId];
-			const markdown = editor && editor.getModel ? (editor.getModel() ? editor.getModel().getValue() : '') : '';
-			renderMarkdownIntoViewer(boxId, markdown);
-		} catch {
-			// ignore
-		}
-		editorEl.style.display = 'none';
-		viewerEl.style.display = '';
-		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+function __kustoApplyMarkdownBoxVisibility(boxId) {
+	const box = document.getElementById(boxId);
+	if (!box) {
 		return;
 	}
-
-	// Returning to Edit: restore the last known height.
+	let expanded = true;
 	try {
-		if (wrapper) {
-			const saved = markdownEditHeightByBoxId[boxId];
-			if (typeof saved === 'number' && isFinite(saved) && saved > 0) {
-				wrapper.style.height = Math.round(saved) + 'px';
-			} else {
-				wrapper.style.height = '';
-			}
-		}
-	} catch {
-		// ignore
-	}
-
-	viewerEl.style.display = 'none';
-	editorEl.style.display = '';
+		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
+	} catch { /* ignore */ }
 	try {
-		if (markdownEditors[boxId]) {
-			markdownEditors[boxId].layout();
-		}
-	} catch {
-		// ignore
+		box.classList.toggle('is-collapsed', !expanded);
+	} catch { /* ignore */ }
+	if (expanded) {
+		try {
+			setTimeout(() => {
+				try {
+					const ed = (typeof markdownEditors === 'object' && markdownEditors) ? markdownEditors[boxId] : null;
+					if (ed && typeof ed.layout === 'function') {
+						ed.layout();
+					}
+				} catch { /* ignore */ }
+			}, 0);
+		} catch { /* ignore */ }
 	}
+}
+
+function toggleMarkdownBoxVisibility(boxId) {
+	try {
+		if (!window.__kustoMarkdownExpandedByBoxId || typeof window.__kustoMarkdownExpandedByBoxId !== 'object') {
+			window.__kustoMarkdownExpandedByBoxId = {};
+		}
+		const current = !(window.__kustoMarkdownExpandedByBoxId[boxId] === false);
+		window.__kustoMarkdownExpandedByBoxId[boxId] = !current;
+	} catch { /* ignore */ }
+	try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch { /* ignore */ }
+	try { __kustoApplyMarkdownBoxVisibility(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
-function initMarkdownEditor(boxId) {
-	return ensureMonaco().then(monaco => {
-		const container = document.getElementById(boxId + '_md_editor');
-		const viewer = document.getElementById(boxId + '_md_viewer');
-		if (!container || !viewer) {
-			return;
-		}
+function initMarkdownViewer(boxId, initialValue) {
+	const container = document.getElementById(boxId + '_md_viewer');
+	if (!container) {
+		return;
+	}
 
-		// If an editor exists, ensure it's still attached to this container.
-		try {
-			const existing = markdownEditors && markdownEditors[boxId] ? markdownEditors[boxId] : null;
-			if (existing) {
-				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
-				const attached = !!(dom && dom.isConnected && container.contains(dom));
-				if (attached) {
-					return;
+	// If a viewer exists, ensure it's still attached to this container.
+	try {
+		const existing = markdownViewers && markdownViewers[boxId] ? markdownViewers[boxId] : null;
+		if (existing) {
+			const attached = !!(container.querySelector && container.querySelector('.toastui-editor-contents'));
+			if (attached) {
+				if (typeof initialValue === 'string' && typeof existing.setValue === 'function') {
+					try { existing.setValue(initialValue); } catch { /* ignore */ }
 				}
-				try { existing.dispose(); } catch { /* ignore */ }
-				try { delete markdownEditors[boxId]; } catch { /* ignore */ }
-			}
-		} catch {
-			// ignore
-		}
-
-		container.style.minHeight = '0';
-		container.style.minWidth = '0';
-
-		// Avoid editor.setValue() during init; pass initial value into create() to reduce timing races.
-		let initialValue = '';
-		try {
-			const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
-			if (typeof pending === 'string') {
-				initialValue = pending;
-				try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
-			}
-		} catch {
-			// ignore
-		}
-
-		const editor = monaco.editor.create(container, {
-			value: initialValue,
-			language: 'markdown',
-			readOnly: false,
-			domReadOnly: false,
-			automaticLayout: true,
-			minimap: { enabled: false },
-			scrollBeyondLastLine: false,
-			fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
-			fontSize: 13,
-			lineNumbers: 'on',
-			renderLineHighlight: 'none'
-		});
-
-		// Mark this as the active Monaco editor for global key handlers (paste, etc.).
-		try {
-			if (typeof editor.onDidFocusEditorText === 'function') {
-				editor.onDidFocusEditorText(() => {
-					try { activeMonacoEditor = editor; } catch { /* ignore */ }
-					try {
-						if (typeof __kustoForceEditorWritable === 'function') {
-							__kustoForceEditorWritable(editor);
-						}
-					} catch { /* ignore */ }
-				});
-			}
-			if (typeof editor.onDidFocusEditorWidget === 'function') {
-				editor.onDidFocusEditorWidget(() => {
-					try { activeMonacoEditor = editor; } catch { /* ignore */ }
-					try {
-						if (typeof __kustoForceEditorWritable === 'function') {
-							__kustoForceEditorWritable(editor);
-						}
-					} catch { /* ignore */ }
-				});
-			}
-		} catch {
-			// ignore
-		}
-
-		markdownEditors[boxId] = editor;
-		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
-		try {
-			if (typeof __kustoEnsureEditorWritableSoon === 'function') {
-				__kustoEnsureEditorWritableSoon(editor);
-			}
-		} catch {
-			// ignore
-		}
-		try {
-			if (typeof __kustoInstallWritableGuard === 'function') {
-				__kustoInstallWritableGuard(editor);
-			}
-		} catch {
-			// ignore
-		}
-		// If the editor is stuck non-interactive on click, force writable before focusing.
-		try {
-			container.addEventListener('mousedown', () => {
-				try {
-					if (typeof __kustoForceEditorWritable === 'function') {
-						__kustoForceEditorWritable(editor);
-					}
-				} catch { /* ignore */ }
-				try { editor.focus(); } catch { /* ignore */ }
-			}, true);
-		} catch {
-			// ignore
-		}
-		// Auto-resize editor to show full content, until the user manually resizes.
-		try {
-			if (typeof __kustoAttachAutoResizeToContent === 'function') {
-				__kustoAttachAutoResizeToContent(editor, container);
-			}
-		} catch {
-			// ignore
-		}
-		try {
-			editor.onDidChangeModelContent(() => {
-				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-			});
-		} catch {
-			// ignore
-		}
-
-		// Drag handle resize (same pattern as the KQL editor).
-		try {
-			const wrapper = container.closest ? container.closest('.query-editor-wrapper') : null;
-			const resizer = document.getElementById(boxId + '_md_resizer');
-			if (wrapper && resizer) {
-				resizer.addEventListener('mousedown', (e) => {
-					try {
-						e.preventDefault();
-						e.stopPropagation();
-					} catch {
-						// ignore
-					}
-					try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-
-					resizer.classList.add('is-dragging');
-					const previousCursor = document.body.style.cursor;
-					const previousUserSelect = document.body.style.userSelect;
-					document.body.style.cursor = 'ns-resize';
-					document.body.style.userSelect = 'none';
-
-						const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
-					const startHeight = wrapper.getBoundingClientRect().height;
-
-					const onMove = (moveEvent) => {
-							try {
-								if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
-									__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-								}
-							} catch { /* ignore */ }
-							const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
-							const delta = pageY - startPageY;
-						const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
-						wrapper.style.height = nextHeight + 'px';
-						try { editor.layout(); } catch { /* ignore */ }
-					};
-					const onUp = () => {
-						document.removeEventListener('mousemove', onMove, true);
-						document.removeEventListener('mouseup', onUp, true);
-						resizer.classList.remove('is-dragging');
-						document.body.style.cursor = previousCursor;
-						document.body.style.userSelect = previousUserSelect;
-						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-					};
-
-					document.addEventListener('mousemove', onMove, true);
-					document.addEventListener('mouseup', onUp, true);
-				});
-			}
-		} catch {
-			// ignore
-		}
-
-		// Respect whichever tab is currently selected.
-		try {
-			setMarkdownTab(boxId, markdownTabByBoxId[boxId] || 'edit');
-		} catch {
-			// ignore
-		}
-	}).catch((e) => {
-		try {
-			if (markdownEditors && markdownEditors[boxId]) {
 				return;
 			}
-		} catch {
-			// ignore
+			try { existing.dispose && existing.dispose(); } catch { /* ignore */ }
+			try { delete markdownViewers[boxId]; } catch { /* ignore */ }
 		}
+	} catch {
+		// ignore
+	}
 
+	let ToastEditor = null;
+	try {
+		ToastEditor = (window.toastui && window.toastui.Editor) ? window.toastui.Editor : null;
+	} catch {
+		ToastEditor = null;
+	}
+
+	if (!ToastEditor) {
+		// Webview scripts load sequentially, but keep a small retry loop for safety.
 		let attempt = 0;
 		try {
-			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
-			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
-			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+			window.__kustoToastUiViewerInitRetryCountByBoxId = window.__kustoToastUiViewerInitRetryCountByBoxId || {};
+			attempt = (window.__kustoToastUiViewerInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoToastUiViewerInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
 
 		const delays = [50, 250, 1000, 2000, 4000];
 		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
-		if (attempt > delays.length) {
-			try { console.error('Monaco init failed (markdown editor).', e); } catch { /* ignore */ }
-			return;
-		}
-		try {
-			setTimeout(() => {
-				try { initMarkdownEditor(boxId); } catch { /* ignore */ }
-			}, delay);
-		} catch {
-			// ignore
-		}
-	});
-}
-
-function renderMarkdownIntoViewer(boxId, markdown) {
-	const viewer = document.getElementById(boxId + '_md_viewer');
-	if (!viewer) {
-		return;
-	}
-	const text = String(markdown || '');
-	if (!text.trim()) {
-		viewer.textContent = '';
-		markdownRenderCacheByBoxId[boxId] = '';
-		return;
-	}
-
-	// Use Marked + DOMPurify if available; otherwise fall back to plain text.
-	try {
-		const hasMarked = (typeof marked !== 'undefined') && marked;
-		const parseFn = hasMarked ? (
-			(typeof marked.parse === 'function') ? marked.parse :
-			(typeof marked.marked === 'function') ? marked.marked :
-			(typeof marked === 'function') ? marked :
-			null
-		) : null;
-
-		let purifier = null;
-		if (typeof DOMPurify !== 'undefined' && DOMPurify) {
-			if (typeof DOMPurify.sanitize === 'function') {
-				purifier = DOMPurify;
-			} else if (typeof DOMPurify === 'function') {
-				// Some DOMPurify builds export a factory that needs the window.
-				try {
-					const maybe = DOMPurify(window);
-					if (maybe && typeof maybe.sanitize === 'function') {
-						purifier = maybe;
-					}
-				} catch {
-					// ignore
-				}
-			}
-		}
-
-		if (typeof parseFn === 'function') {
-			const html = parseFn(text, { mangle: false, headerIds: false });
-			const sanitized = purifier ? purifier.sanitize(html, { USE_PROFILES: { html: true } }) : html;
-			viewer.innerHTML = sanitized;
-			markdownRenderCacheByBoxId[boxId] = sanitized;
-			return;
-		}
-	} catch {
-		// ignore
-	}
-
-	// If Marked got captured as an AMD module, resolve it and retry (best-effort).
-	try {
-		ensureMarkedGlobal().then(() => {
+		if (attempt <= delays.length) {
 			try {
-				if ((markdownTabByBoxId[boxId] || 'edit') === 'preview') {
-					renderMarkdownIntoViewer(boxId, markdown);
+				setTimeout(() => {
+					try { initMarkdownViewer(boxId, initialValue); } catch { /* ignore */ }
+				}, delay);
+			} catch {
+				// ignore
+			}
+		} else {
+			try { console.error('TOAST UI Editor is not available (markdown viewer).'); } catch { /* ignore */ }
+		}
+		return;
+	}
+
+	// Ensure a clean mount point.
+	try { container.textContent = ''; } catch { /* ignore */ }
+
+	let instance = null;
+	try {
+		const opts = {
+			el: container,
+			viewer: true,
+			usageStatistics: false,
+			initialValue: typeof initialValue === 'string' ? initialValue : '',
+			plugins: getToastUiPlugins(ToastEditor)
+		};
+		if (isLikelyDarkTheme()) {
+			opts.theme = 'dark';
+		}
+		instance = (typeof ToastEditor.factory === 'function') ? ToastEditor.factory(opts) : new ToastEditor(opts);
+	} catch (e) {
+		try { console.error('Failed to initialize TOAST UI Editor (markdown viewer).', e); } catch { /* ignore */ }
+		return;
+	}
+
+	markdownViewers[boxId] = {
+		setValue: (value) => {
+			try {
+				if (instance && typeof instance.setMarkdown === 'function') {
+					instance.setMarkdown(String(value || ''));
 				}
 			} catch {
 				// ignore
 			}
-		});
+		},
+		dispose: () => {
+			try {
+				if (instance && typeof instance.destroy === 'function') {
+					instance.destroy();
+				}
+			} catch {
+				// ignore
+			}
+		}
+	};
+}
+
+function initMarkdownEditor(boxId) {
+	const container = document.getElementById(boxId + '_md_editor');
+	const viewer = document.getElementById(boxId + '_md_viewer');
+	if (!container || !viewer) {
+		return;
+	}
+
+	const isLikelyDarkTheme = () => {
+		try {
+			const value = getComputedStyle(document.documentElement)
+				.getPropertyValue('--vscode-editor-background')
+				.trim();
+			if (!value) {
+				return false;
+			}
+			let r, g, b;
+			if (value.startsWith('#')) {
+				const hex = value.slice(1);
+				if (hex.length === 3) {
+					r = parseInt(hex[0] + hex[0], 16);
+					g = parseInt(hex[1] + hex[1], 16);
+					b = parseInt(hex[2] + hex[2], 16);
+				} else if (hex.length === 6) {
+					r = parseInt(hex.slice(0, 2), 16);
+					g = parseInt(hex.slice(2, 4), 16);
+					b = parseInt(hex.slice(4, 6), 16);
+				} else {
+					return false;
+				}
+			} else {
+				const m = value.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+				if (!m) {
+					return false;
+				}
+				r = parseInt(m[1], 10);
+				g = parseInt(m[2], 10);
+				b = parseInt(m[3], 10);
+			}
+			const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+			return luma < 128;
+		} catch {
+			return false;
+		}
+	};
+
+	// If an editor exists, ensure it's still attached to this container.
+	try {
+		const existing = markdownEditors && markdownEditors[boxId] ? markdownEditors[boxId] : null;
+		if (existing) {
+			const attached = !!(container.querySelector && container.querySelector('.toastui-editor-defaultUI'));
+			if (attached) {
+				return;
+			}
+			try { existing.dispose && existing.dispose(); } catch { /* ignore */ }
+			try { delete markdownEditors[boxId]; } catch { /* ignore */ }
+		}
 	} catch {
 		// ignore
 	}
-	viewer.textContent = text;
-	markdownRenderCacheByBoxId[boxId] = '';
+
+	let ToastEditor = null;
+	try {
+		ToastEditor = (window.toastui && window.toastui.Editor) ? window.toastui.Editor : null;
+	} catch {
+		ToastEditor = null;
+	}
+
+	if (!ToastEditor) {
+		// Webview scripts load sequentially, but keep a small retry loop for safety.
+		let attempt = 0;
+		try {
+			window.__kustoToastUiInitRetryCountByBoxId = window.__kustoToastUiInitRetryCountByBoxId || {};
+			attempt = (window.__kustoToastUiInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoToastUiInitRetryCountByBoxId[boxId] = attempt;
+		} catch {
+			attempt = 1;
+		}
+
+		const delays = [50, 250, 1000, 2000, 4000];
+		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
+		if (attempt <= delays.length) {
+			try {
+				setTimeout(() => {
+					try { initMarkdownEditor(boxId); } catch { /* ignore */ }
+				}, delay);
+			} catch {
+				// ignore
+			}
+		} else {
+			try { console.error('TOAST UI Editor is not available (markdown editor).'); } catch { /* ignore */ }
+		}
+		return;
+	}
+
+	container.style.minHeight = '0';
+	container.style.minWidth = '0';
+
+	// Avoid setMarkdown() during init; pass initial value into the constructor.
+	let initialValue = '';
+	try {
+		const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
+		if (typeof pending === 'string') {
+			initialValue = pending;
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+
+	try {
+		// Ensure a clean mount point.
+		container.textContent = '';
+	} catch {
+		// ignore
+	}
+
+	let toastEditor = null;
+	try {
+		const editorOptions = {
+			el: container,
+			height: '100%',
+			initialEditType: 'wysiwyg',
+			previewStyle: 'vertical',
+			hideModeSwitch: true,
+			usageStatistics: false,
+			initialValue,
+			plugins: getToastUiPlugins(ToastEditor),
+			events: {
+				change: () => {
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				}
+			}
+		};
+		if (isLikelyDarkTheme()) {
+			editorOptions.theme = 'dark';
+		}
+
+		toastEditor = new ToastEditor({
+			...editorOptions
+		});
+	} catch (e) {
+		try { console.error('Failed to initialize TOAST UI Editor (markdown editor).', e); } catch { /* ignore */ }
+		return;
+	}
+
+	const api = {
+		getValue: () => {
+			try { return toastEditor && typeof toastEditor.getMarkdown === 'function' ? String(toastEditor.getMarkdown() || '') : ''; } catch { return ''; }
+		},
+		setValue: (value) => {
+			try {
+				if (toastEditor && typeof toastEditor.setMarkdown === 'function') {
+					toastEditor.setMarkdown(String(value || ''));
+				}
+			} catch { /* ignore */ }
+		},
+		layout: () => {
+			try {
+				if (!toastEditor || typeof toastEditor.setHeight !== 'function') {
+					return;
+				}
+				const wrapper = container.closest ? container.closest('.query-editor-wrapper') : null;
+				const resizer = document.getElementById(boxId + '_md_resizer');
+				if (!wrapper) {
+					return;
+				}
+				let h = wrapper.getBoundingClientRect().height;
+				try {
+					if (resizer) {
+						h -= resizer.getBoundingClientRect().height;
+					}
+				} catch { /* ignore */ }
+				h = Math.max(120, Math.min(900, h));
+				toastEditor.setHeight(Math.round(h) + 'px');
+			} catch { /* ignore */ }
+		},
+		dispose: () => {
+			try {
+				if (toastEditor && typeof toastEditor.destroy === 'function') {
+					toastEditor.destroy();
+				}
+			} catch { /* ignore */ }
+			try { container.textContent = ''; } catch { /* ignore */ }
+		},
+		_toastui: toastEditor
+	};
+
+	markdownEditors[boxId] = api;
+	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
+
+	// Drag handle resize (same pattern as the KQL editor).
+	try {
+		const wrapper = container.closest ? container.closest('.query-editor-wrapper') : null;
+		const resizer = document.getElementById(boxId + '_md_resizer');
+		if (wrapper && resizer) {
+			resizer.addEventListener('mousedown', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+				} catch {
+					// ignore
+				}
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startHeight = wrapper.getBoundingClientRect().height;
+
+				const onMove = (moveEvent) => {
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
+					let nextHeight = 0;
+					try {
+						const mode = (typeof __kustoGetMarkdownMode === 'function') ? __kustoGetMarkdownMode(boxId) : 'wysiwyg';
+						if (mode === 'preview') {
+							nextHeight = Math.max(120, startHeight + delta);
+						} else {
+							nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+						}
+					} catch {
+						nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					}
+					wrapper.style.height = nextHeight + 'px';
+					try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
+					try { api.layout(); } catch { /* ignore */ }
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove, true);
+					document.removeEventListener('mouseup', onUp, true);
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				};
+
+				document.addEventListener('mousemove', onMove, true);
+				document.addEventListener('mouseup', onUp, true);
+			});
+		}
+	} catch {
+		// ignore
+	}
+
+	// Ensure correct initial sizing.
+	try { api.layout(); } catch { /* ignore */ }
 }
 
 function addPythonBox(options) {
@@ -614,12 +971,23 @@ function addPythonBox(options) {
 		'<path d="M12 4L4 12"/>' +
 		'</svg>';
 
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
 	const boxHtml =
 		'<div class="query-box" id="' + id + '">' +
 		'<div class="section-header-row">' +
 		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 		'<div class="section-title">Python</div>' +
 		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="Python controls">' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'</div>' +
 		'<button class="section-btn" type="button" onclick="runPythonBox(\'' + id + '\')" title="Run Python">▶ Run</button>' +
 		'<button class="section-btn" type="button" onclick="removePythonBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
@@ -943,6 +1311,14 @@ function addUrlBox(options) {
 		'<circle cx="8" cy="8" r="2.1" />' +
 		'</svg>';
 
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
 	const boxHtml =
 		'<div class="query-box url-box" id="' + id + '">' +
 		'<div class="section-header-row url-section-header">' +
@@ -951,6 +1327,7 @@ function addUrlBox(options) {
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeUrlBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
 		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleUrlBox(\'' + id + '\')" title="Show" aria-label="Show">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +

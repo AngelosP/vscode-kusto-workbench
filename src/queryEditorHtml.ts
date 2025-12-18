@@ -18,6 +18,62 @@ export async function getQueryEditorHtml(
 	const queryEditorCssUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.css')).toString()
 	);
+	const toastUiEditorCssUri = withCacheBuster(
+		webview
+			.asWebviewUri(
+				vscode.Uri.joinPath(
+					extensionUri,
+					'media',
+					'queryEditor',
+					'vendor',
+					'toastui-editor',
+					'toastui-editor.css'
+				)
+			)
+			.toString()
+	);
+	const toastUiEditorDarkCssUri = withCacheBuster(
+		webview
+			.asWebviewUri(
+				vscode.Uri.joinPath(
+					extensionUri,
+					'media',
+					'queryEditor',
+					'vendor',
+					'toastui-editor',
+					'toastui-editor-dark.css'
+				)
+			)
+			.toString()
+	);
+	const toastUiEditorColorSyntaxCssUri = withCacheBuster(
+		webview
+			.asWebviewUri(
+				vscode.Uri.joinPath(
+					extensionUri,
+					'media',
+					'queryEditor',
+					'vendor',
+					'toastui-editor',
+					'toastui-editor-plugin-color-syntax.css'
+				)
+			)
+			.toString()
+	);
+	const tuiColorPickerCssUri = withCacheBuster(
+		webview
+			.asWebviewUri(
+				vscode.Uri.joinPath(
+					extensionUri,
+					'media',
+					'queryEditor',
+					'vendor',
+					'toastui-editor',
+					'tui-color-picker.css'
+				)
+			)
+			.toString()
+	);
 	const queryEditorJsUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.js')).toString()
 	);
@@ -60,6 +116,10 @@ export async function getQueryEditorHtml(
 
 	return template
 		.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
+		.replaceAll('{{toastUiEditorCssUri}}', toastUiEditorCssUri)
+		.replaceAll('{{toastUiEditorDarkCssUri}}', toastUiEditorDarkCssUri)
+		.replaceAll('{{toastUiEditorColorSyntaxCssUri}}', toastUiEditorColorSyntaxCssUri)
+		.replaceAll('{{tuiColorPickerCssUri}}', tuiColorPickerCssUri)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)

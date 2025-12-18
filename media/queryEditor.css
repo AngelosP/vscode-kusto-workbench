@@ -116,24 +116,52 @@
 			pointer-events: none;
 		}
 
+		/* Markdown Preview sizing:
+		   - default: auto-expand to the full rendered height
+		   - once user resizes: constrain to wrapper height and scroll inside */
+		.query-box.is-md-preview .markdown-viewer {
+			border: none;
+			border-radius: 0;
+			background: transparent;
+			padding: 0;
+			min-height: 0;
+		}
+
+		/* Preview: remove the border around the TOAST UI area (the wrapper), while keeping the
+		   overall section chrome (header, spacing) intact. */
 		.query-box.is-md-preview .query-editor-wrapper {
+			border: none;
+			background: transparent;
+		}
+
+		/* Preview mode: remove any TOAST UI viewer chrome (border/outline) without changing
+		   the section wrapper border. */
+		.query-box.is-md-preview .markdown-viewer .toastui-editor-defaultUI {
+			border: none !important;
+			outline: none !important;
+			box-shadow: none !important;
+		}
+		.query-box.is-md-preview .markdown-viewer .toastui-editor-contents {
+			border: none !important;
+			outline: none !important;
+			box-shadow: none !important;
+		}
+		.query-box.is-md-preview-auto .query-editor-wrapper {
 			height: auto;
 			min-height: 0;
 			overflow: visible;
-			background: var(--vscode-editor-background);
-			border: none;
 		}
-
-		.query-box.is-md-preview .query-editor-resizer {
-			display: none;
-		}
-
-		.query-box.is-md-preview .markdown-viewer {
-			min-height: 0;
+		.query-box.is-md-preview-auto .markdown-viewer {
+			flex: 0 0 auto;
 			overflow: visible;
-			border: none;
-			background: transparent;
-			padding: 0 0 15px 0;
+		}
+		.query-box.is-md-preview-fixed .query-editor-wrapper {
+			/* Keep the wrapper constrained so the resizer can make it smaller. */
+			overflow: hidden;
+		}
+		.query-box.is-md-preview-fixed .markdown-viewer {
+			flex: 1 1 auto;
+			overflow: auto;
 		}
 
 		.query-box.is-md-preview {
@@ -261,6 +289,14 @@
 			background: transparent;
 		}
 
+		.md-tabs-divider {
+			width: 1px;
+			height: 16px;
+			background: var(--vscode-input-border);
+			margin: 0 4px;
+			opacity: 0.9;
+		}
+
 		.md-tab {
 			background: transparent;
 			border: 1px solid transparent;
@@ -276,6 +312,21 @@
 			line-height: 0;
 		}
 
+		/* Make maximize → show/hide spacing match show/hide → close spacing. */
+		.md-tab.md-max-btn {
+			margin-right: 6px;
+		}
+
+		.md-tab.md-mode-btn {
+			width: auto;
+			padding: 0 10px;
+			font-size: 12px;
+			line-height: 1;
+			height: 28px;
+			min-width: 68px;
+			justify-content: center;
+		}
+
 		.md-tab svg {
 			display: block;
 		}
@@ -287,6 +338,14 @@
 		.md-tab.is-active {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		/* Markdown section preview mode (Preview button): hide the editor and show the viewer. */
+		.query-box.is-md-preview .kusto-markdown-editor {
+			display: none !important;
+		}
+		.query-box.is-md-preview .markdown-viewer {
+			display: block !important;
 		}
 
 		/* Query section collapse: keep only the top header row (name + buttons). */
@@ -302,7 +361,7 @@
 		.markdown-viewer {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
-			padding: 10px;
+			padding: 0;
 			background: var(--vscode-editor-background);
 			min-height: 80px;
 			font-size: 13px;
@@ -311,10 +370,100 @@
 			overflow: auto;
 		}
 
+		.markdown-viewer .toastui-editor-contents {
+			background: var(--vscode-editor-background);
+			color: var(--vscode-editor-foreground);
+			/* Preview should read like docs, not like code. */
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+			padding: 10px;
+		}
+
 		.markdown-viewer code {
 			background: var(--vscode-textBlockQuote-background);
 			padding: 1px 3px;
 			border-radius: 3px;
+			font-family: var(--vscode-editor-font-family);
+		}
+
+		/* Markdown editor (TOAST UI Editor) - keep only the toolbar + editor surface.
+		   The section header controls visibility, so hide the editor's internal preview tabs/panes. */
+		.kusto-markdown-editor .toastui-editor-defaultUI {
+			border: none;
+			/* Keep the editor UI (toolbar, dialogs) in VS Code UI font. */
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-editor-foreground);
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
+			border-bottom-color: var(--vscode-input-border);
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			height: 36px;
+			padding: 0 10px;
+		}
+
+		.kusto-markdown-editor .toastui-editor-toolbar {
+			height: 36px;
+		}
+
+		/* Avoid global webview button styling from clobbering Toast UI toolbar icons.
+		   (We keep this minimal and only set background-color, never the background shorthand.) */
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button {
+			background-color: transparent;
+			color: inherit;
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button:hover {
+			background-color: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button:active {
+			opacity: 1;
+		}
+
+		.kusto-markdown-editor .toastui-editor-toolbar-divider {
+			height: 14px;
+			margin: 11px 8px;
+			background-color: var(--vscode-input-border);
+		}
+
+		/* Toast UI's built-in mode switch and preview UI are enabled.
+		   (previewStyle: 'vertical' shows a split preview when in Markdown mode.) */
+
+		/* Ensure the editable surface uses VS Code theme colors (fixes dark theme readability). */
+		.kusto-markdown-editor .toastui-editor-main,
+		.kusto-markdown-editor .toastui-editor-md-container,
+		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor,
+		.kusto-markdown-editor .toastui-editor-main .ProseMirror {
+			background: var(--vscode-editor-background) !important;
+			color: var(--vscode-editor-foreground) !important;
+			font-size: 13px;
+		}
+
+		/* Markdown editing surface: use the editor (monospace) font. */
+		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor {
+			font-family: var(--vscode-editor-font-family) !important;
+		}
+
+		/* WYSIWYG editing surface: use the UI font for better readability. */
+		.kusto-markdown-editor .toastui-editor-main .ProseMirror {
+			font-family: var(--vscode-font-family) !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-main .ProseMirror {
+			caret-color: var(--vscode-editor-foreground);
+		}
+
+		/* Match typical VS Code input focus cues for the editor outline/border. */
+		.kusto-markdown-editor .toastui-editor-defaultUI {
+			outline: 1px solid var(--vscode-input-border);
+			outline-offset: -1px;
+		}
+		.kusto-markdown-editor .toastui-editor-defaultUI:focus-within {
+			outline-color: var(--vscode-focusBorder);
 		}
 
 		.python-output {
@@ -1101,8 +1250,11 @@
 			opacity: 0.9;
 		}
 
+		/* Global button styling for our UI.
+		   Use background-color (not background shorthand) so we don't wipe button background-image
+		   sprites (Toast UI toolbar icons, any icon-buttons, etc.). */
 		button {
-			background: var(--vscode-button-background);
+			background-color: var(--vscode-button-background);
 			color: var(--vscode-button-foreground);
 			border: none;
 			padding: 6px 14px;
@@ -1112,7 +1264,7 @@
 		}
 
 		button:hover {
-			background: var(--vscode-button-hoverBackground);
+			background-color: var(--vscode-button-hoverBackground);
 		}
 
 		button:active {

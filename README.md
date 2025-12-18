@@ -173,6 +173,10 @@ Python sections run **locally** on your machine by spawning a local Python inter
 - Remove `.kqlx` content (including embedded results): delete or edit the `.kqlx` file.
 - Clear the persistent session: delete the extension’s global storage for Kusto Workbench (this removes the auto-saved session file).
 
+## Third-party credits
+
+- Markdown section editing uses **TOAST UI Editor** (MIT) by NHN Cloud FE Development Lab: https://github.com/nhn/tui.editor
+
 ## License
 
 [MIT](LICENSE)

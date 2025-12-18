@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Markdown section massively improved thanks to the folks @ toast-ui who have built an awesome control!
+- Created re-usable drop-down control and ... then well ... re-used it.
+- Made the Kusto editor's autocomplete drop-down be smarter in terms of its size and overall behavior
+-  
+
 ## [0.0.7]
 
 - Tables sorting (even advanced multi-column scenarios are supported)
