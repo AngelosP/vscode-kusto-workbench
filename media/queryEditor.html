@@ -47,7 +47,10 @@
 				<div class="object-viewer-section object-viewer-raw-section">
 					<div class="object-viewer-section-header">
 						<div class="object-viewer-section-title">Raw value</div>
-						<button id="objectViewerRawToggle" class="tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
+						<div class="object-viewer-raw-actions">
+							<button id="objectViewerRawCopy" class="tool-toggle-btn object-viewer-raw-copy" type="button" onclick="copyObjectViewerRawToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+							<button id="objectViewerRawToggle" class="tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
+						</div>
 					</div>
 					<div id="objectViewerRawBody" class="object-viewer-raw-body">
 						<div id="objectViewerContent" class="object-viewer-json object-viewer-json-wrap"></div>

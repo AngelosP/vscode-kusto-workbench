@@ -2569,6 +2569,14 @@
 			background: var(--vscode-editorGroupHeader-tabsBackground);
 		}
 
+		.object-viewer-props-section .object-viewer-section-header {
+			justify-content: flex-start;
+		}
+
+		.object-viewer-props-section .object-viewer-section-title {
+			flex: 1;
+		}
+
 		.object-viewer-section-title {
 			font-size: 12px;
 			font-weight: 600;
@@ -2609,7 +2617,19 @@
 		}
 
 		.object-viewer-crumb:hover {
+			background: transparent;
 			text-decoration: underline;
+		}
+
+		.object-viewer-crumb:focus {
+			outline: none;
+			background: transparent;
+		}
+
+		.object-viewer-crumb:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 2px;
+			background: transparent;
 		}
 
 		.object-viewer-crumb:disabled {
@@ -2630,6 +2650,7 @@
 			border-collapse: collapse;
 			font-size: 12px;
 			font-family: var(--vscode-font-family);
+			user-select: text;
 		}
 
 		.object-viewer-props-table td {
@@ -2637,6 +2658,42 @@
 			border-top: 1px solid var(--vscode-panel-border);
 			vertical-align: top;
 			word-break: break-word;
+			user-select: text;
+		}
+
+		.object-viewer-prop-key-cell {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			min-width: 0;
+		}
+
+		.object-viewer-prop-key-text {
+			flex: 1;
+			min-width: 0;
+			word-break: break-word;
+		}
+
+		.object-viewer-prop-copy-btn {
+			min-width: 22px;
+			width: 22px;
+			height: 22px;
+			opacity: 0;
+			pointer-events: none;
+			user-select: none;
+		}
+
+		.object-viewer-props-table tr:hover .object-viewer-prop-copy-btn,
+		.object-viewer-props-table tr:focus-within .object-viewer-prop-copy-btn {
+			opacity: 1;
+			pointer-events: auto;
+		}
+
+		.object-viewer-raw-actions {
+			display: inline-flex;
+			gap: 4px;
+			align-items: center;
 		}
 
 		.object-viewer-props-table td:first-child {
@@ -2648,6 +2705,13 @@
 
 		.object-viewer-props-table td:last-child {
 			font-family: var(--vscode-editor-font-family);
+			vertical-align: middle;
+		}
+
+		.object-viewer-props-table tr.search-match td {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			outline: 1px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -1px;
 		}
 
 		.object-viewer-raw-body {

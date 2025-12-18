@@ -2000,6 +2000,7 @@ function __kustoRerenderResultsTable(boxId) {
 				const isObject = cell && cell.isObject;
 				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">View</button>' : '';
+				const cellHtml = isObject ? '' : displayValue;
 				let tdClass = '';
 				if (state.selectedCell && state.selectedCell.row === rowIdx && state.selectedCell.col === colIdx) {
 					tdClass += (tdClass ? ' ' : '') + 'selected-cell';
@@ -2012,7 +2013,7 @@ function __kustoRerenderResultsTable(boxId) {
 				}
 				const classAttr = tdClass ? (' class="' + tdClass + '"') : '';
 				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
-					displayValue + viewBtn +
+					cellHtml + viewBtn +
 				'</td>';
 			}).join('') +
 			'</tr>'
@@ -2177,9 +2178,10 @@ function displayResultForBox(result, boxId, options) {
 				const isObject = cell && cell.isObject;
 				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">View</button>' : '';
+				const cellHtml = isObject ? '' : displayValue;
 				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
 					'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">' +
-					displayValue + viewBtn + '</td>';
+					cellHtml + viewBtn + '</td>';
 			}).join('') +
 			'</tr>'
 		}).join('') +

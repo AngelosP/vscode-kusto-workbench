@@ -25,6 +25,7 @@ function openObjectViewer(row, col, boxId) {
 
 	// Initialize the raw show/hide button glyph.
 	try { __kustoEnsureObjectViewerRawToggleIcon(); } catch { /* ignore */ }
+	try { __kustoEnsureObjectViewerRawCopyIcon(); } catch { /* ignore */ }
 	try {
 		window.__kustoObjectViewerRawVisible = true;
 		const rawBody = document.getElementById('objectViewerRawBody');
@@ -57,6 +58,32 @@ function openObjectViewer(row, col, boxId) {
 		searchInput.value = '';
 		document.getElementById('objectViewerSearchResults').textContent = '';
 	}
+}
+
+function copyObjectViewerRawToClipboard() {
+	const rawBody = document.getElementById('objectViewerRawBody');
+	const rawEl = document.getElementById('objectViewerContent');
+	if (!rawBody || !rawEl) { return; }
+
+	let textToCopy = '';
+	try {
+		const sel = window.getSelection && window.getSelection();
+		const hasSelection = sel && !sel.isCollapsed && typeof sel.toString === 'function' && sel.toString();
+		const inRaw = sel && sel.anchorNode && sel.focusNode && rawBody.contains(sel.anchorNode) && rawBody.contains(sel.focusNode);
+		if (hasSelection && inRaw) {
+			textToCopy = sel.toString();
+		}
+	} catch { /* ignore */ }
+
+	if (!textToCopy) {
+		try {
+			textToCopy = String(window.currentObjectViewerData && window.currentObjectViewerData.raw ? window.currentObjectViewerData.raw : '');
+		} catch {
+			textToCopy = '';
+		}
+	}
+
+	__kustoWriteTextToClipboard(textToCopy);
 }
 
 function closeObjectViewer(event) {
@@ -200,6 +227,50 @@ function __kustoEnsureObjectViewerRawToggleIcon() {
 	}
 }
 
+function __kustoEnsureObjectViewerRawCopyIcon() {
+	const btn = document.getElementById('objectViewerRawCopy');
+	if (!btn) { return; }
+	if (btn.__kustoHasIcon) { return; }
+	btn.__kustoHasIcon = true;
+	try {
+		btn.innerHTML = __kustoGetCopyIconSvg(16);
+	} catch {
+		btn.textContent = 'Copy';
+	}
+}
+
+function __kustoGetCopyIconSvg(size) {
+	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 16;
+	return (
+		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<rect x="5" y="5" width="9" height="9" rx="2" />' +
+		'<path d="M3 11V4c0-1.1.9-2 2-2h7" />' +
+		'</svg>'
+	);
+}
+
+function __kustoWriteTextToClipboard(text) {
+	const value = (text === null || text === undefined) ? '' : String(text);
+	try {
+		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+			navigator.clipboard.writeText(value);
+			return;
+		}
+	} catch { /* ignore */ }
+	try {
+		const ta = document.createElement('textarea');
+		ta.value = value;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-1000px';
+		ta.style.top = '-1000px';
+		document.body.appendChild(ta);
+		ta.select();
+		document.execCommand('copy');
+		document.body.removeChild(ta);
+	} catch { /* ignore */ }
+}
+
 function __kustoRenderObjectViewer() {
 	const st = window.__kustoObjectViewerState;
 	if (!st || !Array.isArray(st.stack) || st.stack.length < 1) { return; }
@@ -280,12 +351,35 @@ function __kustoRenderObjectViewer() {
 		for (const key of keys) {
 			const tr = document.createElement('tr');
 			const tdKey = document.createElement('td');
-			tdKey.textContent = String(key);
+			const keyCell = document.createElement('div');
+			keyCell.className = 'object-viewer-prop-key-cell';
+			const keyText = document.createElement('span');
+			keyText.className = 'object-viewer-prop-key-text';
+			keyText.textContent = String(key);
+			keyCell.appendChild(keyText);
 			const tdVal = document.createElement('td');
 			let nextValue;
 			try { nextValue = v[key]; } catch { nextValue = undefined; }
 
 			const parsedNext = __kustoParseMaybeJson(nextValue);
+			try {
+				tr.dataset.kustoKeyLower = String(key).toLowerCase();
+				tr.dataset.kustoValueLower = __kustoStringifyForSearch(parsedNext).toLowerCase();
+			} catch { /* ignore */ }
+
+			// Copy value icon (hover on row). Copies the property's raw value.
+			const copyBtn = document.createElement('button');
+			copyBtn.type = 'button';
+			copyBtn.className = 'refresh-btn close-btn object-viewer-prop-copy-btn';
+			copyBtn.title = 'Copy value to clipboard';
+			copyBtn.setAttribute('aria-label', 'Copy value to clipboard');
+			try { copyBtn.innerHTML = __kustoGetCopyIconSvg(14); } catch { copyBtn.textContent = 'Copy'; }
+			copyBtn.addEventListener('click', (e) => {
+				try { e.stopPropagation(); } catch { /* ignore */ }
+				__kustoWriteTextToClipboard(__kustoStringifyForSearch(parsedNext));
+			});
+			keyCell.appendChild(copyBtn);
+			tdKey.appendChild(keyCell);
 			if (__kustoIsComplexValue(parsedNext)) {
 				const btn = document.createElement('button');
 				btn.type = 'button';
@@ -316,6 +410,23 @@ function __kustoRenderObjectViewer() {
 	}
 
 	try { table.appendChild(tbody); } catch { /* ignore */ }
+	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+}
+
+function __kustoApplyObjectViewerTableSearchHighlight() {
+	const table = document.getElementById('objectViewerPropsTable');
+	if (!table) { return; }
+	const input = document.getElementById('objectViewerSearch');
+	const term = input ? String(input.value || '').trim().toLowerCase() : '';
+	const rows = table.querySelectorAll('tr');
+	rows.forEach((tr) => {
+		try {
+			const keyLower = tr.dataset ? String(tr.dataset.kustoKeyLower || '') : '';
+			const valueLower = tr.dataset ? String(tr.dataset.kustoValueLower || '') : '';
+			const hit = !!term && (keyLower.includes(term) || valueLower.includes(term));
+			tr.classList.toggle('search-match', hit);
+		} catch { /* ignore */ }
+	});
 }
 
 function formatJson(jsonString) {
@@ -396,6 +507,7 @@ function searchInObjectViewer() {
 	if (!searchTerm) {
 		content.innerHTML = window.currentObjectViewerData.formatted;
 		resultsSpan.textContent = '';
+		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 		return;
 	}
 
@@ -408,12 +520,7 @@ function searchInObjectViewer() {
 	content.innerHTML = highlightedHtml;
 
 	resultsSpan.textContent = matches > 0 ? matches + ' match' + (matches !== 1 ? 'es' : '') : 'No matches';
-
-	// Scroll to first match
-	const firstMatch = content.querySelector('.json-highlight');
-	if (firstMatch) {
-		firstMatch.scrollIntoView({ block: 'center', behavior: 'smooth' });
-	}
+	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 }
 
 function highlightSearchTerm(html, searchTerm) {

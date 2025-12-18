@@ -54,6 +54,90 @@ document.addEventListener('keydown', async (event) => {
 	}
 }, true);
 
+// Close open modal dialogs on Escape.
+// Only intercept Escape when a modal is visible, so we don't interfere with
+// Monaco/editor keybindings during normal editing.
+document.addEventListener('keydown', (event) => {
+	try {
+		if (!event || event.key !== 'Escape') {
+			return;
+		}
+
+		let handled = false;
+
+		// Object Viewer
+		try {
+			const modal = document.getElementById('objectViewer');
+			if (modal && modal.classList && modal.classList.contains('visible')) {
+				handled = true;
+				if (typeof window.closeObjectViewer === 'function') {
+					window.closeObjectViewer();
+				} else {
+					modal.classList.remove('visible');
+				}
+			}
+		} catch { /* ignore */ }
+
+		// Column Analysis
+		if (!handled) {
+			try {
+				const modal = document.getElementById('columnAnalysisModal');
+				if (modal && modal.classList && modal.classList.contains('visible')) {
+					handled = true;
+					if (typeof window.closeColumnAnalysis === 'function') {
+						window.closeColumnAnalysis();
+					} else {
+						modal.classList.remove('visible');
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
+		// Column Filter popover
+		if (!handled) {
+			try {
+				const modal = document.querySelector && document.querySelector('.kusto-filter-modal.visible');
+				if (modal) {
+					handled = true;
+					if (typeof window.closeColumnFilterPopover === 'function') {
+						window.closeColumnFilterPopover();
+					} else {
+						try { modal.remove(); } catch { /* ignore */ }
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
+		// Sort dialog (per-results box)
+		if (!handled) {
+			try {
+				const modal = document.querySelector && document.querySelector('.kusto-sort-modal.visible');
+				if (modal) {
+					handled = true;
+					const suffix = '_sort_modal';
+					const id = modal.id ? String(modal.id) : '';
+					const boxId = id.endsWith(suffix) ? id.slice(0, -suffix.length) : '';
+					if (boxId && typeof window.closeSortDialog === 'function') {
+						window.closeSortDialog(boxId);
+					} else {
+						modal.classList.remove('visible');
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
+		if (!handled) {
+			return;
+		}
+
+		try { event.preventDefault(); } catch { /* ignore */ }
+		try { event.stopPropagation(); } catch { /* ignore */ }
+		try { event.stopImmediatePropagation(); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}, true);
+
 // VS Code can intercept Ctrl/Cmd+Space in webviews; provide a reliable autocomplete path for Monaco.
 document.addEventListener('keydown', (event) => {
 	try {
