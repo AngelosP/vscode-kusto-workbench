@@ -154,6 +154,56 @@ function __kustoMaximizeMarkdownBox(boxId) {
 	const wrapper = editorHost && editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
 
+	const tryComputeDesiredWrapperHeight = (mode) => {
+		try {
+			const container = editorHost;
+			const ui = container && container.querySelector ? container.querySelector('.toastui-editor-defaultUI') : null;
+			if (!ui) return undefined;
+			const toolbar = ui.querySelector('.toastui-editor-defaultUI-toolbar');
+			const toolbarH = toolbar && toolbar.getBoundingClientRect ? toolbar.getBoundingClientRect().height : 0;
+
+			let contentH = 0;
+			const m = String(mode || '').toLowerCase();
+			if (m === 'wysiwyg') {
+				// In WYSIWYG the scroll container is inside the ww container.
+				const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
+				if (wwContents && typeof wwContents.scrollHeight === 'number') {
+					contentH = Math.max(contentH, wwContents.scrollHeight);
+				}
+				const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
+				if (prose && typeof prose.scrollHeight === 'number') {
+					contentH = Math.max(contentH, prose.scrollHeight);
+				}
+			} else {
+				// Markdown mode uses CodeMirror.
+				const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
+				if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
+					contentH = Math.max(contentH, cmScroll.scrollHeight);
+				}
+				// Fallback: any visible contents area.
+				const mdContents = ui.querySelector('.toastui-editor-md-container .toastui-editor-contents');
+				if (mdContents && typeof mdContents.scrollHeight === 'number') {
+					contentH = Math.max(contentH, mdContents.scrollHeight);
+				}
+			}
+			// Last-ditch fallback (may include hidden containers, so keep it last).
+			if (!contentH) {
+				const anyContents = ui.querySelector('.toastui-editor-contents');
+				if (anyContents && typeof anyContents.scrollHeight === 'number') {
+					contentH = Math.max(contentH, anyContents.scrollHeight);
+				}
+			}
+			if (!contentH) return undefined;
+
+			const resizerH = 12;
+			const padding = 18;
+			const minH = 120;
+			return Math.max(minH, Math.ceil(toolbarH + contentH + resizerH + padding));
+		} catch {
+			return undefined;
+		}
+	};
+
 	const mode = __kustoGetMarkdownMode(id);
 	if (mode === 'preview') {
 		// Max for preview is the full rendered content: use auto-expand.
@@ -177,14 +227,36 @@ function __kustoMaximizeMarkdownBox(boxId) {
 	}
 
 	// Markdown/WYSIWYG: max is the editing cap.
-	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
-	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	const modeForMeasure = (() => {
+		try { return __kustoGetMarkdownMode(id); } catch { return 'wysiwyg'; }
+	})();
+	const applyOnce = () => {
+		try {
+			// No max cap for markdown/wysiwyg: grow to fit the current content.
+			const desired = tryComputeDesiredWrapperHeight(modeForMeasure);
+			if (typeof desired === 'number' && Number.isFinite(desired) && desired > 0) {
+				wrapper.style.height = Math.round(desired) + 'px';
+			} else {
+				// Fallback: bump the current height upward.
+				const current = wrapper.getBoundingClientRect ? wrapper.getBoundingClientRect().height : 0;
+				wrapper.style.height = Math.max(120, Math.round(current + 400)) + 'px';
+			}
+		} catch { /* ignore */ }
+		try {
+			const ed = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
+			if (ed && typeof ed.layout === 'function') {
+				ed.layout();
+			}
+		} catch { /* ignore */ }
+	};
+	// WYSIWYG layout/scrollHeight can settle a tick later; retry a few times.
 	try {
-		const ed = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
-		if (ed && typeof ed.layout === 'function') {
-			ed.layout();
-		}
+		applyOnce();
+		setTimeout(applyOnce, 50);
+		setTimeout(applyOnce, 150);
+		setTimeout(applyOnce, 350);
 	} catch { /* ignore */ }
+	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
@@ -1108,7 +1180,7 @@ function initMarkdownEditor(boxId) {
 						h -= resizer.getBoundingClientRect().height;
 					}
 				} catch { /* ignore */ }
-				h = Math.max(120, Math.min(900, h));
+				h = Math.max(120, h);
 				toastEditor.setHeight(Math.round(h) + 'px');
 			} catch { /* ignore */ }
 		},
@@ -1164,13 +1236,13 @@ function initMarkdownEditor(boxId) {
 					let nextHeight = 0;
 					try {
 						const mode = (typeof __kustoGetMarkdownMode === 'function') ? __kustoGetMarkdownMode(boxId) : 'wysiwyg';
+						// Preview mode can auto-expand; markdown/wysiwyg has no max height cap.
+						nextHeight = Math.max(120, startHeight + delta);
 						if (mode === 'preview') {
-							nextHeight = Math.max(120, startHeight + delta);
-						} else {
-							nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+							// keep same behavior
 						}
 					} catch {
-						nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+						nextHeight = Math.max(120, startHeight + delta);
 					}
 					wrapper.style.height = nextHeight + 'px';
 					try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
