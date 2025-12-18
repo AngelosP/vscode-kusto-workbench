@@ -22,16 +22,37 @@
 	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
 		<div class="object-viewer-content" onclick="event.stopPropagation()">
 			<div class="object-viewer-header">
-				<h3>Object Viewer</h3>
+				<h3 id="objectViewerTitle"></h3>
 				<div class="object-viewer-search">
 					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..."
 						oninput="searchInObjectViewer()" />
 					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
 				</div>
-				<button class="object-viewer-close" onclick="closeObjectViewer()">Close</button>
+				<button class="refresh-btn close-btn object-viewer-close" type="button" onclick="closeObjectViewer()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" />
+						<path d="M12 4L4 12" />
+					</svg>
+				</button>
 			</div>
 			<div class="object-viewer-body">
-				<div id="objectViewerContent" class="object-viewer-json"></div>
+				<div class="object-viewer-section object-viewer-props-section">
+					<div class="object-viewer-section-header">
+						<button id="objectViewerBackBtn" class="tool-toggle-btn object-viewer-back-btn" type="button" onclick="objectViewerNavigateBack()" title="Back" aria-label="Back" style="display:none;">←</button>
+						<div class="object-viewer-section-title" id="objectViewerPropsTitle"></div>
+					</div>
+					<table class="object-viewer-props-table" id="objectViewerPropsTable" aria-label="Properties"></table>
+				</div>
+
+				<div class="object-viewer-section object-viewer-raw-section">
+					<div class="object-viewer-section-header">
+						<div class="object-viewer-section-title">Raw value</div>
+						<button id="objectViewerRawToggle" class="tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
+					</div>
+					<div id="objectViewerRawBody" class="object-viewer-raw-body">
+						<div id="objectViewerContent" class="object-viewer-json object-viewer-json-wrap"></div>
+					</div>
+				</div>
 			</div>
 		</div>
 	</div>

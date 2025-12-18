@@ -2455,7 +2455,10 @@
 		}
 
 		.object-view-btn {
-			margin-left: 6px;
+			margin-left: 0;
+			margin-top: 0;
+			margin-right: 0;
+			margin-bottom: 0;
 			padding: 2px 6px;
 			font-size: 11px;
 			background: var(--vscode-button-secondaryBackground);
@@ -2463,7 +2466,9 @@
 			border: 1px solid var(--vscode-button-border);
 			border-radius: 3px;
 			cursor: pointer;
-			vertical-align: middle;
+			display: inline-flex;
+			align-items: center;
+			vertical-align: baseline;
 		}
 
 		.object-view-btn:hover {
@@ -2538,16 +2543,7 @@
 		}
 
 		.object-viewer-close {
-			padding: 4px 12px;
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: none;
-			border-radius: 2px;
-			cursor: pointer;
-		}
-
-		.object-viewer-close:hover {
-			background: var(--vscode-button-secondaryHoverBackground);
+			/* Reuse shared icon-button styling (.refresh-btn). */
 		}
 
 		.object-viewer-body {
@@ -2556,11 +2552,119 @@
 			padding: 16px;
 		}
 
+		.object-viewer-section {
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			background: var(--vscode-editor-background);
+			margin-bottom: 12px;
+		}
+
+		.object-viewer-section-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.object-viewer-section-title {
+			font-size: 12px;
+			font-weight: 600;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.object-viewer-back-btn {
+			padding: 4px 8px;
+			min-width: 28px;
+			height: 28px;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.object-viewer-back-btn:hover {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.object-viewer-props-section .object-viewer-section-title {
+			white-space: normal;
+			overflow: visible;
+			text-overflow: clip;
+		}
+
+		.object-viewer-crumb {
+			background: transparent;
+			border: none;
+			padding: 0;
+			margin: 0;
+			font: inherit;
+			color: var(--vscode-textLink-foreground);
+			cursor: pointer;
+			text-decoration: none;
+		}
+
+		.object-viewer-crumb:hover {
+			text-decoration: underline;
+		}
+
+		.object-viewer-crumb:disabled {
+			color: var(--vscode-foreground);
+			cursor: default;
+			text-decoration: none;
+			opacity: 0.9;
+		}
+
+		.object-viewer-crumb-sep {
+			color: var(--vscode-descriptionForeground);
+			padding: 0 6px;
+			user-select: none;
+		}
+
+		.object-viewer-props-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+		}
+
+		.object-viewer-props-table td {
+			padding: 6px 10px;
+			border-top: 1px solid var(--vscode-panel-border);
+			vertical-align: top;
+			word-break: break-word;
+		}
+
+		.object-viewer-props-table td:first-child {
+			width: 35%;
+			max-width: 360px;
+			font-family: var(--vscode-editor-font-family);
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.object-viewer-props-table td:last-child {
+			font-family: var(--vscode-editor-font-family);
+		}
+
+		.object-viewer-raw-body {
+			padding: 10px 12px;
+		}
+
 		.object-viewer-json {
 			font-family: var(--vscode-editor-font-family);
 			font-size: var(--vscode-editor-font-size);
 			white-space: pre;
 			line-height: 1.6;
+		}
+
+		.object-viewer-json-wrap {
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-x: hidden;
 		}
 
 		.json-key {
