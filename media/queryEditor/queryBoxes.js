@@ -182,6 +182,68 @@ function addQueryBox(options) {
 		'</span>' +
 		'</button>' +
 		'</div>';
+
+	// Reusable dropdown markup helpers (loaded via media/queryEditor/dropdown.js)
+	const __kustoRenderSelect = (opts) => {
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.renderSelectHtml === 'function') {
+				return window.__kustoDropdown.renderSelectHtml(opts);
+			}
+		} catch { /* ignore */ }
+		return '';
+	};
+	const __kustoRenderMenuDropdown = (opts) => {
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuDropdownHtml === 'function') {
+				return window.__kustoDropdown.renderMenuDropdownHtml(opts);
+			}
+		} catch { /* ignore */ }
+		return '';
+	};
+
+	const favoritesDropdownHtml = __kustoRenderMenuDropdown({
+		wrapperClass: 'kusto-favorites-combo',
+		wrapperId: id + '_favorites_wrapper',
+		wrapperStyle: 'display:none;',
+		title: 'Favorites',
+		buttonId: id + '_favorites_btn',
+		buttonTextId: id + '_favorites_btn_text',
+		menuId: id + '_favorites_menu',
+		placeholder: 'Select favorite...',
+		onToggle: "toggleFavoritesDropdown('" + id + "')"
+	});
+
+	// IMPORTANT: Use a single dropdown implementation everywhere (button+menu), even when
+	// other code paths still expect a <select>. We keep a hidden backing <select> with the
+	// same id so existing selection/persistence code continues to work.
+	const clusterSelectHtml = __kustoRenderMenuDropdown({
+		wrapperClass: 'half-width',
+		title: 'Kusto Cluster',
+		iconSvg: clusterIconSvg,
+		includeHiddenSelect: true,
+		selectId: id + '_connection',
+		onChange: "updateDatabaseField('" + id + "'); try{schedulePersist&&schedulePersist()}catch{}",
+		buttonId: id + '_connection_btn',
+		buttonTextId: id + '_connection_btn_text',
+		menuId: id + '_connection_menu',
+		placeholder: 'Select Cluster...',
+		onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + id + "_connection')}catch{}"
+	});
+
+	const databaseSelectHtml = __kustoRenderMenuDropdown({
+		wrapperClass: 'half-width',
+		title: 'Kusto Database',
+		iconSvg: databaseIconSvg,
+		includeHiddenSelect: true,
+		selectId: id + '_database',
+		onChange: "onDatabaseChanged('" + id + "'); try{schedulePersist&&schedulePersist()}catch{}",
+		buttonId: id + '_database_btn',
+		buttonTextId: id + '_database_btn_text',
+		menuId: id + '_database_menu',
+		placeholder: 'Select Database...',
+		onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + id + "_database')}catch{}"
+	});
+
 	const boxHtml =
 		'<div class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '">' +
 		'<div class="query-header">' +
@@ -199,25 +261,28 @@ function addQueryBox(options) {
 		'</div>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +
-		'<div class="kusto-favorites-combo select-wrapper" id="' + id + '_favorites_wrapper" style="display:none;" title="Favorites">' +
-		'<button type="button" class="kusto-favorites-btn" id="' + id + '_favorites_btn" onclick="toggleFavoritesDropdown(\'' + id + '\'); event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-		'<span class="kusto-favorites-btn-text" id="' + id + '_favorites_btn_text">Select favorite...</span>' +
-		'<span class="kusto-favorites-btn-caret" aria-hidden="true">▾</span>' +
-		'</button>' +
-		'<div class="kusto-favorites-menu" id="' + id + '_favorites_menu" role="listbox" style="display:none;"></div>' +
-		'</div>' +
-		'<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
-		'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
-		'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
-		'<option value="" disabled selected hidden>Select Cluster...</option>' +
-		'</select>' +
-		'</div>' +
-		'<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
-		'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
-		'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
-		'<option value="" disabled selected hidden>Select Database...</option>' +
-		'</select>' +
-		'</div>' +
+		(favoritesDropdownHtml ||
+			('<div class="kusto-favorites-combo select-wrapper" id="' + id + '_favorites_wrapper" style="display:none;" title="Favorites">' +
+			'<button type="button" class="kusto-favorites-btn" id="' + id + '_favorites_btn" onclick="toggleFavoritesDropdown(\'' + id + '\'); event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+			'<span class="kusto-favorites-btn-text" id="' + id + '_favorites_btn_text">Select favorite...</span>' +
+			'<span class="kusto-favorites-btn-caret" aria-hidden="true">▾</span>' +
+			'</button>' +
+			'<div class="kusto-favorites-menu" id="' + id + '_favorites_menu" role="listbox" style="display:none;"></div>' +
+			'</div>')) +
+		(clusterSelectHtml ||
+			('<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
+			'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
+			'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
+			'<option value="" disabled selected hidden>Select Cluster...</option>' +
+			'</select>' +
+			'</div>')) +
+		(databaseSelectHtml ||
+			('<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
+			'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
+			'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
+			'<option value="" disabled selected hidden>Select Database...</option>' +
+			'</select>' +
+			'</div>')) +
 		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
 		'<button class="refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
 		'<button class="refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
@@ -3043,7 +3108,7 @@ function __kustoFormatFavoriteDisplayHtml(fav) {
 function __kustoSetActiveFavoriteMenuItem(boxId, el) {
 	const menu = document.getElementById(boxId + '_favorites_menu');
 	if (!menu) return;
-	const items = Array.from(menu.querySelectorAll('.kusto-favorites-item[role="option"]'));
+	const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
 	for (const it of items) {
 		const active = (it === el);
 		it.classList.toggle('is-active', active);
@@ -3059,7 +3124,7 @@ function __kustoSetActiveFavoriteMenuItem(boxId, el) {
 function __kustoMoveActiveFavoriteMenuItem(boxId, delta) {
 	const menu = document.getElementById(boxId + '_favorites_menu');
 	if (!menu) return;
-	const items = Array.from(menu.querySelectorAll('.kusto-favorites-item[role="option"]'));
+	const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
 	if (!items.length) return;
 	let idx = items.findIndex(it => it.classList.contains('is-active'));
 	let next;
@@ -3120,14 +3185,17 @@ function __kustoWireFavoritesMenuInteractions(boxId) {
 			// If focus is on the trash button, let it handle Enter.
 			try {
 				const t = e && e.target ? e.target : null;
-				if (t && t.classList && t.classList.contains('kusto-favorites-trash')) {
+				if (t && t.classList && (t.classList.contains('kusto-dropdown-trash') || t.classList.contains('kusto-favorites-trash'))) {
 					return;
 				}
 			} catch { /* ignore */ }
 			e.preventDefault();
-			const active = menu.querySelector('.kusto-favorites-item.is-active');
-			if (active && active.dataset && active.dataset.favKey) {
-				selectFavoriteForBox(boxId, String(active.dataset.favKey));
+			const active = menu.querySelector('.kusto-dropdown-item.is-active, .kusto-favorites-item.is-active');
+			if (active && active.dataset) {
+				const k = String(active.dataset.kustoKey || active.dataset.favKey || '');
+				if (k) {
+					selectFavoriteForBox(boxId, k);
+				}
 			}
 			return;
 		}
@@ -3443,47 +3511,85 @@ function renderFavoritesMenuForBox(boxId) {
 		}
 	} catch { /* ignore */ }
 	if (!safe.length) {
-		menu.innerHTML = '<div class="kusto-favorites-empty">No favorites yet.</div>';
+		menu.innerHTML = '<div class="kusto-dropdown-empty">No favorites yet.</div>';
 		return;
 	}
-	const trashSvg = __kustoGetTrashIconSvg();
-	const rows = [];
-	for (let idx = 0; idx < safe.length; idx++) {
-		const f = safe[idx];
-		try {
-			const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
-			const itemId = boxId + '_favorites_opt_' + idx;
-			rows.push(
-				'<div class="kusto-favorites-item" id="' + itemId + '" role="option" tabindex="-1" aria-selected="false" data-fav-key="' + key + '" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
-					'<div class="kusto-favorites-item-main">' +
-						__kustoFormatFavoriteDisplayHtml(f) +
-					'</div>' +
-					'<button type="button" class="kusto-favorites-trash" title="Remove from favorites" aria-label="Remove from favorites" data-fav-key="' + key + '">' +
-						trashSvg +
-					'</button>' +
-				'</div>'
-			);
-		} catch { /* ignore */ }
+	// Prefer shared dropdown renderer (enables optional delete buttons).
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
+			const items = safe.map((f) => {
+				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
+				return {
+					key,
+					html: __kustoFormatFavoriteDisplayHtml(f),
+					ariaLabel: 'Select favorite',
+					// Favorites explicitly opts into delete.
+					enableDelete: true
+				};
+			});
+
+			const otherRowHtml =
+				'<div class="kusto-dropdown-item" id="' + boxId + '_favorites_opt_other" role="option" tabindex="-1" aria-selected="false" data-kusto-key="__other__" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
+					'<div class="kusto-dropdown-item-main"><span class="kusto-favorites-primary">Other...</span></div>' +
+				'</div>';
+
+			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
+				dropdownId: boxId + '_favorites',
+				emptyHtml: '<div class="kusto-dropdown-empty">No favorites yet.</div>',
+				onSelectJs: (keyEnc) => "selectFavoriteForBox('" + boxId + "', '" + keyEnc + "')",
+				onDeleteJs: (keyEnc) => "removeFavoriteFromFavoritesMenu(event, '" + boxId + "', '" + keyEnc + "')",
+				includeOtherRowHtml: otherRowHtml
+			});
+		} else {
+			throw new Error('dropdown helper not available');
+		}
+	} catch {
+		// Fallback to legacy renderer.
+		const trashSvg = __kustoGetTrashIconSvg();
+		const rows = [];
+		for (let idx = 0; idx < safe.length; idx++) {
+			const f = safe[idx];
+			try {
+				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
+				const itemId = boxId + '_favorites_opt_' + idx;
+				rows.push(
+					'<div class="kusto-favorites-item" id="' + itemId + '" role="option" tabindex="-1" aria-selected="false" data-fav-key="' + key + '" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
+						'<div class="kusto-favorites-item-main">' +
+							__kustoFormatFavoriteDisplayHtml(f) +
+						'</div>' +
+						'<button type="button" class="kusto-favorites-trash" title="Remove from favorites" aria-label="Remove from favorites" data-fav-key="' + key + '">' +
+							trashSvg +
+						'</button>' +
+					'</div>'
+				);
+			} catch { /* ignore */ }
+		}
+		rows.push(
+			'<div class="kusto-favorites-item" id="' + boxId + '_favorites_opt_other" role="option" tabindex="-1" aria-selected="false" data-fav-key="__other__" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
+			'<div class="kusto-favorites-item-main"><span class="kusto-favorites-primary">Other...</span></div>' +
+			'</div>'
+		);
+		menu.innerHTML = rows.join('');
 	}
-	rows.push(
-		'<div class="kusto-favorites-item" id="' + boxId + '_favorites_opt_other" role="option" tabindex="-1" aria-selected="false" data-fav-key="__other__" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
-		'<div class="kusto-favorites-item-main"><span class="kusto-favorites-primary">Other...</span></div>' +
-		'</div>'
-	);
-	menu.innerHTML = rows.join('');
 
 	// Wire hover/focus behavior for the freshly rendered items.
 	try {
-		const items = Array.from(menu.querySelectorAll('.kusto-favorites-item[role="option"]'));
+		const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
 		for (const it of items) {
 			it.addEventListener('mouseenter', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
 			it.addEventListener('focus', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
 		}
-		const trashButtons = Array.from(menu.querySelectorAll('.kusto-favorites-trash'));
+		const trashButtons = Array.from(menu.querySelectorAll('.kusto-dropdown-trash, .kusto-favorites-trash'));
 		for (const btn of trashButtons) {
+			// Reusable dropdown delete buttons already have inline onclick.
+			try {
+				if (btn && btn.getAttribute && btn.getAttribute('onclick')) {
+					continue;
+				}
+			} catch { /* ignore */ }
 			btn.addEventListener('click', (ev) => {
 				let k = '';
-				try { k = btn && btn.dataset ? String(btn.dataset.favKey || '') : ''; } catch { k = ''; }
+				try { k = btn && btn.dataset ? String(btn.dataset.kustoKey || btn.dataset.favKey || '') : ''; } catch { k = ''; }
 				removeFavoriteFromFavoritesMenu(ev, boxId, k);
 			});
 		}
@@ -3561,6 +3667,7 @@ function addMissingClusterConnections(boxId) {
 						'<option value="" disabled hidden>Select Database...</option>' +
 						'<option value="' + esc + '">' + esc + '</option>';
 					dbEl.value = chosenDb;
+						try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_database'); } catch { /* ignore */ }
 				}
 			}
 		}
@@ -3628,14 +3735,17 @@ function updateConnectionSelects() {
 			if (!currentValue && resolvedDesiredId) {
 				select.value = resolvedDesiredId;
 				try { delete select.dataset.desiredClusterUrl; } catch { /* ignore */ }
+				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
 				updateDatabaseField(id);
 			} else if (!currentValue && lastConnectionId) {
 				// Pre-fill with last selection if this is a new box.
 				select.value = lastConnectionId;
+				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
 				updateDatabaseField(id);
 			} else if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
 				select.value = currentValue;
 			}
+			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
 		}
 	});
 }
@@ -3699,6 +3809,7 @@ function updateDatabaseField(boxId) {
 			if (refreshBtn) {
 				refreshBtn.disabled = false;
 			}
+			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 		} else {
 			// No cache, need to load from server
 			// Keep the dropdown in a loading state and do not replace its contents with a synthetic
@@ -3709,6 +3820,7 @@ function updateDatabaseField(boxId) {
 			if (refreshBtn) {
 				refreshBtn.disabled = true;
 			}
+			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 
 			// Request databases from the extension
 			vscode.postMessage({
@@ -3723,6 +3835,7 @@ function updateDatabaseField(boxId) {
 		if (refreshBtn) {
 			refreshBtn.disabled = true;
 		}
+		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 	}
 	try {
 		__kustoUpdateFavoritesUiForBox(boxId);
@@ -3861,6 +3974,7 @@ function refreshDatabases(boxId) {
 			databaseSelect.dataset.kustoRefreshInFlight = 'true';
 		} catch { /* ignore */ }
 		databaseSelect.disabled = true;
+		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 	}
 	if (refreshBtn) {
 		try {
@@ -3903,6 +4017,7 @@ function onDatabasesError(boxId, error) {
 				}
 			} catch { /* ignore */ }
 			databaseSelect.disabled = false;
+			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 			try {
 				if (databaseSelect.dataset) {
 					delete databaseSelect.dataset.kustoRefreshInFlight;
@@ -3954,6 +4069,7 @@ function updateDatabaseSelect(boxId, databases) {
 				return '<option value="' + esc + '">' + esc + '</option>';
 			}).join('');
 		databaseSelect.disabled = false;
+		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 
 		// Update local cache with new databases
 		const connectionId = document.getElementById(boxId + '_connection').value;
@@ -3991,6 +4107,7 @@ function updateDatabaseSelect(boxId, databases) {
 		if (target) {
 			databaseSelect.value = target;
 		}
+		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 		__kustoLog(boxId, 'db.select', 'Resolved database selection', {
 			connectionId: document.getElementById(boxId + '_connection') ? document.getElementById(boxId + '_connection').value : '',
 			desired,
@@ -4091,6 +4208,7 @@ function toggleRunMenu(boxId) {
 document.addEventListener('click', () => {
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
+	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 });
 
 function formatElapsed(ms) {

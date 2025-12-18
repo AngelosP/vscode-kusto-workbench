@@ -58,6 +58,7 @@
 		'queryEditor/state.js',
 		'queryEditor/persistence.js',
 		'queryEditor/utils.js',
+		'queryEditor/dropdown.js',
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
 		'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',

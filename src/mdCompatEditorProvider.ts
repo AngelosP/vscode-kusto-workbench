@@ -120,10 +120,11 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'persistDocument': {
-					const normalizeTextToEol = (text: string, eol: vscode.EndOfLine): string => {
+					// VS Code's text model uses `\n` internally even for CRLF files.
+					// Normalize both sides to that representation to avoid false "dirty" edits.
+					const normalizeToLf = (text: string): string => {
 						try {
-							const lf = String(text ?? '').replace(/\r\n/g, '\n');
-							return eol === vscode.EndOfLine.CRLF ? lf.replace(/\n/g, '\r\n') : lf;
+							return String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 						} catch {
 							return String(text ?? '');
 						}
@@ -134,11 +135,12 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 						: [];
 					const firstMarkdown = sections.find((s) => s && String(s.type || '') === 'markdown');
 					const rawNextText = firstMarkdown && typeof firstMarkdown.text === 'string' ? firstMarkdown.text : '';
-					const nextText = normalizeTextToEol(rawNextText, document.eol);
+					const nextText = normalizeToLf(rawNextText);
 
 					try {
 						// Only mark dirty if the raw markdown text to be saved has changed.
-						if (nextText === document.getText()) {
+						const currentText = normalizeToLf(document.getText());
+						if (nextText === currentText) {
 							return;
 						}
 					} catch {
