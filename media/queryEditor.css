@@ -476,9 +476,7 @@
 			outline: 1px solid var(--vscode-input-border);
 			outline-offset: -1px;
 		}
-		.kusto-markdown-editor .toastui-editor-defaultUI:focus-within {
-			outline-color: var(--vscode-focusBorder);
-		}
+		/* Intentionally do not apply a focus ring to the whole Toast UI editor. */
 
 		.python-output {
 			border: 1px solid var(--vscode-input-border);
