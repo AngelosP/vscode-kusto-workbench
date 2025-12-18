@@ -3587,7 +3587,7 @@ function renderFavoritesMenuForBox(boxId) {
 						'<div class="kusto-favorites-item-main">' +
 							__kustoFormatFavoriteDisplayHtml(f) +
 						'</div>' +
-						'<button type="button" class="kusto-favorites-trash" title="Remove from favorites" aria-label="Remove from favorites" data-fav-key="' + key + '">' +
+						'<button type="button" class="kusto-favorites-trash" tabindex="-1" title="Remove from favorites" aria-label="Remove from favorites" data-fav-key="' + key + '">' +
 							trashSvg +
 						'</button>' +
 					'</div>'

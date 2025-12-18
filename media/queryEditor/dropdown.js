@@ -163,7 +163,7 @@
 				'<div class="' + escAttr(classes) + '" id="' + escAttr(itemId) + '" role="option" tabindex="-1"' + ariaSelected + ariaDisabled + ' data-kusto-key="' + escAttr(keyEnc) + '"' + click + aria + '>' +
 					'<div class="kusto-dropdown-item-main">' + mainHtml + '</div>' +
 					(canDelete
-						? ('<button type="button" class="kusto-dropdown-trash" title="Remove" aria-label="Remove" data-kusto-key="' + escAttr(keyEnc) + '" onclick="' + escAttr(onDeleteJs(keyEnc)) + '; event.stopPropagation();">' + trashSvg + '</button>')
+						? ('<button type="button" class="kusto-dropdown-trash" tabindex="-1" title="Remove" aria-label="Remove" data-kusto-key="' + escAttr(keyEnc) + '" onclick="' + escAttr(onDeleteJs(keyEnc)) + '; event.stopPropagation();">' + trashSvg + '</button>')
 						: '') +
 				'</div>'
 			);
@@ -247,6 +247,14 @@
 			btn.setAttribute('aria-expanded', 'true');
 		} catch { /* ignore */ }
 
+		// Close the dropdown automatically if focus leaves the dropdown wrapper
+		// (e.g., user pressed Tab, or clicked somewhere else).
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.wireCloseOnFocusOut === 'function') {
+				window.__kustoDropdown.wireCloseOnFocusOut(btn, menu);
+			}
+		} catch { /* ignore */ }
+
 		try {
 			if (window.__kustoDropdown && typeof window.__kustoDropdown.wireMenuInteractions === 'function') {
 				window.__kustoDropdown.wireMenuInteractions(menu);
@@ -260,6 +268,54 @@
 		} catch { /* ignore */ }
 
 		try { menu.focus(); } catch { /* ignore */ }
+	};
+
+	// Wire focus-out behavior to close a dropdown when it loses focus.
+	// Safe to call multiple times.
+	window.__kustoDropdown.wireCloseOnFocusOut = function (buttonEl, menuEl) {
+		const btn = buttonEl;
+		const menu = menuEl;
+		if (!btn || !menu) return;
+
+		let wrapper = null;
+		try {
+			if (typeof btn.closest === 'function') {
+				wrapper = btn.closest('.kusto-dropdown-wrapper') || btn.closest('.select-wrapper');
+			}
+		} catch { /* ignore */ }
+		if (!wrapper) {
+			try { wrapper = menu.parentElement || null; } catch { wrapper = null; }
+		}
+		if (!wrapper) return;
+
+		try {
+			if (wrapper.dataset && wrapper.dataset.kustoCloseOnBlurWired === '1') {
+				return;
+			}
+			if (wrapper.dataset) {
+				wrapper.dataset.kustoCloseOnBlurWired = '1';
+			}
+		} catch { /* ignore */ }
+
+		// Use focusout (bubbles) so we can detect focus moving anywhere outside the wrapper.
+		wrapper.addEventListener('focusout', () => {
+			try {
+				// Defer until the browser has updated document.activeElement.
+				setTimeout(() => {
+					try {
+						const active = document.activeElement;
+						if (active && wrapper.contains(active)) {
+							return;
+						}
+						// Only close if this dropdown is currently open.
+						if (String(menu.style.display || '') === 'block') {
+							try { menu.style.display = 'none'; } catch { /* ignore */ }
+							try { btn.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+						}
+					} catch { /* ignore */ }
+				}, 0);
+			} catch { /* ignore */ }
+		});
 	};
 
 	const getMenuItems = (menuEl) => {
