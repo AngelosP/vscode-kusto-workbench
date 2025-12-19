@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.1.2]
+
+* Made the schema "(cached)" indicator a hyperlink that opens the cached values viewer.
+
 * Implemented a viewer + editor for all the cached values (authentication tokens, database names, etc.)
 * Improved authentication logic to better handle multi-account scenarios
 
