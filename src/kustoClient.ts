@@ -53,6 +53,8 @@ type StoredAuthAccount = {
 
 type StoredClusterAccountMap = Record<string, string>; // clusterEndpoint -> accountId
 
+type SessionPromptMode = 'default' | 'clearPreference' | 'forceNewSession';
+
 type CachedClientEntry = {
 	client: any;
 	clusterEndpoint: string;
@@ -84,6 +86,30 @@ export class KustoQueryClient {
 
 	constructor(context?: vscode.ExtensionContext) {
 		this.context = context;
+	}
+
+	/**
+	 * Forces an interactive auth prompt for the given connection and refreshes the cached client.
+	 * Useful for explicit user actions like "Refresh databases" when the current account has no access.
+	 */
+	public async reauthenticate(connection: KustoConnection, promptMode: 'clearPreference' | 'forceNewSession' = 'clearPreference'): Promise<void> {
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		if (!clusterEndpoint) {
+			throw new Error('Cluster URL is missing.');
+		}
+		try {
+			const existing = this.clients.get(connection.id);
+			this.clients.delete(connection.id);
+			existing?.client?.close?.();
+		} catch {
+			// ignore
+		}
+		// Explicit user action: skip silent selection so VS Code shows an account picker/sign-in.
+		await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true });
+	}
+
+	public isAuthenticationError(error: unknown): boolean {
+		return this.isAuthError(error);
 	}
 
 	private normalizeClusterEndpoint(clusterUrl: string): string {
@@ -146,7 +172,8 @@ export class KustoQueryClient {
 			throw new Error('Cluster URL is missing.');
 		}
 		const { session, accountId } = await this.getSessionForCluster(clusterEndpoint, {
-			interactiveIfNeeded: !!opts?.interactiveIfNeeded
+			interactiveIfNeeded: !!opts?.interactiveIfNeeded,
+			promptMode: 'default'
 		});
 		if (!session || !accountId) {
 			throw new Error('Failed to authenticate with Microsoft');
@@ -238,7 +265,7 @@ export class KustoQueryClient {
 
 	private async getSessionForCluster(
 		clusterEndpoint: string,
-		opts: { interactiveIfNeeded: boolean }
+		opts: { interactiveIfNeeded: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean }
 	): Promise<{ session: vscode.AuthenticationSession | undefined; accountId: string | undefined }>
 	{
 		// If we have no storage (e.g. unit tests), just fall back to interactive.
@@ -269,19 +296,21 @@ export class KustoQueryClient {
 			}
 		}
 
-		// Silent attempts first.
-		for (const account of candidates) {
-			try {
-				const session = await vscode.authentication.getSession(
-					KustoQueryClient.AUTH_PROVIDER_ID,
-					[...KustoQueryClient.AUTH_SCOPES],
-					{ silent: true, account: { id: account.id, label: account.label } }
-				);
-				if (session) {
-					return { session, accountId: session.account.id };
+		// Silent attempts first (unless explicitly skipped).
+		if (!opts.skipSilent) {
+			for (const account of candidates) {
+				try {
+					const session = await vscode.authentication.getSession(
+						KustoQueryClient.AUTH_PROVIDER_ID,
+						[...KustoQueryClient.AUTH_SCOPES],
+						{ silent: true, account: { id: account.id, label: account.label } }
+					);
+					if (session) {
+						return { session, accountId: session.account.id };
+					}
+				} catch {
+					// Silent path shouldn't throw, but be defensive.
 				}
-			} catch {
-				// Silent path shouldn't throw, but be defensive.
 			}
 		}
 
@@ -289,11 +318,21 @@ export class KustoQueryClient {
 			return { session: undefined, accountId: undefined };
 		}
 
-		// Finally: interactive prompt. This is where users can add a new account.
+		// Finally: interactive prompt.
+		// IMPORTANT: In multi-account scenarios, VS Code may return an existing session without
+		// prompting unless we clear preference / force a new session.
+		const promptMode: SessionPromptMode = opts.promptMode ?? 'default';
+		const interactiveOptions: vscode.AuthenticationGetSessionOptions =
+			promptMode === 'forceNewSession'
+				? { forceNewSession: true }
+				: promptMode === 'clearPreference'
+					? { createIfNone: true, clearSessionPreference: true }
+					: { createIfNone: true };
+
 		const session = await vscode.authentication.getSession(
 			KustoQueryClient.AUTH_PROVIDER_ID,
 			[...KustoQueryClient.AUTH_SCOPES],
-			{ createIfNone: true }
+			interactiveOptions
 		);
 		if (session?.account) {
 			await this.upsertKnownAccount(session.account);
@@ -320,7 +359,7 @@ export class KustoQueryClient {
 
 	private async createClientWithRetry(
 		connection: KustoConnection,
-		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean }
+		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean }
 	): Promise<CachedClientEntry>
 	{
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
@@ -340,7 +379,25 @@ export class KustoQueryClient {
 			}
 
 			// Create client with the best session we can get (silent first, then optional interactive).
-			const entry = await this.createDedicatedClient(connection, { interactiveIfNeeded: opts.interactiveIfNeeded });
+			// promptMode is only used for the final interactive step.
+			const clusterEndpoint2 = this.normalizeClusterEndpoint(connection.clusterUrl);
+			const { session, accountId } = await this.getSessionForCluster(clusterEndpoint2, {
+				interactiveIfNeeded: opts.interactiveIfNeeded,
+				promptMode: opts.promptMode ?? 'default',
+				skipSilent: !!opts.skipSilent
+			});
+			if (!session || !accountId) {
+				throw new Error('Failed to authenticate with Microsoft');
+			}
+			try {
+				await this.upsertKnownAccount(session.account);
+				await this.setClusterAccountId(clusterEndpoint2, session.account.id);
+			} catch {
+				// ignore
+			}
+			const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
+			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, session.accessToken);
+			const entry: CachedClientEntry = { client: new Client(kcsb), clusterEndpoint: clusterEndpoint2, accountId };
 			if (storeInMain) {
 				this.clients.set(connection.id, entry);
 			}
@@ -425,16 +482,34 @@ export class KustoQueryClient {
 				throw error;
 			}
 
-			// Last resort: interactive.
-			if (opts?.cancelableKey) {
-				const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, storeInMainClientCache: false });
-				this.cancelableClientsByKey.set(opts.cancelableKey, created);
+			// Interactive recovery:
+			// 1) Clear session preference so the user can pick another existing account.
+			// 2) If we still get an auth error, force a new session (sign in / add account).
+			const tryInteractive = async (promptMode: SessionPromptMode) => {
+				if (opts?.cancelableKey) {
+					const created = await this.createClientWithRetry(connection, {
+						interactiveIfNeeded: true,
+						storeInMainClientCache: false,
+						promptMode,
+						skipSilent: true
+					});
+					this.cancelableClientsByKey.set(opts.cancelableKey, created);
+					try { opts?.onClient?.(created.client); } catch { /* ignore */ }
+					return await operation(created.client);
+				}
+				const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true });
 				try { opts?.onClient?.(created.client); } catch { /* ignore */ }
 				return await operation(created.client);
+			};
+
+			try {
+				return await tryInteractive('clearPreference');
+			} catch (e2) {
+				if (!this.isAuthError(e2)) {
+					throw e2;
+				}
+				return await tryInteractive('forceNewSession');
 			}
-			const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true });
-			try { opts?.onClient?.(created.client); } catch { /* ignore */ }
-			return await operation(created.client);
 		}
 	}
 

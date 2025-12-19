@@ -1405,15 +1405,85 @@ ${query}
 			return;
 		}
 
-		try {
-			const databasesRaw = await this.kustoClient.getDatabases(connection, forceRefresh);
-			const databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
+		const cachedBefore = (this.getCachedDatabases()[connectionId] ?? []).filter(Boolean);
+
+		const fetchAndNormalize = async (): Promise<string[]> => {
+			const databasesRaw = await this.kustoClient.getDatabases(connection, true);
+			return (Array.isArray(databasesRaw) ? databasesRaw : [])
 				.map((d) => String(d || '').trim())
 				.filter(Boolean)
 				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-			await this.saveCachedDatabases(connectionId, databases);
-			this.postMessage({ type: 'databasesData', databases, boxId });
+		};
+
+		try {
+			let databasesRaw = await this.kustoClient.getDatabases(connection, forceRefresh);
+			let databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
+				.map((d) => String(d || '').trim())
+				.filter(Boolean)
+				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+			// Multi-account recovery:
+			// If the user explicitly clicked refresh and we got an empty list (and we don't have a prior cached list),
+			// it's very commonly because we're authenticated with an account that has no access to this cluster.
+			// Prompt for a different account and retry once.
+			if (forceRefresh && databases.length === 0 && cachedBefore.length === 0) {
+				// First: clear session preference so the user can choose a different existing account.
+				try {
+					await this.kustoClient.reauthenticate(connection, 'clearPreference');
+					databases = await fetchAndNormalize();
+				} catch {
+					// ignore; we'll either retry below or surface error
+				}
+
+				// If still empty, force a new session (sign in / add account) and retry once.
+				if (databases.length === 0) {
+					try {
+						await this.kustoClient.reauthenticate(connection, 'forceNewSession');
+						databases = await fetchAndNormalize();
+					} catch {
+						// ignore
+					}
+				}
+			}
+
+			// Don't wipe a previously-good cached list with an empty refresh result.
+			if (!forceRefresh || databases.length > 0 || cachedBefore.length === 0) {
+				await this.saveCachedDatabases(connectionId, databases);
+				this.postMessage({ type: 'databasesData', databases, boxId });
+				return;
+			}
+
+			this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId });
+			this.postMessage({
+				type: 'databasesError',
+				boxId,
+				error:
+					`Couldn't refresh the database list (received 0 databases). Continuing to use the previous list.\n` +
+					`If you expected databases here, try refreshing again and sign in with a different account.`
+			});
 		} catch (error) {
+			// If the user explicitly requested a refresh and we hit an auth-related error,
+			// try to re-auth interactively and retry once.
+			if (forceRefresh && this.kustoClient.isAuthenticationError(error)) {
+				try {
+					await this.kustoClient.reauthenticate(connection, 'clearPreference');
+					const databases = await fetchAndNormalize();
+					await this.saveCachedDatabases(connectionId, databases);
+					this.postMessage({ type: 'databasesData', databases, boxId });
+					return;
+				} catch {
+					try {
+						await this.kustoClient.reauthenticate(connection, 'forceNewSession');
+						const databases = await fetchAndNormalize();
+						await this.saveCachedDatabases(connectionId, databases);
+						this.postMessage({ type: 'databasesData', databases, boxId });
+						return;
+					} catch {
+						// fall through to error UI
+					}
+				}
+			}
+
 			const userMessage = this.formatQueryExecutionErrorForUser(error, connection);
 			const action = forceRefresh ? 'refresh' : 'load';
 			this.postMessage({
