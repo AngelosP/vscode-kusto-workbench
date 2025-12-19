@@ -1190,28 +1190,22 @@ window.addEventListener('message', event => {
 				} catch { /* ignore */ }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
 				if (optimizeBtn) {
+					// The "Compare two queries" button does not require Copilot.
 					try {
 						if (optimizeBtn.dataset) {
-							optimizeBtn.dataset.kustoCopilotAvailable = available ? '1' : '0';
+							delete optimizeBtn.dataset.kustoDisabledByCopilot;
+							delete optimizeBtn.dataset.kustoCopilotAvailable;
 						}
 					} catch { /* ignore */ }
-
-					const optimizeInProgress = !!(optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeInProgress === '1');
-					if (!available) {
-						optimizeBtn.disabled = true;
-						try { if (optimizeBtn.dataset) optimizeBtn.dataset.kustoDisabledByCopilot = '1'; } catch { /* ignore */ }
-						optimizeBtn.title = 'Optimize query performance\n\nGitHub Copilot is required for this feature. Enable Copilot in VS Code to use query optimization.';
-					} else {
-						// Only re-enable if we were disabled due to Copilot being unavailable.
-						const disabledByCopilot = !!(optimizeBtn.dataset && optimizeBtn.dataset.kustoDisabledByCopilot === '1');
-						if (disabledByCopilot) {
-							try { if (optimizeBtn.dataset) delete optimizeBtn.dataset.kustoDisabledByCopilot; } catch { /* ignore */ }
-							if (!optimizeInProgress) {
-								optimizeBtn.disabled = false;
-							}
+					optimizeBtn.title = 'Compare two queries';
+					optimizeBtn.setAttribute('aria-label', 'Compare two queries');
+					// Do not forcibly enable if some other flow disabled it (e.g. query box is removed).
+					// Only undo any Copilot-based disabling.
+					try {
+						if (optimizeBtn.disabled && optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeInProgress !== '1') {
+							optimizeBtn.disabled = false;
 						}
-						optimizeBtn.title = 'Optimize query performance';
-					}
+					} catch { /* ignore */ }
 				}
 			} catch { /* ignore */ }
 			break;
@@ -1385,7 +1379,12 @@ window.addEventListener('message', event => {
 			try {
 				const boxId = String(message.boxId || '');
 				if (boxId && typeof window.__kustoCopilotApplyWriteQueryOptions === 'function') {
-					window.__kustoCopilotApplyWriteQueryOptions(boxId, message.models || [], message.selectedModelId || '');
+					window.__kustoCopilotApplyWriteQueryOptions(
+						boxId,
+						message.models || [],
+						message.selectedModelId || '',
+						message.tools || []
+					);
 				}
 			} catch { /* ignore */ }
 			break;

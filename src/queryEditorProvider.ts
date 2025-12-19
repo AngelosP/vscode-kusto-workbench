@@ -37,6 +37,14 @@ type StartCopilotWriteQueryMessage = {
 	currentQuery?: string;
 	request: string;
 	modelId?: string;
+	enabledTools?: string[];
+};
+
+type CopilotLocalTool = {
+	name: string;
+	label: string;
+	description: string;
+	enabledByDefault?: boolean;
 };
 
 type OptimizeQueryMessage = {
@@ -124,6 +132,21 @@ export class QueryEditorProvider {
 	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; value: string }>();
 	private readonly controlCommandSyntaxCache = new Map<string, { timestamp: number; syntax: string; withArgs: string[]; error?: string }>();
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+	private getCopilotLocalTools(): CopilotLocalTool[] {
+		return [
+			{
+				name: 'get_extended_schema',
+				label: 'Get extended schema',
+				description: 'Provides cached database schema (tables + columns) to improve query correctness.',
+				enabledByDefault: true
+			}
+		];
+	}
+
+	private normalizeToolName(value: unknown): string {
+		return String(value || '').trim().toLowerCase();
+	}
 
 	private getErrorMessage(error: unknown): string {
 		if (error instanceof Error) {
@@ -590,7 +613,8 @@ export class QueryEditorProvider {
 					type: 'copilotWriteQueryOptions',
 					boxId,
 					models: [],
-					selectedModelId: ''
+					selectedModelId: '',
+					tools: this.getCopilotLocalTools()
 				} as any);
 				this.postMessage({
 					type: 'copilotWriteQueryStatus',
@@ -616,14 +640,16 @@ export class QueryEditorProvider {
 				type: 'copilotWriteQueryOptions',
 				boxId,
 				models: modelOptions,
-				selectedModelId
+				selectedModelId,
+				tools: this.getCopilotLocalTools()
 			} as any);
 		} catch {
 			this.postMessage({
 				type: 'copilotWriteQueryOptions',
 				boxId,
 				models: [],
-				selectedModelId: ''
+				selectedModelId: '',
+				tools: this.getCopilotLocalTools()
 			} as any);
 		}
 	}
@@ -755,12 +781,48 @@ export class QueryEditorProvider {
 		currentQuery?: string;
 		priorAttempts: Array<{ attempt: number; query?: string; error?: string }>;
 		toolResult?: string;
+		enabledTools?: string[];
 	}): string {
 		const request = String(args.request || '').trim();
 		const clusterUrl = String(args.clusterUrl || '').trim();
 		const database = String(args.database || '').trim();
 		const currentQuery = String(args.currentQuery || '').trim();
 		const toolResult = typeof args.toolResult === 'string' ? args.toolResult : '';
+		const enabledToolSet = new Set((args.enabledTools || []).map((t) => this.normalizeToolName(t)).filter(Boolean));
+		const localTools = this.getCopilotLocalTools();
+		const isToolEnabled = (name: string) => {
+			const n = this.normalizeToolName(name);
+			if (!n) return false;
+			// If the client didn't send enabledTools, default to tool defaults.
+			if ((args.enabledTools || []).length === 0) {
+				const def = localTools.find((t) => this.normalizeToolName(t.name) === n);
+				return def ? def.enabledByDefault !== false : false;
+			}
+			return enabledToolSet.has(n);
+		};
+
+		const enabledLocalTools = localTools.filter((t) => isToolEnabled(t.name));
+		const localToolsText = (() => {
+			if (enabledLocalTools.length === 0) {
+				return '';
+			}
+			// Keep the prompt structure stable for the current single-tool experience.
+			if (enabledLocalTools.length === 1 && this.normalizeToolName(enabledLocalTools[0].name) === 'get_extended_schema') {
+				return (
+					'Local tool (optional):\n' +
+					'- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:\n' +
+					'  @tool get_extended_schema {"database":"<database>"}\n' +
+					'- After you receive the tool result, respond with the final query in a single ```kusto block.\n'
+				);
+			}
+			return (
+				'Local tools (optional):\n' +
+				enabledLocalTools
+					.map((t) => `- ${t.name}: ${t.description}`)
+					.join('\n') +
+				'\n'
+			);
+		})();
 
 		const attemptsText = (args.priorAttempts || [])
 			.map((a) => {
@@ -790,10 +852,7 @@ export class QueryEditorProvider {
 			'- Return ONLY the query in a single ```kusto code block.\n' +
 			'- Do not include explanations, bullets, or extra text.\n' +
 			'- Always return the FULL query (not a diff).\n\n' +
-			'Local tool (optional):\n' +
-			'- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:\n' +
-			'  @tool get_extended_schema {"database":"<database>"}\n' +
-			'- After you receive the tool result, respond with the final query in a single ```kusto block.\n'
+			(localToolsText ? localToolsText : '')
 		);
 	}
 
@@ -806,6 +865,8 @@ export class QueryEditorProvider {
 		const request = String(message.request || '').trim();
 		const currentQuery = String(message.currentQuery || '').trim();
 		const requestedModelId = String(message.modelId || '').trim();
+		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
+		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
 		if (!boxId) {
 			return;
 		}
@@ -914,7 +975,8 @@ export class QueryEditorProvider {
 						database,
 						currentQuery,
 						priorAttempts,
-						toolResult
+						toolResult,
+						enabledTools
 					});
 
 					const response = await model.sendRequest(
@@ -939,6 +1001,17 @@ export class QueryEditorProvider {
 
 					const toolCall = this.tryParseCopilotToolCall(generatedText);
 					if (toolCall?.tool === 'get_extended_schema') {
+						const isEnabled = enabledTools.length === 0 ? true : enabledTools.includes('get_extended_schema');
+						if (!isEnabled) {
+							// Treat as a non-answer; the next attempt will (usually) comply with the prompt.
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							break;
+						}
 						const requestedDbRaw = (toolCall.args && typeof toolCall.args === 'object') ? (toolCall.args as any).database : undefined;
 						const requestedDb = String(requestedDbRaw || database || '').trim() || database;
 						postStatus(`Fetching extended schema…${requestedDb ? ` (${requestedDb})` : ''}`);

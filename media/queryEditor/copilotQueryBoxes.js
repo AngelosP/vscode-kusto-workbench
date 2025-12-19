@@ -45,6 +45,17 @@
 		return window.__kustoCopilotToolResponsesByBoxId;
 	}
 
+	function __kustoEnsureCopilotToolSelectionState() {
+		try {
+			if (!window.__kustoCopilotToolSelectionByBoxId || typeof window.__kustoCopilotToolSelectionByBoxId !== 'object') {
+				window.__kustoCopilotToolSelectionByBoxId = {};
+			}
+		} catch {
+			// ignore
+		}
+		return window.__kustoCopilotToolSelectionByBoxId;
+	}
+
 	function __kustoEnsureCopilotChatWidthState() {
 		try {
 			if (!window.__kustoCopilotChatWidthPxByBoxId || typeof window.__kustoCopilotChatWidthPxByBoxId !== 'object') {
@@ -144,11 +155,148 @@
 				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
 				'<div class="kusto-copilot-chat-input">' +
 					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query…" spellcheck="true"></textarea>' +
-					'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">Send</button>' +
-					'<button type="button" id="' + boxId + '_copilot_cancel" class="kusto-copilot-chat-cancel" style="display:none;" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
+					'<div class="kusto-copilot-chat-actions">' +
+						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">Send</button>' +
+						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')">Tools</button>' +
+						'<button type="button" id="' + boxId + '_copilot_cancel" class="kusto-copilot-chat-cancel" style="display:none;" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
+					'</div>' +
+				'</div>' +
+				'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
+					'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
+					'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
 				'</div>' +
 			'</div>'
 		);
+	}
+
+	function __kustoSafeToolDomId(name) {
+		return String(name || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+	}
+
+	function __kustoGetDefaultEnabledTools(tools) {
+		const list = Array.isArray(tools) ? tools : [];
+		const enabled = [];
+		for (const t of list) {
+			if (!t || !t.name) continue;
+			const byDefault = (typeof t.enabledByDefault === 'boolean') ? !!t.enabledByDefault : true;
+			if (byDefault) enabled.push(String(t.name));
+		}
+		return enabled;
+	}
+
+	function __kustoSetCopilotToolsOptions(boxId, tools) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const stateByBox = __kustoEnsureCopilotToolSelectionState();
+		stateByBox[id] = stateByBox[id] || {};
+		stateByBox[id].tools = Array.isArray(tools) ? tools : [];
+		stateByBox[id].enabledNext = __kustoGetDefaultEnabledTools(stateByBox[id].tools);
+		try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+	}
+
+	function __kustoGetEnabledToolsForNextMessage(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return [];
+		const stateByBox = __kustoEnsureCopilotToolSelectionState();
+		const st = stateByBox[id] || {};
+		const tools = Array.isArray(st.tools) ? st.tools : [];
+		const enabled = Array.isArray(st.enabledNext) ? st.enabledNext : __kustoGetDefaultEnabledTools(tools);
+		const known = new Set(tools.map(t => String((t && t.name) || '')));
+		return enabled.map(String).filter(n => n && known.has(String(n)));
+	}
+
+	function __kustoResetEnabledToolsForNextMessage(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const stateByBox = __kustoEnsureCopilotToolSelectionState();
+		const st = stateByBox[id] || {};
+		const tools = Array.isArray(st.tools) ? st.tools : [];
+		st.enabledNext = __kustoGetDefaultEnabledTools(tools);
+		stateByBox[id] = st;
+		try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+	}
+
+	function __kustoRenderCopilotToolsPanel(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const listHost = document.getElementById(id + '_copilot_tools_list');
+		const toolsBtn = document.getElementById(id + '_copilot_tools_btn');
+		if (!listHost) return;
+		const stateByBox = __kustoEnsureCopilotToolSelectionState();
+		const st = stateByBox[id] || {};
+		const tools = Array.isArray(st.tools) ? st.tools : [];
+		const enabled = new Set(__kustoGetEnabledToolsForNextMessage(id));
+
+		try { listHost.innerHTML = ''; } catch { /* ignore */ }
+
+		if (!tools || tools.length === 0) {
+			try {
+				if (toolsBtn) toolsBtn.disabled = true;
+				if (toolsBtn) {
+					toolsBtn.classList.remove('is-active');
+					toolsBtn.setAttribute('aria-pressed', 'false');
+				}
+				const panel = document.getElementById(id + '_copilot_tools_panel');
+				if (panel) panel.style.display = 'none';
+			} catch { /* ignore */ }
+			return;
+		}
+		try {
+			if (toolsBtn) {
+				toolsBtn.disabled = false;
+				if (!toolsBtn.hasAttribute('aria-pressed')) {
+					toolsBtn.setAttribute('aria-pressed', 'false');
+				}
+			}
+		} catch { /* ignore */ }
+
+		for (const t of tools) {
+			if (!t || !t.name) continue;
+			const name = String(t.name);
+			const label = String(t.label || t.name);
+			const desc = String(t.description || '');
+
+			const row = document.createElement('label');
+			row.className = 'kusto-copilot-tool-item';
+			row.setAttribute('data-kusto-no-editor-focus', 'true');
+
+			const cb = document.createElement('input');
+			cb.type = 'checkbox';
+			cb.className = 'kusto-copilot-tool-checkbox';
+			cb.id = id + '_copilot_tool_' + __kustoSafeToolDomId(name);
+			cb.checked = enabled.has(name);
+			cb.onchange = () => {
+				try {
+					const next = __kustoEnsureCopilotToolSelectionState();
+					next[id] = next[id] || {};
+					next[id].enabledNext = __kustoGetEnabledToolsForNextMessage(id);
+					const arr = next[id].enabledNext;
+					const idx = arr.indexOf(name);
+					if (cb.checked) {
+						if (idx < 0) arr.push(name);
+					} else {
+						if (idx >= 0) arr.splice(idx, 1);
+					}
+				} catch { /* ignore */ }
+			};
+
+			const textWrap = document.createElement('span');
+			textWrap.className = 'kusto-copilot-tool-text';
+			const titleEl = document.createElement('span');
+			titleEl.className = 'kusto-copilot-tool-name';
+			titleEl.textContent = label;
+			textWrap.appendChild(titleEl);
+			if (desc) {
+				const descEl = document.createElement('span');
+				descEl.className = 'kusto-copilot-tool-desc';
+				descEl.textContent = desc;
+				textWrap.appendChild(descEl);
+			}
+
+			row.appendChild(cb);
+			row.appendChild(textWrap);
+			listHost.appendChild(row);
+		}
 	}
 
 	function __kustoClampNumber(value, min, max) {
@@ -292,15 +440,26 @@
 		try {
 			const sendBtn = document.getElementById(boxId + '_copilot_send');
 			const cancelBtn = document.getElementById(boxId + '_copilot_cancel');
+			const toolsBtn = document.getElementById(boxId + '_copilot_tools_btn');
 			const input = document.getElementById(boxId + '_copilot_input');
 			const modelSel = document.getElementById(boxId + '_copilot_model');
 			if (sendBtn) sendBtn.disabled = !!running;
+			if (toolsBtn) toolsBtn.disabled = !!running || !!toolsBtn.disabled;
 			if (input) input.disabled = !!running;
 			if (modelSel) modelSel.disabled = !!running;
 			if (cancelBtn) {
 				cancelBtn.style.display = running ? '' : 'none';
 				cancelBtn.disabled = !running;
 			}
+			try {
+				const panel = document.getElementById(boxId + '_copilot_tools_panel');
+				if (panel) {
+					const inputs = panel.querySelectorAll ? panel.querySelectorAll('input') : [];
+					for (const el of inputs) {
+						try { el.disabled = !!running; } catch { /* ignore */ }
+					}
+				}
+			} catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		if (statusText) {
@@ -665,6 +824,7 @@
 		__kustoSetCopilotChatRunning(id, true, 'Working…');
 
 		try {
+			const enabledTools = __kustoGetEnabledToolsForNextMessage(id);
 			vscode.postMessage({
 				type: 'startCopilotWriteQuery',
 				boxId: id,
@@ -672,8 +832,11 @@
 				database: String(database || ''),
 				currentQuery: String(currentQuery || ''),
 				request: String(prompt || ''),
-				modelId: String(modelId || '')
+				modelId: String(modelId || ''),
+				enabledTools
 			});
+			// Applies to the next message only.
+			try { __kustoResetEnabledToolsForNextMessage(id); } catch { /* ignore */ }
 		} catch {
 			__kustoSetCopilotChatRunning(id, false, 'Failed to start Copilot request.');
 		}
@@ -714,8 +877,29 @@
 	};
 
 	// Called by main.js message handler.
-	window.__kustoCopilotApplyWriteQueryOptions = function (boxId, models, selectedModelId) {
+	window.__kustoCopilotApplyWriteQueryOptions = function (boxId, models, selectedModelId, tools) {
 		__kustoApplyModelOptions(String(boxId || ''), models, selectedModelId);
+		try { __kustoSetCopilotToolsOptions(String(boxId || ''), tools || []); } catch { /* ignore */ }
+	};
+
+	window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		try {
+			const panel = document.getElementById(id + '_copilot_tools_panel');
+			const btn = document.getElementById(id + '_copilot_tools_btn');
+			if (!panel) return;
+			try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+			const isHidden = (panel.style.display === 'none');
+			const nextVisible = !!isHidden;
+			panel.style.display = nextVisible ? 'block' : 'none';
+			try {
+				if (btn) {
+					btn.classList.toggle('is-active', nextVisible);
+					btn.setAttribute('aria-pressed', nextVisible ? 'true' : 'false');
+				}
+			} catch { /* ignore */ }
+		} catch { /* ignore */ }
 	};
 	window.__kustoCopilotWriteQueryStatus = function (boxId, text) {
 		__kustoAppendChatMessage(String(boxId || ''), 'assistant', String(text || ''));

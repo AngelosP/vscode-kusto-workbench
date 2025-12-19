@@ -400,10 +400,18 @@
 			padding: 0 8px 8px;
 		}
 
+		.kusto-copilot-chat-actions {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			align-items: stretch;
+		}
+
 		.kusto-copilot-chat-input textarea {
 			flex: 1;
 			resize: vertical;
-			min-height: 40px;
+			min-height: 62px;
+			height: 62px;
 			max-height: 160px;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
@@ -438,6 +446,71 @@
 			font-size: 12px;
 			cursor: pointer;
 			white-space: nowrap;
+		}
+
+		.kusto-copilot-chat-tools {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.kusto-copilot-chat-tools:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+		.kusto-copilot-chat-tools.is-active {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+		.kusto-copilot-chat-tools:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+
+		.kusto-copilot-tools-panel {
+			margin: 0 8px 8px;
+			padding: 8px;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+		.kusto-copilot-tools-panel-title {
+			font-weight: 600;
+			margin: 0 0 6px;
+			color: var(--vscode-foreground);
+		}
+		.kusto-copilot-tools-list {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+		.kusto-copilot-tool-item {
+			display: flex;
+			gap: 8px;
+			align-items: flex-start;
+			cursor: pointer;
+			user-select: none;
+		}
+		.kusto-copilot-tool-checkbox {
+			margin-top: 2px;
+		}
+		.kusto-copilot-tool-text {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			min-width: 0;
+		}
+		.kusto-copilot-tool-name {
+			color: var(--vscode-foreground);
+		}
+		.kusto-copilot-tool-desc {
+			color: var(--vscode-descriptionForeground);
+			font-size: 11px;
+			line-height: 1.25;
 		}
 		.kusto-copilot-chat-cancel:hover {
 			background: var(--vscode-button-secondaryHoverBackground);

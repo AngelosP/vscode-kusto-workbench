@@ -98,6 +98,15 @@ function addQueryBox(options) {
 		'<rect x="10" y="3" width="3" height="11"/>' +
 		'</svg>';
 
+	const diffIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M5 2.5H3.5A1.5 1.5 0 0 0 2 4v8a1.5 1.5 0 0 0 1.5 1.5H5" />' +
+		'<path d="M11 2.5h1.5A1.5 1.5 0 0 1 14 4v8a1.5 1.5 0 0 1-1.5 1.5H11" />' +
+		'<path d="M6.5 5.5h3" />' +
+		'<path d="M6.5 8h3" />' +
+		'<path d="M6.5 10.5h3" />' +
+		'</svg>';
+
 	const copilotLogoUri = (() => {
 		try {
 			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
@@ -126,11 +135,9 @@ function addQueryBox(options) {
 		: (
 			'<span class="optimize-inline" id="' + id + '_optimize_inline">' +
 				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\')" ' +
-					'title="Optimize query performance" aria-label="Optimize query performance with Copilot">' +
-					copilotLogoHtml +
+					'title="Compare two queries" aria-label="Compare two queries">' +
+					diffIconSvg +
 				'</button>' +
-				'<span class="optimize-status" id="' + id + '_optimize_status" style="display:none;"></span>' +
-				'<button type="button" class="optimize-cancel-btn" id="' + id + '_optimize_cancel" style="display:none;" onclick="__kustoCancelOptimizeQuery(\'' + id + '\')" title="Cancel optimization" aria-label="Cancel optimization">Cancel</button>' +
 			'</span>'
 		);
 	const toolbarHtml =
@@ -353,7 +360,6 @@ function addQueryBox(options) {
 		'</select>' +
 		'</div>' +
 		'</div>' +
-		'<div class="optimize-config" id="' + id + '_optimize_config" style="display: none;"></div>' +
 		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;">' +
 		'<div class="results" id="' + id + '_results"></div>' +
 		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results"></div>' +
@@ -1876,20 +1882,13 @@ async function optimizeQueryWithCopilot(boxId) {
 	if (!model) {
 		return;
 	}
-	
-	// Check if optimization is already in progress
-	const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
-	if (optimizeBtn && optimizeBtn.disabled) {
-		console.log('Optimization already in progress for box:', boxId);
-		return;
-	}
 
-	// Hide results to keep the UI focused during optimization.
+	// Hide results to keep the UI focused during comparison setup.
 	try { __kustoSetResultsVisible(boxId, false); } catch { /* ignore */ }
-	
+
 	const query = model.getValue() || '';
 	if (!query.trim()) {
-		alert('No query to optimize');
+		alert('No query to compare');
 		return;
 	}
 	
@@ -1903,6 +1902,14 @@ async function optimizeQueryWithCopilot(boxId) {
 		alert('Please select a database');
 		return;
 	}
+
+	// If a comparison already exists for this source, do nothing.
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId) {
+			console.log('Comparison box already exists for source box:', boxId);
+			return;
+		}
+	} catch { /* ignore */ }
 
 	// Check if query has a name, if not, set one
 	const nameInput = document.getElementById(boxId + '_name');
@@ -1921,28 +1928,100 @@ async function optimizeQueryWithCopilot(boxId) {
 		}
 	}
 
-	// Store pending request and ask the extension for available models + default prompt.
+	// Create a comparison query box below the source box with the same query text (no LLM call).
+	let comparisonQuery = query;
 	try {
-		const pending = __kustoEnsureOptimizePrepByBoxId();
-		pending[boxId] = { query, connectionId, database, queryName };
+		if (typeof window.__kustoPrettifyKustoText === 'function') {
+			comparisonQuery = window.__kustoPrettifyKustoText(query);
+		}
 	} catch { /* ignore */ }
 
-	if (optimizeBtn) {
-		optimizeBtn.disabled = true;
-	}
-	__kustoShowOptimizePromptLoading(boxId);
-
+	let comparisonBoxId = '';
 	try {
-		vscode.postMessage({
-			type: 'prepareOptimizeQuery',
-			boxId,
-			query
+		comparisonBoxId = addQueryBox({
+			id: 'query_cmp_' + Date.now(),
+			initialQuery: comparisonQuery,
+			isComparison: true,
+			defaultResultsVisible: false
 		});
 	} catch (err) {
-		console.error('Error requesting optimize options:', err);
-		alert('Failed to prepare query optimization');
-		__kustoHideOptimizePromptForBox(boxId);
+		console.error('Error creating comparison box:', err);
+		alert('Failed to create comparison section');
+		return;
 	}
+
+	try {
+		if (typeof __kustoSetResultsVisible === 'function') {
+			__kustoSetResultsVisible(boxId, false);
+			__kustoSetResultsVisible(comparisonBoxId, false);
+		}
+	} catch { /* ignore */ }
+	try {
+		if (typeof __kustoSetLinkedOptimizationMode === 'function') {
+			__kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, true);
+		}
+	} catch { /* ignore */ }
+
+	// Store comparison metadata (reuses the existing optimization comparison flow).
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			optimizationMetadataByBoxId[comparisonBoxId] = {
+				sourceBoxId: boxId,
+				isComparison: true,
+				originalQuery: queryEditors[boxId] ? queryEditors[boxId].getValue() : query,
+				optimizedQuery: comparisonQuery
+			};
+			optimizationMetadataByBoxId[boxId] = {
+				comparisonBoxId: comparisonBoxId
+			};
+		}
+	} catch { /* ignore */ }
+
+	// Position the comparison box right after the source box.
+	try {
+		const sourceBox = document.getElementById(boxId);
+		const comparisonBox = document.getElementById(comparisonBoxId);
+		if (sourceBox && comparisonBox && sourceBox.parentNode) {
+			sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
+		}
+	} catch { /* ignore */ }
+
+	// Set connection and database to match source.
+	try {
+		const comparisonConnSelect = document.getElementById(comparisonBoxId + '_connection');
+		const comparisonDbSelect = document.getElementById(comparisonBoxId + '_database');
+		if (comparisonConnSelect) {
+			comparisonConnSelect.value = connectionId;
+			comparisonConnSelect.dataset.prevValue = connectionId;
+			updateDatabaseField(comparisonBoxId);
+			setTimeout(() => {
+				try {
+					const dbEl = document.getElementById(comparisonBoxId + '_database');
+					if (dbEl) {
+						dbEl.value = database;
+					}
+				} catch { /* ignore */ }
+			}, 100);
+		} else if (comparisonDbSelect) {
+			comparisonDbSelect.value = database;
+		}
+	} catch { /* ignore */ }
+
+	// Set the query name.
+	try {
+		const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
+		if (comparisonNameInput) {
+			comparisonNameInput.value = queryName + ' (Comparison)';
+		}
+	} catch { /* ignore */ }
+
+	// Execute both queries for comparison.
+	try {
+		executeQuery(boxId);
+		setTimeout(() => {
+			try { executeQuery(comparisonBoxId); } catch { /* ignore */ }
+		}, 100);
+	} catch { /* ignore */ }
 }
 
 async function fullyQualifyTablesInEditor(boxId) {

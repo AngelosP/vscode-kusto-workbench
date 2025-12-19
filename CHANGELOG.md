@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.1.4]
+
+* Reset database dropdown to an empty placeholder on invalid/unreachable cluster addresses (e.g., ENOTFOUND).
+* Clear stale database-load errors when switching clusters.
+* Disable "Run query" until a valid cluster + database (or favorite) selection is available; keep run-mode selection available.
+* Show a helpful tooltip when "Run query" is disabled.
+
 ## [0.1.3]
 
 * Added support for Kusto dot control commands across autocomplete, docs, and diagnostics.
