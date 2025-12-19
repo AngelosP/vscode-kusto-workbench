@@ -10,7 +10,7 @@ It has advanced markdown capabilities (thanks to the amazing folks at [toastui](
 
 ### Modern editor with a bunch of features
 
-![Kusto query editor](marketplace-media/kusto-query-editor.png)
+![Kusto query editor](./marketplace-media/kusto-query-editor.png)
 
 ### Support for Kusto, CSV, Images, Markdown, Python
 
