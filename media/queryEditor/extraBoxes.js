@@ -818,9 +818,12 @@ function addMarkdownBox(options) {
 	// scroll inside the editor surface instead.
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
-		const controls = document.querySelector('.add-controls');
-		if (controls && typeof controls.scrollIntoView === 'function') {
-			controls.scrollIntoView({ block: 'end' });
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+		if (!isPlainMd) {
+			const controls = document.querySelector('.add-controls');
+			if (controls && typeof controls.scrollIntoView === 'function') {
+				controls.scrollIntoView({ block: 'end' });
+			}
 		}
 	} catch {
 		// ignore
@@ -1229,6 +1232,7 @@ function initMarkdownEditor(boxId) {
 			events: {
 				change: () => {
 					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { __kustoScheduleMdAutoExpand && __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
 				},
 				afterPreviewRender: () => {
 					try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }

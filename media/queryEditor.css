@@ -185,14 +185,14 @@
 		}
 
 		.repo-issues-anchor {
-			color: var(--vscode-textLink-foreground);
+			color: inherit;
 			font-size: 12px;
 			text-decoration: underline;
 		}
 
 		.repo-issues-anchor:hover,
 		.repo-issues-anchor:focus {
-			color: var(--vscode-textLink-activeForeground);
+			color: inherit;
 		}
 
 		/* In plain .md mode the page itself doesn't scroll; keep the link visible
@@ -3920,14 +3920,14 @@
 		}
 
 		.schema-cached-link {
-			color: var(--vscode-textLink-foreground);
+			color: inherit;
 			text-decoration: underline;
 			cursor: pointer;
 		}
 
 		.schema-cached-link:hover,
 		.schema-cached-link:focus {
-			color: var(--vscode-textLink-activeForeground);
+			color: inherit;
 		}
 
 		.schema-loaded.error {
