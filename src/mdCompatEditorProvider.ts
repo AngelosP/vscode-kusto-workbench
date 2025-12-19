@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import * as path from 'path';
+
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
@@ -47,9 +49,27 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const docDir = (() => {
+			try {
+				if (document.uri.scheme === 'file') {
+					return vscode.Uri.file(path.dirname(document.uri.fsPath));
+				}
+			} catch {
+				// ignore
+			}
+			return undefined;
+		})();
+		const workspaceFolderUri = (() => {
+			try {
+				return vscode.workspace.getWorkspaceFolder(document.uri)?.uri;
+			} catch {
+				return undefined;
+			}
+		})();
+
 		webviewPanel.webview.options = {
 			enableScripts: true,
-			localResourceRoots: [this.extensionUri]
+			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
@@ -61,6 +81,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				type: 'persistenceMode',
 				isSessionFile: false,
 				compatibilityMode: true,
+					documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
 				allowedSectionKinds: ['markdown', 'url'],
@@ -78,6 +99,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				type: 'documentData',
 				ok: true,
 				compatibilityMode: true,
+				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
 				allowedSectionKinds: ['markdown', 'url'],
@@ -102,6 +124,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 							type: 'persistenceMode',
 							isSessionFile: false,
 							compatibilityMode: true,
+							documentUri: document.uri.toString(),
 							documentKind: 'md',
 							compatibilitySingleKind: 'markdown',
 							allowedSectionKinds: ['markdown', 'url'],

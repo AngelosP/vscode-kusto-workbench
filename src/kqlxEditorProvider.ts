@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import * as path from 'path';
+
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
@@ -298,9 +300,27 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const docDir = (() => {
+			try {
+				if (document.uri.scheme === 'file') {
+					return vscode.Uri.file(path.dirname(document.uri.fsPath));
+				}
+			} catch {
+				// ignore
+			}
+			return undefined;
+		})();
+		const workspaceFolderUri = (() => {
+			try {
+				return vscode.workspace.getWorkspaceFolder(document.uri)?.uri;
+			} catch {
+				return undefined;
+			}
+		})();
+
 		webviewPanel.webview.options = {
 			enableScripts: true,
-			localResourceRoots: [this.extensionUri]
+			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
@@ -341,6 +361,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				void webviewPanel.webview.postMessage({
 					type: 'persistenceMode',
 					isSessionFile,
+					documentUri: document.uri.toString(),
 					compatibilityMode: false,
 					documentKind,
 					allowedSectionKinds,
@@ -436,6 +457,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				void webviewPanel.webview.postMessage({
 					type: 'documentData',
 					ok: false,
+					documentUri: document.uri.toString(),
 					error: parsed.error,
 					state: createEmptyKqlxFile().state
 				});
@@ -461,6 +483,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				documentUri: document.uri.toString(),
 				state: sanitizedState
 			});
 		};

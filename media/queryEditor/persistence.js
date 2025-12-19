@@ -1041,6 +1041,9 @@ function handleDocumentDataMessage(message) {
 	// Capabilities can arrive either via persistenceMode or (for robustness) piggybacked on documentData.
 	// This prevents restore issues when messages arrive out-of-order.
 	try {
+		if (typeof message.documentUri === 'string') {
+			window.__kustoDocumentUri = String(message.documentUri);
+		}
 		if (Array.isArray(message.allowedSectionKinds)) {
 			window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map(k => String(k));
 		}

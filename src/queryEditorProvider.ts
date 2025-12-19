@@ -32,6 +32,7 @@ type CacheUnit = 'minutes' | 'hours' | 'days';
 type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; clusterUrl: string; database: string; boxId?: string }
@@ -91,6 +92,7 @@ export class QueryEditorProvider {
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
 	private queryRunSeq = 0;
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
+	private readonly resolvedResourceUriCache = new Map<string, string>();
 
 	private getErrorMessage(error: unknown): string {
 		if (error instanceof Error) {
@@ -317,6 +319,9 @@ export class QueryEditorProvider {
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
 		switch (message.type) {
+			case 'resolveResourceUri':
+				await this.resolveResourceUri(message);
+				return;
 			case 'getConnections':
 				await this.sendConnectionsData();
 				return;
@@ -387,6 +392,116 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private async resolveResourceUri(message: Extract<IncomingWebviewMessage, { type: 'resolveResourceUri' }>): Promise<void> {
+		const requestId = String(message.requestId || '');
+		const rawPath = String(message.path || '');
+		const rawBase = typeof message.baseUri === 'string' ? String(message.baseUri || '') : '';
+
+		const reply = (payload: { ok: boolean; uri?: string; error?: string }) => {
+			try {
+				this.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload } as any);
+			} catch {
+				// ignore
+			}
+		};
+
+		if (!requestId) {
+			return;
+		}
+		if (!rawPath.trim()) {
+			reply({ ok: false, error: 'Empty path.' });
+			return;
+		}
+
+		// Do not rewrite/serve remote URLs. ToastUI can load those directly (subject to CSP).
+		const lower = rawPath.trim().toLowerCase();
+		if (
+			lower.startsWith('http://') ||
+			lower.startsWith('https://') ||
+			lower.startsWith('data:') ||
+			lower.startsWith('blob:') ||
+			lower.startsWith('vscode-webview://') ||
+			lower.startsWith('vscode-resource:')
+		) {
+			reply({ ok: true, uri: rawPath.trim() });
+			return;
+		}
+
+		// We only support resolving file-based documents for now.
+		let baseUri: vscode.Uri | null = null;
+		try {
+			if (rawBase) {
+				baseUri = vscode.Uri.parse(rawBase);
+			}
+		} catch {
+			baseUri = null;
+		}
+		if (!baseUri || baseUri.scheme !== 'file') {
+			reply({ ok: false, error: 'Missing or unsupported baseUri. Only local files are supported.' });
+			return;
+		}
+
+		let targetUri: vscode.Uri;
+		try {
+			// Normalize markdown-style paths (always forward slashes).
+			const normalized = rawPath.replace(/\\/g, '/');
+
+			// Markdown sometimes uses leading-slash paths to mean "workspace root".
+			// On Windows, path.isAbsolute('/foo') is true but it is not a meaningful local path.
+			if (normalized.startsWith('/')) {
+				const wf = vscode.workspace.getWorkspaceFolder(baseUri);
+				const rel = normalized.replace(/^\/+/, '');
+				if (wf && rel) {
+					targetUri = vscode.Uri.joinPath(wf.uri, ...rel.split('/'));
+				} else {
+					const baseDir = path.dirname(baseUri.fsPath);
+					const resolvedFsPath = path.resolve(baseDir, rel);
+					targetUri = vscode.Uri.file(resolvedFsPath);
+				}
+			} else {
+				const isWindowsAbsolute = /^[a-zA-Z]:\//.test(normalized) || normalized.startsWith('//');
+				const isPosixAbsolute = !isWindowsAbsolute && path.posix.isAbsolute(normalized);
+				if (isWindowsAbsolute || (isPosixAbsolute && process.platform !== 'win32')) {
+					targetUri = vscode.Uri.file(normalized);
+				} else {
+					const baseDir = path.dirname(baseUri.fsPath);
+					const resolvedFsPath = path.resolve(baseDir, normalized);
+					targetUri = vscode.Uri.file(resolvedFsPath);
+				}
+			}
+		} catch (e) {
+			reply({ ok: false, error: `Failed to resolve path: ${this.getErrorMessage(e)}` });
+			return;
+		}
+
+		const cacheKey = `${baseUri.toString()}::${rawPath}`;
+		const cached = this.resolvedResourceUriCache.get(cacheKey);
+		if (cached) {
+			reply({ ok: true, uri: cached });
+			return;
+		}
+
+		try {
+			await vscode.workspace.fs.stat(targetUri);
+		} catch {
+			reply({ ok: false, error: 'File not found.' });
+			return;
+		}
+
+		if (!this.panel) {
+			reply({ ok: false, error: 'Webview panel is not available.' });
+			return;
+		}
+
+		try {
+			const webviewUri = this.panel.webview.asWebviewUri(targetUri).toString();
+			this.resolvedResourceUriCache.set(cacheKey, webviewUri);
+			reply({ ok: true, uri: webviewUri });
+		} catch (e) {
+			reply({ ok: false, error: `Failed to create webview URI: ${this.getErrorMessage(e)}` });
 		}
 	}
 

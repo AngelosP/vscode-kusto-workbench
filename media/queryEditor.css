@@ -177,6 +177,35 @@
 			margin: 8px 0 16px;
 		}
 
+		.repo-issues-link {
+			width: 100%;
+			display: flex;
+			justify-content: center;
+			margin: 0 0 100px;
+		}
+
+		.repo-issues-anchor {
+			color: var(--vscode-textLink-foreground);
+			font-size: 12px;
+			text-decoration: underline;
+		}
+
+		.repo-issues-anchor:hover,
+		.repo-issues-anchor:focus {
+			color: var(--vscode-textLink-activeForeground);
+		}
+
+		/* In plain .md mode the page itself doesn't scroll; keep the link visible
+		   without stealing height from the editor, and add the extra bottom space
+		   to the actual scroll surfaces instead. */
+		body[data-kusto-document-kind="md"] .repo-issues-link {
+			margin-bottom: 0;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .toastui-editor-contents {
+			padding-bottom: 100px;
+		}
+
 		.add-control-btn {
 			background: var(--vscode-button-secondaryBackground);
 			color: var(--vscode-button-secondaryForeground);

@@ -1055,7 +1055,12 @@ function initMarkdownViewer(boxId, initialValue) {
 			viewer: true,
 			usageStatistics: false,
 			initialValue: typeof initialValue === 'string' ? initialValue : '',
-			plugins: getToastUiPlugins(ToastEditor)
+			plugins: getToastUiPlugins(ToastEditor),
+			events: {
+				afterPreviewRender: () => {
+					try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
+				}
+			}
 		};
 		if (isLikelyDarkTheme()) {
 			opts.theme = 'dark';
@@ -1065,6 +1070,8 @@ function initMarkdownViewer(boxId, initialValue) {
 		try { console.error('Failed to initialize TOAST UI Editor (markdown viewer).', e); } catch { /* ignore */ }
 		return;
 	}
+
+	try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
 
 	markdownViewers[boxId] = {
 		setValue: (value) => {
@@ -1222,6 +1229,9 @@ function initMarkdownEditor(boxId) {
 			events: {
 				change: () => {
 					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				},
+				afterPreviewRender: () => {
+					try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
 				}
 			}
 		};
@@ -1236,6 +1246,9 @@ function initMarkdownEditor(boxId) {
 		try { console.error('Failed to initialize TOAST UI Editor (markdown editor).', e); } catch { /* ignore */ }
 		return;
 	}
+
+	// Initial pass (in case the preview has already rendered by the time the hook is attached).
+	try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
 
 	const api = {
 		getValue: () => {
@@ -1351,6 +1364,86 @@ function initMarkdownEditor(boxId) {
 
 	// Ensure correct initial sizing.
 	try { api.layout(); } catch { /* ignore */ }
+}
+
+function __kustoRewriteToastUiImagesInContainer(rootEl) {
+	try {
+		if (!rootEl || !rootEl.querySelectorAll) {
+			return;
+		}
+		const baseUri = (() => {
+			try {
+				return (typeof window.__kustoDocumentUri === 'string') ? String(window.__kustoDocumentUri) : '';
+			} catch {
+				return '';
+			}
+		})();
+		if (!baseUri) {
+			return;
+		}
+
+		// Cache across renders to avoid spamming the extension host.
+		window.__kustoResolvedImageSrcCache = window.__kustoResolvedImageSrcCache || {};
+		const cache = window.__kustoResolvedImageSrcCache;
+
+		const imgs = rootEl.querySelectorAll('img');
+		for (const img of imgs) {
+			try {
+				if (!img || !img.getAttribute) {
+					continue;
+				}
+				const src = String(img.getAttribute('src') || '').trim();
+				if (!src) {
+					continue;
+				}
+				const lower = src.toLowerCase();
+				if (
+					lower.startsWith('http://') ||
+					lower.startsWith('https://') ||
+					lower.startsWith('data:') ||
+					lower.startsWith('blob:') ||
+					lower.startsWith('vscode-webview://') ||
+					lower.startsWith('vscode-resource:')
+				) {
+					continue;
+				}
+				// If ToastUI already rewrote it or we already processed it, skip.
+				try {
+					if (img.dataset && img.dataset.kustoResolvedSrc === src) {
+						continue;
+					}
+				} catch { /* ignore */ }
+
+				const key = baseUri + '::' + src;
+				if (cache && typeof cache[key] === 'string' && cache[key]) {
+					img.setAttribute('src', cache[key]);
+					try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch { /* ignore */ }
+					continue;
+				}
+
+				const resolver = window.__kustoResolveResourceUri;
+				if (typeof resolver !== 'function') {
+					continue;
+				}
+
+				// Fire-and-forget async resolve; preview is re-rendered frequently.
+				resolver({ path: src, baseUri }).then((resolved) => {
+					try {
+						if (!resolved || typeof resolved !== 'string') {
+							return;
+						}
+						cache[key] = resolved;
+						img.setAttribute('src', resolved);
+						try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch { /* ignore */ }
+					} catch { /* ignore */ }
+				});
+			} catch {
+				// ignore
+			}
+		}
+	} catch {
+		// ignore
+	}
 }
 
 function addPythonBox(options) {

@@ -194,6 +194,52 @@ document.addEventListener('keydown', (event) => {
 // If the bridge is unavailable or times out, callers should fall back to local heuristics.
 let __kustoKqlLanguageRequestResolversById = {};
 
+// --- Local resource URI resolver (webview -> extension host) ---
+// Used to map markdown-relative paths (e.g. ./images/a.png) to webview-safe URIs.
+let __kustoResourceUriRequestResolversById = {};
+
+try {
+	window.__kustoResolveResourceUri = async function (args) {
+		const p = (args && typeof args.path === 'string') ? String(args.path) : '';
+		const baseUri = (args && typeof args.baseUri === 'string') ? String(args.baseUri) : '';
+		if (!p || !vscode || typeof vscode.postMessage !== 'function') {
+			return null;
+		}
+		const requestId = 'resuri_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		return await new Promise((resolve) => {
+			let timer = null;
+			try {
+				timer = setTimeout(() => {
+					try { delete __kustoResourceUriRequestResolversById[requestId]; } catch { /* ignore */ }
+					resolve(null);
+				}, 2000);
+			} catch { /* ignore */ }
+
+			__kustoResourceUriRequestResolversById[requestId] = {
+				resolve: (result) => {
+					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					resolve(result);
+				}
+			};
+
+			try {
+				vscode.postMessage({
+					type: 'resolveResourceUri',
+					requestId,
+					path: p,
+					baseUri
+				});
+			} catch {
+				try { delete __kustoResourceUriRequestResolversById[requestId]; } catch { /* ignore */ }
+				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				resolve(null);
+			}
+		});
+	};
+} catch {
+	// ignore
+}
+
 try {
 	window.__kustoRequestKqlDiagnostics = async function (args) {
 		const text = (args && typeof args.text === 'string') ? args.text : '';
@@ -585,6 +631,11 @@ window.addEventListener('message', event => {
 			case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;
+					try {
+						if (typeof message.documentUri === 'string') {
+							window.__kustoDocumentUri = String(message.documentUri);
+						}
+					} catch { /* ignore */ }
 						try {
 							if (typeof message.documentKind === 'string') {
 								window.__kustoDocumentKind = String(message.documentKind);
@@ -711,6 +762,17 @@ window.addEventListener('message', event => {
 			} catch {
 				// ignore
 			}
+			break;
+		case 'resolveResourceUriResult':
+			try {
+				const reqId = String(message.requestId || '');
+				const r = __kustoResourceUriRequestResolversById && __kustoResourceUriRequestResolversById[reqId];
+				if (r && typeof r.resolve === 'function') {
+					const uri = (message && message.ok && typeof message.uri === 'string') ? String(message.uri) : null;
+					try { r.resolve(uri); } catch { /* ignore */ }
+					try { delete __kustoResourceUriRequestResolversById[reqId]; } catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
 			break;
 		case 'kqlLanguageResponse':
 			try {
