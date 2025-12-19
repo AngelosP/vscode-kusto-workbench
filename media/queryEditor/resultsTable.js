@@ -2143,7 +2143,7 @@ function displayResultForBox(result, boxId, options) {
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
-		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="copyVisibleResultsToClipboard(\'' + boxId + '\')" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
+		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="copyVisibleResultsToClipboard(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="results-body" id="' + boxId + '_results_body">' +
