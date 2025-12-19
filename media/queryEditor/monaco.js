@@ -624,6 +624,445 @@ function ensureMonaco() {
 					const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
 					const isIdentStart = (ch) => /[A-Za-z_]/.test(ch);
 
+					// --- Kusto control/management commands (dot-prefixed) ---
+					// Data is provided by `media/queryEditor/controlCommands.generated.js`.
+					const KUSTO_CONTROL_COMMAND_DOCS_BASE_URL = 'https://learn.microsoft.com/en-us/kusto/';
+					const KUSTO_CONTROL_COMMAND_DOCS_VIEW = 'azure-data-explorer';
+					const KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h
+
+					const __kustoNormalizeControlCommand = (s) => {
+						let v = String(s || '').replace(/\s+/g, ' ').trim();
+						if (!v.startsWith('.')) return '';
+						// Many TOC titles include a trailing "command" word; strip it when it looks like metadata.
+						const parts = v.split(' ').filter(Boolean);
+						if (parts.length >= 3 && /^command$/i.test(parts[parts.length - 1])) {
+							parts.pop();
+							v = parts.join(' ');
+						}
+						return v;
+					};
+
+					const __kustoBuildControlCommandIndex = () => {
+						const raw = (typeof window !== 'undefined' && Array.isArray(window.__kustoControlCommandEntries))
+							? window.__kustoControlCommandEntries
+							: [];
+						const byLower = new Map();
+						for (const ent of raw) {
+							const title = Array.isArray(ent) ? ent[0] : (ent && ent.title);
+							const href = Array.isArray(ent) ? ent[1] : (ent && ent.href);
+							if (!title || !href) continue;
+							for (const aliasRaw of String(title).split(',')) {
+								const base = String(aliasRaw || '').trim();
+								if (!base) continue;
+								const alts = base.includes('|') ? base.split('|').map(s => String(s || '').trim()) : [base];
+								for (const alias of alts) {
+									if (!alias.startsWith('.')) continue;
+									const cmd = __kustoNormalizeControlCommand(alias);
+									if (!cmd) continue;
+									const key = cmd.toLowerCase();
+									if (!byLower.has(key)) {
+										byLower.set(key, { command: cmd, commandLower: key, title: alias, href: String(href) });
+									}
+								}
+							}
+						}
+						const items = Array.from(byLower.values());
+						// Prefer longest match for hover resolution.
+						items.sort((a, b) => (b.commandLower.length - a.commandLower.length) || a.commandLower.localeCompare(b.commandLower));
+						return items;
+					};
+
+					const __kustoControlCommands = __kustoBuildControlCommandIndex();
+
+					const __kustoGetOrInitControlCommandDocCache = () => {
+						try {
+							if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
+								window.__kustoControlCommandDocCache = {};
+							}
+							if (!window.__kustoControlCommandDocPending || typeof window.__kustoControlCommandDocPending !== 'object') {
+								window.__kustoControlCommandDocPending = {};
+							}
+							return window.__kustoControlCommandDocCache;
+						} catch {
+							return {};
+						}
+					};
+
+					const __kustoParseControlCommandSyntaxFromLearnHtml = (html) => {
+						try {
+							const s = String(html || '');
+							if (!s.trim()) return null;
+							let doc = null;
+							try {
+								if (typeof DOMParser !== 'undefined') {
+									doc = new DOMParser().parseFromString(s, 'text/html');
+								}
+							} catch {
+								doc = null;
+							}
+
+						const cleanCode = (code) => {
+							const raw = String(code || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+							// Trim leading/trailing blank lines while preserving inner formatting.
+							const lines = raw.split('\n');
+							while (lines.length && !String(lines[0] || '').trim()) lines.shift();
+							while (lines.length && !String(lines[lines.length - 1] || '').trim()) lines.pop();
+							return lines.join('\n').trim();
+						};
+
+						if (doc) {
+							// Find the "Syntax" heading and the first <pre><code> after it.
+							const headings = Array.from(doc.querySelectorAll('h2, h3'));
+							let syntaxHeading = null;
+							for (const h of headings) {
+								const t = String(h && h.textContent ? h.textContent : '').trim().toLowerCase();
+								if (t === 'syntax') { syntaxHeading = h; break; }
+							}
+							if (syntaxHeading) {
+								let el = syntaxHeading.nextElementSibling;
+								for (let guard = 0; el && guard < 80; guard++, el = el.nextElementSibling) {
+									const tag = String(el.tagName || '').toLowerCase();
+									if (tag === 'h2' || tag === 'h3') break;
+									const pre = el.matches && el.matches('pre') ? el : (el.querySelector ? el.querySelector('pre') : null);
+									if (pre) {
+										const code = pre.querySelector ? pre.querySelector('code') : null;
+										const txt = cleanCode(code && code.textContent ? code.textContent : pre.textContent);
+										if (txt) return txt;
+									}
+								}
+							}
+
+							// Fallback: first code block in the document.
+							try {
+								const first = doc.querySelector('pre code');
+								const txt = cleanCode(first && first.textContent ? first.textContent : '');
+								if (txt) return txt;
+							} catch { /* ignore */ }
+						}
+
+						// Regex fallback if DOMParser isn't available.
+						try {
+							const m = s.match(/<h2[^>]*>\s*Syntax\s*<\/h2>[\s\S]*?<pre[^>]*>([\s\S]*?)<\/pre>/i);
+							if (m && m[1]) {
+								const inner = String(m[1]).replace(/<[^>]+>/g, '');
+								const txt = cleanCode(inner);
+								if (txt) return txt;
+							}
+						} catch { /* ignore */ }
+
+						return null;
+					} catch {
+						return null;
+					}
+					};
+
+					const __kustoExtractWithOptionArgsFromSyntax = (syntaxText) => {
+						try {
+							const s = String(syntaxText || '');
+							if (!s) return [];
+							// Try to capture the inside of a `with (...)` option list.
+							const m = s.match(/\bwith\s*\(([\s\S]*?)\)/i);
+							if (!m || !m[1]) return [];
+							const inside = String(m[1]);
+							const out = [];
+							const seen = new Set();
+							for (const mm of inside.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) {
+								const name = String(mm[1] || '').trim();
+								if (!name) continue;
+								const lower = name.toLowerCase();
+								if (seen.has(lower)) continue;
+								seen.add(lower);
+								out.push(name);
+							}
+							return out;
+						} catch {
+							return [];
+						}
+					};
+
+					const __kustoScheduleFetchControlCommandSyntax = (cmd) => {
+						try {
+							if (!cmd || !cmd.commandLower || !cmd.href) return;
+							const cache = __kustoGetOrInitControlCommandDocCache();
+							const key = String(cmd.commandLower);
+							const entry = cache[key];
+							const now = Date.now();
+							if (entry && entry.fetchedAt && (now - entry.fetchedAt) < KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS && entry.syntax) {
+								return;
+							}
+							if (window.__kustoControlCommandDocPending && window.__kustoControlCommandDocPending[key]) return;
+							const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+							window.__kustoControlCommandDocPending[key] = requestId;
+							try {
+								if (typeof vscode !== 'undefined' && vscode && typeof vscode.postMessage === 'function') {
+									vscode.postMessage({
+										type: 'fetchControlCommandSyntax',
+										requestId,
+										commandLower: key,
+										href: String(cmd.href)
+									});
+								}
+							} catch { /* ignore */ }
+						} catch {
+							// ignore
+						}
+					};
+
+					const __kustoFindEnclosingWithOptionsParen = (model, statementStartOffset, cursorOffset) => {
+						try {
+							const full = model.getValue();
+							const start = Math.max(0, Number(statementStartOffset) || 0);
+							const end = Math.max(start, Math.min(full.length, Number(cursorOffset) || 0));
+							const slice = full.slice(start, end);
+							const lower = slice.toLowerCase();
+							const idx = lower.lastIndexOf('with');
+							if (idx < 0) return null;
+							const after = slice.slice(idx + 4);
+							const m = after.match(/^\s*\(/);
+							if (!m) return null;
+							const openRel = idx + 4 + (m[0].length - 1);
+							const openAbs = start + openRel;
+							if (openAbs >= end) return null;
+							// Verify the paren is still open at cursor.
+							let depth = 0;
+							let inSingle = false;
+							let inDouble = false;
+							for (let i = openAbs; i < end; i++) {
+								const ch = full[i];
+								if (ch === '"') {
+									if (!inSingle) {
+										// Basic support for backslash-escaped double quotes.
+										if (full[i - 1] !== '\\') {
+											inDouble = !inDouble;
+										}
+									}
+									continue;
+								}
+								if (ch === "'") {
+									const next = full[i + 1];
+									if (next === "'") { i++; continue; }
+									inSingle = !inSingle;
+									continue;
+								}
+								if (inSingle || inDouble) continue;
+								if (ch === '(') depth++;
+								else if (ch === ')') {
+									depth--;
+									if (depth <= 0) return null;
+								}
+							}
+							return openAbs;
+						} catch {
+							return null;
+						}
+					};
+
+					const __kustoFindWithOptionsParenRange = (text, statementStartOffset) => {
+						try {
+							const full = String(text || '');
+							const start = Math.max(0, Number(statementStartOffset) || 0);
+							const slice = full.slice(start, Math.min(full.length, start + 4000));
+							if (!slice) return null;
+
+							let inLineComment = false;
+							let inBlockComment = false;
+							let inSingle = false;
+							let inDouble = false;
+
+							const isIdentPart = (ch) => /[A-Za-z0-9_\-]/.test(ch);
+							const eqIgnoreCaseAt = (i, word) => slice.substr(i, word.length).toLowerCase() === word;
+
+							for (let i = 0; i < slice.length; i++) {
+								const ch = slice[i];
+								const next = slice[i + 1];
+
+								if (inLineComment) {
+									if (ch === '\n') inLineComment = false;
+									continue;
+								}
+								if (inBlockComment) {
+									if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+									continue;
+								}
+								if (inSingle) {
+									if (ch === "'") {
+										if (next === "'") { i++; continue; }
+										inSingle = false;
+									}
+									continue;
+								}
+								if (inDouble) {
+									if (ch === '"') {
+										// Basic support for backslash escapes inside quotes.
+										if (slice[i - 1] !== '\\') {
+											inDouble = false;
+										}
+									}
+									continue;
+								}
+
+								if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+								if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+								if (ch === "'") { inSingle = true; continue; }
+								if (ch === '"') { inDouble = true; continue; }
+
+								if (!eqIgnoreCaseAt(i, 'with')) continue;
+								const prev = i > 0 ? slice[i - 1] : '';
+								const afterWord = i + 4 < slice.length ? slice[i + 4] : '';
+								if ((prev && isIdentPart(prev)) || (afterWord && isIdentPart(afterWord))) continue;
+
+								let j = i + 4;
+								while (j < slice.length && /\s/.test(slice[j])) j++;
+								if (slice[j] !== '(') continue;
+								const openRel = j;
+								let depth = 0;
+								let inS = false;
+								let inD = false;
+								for (let k = j; k < slice.length; k++) {
+									const c = slice[k];
+									const n = slice[k + 1];
+									if (inS) {
+										if (c === "'") {
+											if (n === "'") { k++; continue; }
+											inS = false;
+										}
+										continue;
+									}
+									if (inD) {
+										if (c === '"' && slice[k - 1] !== '\\') { inD = false; }
+										continue;
+									}
+									if (c === "'") { inS = true; continue; }
+									if (c === '"') { inD = true; continue; }
+									if (c === '/' && n === '/') {
+										const nl = slice.indexOf('\n', k + 2);
+										if (nl < 0) break;
+										k = nl;
+										continue;
+									}
+									if (c === '/' && n === '*') {
+										const end = slice.indexOf('*/', k + 2);
+										if (end < 0) break;
+										k = end + 1;
+										continue;
+									}
+									if (c === '(') depth++;
+									else if (c === ')') {
+										depth--;
+										if (depth === 0) {
+											return { open: start + openRel, close: start + k };
+										}
+									}
+								}
+								return null;
+							}
+							return null;
+						} catch {
+							return null;
+						}
+					};
+
+					const __kustoTryGetDotCommandCompletionContext = (model, position, statementStartInCursorText, statementTextUpToCursor) => {
+						try {
+							const stmt = String(statementTextUpToCursor || '');
+							const m = stmt.match(/^\s*\.([A-Za-z0-9_\-]*)$/);
+							if (!m) return null;
+							const fragmentLower = String(m[1] || '').toLowerCase();
+							const dotMatch = stmt.match(/^\s*\./);
+							if (!dotMatch) return null;
+							const dotOffsetInStmt = dotMatch[0].length - 1;
+							const dotAbsOffset = Math.max(0, (Number(statementStartInCursorText) || 0) + dotOffsetInStmt);
+							const dotPos = model.getPositionAt(dotAbsOffset);
+							// Dot-command completion is only intended for the statement header line.
+							if (dotPos.lineNumber !== position.lineNumber) return null;
+							const replaceRange = new monaco.Range(dotPos.lineNumber, dotPos.column, position.lineNumber, position.column);
+							return { fragmentLower, replaceRange };
+						} catch {
+							return null;
+						}
+					};
+
+					const __kustoGetControlCommandHoverAt = (model, position) => {
+						try {
+							if (!__kustoControlCommands || __kustoControlCommands.length === 0) return null;
+							const full = model.getValue();
+							if (!full) return null;
+							const offset = model.getOffsetAt(position);
+							const statementStart = __kustoGetStatementStartAtOffset(full, offset);
+							const stmtPrefix = String(full.slice(statementStart, Math.min(full.length, statementStart + 400)));
+							const trimmed = stmtPrefix.replace(/^\s+/g, '');
+							if (!trimmed.startsWith('.')) return null;
+							const prefixLower = trimmed.toLowerCase();
+							let best = null;
+							for (const cmd of __kustoControlCommands) {
+								if (!prefixLower.startsWith(cmd.commandLower)) continue;
+								const next = prefixLower.charAt(cmd.commandLower.length);
+								if (next && !/\s|\(|<|;/.test(next)) continue;
+								best = cmd;
+								break; // already sorted by longest
+							}
+							if (!best) return null;
+
+							const wsPrefixLen = stmtPrefix.length - trimmed.length;
+							const commandStartOffset = statementStart + wsPrefixLen;
+							const commandEndOffset = commandStartOffset + best.command.length;
+							if (offset < commandStartOffset) {
+								// Hide control-command docs once caret moves before the '.'
+								return null;
+							}
+							// If the command has a with(...) option list, keep docs visible only until its closing ')'.
+							const withRange = __kustoFindWithOptionsParenRange(full, statementStart);
+							const maxOffset = (withRange && typeof withRange.close === 'number') ? Math.max(commandEndOffset, withRange.close) : commandEndOffset;
+							if (offset > maxOffset) {
+								// Hide once caret moves past the relevant signature/options region.
+								return null;
+							}
+
+							// Kick off background fetch for syntax/args so the banner can show more than a link.
+							try { __kustoScheduleFetchControlCommandSyntax(best); } catch { /* ignore */ }
+							const cache = __kustoGetOrInitControlCommandDocCache();
+							const cached = cache ? cache[String(best.commandLower)] : null;
+
+							// If the caret is inside `with (...)`, highlight the active option argument.
+							let signature = best.command;
+							try {
+								const withArgs = cached && Array.isArray(cached.withArgs) ? cached.withArgs : [];
+								if (withArgs.length) {
+									const openParen = __kustoFindEnclosingWithOptionsParen(model, statementStart, offset);
+									let active = -1;
+									if (typeof openParen === 'number') {
+										active = computeArgIndex(model, openParen, offset);
+										active = Math.max(0, Math.min(active, withArgs.length - 1));
+									}
+									const formatted = withArgs
+										.map((a, i) => (i === active ? `**${a}**=` : `${a}=`))
+										.join(', ');
+									signature = `${best.command} with (${formatted}...)`;
+								}
+							} catch { /* ignore */ }
+
+							const startPos = model.getPositionAt(statementStart + wsPrefixLen);
+							const endPos = model.getPositionAt(statementStart + wsPrefixLen + best.command.length);
+							const range = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
+							const url = new URL(best.href, KUSTO_CONTROL_COMMAND_DOCS_BASE_URL);
+							url.searchParams.set('view', KUSTO_CONTROL_COMMAND_DOCS_VIEW);
+							let markdown = `\`${signature}\``;
+							try {
+								const syntax = cached && cached.syntax ? String(cached.syntax) : '';
+								if (syntax) {
+									const lines = syntax.split('\n').map(s => String(s || '').trimRight());
+									const preview = lines.slice(0, 3).join('\n').trim();
+									if (preview) {
+										markdown += `\n${preview}`;
+									}
+								}
+							} catch { /* ignore */ }
+							return { range, markdown, __kustoKind: 'controlCommand', __kustoStartOffset: commandStartOffset, __kustoMaxOffset: maxOffset };
+						} catch {
+							return null;
+						}
+					};
+
 					const getTokenAtPosition = (model, position) => {
 						try {
 							const lineNumber = position.lineNumber;
@@ -938,6 +1377,12 @@ function ensureMonaco() {
 							return { range: multi.range, markdown: md };
 						}
 
+						// Dot-prefixed management/control commands: drive hover + caret docs banner.
+						const cc = __kustoGetControlCommandHoverAt(model, position);
+						if (cc) {
+							return cc;
+						}
+
 						const token = getTokenAtPosition(model, position);
 						if (!token || !token.word) {
 							// Even if the caret isn't on a token, keep pipe-operator docs visible while typing the clause.
@@ -974,9 +1419,11 @@ function ensureMonaco() {
 								[/\/\*.*?\*\//, 'comment'],
 								[/\/\/.*$/, 'comment'],
 								[/'.*?'/, 'string'],
+								[/"([^"\\]|\\.)*"/, 'string'],
 								[/\b\d+(\.\d+)?\b/, 'number'],
 								[/\|/, 'delimiter'],
 								[/[=><!~]+/, 'operator'],
+								[/\.[a-zA-Z_][\w\-]*/, 'keyword'],
 								[/[a-zA-Z_][\w\-]*/, {
 									cases: {
 										'@keywords': 'keyword',
@@ -995,7 +1442,15 @@ function ensureMonaco() {
 							{ open: '{', close: '}' },
 							{ open: '[', close: ']' },
 							{ open: '(', close: ')' },
-							{ open: "'", close: "'" }
+							{ open: "'", close: "'" },
+							{ open: '"', close: '"' }
+						],
+						surroundingPairs: [
+							{ open: '{', close: '}' },
+							{ open: '[', close: ']' },
+							{ open: '(', close: ')' },
+							{ open: "'", close: "'" },
+							{ open: '"', close: '"' }
 						]
 					});
 
@@ -1085,6 +1540,29 @@ function ensureMonaco() {
 							const wordUntil = model.getWordUntilPosition(position);
 							const typedRaw = (wordUntil && typeof wordUntil.word === 'string') ? wordUntil.word : '';
 							const typed = typedRaw.toLowerCase();
+
+							// Dot-prefixed control/management commands (e.g. `.create-or-alter function`).
+							// Only offer these at the start of the current statement so we don't pollute query completions.
+							const dotCtx = __kustoTryGetDotCommandCompletionContext(model, position, statementStartInCursorText, statementTextUpToCursor);
+							if (dotCtx && __kustoControlCommands && __kustoControlCommands.length) {
+								for (const cmd of __kustoControlCommands) {
+									// Match on the fragment after the leading '.'
+									const rest = cmd.commandLower.startsWith('.') ? cmd.commandLower.slice(1) : cmd.commandLower;
+									if (dotCtx.fragmentLower && !rest.startsWith(dotCtx.fragmentLower)) continue;
+									const url = new URL(cmd.href, KUSTO_CONTROL_COMMAND_DOCS_BASE_URL);
+									url.searchParams.set('view', KUSTO_CONTROL_COMMAND_DOCS_VIEW);
+									pushSuggestion({
+										label: cmd.command,
+										kind: monaco.languages.CompletionItemKind.Keyword,
+										insertText: cmd.command,
+										range: dotCtx.replaceRange,
+										sortText: '0_' + cmd.commandLower,
+										detail: 'Kusto management command',
+										documentation: { value: `[Open documentation](${url.toString()})` }
+									}, 'cc:' + cmd.commandLower);
+								}
+								return { suggestions };
+							}
 
 							// If the cursor is inside a function call argument list, completions should include columns
 							// even when the operator context regex would otherwise be too strict (e.g. `summarize ... dcount(`).
@@ -2938,6 +3416,23 @@ function ensureMonaco() {
 						for (const st of stmts) {
 							const stmtText = String(st && st.text ? st.text : '');
 							const baseOffset = Number(st && st.startOffset) || 0;
+
+							// Management/control commands (dot-prefixed) are not validated by our lightweight query diagnostics.
+							// Skip the whole statement to avoid false squiggles.
+							try {
+								const lines = stmtText.split('\n');
+								let first = '';
+								for (const ln of lines) {
+									const t = String(ln || '').trim();
+									if (!t || t === ';') continue;
+									if (t.startsWith('//')) continue;
+									first = t;
+									break;
+								}
+								if (first.startsWith('.')) {
+									continue;
+								}
+							} catch { /* ignore */ }
 
 							// First identifier on a statement line (best-effort).
 							try {
@@ -5936,11 +6431,92 @@ function initQueryEditor(boxId) {
 			const banner = document.getElementById(boxId + '_caret_docs');
 			const text = document.getElementById(boxId + '_caret_docs_text') || banner;
 			let lastHtml = '';
+			let lastDocsHtml = '';
 			let lastKey = '';
 			const watermarkTitle = 'Smart documentation tooltips';
 			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
 
+			// Persist last docs HTML across editor/overlay recreation (can happen if VS Code detaches the webview DOM).
+			try {
+				if (!window.__kustoCaretDocsLastHtmlByBoxId || typeof window.__kustoCaretDocsLastHtmlByBoxId !== 'object') {
+					window.__kustoCaretDocsLastHtmlByBoxId = {};
+				}
+				const cached = window.__kustoCaretDocsLastHtmlByBoxId[boxId];
+				if (typeof cached === 'string' && cached.trim()) {
+					lastDocsHtml = cached;
+					lastHtml = cached;
+					// If caret-docs are enabled, paint the cached docs immediately so we don't flash watermark.
+					try {
+						if (typeof caretDocsEnabled === 'undefined' || caretDocsEnabled !== false) {
+							if (banner) banner.style.display = 'flex';
+							if (text) {
+								if (text.classList) text.classList.remove('is-watermark');
+								text.innerHTML = cached;
+							}
+						}
+					} catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+
+			// In VS Code webviews, document.hasFocus() can be unreliable when the VS Code window
+			// loses focus. Track focus explicitly from window-level events.
+			try {
+				if (typeof window.__kustoWebviewHasFocus !== 'boolean') {
+					window.__kustoWebviewHasFocus = true;
+				}
+				if (!window.__kustoWebviewFocusListenersInstalled) {
+					window.__kustoWebviewFocusListenersInstalled = true;
+					try {
+						window.addEventListener(
+							'blur',
+							() => {
+								try { window.__kustoWebviewHasFocus = false; } catch { /* ignore */ }
+								// After focus flips, refresh the active overlay once so it can freeze/restore docs.
+								try {
+									setTimeout(() => {
+										try {
+											if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
+												window.__kustoRefreshActiveCaretDocs();
+											}
+										} catch { /* ignore */ }
+									}, 0);
+								} catch { /* ignore */ }
+							},
+							true
+						);
+					} catch { /* ignore */ }
+					try { window.addEventListener('focus', () => { try { window.__kustoWebviewHasFocus = true; } catch { /* ignore */ } }, true); } catch { /* ignore */ }
+					try {
+						document.addEventListener('visibilitychange', () => {
+							try {
+								// When the tab becomes hidden, treat as unfocused.
+								window.__kustoWebviewHasFocus = !document.hidden;
+							} catch { /* ignore */ }
+						}, true);
+					} catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+
+			const isWebviewFocused = () => {
+				try {
+					if (typeof window.__kustoWebviewHasFocus === 'boolean') {
+						return !!window.__kustoWebviewHasFocus;
+					}
+				} catch { /* ignore */ }
+				try {
+					return typeof document.hasFocus === 'function' ? !!document.hasFocus() : true;
+				} catch {
+					return true;
+				}
+			};
+
 			const showWatermark = () => {
+				// Never overwrite real docs while the overall VS Code/webview is unfocused.
+				try {
+					if (!isWebviewFocused() && (lastDocsHtml || lastHtml)) {
+						return;
+					}
+				} catch { /* ignore */ }
 				try {
 					if (banner) {
 						banner.style.display = 'flex';
@@ -5986,6 +6562,74 @@ function initQueryEditor(boxId) {
 						// ignore
 					}
 
+						// When the editor is not focused, freeze the banner content.
+						// This avoids resetting to the watermark while focus is elsewhere.
+						try {
+							let hasFocus = false;
+							try {
+								// If the overall VS Code/webview is unfocused, freeze regardless of Monaco state.
+								try {
+									if (typeof window.__kustoWebviewHasFocus === 'boolean' && window.__kustoWebviewHasFocus === false) {
+										hasFocus = false;
+										throw new Error('webview not focused');
+									}
+								} catch {
+									// continue to other checks
+								}
+
+								// If the VS Code window/webview isn't focused, freeze regardless of Monaco internals.
+								try {
+									if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+										hasFocus = false;
+										throw new Error('document not focused');
+									}
+								} catch {
+									// continue to other checks
+								}
+
+								const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+								const ae = (typeof document !== 'undefined') ? document.activeElement : null;
+								if (dom && ae && typeof dom.contains === 'function') {
+									hasFocus = dom.contains(ae);
+								} else {
+									hasFocus =
+									(typeof editor.hasTextFocus === 'function' && editor.hasTextFocus()) ||
+									(typeof editor.hasWidgetFocus === 'function' && editor.hasWidgetFocus());
+								}
+							} catch {
+								hasFocus =
+								(typeof editor.hasTextFocus === 'function' && editor.hasTextFocus()) ||
+								(typeof editor.hasWidgetFocus === 'function' && editor.hasWidgetFocus());
+							}
+							// Apply document focus as a final gate (activeElement can be stale when app loses focus).
+							try {
+								if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+									hasFocus = false;
+								}
+							} catch { /* ignore */ }
+							if (!hasFocus) {
+								// If we've never rendered any docs yet, keep the watermark behavior.
+								if (!lastDocsHtml && !lastHtml) {
+									showWatermark();
+									return;
+								}
+								// If we have prior docs, ensure they remain rendered.
+								try {
+									if (lastDocsHtml && text) {
+										if (text.classList) text.classList.remove('is-watermark');
+										text.innerHTML = lastDocsHtml;
+									}
+								} catch { /* ignore */ }
+								try {
+									if (banner) banner.style.display = 'flex';
+								} catch { /* ignore */ }
+								try { updatePlaceholderPosition(); } catch { /* ignore */ }
+								return;
+							}
+						} catch {
+							// ignore
+						}
+
 					// Prefer the explicit "active editor" tracking. In some Monaco builds,
 					// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
 					try {
@@ -5993,8 +6637,15 @@ function initQueryEditor(boxId) {
 							? String(activeQueryEditorBoxId)
 							: null;
 						if (activeId && activeId !== String(boxId)) {
-							showWatermark();
-							return;
+								// When another editor is active, keep the last content (if any) instead
+								// of resetting to the watermark.
+								if (!lastHtml) {
+									showWatermark();
+								} else {
+									try { if (banner) banner.style.display = 'flex'; } catch { /* ignore */ }
+									try { updatePlaceholderPosition(); } catch { /* ignore */ }
+								}
+								return;
 						}
 					} catch {
 						// ignore
@@ -6003,10 +6654,22 @@ function initQueryEditor(boxId) {
 					const model = editor.getModel();
 					const pos = editor.getPosition();
 					const sel = editor.getSelection();
-					if (!model || !pos || !sel || !sel.isEmpty()) {
-						showWatermark();
-						return;
-					}
+							if (!model || !pos || !sel || !sel.isEmpty()) {
+								// Don't lose the last docs due to transient blur/selection glitches.
+								if (lastDocsHtml) {
+									try {
+										if (banner) banner.style.display = 'flex';
+										if (text) {
+											if (text.classList) text.classList.remove('is-watermark');
+											text.innerHTML = lastDocsHtml;
+										}
+									} catch { /* ignore */ }
+									try { updatePlaceholderPosition(); } catch { /* ignore */ }
+									return;
+								}
+								showWatermark();
+								return;
+							}
 
 					const getter = window.__kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
@@ -6017,6 +6680,12 @@ function initQueryEditor(boxId) {
 					// Probe near the caret so we still show docs when the caret is on/near '(' or ')' or just after ')'.
 					// Keep the caret position first so active-argument detection stays accurate.
 					const probePositions = [pos];
+					let originalOffset = null;
+					try {
+						originalOffset = model.getOffsetAt(pos);
+					} catch {
+						originalOffset = null;
+					}
 					try {
 						const maxCol = typeof model.getLineMaxColumn === 'function' ? model.getLineMaxColumn(pos.lineNumber) : null;
 						if (pos.column > 1) probePositions.push(new monaco.Position(pos.lineNumber, pos.column - 1));
@@ -6029,7 +6698,24 @@ function initQueryEditor(boxId) {
 					for (const p of probePositions) {
 						try {
 							info = getter(model, p);
-							if (info && info.markdown) break;
+							if (info && info.markdown) {
+								// For control commands, do NOT keep docs visible after the caret moves outside
+								// the command/options region, even if probing hits ')' or nearby characters.
+								try {
+									if (
+										info.__kustoKind === 'controlCommand' &&
+										typeof info.__kustoStartOffset === 'number' &&
+										typeof info.__kustoMaxOffset === 'number' &&
+										typeof originalOffset === 'number'
+									) {
+										if (originalOffset < info.__kustoStartOffset || originalOffset > info.__kustoMaxOffset) {
+											info = null;
+											continue;
+										}
+									}
+								} catch { /* ignore */ }
+								break;
+							}
 						} catch {
 							// ignore
 						}
@@ -6041,8 +6727,14 @@ function initQueryEditor(boxId) {
 					}
 
 					const key = `${pos.lineNumber}:${pos.column}:${html.slice(0, 120)}`;
-					if (html !== lastHtml) {
+							if (html !== lastHtml) {
 						lastHtml = html;
+								lastDocsHtml = html;
+								try {
+									if (window.__kustoCaretDocsLastHtmlByBoxId && typeof window.__kustoCaretDocsLastHtmlByBoxId === 'object') {
+										window.__kustoCaretDocsLastHtmlByBoxId[boxId] = html;
+									}
+								} catch { /* ignore */ }
 						try {
 							if (text) {
 								if (text.classList) {
@@ -6106,6 +6798,10 @@ function initQueryEditor(boxId) {
 									// ignore
 								}
 							};
+								try {
+									// Allow other features (e.g., async doc fetch) to request a re-render of the active caret-docs banner.
+									window.__kustoRefreshActiveCaretDocs = refreshActive;
+								} catch { /* ignore */ }
 							window.addEventListener('scroll', refreshActive, true);
 							window.addEventListener('resize', refreshActive);
 						}
@@ -6220,14 +6916,14 @@ function initQueryEditor(boxId) {
 							try {
 								if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
 									docOverlay.hide();
-								} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
-									docOverlay.showWatermark();
 								}
 							} catch { /* ignore */ }
 							if (activeQueryEditorBoxId === boxId) {
 								activeQueryEditorBoxId = null;
 							}
 							syncPlaceholder();
+							// Keep existing docs banner content visible while unfocused.
+							// (The overlay's update loop also freezes while unfocused.)
 						}
 					} catch {
 						// ignore

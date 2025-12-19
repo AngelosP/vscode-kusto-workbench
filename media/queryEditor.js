@@ -67,6 +67,7 @@
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
 		'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
+		'queryEditor/controlCommands.generated.js',
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
 		'queryEditor/queryBoxes.js',

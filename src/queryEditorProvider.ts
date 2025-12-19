@@ -29,7 +29,56 @@ type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
 
-type IncomingWebviewMessage = { type: 'getConnections' }
+type StartCopilotWriteQueryMessage = {
+	type: 'startCopilotWriteQuery';
+	boxId: string;
+	connectionId: string;
+	database: string;
+	currentQuery?: string;
+	request: string;
+	modelId?: string;
+};
+
+type OptimizeQueryMessage = {
+	type: 'optimizeQuery';
+	query: string;
+	connectionId: string;
+	database: string;
+	boxId: string;
+	queryName: string;
+	modelId?: string;
+	promptText?: string;
+};
+
+type ExecuteQueryMessage = {
+	type: 'executeQuery';
+	query: string;
+	connectionId: string;
+	boxId: string;
+	database?: string;
+	queryMode?: string;
+	cacheEnabled?: boolean;
+	cacheValue?: number;
+	cacheUnit?: CacheUnit | string;
+};
+
+type ImportConnectionsFromXmlMessage = {
+	type: 'importConnectionsFromXml';
+	connections: Array<{ name: string; clusterUrl: string; database?: string }>;
+	boxId?: string;
+};
+
+type KqlLanguageRequestMessage = {
+	type: 'kqlLanguageRequest';
+	requestId: string;
+	method: 'textDocument/diagnostic' | 'kusto/findTableReferences';
+	params: { text: string; connectionId?: string; database?: string; boxId?: string; uri?: string };
+};
+
+type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
+
+type IncomingWebviewMessage =
+	| { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'seeCachedValues' }
@@ -46,52 +95,17 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'cancelQuery'; boxId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareCopilotWriteQuery'; boxId: string }
-	| {
-			type: 'startCopilotWriteQuery';
-			boxId: string;
-			connectionId: string;
-			database: string;
-			currentQuery?: string;
-			request: string;
-			modelId?: string;
-		}
+	| StartCopilotWriteQueryMessage
 	| { type: 'cancelCopilotWriteQuery'; boxId: string }
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
 	| { type: 'cancelOptimizeQuery'; boxId: string }
-	| {
-			type: 'optimizeQuery';
-			query: string;
-			connectionId: string;
-			database: string;
-			boxId: string;
-			queryName: string;
-			modelId?: string;
-			promptText?: string;
-		}
-	| {
-		type: 'executeQuery';
-		query: string;
-		connectionId: string;
-		boxId: string;
-		database?: string;
-		queryMode?: string;
-		cacheEnabled?: boolean;
-		cacheValue?: number;
-		cacheUnit?: CacheUnit | string;
-	}
+	| OptimizeQueryMessage
+	| ExecuteQueryMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
-	| {
-			type: 'importConnectionsFromXml';
-			connections: Array<{ name: string; clusterUrl: string; database?: string }>;
-			boxId?: string;
-		}
-	| {
-		type: 'kqlLanguageRequest';
-		requestId: string;
-		method: 'textDocument/diagnostic' | 'kusto/findTableReferences';
-		params: { text: string; connectionId?: string; database?: string; boxId?: string; uri?: string };
-	};
+	| ImportConnectionsFromXmlMessage
+	| KqlLanguageRequestMessage
+	| FetchControlCommandSyntaxMessage;
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -108,6 +122,8 @@ export class QueryEditorProvider {
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
 	private readonly resolvedResourceUriCache = new Map<string, string>();
 	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; value: string }>();
+	private readonly controlCommandSyntaxCache = new Map<string, { timestamp: number; syntax: string; withArgs: string[]; error?: string }>();
+	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 	private getErrorMessage(error: unknown): string {
 		if (error instanceof Error) {
@@ -336,6 +352,9 @@ export class QueryEditorProvider {
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
 		switch (message.type) {
+			case 'fetchControlCommandSyntax':
+				await this.handleFetchControlCommandSyntax(message);
+				return;
 			case 'resolveResourceUri':
 				await this.resolveResourceUri(message);
 				return;
@@ -421,6 +440,116 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private decodeHtmlEntities(text: string): string {
+		try {
+			return String(text || '')
+				.replace(/&nbsp;/gi, ' ')
+				.replace(/&lt;/gi, '<')
+				.replace(/&gt;/gi, '>')
+				.replace(/&amp;/gi, '&')
+				.replace(/&quot;/gi, '"')
+				.replace(/&#39;/gi, "'")
+				.replace(/&#x27;/gi, "'");
+		} catch {
+			return String(text || '');
+		}
+	}
+
+	private extractControlCommandSyntaxFromLearnHtml(html: string): string {
+		try {
+			const s = String(html || '');
+			if (!s.trim()) return '';
+
+			// Prefer a Syntax section.
+			let preBlock = '';
+			try {
+				const m = s.match(/<h2[^>]*>\s*Syntax\s*<\/h2>[\s\S]*?<pre[^>]*>([\s\S]*?)<\/pre>/i);
+				if (m?.[1]) preBlock = String(m[1]);
+			} catch {
+				preBlock = '';
+			}
+
+			// Fallback: first code block on the page.
+			if (!preBlock) {
+				try {
+					const m = s.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+					if (m?.[1]) preBlock = String(m[1]);
+				} catch {
+					preBlock = '';
+				}
+			}
+
+			if (!preBlock) return '';
+			const withoutTags = preBlock
+				.replace(/<code[^>]*>/gi, '')
+				.replace(/<\/code>/gi, '')
+				.replace(/<[^>]+>/g, '');
+			const decoded = this.decodeHtmlEntities(withoutTags);
+			const normalized = decoded.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+			const lines = normalized.split('\n');
+			while (lines.length && !String(lines[0] || '').trim()) lines.shift();
+			while (lines.length && !String(lines[lines.length - 1] || '').trim()) lines.pop();
+			return lines.join('\n').trim();
+		} catch {
+			return '';
+		}
+	}
+
+	private extractWithArgsFromSyntax(syntax: string): string[] {
+		try {
+			const s = String(syntax || '');
+			if (!s) return [];
+			const m = s.match(/\bwith\s*\(([\s\S]*?)\)/i);
+			if (!m?.[1]) return [];
+			const inside = String(m[1]);
+			const out: string[] = [];
+			const seen = new Set<string>();
+			for (const mm of inside.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g)) {
+				const name = String(mm[1] || '').trim();
+				if (!name) continue;
+				const lower = name.toLowerCase();
+				if (seen.has(lower)) continue;
+				seen.add(lower);
+				out.push(name);
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	}
+
+	private async handleFetchControlCommandSyntax(message: { requestId: string; commandLower: string; href: string }): Promise<void> {
+		const requestId = String(message.requestId || '');
+		const commandLower = String(message.commandLower || '').toLowerCase();
+		const href = String(message.href || '');
+		if (!requestId || !commandLower || !href) {
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] } as any);
+			return;
+		}
+
+		try {
+			const now = Date.now();
+			const cached = this.controlCommandSyntaxCache.get(commandLower);
+			if (cached && (now - cached.timestamp) < this.CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS) {
+				this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax: cached.syntax, withArgs: cached.withArgs } as any);
+				return;
+			}
+
+			const url = new URL(href, 'https://learn.microsoft.com/en-us/kusto/');
+			url.searchParams.set('view', 'azure-data-explorer');
+			const res = await fetch(url.toString(), { method: 'GET' });
+			if (!res.ok) throw new Error(`Failed to fetch control command syntax (HTTP ${res.status})`);
+			const html = await res.text();
+			const syntax = this.extractControlCommandSyntaxFromLearnHtml(html);
+			const withArgs = this.extractWithArgsFromSyntax(syntax);
+			this.controlCommandSyntaxCache.set(commandLower, { timestamp: Date.now(), syntax, withArgs });
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax, withArgs } as any);
+		} catch (err) {
+			this.controlCommandSyntaxCache.set(commandLower, { timestamp: Date.now(), syntax: '', withArgs: [], error: this.getErrorMessage(err) });
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] } as any);
 		}
 	}
 

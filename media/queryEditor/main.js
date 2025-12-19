@@ -628,6 +628,40 @@ window.addEventListener('message', event => {
 	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
 	const messageType = String(message.type || '');
 	switch (messageType) {
+		case 'controlCommandSyntaxResult':
+			try {
+				const commandLower = message && typeof message.commandLower === 'string' ? String(message.commandLower) : '';
+				if (commandLower) {
+					try {
+						if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
+							window.__kustoControlCommandDocCache = {};
+						}
+					} catch { /* ignore */ }
+					try {
+						const ok = !!message.ok;
+						const syntax = ok && typeof message.syntax === 'string' ? String(message.syntax) : '';
+						const withArgs = ok && Array.isArray(message.withArgs) ? message.withArgs.map(s => String(s)) : [];
+						window.__kustoControlCommandDocCache[commandLower] = {
+							syntax,
+							withArgs,
+							fetchedAt: Date.now()
+						};
+					} catch { /* ignore */ }
+					try {
+						if (window.__kustoControlCommandDocPending && typeof window.__kustoControlCommandDocPending === 'object') {
+							delete window.__kustoControlCommandDocPending[commandLower];
+						}
+					} catch { /* ignore */ }
+					try {
+						if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
+							window.__kustoRefreshActiveCaretDocs();
+						}
+					} catch { /* ignore */ }
+				}
+			} catch {
+				// ignore
+			}
+			break;
 			case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;

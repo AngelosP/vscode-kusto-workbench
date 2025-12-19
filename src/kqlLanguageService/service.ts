@@ -64,6 +64,35 @@ const offsetToPosition = (lineStarts: number[], offset: number): KqlPosition => 
 const isIdentStart = (ch: number) => (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95;
 const isIdentPart = (ch: number) => isIdentStart(ch) || (ch >= 48 && ch <= 57) || ch === 45;
 
+const isDotCommandStatement = (stmtText: string): boolean => {
+	try {
+		const s = String(stmtText ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+		let i = 0;
+		while (i < s.length) {
+			// whitespace
+			while (i < s.length && /\s/.test(s[i]!)) i++;
+			if (i >= s.length) return false;
+			// line comment
+			if (s[i] === '/' && s[i + 1] === '/') {
+				i = s.indexOf('\n', i + 2);
+				if (i < 0) return false;
+				continue;
+			}
+			// block comment
+			if (s[i] === '/' && s[i + 1] === '*') {
+				const end = s.indexOf('*/', i + 2);
+				if (end < 0) return false;
+				i = end + 2;
+				continue;
+			}
+			return s[i] === '.';
+		}
+		return false;
+	} catch {
+		return false;
+	}
+};
+
 type TextRange = { start: number; end: number };
 
 const buildCommentRanges = (text: string): TextRange[] => {
@@ -578,6 +607,7 @@ export class KqlLanguageService {
 			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
+				if (isDotCommandStatement(stmtText)) continue;
 				const baseOffset = Number(st?.startOffset ?? 0) || 0;
 				for (const m of stmtText.matchAll(/\b(join|lookup|from)\b/gi)) {
 					const kw = String(m[1] || '').toLowerCase();
@@ -780,6 +810,7 @@ export class KqlLanguageService {
 			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
+				if (isDotCommandStatement(stmtText)) continue;
 				const baseOffset = Number(st?.startOffset ?? 0) || 0;
 				const lines = stmtText.split('\n');
 				let runningOffset = baseOffset;
@@ -958,6 +989,7 @@ export class KqlLanguageService {
 			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
+				if (isDotCommandStatement(stmtText)) continue;
 				const baseOffset = Number(st?.startOffset ?? 0) || 0;
 				const lines = stmtText.split('\n');
 				let runningOffset = baseOffset;
