@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
+import { KustoQueryClient } from './kustoClient';
 
 const VIEW_TITLE = 'Kusto Workbench: Cached Values';
 
@@ -53,7 +54,7 @@ type IncomingMessage =
 	| { type: 'clusterMap.delete'; clusterEndpoint: string }
 	| { type: 'clusterMap.resetAll' }
 	| { type: 'databases.delete'; clusterKey: string }
-	| { type: 'databases.resetAll' };
+	| { type: 'databases.refresh'; clusterKey: string };
 
 export class CachedValuesViewer {
 	private static current: CachedValuesViewer | undefined;
@@ -70,12 +71,14 @@ export class CachedValuesViewer {
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
+	private readonly kustoClient: KustoQueryClient;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager
 	) {
+		this.kustoClient = new KustoQueryClient(this.context);
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.cachedValues',
 			VIEW_TITLE,
@@ -296,6 +299,16 @@ export class CachedValuesViewer {
 					return;
 				}
 				try { await this.context.secrets.delete(SECRET_KEYS.tokenOverrideByAccountId(accountId)); } catch { /* ignore */ }
+				// User asked: "Delete token" should forget this account as if never used.
+				// We can't delete VS Code's underlying auth session via stable API, but we can
+				// forget our extension's persisted account history and mappings.
+				try {
+					const prevKnown = this.readKnownAccounts();
+					const nextKnown = prevKnown.filter(a => String(a?.id || '').trim() !== accountId);
+					await this.context.globalState.update(STORAGE_KEYS.knownAccounts, nextKnown);
+				} catch { /* ignore */ }
+				// Also clear all cached cluster->account associations.
+				try { await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, {}); } catch { /* ignore */ }
 				return;
 			}
 			case 'auth.resetAll': {
@@ -352,9 +365,64 @@ export class CachedValuesViewer {
 				await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
 				return;
 			}
-			case 'databases.resetAll': {
-				await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, {});
-				return;
+			case 'databases.refresh': {
+				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
+				if (!clusterKey) {
+					return;
+				}
+
+				const cached = this.readCachedDatabases();
+				const cachedBefore = (cached[clusterKey] ?? []).filter(Boolean);
+
+				// Prefer a saved connection's clusterUrl for this clusterKey when available.
+				let connection: KustoConnection | undefined;
+				try {
+					const conns = this.connectionManager.getConnections();
+					for (const c of conns) {
+						if (!c || !c.clusterUrl) {
+							continue;
+						}
+						const key = this.getClusterCacheKey(c.clusterUrl);
+						if (key === clusterKey) {
+							connection = c;
+							break;
+						}
+					}
+				} catch {
+					connection = undefined;
+				}
+
+				if (!connection) {
+					// Fallback: construct a minimal connection using the hostname key.
+					const url = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
+					connection = { id: `cluster_${clusterKey}`, name: clusterKey, clusterUrl: url };
+				}
+
+				try {
+					const databasesRaw = await this.kustoClient.getDatabases(connection, true);
+					const databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
+						.map((d) => String(d || '').trim())
+						.filter(Boolean)
+						.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+					// Don't wipe a previously-good cached list with an empty refresh result.
+					if (databases.length > 0 || cachedBefore.length === 0) {
+						cached[clusterKey] = databases;
+						await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
+						return;
+					}
+
+					void vscode.window.showWarningMessage(
+						"Couldn't refresh the database list (received 0 databases). Keeping the previous cached list."
+					);
+					return;
+				} catch (error) {
+					const msgText = this.kustoClient.isAuthenticationError(error)
+						? 'Failed to refresh the database list due to an authentication error. Try running a query against the cluster to sign in, then refresh again.'
+						: 'Failed to refresh the database list. Check your connection and try again.';
+					void vscode.window.showErrorMessage(msgText);
+					return;
+				}
 			}
 			default:
 				return;
@@ -378,6 +446,9 @@ export class CachedValuesViewer {
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>${VIEW_TITLE}</title>
 	<style>
+		/* Ensure borders/padding don't cause height overflow + clipping in fixed-height panes. */
+		*, *::before, *::after { box-sizing: border-box; }
+
 		/* VS Code injects theme classes on <body> (vscode-light/vscode-dark/etc.) and updates them on theme switch. */
 		body.vscode-light, body.vscode-high-contrast-light { color-scheme: light; }
 		body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
@@ -385,8 +456,12 @@ export class CachedValuesViewer {
 		body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); padding: 16px; }
 		h1 { font-size: 16px; margin: 0 0 12px 0; }
 		.small { opacity: 0.8; font-size: 12px; }
-		section { margin: 16px 0; padding: 12px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; background: var(--vscode-editorWidget-background); }
+		section { margin: 16px 0; padding: 12px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 0; background: var(--vscode-editorWidget-background); max-height: 500px; overflow: auto; }
 		section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+		.sectionBody { min-height: 0; }
+		section.dbSection { overflow: hidden; display: flex; flex-direction: column; height: 500px; }
+		section.dbSection > header { flex: 0 0 auto; }
+		section.dbSection #dbContent { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 		button { font-family: inherit; }
 		.iconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 4px; border: 1px solid var(--vscode-button-border, transparent); background: transparent; color: var(--vscode-foreground); cursor: pointer; }
 		.iconButton:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
@@ -395,6 +470,7 @@ export class CachedValuesViewer {
 		table { width: 100%; border-collapse: collapse; }
 		th, td { border-bottom: 1px solid var(--vscode-editorWidget-border); padding: 6px 8px; vertical-align: top; }
 		th { text-align: left; font-weight: 600; }
+		.tokenCol { white-space: nowrap; min-width: 92px; }
 		code, pre, textarea, input { font-family: var(--vscode-editor-font-family); }
 		textarea { width: 100%; min-height: 56px; }
 		.rowActions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -437,15 +513,25 @@ export class CachedValuesViewer {
 		.select-wrapper select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 		.mono { font-family: var(--vscode-editor-font-family); }
-		.twoPane { display: grid; grid-template-columns: 260px 1fr; gap: 10px; min-height: 220px; }
-		.pane { border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; overflow: hidden; }
-		.list { max-height: 320px; overflow: auto; }
+		.twoPane { display: grid; grid-template-columns: 260px 1fr; gap: 10px; height: 100%; min-height: 0; align-items: stretch; }
+		.pane { border: 1px solid var(--vscode-editorWidget-border); border-radius: 0; overflow: hidden; min-height: 0; }
+		.list { height: 100%; overflow-y: scroll; overflow-x: hidden; }
+		#dbDetail { height: 100%; overflow: auto; }
+		.scrollPane:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+		.dbDetailHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+
+		/* Make scrollbars visible in webview panes (theme-aware, no hard-coded colors). */
+		.scrollPane { scrollbar-gutter: stable; }
+		.scrollPane::-webkit-scrollbar { width: 12px; height: 12px; }
+		.scrollPane::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 0; }
+		.scrollPane::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+		.scrollPane::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+		.scrollPane::-webkit-scrollbar-corner { background: transparent; }
 		.listItem { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-editorWidget-border); cursor: pointer; }
 		.listItem:last-child { border-bottom: none; }
 		.listItem:hover { background: var(--vscode-list-hoverBackground); }
 		.listItem.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 		.listItem .count { opacity: 0.8; font-size: 12px; }
-		.dbToolbar { display: flex; gap: 6px; align-items: center; }
 	</style>
 </head>
 <body>
@@ -458,13 +544,8 @@ export class CachedValuesViewer {
 				<div><strong>Cached authentication tokens</strong></div>
 				<div class="small">Shows VS Code auth sessions for Kusto scope, plus optional token overrides.</div>
 			</div>
-			<div class="rowActions">
-				<button class="iconButton" id="authReset" title="Reset auth cache" aria-label="Reset auth cache">
-					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.32 4H16v2h6V5h-2v2.1A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7z"/></svg>
-				</button>
-			</div>
 		</header>
-		<div id="authContent"></div>
+		<div id="authContent" class="sectionBody"></div>
 	</section>
 
 	<section>
@@ -473,36 +554,18 @@ export class CachedValuesViewer {
 				<div><strong>Cached associations of clusters to authentication accounts</strong></div>
 				<div class="small">Cluster → preferred account mapping (auth preference cache).</div>
 			</div>
-			<div class="rowActions">
-				<button class="iconButton" id="clusterMapReset" title="Reset cluster/account map" aria-label="Reset cluster/account map">
-					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.32 4H16v2h6V5h-2v2.1A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7z"/></svg>
-				</button>
-			</div>
 		</header>
-		<div id="clusterMapContent"></div>
+		<div id="clusterMapContent" class="sectionBody"></div>
 	</section>
 
-	<section>
+	<section class="dbSection">
 		<header>
 			<div>
 				<div><strong>Cached list of databases (per cluster)</strong></div>
 				<div class="small">Select a cluster on the left to view its cached databases.</div>
 			</div>
-			<div class="rowActions">
-				<div class="dbToolbar">
-					<button class="iconButton" id="dbCopySelected" title="Copy selected" aria-label="Copy selected">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1z"/><path d="M20 5H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>
-					</button>
-					<button class="iconButton" id="dbResetSelected" title="Reset selected" aria-label="Reset selected">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.32 4H16v2h6V5h-2v2.1A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7z"/></svg>
-					</button>
-					<button class="iconButton" id="dbReset" title="Reset database cache" aria-label="Reset database cache">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>
-					</button>
-				</div>
-			</div>
 		</header>
-		<div id="dbContent"></div>
+		<div id="dbContent" class="sectionBody"></div>
 	</section>
 
 	<script nonce="${nonce}">
@@ -717,7 +780,7 @@ export class CachedValuesViewer {
 			html += '<thead><tr>';
 			html += '<th>Account</th>';
 			html += '<th>Account Id</th>';
-			html += '<th>Token</th>';
+			html += '<th class="tokenCol">Token</th>';
 			html += '<th>Override</th>';
 			html += '<th>Actions</th>';
 			html += '</tr></thead>';
@@ -734,10 +797,15 @@ export class CachedValuesViewer {
 				html += '<tr>';
 				html += '<td>' + escapeHtml(account.label) + '</td>';
 				html += '<td class="mono">' + escapeHtml(account.id) + '</td>';
-				html += '<td>';
+				html += '<td class="tokenCol">';
+				html += '<div class="rowActions">';
 				html += '<button class="iconButton" data-copy="token" data-account-id="' + escapeHtml(account.id) + '" title="Copy token" aria-label="Copy token">';
 				html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1z"/><path d="M20 5H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>';
 				html += '</button>';
+				html += '<button class="iconButton" data-clear-override="' + escapeHtml(account.id) + '" title="Delete token" aria-label="Delete token">';
+				html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>';
+				html += '</button>';
+				html += '</div>';
 				html += '</td>';
 				html += '<td>';
 				html += '<textarea data-override-for="' + escapeHtml(account.id) + '" placeholder="(empty = use session token)">' + escapeHtml(overrideVal) + '</textarea>';
@@ -746,9 +814,6 @@ export class CachedValuesViewer {
 				html += '<div class="rowActions">';
 				html += '<button class="iconButton" data-save-override="' + escapeHtml(account.id) + '" title="Save override" aria-label="Save override">';
 				html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3H5a2 2 0 0 0-2 2v14h18V7l-4-4zm2 14H5V5h11.17L19 7.83V17z"/><path d="M7 5h8v4H7V5z"/></svg>';
-				html += '</button>';
-				html += '<button class="iconButton" data-clear-override="' + escapeHtml(account.id) + '" title="Clear override" aria-label="Clear override">';
-				html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>';
 				html += '</button>';
 				html += '</div>';
 				html += '</td>';
@@ -854,6 +919,16 @@ export class CachedValuesViewer {
 
 		function renderDatabases(snapshot) {
 			var el = document.getElementById('dbContent');
+			var prevList = document.getElementById('dbList');
+			var prevScrollTop = 0;
+			var prevFocusedId = '';
+			try {
+				var ae = getActiveElement();
+				prevFocusedId = (ae && ae.id) ? String(ae.id) : '';
+			} catch { /* ignore */ }
+			try {
+				prevScrollTop = prevList && typeof prevList.scrollTop === 'number' ? prevList.scrollTop : 0;
+			} catch { /* ignore */ }
 			var cached = getObject(snapshot ? snapshot.cachedDatabases : null);
 			var clusterKeys = Object.keys(cached);
 			clusterKeys.sort();
@@ -916,7 +991,7 @@ export class CachedValuesViewer {
 
 			var html = '';
 			html += '<div class="twoPane">';
-			html += '<div class="pane list" id="dbList">';
+			html += '<div class="pane list scrollPane" id="dbList" tabindex="0" role="listbox" aria-label="Clusters">';
 			for (var j = 0; j < clusterKeys.length; j++) {
 				var clusterKey = clusterKeys[j];
 				var list = getArray(cached[clusterKey]);
@@ -931,13 +1006,23 @@ export class CachedValuesViewer {
 				html += '</div>';
 			}
 			html += '</div>';
-			html += '<div class="pane" id="dbDetail">';
+			html += '<div class="pane scrollPane" id="dbDetail" tabindex="0" aria-label="Databases">';
 			// Detail
 			var selected = selectedDbClusterKey;
 			var selectedList = getArray(cached[selected]);
 			var selectedTitle = labelByCluster[selected] || selected;
 			html += '<div style="padding:10px;">';
-			html += '<div class="small" style="margin-bottom:6px;">' + escapeHtml(selectedTitle) + '</div>';
+			html += '<div class="dbDetailHeader">';
+			html += '<div class="small">' + escapeHtml(selectedTitle) + '</div>';
+			html += '<div class="rowActions">';
+			html += '<button class="iconButton" data-db-refresh="' + escapeHtml(selected) + '" title="Refresh the list of cached databases for selected cluster" aria-label="Refresh the list of cached databases for selected cluster">';
+			html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.32 4H16v2h6V5h-2v2.1A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7z"/></svg>';
+			html += '</button>';
+			html += '<button class="iconButton" data-db-delete="' + escapeHtml(selected) + '" title="Delete the list of cached databases for the selected cluster" aria-label="Delete the list of cached databases for the selected cluster">';
+			html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>';
+			html += '</button>';
+			html += '</div>';
+			html += '</div>';
 			html += '<table>';
 			html += '<thead><tr><th>Database</th></tr></thead>';
 			html += '<tbody>';
@@ -952,6 +1037,34 @@ export class CachedValuesViewer {
 			html += '</div>';
 			html += '</div>';
 			el.innerHTML = html;
+			// Preserve left list scroll position across re-renders (including when selection changes).
+			try {
+				var nextList = document.getElementById('dbList');
+				if (nextList && typeof nextList.scrollTop === 'number') {
+					nextList.scrollTop = prevScrollTop;
+					// Restore focus if the user was navigating with the keyboard.
+					if (prevFocusedId === 'dbList' && nextList.focus) {
+						nextList.focus();
+					}
+					var items = nextList.querySelectorAll('[data-db-select]');
+					for (var i = 0; i < items.length; i++) {
+						var node = items[i];
+						if (!node || !node.getAttribute) continue;
+						if (node.getAttribute('data-db-select') === selectedDbClusterKey) {
+							if (node.scrollIntoView) {
+								node.scrollIntoView({ block: 'nearest' });
+							}
+							break;
+						}
+					}
+				}
+				if (prevFocusedId === 'dbDetail') {
+					var nextDetail = document.getElementById('dbDetail');
+					if (nextDetail && nextDetail.focus) {
+						nextDetail.focus();
+					}
+				}
+			} catch { /* ignore */ }
 		}
 
 		function renderAll(snapshot) {
@@ -1042,37 +1155,6 @@ export class CachedValuesViewer {
 				requestSnapshot();
 				return;
 			}
-			if (t.id === 'dbReset') {
-				vscode.postMessage({ type: 'databases.resetAll' });
-				requestSnapshot();
-				return;
-			}
-			if (t.id === 'dbCopySelected') {
-				var clusterKey = selectedDbClusterKey;
-				if (!clusterKey) {
-					return;
-				}
-				var snap = lastSnapshot;
-				var dbs = [];
-				if (snap && snap.cachedDatabases && typeof snap.cachedDatabases === 'object') {
-					var v = snap.cachedDatabases[clusterKey];
-					if (Array.isArray(v)) {
-						dbs = v;
-					}
-				}
-				vscode.postMessage({ type: 'copyToClipboard', text: JSON.stringify(dbs, null, 2) });
-				return;
-			}
-			if (t.id === 'dbResetSelected') {
-				var clusterKey = selectedDbClusterKey;
-				if (!clusterKey) {
-					return;
-				}
-				vscode.postMessage({ type: 'databases.delete', clusterKey: clusterKey });
-				requestSnapshot();
-				return;
-			}
-
 			var dbSelect = closest(t, '[data-db-select]');
 			if (dbSelect) {
 				var clusterKey = String(dbSelect.getAttribute('data-db-select') || '');
@@ -1080,7 +1162,33 @@ export class CachedValuesViewer {
 					selectedDbClusterKey = clusterKey;
 					if (lastSnapshot) {
 						renderDatabases(lastSnapshot);
+						try {
+							var list = document.getElementById('dbList');
+							if (list && list.focus) {
+								list.focus();
+							}
+						} catch { /* ignore */ }
 					}
+				}
+				return;
+			}
+
+			var dbRefresh = closest(t, '[data-db-refresh]');
+			if (dbRefresh) {
+				var clusterKey = String(dbRefresh.getAttribute('data-db-refresh') || '');
+				if (clusterKey) {
+					vscode.postMessage({ type: 'databases.refresh', clusterKey: clusterKey });
+					requestSnapshot();
+				}
+				return;
+			}
+
+			var dbDelete = closest(t, '[data-db-delete]');
+			if (dbDelete) {
+				var clusterKey = String(dbDelete.getAttribute('data-db-delete') || '');
+				if (clusterKey) {
+					vscode.postMessage({ type: 'databases.delete', clusterKey: clusterKey });
+					requestSnapshot();
 				}
 				return;
 			}
@@ -1134,6 +1242,44 @@ export class CachedValuesViewer {
 			}
 
 
+		});
+
+		document.addEventListener('keydown', function (e) {
+			var ae = getActiveElement();
+			if (!ae || !ae.id || ae.id !== 'dbList') {
+				return;
+			}
+			if (!lastSnapshot) {
+				return;
+			}
+			var key = e && e.key ? String(e.key) : '';
+			if (key !== 'ArrowUp' && key !== 'ArrowDown') {
+				return;
+			}
+			var cached = getObject(lastSnapshot ? lastSnapshot.cachedDatabases : null);
+			var clusterKeys = Object.keys(cached);
+			clusterKeys.sort();
+			if (clusterKeys.length === 0) {
+				return;
+			}
+			var idx = -1;
+			for (var i = 0; i < clusterKeys.length; i++) {
+				if (clusterKeys[i] === selectedDbClusterKey) {
+					idx = i;
+					break;
+				}
+			}
+			if (idx < 0) {
+				idx = 0;
+			}
+			if (key === 'ArrowUp') {
+				idx = Math.max(0, idx - 1);
+			} else {
+				idx = Math.min(clusterKeys.length - 1, idx + 1);
+			}
+			selectedDbClusterKey = clusterKeys[idx];
+			renderDatabases(lastSnapshot);
+			try { if (e && e.preventDefault) e.preventDefault(); } catch { /* ignore */ }
 		});
 
 		document.addEventListener('change', function (e) {

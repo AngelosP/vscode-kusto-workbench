@@ -32,6 +32,7 @@ type CacheUnit = 'minutes' | 'hours' | 'days';
 type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
@@ -324,6 +325,9 @@ export class QueryEditorProvider {
 				return;
 			case 'getConnections':
 				await this.sendConnectionsData();
+				return;
+			case 'seeCachedValues':
+				await vscode.commands.executeCommand('kusto.seeCachedValues');
 				return;
 			case 'requestAddFavorite':
 				await this.promptAddFavorite(message);

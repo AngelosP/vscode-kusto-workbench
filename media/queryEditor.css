@@ -3608,6 +3608,17 @@
 			white-space: nowrap;
 		}
 
+		.schema-cached-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: underline;
+			cursor: pointer;
+		}
+
+		.schema-cached-link:hover,
+		.schema-cached-link:focus {
+			color: var(--vscode-textLink-activeForeground);
+		}
+
 		.schema-loaded.error {
 			text-decoration: underline;
 		}

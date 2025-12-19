@@ -28,6 +28,7 @@ It has advanced markdown capabilities (thanks to the amazing folks at [toastui](
 
 * Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
 * Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > .kqlx and you are good to go just the same.
+* Support for multiple authentication accounts, seamless switching between them just by running your queries. You won't even know it's happening.
 * No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).
 * Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based). It's pretty much all you'll need for quick explorations in one place and new features are being added all the time.
 * Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come. [Make a request](https://github.com/AngelosP/vscode-kusto-workbench/issues) for what you'd like to see next. With .kqlx files you also get the ability to save the query results in the file itself, creating a snapshot in time and something you can easily share with others.
@@ -111,6 +112,7 @@ Notes:
 * `Kusto Workbench: Save Session As... (.kqlx)`
 * `Kusto Workbench: Manage Connections`
 * `Kusto Workbench: Delete All Connections`
+* `Kusto Workbench: Show Cached Values`
 
 ## Importing connections from Kusto Explorer (connections.xml)
 

@@ -1028,12 +1028,12 @@ window.addEventListener('message', event => {
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
 				const columnsCount = meta.columnsCount ?? 0;
-				const cacheTag = meta.fromCache ? ' (cached)' : '';
 				setSchemaLoadedSummary(
 					message.boxId,
-					tablesCount + ' tables, ' + columnsCount + ' cols' + cacheTag,
-					'Schema loaded for autocomplete' + cacheTag,
-					false
+					tablesCount + ' tables, ' + columnsCount + ' cols',
+					'Schema loaded for autocomplete' + (meta.fromCache ? ' (cached)' : ''),
+					false,
+					{ fromCache: !!meta.fromCache, tablesCount, columnsCount }
 				);
 			}
 			break;

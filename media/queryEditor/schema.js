@@ -74,15 +74,55 @@ function setSchemaLoading(boxId, loading) {
 	}
 }
 
-function setSchemaLoadedSummary(boxId, text, title, isError) {
+function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 	const el = document.getElementById(boxId + '_schema_loaded');
 	if (!el) {
 		return;
 	}
-	el.textContent = text || '';
+	// Clear any prior content (we sometimes render a link).
+	try {
+		while (el.firstChild) {
+			el.removeChild(el.firstChild);
+		}
+	} catch {
+		// ignore
+	}
+
+	const hasText = !!text;
+	if (hasText && meta && meta.fromCache) {
+		try {
+			const tablesCount = Number(meta.tablesCount);
+			const columnsCount = Number(meta.columnsCount);
+			const prefix = document.createElement('span');
+			prefix.textContent =
+				(tablesCount >= 0 ? tablesCount : 0) + ' tables, ' + (columnsCount >= 0 ? columnsCount : 0) + ' cols';
+			el.appendChild(prefix);
+
+			const link = document.createElement('a');
+			link.href = '#';
+			link.className = 'schema-cached-link';
+			link.textContent = '(cached)';
+			link.title = 'See cached values';
+			link.addEventListener('click', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+				} catch { /* ignore */ }
+				try {
+					vscode.postMessage({ type: 'seeCachedValues' });
+				} catch { /* ignore */ }
+			});
+			el.appendChild(link);
+		} catch {
+			// Fallback: plain text
+			el.textContent = text || '';
+		}
+	} else {
+		el.textContent = text || '';
+	}
 	el.title = title || '';
 	el.classList.toggle('error', !!isError);
-	el.style.display = text ? 'inline-flex' : 'none';
+	el.style.display = hasText ? 'inline-flex' : 'none';
 }
 
 function ensureSchemaForBox(boxId, forceRefresh) {
