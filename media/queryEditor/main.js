@@ -718,6 +718,11 @@ window.addEventListener('message', event => {
 				}
 			} catch { /* ignore */ }
 			try {
+				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
+				}
+			} catch { /* ignore */ }
+			try {
 				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
 					window.__kustoOnConnectionsUpdated();
 				}
@@ -734,6 +739,11 @@ window.addEventListener('message', event => {
 			try {
 				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
 					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 				}
 			} catch { /* ignore */ }
 			// If this update came from an "Add favorite" action in a specific box, automatically

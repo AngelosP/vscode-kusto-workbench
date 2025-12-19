@@ -1,4 +1,5 @@
 function addQueryBox(options) {
+	const isFirstBox = !(Array.isArray(queryBoxes) && queryBoxes.length > 0);
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
 	const isComparison = !!(options && options.isComparison);
@@ -363,6 +364,13 @@ function addQueryBox(options) {
 	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
+	// If this is the first section and the user has favorites, default to Favorites mode.
+	// (Otherwise, keep the normal cluster+database dropdowns visible.)
+	try {
+		if (isFirstBox && typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+			window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
+		}
+	} catch { /* ignore */ }
 	initQueryEditor(id);
 
 	// Default visibility state (results + comparison summary)
@@ -2928,6 +2936,32 @@ window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 	} catch { /* ignore */ }
 };
 
+// Default behavior for blank/new docs: if the user has any favorites, start the first
+// section in Favorites mode. If they have no favorites, keep the normal cluster/db selects.
+let __kustoDidDefaultFirstBoxToFavorites = false;
+
+window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
+	try {
+		if (__kustoDidDefaultFirstBoxToFavorites) return;
+		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+		if (!hasAny) return;
+		if (!Array.isArray(queryBoxes) || queryBoxes.length !== 1) return;
+		const id = String(queryBoxes[0] || '').trim();
+		if (!id) return;
+
+		// Don't override an explicit/restored setting for this box.
+		try {
+			if (favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+				return;
+			}
+		} catch { /* ignore */ }
+
+		__kustoApplyFavoritesMode(id, true);
+		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
+		__kustoDidDefaultFirstBoxToFavorites = true;
+	} catch { /* ignore */ }
+};
+
 // Webviews are sandboxed; confirm()/alert() may be blocked unless allow-modals is set.
 // Route confirmation via the extension host so we can use VS Code's native modal.
 let __kustoConfirmRemoveFavoriteCallbacksById = Object.create(null);
@@ -3550,6 +3584,20 @@ function toggleFavoritesDropdown(boxId) {
 function renderFavoritesMenuForBox(boxId) {
 	const menu = document.getElementById(boxId + '_favorites_menu');
 	if (!menu) return;
+	let selectedKeyEnc = '';
+	try {
+		let ownerId = String(boxId || '').trim();
+		try {
+			ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
+				? (String(window.__kustoGetSelectionOwnerBoxId(ownerId) || ownerId))
+				: ownerId;
+		} catch { /* ignore */ }
+		const currentClusterUrl = __kustoGetCurrentClusterUrlForBox(ownerId);
+		const currentDb = __kustoGetCurrentDatabaseForBox(ownerId);
+		if (currentClusterUrl && currentDb) {
+			selectedKeyEnc = encodeURIComponent(__kustoFavoriteKey(currentClusterUrl, currentDb));
+		}
+	} catch { /* ignore */ }
 	let list = [];
 	try {
 		list = __kustoGetFavoritesSorted();
@@ -3571,15 +3619,17 @@ function renderFavoritesMenuForBox(boxId) {
 		menu.innerHTML = '<div class="kusto-dropdown-empty">No favorites yet.</div>';
 		return;
 	}
+	const useSharedDropdown = !!(window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function');
 	// Prefer shared dropdown renderer (enables optional delete buttons).
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
+		if (useSharedDropdown) {
 			const items = safe.map((f) => {
 				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
 				return {
 					key,
 					html: __kustoFormatFavoriteDisplayHtml(f),
 					ariaLabel: 'Select favorite',
+					selected: !!(selectedKeyEnc && key === selectedKeyEnc),
 					// Favorites explicitly opts into delete.
 					enableDelete: true
 				};
@@ -3609,8 +3659,9 @@ function renderFavoritesMenuForBox(boxId) {
 			try {
 				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
 				const itemId = boxId + '_favorites_opt_' + idx;
+				const isSelected = !!(selectedKeyEnc && key === selectedKeyEnc);
 				rows.push(
-					'<div class="kusto-favorites-item" id="' + itemId + '" role="option" tabindex="-1" aria-selected="false" data-fav-key="' + key + '" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
+					'<div class="kusto-favorites-item' + (isSelected ? ' is-active' : '') + '" id="' + itemId + '" role="option" tabindex="-1" aria-selected="' + (isSelected ? 'true' : 'false') + '" data-fav-key="' + key + '" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
 						'<div class="kusto-favorites-item-main">' +
 							__kustoFormatFavoriteDisplayHtml(f) +
 						'</div>' +
@@ -3629,26 +3680,44 @@ function renderFavoritesMenuForBox(boxId) {
 		menu.innerHTML = rows.join('');
 	}
 
-	// Wire hover/focus behavior for the freshly rendered items.
+	// Wire behavior for the freshly rendered items.
 	try {
-		const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
-		for (const it of items) {
-			it.addEventListener('mouseenter', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
-			it.addEventListener('focus', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
-		}
-		const trashButtons = Array.from(menu.querySelectorAll('.kusto-dropdown-trash, .kusto-favorites-trash'));
-		for (const btn of trashButtons) {
-			// Reusable dropdown delete buttons already have inline onclick.
+		if (useSharedDropdown && window.__kustoDropdown && typeof window.__kustoDropdown.wireMenuInteractions === 'function') {
+			window.__kustoDropdown.wireMenuInteractions(menu);
+			// In shared-dropdown mode, aria-selected represents the current selection.
+			// Do not attach the legacy handlers that repurpose aria-selected for "active".
+		} else {
+			const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
+			for (const it of items) {
+				it.addEventListener('mouseenter', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
+				it.addEventListener('focus', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
+			}
+			// Default the initial active item to the current selection if possible.
 			try {
-				if (btn && btn.getAttribute && btn.getAttribute('onclick')) {
-					continue;
+				const selectedEl = selectedKeyEnc
+					? (menu.querySelector('[data-fav-key="' + selectedKeyEnc + '"], [data-kusto-key="' + selectedKeyEnc + '"]'))
+					: null;
+				if (selectedEl) {
+					__kustoSetActiveFavoriteMenuItem(boxId, selectedEl);
+				} else if (items.length) {
+					__kustoSetActiveFavoriteMenuItem(boxId, items[0]);
 				}
 			} catch { /* ignore */ }
-			btn.addEventListener('click', (ev) => {
-				let k = '';
-				try { k = btn && btn.dataset ? String(btn.dataset.kustoKey || btn.dataset.favKey || '') : ''; } catch { k = ''; }
-				removeFavoriteFromFavoritesMenu(ev, boxId, k);
-			});
+
+			const trashButtons = Array.from(menu.querySelectorAll('.kusto-dropdown-trash, .kusto-favorites-trash'));
+			for (const btn of trashButtons) {
+				// Reusable dropdown delete buttons already have inline onclick.
+				try {
+					if (btn && btn.getAttribute && btn.getAttribute('onclick')) {
+						continue;
+					}
+				} catch { /* ignore */ }
+				btn.addEventListener('click', (ev) => {
+					let k = '';
+					try { k = btn && btn.dataset ? String(btn.dataset.kustoKey || btn.dataset.favKey || '') : ''; } catch { k = ''; }
+					removeFavoriteFromFavoritesMenu(ev, boxId, k);
+				});
+			}
 		}
 	} catch { /* ignore */ }
 }
