@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.1.0]
+
+* Improved multi-account authentication flow: clicking "Refresh databases" now prompts for the correct VS Code/Microsoft account when needed, and retries after 401/403 authentication failures.
+* Prevented an empty refresh result from wiping a previously loaded database list.
+
 ## [0.0.9]
 
 * Fixed the glaring issue with the editing toolbar in the markdown section not staying always visible as you scroll (oops, sorry!)
