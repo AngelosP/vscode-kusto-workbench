@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+
+## [0.1.1]
+
+* Added a 'ask for link' at the bottom of the files
+* Fixed the issue with images + markdown files
+
 ## [0.1.0]
 
 * Improved multi-account authentication flow: clicking "Refresh databases" now prompts for the correct VS Code/Microsoft account when needed, and retries after 401/403 authentication failures.
