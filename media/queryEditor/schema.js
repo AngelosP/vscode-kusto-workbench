@@ -265,6 +265,11 @@ function onDatabaseChanged(boxId) {
 			window.__kustoUpdateFavoritesUiForAllBoxes();
 		}
 	} catch { /* ignore */ }
+	try {
+		if (window && typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

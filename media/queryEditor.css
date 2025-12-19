@@ -1944,12 +1944,21 @@
 			border-radius: 2px;
 		}
 
-		button:hover {
+		button:hover:not(:disabled) {
 			background-color: var(--vscode-button-hoverBackground);
 		}
 
-		button:active {
+		button:active:not(:disabled) {
 			opacity: 0.8;
+		}
+
+		/* Disabled buttons: match VS Code's disabled feel.
+		   Keep this scoped to our primary "Run" button to avoid fighting other component-specific rules. */
+		.split-button .split-main:disabled {
+			background-color: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-disabledForeground);
+			cursor: not-allowed;
+			opacity: 1;
 		}
 
 		.split-button {

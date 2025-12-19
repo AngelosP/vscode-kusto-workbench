@@ -318,12 +318,12 @@ function addQueryBox(options) {
 		'<div class="query-actions">' +
 		'<div class="query-run">' +
 		'<div class="split-button" id="' + id + '_run_split">' +
-		'<button class="split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')">▶ Run Query (take 100)</button>' +
+		'<button class="split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Select a cluster and database first (or select a favorite)">▶ Run Query (take 100)</button>' +
 		'<button class="split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options">▾</button>' +
 		'<div class="split-menu" id="' + id + '_run_menu" role="menu">' +
-		'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\'' + id + '\', \'plain\'); executeQuery(\'' + id + '\'); closeRunMenu(\'' + id + '\');">Run Query</div>' +
-		'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\'' + id + '\', \'take100\'); executeQuery(\'' + id + '\'); closeRunMenu(\'' + id + '\');">Run Query (take 100)</div>' +
-		'<div class="split-menu-item" role="menuitem" onclick="setRunMode(\'' + id + '\', \'sample100\'); executeQuery(\'' + id + '\'); closeRunMenu(\'' + id + '\');">Run Query (sample 100)</div>' +
+		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'plain\');">Run Query</div>' +
+		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'take100\');">Run Query (take 100)</div>' +
+		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'sample100\');">Run Query (sample 100)</div>' +
 		'</div>' +
 		'</div>' +
 		optimizeOrAcceptHtml +
@@ -1609,6 +1609,11 @@ function __kustoHideOptimizePromptForBox(boxId) {
 
 	try {
 		__kustoSetOptimizeInProgress(boxId, false, '');
+	} catch { /* ignore */ }
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
 	} catch { /* ignore */ }
 }
 
@@ -3286,6 +3291,7 @@ function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
 	if (keyStr === '__other__') {
 		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
 		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+		try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
 		if (closeDropdown) {
 			closeFavoritesDropdown(id);
 		}
@@ -3297,6 +3303,7 @@ function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
 	if (key === '__other__') {
 		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
 		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
+		try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
 		if (closeDropdown) {
 			closeFavoritesDropdown(id);
 		}
@@ -3337,6 +3344,7 @@ function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
 
 	try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
 	if (closeDropdown) {
 		closeFavoritesDropdown(id);
 	}
@@ -3523,6 +3531,11 @@ function toggleFavoritesMode(boxId) {
 	if (!hasAny) return;
 	const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
 	__kustoApplyFavoritesMode(id, !enabled);
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(id);
+		}
+	} catch { /* ignore */ }
 }
 
 function closeFavoritesDropdown(boxId) {
@@ -3874,9 +3887,22 @@ function updateConnectionSelects() {
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
 		}
 	});
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {
+			window.__kustoUpdateRunEnabledForAllBoxes();
+		}
+	} catch { /* ignore */ }
 }
 
 function updateDatabaseField(boxId) {
+	// If a previous database-load attempt rendered an error into the results area,
+	// clear it as soon as the user changes clusters so the UI doesn't look stuck.
+	try {
+		if (typeof __kustoClearDatabaseLoadError === 'function') {
+			__kustoClearDatabaseLoadError(boxId);
+		}
+	} catch { /* ignore */ }
+
 	const connectionSelect = document.getElementById(boxId + '_connection');
 	const connectionId = connectionSelect ? connectionSelect.value : '';
 	if (connectionSelect && connectionId === '__enter_new__') {
@@ -3984,6 +4010,52 @@ function updateDatabaseField(boxId) {
 	try {
 		__kustoUpdateFavoritesUiForBox(boxId);
 	} catch { /* ignore */ }
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoClearDatabaseLoadError(boxId) {
+	const bid = String(boxId || '').trim();
+	if (!bid) return;
+	const resultsDiv = document.getElementById(bid + '_results');
+	if (!resultsDiv || !resultsDiv.dataset) return;
+
+	try {
+		if (resultsDiv.dataset.kustoDbLoadErrorActive !== '1') {
+			return;
+		}
+		const prevHtml = resultsDiv.dataset.kustoDbLoadErrorPrevHtml;
+		const prevVisible = resultsDiv.dataset.kustoDbLoadErrorPrevVisible;
+		if (typeof prevHtml === 'string') {
+			resultsDiv.innerHTML = prevHtml;
+		}
+		try {
+			if (typeof prevVisible === 'string' && prevVisible.length) {
+				const desiredVisible = (prevVisible === '1');
+				if (typeof __kustoSetResultsVisible === 'function') {
+					__kustoSetResultsVisible(bid, desiredVisible);
+				} else {
+					try {
+						if (window.__kustoResultsVisibleByBoxId) {
+							window.__kustoResultsVisibleByBoxId[bid] = desiredVisible;
+						}
+						if (typeof __kustoApplyResultsVisibility === 'function') {
+							__kustoApplyResultsVisibility(bid);
+						}
+					} catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
+	} finally {
+		try {
+			delete resultsDiv.dataset.kustoDbLoadErrorActive;
+			delete resultsDiv.dataset.kustoDbLoadErrorPrevHtml;
+			delete resultsDiv.dataset.kustoDbLoadErrorPrevVisible;
+		} catch { /* ignore */ }
+	}
 }
 
 function promptAddConnectionFromDropdown(boxId) {
@@ -4143,23 +4215,32 @@ function refreshDatabases(boxId) {
 }
 
 function onDatabasesError(boxId, error) {
+	const errText = String(error || '');
+	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
+
 	try {
 		const databaseSelect = document.getElementById(boxId + '_database');
 		const refreshBtn = document.getElementById(boxId + '_refresh');
 		if (databaseSelect) {
-			// Restore previous dropdown contents/value if we snapshotted them.
-			try {
-				if (databaseSelect.dataset && databaseSelect.dataset.kustoRefreshInFlight === 'true') {
-					const prevHtml = databaseSelect.dataset.kustoPrevHtml;
-					const prevValue = databaseSelect.dataset.kustoPrevValue;
-					if (typeof prevHtml === 'string' && prevHtml) {
-						databaseSelect.innerHTML = prevHtml;
+			if (isEnotfound) {
+				// Cluster is unreachable/invalid: don't keep stale DBs around.
+				databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>';
+				try { databaseSelect.value = ''; } catch { /* ignore */ }
+			} else {
+				// Restore previous dropdown contents/value if we snapshotted them.
+				try {
+					if (databaseSelect.dataset && databaseSelect.dataset.kustoRefreshInFlight === 'true') {
+						const prevHtml = databaseSelect.dataset.kustoPrevHtml;
+						const prevValue = databaseSelect.dataset.kustoPrevValue;
+						if (typeof prevHtml === 'string' && prevHtml) {
+							databaseSelect.innerHTML = prevHtml;
+						}
+						if (typeof prevValue === 'string') {
+							databaseSelect.value = prevValue;
+						}
 					}
-					if (typeof prevValue === 'string') {
-						databaseSelect.value = prevValue;
-					}
-				}
-			} catch { /* ignore */ }
+				} catch { /* ignore */ }
+			}
 			databaseSelect.disabled = false;
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 			try {
@@ -4188,7 +4269,32 @@ function onDatabasesError(boxId, error) {
 		// ignore
 	}
 	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch { /* ignore */ }
+	try {
 		if (typeof window.__kustoDisplayBoxError === 'function') {
+			// Snapshot current results so we can restore them when the user changes clusters.
+			try {
+				const bid = String(boxId || '').trim();
+				const resultsDiv = bid ? document.getElementById(bid + '_results') : null;
+				if (resultsDiv && resultsDiv.dataset) {
+					if (resultsDiv.dataset.kustoDbLoadErrorActive !== '1') {
+						resultsDiv.dataset.kustoDbLoadErrorPrevHtml = String(resultsDiv.innerHTML || '');
+						let visible = '';
+						try {
+							if (window.__kustoResultsVisibleByBoxId && typeof window.__kustoResultsVisibleByBoxId[bid] === 'boolean') {
+								visible = window.__kustoResultsVisibleByBoxId[bid] ? '1' : '0';
+							}
+						} catch { /* ignore */ }
+						if (visible) {
+							resultsDiv.dataset.kustoDbLoadErrorPrevVisible = visible;
+						}
+						resultsDiv.dataset.kustoDbLoadErrorActive = '1';
+					}
+				}
+			} catch { /* ignore */ }
 			window.__kustoDisplayBoxError(boxId, error);
 		}
 	} catch {
@@ -4318,6 +4424,115 @@ function updateDatabaseSelect(boxId, databases) {
 		refreshBtn.disabled = false;
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoIsValidConnectionIdForRun(connectionId) {
+	const cid = String(connectionId || '').trim();
+	if (!cid) return false;
+	if (cid === '__enter_new__' || cid === '__import_xml__') return false;
+	return true;
+}
+
+function __kustoGetEffectiveSelectionOwnerIdForRun(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return '';
+	try {
+		if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
+			return String(window.__kustoGetSelectionOwnerBoxId(id) || id).trim();
+		}
+	} catch { /* ignore */ }
+	return id;
+}
+
+function __kustoIsRunSelectionReady(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return false;
+
+	const ownerId = __kustoGetEffectiveSelectionOwnerIdForRun(id);
+
+	// If a favorites selection is still staging/applying, don't allow Run.
+	try {
+		const pending1 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]);
+		const pending2 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[ownerId]);
+		if (pending1 || pending2) {
+			return false;
+		}
+	} catch { /* ignore */ }
+
+	const connEl = document.getElementById(ownerId + '_connection');
+	const dbEl = document.getElementById(ownerId + '_database');
+	const connectionId = connEl ? String(connEl.value || '').trim() : '';
+	const database = dbEl ? String(dbEl.value || '').trim() : '';
+
+	if (!__kustoIsValidConnectionIdForRun(connectionId)) return false;
+	if (!database) return false;
+
+	// If DB selection is still being resolved (favorites/restore), block Run.
+	try {
+		const desiredPending = !!(dbEl && dbEl.dataset && String(dbEl.dataset.desired || '').trim());
+		if (desiredPending) return false;
+	} catch { /* ignore */ }
+	try {
+		if (dbEl && dbEl.disabled) return false;
+	} catch { /* ignore */ }
+
+	return true;
+}
+
+window.__kustoUpdateRunEnabledForBox = function (boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const runBtn = document.getElementById(id + '_run_btn');
+	const runToggle = document.getElementById(id + '_run_toggle');
+	const disabledTooltip = 'Select a cluster and database first (or select a favorite)';
+
+	// If a query is currently executing for this box, keep disabled.
+	try {
+		if (queryExecutionTimers && queryExecutionTimers[id]) {
+			if (runBtn) runBtn.disabled = true;
+			if (runToggle) runToggle.disabled = true;
+			return;
+		}
+	} catch { /* ignore */ }
+
+	const enabled = __kustoIsRunSelectionReady(id);
+	if (runBtn) {
+		runBtn.disabled = !enabled;
+		try {
+			// When disabled, provide a helpful tooltip instead of looking "broken".
+			runBtn.title = enabled ? '' : disabledTooltip;
+			// Also keep ARIA label helpful when disabled.
+			runBtn.setAttribute('aria-label', enabled ? 'Run query' : disabledTooltip);
+		} catch { /* ignore */ }
+	}
+	// Keep the split dropdown usable so users can change run mode even before selection is ready.
+	if (runToggle) runToggle.disabled = false;
+};
+
+window.__kustoUpdateRunEnabledForAllBoxes = function () {
+	try {
+		for (const id of (queryBoxes || [])) {
+			try { window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+};
+
+function __kustoApplyRunModeFromMenu(boxId, mode) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	setRunMode(id, mode);
+	// Only execute if selection is valid; otherwise we just changed the default run mode.
+	try {
+		if (__kustoIsRunSelectionReady(id)) {
+			executeQuery(id, mode);
+		}
+	} catch { /* ignore */ }
+	try { closeRunMenu(id); } catch { /* ignore */ }
 }
 
 function getRunMode(boxId) {
@@ -4420,11 +4635,24 @@ function setQueryExecuting(boxId, executing) {
 		return;
 	}
 
-	if (runBtn) {
-		runBtn.disabled = false;
-	}
-	if (runToggle) {
-		runToggle.disabled = false;
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		} else {
+			if (runBtn) {
+				runBtn.disabled = false;
+			}
+			if (runToggle) {
+				runToggle.disabled = false;
+			}
+		}
+	} catch {
+		if (runBtn) {
+			runBtn.disabled = false;
+		}
+		if (runToggle) {
+			runToggle.disabled = false;
+		}
 	}
 	if (cancelBtn) {
 		cancelBtn.disabled = true;
@@ -4514,6 +4742,10 @@ function executeQuery(boxId, mode) {
 
 	if (!connectionId) {
 		alert('Please select a cluster connection');
+		return;
+	}
+	if (!database) {
+		alert('Please select a database');
 		return;
 	}
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });

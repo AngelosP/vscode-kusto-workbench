@@ -324,7 +324,35 @@ export class KustoQueryClient {
 			return true;
 		}
 		// azure-kusto-data often wraps HTTP errors; check status codes when present.
-		const status = anyErr?.statusCode ?? anyErr?.response?.status ?? anyErr?.response?.statusCode;
+		const extractStatus = (e: any): number | undefined => {
+			try {
+				const direct = e?.statusCode ?? e?.status ?? e?.response?.status ?? e?.response?.statusCode;
+				if (typeof direct === 'number' && Number.isFinite(direct)) {
+					return direct;
+				}
+			} catch {
+				// ignore
+			}
+			try {
+				const m = String(e?.message ?? '').match(/\bstatus\s*code\s*(401|403)\b/i)
+					|| String(e?.message ?? '').match(/\bstatus\s*[:=]\s*(401|403)\b/i)
+					|| String(e?.message ?? '').match(/\b(401|403)\b\s*\(?unauthorized\)?/i)
+					|| String(e?.message ?? '').match(/\b(401|403)\b\s*\(?forbidden\)?/i);
+				if (m?.[1]) {
+					const n = Number(m[1]);
+					return Number.isFinite(n) ? n : undefined;
+				}
+			} catch {
+				// ignore
+			}
+			return undefined;
+		};
+
+		const status = extractStatus(anyErr)
+			?? extractStatus(anyErr?.cause)
+			?? extractStatus(anyErr?.innerError)
+			?? extractStatus(anyErr?.error)
+			?? extractStatus(anyErr?.originalError);
 		return status === 401 || status === 403;
 	}
 
@@ -629,7 +657,7 @@ export class KustoQueryClient {
 		return /\b(cancel(l)?ed|canceled|did\s+not\s+consent|user\s+did\s+not\s+consent|consent\s+denied|user\s+cancel(l)?ed)\b/i.test(msg);
 	}
 
-	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
+	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: { allowInteractive?: boolean }): Promise<string[]> {
 		try {
 			const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 			// Check cache first
@@ -643,7 +671,11 @@ export class KustoQueryClient {
 
 			console.log('Fetching databases for cluster:', clusterEndpoint);
 			console.log('Executing .show databases command');
-			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute('', '.show databases'));
+			const result = await this.executeWithAuthRetry<any>(
+				connection,
+				(client) => client.execute('', '.show databases'),
+				{ allowInteractive: opts?.allowInteractive }
+			);
 			console.log('Query result received:', result);
 			
 			const databases: string[] = [];

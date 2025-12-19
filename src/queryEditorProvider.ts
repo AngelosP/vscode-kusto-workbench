@@ -2284,7 +2284,7 @@ ${query}
 		const cachedBefore = (this.getCachedDatabases()[clusterKey] ?? []).filter(Boolean);
 
 		const fetchAndNormalize = async (): Promise<string[]> => {
-			const databasesRaw = await this.kustoClient.getDatabases(connection, true);
+			const databasesRaw = await this.kustoClient.getDatabases(connection, true, { allowInteractive: false });
 			return (Array.isArray(databasesRaw) ? databasesRaw : [])
 				.map((d) => String(d || '').trim())
 				.filter(Boolean)
@@ -2292,7 +2292,7 @@ ${query}
 		};
 
 		try {
-			let databasesRaw = await this.kustoClient.getDatabases(connection, forceRefresh);
+			let databasesRaw = await this.kustoClient.getDatabases(connection, forceRefresh, { allowInteractive: false });
 			let databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
 				.map((d) => String(d || '').trim())
 				.filter(Boolean)
@@ -2303,19 +2303,31 @@ ${query}
 			// it's very commonly because we're authenticated with an account that has no access to this cluster.
 			// Prompt for a different account and retry once.
 			if (forceRefresh && databases.length === 0 && cachedBefore.length === 0) {
-				// First: clear session preference so the user can choose a different existing account.
+				// If the user explicitly clicked refresh and we got an empty list (with no cached list),
+				// prompt once to choose an account and retry.
 				try {
 					await this.kustoClient.reauthenticate(connection, 'clearPreference');
 					databases = await fetchAndNormalize();
 				} catch {
-					// ignore; we'll either retry below or surface error
+					// ignore; we'll surface error below
 				}
 
-				// If still empty, force a new session (sign in / add account) and retry once.
+				// If still empty, don't immediately prompt again. Give the user a choice.
 				if (databases.length === 0) {
 					try {
-						await this.kustoClient.reauthenticate(connection, 'forceNewSession');
-						databases = await fetchAndNormalize();
+						const choice = await vscode.window.showWarningMessage(
+							"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
+							'Try another account',
+							'Add account',
+							'Cancel'
+						);
+						if (choice === 'Try another account') {
+							await this.kustoClient.reauthenticate(connection, 'clearPreference');
+							databases = await fetchAndNormalize();
+						} else if (choice === 'Add account') {
+							await this.kustoClient.reauthenticate(connection, 'forceNewSession');
+							databases = await fetchAndNormalize();
+						}
 					} catch {
 						// ignore
 					}
@@ -2338,9 +2350,25 @@ ${query}
 					`If you expected databases here, try refreshing again and sign in with a different account.`
 			});
 		} catch (error) {
-			// If the user explicitly requested a refresh and we hit an auth-related error,
-			// try to re-auth interactively and retry once.
-			if (forceRefresh && this.kustoClient.isAuthenticationError(error)) {
+			// Auth recovery:
+			// - On explicit refresh: retry with interactive auth (existing behavior).
+			// - On initial load (not refresh): if there is no cached list, still prompt once so the user can recover.
+			const isAuthErr = this.kustoClient.isAuthenticationError(error);
+			if (isAuthErr && !forceRefresh && cachedBefore.length > 0) {
+				// Keep the editor usable by showing the last known list, but guide the user to re-auth.
+				this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId });
+				this.postMessage({
+					type: 'databasesError',
+					boxId,
+					error:
+						`Couldn't refresh the database list due to an authentication error. Showing the previously cached list.\n` +
+						`Use the refresh button and sign in with the correct account for this cluster.`
+				});
+				return;
+			}
+
+			// If we hit an auth-related error, try to re-auth interactively and retry once.
+			if ((forceRefresh || cachedBefore.length === 0) && isAuthErr) {
 				try {
 					await this.kustoClient.reauthenticate(connection, 'clearPreference');
 					const databases = await fetchAndNormalize();
@@ -2348,12 +2376,28 @@ ${query}
 					this.postMessage({ type: 'databasesData', databases, boxId });
 					return;
 				} catch {
+					// Don't immediately prompt a second time. Give the user control.
 					try {
-						await this.kustoClient.reauthenticate(connection, 'forceNewSession');
-						const databases = await fetchAndNormalize();
-						await this.saveCachedDatabases(connectionId, databases);
-						this.postMessage({ type: 'databasesData', databases, boxId });
-						return;
+						const choice = await vscode.window.showWarningMessage(
+							"Authentication succeeded but the cluster still rejected the request (401/403). Try a different account?",
+							'Try another account',
+							'Add account',
+							'Cancel'
+						);
+						if (choice === 'Try another account') {
+							await this.kustoClient.reauthenticate(connection, 'clearPreference');
+							const databases = await fetchAndNormalize();
+							await this.saveCachedDatabases(connectionId, databases);
+							this.postMessage({ type: 'databasesData', databases, boxId });
+							return;
+						}
+						if (choice === 'Add account') {
+							await this.kustoClient.reauthenticate(connection, 'forceNewSession');
+							const databases = await fetchAndNormalize();
+							await this.saveCachedDatabases(connectionId, databases);
+							this.postMessage({ type: 'databasesData', databases, boxId });
+							return;
+						}
 					} catch {
 						// fall through to error UI
 					}
