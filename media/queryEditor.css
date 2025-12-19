@@ -1144,6 +1144,16 @@
 			flex-wrap: nowrap;
 		}
 
+		/*
+			The bottom header row (cluster/database/favorites + icon buttons) should prefer
+			squeezing controls rather than wrapping them onto multiple lines, so width-based
+			shrinking behaves smoothly.
+		*/
+		.query-header-row-bottom {
+			flex-wrap: nowrap;
+			min-width: 0;
+		}
+
 		.query-name {
 			background: transparent;
 			border: 1px solid transparent;
@@ -1215,9 +1225,14 @@
 
 		/* Favorites dropdown replaces: cluster (210) + database (210) + refresh (28) = 448px */
 		.select-wrapper.kusto-favorites-combo {
-			flex: 0 0 448px;
-			width: 448px;
+			/*
+				Prefer the full-size layout (~448px), but allow this control to shrink smoothly
+				as the available header width decreases.
+			*/
+			flex: 1 1 448px;
+			width: auto;
 			max-width: 448px;
+			min-width: 108px;
 		}
 
 		/*
@@ -1578,7 +1593,7 @@
 			color: var(--vscode-dropdown-foreground);
 		}
 
-		@media (max-width: 775px) {
+		@media (max-width: 800px) {
 			.select-wrapper {
 				flex: 0 0 40px;
 				width: 40px;
@@ -1586,10 +1601,16 @@
 			}
 
 			.select-wrapper.kusto-favorites-combo {
-				flex: 0 0 108px;
-				width: 108px;
+				/* Override the icon-only sizing so favorites can shrink smoothly instead of snapping. */
+				flex: 1 1 448px;
+				width: auto;
 				min-width: 108px;
-				max-width: 108px;
+				max-width: 448px;
+			}
+
+			/* Extra spacing so the DB refresh icon doesn't crowd/overlap the dropdown on the left. */
+			.query-header-row-bottom > button.refresh-btn[id$="_refresh"] {
+				margin-left: 15px;
 			}
 
 			/* In responsive mode, allow the expanded menu to grow to fit content */
