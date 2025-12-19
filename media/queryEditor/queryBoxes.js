@@ -1873,7 +1873,7 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	}
 }
 
-async function optimizeQueryWithCopilot(boxId) {
+async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride) {
 	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
@@ -1889,6 +1889,11 @@ async function optimizeQueryWithCopilot(boxId) {
 	const query = model.getValue() || '';
 	if (!query.trim()) {
 		alert('No query to compare');
+		return;
+	}
+	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
+	if (comparisonQueryOverride != null && !overrideText.trim()) {
+		alert('No comparison query provided');
 		return;
 	}
 	
@@ -1928,11 +1933,12 @@ async function optimizeQueryWithCopilot(boxId) {
 		}
 	}
 
-	// Create a comparison query box below the source box with the same query text (no LLM call).
-	let comparisonQuery = query;
+	// Create a comparison query box below the source box.
+	// If a query override is provided, compare source query vs the provided query.
+	let comparisonQuery = overrideText.trim() ? overrideText : query;
 	try {
 		if (typeof window.__kustoPrettifyKustoText === 'function') {
-			comparisonQuery = window.__kustoPrettifyKustoText(query);
+			comparisonQuery = window.__kustoPrettifyKustoText(comparisonQuery);
 		}
 	} catch { /* ignore */ }
 

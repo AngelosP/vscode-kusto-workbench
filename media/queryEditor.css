@@ -3350,8 +3350,40 @@
 		td.selected-cell {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		td.selected-cell-focus {
 			outline: 2px solid var(--vscode-focusBorder);
 			outline-offset: -2px;
+		}
+
+		.kusto-context-menu {
+			position: absolute;
+			z-index: 100000;
+			background: var(--vscode-menu-background);
+			color: var(--vscode-menu-foreground);
+			border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+			border-radius: 4px;
+			padding: 4px;
+			min-width: 120px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+		}
+
+		.kusto-context-menu-item {
+			width: 100%;
+			display: block;
+			text-align: left;
+			background: transparent;
+			color: inherit;
+			border: none;
+			padding: 6px 10px;
+			font: inherit;
+			cursor: pointer;
+		}
+
+		.kusto-context-menu-item:hover {
+			background: var(--vscode-menu-selectionBackground);
+			color: var(--vscode-menu-selectionForeground);
 		}
 
 		td[title]:hover {

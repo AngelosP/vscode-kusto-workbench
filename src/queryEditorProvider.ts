@@ -140,8 +140,43 @@ export class QueryEditorProvider {
 				label: 'Get extended schema',
 				description: 'Provides cached database schema (tables + columns) to improve query correctness.',
 				enabledByDefault: true
+			},
+			{
+				name: 'get_query_optimization_best_practices',
+				label: 'Get query optimization best practices',
+				description: 'Returns the extension\'s query optimization best practices document (optimize-query-rules.md).',
+				enabledByDefault: true
+			},
+			{
+				name: 'validate_query_performance_improvements',
+				label: 'Validate query performance improvements',
+				description:
+					'Creates a comparison section with your proposed query, prettifies it, and runs both queries to compare performance.',
+				enabledByDefault: true
 			}
 		];
+	}
+
+	private async readOptimizeQueryRules(): Promise<string> {
+		try {
+			const uri = vscode.Uri.joinPath(this.context.extensionUri, 'optimize-query-rules.md');
+			const bytes = await vscode.workspace.fs.readFile(uri);
+			return new TextDecoder('utf-8').decode(bytes);
+		} catch (e) {
+			const msg = this.getErrorMessage(e);
+			return `Failed to read optimize-query-rules.md: ${msg}`;
+		}
+	}
+
+	private isCopilotToolEnabled(toolName: string, enabledTools: string[]): boolean {
+		const name = this.normalizeToolName(toolName);
+		if (!name) return false;
+		const tools = this.getCopilotLocalTools();
+		if (!Array.isArray(enabledTools) || enabledTools.length === 0) {
+			const def = tools.find((t) => this.normalizeToolName(t.name) === name);
+			return def ? def.enabledByDefault !== false : false;
+		}
+		return enabledTools.includes(name);
 	}
 
 	private normalizeToolName(value: unknown): string {
@@ -663,19 +698,24 @@ export class QueryEditorProvider {
 		return raw.trim();
 	}
 
-	private tryParseCopilotToolCall(text: string): { tool: 'get_extended_schema'; args: any } | undefined {
+	private tryParseCopilotToolCall(text: string): { tool: string; args: any } | undefined {
 		const raw = String(text || '').trim();
-		if (!raw.toLowerCase().startsWith('@tool get_extended_schema')) {
+		const m = raw.match(/^@tool\s+([a-zA-Z0-9_\-]+)\s*([\s\S]*)$/);
+		if (!m) {
 			return undefined;
 		}
-		const jsonPart = raw.replace(/^@tool\s+get_extended_schema\s*/i, '').trim();
+		const tool = this.normalizeToolName(m[1]);
+		const jsonPart = String(m[2] || '').trim();
+		if (!tool) {
+			return undefined;
+		}
 		if (!jsonPart) {
-			return { tool: 'get_extended_schema', args: {} };
+			return { tool, args: {} };
 		}
 		try {
-			return { tool: 'get_extended_schema', args: JSON.parse(jsonPart) };
+			return { tool, args: JSON.parse(jsonPart) };
 		} catch {
-			return { tool: 'get_extended_schema', args: {} };
+			return { tool, args: { raw: jsonPart } };
 		}
 	}
 
@@ -781,6 +821,7 @@ export class QueryEditorProvider {
 		currentQuery?: string;
 		priorAttempts: Array<{ attempt: number; query?: string; error?: string }>;
 		toolResult?: string;
+		bestPracticesText?: string;
 		enabledTools?: string[];
 	}): string {
 		const request = String(args.request || '').trim();
@@ -788,6 +829,7 @@ export class QueryEditorProvider {
 		const database = String(args.database || '').trim();
 		const currentQuery = String(args.currentQuery || '').trim();
 		const toolResult = typeof args.toolResult === 'string' ? args.toolResult : '';
+		const bestPracticesText = typeof args.bestPracticesText === 'string' ? args.bestPracticesText : '';
 		const enabledToolSet = new Set((args.enabledTools || []).map((t) => this.normalizeToolName(t)).filter(Boolean));
 		const localTools = this.getCopilotLocalTools();
 		const isToolEnabled = (name: string) => {
@@ -806,22 +848,34 @@ export class QueryEditorProvider {
 			if (enabledLocalTools.length === 0) {
 				return '';
 			}
-			// Keep the prompt structure stable for the current single-tool experience.
-			if (enabledLocalTools.length === 1 && this.normalizeToolName(enabledLocalTools[0].name) === 'get_extended_schema') {
-				return (
-					'Local tool (optional):\n' +
-					'- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:\n' +
-					'  @tool get_extended_schema {"database":"<database>"}\n' +
-					'- After you receive the tool result, respond with the final query in a single ```kusto block.\n'
-				);
+			const lines: string[] = [];
+			lines.push('Local tools (optional):');
+			for (const t of enabledLocalTools) {
+				const n = this.normalizeToolName(t.name);
+				if (n === 'get_extended_schema') {
+					lines.push('- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:');
+					lines.push('  @tool get_extended_schema {"database":"<database>"}');
+					lines.push('- After you receive the tool result, respond with the final query in a single ```kusto block.');
+					continue;
+				}
+				if (n === 'get_query_optimization_best_practices') {
+					lines.push('- If you want to consult the repository\'s optimization best practices, respond with EXACTLY this and nothing else:');
+					lines.push('  @tool get_query_optimization_best_practices');
+					lines.push('- After you receive the tool result, continue with the final query in a single ```kusto block.');
+					continue;
+				}
+				if (n === 'validate_query_performance_improvements') {
+					lines.push('- If you have a performance-improved query and want to validate it by running a comparison, respond with EXACTLY this and nothing else:');
+					lines.push('  @tool validate_query_performance_improvements {"query":"<full kusto query>"}');
+					lines.push(
+						'- IMPORTANT: If the user asks you to improve/optimize query performance and this tool is available, you MUST use this tool as the final step (instead of returning a ```kusto block).'
+					);
+					lines.push('- Do not include explanations or code blocks when using this tool.');
+					continue;
+				}
+				lines.push(`- ${t.name}: ${t.description}`);
 			}
-			return (
-				'Local tools (optional):\n' +
-				enabledLocalTools
-					.map((t) => `- ${t.name}: ${t.description}`)
-					.join('\n') +
-				'\n'
-			);
+			return lines.join('\n') + '\n';
 		})();
 
 		const attemptsText = (args.priorAttempts || [])
@@ -845,6 +899,7 @@ export class QueryEditorProvider {
 				: '') +
 			(attemptsText ? 'Prior attempts and errors (fix these):\n' + attemptsText + '\n\n' : '') +
 			(toolResult ? 'Tool result (extended schema):\n' + toolResult + '\n\n' : '') +
+			(bestPracticesText ? 'Tool result (optimization best practices):\n' + bestPracticesText + '\n\n' : '') +
 			'User request:\n' +
 			request +
 			'\n\n' +
@@ -963,6 +1018,7 @@ export class QueryEditorProvider {
 				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
 
 				let toolResult: string | undefined;
+				let bestPracticesText: string | undefined;
 				let generatedText = '';
 				const maxToolTurns = 3;
 				for (let toolTurn = 1; toolTurn <= maxToolTurns; toolTurn++) {
@@ -976,6 +1032,7 @@ export class QueryEditorProvider {
 						currentQuery,
 						priorAttempts,
 						toolResult,
+						bestPracticesText,
 						enabledTools
 					});
 
@@ -1001,8 +1058,7 @@ export class QueryEditorProvider {
 
 					const toolCall = this.tryParseCopilotToolCall(generatedText);
 					if (toolCall?.tool === 'get_extended_schema') {
-						const isEnabled = enabledTools.length === 0 ? true : enabledTools.includes('get_extended_schema');
-						if (!isEnabled) {
+						if (!this.isCopilotToolEnabled('get_extended_schema', enabledTools)) {
 							// Treat as a non-answer; the next attempt will (usually) comply with the prompt.
 							priorAttempts.push({
 								attempt,
@@ -1017,6 +1073,90 @@ export class QueryEditorProvider {
 						postStatus(`Fetching extended schema…${requestedDb ? ` (${requestedDb})` : ''}`);
 						toolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
 						continue;
+					}
+
+					if (toolCall?.tool === 'get_query_optimization_best_practices') {
+						if (!this.isCopilotToolEnabled('get_query_optimization_best_practices', enabledTools)) {
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							break;
+						}
+						postStatus('Fetching optimization best practices…');
+						bestPracticesText = await this.readOptimizeQueryRules();
+						try {
+							this.postMessage({
+								type: 'copilotWriteQueryToolResult',
+								boxId,
+								tool: 'get_query_optimization_best_practices',
+								label: 'optimize-query-rules.md',
+								json: bestPracticesText
+							} as any);
+						} catch {
+							// ignore
+						}
+						continue;
+					}
+
+					if (toolCall?.tool === 'validate_query_performance_improvements') {
+						if (!this.isCopilotToolEnabled('validate_query_performance_improvements', enabledTools)) {
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							break;
+						}
+						const rawQuery = (() => {
+							try {
+								if (toolCall.args && typeof toolCall.args === 'object') {
+									const q = (toolCall.args as any).query || (toolCall.args as any).newQuery;
+									if (typeof q === 'string') {
+										return q;
+									}
+									// If JSON parsing failed, we store the raw tool payload under args.raw
+									if (typeof (toolCall.args as any).raw === 'string') {
+										return String((toolCall.args as any).raw);
+									}
+								}
+							} catch {
+								// ignore
+							}
+							return '';
+						})();
+						const improvedQuery = this.extractKustoCodeBlock(rawQuery).trim();
+						if (!improvedQuery) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
+							postStatus('Tool call missing query argument. Retrying…');
+							generatedText = '';
+							break;
+						}
+
+						postStatus('Creating performance comparison…');
+						try {
+							this.postMessage({
+								type: 'compareQueryPerformanceWithQuery',
+								boxId,
+								query: improvedQuery
+							} as any);
+						} catch {
+							// ignore
+						}
+						try {
+							this.postMessage({
+								type: 'copilotWriteQueryDone',
+								boxId,
+								ok: true,
+								message: 'Started performance comparison using the provided query.'
+							} as any);
+						} catch {
+							// ignore
+						}
+						return;
 					}
 
 					break;

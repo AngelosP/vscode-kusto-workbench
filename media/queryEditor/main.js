@@ -1222,6 +1222,15 @@ window.addEventListener('message', event => {
 				} catch { /* ignore */ }
 			} catch { /* ignore */ }
 			break;
+		case 'compareQueryPerformanceWithQuery':
+			try {
+				const boxId = String(message.boxId || '');
+				const query = String(message.query || '');
+				if (boxId && typeof optimizeQueryWithCopilot === 'function') {
+					Promise.resolve(optimizeQueryWithCopilot(boxId, query));
+				}
+			} catch { /* ignore */ }
+			break;
 		case 'optimizeQueryReady':
 			try {
 				const sourceBoxId = message.boxId || '';

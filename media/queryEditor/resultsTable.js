@@ -20,6 +20,15 @@ function __kustoGetScrollToColumnIconSvg() {
 	);
 }
 
+function __kustoGetCopyIconSvg() {
+	return (
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<rect x="5" y="5" width="9" height="9" rx="2" ry="2" />' +
+		'<path d="M3 11V4a2 2 0 0 1 2-2h7" />' +
+		'</svg>'
+	);
+}
+
 function __kustoGetFilterIconSvg(size) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 12;
 	return (
@@ -63,10 +72,12 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	const searchBtn = document.getElementById(boxId + '_results_search_btn');
 	const columnBtn = document.getElementById(boxId + '_results_column_btn');
 	const sortBtn = document.getElementById(boxId + '_results_sort_btn');
+	const copyBtn = document.getElementById(boxId + '_results_copy_btn');
 	const display = visible ? '' : 'none';
 	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (sortBtn) { sortBtn.style.display = display; } } catch { /* ignore */ }
+	try { if (copyBtn) { copyBtn.style.display = display; } } catch { /* ignore */ }
 }
 
 function __kustoHideResultsTools(boxId) {
@@ -1978,6 +1989,7 @@ function __kustoRerenderResultsTable(boxId) {
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i);
+	const range = (state && state.cellSelectionRange && typeof state.cellSelectionRange === 'object') ? state.cellSelectionRange : null;
 	try {
 		const countEl = document.getElementById(boxId + '_results_count');
 		if (countEl) {
@@ -2002,8 +2014,13 @@ function __kustoRerenderResultsTable(boxId) {
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">View</button>' : '';
 				const cellHtml = isObject ? '' : displayValue;
 				let tdClass = '';
+				if (range && isFinite(range.displayRowMin) && isFinite(range.displayRowMax) && isFinite(range.colMin) && isFinite(range.colMax)) {
+					if (displayIdx >= range.displayRowMin && displayIdx <= range.displayRowMax && colIdx >= range.colMin && colIdx <= range.colMax) {
+						tdClass += (tdClass ? ' ' : '') + 'selected-cell';
+					}
+				}
 				if (state.selectedCell && state.selectedCell.row === rowIdx && state.selectedCell.col === colIdx) {
-					tdClass += (tdClass ? ' ' : '') + 'selected-cell';
+					tdClass += (tdClass ? ' ' : '') + 'selected-cell-focus';
 				}
 				if (matchSet && matchSet.has(String(rowIdx) + ',' + String(colIdx))) {
 					tdClass += (tdClass ? ' ' : '') + 'search-match';
@@ -2085,6 +2102,8 @@ function displayResultForBox(result, boxId, options) {
 		rows: rows,
 		metadata: metadata,
 		selectedCell: null,
+		cellSelectionAnchor: null,
+		cellSelectionRange: null,
 		selectedRows: new Set(),
 		searchMatches: [],
 		currentSearchIndex: -1,
@@ -2110,6 +2129,7 @@ function displayResultForBox(result, boxId, options) {
 	const scrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg();
 	const resultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg();
 	const sortIconSvg = __kustoGetSortIconSvg();
+	const copyIconSvg = __kustoGetCopyIconSvg();
 
 	const stateForRender = __kustoGetResultsState(boxId);
 	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_, i) => i);
@@ -2123,6 +2143,7 @@ function displayResultForBox(result, boxId, options) {
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
+		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="copyVisibleResultsToClipboard(\'' + boxId + '\')" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="results-body" id="' + boxId + '_results_body">' +
@@ -2142,7 +2163,7 @@ function displayResultForBox(result, boxId, options) {
 		'onkeydown="handleColumnSearchKeydown(event, \'' + boxId + '\')" />' +
 		'<div class="column-autocomplete" id="' + boxId + '_column_autocomplete"></div>' +
 		'</div>' +
-		'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" onkeydown="handleTableKeydown(event, \'' + boxId + '\')">' +
+		'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" onkeydown="handleTableKeydown(event, \'' + boxId + '\')" oncontextmenu="handleTableContextMenu(event, \'' + boxId + '\')">' +
 		'<table id="' + boxId + '_table">' +
 		'<thead><tr>' +
 		'<th class="row-selector">#</th>' +
@@ -2657,31 +2678,98 @@ function displayCancelled() {
 	resultsDiv.classList.add('visible');
 }
 
-function selectCell(row, col, boxId) {
+function __kustoClampInt(value, min, max) {
+	const n = parseInt(String(value), 10);
+	if (!isFinite(n)) return min;
+	if (n < min) return min;
+	if (n > max) return max;
+	return n;
+}
+
+function __kustoTryGetDomEventFromInlineHandler(explicitEvent) {
+	try {
+		if (explicitEvent && typeof explicitEvent === 'object') {
+			return explicitEvent;
+		}
+	} catch { /* ignore */ }
+	try {
+		// In inline handlers, many browsers expose a global `event`.
+		if (typeof window !== 'undefined' && window && window.event) {
+			return window.event;
+		}
+	} catch { /* ignore */ }
+	return null;
+}
+
+function __kustoSetCellSelectionState(boxId, state, nextRow, nextCol, options) {
+	if (!state) return;
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	const maxRow = Math.max(0, rows.length - 1);
+	const maxCol = Math.max(0, cols.length - 1);
+	const row = __kustoClampInt(nextRow, 0, maxRow);
+	const col = __kustoClampInt(nextCol, 0, maxCol);
+
+	const extend = !!(options && options.extend);
+	let anchor = state.cellSelectionAnchor;
+	if (!extend || !anchor) {
+		anchor = { row, col };
+	}
+	state.cellSelectionAnchor = anchor;
+	state.selectedCell = { row, col };
+
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const inv = Array.isArray(state.rowIndexToDisplayIndex) ? state.rowIndexToDisplayIndex : null;
+	const aDisplay = (inv && isFinite(inv[anchor.row])) ? inv[anchor.row] : anchor.row;
+	const fDisplay = (inv && isFinite(inv[row])) ? inv[row] : row;
+
+	state.cellSelectionRange = {
+		displayRowMin: Math.min(aDisplay, fDisplay),
+		displayRowMax: Math.max(aDisplay, fDisplay),
+		colMin: Math.min(anchor.col, col),
+		colMax: Math.max(anchor.col, col)
+	};
+
+	// Clearing row-selection avoids ambiguity about what Ctrl+C will copy.
+	try { if (state.selectedRows && state.selectedRows.size > 0) state.selectedRows.clear(); } catch { /* ignore */ }
+}
+
+function selectCell(a, b, c, d) {
+	// Backward-compatible signature:
+	// - selectCell(row, col, boxId)
+	// - selectCell(event, row, col, boxId)
+	const hasEventSignature = (arguments.length >= 4);
+	const ev = __kustoTryGetDomEventFromInlineHandler(hasEventSignature ? a : null);
+	const row = hasEventSignature ? b : a;
+	const col = hasEventSignature ? c : b;
+	const boxId = hasEventSignature ? d : c;
+
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	// Clear previous selection
-	const prevCell = document.querySelector('#' + boxId + '_table td.selected-cell');
-	if (prevCell) {
-		prevCell.classList.remove('selected-cell');
-	}
+	__kustoSetCellSelectionState(boxId, state, row, col, {
+		extend: !!(ev && ev.shiftKey)
+	});
 
-	// Select new cell
-	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + row + '"][data-col="' + col + '"]');
-	if (cell) {
-		cell.classList.add('selected-cell');
-		state.selectedCell = { row, col };
+	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
 
-		// Scroll cell into view
-		cell.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+	// Scroll focus cell into view
+	try {
+		const cellEl = document.querySelector('#' + boxId + '_table td[data-row="' + state.selectedCell.row + '"][data-col="' + state.selectedCell.col + '"]');
+		if (cellEl) {
+			cellEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+		}
+	} catch { /* ignore */ }
 
-		// Focus the container for keyboard navigation
+	// Focus the container for keyboard navigation
+	try {
 		const container = document.getElementById(boxId + '_table_container');
 		if (container) {
 			container.focus();
 		}
-	}
+	} catch { /* ignore */ }
 }
 
 function toggleRowSelection(row, boxId) {
@@ -2926,7 +3014,7 @@ function handleTableKeydown(event, boxId) {
 			// First displayed row (respects current sort)
 			const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
 			const firstRow = (disp && disp.length > 0) ? disp[0] : 0;
-			selectCell(firstRow, 0, boxId);
+			selectCell(event, firstRow, 0, boxId);
 		}
 		return;
 	}
@@ -2990,7 +3078,7 @@ function handleTableKeydown(event, boxId) {
 	}
 
 	if (newRow !== cell.row || newCol !== cell.col) {
-		selectCell(newRow, newCol, boxId);
+		selectCell(event, newRow, newCol, boxId);
 	}
 }
 
@@ -3093,7 +3181,7 @@ function scrollToColumn(colIndex, boxId) {
 	const firstRow = (disp && disp.length > 0) ? disp[0] : 0;
 
 	// Select first cell in that column first
-	selectCell(firstRow, colIndex, boxId);
+	selectCell(null, firstRow, colIndex, boxId);
 
 	// Then scroll the container to center the column
 	setTimeout(() => {
@@ -3104,33 +3192,168 @@ function scrollToColumn(colIndex, boxId) {
 	}, 100);
 }
 
+function __kustoCopyTextToClipboard(text) {
+	try {
+		navigator.clipboard.writeText(text).then(() => {
+			// Copied
+		}).catch(err => {
+			console.error('Failed to copy:', err);
+		});
+	} catch (err) {
+		console.error('Failed to copy:', err);
+	}
+}
+
+function __kustoGetDisplayRowsInRange(state, displayRowMin, displayRowMax) {
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const maxDisplay = (disp && disp.length > 0) ? (disp.length - 1) : (rows.length - 1);
+	const minIdx = __kustoClampInt(displayRowMin, 0, Math.max(0, maxDisplay));
+	const maxIdx = __kustoClampInt(displayRowMax, 0, Math.max(0, maxDisplay));
+	const out = [];
+	for (let di = minIdx; di <= maxIdx; di++) {
+		out.push(disp ? disp[di] : di);
+	}
+	return out;
+}
+
+function __kustoCellToClipboardString(cell) {
+	const raw = __kustoGetRawCellValue(cell);
+	if (raw === null || raw === undefined) return '';
+	let s = String(raw);
+	// Keep clipboard TSV stable.
+	s = s.replace(/\r?\n/g, ' ');
+	s = s.replace(/\t/g, ' ');
+	return s;
+}
+
+function copyVisibleResultsToClipboard(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
+
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+
+	const visibleRows = disp ? disp : rows.map((_, i) => i);
+	const header = cols.map(c => __kustoCellToClipboardString(c)).join('\t');
+	const body = visibleRows.map(rowIdx => {
+		const row = rows[rowIdx] || [];
+		return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
+	}).join('\n');
+
+	const text = header + (body ? ('\n' + body) : '');
+	__kustoCopyTextToClipboard(text);
+}
+
 function copySelectionToClipboard(boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	// Check if any rows are selected
-	if (state.selectedRows.size > 0) {
-		// Copy selected rows in tab-delimited format
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+
+	// Prefer a cell range selection.
+	if (state.cellSelectionRange && typeof state.cellSelectionRange === 'object') {
+		const r = state.cellSelectionRange;
+		if (isFinite(r.displayRowMin) && isFinite(r.displayRowMax) && isFinite(r.colMin) && isFinite(r.colMax)) {
+			const rowIndices = __kustoGetDisplayRowsInRange(state, r.displayRowMin, r.displayRowMax);
+			const lines = rowIndices.map(rowIdx => {
+				const row = (state.rows && state.rows[rowIdx]) ? state.rows[rowIdx] : [];
+				const cells = [];
+				for (let col = r.colMin; col <= r.colMax; col++) {
+					cells.push(__kustoCellToClipboardString(row[col]));
+				}
+				return cells.join('\t');
+			});
+			__kustoCopyTextToClipboard(lines.join('\n'));
+			return;
+		}
+	}
+
+	// Next: selected rows.
+	if (state.selectedRows && state.selectedRows.size > 0) {
 		const rowIndices = Array.from(state.selectedRows).sort((a, b) => a - b);
 		const textToCopy = rowIndices.map(rowIdx => {
-			const row = state.rows[rowIdx];
-			return row.join('\t');
+			const row = state.rows[rowIdx] || [];
+			return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
 		}).join('\n');
+		__kustoCopyTextToClipboard(textToCopy);
+		return;
+	}
 
-		navigator.clipboard.writeText(textToCopy).then(() => {
-			console.log('Copied ' + rowIndices.length + ' row(s) to clipboard');
-		}).catch(err => {
-			console.error('Failed to copy rows:', err);
-		});
-	} else if (state.selectedCell) {
-		// Copy single cell value
+	// Finally: single cell.
+	if (state.selectedCell) {
 		const cell = state.selectedCell;
-		const value = state.rows[cell.row][cell.col];
-
-		navigator.clipboard.writeText(value).then(() => {
-			console.log('Copied cell value to clipboard:', value);
-		}).catch(err => {
-			console.error('Failed to copy cell:', err);
-		});
+		const value = (state.rows && state.rows[cell.row]) ? state.rows[cell.row][cell.col] : '';
+		__kustoCopyTextToClipboard(__kustoCellToClipboardString(value));
 	}
 }
+
+function __kustoHideContextMenu() {
+	try {
+		if (window.__kustoContextMenuEl) {
+			window.__kustoContextMenuEl.remove();
+		}
+	} catch { /* ignore */ }
+	try { window.__kustoContextMenuEl = null; } catch { /* ignore */ }
+}
+
+function handleTableContextMenu(event, boxId) {
+	try {
+		if (!event) return;
+		event.preventDefault();
+		event.stopPropagation();
+	} catch { /* ignore */ }
+
+	const state = __kustoGetResultsState(boxId);
+	if (!state) { return; }
+
+	// If right-clicking a cell, make it the focus cell first.
+	try {
+		const td = event.target && event.target.closest ? event.target.closest('td[data-row][data-col]') : null;
+		if (td) {
+			const r = parseInt(td.getAttribute('data-row'), 10);
+			const c = parseInt(td.getAttribute('data-col'), 10);
+			if (isFinite(r) && isFinite(c)) {
+				selectCell(event, r, c, boxId);
+			}
+		}
+	} catch { /* ignore */ }
+
+	__kustoHideContextMenu();
+
+	// Minimal context menu with just Copy.
+	const menu = document.createElement('div');
+	menu.className = 'kusto-context-menu';
+	menu.style.left = String(event.pageX || 0) + 'px';
+	menu.style.top = String(event.pageY || 0) + 'px';
+	menu.innerHTML = '<button type="button" class="kusto-context-menu-item">Copy</button>';
+
+	const btn = menu.querySelector('button');
+	if (btn) {
+		btn.addEventListener('click', (e) => {
+			try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+			copySelectionToClipboard(boxId);
+			__kustoHideContextMenu();
+		});
+	}
+
+	document.body.appendChild(menu);
+	try { window.__kustoContextMenuEl = menu; } catch { /* ignore */ }
+
+	setTimeout(() => {
+		try {
+			const onDocMouseDown = (e) => {
+				try {
+					if (!menu.contains(e.target)) {
+						__kustoHideContextMenu();
+						document.removeEventListener('mousedown', onDocMouseDown, true);
+					}
+				} catch { /* ignore */ }
+			};
+			document.addEventListener('mousedown', onDocMouseDown, true);
+		} catch { /* ignore */ }
+	}, 0);
+}
+

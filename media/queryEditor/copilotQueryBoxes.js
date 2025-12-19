@@ -190,7 +190,18 @@
 		const stateByBox = __kustoEnsureCopilotToolSelectionState();
 		stateByBox[id] = stateByBox[id] || {};
 		stateByBox[id].tools = Array.isArray(tools) ? tools : [];
-		stateByBox[id].enabledNext = __kustoGetDefaultEnabledTools(stateByBox[id].tools);
+		// If the user has already modified selection for this conversation, preserve it.
+		if (!stateByBox[id].userModified) {
+			stateByBox[id].enabledNext = __kustoGetDefaultEnabledTools(stateByBox[id].tools);
+		} else {
+			// Keep only tools that still exist.
+			try {
+				const known = new Set((stateByBox[id].tools || []).map(t => String((t && t.name) || '')));
+				stateByBox[id].enabledNext = (Array.isArray(stateByBox[id].enabledNext) ? stateByBox[id].enabledNext : [])
+					.map(String)
+					.filter(n => n && known.has(String(n)));
+			} catch { /* ignore */ }
+		}
 		try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
 	}
 
@@ -269,6 +280,7 @@
 				try {
 					const next = __kustoEnsureCopilotToolSelectionState();
 					next[id] = next[id] || {};
+					next[id].userModified = true;
 					next[id].enabledNext = __kustoGetEnabledToolsForNextMessage(id);
 					const arr = next[id].enabledNext;
 					const idx = arr.indexOf(name);
@@ -835,8 +847,7 @@
 				modelId: String(modelId || ''),
 				enabledTools
 			});
-			// Applies to the next message only.
-			try { __kustoResetEnabledToolsForNextMessage(id); } catch { /* ignore */ }
+			// Do not reset: tool selection persists for this conversation.
 		} catch {
 			__kustoSetCopilotChatRunning(id, false, 'Failed to start Copilot request.');
 		}
@@ -873,6 +884,10 @@
 		try {
 			const stateByBox = __kustoEnsureCopilotChatState();
 			delete stateByBox[id];
+		} catch { /* ignore */ }
+		try {
+			const toolState = __kustoEnsureCopilotToolSelectionState();
+			delete toolState[id];
 		} catch { /* ignore */ }
 	};
 
