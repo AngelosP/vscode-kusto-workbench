@@ -739,6 +739,87 @@ export class KqlLanguageService {
 			}
 		})();
 
+		// Tabular parameters inside user-defined functions should behave like valid table variables
+		// within the function body, e.g.
+		//   let f = (T:(col:type)) { T | summarize ... };
+		type TabularParamScope = { startOffset: number; endOffset: number; namesLower: Set<string> };
+		const tabularParamScopes: TabularParamScope[] = (() => {
+			try {
+				const scopes: TabularParamScope[] = [];
+				const s = raw;
+				const re = /(^|\n)\s*let\s+[A-Za-z_][\w-]*\s*=\s*\(/gi;
+				for (const m of s.matchAll(re)) {
+					const idx = typeof m.index === 'number' ? m.index : -1;
+					if (idx < 0) continue;
+					const openParen = s.indexOf('(', idx);
+					if (openParen < 0) continue;
+					let parenDepth = 1;
+					let closeParen = -1;
+					for (let i = openParen + 1; i < s.length; i++) {
+						const ch = s[i];
+						if (ch === '(') parenDepth++;
+						else if (ch === ')') {
+							parenDepth--;
+							if (parenDepth === 0) {
+								closeParen = i;
+								break;
+							}
+						}
+					}
+					if (closeParen < 0) continue;
+					const paramText = s.slice(openParen + 1, closeParen);
+					const namesLower = new Set<string>();
+					for (const pm of paramText.matchAll(/([A-Za-z_][\w-]*)\s*:\s*\(/g)) {
+						if (pm?.[1]) namesLower.add(String(pm[1]).toLowerCase());
+					}
+					if (!namesLower.size) continue;
+
+					let bodyStart = -1;
+					for (let j = closeParen + 1; j < s.length; j++) {
+						const ch = s[j];
+						if (ch === '{') {
+							bodyStart = j;
+							break;
+						}
+						if (ch === ';') break;
+					}
+					if (bodyStart < 0) continue;
+
+					let braceDepth = 1;
+					let bodyEnd = -1;
+					for (let k = bodyStart + 1; k < s.length; k++) {
+						const ch = s[k];
+						if (ch === '{') braceDepth++;
+						else if (ch === '}') {
+							braceDepth--;
+							if (braceDepth === 0) {
+								bodyEnd = k;
+								break;
+							}
+						}
+					}
+					if (bodyEnd < 0) continue;
+					scopes.push({ startOffset: bodyStart + 1, endOffset: bodyEnd - 1, namesLower });
+				}
+				return scopes;
+			} catch {
+				return [];
+			}
+		})();
+
+		const isTabularParamInScope = (nameLower: string, offset: number): boolean => {
+			try {
+				const n = String(nameLower || '').toLowerCase();
+				const off = Number(offset) || 0;
+				for (const sc of tabularParamScopes) {
+					if (off >= sc.startOffset && off <= sc.endOffset && sc.namesLower.has(n)) return true;
+				}
+				return false;
+			} catch {
+				return false;
+			}
+		};
+
 		const reportUnknown = (code: string, what: 'table' | 'column', name: string, startOffset: number, endOffset: number, candidates: string[]) => {
 			const prefixLower = String(name || '').toLowerCase();
 			const filtered = prefixLower
@@ -848,6 +929,12 @@ export class KqlLanguageService {
 								runningOffset += line.length + 1;
 								continue;
 							}
+								// Tabular function parameters are valid table variables within the function body.
+								if (isTabularParamInScope(nameLower, runningOffset + Math.max(0, line.indexOf(name)))) {
+									statementHasLeadingId = true;
+									runningOffset += line.length + 1;
+									continue;
+								}
 							const resolvedLet = resolveTabularLetToTable(String(name).toLowerCase());
 							if (resolvedLet) {
 								statementHasLeadingId = true;
@@ -970,6 +1057,13 @@ export class KqlLanguageService {
 					// Fully-qualified sources (cluster().database().Table) should not be validated against current DB schema.
 					if (isFullyQualifiedTableExpr(seg)) continue;
 					if (letDeclaredNames.has(String(name).toLowerCase())) continue;
+					try {
+						const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
+						const startOffset = baseOffset + idx + Math.max(0, localStart);
+						if (isTabularParamInScope(String(name).toLowerCase(), startOffset)) continue;
+					} catch {
+						// ignore
+					}
 					if (resolveTabularLetToTable(String(name).toLowerCase())) continue;
 					if (tables.length && !tables.some((t) => sameLower(String(t), name))) {
 						const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());

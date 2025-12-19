@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.1.3]
+
+* Added support for Kusto dot control commands across autocomplete, docs, and diagnostics.
+* Improved caret-docs banner behavior (argument tracking, focus freeze, and boundary correctness).
+* Fixed false "Unknown table" diagnostics for tabular user-defined function parameters.
+
 ## [0.1.2]
 
 * Made the schema "(cached)" indicator a hyperlink that opens the cached values viewer.
