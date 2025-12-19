@@ -88,6 +88,21 @@ export class KustoQueryClient {
 		this.context = context;
 	}
 
+	private async getEffectiveAccessToken(session: vscode.AuthenticationSession): Promise<string> {
+		const token = String(session?.accessToken || '');
+		if (!this.context) {
+			return token;
+		}
+		try {
+			const key = `kusto.auth.tokenOverride.${session.account.id}`;
+			const override = await this.context.secrets.get(key);
+			const trimmed = String(override || '').trim();
+			return trimmed ? trimmed : token;
+		} catch {
+			return token;
+		}
+	}
+
 	/**
 	 * Forces an interactive auth prompt for the given connection and refreshes the cached client.
 	 * Useful for explicit user actions like "Refresh databases" when the current account has no access.
@@ -186,7 +201,8 @@ export class KustoQueryClient {
 			// Non-fatal: auth still works even if persistence fails.
 		}
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
+		const effectiveToken = await this.getEffectiveAccessToken(session);
+		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
 		return { client: new Client(kcsb), clusterEndpoint, accountId };
 	}
 
@@ -396,7 +412,8 @@ export class KustoQueryClient {
 				// ignore
 			}
 			const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, session.accessToken);
+			const effectiveToken = await this.getEffectiveAccessToken(session);
+			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, effectiveToken);
 			const entry: CachedClientEntry = { client: new Client(kcsb), clusterEndpoint: clusterEndpoint2, accountId };
 			if (storeInMain) {
 				this.clients.set(connection.id, entry);
@@ -459,7 +476,8 @@ export class KustoQueryClient {
 						continue;
 					}
 					const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
+					const effectiveToken = await this.getEffectiveAccessToken(session);
+					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
 					const client = new Client(kcsb);
 					await this.setClusterAccountId(clusterEndpoint, session.account.id);
 					await this.upsertKnownAccount(session.account);

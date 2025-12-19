@@ -2,6 +2,7 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
+import { CachedValuesViewer } from './cachedValuesViewer';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
@@ -187,6 +188,12 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('kusto.saveKqlxAs', async () => {
 			// Delegate to VS Code's built-in Save As for the active editor/document.
 			await vscode.commands.executeCommand('workbench.action.files.saveAs');
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.seeCachedValues', async () => {
+			CachedValuesViewer.open(context, context.extensionUri, connectionManager);
 		})
 	);
 }

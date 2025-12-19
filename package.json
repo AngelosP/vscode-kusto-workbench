@@ -119,6 +119,11 @@
         "command": "kusto.deleteAllConnections",
         "title": "Delete All Connections",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.seeCachedValues",
+        "title": "See Cached Values",
+        "category": "Kusto Workbench"
       }
     ]
   },
