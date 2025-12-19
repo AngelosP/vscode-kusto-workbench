@@ -42,18 +42,49 @@ export class QueryCancelledError extends Error {
 	}
 }
 
+type StoredAuthAccount = {
+	/** VS Code AuthenticationSession.account.id */
+	id: string;
+	/** VS Code AuthenticationSession.account.label */
+	label: string;
+	/** Last time we successfully used this account for any cluster. */
+	lastUsedAt: number;
+};
+
+type StoredClusterAccountMap = Record<string, string>; // clusterEndpoint -> accountId
+
+type CachedClientEntry = {
+	client: any;
+	clusterEndpoint: string;
+	accountId: string;
+};
+
 export class KustoQueryClient {
-	private clients: Map<string, any> = new Map();
+	private clients: Map<string, CachedClientEntry> = new Map();
 	// Dedicated clients used for cancelable query execution. Keyed by box/run context to
 	// (a) support cancellation without impacting other editors, and (b) improve server-side
 	// query results cache hit rate by reusing the same underlying HTTP session.
 	// IMPORTANT: The key must include connection identity (e.g. boxId + connection.id).
 	// Otherwise switching clusters in the same box would reuse the previous cluster's client.
-	private cancelableClientsByKey: Map<string, any> = new Map();
+	private cancelableClientsByKey: Map<string, CachedClientEntry> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 	private readonly SCHEMA_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
+
+	private static readonly AUTH_PROVIDER_ID = 'microsoft';
+	private static readonly AUTH_SCOPES = ['https://kusto.kusto.windows.net/.default'] as const;
+	private static readonly STORAGE_KEYS = {
+		knownAccounts: 'kusto.auth.knownAccounts',
+		clusterAccountMap: 'kusto.auth.clusterAccountMap'
+	} as const;
+
+	private readonly context?: vscode.ExtensionContext;
+	private readonly authLocksByCluster = new Map<string, Promise<void>>();
+
+	constructor(context?: vscode.ExtensionContext) {
+		this.context = context;
+	}
 
 	private normalizeClusterEndpoint(clusterUrl: string): string {
 		const raw = String(clusterUrl || '').trim();
@@ -91,64 +122,320 @@ export class KustoQueryClient {
 	}
 
 	private async getOrCreateClient(connection: KustoConnection): Promise<any> {
-		if (this.clients.has(connection.id)) {
-			return this.clients.get(connection.id)!;
-		}
-
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
 		}
 
-		// Get access token using VS Code's built-in authentication
-		const session = await vscode.authentication.getSession('microsoft', ['https://kusto.kusto.windows.net/.default'], { createIfNone: true });
-		
-		if (!session) {
-			throw new Error('Failed to authenticate with Microsoft');
+		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
+		if (mappedAccountId) {
+			const existing = this.clients.get(connection.id);
+			if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
+				return existing.client;
+			}
 		}
 
-		// Dynamic import to handle ESM module
-		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-		
-		// Use Azure AD access token authentication
-		const kcsb = KustoConnectionStringBuilder.withAccessToken(
-			clusterEndpoint,
-			session.accessToken
-		);
-		
-		const client = new Client(kcsb);
-		this.clients.set(connection.id, client);
+		// Create/refresh client via auth flow (may use silent retries and only prompt if needed).
+		const { client } = await this.createClientWithRetry(connection, { interactiveIfNeeded: true });
 		return client;
 	}
 
-	private async createDedicatedClient(connection: KustoConnection): Promise<any> {
+	private async createDedicatedClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean }): Promise<CachedClientEntry> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
 		}
-
-		// Get access token using VS Code's built-in authentication
-		const session = await vscode.authentication.getSession(
-			'microsoft',
-			['https://kusto.kusto.windows.net/.default'],
-			{ createIfNone: true }
-		);
-		if (!session) {
+		const { session, accountId } = await this.getSessionForCluster(clusterEndpoint, {
+			interactiveIfNeeded: !!opts?.interactiveIfNeeded
+		});
+		if (!session || !accountId) {
 			throw new Error('Failed to authenticate with Microsoft');
+		}
+		// Persist successful auth selection for this cluster.
+		try {
+			await this.upsertKnownAccount(session.account);
+			await this.setClusterAccountId(clusterEndpoint, session.account.id);
+		} catch {
+			// Non-fatal: auth still works even if persistence fails.
 		}
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
-		return new Client(kcsb);
+		return { client: new Client(kcsb), clusterEndpoint, accountId };
 	}
 
 	private async getOrCreateCancelableClient(connection: KustoConnection, key: string): Promise<any> {
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
 		const existing = this.cancelableClientsByKey.get(key);
-		if (existing) {
-			return existing;
+		if (existing && mappedAccountId && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
+			return existing.client;
 		}
-		const created = await this.createDedicatedClient(connection);
+		if (existing) {
+			try { existing.client?.close?.(); } catch { /* ignore */ }
+			this.cancelableClientsByKey.delete(key);
+		}
+		const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, storeInMainClientCache: false });
 		this.cancelableClientsByKey.set(key, created);
+		return created.client;
+	}
+
+	private getKnownAccounts(): StoredAuthAccount[] {
+		if (!this.context) {
+			return [];
+		}
+		const raw = this.context.globalState.get<StoredAuthAccount[] | undefined>(KustoQueryClient.STORAGE_KEYS.knownAccounts);
+		return Array.isArray(raw) ? raw.filter(a => a && typeof a.id === 'string' && typeof a.label === 'string') : [];
+	}
+
+	private async upsertKnownAccount(account: vscode.AuthenticationSessionAccountInformation): Promise<void> {
+		if (!this.context) {
+			return;
+		}
+		const now = Date.now();
+		const existing = this.getKnownAccounts();
+		const filtered = existing.filter(a => a.id !== account.id);
+		filtered.unshift({ id: account.id, label: account.label, lastUsedAt: now });
+		// Keep list bounded.
+		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.knownAccounts, filtered.slice(0, 10));
+	}
+
+	private getClusterAccountId(clusterEndpoint: string): string | undefined {
+		if (!this.context) {
+			return undefined;
+		}
+		const map = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
+		if (!map || typeof map !== 'object') {
+			return undefined;
+		}
+		const v = (map as any)[clusterEndpoint];
+		return typeof v === 'string' && v ? v : undefined;
+	}
+
+	private async setClusterAccountId(clusterEndpoint: string, accountId: string): Promise<void> {
+		if (!this.context) {
+			return;
+		}
+		const prev = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
+		const next: StoredClusterAccountMap = { ...(prev && typeof prev === 'object' ? prev : {}) };
+		next[clusterEndpoint] = accountId;
+		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.clusterAccountMap, next);
+	}
+
+	private isAuthError(error: unknown): boolean {
+		const anyErr = error as any;
+		const msg = typeof anyErr?.message === 'string' ? anyErr.message : String(error || '');
+		const lower = msg.toLowerCase();
+		if (lower.includes('aadsts') || lower.includes('aads')) {
+			return true;
+		}
+		if (lower.includes('unauthorized') || lower.includes('authentication') || lower.includes('authorization')) {
+			return true;
+		}
+		// azure-kusto-data often wraps HTTP errors; check status codes when present.
+		const status = anyErr?.statusCode ?? anyErr?.response?.status ?? anyErr?.response?.statusCode;
+		return status === 401 || status === 403;
+	}
+
+	private async getSessionForCluster(
+		clusterEndpoint: string,
+		opts: { interactiveIfNeeded: boolean }
+	): Promise<{ session: vscode.AuthenticationSession | undefined; accountId: string | undefined }>
+	{
+		// If we have no storage (e.g. unit tests), just fall back to interactive.
+		if (!this.context) {
+			const session = await vscode.authentication.getSession(
+				KustoQueryClient.AUTH_PROVIDER_ID,
+				[...KustoQueryClient.AUTH_SCOPES],
+				{ createIfNone: true }
+			);
+			return { session, accountId: session?.account?.id };
+		}
+
+		const mapped = this.getClusterAccountId(clusterEndpoint);
+		const known = this.getKnownAccounts().sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
+		const candidates: StoredAuthAccount[] = [];
+		if (mapped) {
+			const inKnown = known.find(a => a.id === mapped);
+			if (inKnown) {
+				candidates.push(inKnown);
+			} else {
+				// Keep label best-effort; VS Code uses id to match.
+				candidates.push({ id: mapped, label: mapped, lastUsedAt: 0 });
+			}
+		}
+		for (const a of known) {
+			if (!candidates.some(c => c.id === a.id)) {
+				candidates.push(a);
+			}
+		}
+
+		// Silent attempts first.
+		for (const account of candidates) {
+			try {
+				const session = await vscode.authentication.getSession(
+					KustoQueryClient.AUTH_PROVIDER_ID,
+					[...KustoQueryClient.AUTH_SCOPES],
+					{ silent: true, account: { id: account.id, label: account.label } }
+				);
+				if (session) {
+					return { session, accountId: session.account.id };
+				}
+			} catch {
+				// Silent path shouldn't throw, but be defensive.
+			}
+		}
+
+		if (!opts.interactiveIfNeeded) {
+			return { session: undefined, accountId: undefined };
+		}
+
+		// Finally: interactive prompt. This is where users can add a new account.
+		const session = await vscode.authentication.getSession(
+			KustoQueryClient.AUTH_PROVIDER_ID,
+			[...KustoQueryClient.AUTH_SCOPES],
+			{ createIfNone: true }
+		);
+		if (session?.account) {
+			await this.upsertKnownAccount(session.account);
+			await this.setClusterAccountId(clusterEndpoint, session.account.id);
+		}
+		return { session, accountId: session?.account?.id };
+	}
+
+	private async withClusterAuthLock(clusterEndpoint: string, fn: () => Promise<void>): Promise<void> {
+		const existing = this.authLocksByCluster.get(clusterEndpoint);
+		if (existing) {
+			await existing;
+		}
+		let resolveFn: (() => void) | undefined;
+		const p = new Promise<void>((resolve) => { resolveFn = resolve; });
+		this.authLocksByCluster.set(clusterEndpoint, p);
+		try {
+			await fn();
+		} finally {
+			try { resolveFn?.(); } catch { /* ignore */ }
+			this.authLocksByCluster.delete(clusterEndpoint);
+		}
+	}
+
+	private async createClientWithRetry(
+		connection: KustoConnection,
+		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean }
+	): Promise<CachedClientEntry>
+	{
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		const storeInMain = opts.storeInMainClientCache !== false;
+
+		// Ensure we don't race multiple auth prompts for the same cluster.
+		let created: CachedClientEntry | undefined;
+		await this.withClusterAuthLock(clusterEndpoint, async () => {
+			// Re-check cache after waiting.
+			const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
+			if (storeInMain && mappedAccountId) {
+				const existing = this.clients.get(connection.id);
+				if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
+					created = existing;
+					return;
+				}
+			}
+
+			// Create client with the best session we can get (silent first, then optional interactive).
+			const entry = await this.createDedicatedClient(connection, { interactiveIfNeeded: opts.interactiveIfNeeded });
+			if (storeInMain) {
+				this.clients.set(connection.id, entry);
+			}
+			created = entry;
+		});
+		if (!created) {
+			throw new Error('Failed to authenticate with Microsoft');
+		}
 		return created;
+	}
+
+	private async executeWithAuthRetry<T>(
+		connection: KustoConnection,
+		operation: (client: any) => Promise<T>,
+		opts?: { allowInteractive?: boolean; cancelableKey?: string; onClient?: (client: any) => void }
+	): Promise<T> {
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		const allowInteractive = opts?.allowInteractive !== false;
+
+		// First attempt: use existing cached client (if any).
+		try {
+			const client = opts?.cancelableKey
+				? await this.getOrCreateCancelableClient(connection, opts.cancelableKey)
+				: await this.getOrCreateClient(connection);
+			try { opts?.onClient?.(client); } catch { /* ignore */ }
+			return await operation(client);
+		} catch (error) {
+			if (!this.isAuthError(error)) {
+				throw error;
+			}
+			// Evict cached clients for this connection so we can retry with a different session/account.
+			try {
+				const existing = this.clients.get(connection.id);
+				this.clients.delete(connection.id);
+				existing?.client?.close?.();
+			} catch {
+				// ignore
+			}
+			if (opts?.cancelableKey) {
+				try {
+					const existing = this.cancelableClientsByKey.get(opts.cancelableKey);
+					this.cancelableClientsByKey.delete(opts.cancelableKey);
+					existing?.client?.close?.();
+				} catch {
+					// ignore
+				}
+			}
+			// Retry path: try known accounts silently in order; if still failing and allowed, prompt.
+			// We model this by attempting to (re)create a client and then re-run operation.
+			const known = this.getKnownAccounts().sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
+			for (const acct of known) {
+				try {
+					const session = await vscode.authentication.getSession(
+						KustoQueryClient.AUTH_PROVIDER_ID,
+						[...KustoQueryClient.AUTH_SCOPES],
+						{ silent: true, account: { id: acct.id, label: acct.label } }
+					);
+					if (!session) {
+						continue;
+					}
+					const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
+					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, session.accessToken);
+					const client = new Client(kcsb);
+					await this.setClusterAccountId(clusterEndpoint, session.account.id);
+					await this.upsertKnownAccount(session.account);
+					if (opts?.cancelableKey) {
+						this.cancelableClientsByKey.set(opts.cancelableKey, { client, clusterEndpoint, accountId: session.account.id });
+					} else {
+						this.clients.set(connection.id, { client, clusterEndpoint, accountId: session.account.id });
+					}
+					try { opts?.onClient?.(client); } catch { /* ignore */ }
+					return await operation(client);
+				} catch (err2) {
+					if (this.isAuthError(err2)) {
+						continue;
+					}
+					throw err2;
+				}
+			}
+
+			if (!allowInteractive) {
+				throw error;
+			}
+
+			// Last resort: interactive.
+			if (opts?.cancelableKey) {
+				const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, storeInMainClientCache: false });
+				this.cancelableClientsByKey.set(opts.cancelableKey, created);
+				try { opts?.onClient?.(created.client); } catch { /* ignore */ }
+				return await operation(created.client);
+			}
+			const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true });
+			try { opts?.onClient?.(created.client); } catch { /* ignore */ }
+			return await operation(created.client);
+		}
 	}
 
 	private isLikelyCancellationError(error: unknown): boolean {
@@ -182,10 +469,8 @@ export class KustoQueryClient {
 			}
 
 			console.log('Fetching databases for cluster:', clusterEndpoint);
-			const client = await this.getOrCreateClient(connection);
-			
 			console.log('Executing .show databases command');
-			const result = await client.execute('', '.show databases');
+			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute('', '.show databases'));
 			console.log('Query result received:', result);
 			
 			const databases: string[] = [];
@@ -222,12 +507,10 @@ export class KustoQueryClient {
 		database: string,
 		query: string
 	): Promise<QueryResult> {
-		const client = await this.getOrCreateClient(connection);
-		
 		const startTime = Date.now();
 		
 		try {
-			const result = await client.execute(database, query);
+			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 			
 			// Get the primary result
@@ -378,7 +661,11 @@ export class KustoQueryClient {
 				if (cancelled) {
 					throw new QueryCancelledError();
 				}
-				const result = await client.execute(database, query);
+				const result = await this.executeWithAuthRetry<any>(
+					connection,
+					(c) => c.execute(database, query),
+					{ allowInteractive: true, cancelableKey: key, onClient: (c2) => { client = c2; } }
+				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 
 				const primaryResults = result.primaryResults[0];
@@ -495,8 +782,6 @@ export class KustoQueryClient {
 			}
 		}
 
-		const client = await this.getOrCreateClient(connection);
-
 		const tryCommands = [
 			'.show database schema as json',
 			'.show database schema'
@@ -505,7 +790,7 @@ export class KustoQueryClient {
 		let lastError: unknown = null;
 		for (const command of tryCommands) {
 			try {
-				const result = await client.execute(database, command);
+				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
 				const debug = this.buildSchemaDebug(result, command);
 				const schema = this.parseDatabaseSchemaResult(result);
 				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });

@@ -6,9 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.0.9]
+
 * Fixed the glaring issue with the editing toolbar in the markdown section not staying always visible as you scroll (oops, sorry!)
 * Fixed the incosistent behavior of drop down menus (should be able to navigate with keyboard now as well)
-* First attempt at trying to handle different authentication for different connections (will it work first try?)
+* Proper per-cluster authentication: remember which work account was used per Kusto cluster and retry known accounts silently before prompting.
 
 ## [0.0.8]
 

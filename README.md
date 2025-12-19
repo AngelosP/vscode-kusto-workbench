@@ -4,37 +4,35 @@ A modern, notebook-like workflow for Kusto Query Language (KQL) in VS Code.
 
 Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly—without forcing you to abandon existing `.kql` / `.csl` files.
 
-It has advanced markdown capabilities (thanks to the amazing folks at [toastui](https://ui.toast.com/)), so you could even just use it as a better markdown editor (with WYSIWYG support) for VS Code. Open existing .md files (open with, or change association), or make new empty .mdx file and give it a go.  
+It has advanced markdown capabilities (thanks to the amazing folks at [toastui](https://ui.toast.com/)), so you could even just use it as a better markdown editor (with WYSIWYG support) for VS Code. Open existing .md files (open with, or change association), or make new empty .mdx file and give it a go.
 
 ## Screenshots
 
 ### Modern editor with a bunch of features
+
 ![Kusto query editor](marketplace-media/kusto-query-editor.png)
 
 ### Support for Kusto, CSV, Images, Markdown, Python
+
 ![Support for additional data in .kqlx files](marketplace-media/kusto-kqlx-files.png)
 
 ### WYSIWYG for markdown
+
 ![WYSIWYG for markdown in .md and .mdx files](marketplace-media/markdown.png)
 
 ### Favorites
+
 ![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
 
 ## Key features
 
-- Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
-
-- Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > <anyfilename>.kqlx and you are good to go just the same.
-
-- No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).
-
-- Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based). It's pretty much all you'll need for quick explorations in one place and new features are being added all the time.
-
-- Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come. [Make a request](https://github.com/AngelosP/vscode-kusto-workbench/issues) for what you'd like to see next. With .kqlx files you also get the ability to save the query results in the file itself, creating a snapshot in time and something you can easily share with others.
-
-- Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
-
-- Automatically improve query performance using GitHub Copilot, with side-by-side comparison tools to make sure the before and the after produce the same results and actually save query execution time.
+* Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
+* Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > .kqlx and you are good to go just the same.
+* No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).
+* Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based). It's pretty much all you'll need for quick explorations in one place and new features are being added all the time.
+* Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come. [Make a request](https://github.com/AngelosP/vscode-kusto-workbench/issues) for what you'd like to see next. With .kqlx files you also get the ability to save the query results in the file itself, creating a snapshot in time and something you can easily share with others.
+* Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
+* Automatically improve query performance using GitHub Copilot, with side-by-side comparison tools to make sure the before and the after produce the same results and actually save query execution time.
 
 ## Quick start
 
@@ -44,9 +42,9 @@ It has advanced markdown capabilities (thanks to the amazing folks at [toastui](
 
 To open a file:
 
-- `.kql` / `.csl`: open it normally (opens in compatibility mode)
-- `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
-- `.mdx`: create an empty file and open it normally
+* `.kql` / `.csl`: open it normally (opens in compatibility mode)
+* `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
+* `.mdx`: create an empty file and open it normally
 
 ## Drag & drop section reordering
 
@@ -62,8 +60,8 @@ When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics
 
 Where possible, diagnostics include:
 
-- Go-to-line behavior to take you straight to the relevant part of the query
-- Highlighting of important terms to focus your attention
+* Go-to-line behavior to take you straight to the relevant part of the query
+* Highlighting of important terms to focus your attention
 
 ## File formats (and “no file” mode)
 
@@ -77,10 +75,10 @@ Compatibility mode is intentionally limited to a single query section (it does n
 
 For the full notebook-style experience, use `.kqlx` files. `.kqlx` supports multiple sections:
 
-- Query sections (KQL)
-- Markdown sections
-- Python sections (run locally)
-- URL preview sections
+* Query sections (KQL)
+* Markdown sections
+* Python sections (run locally)
+* URL preview sections
 
 ### Start without a file (persistent global session)
 
@@ -96,23 +94,23 @@ Use the query toolbar to optimize the current query with GitHub Copilot.
 
 The optimization workflow is designed to be safe and practical:
 
-- Copilot proposes a performance-improved query while preserving results
-- A comparison section can be created to run both queries and compare outputs
-- When results match, you can accept the optimizations back into the original query
+* Copilot proposes a performance-improved query while preserving results
+* A comparison section can be created to run both queries and compare outputs
+* When results match, you can accept the optimizations back into the original query
 
 Notes:
 
-- Copilot optimization requires GitHub Copilot to be available in VS Code
-- The prompt is intentionally strict about preserving semantics
+* Copilot optimization requires GitHub Copilot to be available in VS Code
+* The prompt is intentionally strict about preserving semantics
 
 ## Commands
 
-- `Kusto Workbench: Open Query Editor`
-- `Kusto Workbench: Open .kqlx File`
-- `Kusto Workbench: Open .mdx File`
-- `Kusto Workbench: Save Session As... (.kqlx)`
-- `Kusto Workbench: Manage Connections`
-- `Kusto Workbench: Delete All Connections`
+* `Kusto Workbench: Open Query Editor`
+* `Kusto Workbench: Open .kqlx File`
+* `Kusto Workbench: Open .mdx File`
+* `Kusto Workbench: Save Session As... (.kqlx)`
+* `Kusto Workbench: Manage Connections`
+* `Kusto Workbench: Delete All Connections`
 
 ## Importing connections from Kusto Explorer (connections.xml)
 
@@ -123,8 +121,8 @@ This extension can import connections that you already have set up in the Window
 
 ## Requirements
 
-- VS Code 1.107.0 or higher
-- For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
+* VS Code 1.107.0 or higher
+* For Python sections: a local Python install available as `python`, `python3`, or `py` on your PATH
 
 ## Data & privacy (how it actually works)
 
@@ -132,29 +130,32 @@ This extension is designed to keep your work local by default, and only sends da
 
 ### What gets stored locally
 
-- **Connections**: Saved in VS Code extension global state on your machine (name + cluster URL + optional default database). This is not synced by the extension itself, but your VS Code settings/profile sync behavior may vary.
-- **`.kqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.).
-- **Persistent “no file” session**: If you use `Kusto Workbench: Open Query Editor`, the session auto-saves to a `.kqlx` file in VS Code’s *global storage* for this extension so it can survive restarts.
-- **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` state as JSON (capped at ~200KB per section). If you save a `.kqlx`, those embedded results become part of the file.
-- **In-memory caches**: Database lists and schema information are cached in memory to speed up iteration. These caches expire and are not intended to be long-term storage.
+* **Connections**: Saved in VS Code extension global state on your machine (name + cluster URL + optional default database). This is not synced by the extension itself, but your VS Code settings/profile sync behavior may vary.
+* **Authentication account preferences (per cluster)**: The extension remembers which Microsoft work account was last used successfully per Kusto cluster (account id/label only). This helps avoid repeated sign-in prompts when you use multiple clusters that require different accounts.
+* **`.kqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.).
+* **Persistent “no file” session**: If you use `Kusto Workbench: Open Query Editor`, the session auto-saves to a `.kqlx` file in VS Code’s *global storage* for this extension so it can survive restarts.
+* **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx`, those embedded results become part of the file.
+* **In-memory caches**: Database lists and schema information are cached in memory to speed up iteration. These caches expire and are not intended to be long-term storage.
 
 ### What gets sent to your Kusto cluster
 
 When you click **Run** (or any action that executes KQL), the extension sends:
 
-- Your **query text**
-- The target **cluster** and **database**
-- Your **Microsoft access token** (obtained via VS Code’s built-in Microsoft authentication)
+* Your **query text**
+* The target **cluster** and **database**
+* Your **Microsoft access token** (obtained via VS Code’s built-in Microsoft authentication)
 
 The extension uses `vscode.authentication.getSession('microsoft', ['https://kusto.kusto.windows.net/.default'], …)` to acquire a token. Token lifecycle and secure storage are handled by VS Code; the extension uses the token in memory to authenticate requests.
+
+If you work with multiple clusters that require different accounts, the extension will try previously-used accounts silently (without prompting) and will only prompt you to sign in when none of the known accounts work for the target cluster.
 
 ### What gets sent to GitHub Copilot
 
 When you use **Optimize query performance**:
 
-- The extension sends the optimization prompt (which includes your **query text**) to GitHub Copilot via VS Code’s Language Model API (`vscode.lm`).
-- The extension does **not** send your Kusto credentials to Copilot.
-- Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
+* The extension sends the optimization prompt (which includes your **query text**) to GitHub Copilot via VS Code’s Language Model API (`vscode.lm`).
+* The extension does **not** send your Kusto credentials to Copilot.
+* Any result comparison happens by running queries against your Kusto cluster (not by executing anything inside Copilot).
 
 Important note: the prompt can be edited in the UI; anything you include there is part of what gets sent to Copilot.
 
@@ -162,23 +163,23 @@ Important note: the prompt can be edited in the UI; anything you include there i
 
 Python sections run **locally** on your machine by spawning a local Python interpreter (`python`, `python3`, or `py`).
 
-- Your code is executed locally.
-- Output is captured (with size limits) and may be stored in the `.kqlx` file if you save.
+* Your code is executed locally.
+* Output is captured (with size limits) and may be stored in the `.kqlx` file if you save.
 
 ### Diagnostics and logs
 
-- Query errors returned by the Kusto SDK/cluster may be surfaced in the UI (and may include fragments of your query or server-provided diagnostics).
-- The extension may write diagnostic information to the VS Code Developer Tools console during development/troubleshooting.
+* Query errors returned by the Kusto SDK/cluster may be surfaced in the UI (and may include fragments of your query or server-provided diagnostics).
+* The extension may write diagnostic information to the VS Code Developer Tools console during development/troubleshooting.
 
 ### How to remove stored data
 
-- Remove saved connections: use `Kusto Workbench: Manage Connections`.
-- Remove `.kqlx` content (including embedded results): delete or edit the `.kqlx` file.
-- Clear the persistent session: delete the extension’s global storage for Kusto Workbench (this removes the auto-saved session file).
+* Remove saved connections: use `Kusto Workbench: Manage Connections`.
+* Remove `.kqlx` content (including embedded results): delete or edit the `.kqlx` file.
+* Clear the persistent session: delete the extension’s global storage for Kusto Workbench (this removes the auto-saved session file).
 
 ## Third-party credits
 
-- Markdown section editing uses **TOAST UI Editor** (MIT) by NHN Cloud FE Development Lab: https://github.com/nhn/tui.editor
+* Markdown section editing uses **TOAST UI Editor** (MIT) by NHN Cloud FE Development Lab: https://github.com/nhn/tui.editor
 
 ## License
 

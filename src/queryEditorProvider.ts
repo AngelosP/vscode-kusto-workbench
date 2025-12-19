@@ -82,7 +82,7 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
-	private readonly kustoClient = new KustoQueryClient();
+	private readonly kustoClient: KustoQueryClient;
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
 	private readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
@@ -202,6 +202,7 @@ export class QueryEditorProvider {
 		private readonly connectionManager: ConnectionManager,
 		private readonly context: vscode.ExtensionContext
 	) {
+		this.kustoClient = new KustoQueryClient(this.context);
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.loadLastSelection();
 		// Avoid storing large schema payloads in globalState (causes warnings and slows down).
