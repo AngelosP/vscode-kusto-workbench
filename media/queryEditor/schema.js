@@ -144,9 +144,32 @@ window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
 		return [];
 	}
 	try {
-		const cached = cachedDatabases && cachedDatabases[cid];
-		if (!forceRefresh && Array.isArray(cached) && cached.length) {
-			return cached;
+		let clusterKey = '';
+		try {
+			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+			if (clusterUrl) {
+				let u = clusterUrl;
+				if (!/^https?:\/\//i.test(u)) {
+					u = 'https://' + u;
+				}
+				try {
+					clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+				} catch {
+					clusterKey = String(clusterUrl || '').trim().toLowerCase();
+				}
+			}
+		} catch { /* ignore */ }
+
+		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
+		if (!forceRefresh && Array.isArray(cachedByCluster) && cachedByCluster.length) {
+			return cachedByCluster;
+		}
+
+		// Legacy fallback (pre per-cluster cache): allow reading by connectionId.
+		const cachedByConnectionId = cachedDatabases && cachedDatabases[cid];
+		if (!forceRefresh && Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) {
+			return cachedByConnectionId;
 		}
 	} catch {
 		// ignore

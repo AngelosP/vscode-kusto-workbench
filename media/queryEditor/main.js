@@ -807,7 +807,25 @@ window.addEventListener('message', event => {
 						.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 					try {
 						if (cid) {
-							cachedDatabases[cid] = list;
+							let clusterKey = '';
+							try {
+								const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === String(cid || '').trim()) : null;
+								const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+								if (clusterUrl) {
+									let u = clusterUrl;
+									if (!/^https?:\/\//i.test(u)) {
+										u = 'https://' + u;
+									}
+									try {
+										clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+									} catch {
+										clusterKey = String(clusterUrl || '').trim().toLowerCase();
+									}
+								}
+							} catch { /* ignore */ }
+							if (clusterKey) {
+								cachedDatabases[clusterKey] = list;
+							}
 						}
 					} catch { /* ignore */ }
 					try { r.resolve(list); } catch { /* ignore */ }

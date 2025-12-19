@@ -2175,7 +2175,24 @@ async function qualifyTablesInTextPriority(text, opts) {
 			// ignore
 		}
 		try {
-			const cached = cachedDatabases && cachedDatabases[String(connectionId || '').trim()];
+			const cid = String(connectionId || '').trim();
+			let clusterKey = '';
+			try {
+				const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+				if (clusterUrl) {
+					let u = clusterUrl;
+					if (!/^https?:\/\//i.test(u)) {
+						u = 'https://' + u;
+					}
+					try {
+						clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+					} catch {
+						clusterKey = String(clusterUrl || '').trim().toLowerCase();
+					}
+				}
+			} catch { /* ignore */ }
+			const cached = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
 			return Array.isArray(cached) ? cached : [];
 		} catch {
 			return [];
@@ -3822,8 +3839,26 @@ function updateDatabaseField(boxId) {
 	} catch { /* ignore */ }
 
 	if (connectionId && databaseSelect) {
-		// Check if we have cached databases for this connection
-		const cached = cachedDatabases[connectionId];
+		// Check if we have cached databases for this cluster
+		let clusterKey = '';
+		try {
+			const cid = String(connectionId || '').trim();
+			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+			if (clusterUrl) {
+				let u = clusterUrl;
+				if (!/^https?:\/\//i.test(u)) {
+					u = 'https://' + u;
+				}
+				try {
+					clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+				} catch {
+					clusterKey = String(clusterUrl || '').trim().toLowerCase();
+				}
+			}
+		} catch { /* ignore */ }
+
+		const cached = (cachedDatabases && cachedDatabases[String(clusterKey || '').trim()]) || cachedDatabases[connectionId];
 
 		if (cached && cached.length > 0) {
 			// Use cached databases immediately
@@ -4104,7 +4139,24 @@ function updateDatabaseSelect(boxId, databases) {
 		// Update local cache with new databases
 		const connectionId = document.getElementById(boxId + '_connection').value;
 		if (connectionId) {
-			cachedDatabases[connectionId] = list;
+			let clusterKey = '';
+			try {
+				const cid = String(connectionId || '').trim();
+				const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+				if (clusterUrl) {
+					let u = clusterUrl;
+					if (!/^https?:\/\//i.test(u)) {
+						u = 'https://' + u;
+					}
+					try {
+						clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+					} catch {
+						clusterKey = String(clusterUrl || '').trim().toLowerCase();
+					}
+				}
+			} catch { /* ignore */ }
+			cachedDatabases[String(clusterKey || '').trim()] = list;
 		}
 
 		// Prefer per-box desired selection (restore), else keep existing, else last selection.

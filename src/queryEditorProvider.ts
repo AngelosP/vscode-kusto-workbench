@@ -1345,7 +1345,69 @@ ${query}
 	}
 
 	private getCachedDatabases(): Record<string, string[]> {
-		return this.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
+		// Cached database lists are keyed by *cluster* (hostname), not by connection id.
+		// We also support migrating legacy connection-id keyed entries.
+		const raw = this.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
+		return this.migrateCachedDatabasesToClusterKeys(raw);
+	}
+
+	private getClusterCacheKey(clusterUrlRaw: string): string {
+		try {
+			const withScheme = this.ensureHttpsUrl(String(clusterUrlRaw || '').trim());
+			const u = new URL(withScheme);
+			const host = String(u.hostname || '').trim().toLowerCase();
+			return host || String(clusterUrlRaw || '').trim().toLowerCase();
+		} catch {
+			return String(clusterUrlRaw || '').trim().toLowerCase();
+		}
+	}
+
+	private migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
+		const src = raw && typeof raw === 'object' ? raw : {};
+		const connections = this.connectionManager.getConnections();
+		const connById = new Map<string, KustoConnection>(connections.map((c) => [c.id, c]));
+
+		let changed = false;
+		const next: Record<string, string[]> = {};
+		for (const [k, v] of Object.entries(src)) {
+			const keyRaw = String(k || '').trim();
+			if (!keyRaw) {
+				changed = true;
+				continue;
+			}
+
+			const list = (Array.isArray(v) ? v : [])
+				.map((d) => String(d || '').trim())
+				.filter(Boolean);
+
+			const conn = connById.get(keyRaw);
+			const clusterKey = conn ? this.getClusterCacheKey(conn.clusterUrl) : this.getClusterCacheKey(keyRaw);
+			if (clusterKey !== keyRaw) {
+				changed = true;
+			}
+
+			const existing = next[clusterKey] || [];
+			// Merge (dedupe) to avoid multiple lists for the same cluster.
+			const merged = [...existing, ...list]
+				.map((d) => String(d || '').trim())
+				.filter(Boolean);
+			const deduped: string[] = [];
+			const seen = new Set<string>();
+			for (const d of merged) {
+				const lower = d.toLowerCase();
+				if (!seen.has(lower)) {
+					seen.add(lower);
+					deduped.push(d);
+				}
+			}
+			next[clusterKey] = deduped;
+		}
+
+		if (changed) {
+			// Best-effort: persist the migrated form so future reads are stable.
+			void this.context.globalState.update(STORAGE_KEYS.cachedDatabases, next);
+		}
+		return next;
 	}
 
 	private async getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined> {
@@ -1380,8 +1442,16 @@ ${query}
 	}
 
 	private async saveCachedDatabases(connectionId: string, databases: string[]): Promise<void> {
+		const connection = this.findConnection(connectionId);
+		if (!connection) {
+			return;
+		}
+		const clusterKey = this.getClusterCacheKey(connection.clusterUrl);
+		if (!clusterKey) {
+			return;
+		}
 		const cached = this.getCachedDatabases();
-		cached[connectionId] = databases;
+		cached[clusterKey] = databases;
 		await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
 	}
 
@@ -1519,8 +1589,8 @@ ${query}
 		if (!connection) {
 			return;
 		}
-
-		const cachedBefore = (this.getCachedDatabases()[connectionId] ?? []).filter(Boolean);
+		const clusterKey = this.getClusterCacheKey(connection.clusterUrl);
+		const cachedBefore = (this.getCachedDatabases()[clusterKey] ?? []).filter(Boolean);
 
 		const fetchAndNormalize = async (): Promise<string[]> => {
 			const databasesRaw = await this.kustoClient.getDatabases(connection, true);

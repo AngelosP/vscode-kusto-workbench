@@ -81,8 +81,14 @@ export class KustoQueryClient {
 		clusterAccountMap: 'kusto.auth.clusterAccountMap'
 	} as const;
 
+	// If the user cancels the VS Code authentication prompt, multiple concurrent/queued
+	// requests (e.g. loading databases + schema) can otherwise prompt back-to-back.
+	// We suppress additional interactive prompts for a short window.
+	private static readonly AUTH_CANCEL_SUPPRESS_MS = 2500;
+
 	private readonly context?: vscode.ExtensionContext;
 	private readonly authLocksByCluster = new Map<string, Promise<void>>();
+	private readonly authCancelledAtByCluster = new Map<string, number>();
 
 	constructor(context?: vscode.ExtensionContext) {
 		this.context = context;
@@ -258,14 +264,57 @@ export class KustoQueryClient {
 		if (!this.context) {
 			return;
 		}
+		// If the user just cancelled an auth prompt for this cluster, don't persist any mapping.
+		if (this.wasAuthCancelledRecently(clusterEndpoint)) {
+			return;
+		}
 		const prev = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
 		const next: StoredClusterAccountMap = { ...(prev && typeof prev === 'object' ? prev : {}) };
 		next[clusterEndpoint] = accountId;
 		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.clusterAccountMap, next);
 	}
 
+	private async clearClusterAccountId(clusterEndpoint: string): Promise<void> {
+		if (!this.context) {
+			return;
+		}
+		const prev = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
+		if (!prev || typeof prev !== 'object') {
+			return;
+		}
+		const next: StoredClusterAccountMap = { ...(prev && typeof prev === 'object' ? prev : {}) };
+		if (!Object.prototype.hasOwnProperty.call(next, clusterEndpoint)) {
+			return;
+		}
+		delete next[clusterEndpoint];
+		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.clusterAccountMap, next);
+	}
+
+	private markAuthCancelled(clusterEndpoint: string): void {
+		try {
+			this.authCancelledAtByCluster.set(clusterEndpoint, Date.now());
+		} catch {
+			// ignore
+		}
+	}
+
+	private wasAuthCancelledRecently(clusterEndpoint: string): boolean {
+		const t = this.authCancelledAtByCluster.get(clusterEndpoint) ?? 0;
+		return !!(t && (Date.now() - t) < KustoQueryClient.AUTH_CANCEL_SUPPRESS_MS);
+	}
+
+	private createAuthCancelledError(): Error {
+		const err = new Error('Sign-in cancelled');
+		(err as any).isCancelled = true;
+		return err;
+	}
+
 	private isAuthError(error: unknown): boolean {
 		const anyErr = error as any;
+		// User cancelled sign-in: do not treat as an auth error (otherwise we may retry and prompt again).
+		if (anyErr?.isCancelled === true || this.isLikelyCancellationError(error)) {
+			return false;
+		}
 		const msg = typeof anyErr?.message === 'string' ? anyErr.message : String(error || '');
 		const lower = msg.toLowerCase();
 		if (lower.includes('aadsts') || lower.includes('aads')) {
@@ -286,12 +335,19 @@ export class KustoQueryClient {
 	{
 		// If we have no storage (e.g. unit tests), just fall back to interactive.
 		if (!this.context) {
-			const session = await vscode.authentication.getSession(
-				KustoQueryClient.AUTH_PROVIDER_ID,
-				[...KustoQueryClient.AUTH_SCOPES],
-				{ createIfNone: true }
-			);
-			return { session, accountId: session?.account?.id };
+			try {
+				const session = await vscode.authentication.getSession(
+					KustoQueryClient.AUTH_PROVIDER_ID,
+					[...KustoQueryClient.AUTH_SCOPES],
+					{ createIfNone: true }
+				);
+				return { session, accountId: session?.account?.id };
+			} catch (e) {
+				if (this.isLikelyCancellationError(e)) {
+					throw this.createAuthCancelledError();
+				}
+				throw e;
+			}
 		}
 
 		const mapped = this.getClusterAccountId(clusterEndpoint);
@@ -334,6 +390,12 @@ export class KustoQueryClient {
 			return { session: undefined, accountId: undefined };
 		}
 
+		// If the user just cancelled an auth prompt for this cluster, avoid prompting again
+		// back-to-back (common when multiple features request auth in quick succession).
+		if (this.wasAuthCancelledRecently(clusterEndpoint)) {
+			return { session: undefined, accountId: undefined };
+		}
+
 		// Finally: interactive prompt.
 		// IMPORTANT: In multi-account scenarios, VS Code may return an existing session without
 		// prompting unless we clear preference / force a new session.
@@ -345,16 +407,31 @@ export class KustoQueryClient {
 					? { createIfNone: true, clearSessionPreference: true }
 					: { createIfNone: true };
 
-		const session = await vscode.authentication.getSession(
-			KustoQueryClient.AUTH_PROVIDER_ID,
-			[...KustoQueryClient.AUTH_SCOPES],
-			interactiveOptions
-		);
-		if (session?.account) {
-			await this.upsertKnownAccount(session.account);
-			await this.setClusterAccountId(clusterEndpoint, session.account.id);
+		try {
+			const session = await vscode.authentication.getSession(
+				KustoQueryClient.AUTH_PROVIDER_ID,
+				[...KustoQueryClient.AUTH_SCOPES],
+				interactiveOptions
+			);
+			// VS Code may return `undefined` when the user cancels the consent/sign-in UI.
+			if (!session) {
+				this.markAuthCancelled(clusterEndpoint);
+				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				return { session: undefined, accountId: undefined };
+			}
+			if (session?.account) {
+				await this.upsertKnownAccount(session.account);
+				await this.setClusterAccountId(clusterEndpoint, session.account.id);
+			}
+			return { session, accountId: session?.account?.id };
+		} catch (e) {
+			if (this.isLikelyCancellationError(e)) {
+				this.markAuthCancelled(clusterEndpoint);
+				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				return { session: undefined, accountId: undefined };
+			}
+			throw e;
 		}
-		return { session, accountId: session?.account?.id };
 	}
 
 	private async withClusterAuthLock(clusterEndpoint: string, fn: () => Promise<void>): Promise<void> {
@@ -403,7 +480,9 @@ export class KustoQueryClient {
 				skipSilent: !!opts.skipSilent
 			});
 			if (!session || !accountId) {
-				throw new Error('Failed to authenticate with Microsoft');
+				// If the user cancelled the auth prompt, treat as a cancellation so callers can
+				// avoid retrying or surfacing scary error UI.
+				throw this.createAuthCancelledError();
 			}
 			try {
 				await this.upsertKnownAccount(session.account);
@@ -546,7 +625,8 @@ export class KustoQueryClient {
 			return true;
 		}
 		const msg = typeof anyErr?.message === 'string' ? anyErr.message : '';
-		return /\bcancel(l)?ed\b|\bcanceled\b/i.test(msg);
+		// VS Code auth cancellation often appears as "User did not consent" rather than "cancelled".
+		return /\b(cancel(l)?ed|canceled|did\s+not\s+consent|user\s+did\s+not\s+consent|consent\s+denied|user\s+cancel(l)?ed)\b/i.test(msg);
 	}
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false): Promise<string[]> {
