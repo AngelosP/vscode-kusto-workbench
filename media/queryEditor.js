@@ -6,14 +6,14 @@
 	// If the user clicks one of the add buttons before scripts are fully loaded,
 	// queue those clicks and replay them once initialization completes.
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
-		window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+		window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0, copilotQuery: 0 };
 	}
 	const pendingAdds = window.__kustoQueryEditorPendingAdds;
 	if (typeof window.__kustoRequestAddSection !== 'function') {
 		window.__kustoRequestAddSection = function (kind) {
 			const k = String(kind || '').trim();
 			if (!k) return;
-			if (k === 'query' || k === 'markdown' || k === 'python' || k === 'url') {
+			if (k === 'query' || k === 'markdown' || k === 'python' || k === 'url' || k === 'copilotQuery') {
 				pendingAdds[k] = (pendingAdds[k] || 0) + 1;
 			}
 		};
@@ -36,6 +36,11 @@
 	if (typeof window.addUrlBox !== 'function') {
 		window.addUrlBox = function () {
 			pendingAdds.url = (pendingAdds.url || 0) + 1;
+		};
+	}
+	if (typeof window.addCopilotQueryBox !== 'function') {
+		window.addCopilotQueryBox = function () {
+			pendingAdds.copilotQuery = (pendingAdds.copilotQuery || 0) + 1;
 		};
 	}
 
@@ -65,6 +70,7 @@
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
 		'queryEditor/queryBoxes.js',
+		'queryEditor/copilotQueryBoxes.js',
 		'queryEditor/extraBoxes.js',
 		'queryEditor/resultsTable.js',
 		'queryEditor/objectViewer.js',

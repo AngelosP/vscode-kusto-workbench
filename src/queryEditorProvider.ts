@@ -45,6 +45,17 @@ type IncomingWebviewMessage = { type: 'getConnections' }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
+	| { type: 'prepareCopilotWriteQuery'; boxId: string }
+	| {
+			type: 'startCopilotWriteQuery';
+			boxId: string;
+			connectionId: string;
+			database: string;
+			currentQuery?: string;
+			request: string;
+			modelId?: string;
+		}
+	| { type: 'cancelCopilotWriteQuery'; boxId: string }
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
 	| { type: 'cancelOptimizeQuery'; boxId: string }
 	| {
@@ -91,9 +102,12 @@ export class QueryEditorProvider {
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
+	private readonly runningCopilotWriteQueryByBoxId = new Map<string, { cts: vscode.CancellationTokenSource; seq: number }>();
+	private copilotWriteSeq = 0;
 	private queryRunSeq = 0;
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
 	private readonly resolvedResourceUriCache = new Map<string, string>();
+	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; value: string }>();
 
 	private getErrorMessage(error: unknown): string {
 		if (error instanceof Error) {
@@ -360,6 +374,15 @@ export class QueryEditorProvider {
 			case 'checkCopilotAvailability':
 				await this.checkCopilotAvailability(message.boxId);
 				return;
+			case 'prepareCopilotWriteQuery':
+				await this.prepareCopilotWriteQuery(message);
+				return;
+			case 'startCopilotWriteQuery':
+				await this.startCopilotWriteQuery(message);
+				return;
+			case 'cancelCopilotWriteQuery':
+				this.cancelCopilotWriteQuery(message.boxId);
+				return;
 			case 'prepareOptimizeQuery':
 				await this.prepareOptimizeQuery(message);
 				return;
@@ -396,6 +419,539 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private cancelCopilotWriteQuery(boxId: string): void {
+		const id = String(boxId || '').trim();
+		if (!id) {
+			return;
+		}
+		const running = this.runningCopilotWriteQueryByBoxId.get(id);
+		if (!running) {
+			return;
+		}
+		try {
+			this.postMessage({ type: 'copilotWriteQueryStatus', boxId: id, status: 'Canceling…' } as any);
+		} catch {
+			// ignore
+		}
+		// Also cancel any in-flight query execution started by the write-query loop.
+		this.cancelRunningQuery(id);
+		try {
+			running.cts.cancel();
+		} catch {
+			// ignore
+		}
+	}
+
+	private async prepareCopilotWriteQuery(
+		message: Extract<IncomingWebviewMessage, { type: 'prepareCopilotWriteQuery' }>
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		if (!boxId) {
+			return;
+		}
+		try {
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				this.postMessage({
+					type: 'copilotWriteQueryOptions',
+					boxId,
+					models: [],
+					selectedModelId: ''
+				} as any);
+				this.postMessage({
+					type: 'copilotWriteQueryStatus',
+					boxId,
+					status:
+						'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.'
+				} as any);
+				return;
+			}
+
+			const modelOptions = models
+				.map((m) => ({ id: String(m.id), label: this.formatCopilotModelLabel(m) }))
+				.filter((m) => !!m.id);
+
+			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
+			const preferredModelId = String(lastModelId || '').trim();
+			const selectedModelId =
+				preferredModelId && modelOptions.some((m) => m.id === preferredModelId)
+					? preferredModelId
+					: modelOptions[0]?.id || '';
+
+			this.postMessage({
+				type: 'copilotWriteQueryOptions',
+				boxId,
+				models: modelOptions,
+				selectedModelId
+			} as any);
+		} catch {
+			this.postMessage({
+				type: 'copilotWriteQueryOptions',
+				boxId,
+				models: [],
+				selectedModelId: ''
+			} as any);
+		}
+	}
+
+	private extractKustoCodeBlock(text: string): string {
+		const raw = String(text || '');
+		const codeBlockMatch = raw.match(/```(?:kusto|kql)?\s*\n([\s\S]*?)\n```/i);
+		if (codeBlockMatch) {
+			return String(codeBlockMatch[1] || '').trim();
+		}
+		return raw.trim();
+	}
+
+	private tryParseCopilotToolCall(text: string): { tool: 'get_extended_schema'; args: any } | undefined {
+		const raw = String(text || '').trim();
+		if (!raw.toLowerCase().startsWith('@tool get_extended_schema')) {
+			return undefined;
+		}
+		const jsonPart = raw.replace(/^@tool\s+get_extended_schema\s*/i, '').trim();
+		if (!jsonPart) {
+			return { tool: 'get_extended_schema', args: {} };
+		}
+		try {
+			return { tool: 'get_extended_schema', args: JSON.parse(jsonPart) };
+		} catch {
+			return { tool: 'get_extended_schema', args: {} };
+		}
+	}
+
+	private async getExtendedSchemaToolResult(
+		connection: KustoConnection,
+		database: string,
+		boxId: string,
+		token: vscode.CancellationToken
+	): Promise<string> {
+		const db = String(database || '').trim();
+		const clusterKey = this.normalizeClusterUrlKey(connection.clusterUrl || '');
+		const memCacheKey = `${clusterKey}|${db}`;
+		const diskCacheKey = `${String(connection.clusterUrl || '').trim()}|${db}`;
+		const now = Date.now();
+
+		if (token.isCancellationRequested) {
+			throw new Error('Copilot write-query canceled');
+		}
+
+		try {
+			const cached = this.copilotExtendedSchemaCache.get(memCacheKey);
+			if (cached && now - cached.timestamp < this.SCHEMA_CACHE_TTL_MS) {
+				return cached.value;
+			}
+		} catch {
+			// ignore
+		}
+
+		let jsonText = '';
+		let label = '';
+		try {
+			const cached = await this.getCachedSchemaFromDisk(diskCacheKey);
+			if (token.isCancellationRequested) {
+				throw new Error('Copilot write-query canceled');
+			}
+
+			if (!cached || !cached.schema) {
+				label = `${db || '(unknown db)'}: no cached schema`;
+				jsonText = JSON.stringify(
+					{
+						database: db,
+						error:
+							'No cached schema was found for this database. ' +
+							'Try loading schema for autocomplete (or refresh schema), or provide the table/column names in your request.'
+					},
+					null,
+					2
+				);
+			} else {
+				const schema = cached.schema;
+				const tablesCount = schema.tables?.length ?? 0;
+				let columnsCount = 0;
+				for (const cols of Object.values(schema.columnsByTable || {})) {
+					columnsCount += cols.length;
+				}
+				const cacheAgeMs = Math.max(0, now - cached.timestamp);
+				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns`;
+				jsonText = JSON.stringify(
+					{
+						database: db,
+						schema,
+						meta: {
+							cacheAgeMs,
+							tablesCount,
+							columnsCount
+						}
+					},
+					null,
+					2
+				);
+			}
+		} catch (error) {
+			const raw = this.getErrorMessage(error);
+			label = `${db || '(unknown db)'}: schema lookup failed`;
+			jsonText = JSON.stringify({ database: db, error: `Failed to read cached schema: ${raw}` }, null, 2);
+		}
+
+		try {
+			this.copilotExtendedSchemaCache.set(memCacheKey, { timestamp: now, value: jsonText });
+		} catch {
+			// ignore
+		}
+
+		try {
+			this.postMessage({
+				type: 'copilotWriteQueryToolResult',
+				boxId,
+				tool: 'get_extended_schema',
+				label,
+				json: jsonText
+			} as any);
+		} catch {
+			// ignore
+		}
+
+		return jsonText;
+	}
+
+	private buildCopilotWriteQueryPrompt(args: {
+		request: string;
+		clusterUrl: string;
+		database: string;
+		currentQuery?: string;
+		priorAttempts: Array<{ attempt: number; query?: string; error?: string }>;
+		toolResult?: string;
+	}): string {
+		const request = String(args.request || '').trim();
+		const clusterUrl = String(args.clusterUrl || '').trim();
+		const database = String(args.database || '').trim();
+		const currentQuery = String(args.currentQuery || '').trim();
+		const toolResult = typeof args.toolResult === 'string' ? args.toolResult : '';
+
+		const attemptsText = (args.priorAttempts || [])
+			.map((a) => {
+				const header = `Attempt ${a.attempt}:`;
+				const q = a.query ? `Generated query:\n${a.query}` : '';
+				const e = a.error ? `Error:\n${a.error}` : '';
+				return [header, q, e].filter(Boolean).join('\n');
+			})
+			.filter(Boolean)
+			.join('\n\n');
+
+		return (
+			'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
+			'Task: Write a complete, runnable KQL query for the user request.\n\n' +
+			'Context:\n' +
+			`- Cluster: ${clusterUrl || '(unknown)'}\n` +
+			`- Database: ${database || '(unknown)'}\n\n` +
+			(currentQuery
+				? 'Current query (if any):\n```kusto\n' + currentQuery + '\n```\n\n'
+				: '') +
+			(attemptsText ? 'Prior attempts and errors (fix these):\n' + attemptsText + '\n\n' : '') +
+			(toolResult ? 'Tool result (extended schema):\n' + toolResult + '\n\n' : '') +
+			'User request:\n' +
+			request +
+			'\n\n' +
+			'Hard constraints:\n' +
+			'- Return ONLY the query in a single ```kusto code block.\n' +
+			'- Do not include explanations, bullets, or extra text.\n' +
+			'- Always return the FULL query (not a diff).\n\n' +
+			'Local tool (optional):\n' +
+			'- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:\n' +
+			'  @tool get_extended_schema {"database":"<database>"}\n' +
+			'- After you receive the tool result, respond with the final query in a single ```kusto block.\n'
+		);
+	}
+
+	private async startCopilotWriteQuery(
+		message: Extract<IncomingWebviewMessage, { type: 'startCopilotWriteQuery' }>
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		const connectionId = String(message.connectionId || '').trim();
+		const database = String(message.database || '').trim();
+		const request = String(message.request || '').trim();
+		const currentQuery = String(message.currentQuery || '').trim();
+		const requestedModelId = String(message.modelId || '').trim();
+		if (!boxId) {
+			return;
+		}
+		if (!connectionId || !database || !request) {
+			try {
+				this.postMessage({
+					type: 'copilotWriteQueryDone',
+					boxId,
+					ok: false,
+					message: 'Select a connection and database, then enter what you want the query to do.'
+				} as any);
+			} catch {
+				// ignore
+			}
+			return;
+		}
+
+		// Cancel any prior write-query loop for this box.
+		try {
+			const existing = this.runningCopilotWriteQueryByBoxId.get(boxId);
+			if (existing) {
+				existing.cts.cancel();
+				this.runningCopilotWriteQueryByBoxId.delete(boxId);
+			}
+		} catch {
+			// ignore
+		}
+
+		const cts = new vscode.CancellationTokenSource();
+		const seq = ++this.copilotWriteSeq;
+		this.runningCopilotWriteQueryByBoxId.set(boxId, { cts, seq });
+		const isActive = () => {
+			const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
+			return !!current && current.cts === cts && current.seq === seq;
+		};
+
+		const postStatus = (status: string) => {
+			try {
+				this.postMessage({ type: 'copilotWriteQueryStatus', boxId, status } as any);
+			} catch {
+				// ignore
+			}
+		};
+
+		try {
+			postStatus('Selecting Copilot model…');
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				this.postMessage({
+					type: 'copilotWriteQueryDone',
+					boxId,
+					ok: false,
+					message: 'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.'
+				} as any);
+				return;
+			}
+			let model: vscode.LanguageModelChat | undefined;
+			if (requestedModelId) {
+				model = models.find((m) => String(m.id) === requestedModelId);
+			}
+			if (!model) {
+				const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
+				const preferred = String(lastModelId || '').trim();
+				model = preferred ? models.find((m) => String(m.id) === preferred) : undefined;
+			}
+			if (!model) {
+				model = models[0];
+			}
+
+			try {
+				await this.context.globalState.update(STORAGE_KEYS.lastOptimizeCopilotModelId, String(model.id));
+			} catch {
+				// ignore
+			}
+			postStatus(`Using model: ${this.formatCopilotModelLabel(model)}`);
+
+			const connection = this.findConnection(connectionId);
+			if (!connection) {
+				this.postMessage({
+					type: 'copilotWriteQueryDone',
+					boxId,
+					ok: false,
+					message: 'Connection not found. Select a valid connection and try again.'
+				} as any);
+				return;
+			}
+
+			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
+			const maxAttempts = 6;
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				if (!isActive() || cts.token.isCancellationRequested) {
+					throw new Error('Copilot write-query canceled');
+				}
+				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
+
+				let toolResult: string | undefined;
+				let generatedText = '';
+				const maxToolTurns = 3;
+				for (let toolTurn = 1; toolTurn <= maxToolTurns; toolTurn++) {
+					if (!isActive() || cts.token.isCancellationRequested) {
+						throw new Error('Copilot write-query canceled');
+					}
+					const prompt = this.buildCopilotWriteQueryPrompt({
+						request,
+						clusterUrl: String(connection.clusterUrl || ''),
+						database,
+						currentQuery,
+						priorAttempts,
+						toolResult
+					});
+
+					const response = await model.sendRequest(
+						[vscode.LanguageModelChatMessage.User(prompt)],
+						{},
+						cts.token
+					);
+
+					generatedText = '';
+					let lastProgressUpdate = 0;
+					for await (const fragment of response.text) {
+						if (!isActive() || cts.token.isCancellationRequested) {
+							throw new Error('Copilot write-query canceled');
+						}
+						generatedText += fragment;
+						const now = Date.now();
+						if (now - lastProgressUpdate > 800) {
+							lastProgressUpdate = now;
+							postStatus(`Receiving response… (${generatedText.length} chars)`);
+						}
+					}
+
+					const toolCall = this.tryParseCopilotToolCall(generatedText);
+					if (toolCall?.tool === 'get_extended_schema') {
+						const requestedDbRaw = (toolCall.args && typeof toolCall.args === 'object') ? (toolCall.args as any).database : undefined;
+						const requestedDb = String(requestedDbRaw || database || '').trim() || database;
+						postStatus(`Fetching extended schema…${requestedDb ? ` (${requestedDb})` : ''}`);
+						toolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
+						continue;
+					}
+
+					break;
+				}
+
+				const query = this.extractKustoCodeBlock(generatedText);
+				if (!query) {
+					priorAttempts.push({ attempt, error: 'Copilot returned an empty query.' });
+					postStatus('Copilot returned an empty query. Retrying…');
+					continue;
+				}
+
+				try {
+					this.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query } as any);
+				} catch {
+					// ignore
+				}
+
+				postStatus('Running query…');
+				try {
+					this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true } as any);
+				} catch {
+					// ignore
+				}
+
+				// Cancel any in-flight manual run and run using default editor mode.
+				this.cancelRunningQuery(boxId);
+				const queryWithMode = this.appendQueryMode(query, 'take100');
+				const cacheDirective = this.buildCacheDirective(true, 1, 'days');
+				const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+
+				const cancelClientKey = `${boxId}::${connection.id}::copilot`;
+				const { promise, cancel } = this.kustoClient.executeQueryCancelable(
+					connection,
+					database,
+					finalQuery,
+					cancelClientKey
+				);
+				const runSeq = ++this.queryRunSeq;
+				this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
+				try {
+					const result = await promise;
+					if (isActive()) {
+						this.postMessage({ type: 'queryResult', result, boxId } as any);
+						this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
+						this.postMessage({
+							type: 'copilotWriteQueryDone',
+							boxId,
+							ok: true,
+							message: 'Query ran successfully. Review the results and adjust if needed.'
+						} as any);
+						return;
+					}
+				} catch (error) {
+					if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
+						if (isActive()) {
+							try {
+								this.postMessage({ type: 'queryCancelled', boxId } as any);
+							} catch {
+								// ignore
+							}
+						}
+						throw new Error('Copilot write-query canceled');
+					}
+
+					const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
+					this.logQueryExecutionError(error, connection, database, boxId, finalQuery);
+					if (isActive()) {
+						try {
+							this.postMessage({ type: 'queryError', error: userMessage, boxId } as any);
+						} catch {
+							// ignore
+						}
+					}
+
+					priorAttempts.push({ attempt, query, error: userMessage });
+					postStatus(`Query failed: ${userMessage}. Retrying…`);
+					continue;
+				} finally {
+					try {
+						if (isActive()) {
+							this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
+						}
+					} catch {
+						// ignore
+					}
+					const current = this.runningQueriesByBoxId.get(boxId);
+					if (current?.cancel === cancel && current.runSeq === runSeq) {
+						this.runningQueriesByBoxId.delete(boxId);
+					}
+				}
+			}
+
+			this.postMessage({
+				type: 'copilotWriteQueryDone',
+				boxId,
+				ok: false,
+				message: 'I could not produce a query that runs successfully. Review the latest error and refine your request.'
+			} as any);
+		} catch (err) {
+			const msg = this.getErrorMessage(err);
+			const canceled = cts.token.isCancellationRequested || /canceled|cancelled/i.test(msg);
+			if (canceled) {
+				try {
+					this.postMessage({
+						type: 'copilotWriteQueryDone',
+						boxId,
+						ok: false,
+						message: 'Canceled.'
+					} as any);
+				} catch {
+					// ignore
+				}
+				return;
+			}
+			try {
+				this.postMessage({
+					type: 'copilotWriteQueryDone',
+					boxId,
+					ok: false,
+					message: `Copilot request failed: ${msg}`
+				} as any);
+			} catch {
+				// ignore
+			}
+		} finally {
+			try {
+				const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
+				if (current?.cts === cts && current.seq === seq) {
+					this.runningCopilotWriteQueryByBoxId.delete(boxId);
+				}
+			} catch {
+				// ignore
+			}
+			try {
+				cts.dispose();
+			} catch {
+				// ignore
+			}
 		}
 	}
 

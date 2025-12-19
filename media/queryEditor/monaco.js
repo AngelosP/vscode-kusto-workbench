@@ -3690,6 +3690,11 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 				const next = Math.max(120, Math.ceil(chrome + contentHeight));
 				wrapper.style.height = next + 'px';
 				try {
+					if (wrapper.dataset) {
+						wrapper.dataset.kustoAutoResized = 'true';
+					}
+				} catch { /* ignore */ }
+				try {
 					// Ensure Monaco re-layouts after the container changes.
 					editor.layout();
 				} catch {
@@ -5006,7 +5011,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 function initQueryEditor(boxId) {
 	return ensureMonaco().then(monaco => {
 		const container = document.getElementById(boxId + '_query_editor');
-		const wrapper = container ? container.parentElement : null;
+		const wrapper = container && container.closest ? container.closest('.query-editor-wrapper') : null;
 		const placeholder = document.getElementById(boxId + '_query_placeholder');
 		const resizer = document.getElementById(boxId + '_query_resizer');
 		if (!container) {
@@ -5019,11 +5024,26 @@ function initQueryEditor(boxId) {
 			}
 			try {
 				// The placeholder is absolutely positioned within .query-editor-wrapper.
-				// Use the Monaco container's offsetTop so it naturally accounts for any
-				// banners/toolbars above the editor (e.g., caret docs banner).
-				// Align to the first line number baseline.
-				const top = (container.offsetTop || 0) + 1;
+				// Compute its position based on the Monaco container's actual on-screen
+				// location so it stays correct even when the editor is nested (e.g. in
+				// the Copilot split pane).
+				if (!wrapper) {
+					return;
+				}
+				const c = container.getBoundingClientRect();
+				const w = wrapper.getBoundingClientRect();
+				if (!c || !w) return;
+
+				// Align to the first line number baseline (small +1px nudge).
+				const top = (c.top - w.top) + 1;
+				// Keep existing gutter offset behavior (56px) but relative to the editor's left.
+				const left = (c.left - w.left) + 56;
+				// Mirror the old right inset (10px) but relative to the editor's right.
+				const right = (w.right - c.right) + 10;
+
 				placeholder.style.top = Math.max(0, Math.round(top)) + 'px';
+				placeholder.style.left = Math.max(0, Math.round(left)) + 'px';
+				placeholder.style.right = Math.max(0, Math.round(right)) + 'px';
 			} catch {
 				// ignore
 			}
@@ -5049,6 +5069,24 @@ function initQueryEditor(boxId) {
 		// Ensure flex sizing doesn't allow the editor container to expand with content.
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
+
+		// If persistence restore ran before Monaco init, apply the restored wrapper height now.
+		// This avoids layout glitches when the Copilot split-pane is installed.
+		try {
+			const pending = window.__kustoPendingWrapperHeightPxByBoxId && window.__kustoPendingWrapperHeightPxByBoxId[boxId];
+			if (typeof pending === 'number' && Number.isFinite(pending) && pending > 0) {
+				let w = wrapper;
+				if (!w) {
+					const box = document.getElementById(boxId);
+					w = (box && box.querySelector) ? box.querySelector('.query-editor-wrapper') : null;
+				}
+				if (w) {
+					w.style.height = Math.round(pending) + 'px';
+					try { w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				}
+				try { delete window.__kustoPendingWrapperHeightPxByBoxId[boxId]; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
 
 		// Avoid calling editor.setValue() during initialization; pass initial value into create()
 		// to reduce async timing races in VS Code webviews.
@@ -6224,6 +6262,10 @@ function initQueryEditor(boxId) {
 			wrapper.addEventListener('mousedown', (e) => {
 				try {
 					if (e && e.target && e.target.closest) {
+						// Allow embedded UI (e.g. Copilot Chat) to receive focus.
+						if (e.target.closest('.kusto-copilot-chat') || e.target.closest('[data-kusto-no-editor-focus="true"]')) {
+							return;
+						}
 						if (e.target.closest('.query-editor-toolbar')) {
 							return;
 						}
@@ -6282,11 +6324,47 @@ function initQueryEditor(boxId) {
 		}
 
 		// Drag handle resize (more reliable than CSS resize in VS Code webviews).
-		if (wrapper && resizer) {
+		if (resizer) {
+			const resolveWrapperForResize = () => {
+				try {
+					let w = null;
+					try {
+						w = (resizer && resizer.closest) ? resizer.closest('.query-editor-wrapper') : null;
+					} catch { /* ignore */ }
+					if (!w) {
+						try {
+							w = (container && container.closest) ? container.closest('.query-editor-wrapper') : null;
+						} catch { /* ignore */ }
+					}
+					if (!w) {
+						try {
+							const box = document.getElementById(boxId);
+							w = (box && box.querySelector) ? box.querySelector('.query-editor-wrapper') : null;
+						} catch { /* ignore */ }
+					}
+					return w;
+				} catch {
+					return null;
+				}
+			};
+
 			resizer.addEventListener('mousedown', (e) => {
 				e.preventDefault();
 				e.stopPropagation();
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+				const w = resolveWrapperForResize();
+				if (!w) {
+					return;
+				}
+				try {
+					w.dataset.kustoUserResized = 'true';
+					try { delete w.dataset.kustoAutoResized; } catch { /* ignore */ }
+				} catch { /* ignore */ }
+				try {
+					if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+						window.__kustoManualQueryEditorHeightPxByBoxId = {};
+					}
+				} catch { /* ignore */ }
 
 				resizer.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;
@@ -6295,7 +6373,7 @@ function initQueryEditor(boxId) {
 				document.body.style.userSelect = 'none';
 
 				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
-				const startHeight = wrapper.getBoundingClientRect().height;
+				const startHeight = w.getBoundingClientRect().height;
 
 				const onMove = (moveEvent) => {
 					try {
@@ -6306,7 +6384,12 @@ function initQueryEditor(boxId) {
 					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
-					wrapper.style.height = nextHeight + 'px';
+					w.style.height = nextHeight + 'px';
+					try {
+						if (window.__kustoManualQueryEditorHeightPxByBoxId && typeof window.__kustoManualQueryEditorHeightPxByBoxId === 'object') {
+							window.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(nextHeight);
+						}
+					} catch { /* ignore */ }
 					try { editor.layout(); } catch { /* ignore */ }
 				};
 				const onUp = () => {

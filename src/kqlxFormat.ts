@@ -5,6 +5,7 @@ export type KqlxSectionV1 =
 			type: 'query';
 			name?: string;
 			expanded?: boolean;
+			resultsVisible?: boolean;
 			// Persist the actual cluster URL so sessions are portable across machines.
 			clusterUrl?: string;
 			database?: string;
@@ -19,6 +20,28 @@ export type KqlxSectionV1 =
 			cacheUnit?: string;
 			editorHeightPx?: number;
 			resultsHeightPx?: number;
+			// Copilot chat is now a per-query-box toggle.
+			copilotChatVisible?: boolean;
+			copilotChatWidthPx?: number;
+		}
+	| {
+			type: 'copilotQuery';
+			name?: string;
+			expanded?: boolean;
+			resultsVisible?: boolean;
+			clusterUrl?: string;
+			database?: string;
+			query?: string;
+			resultJson?: string;
+			runMode?: string;
+			cacheEnabled?: boolean;
+			cacheValue?: number;
+			cacheUnit?: string;
+			editorHeightPx?: number;
+			resultsHeightPx?: number;
+			// Back-compat: older files may have this type, but current webview treats it as a normal query.
+			copilotChatVisible?: boolean;
+			copilotChatWidthPx?: number;
 		}
 	| {
 			type: 'markdown';

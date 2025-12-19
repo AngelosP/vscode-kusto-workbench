@@ -1112,6 +1112,38 @@ window.addEventListener('message', event => {
 			try {
 				const boxId = message.boxId || '';
 				const available = !!message.available;
+				// Per-editor toolbar toggle button
+				try {
+					const applyToButton = (btn) => {
+						if (!btn) return;
+						const inProgress = !!(btn.dataset && btn.dataset.kustoCopilotChatInProgress === '1');
+						if (!available) {
+							btn.disabled = true;
+							try { if (btn.dataset) btn.dataset.kustoDisabledByCopilot = '1'; } catch { /* ignore */ }
+							btn.title = 'Copilot chat\n\nGitHub Copilot is required for this feature. Enable Copilot in VS Code to use Copilot-assisted query writing.';
+							btn.setAttribute('aria-disabled', 'true');
+						} else {
+							const disabledByCopilot = !!(btn.dataset && btn.dataset.kustoDisabledByCopilot === '1');
+							if (disabledByCopilot) {
+								try { if (btn.dataset) delete btn.dataset.kustoDisabledByCopilot; } catch { /* ignore */ }
+								if (!inProgress) {
+									btn.disabled = false;
+									btn.setAttribute('aria-disabled', 'false');
+								}
+							}
+							btn.title = 'Copilot chat\nGenerate and run a query with GitHub Copilot';
+						}
+					};
+
+					if (boxId === '__kusto_global__') {
+						const btns = document.querySelectorAll('.kusto-copilot-chat-toggle');
+						for (const b of btns) {
+							applyToButton(b);
+						}
+					} else {
+						applyToButton(document.getElementById(boxId + '_copilot_chat_toggle'));
+					}
+				} catch { /* ignore */ }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
 				if (optimizeBtn) {
 					try {
@@ -1305,11 +1337,67 @@ window.addEventListener('message', event => {
 				}
 			} catch { /* ignore */ }
 			break;
+		case 'copilotWriteQueryOptions':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotApplyWriteQueryOptions === 'function') {
+					window.__kustoCopilotApplyWriteQueryOptions(boxId, message.models || [], message.selectedModelId || '');
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotWriteQueryStatus':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotWriteQueryStatus === 'function') {
+					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '');
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotWriteQuerySetQuery':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotWriteQuerySetQuery === 'function') {
+					window.__kustoCopilotWriteQuerySetQuery(boxId, message.query || '');
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotWriteQueryExecuting':
+			try {
+				const boxId = String(message.boxId || '');
+				const executing = !!message.executing;
+				if (boxId && typeof setQueryExecuting === 'function') {
+					setQueryExecuting(boxId, executing);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotWriteQueryToolResult':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotWriteQueryToolResult === 'function') {
+					window.__kustoCopilotWriteQueryToolResult(
+						boxId,
+						message.tool || '',
+						message.label || '',
+						message.json || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotWriteQueryDone':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotWriteQueryDone === 'function') {
+					window.__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
+				}
+			} catch { /* ignore */ }
+			break;
 	}
 });
 
 // Request connections on load
 vscode.postMessage({ type: 'getConnections' });
+// Global Copilot capability check (for add-controls Copilot button)
+try { vscode.postMessage({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch { /* ignore */ }
 // Request document state on load (.kqlx custom editor)
 try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 

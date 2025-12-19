@@ -109,7 +109,7 @@ function addQueryBox(options) {
 	const copilotLogoHtml = copilotLogoUri
 		? ('<img class="copilot-logo" src="' + copilotLogoUri + '" alt="" aria-hidden="true" />')
 		: (
-			'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+			'<svg class="copilot-logo-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
 			'<rect x="3" y="3" width="10" height="9" rx="2" />' +
 			'<path d="M6 12v1" />' +
 			'<path d="M10 12v1" />' +
@@ -166,6 +166,9 @@ function addQueryBox(options) {
 		'</button>' +
 		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation tooltips\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
+		'</button>' +
+		'<button type="button" id="' + id + '_copilot_chat_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
+		'<span class="qe-icon" aria-hidden="true">' + copilotLogoHtml + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="query-editor-toolbar-btn" data-qe-action="qualifyTables" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table" aria-label="Fully qualify tables">' +
@@ -2496,6 +2499,13 @@ function qualifyTablesInText(text, tables, clusterUrl, database) {
 }
 
 function removeQueryBox(boxId) {
+	// Dispose Copilot chat state for this query box (if present).
+	try {
+		if (typeof window.__kustoDisposeCopilotQueryBox === 'function') {
+			window.__kustoDisposeCopilotQueryBox(boxId);
+		}
+	} catch { /* ignore */ }
+
 	// If removing a linked optimized box, exit linked optimization mode and restore cache settings.
 	try {
 		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {

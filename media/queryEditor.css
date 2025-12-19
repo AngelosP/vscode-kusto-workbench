@@ -221,6 +221,267 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 
+		.kusto-copilot-chat {
+			margin: 0;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 0;
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+			width: 100%;
+			flex: 1 1 auto;
+		}
+
+		.kusto-copilot-split {
+			display: flex;
+			gap: 0;
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
+		.kusto-copilot-chat-pane {
+			flex: 0 0 360px;
+			width: 360px;
+			min-width: 240px;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			align-items: stretch;
+			padding: 0;
+			margin: 0;
+		}
+
+		.kusto-copilot-editor-pane {
+			flex: 1 1 auto;
+			min-width: 0;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.kusto-copilot-splitter.query-editor-resizer {
+			flex: 0 0 12px;
+			width: 12px;
+			height: auto;
+			cursor: ew-resize;
+			background: var(--vscode-editor-background);
+			border-top: none;
+			position: relative;
+			padding: 0;
+			margin: 0;
+		}
+
+		.kusto-copilot-splitter.query-editor-resizer::after {
+			width: 6px;
+			height: 34px;
+			background-image: repeating-linear-gradient(
+				0deg,
+				var(--vscode-input-placeholderForeground),
+				var(--vscode-input-placeholderForeground) 2px,
+				transparent 2px,
+				transparent 6px
+			);
+		}
+
+		.kusto-copilot-chat-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			margin: 0;
+			padding: 8px 8px 0;
+		}
+
+		.kusto-copilot-chat-title {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			font-weight: 600;
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-copilot-chat-title img.copilot-logo {
+			width: 16px;
+			height: 16px;
+			vertical-align: middle;
+		}
+
+		.kusto-copilot-chat-model {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			min-width: 0;
+		}
+
+		.kusto-copilot-chat-model .select-wrapper {
+			margin: 0;
+		}
+
+		.kusto-copilot-chat-model-dropdown {
+			/* Shrink with the chat pane width; cap default size a bit smaller. */
+			width: 100%;
+			max-width: 225px;
+			min-width: 0;
+		}
+
+		/* Square corners for the custom dropdown inside the Copilot chat only. */
+		.kusto-copilot-chat .kusto-dropdown-btn,
+		.kusto-copilot-chat .kusto-dropdown-menu {
+			border-radius: 0;
+		}
+
+		/* Copilot chat can be toggled per query editor. When hidden, the layout should
+		   behave like the original editor-only wrapper (no splitter, no blank space). */
+		.kusto-copilot-split.kusto-copilot-chat-hidden .kusto-copilot-chat-pane,
+		.kusto-copilot-split.kusto-copilot-chat-hidden .kusto-copilot-splitter {
+			display: none;
+		}
+
+		.kusto-copilot-split.kusto-copilot-chat-hidden .kusto-copilot-editor-pane {
+			flex: 1 1 auto;
+			width: 100%;
+			min-width: 0;
+		}
+
+		.kusto-copilot-chat-model label {
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-copilot-chat-model select {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 3px 6px;
+			font-size: 12px;
+		}
+
+		.kusto-copilot-chat-messages {
+			max-height: none;
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: auto;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			padding: 6px;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			background: var(--vscode-editor-background);
+			margin: 8px 8px 8px;
+		}
+
+		.kusto-copilot-chat-msg {
+			font-size: 12px;
+			line-height: 1.35;
+			white-space: pre-wrap;
+			word-break: break-word;
+			padding: 6px 8px;
+			border-radius: 0;
+			border: 1px solid var(--vscode-input-border);
+		}
+		.kusto-copilot-chat-msg-user {
+			align-self: flex-end;
+			background: var(--vscode-editorWidget-background);
+		}
+		.kusto-copilot-chat-msg-assistant {
+			align-self: flex-start;
+			background: var(--vscode-editorWidget-background);
+			color: var(--vscode-foreground);
+			border-color: var(--vscode-editorWidget-border);
+		}
+
+		.kusto-copilot-chat-input {
+			display: flex;
+			gap: 8px;
+			align-items: flex-start;
+			margin: 0;
+			padding: 0 8px 8px;
+		}
+
+		.kusto-copilot-chat-input textarea {
+			flex: 1;
+			resize: vertical;
+			min-height: 40px;
+			max-height: 160px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 6px 8px;
+			font-size: 12px;
+			line-height: 1.35;
+		}
+
+		.kusto-copilot-chat-send {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 0;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.kusto-copilot-chat-send:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+
+		.kusto-copilot-chat-cancel {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.kusto-copilot-chat-cancel:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+		.kusto-copilot-chat-cancel:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+
+		.kusto-copilot-tool-header {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			justify-content: space-between;
+			margin-bottom: 6px;
+		}
+		.kusto-copilot-tool-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 12px;
+			white-space: nowrap;
+		}
+		.kusto-copilot-tool-link:hover {
+			text-decoration: underline;
+		}
+		.kusto-copilot-tool-json {
+			margin: 0;
+			padding: 8px;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			font-family: var(--vscode-editor-font-family);
+			font-size: 11px;
+			line-height: 1.35;
+			max-height: 220px;
+			overflow: auto;
+			white-space: pre;
+		}
+
 		/* Generic section header row used by non-KQL boxes */
 		.section-header-row {
 			display: flex;
@@ -1029,13 +1290,18 @@
 			position: absolute;
 			left: 0;
 			top: 100%;
-			width: 100%;
+			/* Allow the menu to grow to fit item text (up to a cap),
+			   but never be narrower than the control itself. */
+			width: max-content;
+			min-width: 100%;
+			max-width: 350px;
 			max-height: 280px;
 			overflow: auto;
 			z-index: 50;
 			background: var(--vscode-editorWidget-background);
 			border: 1px solid var(--vscode-input-border);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+			box-sizing: border-box;
 		}
 
 		.kusto-dropdown-item,
@@ -1054,6 +1320,8 @@
 
 		.kusto-dropdown-item-main,
 		.kusto-favorites-item-main {
+			flex: 1 1 auto;
+			max-width: 100%;
 			min-width: 0;
 			overflow: hidden;
 			text-overflow: ellipsis;
@@ -1525,6 +1793,28 @@
 
 		.query-editor-toolbar-btn svg {
 			display: block;
+		}
+
+		/* Copilot logo in the query editor toolbar: ensure good contrast in dark themes.
+		   - If using the image logo, invert it like the optimize button.
+		   - If using the inline SVG fallback, slightly thicken strokes so it doesn't look washed out. */
+		.query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo {
+			width: 16px;
+			height: 16px;
+			display: block;
+		}
+
+		body.vscode-dark .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo,
+		body.vscode-high-contrast .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo,
+		body.vscode-high-contrast-light .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo {
+			filter: invert(1);
+		}
+
+		.query-editor-toolbar-btn.kusto-copilot-chat-toggle .copilot-logo-svg {
+			width: 16px;
+			height: 16px;
+			display: block;
+			stroke-width: 1.8px;
 		}
 
 		/* Ensure Monaco content widgets (our caret docs tooltip) render above editor content. */

@@ -65,6 +65,7 @@ type ComparableSection =
 			type: 'query';
 			name: string;
 			expanded: boolean;
+			resultsVisible: boolean;
 			clusterUrl: string;
 			database: string;
 			query: string;
@@ -75,6 +76,8 @@ type ComparableSection =
 			cacheUnit: string;
 			editorHeightPx?: number;
 			resultsHeightPx?: number;
+			copilotChatVisible: boolean;
+			copilotChatWidthPx?: number;
 		}
 	| {
 			type: 'markdown';
@@ -118,12 +121,13 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 	const sections: ComparableSection[] = [];
 	for (const section of Array.isArray(s.sections) ? s.sections : []) {
 		const t = (section as any)?.type;
-		if (t === 'query') {
+		if (t === 'query' || t === 'copilotQuery') {
 			sections.push({
 				type: 'query',
 				name: String((section as any).name ?? ''),
-					expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
-					clusterUrl: String((section as any).clusterUrl ?? ''),
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
+				resultsVisible: (typeof (section as any).resultsVisible === 'boolean') ? (section as any).resultsVisible : true,
+				clusterUrl: String((section as any).clusterUrl ?? ''),
 				database: String((section as any).database ?? ''),
 				query: String((section as any).query ?? ''),
 				resultJson: String((section as any).resultJson ?? ''),
@@ -132,7 +136,9 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 				cacheValue: Number.isFinite((section as any).cacheValue) ? Math.max(1, Math.trunc((section as any).cacheValue)) : 1,
 				cacheUnit: String((section as any).cacheUnit ?? 'days'),
 				editorHeightPx: normalizeHeight((section as any).editorHeightPx),
-				resultsHeightPx: normalizeHeight((section as any).resultsHeightPx)
+				resultsHeightPx: normalizeHeight((section as any).resultsHeightPx),
+				copilotChatVisible: (typeof (section as any).copilotChatVisible === 'boolean') ? (section as any).copilotChatVisible : (t === 'copilotQuery'),
+				copilotChatWidthPx: normalizeHeight((section as any).copilotChatWidthPx)
 			});
 			continue;
 		}
@@ -401,7 +407,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const urls: string[] = [];
 			try {
 				for (const sec of Array.isArray(state.sections) ? state.sections : []) {
-					if (!sec || (sec as any).type !== 'query') {
+					const t = (sec as any)?.type;
+					if (!sec || (t !== 'query' && t !== 'copilotQuery')) {
 						continue;
 					}
 					const clusterUrl = String((sec as any).clusterUrl || '').trim();

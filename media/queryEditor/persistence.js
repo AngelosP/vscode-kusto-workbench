@@ -136,6 +136,7 @@ function __kustoRequestAddSection(kind) {
 	if (k === 'markdown') return addMarkdownBox();
 	if (k === 'python') return addPythonBox();
 	if (k === 'url') return addUrlBox();
+	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
 }
 
 // Replace the early bootstrap stub (defined in queryEditor.js before all scripts load).
@@ -199,21 +200,35 @@ function __kustoOnQueryResult(boxId, result) {
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
-function __kustoGetWrapperHeightPx(boxId, suffix) {
+function __kustoFindQueryEditorWrapper(boxId, suffix) {
 	try {
 		const el = document.getElementById(boxId + suffix);
-		if (!el) return undefined;
-		const wrapper = el.closest ? el.closest('.query-editor-wrapper') : null;
+		let wrapper = (el && el.closest) ? el.closest('.query-editor-wrapper') : null;
+		if (!wrapper) {
+			const box = document.getElementById(boxId);
+			wrapper = (box && box.querySelector) ? box.querySelector('.query-editor-wrapper') : null;
+		}
+		return wrapper;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoGetWrapperHeightPx(boxId, suffix) {
+	try {
+		// If the user manually resized, prefer the explicit height state.
+		try {
+			const map = window.__kustoManualQueryEditorHeightPxByBoxId;
+			const v = map ? map[boxId] : undefined;
+			if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+				return Math.max(0, Math.round(v));
+			}
+		} catch { /* ignore */ }
+
+		const wrapper = __kustoFindQueryEditorWrapper(boxId, suffix);
 		if (!wrapper) return undefined;
 		// Only persist heights that came from an explicit user resize (or a restored persisted height).
-		// Auto-resize can set an inline height too, but that should not get saved into .kqlx.
-		try {
-			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
-				return undefined;
-			}
-		} catch {
-			return undefined;
-		}
+		// Auto-resize can also set an inline height, but that should not get saved into .kqlx.
 		// Only persist height if the user explicitly resized (wrapper has an inline height).
 		// Otherwise, default layout can vary by window size/theme and would cause spurious "dirty" writes.
 		const inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
@@ -221,7 +236,15 @@ function __kustoGetWrapperHeightPx(boxId, suffix) {
 		const m = inlineHeight.match(/^([0-9]+)px$/i);
 		if (!m) return undefined;
 		const px = parseInt(m[1], 10);
-		return Number.isFinite(px) ? Math.max(0, px) : undefined;
+		if (!Number.isFinite(px)) return undefined;
+		// If Monaco's content auto-resize set the height, do not persist.
+		try {
+			if (wrapper.dataset && wrapper.dataset.kustoAutoResized === 'true') {
+				return undefined;
+			}
+		} catch { /* ignore */ }
+		// Prefer the explicit user-resize marker, but accept any non-auto inline height.
+		return Math.max(0, px);
 	} catch {
 		return undefined;
 	}
@@ -229,9 +252,7 @@ function __kustoGetWrapperHeightPx(boxId, suffix) {
 
 function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 	try {
-		const el = document.getElementById(boxId + suffix);
-		if (!el) return;
-		const wrapper = el.closest ? el.closest('.query-editor-wrapper') : null;
+		const wrapper = __kustoFindQueryEditorWrapper(boxId, suffix);
 		if (!wrapper) return;
 		const h = Number(heightPx);
 		if (!Number.isFinite(h) || h <= 0) return;
@@ -241,6 +262,12 @@ function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 		} catch {
 			// ignore
 		}
+		try {
+			const editor = (window.queryEditors && window.queryEditors[boxId]) ? window.queryEditors[boxId] : null;
+			if (editor && typeof editor.layout === 'function') {
+				editor.layout();
+			}
+		} catch { /* ignore */ }
 	} catch {
 		// ignore
 	}
@@ -431,11 +458,16 @@ function getKqlxState() {
 		if (!id) continue;
 
 		if (id.startsWith('query_')) {
+			const querySectionType = 'query';
 			const name = (document.getElementById(id + '_name') || {}).value || '';
 			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
 			let expanded = true;
 			try {
 				expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[id] === false);
+			} catch { /* ignore */ }
+			let resultsVisible = true;
+			try {
+				resultsVisible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
 			} catch { /* ignore */ }
 			let clusterUrl = '';
 			try {
@@ -455,20 +487,38 @@ function getKqlxState() {
 			const cacheEnabled = !!((document.getElementById(id + '_cache_enabled') || {}).checked);
 			const cacheValue = parseInt(((document.getElementById(id + '_cache_value') || {}).value || '1'), 10) || 1;
 			const cacheUnit = (document.getElementById(id + '_cache_unit') || {}).value || 'days';
+			let copilotChatVisible;
+			let copilotChatWidthPx;
+			try {
+				if (typeof window.__kustoGetCopilotChatVisible === 'function') {
+					copilotChatVisible = !!window.__kustoGetCopilotChatVisible(id);
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoGetCopilotChatWidthPx === 'function') {
+					const w = window.__kustoGetCopilotChatWidthPx(id);
+					if (typeof w === 'number' && Number.isFinite(w)) {
+						copilotChatWidthPx = w;
+					}
+				}
+			} catch { /* ignore */ }
 			sections.push({
-				type: 'query',
+				type: querySectionType,
 				name,
 				clusterUrl,
 				database,
 				query,
 				expanded,
+				resultsVisible,
 				...(resultJson ? { resultJson } : {}),
 				runMode,
 				cacheEnabled,
 				cacheValue,
 				cacheUnit,
 				editorHeightPx: __kustoGetWrapperHeightPx(id, '_query_editor'),
-				resultsHeightPx: __kustoGetQueryResultsOutputHeightPx(id)
+				resultsHeightPx: __kustoGetQueryResultsOutputHeightPx(id),
+				...(typeof copilotChatVisible === 'boolean' ? { copilotChatVisible } : {}),
+				...(typeof copilotChatWidthPx === 'number' ? { copilotChatWidthPx } : {})
 			});
 			continue;
 		}
@@ -763,7 +813,8 @@ function applyKqlxState(state) {
 		};
 		for (const section of sections) {
 			const t = section && section.type ? String(section.type) : '';
-			if (t === 'query') {
+			if (t === 'query' || t === 'copilotQuery') {
+				const isLegacyCopilotQuerySection = t === 'copilotQuery';
 				const boxId = addQueryBox({
 					id: (section.id ? String(section.id) : undefined),
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true
@@ -860,8 +911,57 @@ function applyKqlxState(state) {
 					if (cu) cu.value = String(section.cacheUnit || 'days');
 					try { toggleCacheControls(boxId); } catch { /* ignore */ }
 				} catch { /* ignore */ }
+				// Restore per-query results visibility (show/hide results toggle).
+				try {
+					if (typeof section.resultsVisible === 'boolean') {
+						if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+							window.__kustoResultsVisibleByBoxId = {};
+						}
+						window.__kustoResultsVisibleByBoxId[boxId] = !!section.resultsVisible;
+						try { __kustoUpdateQueryResultsToggleButton && __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
+						try { __kustoApplyResultsVisibility && __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+				try {
+					let desiredVisible;
+					if (typeof section.copilotChatVisible === 'boolean') {
+						desiredVisible = !!section.copilotChatVisible;
+					} else if (isLegacyCopilotQuerySection) {
+						// Back-compat: legacy copilotQuery sections always had the chat shown.
+						desiredVisible = true;
+					}
+					if (typeof desiredVisible === 'boolean' && typeof window.__kustoSetCopilotChatVisible === 'function') {
+						window.__kustoSetCopilotChatVisible(boxId, desiredVisible);
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof window.__kustoSetCopilotChatWidthPx === 'function' && typeof section.copilotChatWidthPx === 'number') {
+						window.__kustoSetCopilotChatWidthPx(boxId, section.copilotChatWidthPx);
+					}
+				} catch { /* ignore */ }
+				// Monaco editor may initialize after restore; remember desired wrapper height for initQueryEditor.
+				try {
+					if (typeof section.editorHeightPx === 'number' && Number.isFinite(section.editorHeightPx) && section.editorHeightPx > 0) {
+						if (!window.__kustoPendingWrapperHeightPxByBoxId) window.__kustoPendingWrapperHeightPxByBoxId = {};
+						window.__kustoPendingWrapperHeightPxByBoxId[boxId] = section.editorHeightPx;
+					}
+				} catch { /* ignore */ }
+				// Apply persisted heights after any Copilot chat installation/reparenting.
 				try { __kustoSetWrapperHeightPx(boxId, '_query_editor', section.editorHeightPx); } catch { /* ignore */ }
 				try { __kustoSetQueryResultsOutputHeightPx(boxId, section.resultsHeightPx); } catch { /* ignore */ }
+				// Re-apply on next tick to avoid any late layout/resize observers overriding restored sizes.
+				try {
+					setTimeout(() => {
+						try { __kustoSetWrapperHeightPx(boxId, '_query_editor', section.editorHeightPx); } catch { /* ignore */ }
+						try { __kustoSetQueryResultsOutputHeightPx(boxId, section.resultsHeightPx); } catch { /* ignore */ }
+						try {
+							const editor = (window.queryEditors && window.queryEditors[boxId]) ? window.queryEditors[boxId] : null;
+							if (editor && typeof editor.layout === 'function') {
+								editor.layout();
+							}
+						} catch { /* ignore */ }
+					}, 0);
+				} catch { /* ignore */ }
 				continue;
 			}
 

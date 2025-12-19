@@ -522,6 +522,18 @@
 		} catch { /* ignore */ }
 
 		btnText.textContent = selectedLabel || placeholderText || 'Select...';
+		// Tooltip shows current selection (useful when label is truncated).
+		try {
+			btn.title = selectedLabel || '';
+		} catch { /* ignore */ }
+
+		const showLabelTooltips = (() => {
+			try {
+				return !!(wrapper.classList && wrapper.classList.contains('kusto-dropdown-tooltip-label'));
+			} catch {
+				return false;
+			}
+		})();
 
 		// Rebuild menu items from options.
 		const items = [];
@@ -535,9 +547,13 @@
 				if (!val && o.disabled) {
 					continue;
 				}
+				const safeLabel = label || val;
+				const mainHtml = showLabelTooltips
+					? ('<span class="kusto-dropdown-item-label" title="' + escAttr(safeLabel) + '">' + escAttr(safeLabel) + '</span>')
+					: escAttr(safeLabel);
 				items.push({
 					key: encodeURIComponent(val),
-					html: escAttr(label || val),
+					html: mainHtml,
 					ariaLabel: label ? 'Select ' + label : 'Select',
 					disabled: !!o.disabled,
 					selected: !!o.selected
