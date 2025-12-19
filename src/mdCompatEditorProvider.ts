@@ -73,7 +73,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
-		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, hideFooterControls: true });
 
 		// Inform the webview it's operating in Markdown compatibility mode.
 		try {

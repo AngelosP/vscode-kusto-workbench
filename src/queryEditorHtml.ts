@@ -3,11 +3,21 @@ import * as vscode from 'vscode';
 export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
-	context: vscode.ExtensionContext
+	context: vscode.ExtensionContext,
+	options?: { hideFooterControls?: boolean }
 ): Promise<string> {
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.html');
 	const templateBytes = await vscode.workspace.fs.readFile(templateUri);
-	const template = new TextDecoder('utf-8').decode(templateBytes);
+	let template = new TextDecoder('utf-8').decode(templateBytes);
+
+	// For certain modes (e.g. .md compatibility mode), we want to avoid rendering footer UI
+	// (Add Section buttons + feedback link) entirely so it doesn't take up layout/scroll space.
+	if (options?.hideFooterControls) {
+		// Remove the "Add sections" controls block.
+		template = template.replace(/\s*<div class="add-controls"[\s\S]*?<\/div>\s*/m, '\n');
+		// Remove the feedback link block.
+		template = template.replace(/\s*<div class="repo-issues-link"[\s\S]*?<\/div>\s*/m, '\n');
+	}
 
 	const cacheBuster = `${context.extension.packageJSON?.version ?? 'dev'}-${Date.now()}`;
 	const withCacheBuster = (uri: string) => {

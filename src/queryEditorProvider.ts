@@ -268,7 +268,7 @@ export class QueryEditorProvider {
 
 	async initializeWebviewPanel(
 		panel: vscode.WebviewPanel,
-		options?: { registerMessageHandler?: boolean }
+		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean }
 	): Promise<void> {
 		this.panel = panel;
 		try {
@@ -278,7 +278,9 @@ export class QueryEditorProvider {
 		} catch {
 			// ignore
 		}
-		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context);
+		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context, {
+			hideFooterControls: !!options?.hideFooterControls
+		});
 
 		const shouldRegisterMessageHandler = options?.registerMessageHandler !== false;
 		if (shouldRegisterMessageHandler) {
