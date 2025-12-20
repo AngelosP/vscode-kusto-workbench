@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+## [0.1.5] - 2025-12-20
+
+* Version bump and packaging for the v0.1.5 release.
+
 ## [0.1.4]
 
 * Reset database dropdown to an empty placeholder on invalid/unreachable cluster addresses (e.g., ENOTFOUND).

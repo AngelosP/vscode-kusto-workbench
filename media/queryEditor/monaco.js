@@ -5202,6 +5202,141 @@ function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
 	return outLines.join('\n');
 }
 
+function __kustoIsElementVisibleForSuggest(el) {
+	try {
+		if (!el) return false;
+		// Most Monaco builds keep `aria-hidden` in sync.
+		try {
+			const ariaHidden = String((el.getAttribute && el.getAttribute('aria-hidden')) || '').toLowerCase();
+			if (ariaHidden === 'true') return false;
+		} catch { /* ignore */ }
+		try {
+			const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(el) : null;
+			if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) return false;
+		} catch { /* ignore */ }
+		try {
+			if (el.getClientRects && el.getClientRects().length === 0) return false;
+		} catch { /* ignore */ }
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoFindSuggestWidgetForEditor(ed, opts) {
+	try {
+		const options = opts || {};
+		const requireVisible = options.requireVisible !== false;
+		const maxDistancePx = (typeof options.maxDistancePx === 'number') ? options.maxDistancePx : 320;
+
+		const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
+		const doc = (root && root.ownerDocument) ? root.ownerDocument : (typeof document !== 'undefined' ? document : null);
+		if (!doc || typeof doc.querySelectorAll !== 'function') return null;
+
+		// Compute a client point near the caret for "which widget is mine" selection.
+		let anchorX = 0;
+		let anchorY = 0;
+		try {
+			const r = root && root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+			anchorX = r ? (r.left + Math.max(0, (r.width || 0) / 2)) : 0;
+			anchorY = r ? (r.top + Math.max(0, (r.height || 0) / 2)) : 0;
+			const pos = (ed && typeof ed.getPosition === 'function') ? ed.getPosition() : null;
+			const rel = (pos && typeof ed.getScrolledVisiblePosition === 'function') ? ed.getScrolledVisiblePosition(pos) : null;
+			if (r && rel && typeof rel.left === 'number' && typeof rel.top === 'number') {
+				anchorX = r.left + rel.left + 8;
+				anchorY = r.top + rel.top + (typeof rel.height === 'number' ? rel.height : 0) + 2;
+			}
+		} catch { /* ignore */ }
+
+		const widgets = doc.querySelectorAll('.suggest-widget');
+		if (!widgets || !widgets.length) return null;
+		let best = null;
+		let bestDist2 = Infinity;
+		for (const w of widgets) {
+			if (!w || !w.getBoundingClientRect) continue;
+			if (requireVisible && !__kustoIsElementVisibleForSuggest(w)) continue;
+			const rect = w.getBoundingClientRect();
+			// distance from point to rect (0 if inside)
+			const dx = (anchorX < rect.left) ? (rect.left - anchorX) : (anchorX > rect.right) ? (anchorX - rect.right) : 0;
+			const dy = (anchorY < rect.top) ? (rect.top - anchorY) : (anchorY > rect.bottom) ? (anchorY - rect.bottom) : 0;
+			const d2 = (dx * dx) + (dy * dy);
+			if (d2 < bestDist2) {
+				bestDist2 = d2;
+				best = w;
+			}
+		}
+		if (!best) return null;
+		if (isFinite(bestDist2) && maxDistancePx > 0) {
+			const max2 = maxDistancePx * maxDistancePx;
+			if (bestDist2 > max2) return null;
+		}
+		return best;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoRegisterGlobalSuggestMutationHandler(doc, handler) {
+	try {
+		if (!doc || !handler) return () => { };
+		const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+		if (!win) return () => { };
+
+		if (!win.__kustoSuggestMutationHub) {
+			const hub = {
+				handlers: new Set(),
+				mo: null,
+				scheduled: false,
+				schedule() {
+					if (hub.scheduled) return;
+					hub.scheduled = true;
+					const run = () => {
+						hub.scheduled = false;
+						try {
+							for (const h of Array.from(hub.handlers)) {
+								try { h(); } catch { /* ignore */ }
+							}
+						} catch { /* ignore */ }
+					};
+					try {
+						requestAnimationFrame(run);
+					} catch {
+						setTimeout(run, 0);
+					}
+				}
+			};
+			try {
+				if (typeof MutationObserver !== 'undefined' && doc.body) {
+					hub.mo = new MutationObserver(() => hub.schedule());
+					hub.mo.observe(doc.body, {
+						subtree: true,
+						childList: true,
+						attributes: true,
+						attributeFilter: ['aria-hidden', 'class', 'style']
+					});
+				}
+			} catch { hub.mo = null; }
+			win.__kustoSuggestMutationHub = hub;
+		}
+
+		const hub = win.__kustoSuggestMutationHub;
+		try { hub.handlers.add(handler); } catch { /* ignore */ }
+		try { hub.schedule(); } catch { /* ignore */ }
+
+		return () => {
+			try { hub.handlers.delete(handler); } catch { /* ignore */ }
+			try {
+				if (hub.handlers.size === 0 && hub.mo) {
+					hub.mo.disconnect();
+					hub.mo = null;
+				}
+			} catch { /* ignore */ }
+		};
+	} catch {
+		return () => { };
+	}
+}
+
 function __kustoInstallSmartSuggestWidgetSizing(editor) {
 	try {
 		if (!editor) return () => { };
@@ -5230,57 +5365,129 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 
 			// Keep existing call sites safe, but intentionally no-op.
 			try { editor.__kustoScheduleSuggestClamp = () => { }; } catch { /* ignore */ }
+			// IMPORTANT: keep existing call sites safe, but prevent preselect from being
+			// retriggered on arrow/cursor navigation.
+			try { editor.__kustoScheduleSuggestPreselect = () => { }; } catch { /* ignore */ }
 
 			let didPreselectThisOpen = false;
 			let lastVisible = false;
 			let preselectScheduled = false;
+			let preselectAttemptsRemaining = 0;
+			let targetWordAtOpen = '';
 
-			const schedulePreselectOnce = () => {
+			const getWordAtCursor = () => {
+				try {
+					const model = editor.getModel && editor.getModel();
+					const pos = (typeof editor.getPosition === 'function') ? editor.getPosition() : null;
+					if (!model || !pos || typeof model.getWordAtPosition !== 'function') return '';
+					const readWordAt = (p) => {
+						try {
+							const w = model.getWordAtPosition(p);
+							const word = w && typeof w.word === 'string' ? w.word : '';
+							return String(word || '').trim();
+						} catch {
+							return '';
+						}
+					};
+					// Normal case: caret is inside a word.
+					let word = readWordAt(pos);
+					if (word) return word;
+
+					// Edge case: caret is at the *start* of a word.
+					// Monaco can treat the caret as "between" tokens and return no word.
+					try {
+						if (typeof model.getLineContent === 'function') {
+							const line = String(model.getLineContent(pos.lineNumber) || '');
+							const idx = Math.max(0, (Number(pos.column) || 1) - 1);
+							const chRight = (idx >= 0 && idx < line.length) ? line[idx] : '';
+							if (chRight && /[A-Za-z0-9_]/.test(chRight)) {
+								word = readWordAt({ lineNumber: pos.lineNumber, column: (Number(pos.column) || 1) + 1 });
+								if (word) return word;
+							}
+
+							// Robust fallback: scan the actual line text for an identifier run
+							// under or adjacent to the caret.
+							const isWordCh = (c) => /[A-Za-z0-9_]/.test(String(c || ''));
+							let scanIdx = idx;
+							if (!isWordCh(line[scanIdx]) && scanIdx > 0 && isWordCh(line[scanIdx - 1])) {
+								scanIdx = scanIdx - 1;
+							}
+							if (isWordCh(line[scanIdx])) {
+								let start = scanIdx;
+								let end = scanIdx;
+								while (start > 0 && isWordCh(line[start - 1])) start--;
+								while (end + 1 < line.length && isWordCh(line[end + 1])) end++;
+								const s = line.slice(start, end + 1);
+								word = String(s || '').trim();
+								if (word) return word;
+							}
+						}
+					} catch { /* ignore */ }
+
+					return '';
+				} catch {
+					return '';
+				}
+			};
+
+			const tryPreselectNow = () => {
+				try {
+					if (didPreselectThisOpen) return;
+					if (typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') {
+						didPreselectThisOpen = true;
+						return;
+					}
+					const did = !!editor.__kustoPreselectExactWordInSuggestIfPresent(targetWordAtOpen);
+					if (did) {
+						didPreselectThisOpen = true;
+						return;
+					}
+					if (preselectAttemptsRemaining > 0) {
+						preselectAttemptsRemaining--;
+						schedulePreselectAttempt();
+						return;
+					}
+					didPreselectThisOpen = true;
+				} catch {
+					didPreselectThisOpen = true;
+				}
+			};
+
+			const schedulePreselectAttempt = () => {
 				try {
 					if (didPreselectThisOpen) return;
 					if (preselectScheduled) return;
 					preselectScheduled = true;
 					requestAnimationFrame(() => {
 						preselectScheduled = false;
-						try {
-							if (didPreselectThisOpen) return;
-							if (typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
-							editor.__kustoPreselectExactWordInSuggestIfPresent();
-						} catch { /* ignore */ }
-						didPreselectThisOpen = true;
+						tryPreselectNow();
 					});
 				} catch {
 					preselectScheduled = false;
 					setTimeout(() => {
-						try {
-							preselectScheduled = false;
-							if (didPreselectThisOpen) return;
-							if (typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
-							editor.__kustoPreselectExactWordInSuggestIfPresent();
-						} catch { /* ignore */ }
-						didPreselectThisOpen = true;
+						preselectScheduled = false;
+						tryPreselectNow();
 					}, 0);
 				}
 			};
 
-			try { editor.__kustoScheduleSuggestPreselect = schedulePreselectOnce; } catch { /* ignore */ }
-
 			const checkSuggestVisibilityTransition = () => {
 				try {
-					const root = getEditorDomMinimal();
-					if (!root || typeof root.querySelector !== 'function') return;
-					const widget = root.querySelector('.suggest-widget');
-					if (!widget || typeof widget.getAttribute !== 'function') return;
-					const ariaHidden = String(widget.getAttribute('aria-hidden') || '').toLowerCase();
-					const visible = ariaHidden !== 'true';
+					const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: false, maxDistancePx: 320 });
+					let visible = !!(widget && __kustoIsElementVisibleForSuggest(widget));
 					if (!visible) {
 						lastVisible = false;
 						didPreselectThisOpen = false;
+						targetWordAtOpen = '';
+						preselectAttemptsRemaining = 0;
 						return;
 					}
 					if (!lastVisible) {
 						lastVisible = true;
-						schedulePreselectOnce();
+						targetWordAtOpen = getWordAtCursor();
+						// Allow a few frames for async suggest providers to populate rows.
+						preselectAttemptsRemaining = 8;
+						schedulePreselectAttempt();
 					}
 				} catch { /* ignore */ }
 			};
@@ -5306,14 +5513,14 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
 
 			let mo = null;
+			let unregister = null;
 			try {
 				const root = getEditorDomMinimal();
-				if (root && typeof MutationObserver !== 'undefined') {
-					mo = new MutationObserver(() => checkSuggestVisibilityTransition());
-					mo.observe(root, { subtree: true, attributes: true, attributeFilter: ['aria-hidden'] });
-				}
+				const doc = (root && root.ownerDocument) ? root.ownerDocument : (typeof document !== 'undefined' ? document : null);
+				unregister = __kustoRegisterGlobalSuggestMutationHandler(doc, checkSuggestVisibilityTransition);
 			} catch {
 				mo = null;
+				unregister = null;
 			}
 
 			try { checkSuggestVisibilityTransition(); } catch { /* ignore */ }
@@ -5321,6 +5528,8 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			const dispose = () => {
 				try { if (mo) mo.disconnect(); } catch { /* ignore */ }
 				try { mo = null; } catch { /* ignore */ }
+				try { if (typeof unregister === 'function') unregister(); } catch { /* ignore */ }
+				try { unregister = null; } catch { /* ignore */ }
 				try {
 					for (const d of disposables) {
 						try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
@@ -6758,22 +6967,15 @@ function initQueryEditor(boxId) {
 					// ignore
 				}
 
-				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
-				if (!root || typeof root.querySelector !== 'function') {
-					return;
-				}
-				const widget = root.querySelector('.suggest-widget');
-				if (!widget) {
-					return;
-				}
+				const widget = __kustoFindSuggestWidgetForEditor(ed, { requireVisible: true, maxDistancePx: 320 });
+				if (!widget) return;
 				// IMPORTANT:
 				// Don't hide merely because rows haven't rendered yet.
 				// Monaco can take a tick (or longer with async providers) to populate the list.
 				const text = String(widget.textContent || '').toLowerCase();
 				const hasNoSuggestionsText = text.includes('no suggestions');
 				const hasRows = !!(widget.querySelector && widget.querySelector('.monaco-list-row'));
-				const ariaHidden = String(widget.getAttribute && widget.getAttribute('aria-hidden') || '').toLowerCase();
-				const isVisible = ariaHidden !== 'true';
+				const isVisible = __kustoIsElementVisibleForSuggest(widget);
 				const hasProgress = !!(widget.querySelector && widget.querySelector('.monaco-progress-container'));
 				const hasLoadingText = text.includes('loading');
 				if (isVisible && hasNoSuggestionsText && !hasRows && !hasProgress && !hasLoadingText) {
@@ -6788,7 +6990,7 @@ function initQueryEditor(boxId) {
 		// Enhancement (best-effort): when the suggest widget opens and the caret is inside a word,
 		// preselect the suggestion that exactly matches the current word (if present).
 		// This is intentionally defensive: if Monaco DOM/structure differs, it does nothing.
-		const __kustoPreselectExactWordInSuggestIfPresent = (ed, expectedModelVersionId) => {
+		const __kustoPreselectExactWordInSuggestIfPresent = (ed, expectedModelVersionId, forcedWord) => {
 			try {
 				if (!ed) return;
 				try {
@@ -6801,11 +7003,16 @@ function initQueryEditor(boxId) {
 					}
 				} catch { /* ignore */ }
 
-				const model = ed.getModel && ed.getModel();
-				const pos = typeof ed.getPosition === 'function' ? ed.getPosition() : null;
-				if (!model || !pos || typeof model.getWordAtPosition !== 'function') return;
-				const w = model.getWordAtPosition(pos);
-				const currentWord = w && typeof w.word === 'string' ? w.word : '';
+				let currentWord = '';
+				if (typeof forcedWord === 'string' && forcedWord.trim()) {
+					currentWord = forcedWord;
+				} else {
+					const model = ed.getModel && ed.getModel();
+					const pos = typeof ed.getPosition === 'function' ? ed.getPosition() : null;
+					if (!model || !pos || typeof model.getWordAtPosition !== 'function') return;
+					const w = model.getWordAtPosition(pos);
+					currentWord = w && typeof w.word === 'string' ? w.word : '';
+				}
 				if (!currentWord || !String(currentWord).trim()) return;
 				const normalize = (s) => {
 					try {
@@ -6823,12 +7030,8 @@ function initQueryEditor(boxId) {
 				if (!target) return;
 				const targetLower = target.toLowerCase();
 
-				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
-				if (!root || typeof root.querySelector !== 'function') return;
-				const widget = root.querySelector('.suggest-widget');
+				const widget = __kustoFindSuggestWidgetForEditor(ed, { requireVisible: true, maxDistancePx: 320 });
 				if (!widget || typeof widget.querySelectorAll !== 'function') return;
-				const ariaHidden = String((widget.getAttribute && widget.getAttribute('aria-hidden')) || '').toLowerCase();
-				if (ariaHidden === 'true') return;
 
 				const rows = widget.querySelectorAll('.monaco-list-row');
 				if (!rows || !rows.length) return;
@@ -6993,7 +7196,6 @@ function initQueryEditor(boxId) {
 					try {
 						ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
 						try { if (typeof ed.__kustoScheduleSuggestClamp === 'function') ed.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
-						try { if (typeof ed.__kustoScheduleSuggestPreselect === 'function') ed.__kustoScheduleSuggestPreselect(); } catch { /* ignore */ }
 					} catch { /* ignore */ }
 				};
 				if (shouldDeferTrigger) {
@@ -7015,11 +7217,7 @@ function initQueryEditor(boxId) {
 				// Use longer delays and only hide if the model didn't change.
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 1200);
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 2500);
-				// Best-effort preselect is now driven by the suggest widget observer (fires when rows populate).
-				// Keep a single quick attempt for cases where the list is already populated.
-				setTimeout(() => {
-					try { __kustoPreselectExactWordInSuggestIfPresent(ed, versionId); } catch { /* ignore */ }
-				}, 0);
+				// Best-effort preselect is driven by the suggest widget visibility observer (one-shot per open).
 			} catch {
 				// ignore
 			}
@@ -7027,18 +7225,22 @@ function initQueryEditor(boxId) {
 
 		// Expose the preselect helper so the suggest widget sizing/visibility observer can call it.
 		try {
-			editor.__kustoPreselectExactWordInSuggestIfPresent = () => {
+			editor.__kustoPreselectExactWordInSuggestIfPresent = (forcedWord) => {
 				try {
 					// Cache the current target word (best-effort) so callers can avoid redundant focus changes.
 					try {
-						const model = editor.getModel && editor.getModel();
-						const pos = typeof editor.getPosition === 'function' ? editor.getPosition() : null;
-						if (model && pos && typeof model.getWordAtPosition === 'function') {
-							const w = model.getWordAtPosition(pos);
-							const currentWord = w && typeof w.word === 'string' ? w.word : '';
-							const t = String(currentWord || '').trim();
-							if (t) {
-								editor.__kustoLastSuggestPreselectTargetLower = t.toLowerCase();
+						if (typeof forcedWord === 'string' && forcedWord.trim()) {
+							editor.__kustoLastSuggestPreselectTargetLower = forcedWord.trim().toLowerCase();
+						} else {
+							const model = editor.getModel && editor.getModel();
+							const pos = typeof editor.getPosition === 'function' ? editor.getPosition() : null;
+							if (model && pos && typeof model.getWordAtPosition === 'function') {
+								const w = model.getWordAtPosition(pos);
+								const currentWord = w && typeof w.word === 'string' ? w.word : '';
+								const t = String(currentWord || '').trim();
+								if (t) {
+									editor.__kustoLastSuggestPreselectTargetLower = t.toLowerCase();
+								}
 							}
 						}
 					} catch { /* ignore */ }
@@ -7048,7 +7250,7 @@ function initQueryEditor(boxId) {
 					const expected = (typeof editor.__kustoLastSuggestTriggerModelVersionId === 'number')
 						? editor.__kustoLastSuggestTriggerModelVersionId
 						: (typeof vid === 'number' ? vid : null);
-					return __kustoPreselectExactWordInSuggestIfPresent(editor, expected);
+					return __kustoPreselectExactWordInSuggestIfPresent(editor, expected, forcedWord);
 				} catch {
 					return false;
 				}
