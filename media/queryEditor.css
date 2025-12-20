@@ -3177,8 +3177,7 @@
 
 		.kusto-filter-values-search {
 			flex: 1;
-			min-width: 220px;
-			max-width: 420px;
+			min-width: 50px;
 		}
 
 		.kusto-filter-mini-btn {
