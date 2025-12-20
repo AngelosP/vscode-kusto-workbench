@@ -1349,7 +1349,7 @@ export class QueryEditorProvider {
 						// Scenario #2: Two-layer retry logic.
 						// - Keep original query unchanged.
 						// - Ensure/reuse comparison editor and run execution retries (up to 6) for the comparison query.
-						// - After a successful execution, wait for the comparison summary. If mismatch, ask Copilot to try again (up to 3).
+						// - After a successful execution, stop. (We do not retry based on result mismatches.)
 						const originalQueryForCompare = currentQuery;
 						let candidate = improvedQuery;
 
@@ -1378,13 +1378,54 @@ export class QueryEditorProvider {
 							}
 						};
 
-						const maxMismatchAttempts = 3;
-						for (let mismatchAttempt = 1; mismatchAttempt <= maxMismatchAttempts; mismatchAttempt++) {
+						// Ensure comparison editor exists and has the latest candidate query.
+						comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
+						if (!comparisonBoxId) {
+							this.postMessage({
+								type: 'copilotWriteQueryDone',
+								boxId,
+								ok: false,
+								message: 'Failed to prepare comparison editor.'
+							} as any);
+							return;
+						}
+
+						// Clear any previously cached summary for this pair so we don't read stale state.
+						try {
+							this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
+						} catch {
+							// ignore
+						}
+
+						postStatus('Running original query…');
+						try {
+							await executeQueryAndPost(boxId, originalQueryForCompare, 'source');
+						} catch (error) {
+							this.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
+							try {
+								this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+							} catch {
+								// ignore
+							}
+							this.postMessage({
+								type: 'copilotWriteQueryDone',
+								boxId,
+								ok: false,
+								message: 'Query failed to execute.'
+							} as any);
+							return;
+						}
+
+						const maxExecAttempts = 6;
+						let executed = false;
+						let lastExecErrorText = '';
+						for (let execAttempt = 1; execAttempt <= maxExecAttempts; execAttempt++) {
 							if (!isActive() || cts.token.isCancellationRequested) {
 								throw new Error('Copilot write-query canceled');
 							}
 
-							// Ensure comparison editor exists and has the latest candidate query.
+							postStatus(`Running comparison query (attempt ${execAttempt}/${maxExecAttempts})…`);
+							// Re-ensure in case the comparison box was closed/recreated.
 							comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 							if (!comparisonBoxId) {
 								this.postMessage({
@@ -1395,201 +1436,92 @@ export class QueryEditorProvider {
 								} as any);
 								return;
 							}
-
-							// Clear any previously cached summary for this pair so we don't read stale state.
 							try {
 								this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
 							} catch {
 								// ignore
 							}
 
-							postStatus('Running original query…');
 							try {
-								await executeQueryAndPost(boxId, originalQueryForCompare, 'source');
+								await executeQueryAndPost(comparisonBoxId, candidate, 'comparison');
+								executed = true;
+								break;
 							} catch (error) {
-								this.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
+								this.logQueryExecutionError(error, connection, database, comparisonBoxId, candidate);
+								lastExecErrorText = this.formatQueryExecutionErrorForUser(error, connection, database);
 								try {
-									this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+									this.postMessage({
+										type: 'queryError',
+										error: 'Query failed to execute.',
+										boxId: comparisonBoxId
+									} as any);
 								} catch {
 									// ignore
 								}
-								this.postMessage({
-									type: 'copilotWriteQueryDone',
-									boxId,
-									ok: false,
-									message: 'Query failed to execute.'
-								} as any);
-								return;
-							}
-
-							const maxExecAttempts = 6;
-							let executed = false;
-							let lastExecErrorText = '';
-							for (let execAttempt = 1; execAttempt <= maxExecAttempts; execAttempt++) {
-								if (!isActive() || cts.token.isCancellationRequested) {
-									throw new Error('Copilot write-query canceled');
-								}
-
-								postStatus(`Running comparison query (attempt ${execAttempt}/${maxExecAttempts})…`);
-								// Re-ensure in case the comparison box was closed/recreated.
-								comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
-								if (!comparisonBoxId) {
+								if (execAttempt >= maxExecAttempts) {
 									this.postMessage({
 										type: 'copilotWriteQueryDone',
 										boxId,
 										ok: false,
-										message: 'Failed to prepare comparison editor.'
+										message: 'Query failed to execute.'
 									} as any);
 									return;
 								}
-								try {
-									this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
-								} catch {
-									// ignore
-								}
 
-								try {
-									await executeQueryAndPost(comparisonBoxId, candidate, 'comparison');
-									executed = true;
-									break;
-								} catch (error) {
-									this.logQueryExecutionError(error, connection, database, comparisonBoxId, candidate);
-									lastExecErrorText = this.formatQueryExecutionErrorForUser(error, connection, database);
-									try {
-										this.postMessage({
-											type: 'queryError',
-											error: 'Query failed to execute.',
-											boxId: comparisonBoxId
-										} as any);
-									} catch {
-										// ignore
+								postStatus('Query failed to execute. Asking Copilot to try again…');
+								const fixPrompt =
+									'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
+									'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
+									`Cluster: ${String(connection.clusterUrl || '')}\n` +
+									`Database: ${database}\n\n` +
+									'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
+									'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
+									'Execution error:\n' + lastExecErrorText + '\n\n' +
+									'Hard constraints:\n' +
+										'- Return ONLY a single @tool call and nothing else.\n' +
+										'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
+
+								const fixResponse = await model.sendRequest(
+									[vscode.LanguageModelChatMessage.User(fixPrompt)],
+									{},
+									cts.token
+								);
+								let fixText = '';
+								for await (const fragment of fixResponse.text) {
+									if (!isActive() || cts.token.isCancellationRequested) {
+										throw new Error('Copilot write-query canceled');
 									}
-									if (execAttempt >= maxExecAttempts) {
-										this.postMessage({
-											type: 'copilotWriteQueryDone',
-											boxId,
-											ok: false,
-											message: 'Query failed to execute.'
-										} as any);
-										return;
-									}
-
-									postStatus('Query failed to execute. Asking Copilot to try again…');
-										const fixPrompt =
-										'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
-										'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
-										`Cluster: ${String(connection.clusterUrl || '')}\n` +
-										`Database: ${database}\n\n` +
-										'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
-										'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
-										'Execution error:\n' + lastExecErrorText + '\n\n' +
-										'Hard constraints:\n' +
-											'- Return ONLY a single @tool call and nothing else.\n' +
-											'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
-
-									const fixResponse = await model.sendRequest(
-										[vscode.LanguageModelChatMessage.User(fixPrompt)],
-										{},
-										cts.token
-									);
-									let fixText = '';
-									for await (const fragment of fixResponse.text) {
-										if (!isActive() || cts.token.isCancellationRequested) {
-											throw new Error('Copilot write-query canceled');
-										}
-										fixText += fragment;
-									}
-											const fixToolCall = this.tryParseCopilotToolCall(fixText);
-											const fixedRaw = fixToolCall?.tool === 'respond_to_query_performance_optimization_request'
-												? this.extractQueryArgument(fixToolCall.args)
-												: '';
-											const fixed = this.extractKustoCodeBlock(fixedRaw || fixText).trim();
-											if (fixed) {
-												candidate = fixed;
-											}
+									fixText += fragment;
 								}
-							}
-
-							if (!executed) {
-								this.postMessage({
-									type: 'copilotWriteQueryDone',
-									boxId,
-									ok: false,
-									message: 'Query failed to execute.'
-								} as any);
-								return;
-							}
-
-							postStatus('Checking whether results match…');
-							let summary: { dataMatches: boolean; headersMatch: boolean };
-							try {
-								summary = await this.waitForComparisonSummary(boxId, comparisonBoxId, cts.token);
-							} catch {
-								this.postMessage({
-									type: 'copilotWriteQueryDone',
-									boxId,
-									ok: false,
-									message: 'Failed to verify whether results match.'
-								} as any);
-								return;
-							}
-
-							if (summary.dataMatches) {
-								this.postMessage({
-									type: 'copilotWriteQueryDone',
-									boxId,
-									ok: true,
-									message: summary.headersMatch
-										? 'Validated performance improvements. Review the comparison summary.'
-										: 'Validated performance improvements (warning: column headers differ). Review the comparison summary.'
-								} as any);
-								return;
-							}
-
-							if (mismatchAttempt >= maxMismatchAttempts) {
-								this.postMessage({
-									type: 'copilotWriteQueryDone',
-									boxId,
-									ok: false,
-									message: 'Results differ after multiple attempts.'
-								} as any);
-								return;
-							}
-
-							postStatus(`Results differ. Asking Copilot to try again (${mismatchAttempt}/${maxMismatchAttempts})…`);
-							const retryPrompt =
-								'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
-								'Task: Produce a new optimized query that returns EXACTLY the same results as the original query.\n' +
-								'The previous optimized query executed but returned different data.\n\n' +
-								`Cluster: ${String(connection.clusterUrl || '')}\n` +
-								`Database: ${database}\n\n` +
-								'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
-								'Previous optimized query (data mismatch):\n```kusto\n' + candidate + '\n```\n\n' +
-								'Hard constraints:\n' +
-								'- Return ONLY a single @tool call and nothing else.\n' +
-								'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
-
-							const retryResponse = await model.sendRequest(
-								[vscode.LanguageModelChatMessage.User(retryPrompt)],
-								{},
-								cts.token
-							);
-							let retryText = '';
-							for await (const fragment of retryResponse.text) {
-								if (!isActive() || cts.token.isCancellationRequested) {
-									throw new Error('Copilot write-query canceled');
+								const fixToolCall = this.tryParseCopilotToolCall(fixText);
+								const fixedRaw = fixToolCall?.tool === 'respond_to_query_performance_optimization_request'
+									? this.extractQueryArgument(fixToolCall.args)
+									: '';
+								const fixed = this.extractKustoCodeBlock(fixedRaw || fixText).trim();
+								if (fixed) {
+									candidate = fixed;
 								}
-								retryText += fragment;
-							}
-							const retryToolCall = this.tryParseCopilotToolCall(retryText);
-							const nextRaw = retryToolCall?.tool === 'respond_to_query_performance_optimization_request'
-								? this.extractQueryArgument(retryToolCall.args)
-								: '';
-							const next = this.extractKustoCodeBlock(nextRaw || retryText).trim();
-							if (next) {
-								candidate = next;
 							}
 						}
+
+						if (!executed) {
+							this.postMessage({
+								type: 'copilotWriteQueryDone',
+								boxId,
+								ok: false,
+								message: 'Query failed to execute.'
+							} as any);
+							return;
+						}
+
+						this.postMessage({
+							type: 'copilotWriteQueryDone',
+							boxId,
+							ok: true,
+							message:
+								'Optimized query has been provided, please check the results to make sure the same data is being returned. Keep in mind that count() and dcount() can return slightly different values by design, so we cannot expect a 100% match the entire time.'
+						} as any);
+						return;
 						return;
 					}
 
@@ -1645,6 +1577,8 @@ export class QueryEditorProvider {
 							const result = await promise;
 							if (isActive()) {
 								this.postMessage({ type: 'queryResult', result, boxId } as any);
+								// Ensure results are visible even if the user previously hid them.
+								this.postMessage({ type: 'ensureResultsVisible', boxId } as any);
 								this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
 								this.postMessage({
 									type: 'copilotWriteQueryDone',

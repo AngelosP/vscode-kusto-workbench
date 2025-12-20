@@ -206,7 +206,7 @@ function addQueryBox(options) {
 
 	const optimizeOrAcceptHtml = isComparison
 		? ('<button class="accept-optimizations-btn" id="' + id + '_accept_btn" onclick="acceptOptimizations(\'' + id + '\')" disabled ' +
-			'title="Run both queries to compare results. This will be enabled only when results match." aria-label="Accept Optimizations">Accept Optimizations</button>')
+			'title="Run both queries to compare results. This will be enabled when the optimized query has results." aria-label="Accept Optimizations">Accept Optimizations</button>')
 		: (
 			'<span class="optimize-inline" id="' + id + '_optimize_inline">' +
 				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\', null, { skipExecute: true })" ' +
@@ -1166,7 +1166,7 @@ function __kustoUpdateAcceptOptimizationsButton(comparisonBoxId, enabled, toolti
 		return;
 	}
 	btn.disabled = !enabled;
-	btn.title = tooltip || (enabled ? 'Accept Optimizations' : 'Accept Optimizations is enabled only when results match.');
+	btn.title = tooltip || (enabled ? 'Accept Optimizations' : 'Accept Optimizations is enabled when the optimized query has results.');
 	btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 }
 
@@ -2023,17 +2023,12 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 		</div>
 	`;
 	try {
-		if (dataMatches) {
-			__kustoUpdateAcceptOptimizationsButton(
-				comparisonBoxId,
-				true,
-				warningNeeded
-					? 'Data matches, but row/column ordering or header details differ. Accept optimizations with caution.'
-					: 'Results match. Accept optimizations.'
-			);
-		} else {
-			__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, false, 'Results differ. Accept optimizations is disabled.');
-		}
+		const acceptTooltip = dataMatches
+			? (warningNeeded
+				? 'Data matches, but row/column ordering or header details differ. Accept optimizations with caution.'
+				: 'Results match. Accept optimizations.')
+			: 'Results differ. Accept optimizations is enabled — review the diff before accepting.';
+		__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, true, acceptTooltip);
 	} catch { /* ignore */ }
 	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch { /* ignore */ }
 

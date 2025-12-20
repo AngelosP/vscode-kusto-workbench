@@ -1067,6 +1067,21 @@ window.addEventListener('message', async event => {
 				displayError('Cancelled');
 			}
 			break;
+		case 'ensureResultsVisible':
+			try {
+				const boxId = (message && message.boxId) ? String(message.boxId) : '';
+				if (boxId) {
+					// Prefer the canonical setter so the toggle button and wrapper stay in sync.
+					if (typeof __kustoSetResultsVisible === 'function') {
+						__kustoSetResultsVisible(boxId, true);
+					} else if (typeof __kustoEnsureResultsShownForTool === 'function') {
+						__kustoEnsureResultsShownForTool(boxId);
+					}
+				}
+			} catch {
+				// ignore
+			}
+			break;
 		case 'pythonResult':
 			try { if (typeof onPythonResult === 'function') onPythonResult(message); } catch { /* ignore */ }
 			break;

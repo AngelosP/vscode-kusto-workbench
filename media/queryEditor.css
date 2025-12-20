@@ -3614,6 +3614,11 @@
 			background: var(--vscode-editorGroupHeader-tabsBackground);
 		}
 
+		/* Push the close button to the far right of the header. */
+		.diff-view-header .diff-view-close {
+			margin-left: auto;
+		}
+
 		.diff-view-header h3 {
 			margin: 0;
 			font-size: 13px;
