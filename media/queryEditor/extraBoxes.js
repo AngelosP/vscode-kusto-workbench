@@ -1567,6 +1567,7 @@ function initPythonEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			fixedOverflowWidgets: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
 			fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),

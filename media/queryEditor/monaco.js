@@ -6366,6 +6366,10 @@ function initQueryEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			// Suggest (and other overflow widgets) can be mispositioned when Monaco is nested inside
+			// multiple stacked, scrollable containers (e.g. the 3rd query box on screen).
+			// Fixed overflow widgets use viewport-based geometry and are more reliable in VS Code webviews.
+			fixedOverflowWidgets: true,
 			// Monaco's built-in hover UI shows multiple stacked hover blocks (markers + providers)
 			// and an action bar ("View Problem") that isn't useful in our webview.
 			// We provide a single custom diagnostics tooltip instead.
