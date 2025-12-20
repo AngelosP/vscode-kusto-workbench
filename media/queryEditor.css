@@ -389,7 +389,7 @@
 			align-self: flex-start;
 			background: var(--vscode-editorWidget-background);
 			color: var(--vscode-foreground);
-			border-color: var(--vscode-editorWidget-border);
+			border: none;
 		}
 
 		.kusto-copilot-chat-input {
@@ -432,6 +432,32 @@
 			cursor: pointer;
 			white-space: nowrap;
 		}
+		.kusto-copilot-chat-send .kusto-copilot-chat-send-spinner {
+			display: none;
+			width: 14px;
+			height: 14px;
+			box-sizing: border-box;
+			border-radius: 999px;
+			border: 2px solid currentColor;
+			border-top-color: transparent;
+			animation: kusto-copilot-spin 0.9s linear infinite;
+		}
+		.kusto-copilot-chat-send.is-running {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+		}
+		.kusto-copilot-chat-send.is-running .kusto-copilot-chat-send-label {
+			display: none;
+		}
+		.kusto-copilot-chat-send.is-running .kusto-copilot-chat-send-spinner {
+			display: inline-block;
+		}
+		@keyframes kusto-copilot-spin {
+			0% { transform: rotate(0deg); }
+			100% { transform: rotate(360deg); }
+		}
 		.kusto-copilot-chat-send:disabled {
 			opacity: 0.6;
 			cursor: default;
@@ -453,16 +479,28 @@
 			color: var(--vscode-button-secondaryForeground);
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 0;
-			padding: 6px 10px;
+			width: 28px;
+			height: 28px;
+			padding: 0;
 			font-size: 12px;
 			cursor: pointer;
-			white-space: nowrap;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+			flex: 0 0 auto;
+		}
+		.kusto-copilot-chat-tools .codicon {
+			font-size: 16px;
+			line-height: 1;
 		}
 		.kusto-copilot-chat-tools:hover {
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 		.kusto-copilot-chat-tools.is-active {
-			background: var(--vscode-button-secondaryHoverBackground);
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
 		}
 		.kusto-copilot-chat-tools:disabled {
 			opacity: 0.6;
@@ -470,7 +508,7 @@
 		}
 
 		.kusto-copilot-tools-panel {
-			margin: 0 8px 8px;
+			margin: 8px 8px 0;
 			padding: 8px;
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 0;
@@ -512,8 +550,11 @@
 			font-size: 11px;
 			line-height: 1.25;
 		}
-		.kusto-copilot-chat-cancel:hover {
-			background: var(--vscode-button-secondaryHoverBackground);
+		.kusto-copilot-chat-cancel:hover:not(:disabled) {
+			background: var(--vscode-inputValidation-errorBackground);
+			color: var(--vscode-inputValidation-errorForeground);
+			border-color: var(--vscode-inputValidation-errorBorder);
+			opacity: 0.95;
 		}
 		.kusto-copilot-chat-cancel:disabled {
 			opacity: 0.6;
@@ -2406,6 +2447,10 @@
 			text-overflow: ellipsis;
 		}
 
+		td {
+			background: var(--vscode-editor-background);
+		}
+
 		th {
 			font-weight: 600;
 			background: var(--vscode-list-hoverBackground);
@@ -3988,6 +4033,21 @@
 			font-size: 12px;
 			padding-left: 4px;
 			color: var(--vscode-descriptionForeground);
+		}
+
+		.comparison-data-match {
+			color: var(--vscode-testing-iconPassed);
+		}
+
+		.comparison-data-diff {
+			color: var(--vscode-testing-iconFailed);
+		}
+
+		.comparison-warning-icon {
+			display: inline-block;
+			margin-left: 6px;
+			color: var(--vscode-notificationsWarningIcon-foreground);
+			cursor: help;
 		}
 
 

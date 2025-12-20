@@ -113,7 +113,17 @@ type IncomingWebviewMessage =
 	| { type: 'promptAddConnection'; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
-	| FetchControlCommandSyntaxMessage;
+	| FetchControlCommandSyntaxMessage
+	| { type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string }
+	| {
+			type: 'comparisonSummary';
+			sourceBoxId: string;
+			comparisonBoxId: string;
+			dataMatches: boolean;
+			headersMatch?: boolean;
+			rowOrderMatches?: boolean;
+			columnOrderMatches?: boolean;
+		};
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -125,6 +135,26 @@ export class QueryEditorProvider {
 	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
 	private readonly runningCopilotWriteQueryByBoxId = new Map<string, { cts: vscode.CancellationTokenSource; seq: number }>();
+	private readonly pendingComparisonEnsureByRequestId = new Map<
+		string,
+		{
+			resolve: (comparisonBoxId: string) => void;
+			reject: (error: Error) => void;
+			timer: ReturnType<typeof setTimeout>;
+		}
+	>();
+	private readonly latestComparisonSummaryByKey = new Map<
+		string,
+		{ dataMatches: boolean; headersMatch: boolean; timestamp: number }
+	>();
+	private readonly pendingComparisonSummaryByKey = new Map<
+		string,
+		Array<{
+			resolve: (summary: { dataMatches: boolean; headersMatch: boolean }) => void;
+			reject: (error: Error) => void;
+			timer: ReturnType<typeof setTimeout>;
+		}>
+	>();
 	private copilotWriteSeq = 0;
 	private queryRunSeq = 0;
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
@@ -410,6 +440,57 @@ export class QueryEditorProvider {
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
 		switch (message.type) {
+			case 'comparisonBoxEnsured':
+				try {
+					const requestId = String(message.requestId || '');
+					const comparisonBoxId = String(message.comparisonBoxId || '');
+					const pending = requestId ? this.pendingComparisonEnsureByRequestId.get(requestId) : undefined;
+					if (pending) {
+						try {
+							clearTimeout(pending.timer);
+						} catch {
+							// ignore
+						}
+						this.pendingComparisonEnsureByRequestId.delete(requestId);
+						pending.resolve(comparisonBoxId);
+					}
+				} catch {
+					// ignore
+				}
+				return;
+			case 'comparisonSummary':
+				try {
+					const sourceBoxId = String(message.sourceBoxId || '');
+					const comparisonBoxId = String(message.comparisonBoxId || '');
+					if (!sourceBoxId || !comparisonBoxId) {
+						return;
+					}
+					const key = `${sourceBoxId}::${comparisonBoxId}`;
+					const summary = {
+						dataMatches: !!message.dataMatches,
+						headersMatch: message.headersMatch == null ? true : !!message.headersMatch
+					};
+					this.latestComparisonSummaryByKey.set(key, { ...summary, timestamp: Date.now() });
+					const pending = this.pendingComparisonSummaryByKey.get(key);
+					if (pending && pending.length) {
+						this.pendingComparisonSummaryByKey.delete(key);
+						for (const w of pending) {
+							try {
+								clearTimeout(w.timer);
+							} catch {
+								// ignore
+							}
+							try {
+								w.resolve(summary);
+							} catch {
+								// ignore
+							}
+						}
+					}
+				} catch {
+					// ignore
+				}
+				return;
 			case 'fetchControlCommandSyntax':
 				await this.handleFetchControlCommandSyntax(message);
 				return;
@@ -554,6 +635,123 @@ export class QueryEditorProvider {
 		} catch {
 			return '';
 		}
+	}
+
+	private async ensureComparisonBoxInWebview(
+		sourceBoxId: string,
+		comparisonQuery: string,
+		token: vscode.CancellationToken
+	): Promise<string> {
+		if (!this.panel) {
+			throw new Error('Webview panel is not available');
+		}
+		const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+		return await new Promise<string>((resolve, reject) => {
+			if (token.isCancellationRequested) {
+				reject(new Error('Canceled'));
+				return;
+			}
+
+			const timer = setTimeout(() => {
+				try {
+					this.pendingComparisonEnsureByRequestId.delete(requestId);
+				} catch {
+					// ignore
+				}
+				reject(new Error('Timed out while preparing comparison editor'));
+			}, 20000);
+
+			this.pendingComparisonEnsureByRequestId.set(requestId, { resolve, reject, timer });
+
+			try {
+				this.postMessage({
+					type: 'ensureComparisonBox',
+					requestId,
+					boxId: sourceBoxId,
+					query: comparisonQuery
+				} as any);
+			} catch (e) {
+				try {
+					clearTimeout(timer);
+				} catch {
+					// ignore
+				}
+				this.pendingComparisonEnsureByRequestId.delete(requestId);
+				reject(e instanceof Error ? e : new Error(String(e)));
+				return;
+			}
+
+			try {
+				token.onCancellationRequested(() => {
+					const pending = this.pendingComparisonEnsureByRequestId.get(requestId);
+					if (!pending) {
+						return;
+					}
+					try {
+						clearTimeout(pending.timer);
+					} catch {
+						// ignore
+					}
+					this.pendingComparisonEnsureByRequestId.delete(requestId);
+					pending.reject(new Error('Canceled'));
+				});
+			} catch {
+				// ignore
+			}
+		});
+	}
+
+	private async waitForComparisonSummary(
+		sourceBoxId: string,
+		comparisonBoxId: string,
+		token: vscode.CancellationToken
+	): Promise<{ dataMatches: boolean; headersMatch: boolean }> {
+		const key = `${sourceBoxId}::${comparisonBoxId}`;
+		const existing = this.latestComparisonSummaryByKey.get(key);
+		if (existing) {
+			return { dataMatches: existing.dataMatches, headersMatch: existing.headersMatch };
+		}
+
+		return await new Promise<{ dataMatches: boolean; headersMatch: boolean }>((resolve, reject) => {
+			if (token.isCancellationRequested) {
+				reject(new Error('Canceled'));
+				return;
+			}
+
+			const timer = setTimeout(() => {
+				try {
+					const pending = this.pendingComparisonSummaryByKey.get(key) || [];
+					this.pendingComparisonSummaryByKey.set(
+						key,
+						pending.filter((p) => p.reject !== reject)
+					);
+					if ((this.pendingComparisonSummaryByKey.get(key) || []).length === 0) {
+						this.pendingComparisonSummaryByKey.delete(key);
+					}
+				} catch {
+					// ignore
+				}
+				reject(new Error('Timed out while waiting for comparison summary'));
+			}, 20000);
+
+			const entry = { resolve, reject, timer };
+			const pending = this.pendingComparisonSummaryByKey.get(key) || [];
+			pending.push(entry);
+			this.pendingComparisonSummaryByKey.set(key, pending);
+
+			try {
+				token.onCancellationRequested(() => {
+					try {
+						clearTimeout(timer);
+					} catch {
+						// ignore
+					}
+					reject(new Error('Canceled'));
+				});
+			} catch {
+				// ignore
+			}
+		});
 	}
 
 	private extractWithArgsFromSyntax(syntax: string): string[] {
@@ -967,7 +1165,6 @@ export class QueryEditorProvider {
 		};
 
 		try {
-			postStatus('Selecting Copilot model…');
 			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				this.postMessage({
@@ -996,7 +1193,7 @@ export class QueryEditorProvider {
 			} catch {
 				// ignore
 			}
-			postStatus(`Using model: ${this.formatCopilotModelLabel(model)}`);
+			// Avoid noisy model-selection/status messages in the chat UI.
 
 			const connection = this.findConnection(connectionId);
 			if (!connection) {
@@ -1043,17 +1240,11 @@ export class QueryEditorProvider {
 					);
 
 					generatedText = '';
-					let lastProgressUpdate = 0;
 					for await (const fragment of response.text) {
 						if (!isActive() || cts.token.isCancellationRequested) {
 							throw new Error('Copilot write-query canceled');
 						}
 						generatedText += fragment;
-						const now = Date.now();
-						if (now - lastProgressUpdate > 800) {
-							lastProgressUpdate = now;
-							postStatus(`Receiving response… (${generatedText.length} chars)`);
-						}
 					}
 
 					const toolCall = this.tryParseCopilotToolCall(generatedText);
@@ -1136,25 +1327,241 @@ export class QueryEditorProvider {
 							break;
 						}
 
-						postStatus('Creating performance comparison…');
-						try {
-							this.postMessage({
-								type: 'compareQueryPerformanceWithQuery',
-								boxId,
-								query: improvedQuery
-							} as any);
-						} catch {
-							// ignore
-						}
-						try {
+						// Scenario #2: Two-layer retry logic.
+						// - Keep original query unchanged.
+						// - Ensure/reuse comparison editor and run execution retries (up to 6) for the comparison query.
+						// - After a successful execution, wait for the comparison summary. If mismatch, ask Copilot to try again (up to 3).
+						const originalQueryForCompare = currentQuery;
+						let candidate = improvedQuery;
+
+						postStatus('Preparing comparison editor…');
+						let comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
+						if (!comparisonBoxId) {
 							this.postMessage({
 								type: 'copilotWriteQueryDone',
 								boxId,
-								ok: true,
-								message: 'Started performance comparison using the provided query.'
+								ok: false,
+								message: 'Failed to prepare comparison editor.'
 							} as any);
-						} catch {
-							// ignore
+							return;
+						}
+
+						const executeQueryAndPost = async (targetBoxId: string, queryText: string, cancelSuffix: string) => {
+							const queryWithMode = this.appendQueryMode(queryText, 'take100');
+							const cacheDirective = this.buildCacheDirective(true, 1, 'days');
+							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
+							const result = await this.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey).promise;
+							try {
+								this.postMessage({ type: 'queryResult', result, boxId: targetBoxId } as any);
+							} catch {
+								// ignore
+							}
+						};
+
+						const maxMismatchAttempts = 3;
+						for (let mismatchAttempt = 1; mismatchAttempt <= maxMismatchAttempts; mismatchAttempt++) {
+							if (!isActive() || cts.token.isCancellationRequested) {
+								throw new Error('Copilot write-query canceled');
+							}
+
+							// Ensure comparison editor exists and has the latest candidate query.
+							comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
+							if (!comparisonBoxId) {
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: false,
+									message: 'Failed to prepare comparison editor.'
+								} as any);
+								return;
+							}
+
+							// Clear any previously cached summary for this pair so we don't read stale state.
+							try {
+								this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
+							} catch {
+								// ignore
+							}
+
+							postStatus('Running original query…');
+							try {
+								await executeQueryAndPost(boxId, originalQueryForCompare, 'source');
+							} catch (error) {
+								this.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
+								try {
+									this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+								} catch {
+									// ignore
+								}
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: false,
+									message: 'Query failed to execute.'
+								} as any);
+								return;
+							}
+
+							const maxExecAttempts = 6;
+							let executed = false;
+							let lastExecErrorText = '';
+							for (let execAttempt = 1; execAttempt <= maxExecAttempts; execAttempt++) {
+								if (!isActive() || cts.token.isCancellationRequested) {
+									throw new Error('Copilot write-query canceled');
+								}
+
+								postStatus(`Running comparison query (attempt ${execAttempt}/${maxExecAttempts})…`);
+								// Re-ensure in case the comparison box was closed/recreated.
+								comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
+								if (!comparisonBoxId) {
+									this.postMessage({
+										type: 'copilotWriteQueryDone',
+										boxId,
+										ok: false,
+										message: 'Failed to prepare comparison editor.'
+									} as any);
+									return;
+								}
+								try {
+									this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
+								} catch {
+									// ignore
+								}
+
+								try {
+									await executeQueryAndPost(comparisonBoxId, candidate, 'comparison');
+									executed = true;
+									break;
+								} catch (error) {
+									this.logQueryExecutionError(error, connection, database, comparisonBoxId, candidate);
+									lastExecErrorText = this.formatQueryExecutionErrorForUser(error, connection, database);
+									try {
+										this.postMessage({
+											type: 'queryError',
+											error: 'Query failed to execute.',
+											boxId: comparisonBoxId
+										} as any);
+									} catch {
+										// ignore
+									}
+									if (execAttempt >= maxExecAttempts) {
+										this.postMessage({
+											type: 'copilotWriteQueryDone',
+											boxId,
+											ok: false,
+											message: 'Query failed to execute.'
+										} as any);
+										return;
+									}
+
+									postStatus('Query failed to execute. Asking Copilot to try again…');
+									const fixPrompt =
+										'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
+										'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
+										`Cluster: ${String(connection.clusterUrl || '')}\n` +
+										`Database: ${database}\n\n` +
+										'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
+										'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
+										'Execution error:\n' + lastExecErrorText + '\n\n' +
+										'Hard constraints:\n' +
+										'- Return ONLY the full query in a single ```kusto``` code block.\n' +
+										'- Do not include explanations or any other text.\n';
+
+									const fixResponse = await model.sendRequest(
+										[vscode.LanguageModelChatMessage.User(fixPrompt)],
+										{},
+										cts.token
+									);
+									let fixText = '';
+									for await (const fragment of fixResponse.text) {
+										if (!isActive() || cts.token.isCancellationRequested) {
+											throw new Error('Copilot write-query canceled');
+										}
+										fixText += fragment;
+									}
+									const fixed = this.extractKustoCodeBlock(fixText).trim();
+									if (fixed) {
+										candidate = fixed;
+									}
+								}
+							}
+
+							if (!executed) {
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: false,
+									message: 'Query failed to execute.'
+								} as any);
+								return;
+							}
+
+							postStatus('Checking whether results match…');
+							let summary: { dataMatches: boolean; headersMatch: boolean };
+							try {
+								summary = await this.waitForComparisonSummary(boxId, comparisonBoxId, cts.token);
+							} catch {
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: false,
+									message: 'Failed to verify whether results match.'
+								} as any);
+								return;
+							}
+
+							if (summary.dataMatches) {
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: true,
+									message: summary.headersMatch
+										? 'Validated performance improvements. Review the comparison summary.'
+										: 'Validated performance improvements (warning: column headers differ). Review the comparison summary.'
+								} as any);
+								return;
+							}
+
+							if (mismatchAttempt >= maxMismatchAttempts) {
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: false,
+									message: 'Results differ after multiple attempts.'
+								} as any);
+								return;
+							}
+
+							postStatus(`Results differ. Asking Copilot to try again (${mismatchAttempt}/${maxMismatchAttempts})…`);
+							const retryPrompt =
+								'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
+								'Task: Produce a new optimized query that returns EXACTLY the same results as the original query.\n' +
+								'The previous optimized query executed but returned different data.\n\n' +
+								`Cluster: ${String(connection.clusterUrl || '')}\n` +
+								`Database: ${database}\n\n` +
+								'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
+								'Previous optimized query (data mismatch):\n```kusto\n' + candidate + '\n```\n\n' +
+								'Hard constraints:\n' +
+								'- Return ONLY the full query in a single ```kusto``` code block.\n' +
+								'- Do not include explanations or any other text.\n';
+
+							const retryResponse = await model.sendRequest(
+								[vscode.LanguageModelChatMessage.User(retryPrompt)],
+								{},
+								cts.token
+							);
+							let retryText = '';
+							for await (const fragment of retryResponse.text) {
+								if (!isActive() || cts.token.isCancellationRequested) {
+									throw new Error('Copilot write-query canceled');
+								}
+								retryText += fragment;
+							}
+							const next = this.extractKustoCodeBlock(retryText).trim();
+							if (next) {
+								candidate = next;
+							}
 						}
 						return;
 					}
@@ -1226,14 +1633,15 @@ export class QueryEditorProvider {
 					this.logQueryExecutionError(error, connection, database, boxId, finalQuery);
 					if (isActive()) {
 						try {
-							this.postMessage({ type: 'queryError', error: userMessage, boxId } as any);
+							// Keep chat UX clean: don't surface raw backend/exception details.
+							this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
 						} catch {
 							// ignore
 						}
 					}
 
 					priorAttempts.push({ attempt, query, error: userMessage });
-					postStatus(`Query failed: ${userMessage}. Retrying…`);
+					postStatus('Query failed to execute. Retrying…');
 					continue;
 				} finally {
 					try {
@@ -1746,7 +2154,6 @@ ${query}
 		};
 
 		try {
-			postStatus('Selecting Copilot model…');
 			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
 			if (models.length === 0) {
 				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
@@ -1770,11 +2177,7 @@ ${query}
 			} catch {
 				// ignore
 			}
-			try {
-				postStatus(`Using model: ${this.formatCopilotModelLabel(model)}`);
-			} catch {
-				// ignore
-			}
+			// Avoid noisy model-selection/status messages in the chat UI.
 
 			postStatus('Sending request to Copilot…');
 
@@ -1789,17 +2192,11 @@ ${query}
 			postStatus('Waiting for Copilot response…');
 
 			let optimizedQuery = '';
-			let lastProgressUpdate = 0;
 			for await (const fragment of response.text) {
 				if (cts.token.isCancellationRequested) {
 					throw new Error('Optimization canceled');
 				}
 				optimizedQuery += fragment;
-				const now = Date.now();
-				if (now - lastProgressUpdate > 600) {
-					lastProgressUpdate = now;
-					postStatus(`Receiving response… (${optimizedQuery.length} chars)`);
-				}
 			}
 
 			postStatus('Parsing optimized query…');

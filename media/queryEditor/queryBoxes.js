@@ -713,18 +713,104 @@ function __kustoLockCacheForBenchmark(boxId) {
 }
 
 function __kustoNormalizeCellForComparison(cell) {
-	try {
-		if (cell === null || cell === undefined) return ['n', null];
-		const t = typeof cell;
-		if (t === 'string' || t === 'number' || t === 'boolean') return ['p', t, cell];
-		if (t !== 'object') return ['p', t, String(cell)];
-		// Common table-cell wrapper used by this webview.
-		if ('display' in cell && 'full' in cell) {
-			return ['h', String(cell.display), String(cell.full), !!cell.isObject];
+	const isNumericString = (s) => {
+		try {
+			const t = String(s).trim();
+			if (!t) return false;
+			return /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/.test(t);
+		} catch {
+			return false;
 		}
-		return ['o', JSON.stringify(cell)];
+	};
+	const tryParseDateMs = (v) => {
+		try {
+			if (v instanceof Date) {
+				const t = v.getTime();
+				return isFinite(t) ? t : null;
+			}
+			const s = String(v).trim();
+			if (!s) return null;
+			// Don't treat pure numbers as dates.
+			if (isNumericString(s)) return null;
+			const t = Date.parse(s);
+			return isFinite(t) ? t : null;
+		} catch {
+			return null;
+		}
+	};
+	const stableStringify = (obj) => {
+		const seen = new Set();
+		const walk = (v) => {
+			if (v === null || v === undefined) return v;
+			const t = typeof v;
+			if (t === 'string' || t === 'number' || t === 'boolean') return v;
+			if (v instanceof Date) {
+				const ms = v.getTime();
+				return isFinite(ms) ? { $date: ms } : { $date: String(v) };
+			}
+			if (t !== 'object') return String(v);
+			if (seen.has(v)) return '[circular]';
+			seen.add(v);
+			if (Array.isArray(v)) {
+				return v.map(walk);
+			}
+			const out = {};
+			for (const k of Object.keys(v).sort()) {
+				try {
+					out[k] = walk(v[k]);
+				} catch {
+					out[k] = '[unreadable]';
+				}
+			}
+			seen.delete(v);
+			return out;
+		};
+		try {
+			return JSON.stringify(walk(obj));
+		} catch {
+			try { return String(obj); } catch { return '[unstringifiable]'; }
+		}
+	};
+	const normalize = (v) => {
+		try {
+			if (v === null || v === undefined) return ['n', null];
+			const t = typeof v;
+			if (t === 'number') {
+				return ['num', isFinite(v) ? v : String(v)];
+			}
+			if (t === 'boolean') return ['bool', v ? 1 : 0];
+			if (t === 'string') {
+				const s = String(v);
+				if (isNumericString(s)) {
+					const num = parseFloat(s);
+					if (isFinite(num)) return ['num', num];
+				}
+				const ms = tryParseDateMs(s);
+				if (ms !== null) return ['date', ms];
+				return ['str', s];
+			}
+			if (v instanceof Date) {
+				const ms = v.getTime();
+				return ['date', isFinite(ms) ? ms : String(v)];
+			}
+			if (t !== 'object') return ['p', t, String(v)];
+			// Common table-cell wrapper used by this webview.
+			if (v && typeof v === 'object' && 'full' in v && v.full !== undefined && v.full !== null) {
+				return normalize(v.full);
+			}
+			if (v && typeof v === 'object' && 'display' in v && v.display !== undefined && v.display !== null) {
+				return normalize(v.display);
+			}
+			return ['obj', stableStringify(v)];
+		} catch {
+			try { return ['obj', String(v)]; } catch { return ['obj', '[uncomparable]']; }
+		}
+	};
+
+	try {
+		return normalize(cell);
 	} catch {
-		try { return ['o', String(cell)]; } catch { return ['o', '[uncomparable]']; }
+		try { return ['obj', String(cell)]; } catch { return ['obj', '[uncomparable]']; }
 	}
 }
 
@@ -738,32 +824,180 @@ function __kustoRowKeyForComparison(row) {
 	}
 }
 
-function __kustoAreResultsEquivalent(sourceState, comparisonState) {
+function __kustoNormalizeColumnNameForComparison(name) {
+	try {
+		return String(name == null ? '' : name).trim().toLowerCase();
+	} catch {
+		return '';
+	}
+}
+
+function __kustoGetNormalizedColumnNameList(state) {
+	try {
+		const cols = Array.isArray(state && state.columns) ? state.columns : [];
+		return cols.map(__kustoNormalizeColumnNameForComparison);
+	} catch {
+		return [];
+	}
+}
+
+function __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState) {
+	try {
+		const a = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
+		const b = __kustoGetNormalizedColumnNameList(comparisonState).slice().sort();
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoDoColumnOrderMatch(sourceState, comparisonState) {
+	try {
+		const a = __kustoGetNormalizedColumnNameList(sourceState);
+		const b = __kustoGetNormalizedColumnNameList(comparisonState);
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoBuildColumnIndexMapForNames(state) {
+	const cols = Array.isArray(state && state.columns) ? state.columns : [];
+	const map = new Map();
+	for (let i = 0; i < cols.length; i++) {
+		const n = __kustoNormalizeColumnNameForComparison(cols[i]);
+		if (!map.has(n)) {
+			map.set(n, []);
+		}
+		map.get(n).push(i);
+	}
+	return map;
+}
+
+function __kustoBuildNameBasedColumnMapping(state, canonicalNames) {
+	try {
+		const map = __kustoBuildColumnIndexMapForNames(state);
+		const mapping = [];
+		for (const name of canonicalNames) {
+			const list = map.get(name) || [];
+			mapping.push(list.length ? list.shift() : -1);
+			map.set(name, list);
+		}
+		return mapping;
+	} catch {
+		return [];
+	}
+}
+
+function __kustoRowKeyForComparisonWithColumnMapping(row, mapping) {
+	try {
+		const r = Array.isArray(row) ? row : [];
+		const norm = (mapping || []).map((idx) => __kustoNormalizeCellForComparison(idx >= 0 ? r[idx] : undefined));
+		return JSON.stringify(norm);
+	} catch {
+		try { return String(row); } catch { return '[uncomparable-row]'; }
+	}
+}
+
+function __kustoRowKeyForComparisonIgnoringColumnOrder(row) {
+	try {
+		const r = Array.isArray(row) ? row : [];
+		const parts = r.map(__kustoNormalizeCellForComparison).map((c) => {
+			try { return JSON.stringify(c); } catch { return String(c); }
+		});
+		parts.sort();
+		return JSON.stringify(parts);
+	} catch {
+		try { return String(row); } catch { return '[uncomparable-row]'; }
+	}
+}
+
+function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 	try {
 		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
 		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
-		if (aCols.length !== bCols.length) return false;
-		for (let i = 0; i < aCols.length; i++) {
-			if (String(aCols[i]) !== String(bCols[i])) return false;
+		if (aCols.length !== bCols.length) {
+			return {
+				dataMatches: false,
+				rowOrderMatches: false,
+				columnOrderMatches: false,
+				columnHeaderNamesMatch: false
+			};
 		}
 
 		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
 		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
-		if (aRows.length !== bRows.length) return false;
+		if (aRows.length !== bRows.length) {
+			return {
+				dataMatches: false,
+				rowOrderMatches: false,
+				columnOrderMatches: false,
+				columnHeaderNamesMatch: __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState)
+			};
+		}
 
-		// Compare as an unordered multiset of rows:
-		// - row order may change
-		// - but content and multiplicity must match
+		const columnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState);
+		const columnOrderMatches = __kustoDoColumnOrderMatch(sourceState, comparisonState);
+
+		// Data equivalence prioritizes values:
+		// - ignore row order always
+		// - ignore column order always
+		// - ignore column header names when needed
+		let rowKeyForA = null;
+		let rowKeyForB = null;
+		let rowOrderMatches = false;
+
+		if (columnHeaderNamesMatch) {
+			// Align columns by header name (case-insensitive) using a canonical sorted name list.
+			const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
+			const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
+			const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
+			rowKeyForA = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
+			rowKeyForB = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
+			// Row order matches means: after aligning columns by name, each row matches in sequence.
+			rowOrderMatches = true;
+			for (let i = 0; i < aRows.length; i++) {
+				if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
+					rowOrderMatches = false;
+					break;
+				}
+			}
+		} else {
+			// No reliable column-name alignment; compare each row as an unordered multiset of cell values.
+			rowKeyForA = __kustoRowKeyForComparisonIgnoringColumnOrder;
+			rowKeyForB = __kustoRowKeyForComparisonIgnoringColumnOrder;
+			rowOrderMatches = true;
+			for (let i = 0; i < aRows.length; i++) {
+				if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
+					rowOrderMatches = false;
+					break;
+				}
+			}
+		}
+
 		const counts = new Map();
 		for (const row of aRows) {
-			const key = __kustoRowKeyForComparison(row);
+			const key = rowKeyForA(row);
 			counts.set(key, (counts.get(key) || 0) + 1);
 		}
 		for (const row of bRows) {
-			const key = __kustoRowKeyForComparison(row);
+			const key = rowKeyForB(row);
 			const prev = counts.get(key) || 0;
 			if (prev <= 0) {
-				return false;
+				return {
+					dataMatches: false,
+					rowOrderMatches,
+					columnOrderMatches,
+					columnHeaderNamesMatch
+				};
 			}
 			if (prev === 1) {
 				counts.delete(key);
@@ -771,7 +1005,35 @@ function __kustoAreResultsEquivalent(sourceState, comparisonState) {
 				counts.set(key, prev - 1);
 			}
 		}
-		if (counts.size !== 0) return false;
+		const dataMatches = counts.size === 0;
+		return { dataMatches, rowOrderMatches, columnOrderMatches, columnHeaderNamesMatch };
+	} catch {
+		return {
+			dataMatches: false,
+			rowOrderMatches: false,
+			columnOrderMatches: false,
+			columnHeaderNamesMatch: false
+		};
+	}
+}
+
+function __kustoAreResultsEquivalent(sourceState, comparisonState) {
+	try {
+		return !!__kustoAreResultsEquivalentWithDetails(sourceState, comparisonState).dataMatches;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoDoResultHeadersMatch(sourceState, comparisonState) {
+	try {
+		// Historical name: keep behavior for any callers that expect strict header equality.
+		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
+		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
+		if (aCols.length !== bCols.length) return false;
+		for (let i = 0; i < aCols.length; i++) {
+			if (String(aCols[i]) !== String(bCols[i])) return false;
+		}
 		return true;
 	} catch {
 		return false;
@@ -1525,22 +1787,28 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	}
 	
 	// Check data consistency
-	const rowsMatch = sourceRows === comparisonRows;
-	const colsMatch = sourceCols === comparisonCols;
-	const deepMatch = __kustoAreResultsEquivalent(sourceState, comparisonState);
-	
+	const details = __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState);
+	const dataMatches = !!(details && details.dataMatches);
+	const rowOrderMatches = !!(details && details.rowOrderMatches);
+	const columnOrderMatches = !!(details && details.columnOrderMatches);
+	const columnHeaderNamesMatch = !!(details && details.columnHeaderNamesMatch);
+	const warningNeeded = dataMatches && !(rowOrderMatches && columnOrderMatches && columnHeaderNamesMatch);
+
+	const yesNo = (v) => (v ? 'yes' : 'no');
+	const warningTitle =
+		'Order of rows matches: ' + yesNo(rowOrderMatches) + '\n' +
+		'Order of columns matches: ' + yesNo(columnOrderMatches) + '\n' +
+		'Names of column headers match: ' + yesNo(columnHeaderNamesMatch);
+
 	let dataMessage = '';
-	if (deepMatch) {
-		dataMessage = '<span style="color: #89d185;">\u2713 Data matches (row order ignored)</span>';
+	if (dataMatches) {
+		dataMessage =
+			'<span class="comparison-data-match">\u2713 Data matches</span>' +
+			(warningNeeded
+				? '<span class="comparison-warning-icon" title="' + warningTitle.replace(/"/g, '&quot;') + '">\u26a0</span>'
+				: '');
 	} else {
-		const parts = [];
-		if (!rowsMatch) {
-			parts.push(`rows: ${sourceRows} \u2192 ${comparisonRows}`);
-		}
-		if (!colsMatch) {
-			parts.push(`columns: ${sourceCols} \u2192 ${comparisonCols}`);
-		}
-		dataMessage = `<span style="color: #f48771;">\u26a0 Data differs${parts.length ? (' (' + parts.join(', ') + ')') : ''}</span>`;
+		dataMessage = '<span class="comparison-data-diff">\u26a0 Data differs</span>';
 	}
 	
 	// Create or update comparison summary banner
@@ -1563,21 +1831,40 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	
 	banner.innerHTML = `
 		<div class="comparison-summary-content">
-			<strong>\ud83d\udcca Optimization Comparison</strong>
+			<strong>How do the two queries compare?</strong>
 			<div class="comparison-metrics">
-				<div class="comparison-metric">\u26a1 Performance: ${perfMessage}</div>
-				<div class="comparison-metric">\ud83d\udccb Data: ${dataMessage}</div>
+				<div class="comparison-metric">\u26a1 Execution speed: ${perfMessage}</div>
+				<div class="comparison-metric">\ud83d\udccb Data returned: ${dataMessage}</div>
 			</div>
 		</div>
 	`;
 	try {
-		if (deepMatch) {
-			__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, true, 'Results match. Accept optimizations.');
+		if (dataMatches) {
+			__kustoUpdateAcceptOptimizationsButton(
+				comparisonBoxId,
+				true,
+				warningNeeded
+					? 'Data matches, but row/column ordering or header details differ. Accept optimizations with caution.'
+					: 'Results match. Accept optimizations.'
+			);
 		} else {
 			__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, false, 'Results differ. Accept optimizations is disabled.');
 		}
 	} catch { /* ignore */ }
 	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch { /* ignore */ }
+
+	// Notify the extension backend so it can coordinate validation retries.
+	try {
+		vscode.postMessage({
+			type: 'comparisonSummary',
+			sourceBoxId: String(sourceBoxId || ''),
+			comparisonBoxId: String(comparisonBoxId || ''),
+			dataMatches: !!dataMatches,
+			headersMatch: !!columnHeaderNamesMatch,
+			rowOrderMatches: !!rowOrderMatches,
+			columnOrderMatches: !!columnOrderMatches
+		});
+	} catch { /* ignore */ }
 }
 
 function __kustoEnsureOptimizePrepByBoxId() {
@@ -1873,15 +2160,17 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	}
 }
 
-async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride) {
+async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options) {
 	const editor = queryEditors[boxId];
 	if (!editor) {
-		return;
+		return '';
 	}
 	const model = editor.getModel();
 	if (!model) {
-		return;
+		return '';
 	}
+
+	const shouldExecute = !(options && options.skipExecute === true);
 
 	// Hide results to keep the UI focused during comparison setup.
 	try { __kustoSetResultsVisible(boxId, false); } catch { /* ignore */ }
@@ -1889,30 +2178,80 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride) {
 	const query = model.getValue() || '';
 	if (!query.trim()) {
 		alert('No query to compare');
-		return;
+		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
 		alert('No comparison query provided');
-		return;
+		return '';
 	}
 	
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
 	if (!connectionId) {
 		alert('Please select a cluster connection');
-		return;
+		return '';
 	}
 	if (!database) {
 		alert('Please select a database');
-		return;
+		return '';
 	}
 
-	// If a comparison already exists for this source, do nothing.
+	// If a comparison already exists for this source, reuse it.
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId) {
-			console.log('Comparison box already exists for source box:', boxId);
-			return;
+		const existingComparisonBoxId = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId])
+			? optimizationMetadataByBoxId[boxId].comparisonBoxId
+			: '';
+		if (existingComparisonBoxId) {
+			const comparisonBoxEl = document.getElementById(existingComparisonBoxId);
+			const comparisonEditor = queryEditors && queryEditors[existingComparisonBoxId];
+			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
+				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
+				try {
+					if (typeof window.__kustoPrettifyKustoText === 'function') {
+						nextComparisonQuery = window.__kustoPrettifyKustoText(nextComparisonQuery);
+					}
+				} catch { /* ignore */ }
+				try { comparisonEditor.setValue(nextComparisonQuery); } catch { /* ignore */ }
+				try {
+					if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+						optimizationMetadataByBoxId[existingComparisonBoxId] = optimizationMetadataByBoxId[existingComparisonBoxId] || {};
+						optimizationMetadataByBoxId[existingComparisonBoxId].sourceBoxId = boxId;
+						optimizationMetadataByBoxId[existingComparisonBoxId].isComparison = true;
+						optimizationMetadataByBoxId[existingComparisonBoxId].originalQuery = queryEditors[boxId] ? queryEditors[boxId].getValue() : query;
+						optimizationMetadataByBoxId[existingComparisonBoxId].optimizedQuery = nextComparisonQuery;
+						optimizationMetadataByBoxId[boxId] = optimizationMetadataByBoxId[boxId] || {};
+						optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof __kustoSetLinkedOptimizationMode === 'function') {
+						__kustoSetLinkedOptimizationMode(boxId, existingComparisonBoxId, true);
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof __kustoSetResultsVisible === 'function') {
+						__kustoSetResultsVisible(boxId, false);
+						__kustoSetResultsVisible(existingComparisonBoxId, false);
+					}
+				} catch { /* ignore */ }
+				if (shouldExecute) {
+					try {
+						executeQuery(boxId);
+						setTimeout(() => {
+							try { executeQuery(existingComparisonBoxId); } catch { /* ignore */ }
+						}, 100);
+					} catch { /* ignore */ }
+				}
+				return existingComparisonBoxId;
+			}
+			// Stale mapping: comparison was removed; clear and fall back to creating a new one.
+			try {
+				if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+					delete optimizationMetadataByBoxId[boxId];
+					delete optimizationMetadataByBoxId[existingComparisonBoxId];
+				}
+			} catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 
@@ -1953,7 +2292,7 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride) {
 	} catch (err) {
 		console.error('Error creating comparison box:', err);
 		alert('Failed to create comparison section');
-		return;
+		return '';
 	}
 
 	try {
@@ -2021,13 +2360,17 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride) {
 		}
 	} catch { /* ignore */ }
 
-	// Execute both queries for comparison.
-	try {
-		executeQuery(boxId);
-		setTimeout(() => {
-			try { executeQuery(comparisonBoxId); } catch { /* ignore */ }
-		}, 100);
-	} catch { /* ignore */ }
+	if (shouldExecute) {
+		// Execute both queries for comparison.
+		try {
+			executeQuery(boxId);
+			setTimeout(() => {
+				try { executeQuery(comparisonBoxId); } catch { /* ignore */ }
+			}, 100);
+		} catch { /* ignore */ }
+	}
+
+	return comparisonBoxId;
 }
 
 async function fullyQualifyTablesInEditor(boxId) {

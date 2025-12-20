@@ -203,6 +203,10 @@ function __kustoGetCellSortValue(cell) {
 		if (typeof cell === 'number') {
 			return { kind: 'number', v: cell };
 		}
+		if (cell instanceof Date) {
+			const t = cell.getTime();
+			return isFinite(t) ? { kind: 'date', v: t } : { kind: 'string', v: String(cell) };
+		}
 		if (typeof cell === 'boolean') {
 			return { kind: 'number', v: cell ? 1 : 0 };
 		}
@@ -225,6 +229,13 @@ function __kustoGetCellSortValue(cell) {
 				return { kind: 'number', v: num };
 			}
 		}
+		// Date-like strings: sort as dates (timestamps).
+		try {
+			const ms = __kustoTryParseDateMs(trimmed);
+			if (ms !== null) {
+				return { kind: 'date', v: ms };
+			}
+		} catch { /* ignore */ }
 		return { kind: 'string', v: s };
 	} catch {
 		return { kind: 'string', v: String(cell) };
@@ -236,6 +247,12 @@ function __kustoCompareSortValues(a, b) {
 	if (a.kind === 'null' && b.kind === 'null') return 0;
 	if (a.kind === 'null') return 1;
 	if (b.kind === 'null') return -1;
+	if (a.kind === 'date' && b.kind === 'date') {
+		if (a.v < b.v) return -1;
+		if (a.v > b.v) return 1;
+		return 0;
+	}
+	// Compare date vs non-date by falling back to numeric/string.
 	if (a.kind === 'number' && b.kind === 'number') {
 		if (a.v < b.v) return -1;
 		if (a.v > b.v) return 1;
@@ -249,6 +266,45 @@ function __kustoCompareSortValues(a, b) {
 		if (as < bs) return -1;
 		if (as > bs) return 1;
 		return 0;
+	}
+}
+
+function __kustoFormatNumberForDisplay(val) {
+	try {
+		if (val === null || val === undefined) return '';
+		const n = (typeof val === 'number') ? val : null;
+		if (n === null || !isFinite(n)) return String(val);
+		// Avoid surprising formatting for extremely large magnitudes.
+		if (Math.abs(n) >= 1e21) return String(val);
+		if (Number.isInteger(n)) {
+			return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+		}
+		return n.toLocaleString(undefined, { maximumFractionDigits: 20 });
+	} catch {
+		try { return String(val); } catch { return ''; }
+	}
+}
+
+function __kustoFormatCellDisplayValueForTable(cell) {
+	try {
+		if (cell === null || cell === undefined) return '';
+		if (typeof cell === 'number') {
+			return __kustoFormatNumberForDisplay(cell);
+		}
+		if (typeof cell === 'string') {
+			const s = cell.trim();
+			// Only group reasonably-sized numeric strings to avoid precision loss.
+			if (s.length > 0 && s.length <= 15 && /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)$/.test(s)) {
+				const num = parseFloat(s);
+				if (isFinite(num)) {
+					return __kustoFormatNumberForDisplay(num);
+				}
+			}
+			return cell;
+		}
+		return cell;
+	} catch {
+		try { return String(cell); } catch { return ''; }
 	}
 }
 
@@ -2012,7 +2068,7 @@ function __kustoRerenderResultsTable(boxId) {
 				const isObject = cell && cell.isObject;
 				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">View</button>' : '';
-				const cellHtml = isObject ? '' : displayValue;
+				const cellHtml = isObject ? '' : __kustoFormatCellDisplayValueForTable(displayValue);
 				let tdClass = '';
 				if (range && isFinite(range.displayRowMin) && isFinite(range.displayRowMax) && isFinite(range.colMin) && isFinite(range.colMax)) {
 					if (displayIdx >= range.displayRowMin && displayIdx <= range.displayRowMax && colIdx >= range.colMin && colIdx <= range.colMax) {
@@ -2199,7 +2255,7 @@ function displayResultForBox(result, boxId, options) {
 				const isObject = cell && cell.isObject;
 				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
 				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">View</button>' : '';
-				const cellHtml = isObject ? '' : displayValue;
+				const cellHtml = isObject ? '' : __kustoFormatCellDisplayValueForTable(displayValue);
 				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
 					'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">' +
 					cellHtml + viewBtn + '</td>';

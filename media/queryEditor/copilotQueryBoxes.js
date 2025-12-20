@@ -150,20 +150,25 @@
 					'<div class="kusto-copilot-chat-model">' +
 						'<label for="' + boxId + '_copilot_model">Model</label>' +
 						modelDropdown +
-					'</div>' +
-				'</div>' +
-				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
-				'<div class="kusto-copilot-chat-input">' +
-					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query…" spellcheck="true"></textarea>' +
-					'<div class="kusto-copilot-chat-actions">' +
-						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">Send</button>' +
-						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')">Tools</button>' +
-						'<button type="button" id="' + boxId + '_copilot_cancel" class="kusto-copilot-chat-cancel" style="display:none;" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
+						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
+							'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
+						'</button>' +
 					'</div>' +
 				'</div>' +
 				'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
 					'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
 					'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
+				'</div>' +
+				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
+				'<div class="kusto-copilot-chat-input">' +
+					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query…" spellcheck="true"></textarea>' +
+					'<div class="kusto-copilot-chat-actions">' +
+						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">' +
+							'<span class="kusto-copilot-chat-send-label">Send</span>' +
+							'<span class="kusto-copilot-chat-send-spinner" aria-hidden="true"></span>' +
+						'</button>' +
+						'<button type="button" id="' + boxId + '_copilot_cancel" class="kusto-copilot-chat-cancel" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
+					'</div>' +
 				'</div>' +
 			'</div>'
 		);
@@ -455,23 +460,18 @@
 			const toolsBtn = document.getElementById(boxId + '_copilot_tools_btn');
 			const input = document.getElementById(boxId + '_copilot_input');
 			const modelSel = document.getElementById(boxId + '_copilot_model');
-			if (sendBtn) sendBtn.disabled = !!running;
-			if (toolsBtn) toolsBtn.disabled = !!running || !!toolsBtn.disabled;
+			if (sendBtn) {
+				sendBtn.disabled = !!running;
+				try { sendBtn.classList.toggle('is-running', !!running); } catch { /* ignore */ }
+			}
+			// Tools button stays usable while running.
+			if (toolsBtn) toolsBtn.disabled = !!toolsBtn.disabled;
 			if (input) input.disabled = !!running;
 			if (modelSel) modelSel.disabled = !!running;
 			if (cancelBtn) {
-				cancelBtn.style.display = running ? '' : 'none';
+				cancelBtn.style.display = '';
 				cancelBtn.disabled = !running;
 			}
-			try {
-				const panel = document.getElementById(boxId + '_copilot_tools_panel');
-				if (panel) {
-					const inputs = panel.querySelectorAll ? panel.querySelectorAll('input') : [];
-					for (const el of inputs) {
-						try { el.disabled = !!running; } catch { /* ignore */ }
-					}
-				}
-			} catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		if (statusText) {
@@ -833,7 +833,7 @@
 			if (inputEl) inputEl.value = '';
 		} catch { /* ignore */ }
 
-		__kustoSetCopilotChatRunning(id, true, 'Working…');
+		__kustoSetCopilotChatRunning(id, true);
 
 		try {
 			const enabledTools = __kustoGetEnabledToolsForNextMessage(id);

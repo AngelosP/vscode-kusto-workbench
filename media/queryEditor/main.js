@@ -624,13 +624,13 @@ document.addEventListener('visibilitychange', () => {
 	}
 });
 
-window.addEventListener('message', event => {
+window.addEventListener('message', async event => {
 	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
 	const messageType = String(message.type || '');
 	switch (messageType) {
 		case 'controlCommandSyntaxResult':
 			try {
-				const commandLower = message && typeof message.commandLower === 'string' ? String(message.commandLower) : '';
+				const commandLower = String(message.commandLower || '').trim();
 				if (commandLower) {
 					try {
 						if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
@@ -662,7 +662,31 @@ window.addEventListener('message', event => {
 				// ignore
 			}
 			break;
-			case 'persistenceMode':
+		case 'ensureComparisonBox':
+			try {
+				const boxId = String(message.boxId || '');
+				const requestId = String(message.requestId || '');
+				const query = (typeof message.query === 'string') ? message.query : '';
+				if (!boxId || !requestId) {
+					break;
+				}
+				let comparisonBoxId = '';
+				try {
+					if (typeof optimizeQueryWithCopilot === 'function') {
+						comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
+					}
+				} catch { /* ignore */ }
+				try {
+					vscode.postMessage({
+						type: 'comparisonBoxEnsured',
+						requestId,
+						sourceBoxId: boxId,
+						comparisonBoxId: String(comparisonBoxId || '')
+					});
+				} catch { /* ignore */ }
+			} catch { /* ignore */ }
+			break;
+		case 'persistenceMode':
 				try {
 					window.__kustoIsSessionFile = !!message.isSessionFile;
 					try {
@@ -927,14 +951,23 @@ window.addEventListener('message', event => {
 				// ignore
 			}
 			try {
-				if (typeof displayResult === 'function') {
+				// Always target the concrete boxId when available (prevents races when
+				// multiple queries are running and keeps comparison summaries in sync).
+				if (message.boxId && (typeof displayResultForBox === 'function' || typeof window.displayResultForBox === 'function')) {
+					try {
+						if (typeof setQueryExecuting === 'function') {
+							setQueryExecuting(message.boxId, false);
+						}
+					} catch { /* ignore */ }
+					if (typeof displayResultForBox === 'function') {
+						displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+					} else {
+						window.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+					}
+				} else if (typeof displayResult === 'function') {
 					displayResult(message.result);
 				} else if (typeof window.displayResult === 'function') {
 					window.displayResult(message.result);
-				} else if (message.boxId && typeof displayResultForBox === 'function') {
-					displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
-				} else if (message.boxId && typeof window.displayResultForBox === 'function') {
-					window.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 				} else {
 					console.error('Query result received, but no results renderer is available (displayResult/displayResultForBox).');
 				}
@@ -1255,10 +1288,42 @@ window.addEventListener('message', event => {
 					}
 				} catch { /* ignore */ }
 				
-				// Check if a comparison box was already created for this source
+				// If a comparison box already exists for this source, reuse it.
 				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
-					console.log('Comparison box already exists for source box:', sourceBoxId);
-					// Just restore the button state
+					const comparisonBoxId = optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId;
+					const comparisonEditor = queryEditors && queryEditors[comparisonBoxId];
+					if (comparisonBoxId && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
+						try {
+							comparisonEditor.setValue(prettifiedOptimizedQuery);
+							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						} catch { /* ignore */ }
+						try {
+							optimizationMetadataByBoxId[comparisonBoxId] = optimizationMetadataByBoxId[comparisonBoxId] || {};
+							optimizationMetadataByBoxId[comparisonBoxId].sourceBoxId = sourceBoxId;
+							optimizationMetadataByBoxId[comparisonBoxId].isComparison = true;
+							optimizationMetadataByBoxId[comparisonBoxId].originalQuery = queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '';
+							optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
+						} catch { /* ignore */ }
+						try {
+							if (typeof __kustoSetLinkedOptimizationMode === 'function') {
+								__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
+							}
+						} catch { /* ignore */ }
+						try {
+							if (typeof __kustoSetResultsVisible === 'function') {
+								__kustoSetResultsVisible(sourceBoxId, false);
+								__kustoSetResultsVisible(comparisonBoxId, false);
+							}
+						} catch { /* ignore */ }
+						try {
+							executeQuery(sourceBoxId);
+							setTimeout(() => {
+								try { executeQuery(comparisonBoxId); } catch { /* ignore */ }
+							}, 100);
+						} catch { /* ignore */ }
+					}
+
+					// Restore the optimize button state on source box
 					const optimizeBtn = document.getElementById(sourceBoxId + '_optimize_btn');
 					if (optimizeBtn) {
 						optimizeBtn.disabled = false;
@@ -1267,7 +1332,7 @@ window.addEventListener('message', event => {
 							delete optimizeBtn.dataset.originalContent;
 						}
 					}
-					return;
+					break;
 				}
 				
 				// Create a new query box below the source box for comparison
