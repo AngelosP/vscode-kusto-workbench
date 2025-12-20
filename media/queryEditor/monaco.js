@@ -5351,6 +5351,33 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
+		const applyListViewportClampFallback = (suggest, availablePx) => {
+			// Some Monaco builds can end up with a visible suggest widget whose internal list viewport
+			// collapses (scrollbar present but rows not painted). Apply a height to the list container
+			// as a last-resort recovery.
+			try {
+				if (!suggest) return;
+				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
+				if (!avail) return;
+				const overheadPx = 14;
+				const h = Math.max(1, avail - overheadPx);
+				let list = null;
+				try { list = suggest.querySelector && suggest.querySelector('.monaco-list'); } catch { list = null; }
+				if (!list) {
+					try {
+						const rows = suggest.querySelector && suggest.querySelector('.monaco-list-rows');
+						list = rows && rows.parentElement ? rows.parentElement : null;
+					} catch { list = null; }
+				}
+				if (!list) return;
+				list.style.height = h + 'px';
+				list.style.maxHeight = h + 'px';
+				try { if (list.dataset) list.dataset.kustoSuggestClamp = '1'; } catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		};
+
 		let lastForceBelowKey = '';
 		let lastForceBelowAt = 0;
 		const tryForceSuggestBelowCaret = () => {
@@ -5405,6 +5432,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 
 		const scheduleHideSuggestIfTrulyBlurred = () => {
 			try {
+				// Avoid closing suggest during Monaco's internal focus churn while opening/closing widgets.
 				setTimeout(() => {
 					try {
 						const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
@@ -5416,11 +5444,115 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 						// ignore
 					}
 					__kustoSafeEditorTrigger(editor, 'hideSuggestWidget');
-				}, 0);
+				}, 150);
 			} catch {
 				// ignore
 			}
 		};
+
+		let lastSuggestVisible = false;
+		let suggestListObserver = null;
+		let suggestPreselectRaf = false;
+		let lastPreselectAt = 0;
+		let lastPreselectTargetLower = '';
+		let lastPreselectFocusedLower = '';
+		let cursorClampTimer = null;
+		let lastCursorClampAt = 0;
+		const debugSuggest = (eventName, data) => {
+			try {
+				const enabled = !!(window && (window.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
+				if (!enabled) return;
+				// eslint-disable-next-line no-console
+				console.debug('[kusto][suggest]', String(eventName || ''), data || {}, { boxId: editor && editor.__kustoBoxId });
+			} catch {
+				// ignore
+			}
+		};
+		const normalizeSuggestLabel = (s) => {
+			try {
+				let x = String(s || '').trim();
+				x = x.replace(/^(\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
+				x = x.split(/[\s,\(]/g).filter(Boolean)[0] || x;
+				return String(x || '').trim();
+			} catch {
+				return String(s || '').trim();
+			}
+		};
+		const getFocusedSuggestRowLabelLower = () => {
+			try {
+				const root = getEditorDom();
+				if (!root || typeof root.querySelector !== 'function') return '';
+				const widget = root.querySelector('.suggest-widget');
+				if (!widget || typeof widget.querySelector !== 'function') return '';
+				const ariaHidden = String((widget.getAttribute && widget.getAttribute('aria-hidden')) || '').toLowerCase();
+				if (ariaHidden === 'true') return '';
+				const row = widget.querySelector('.monaco-list-row.focused') || widget.querySelector('.monaco-list-row[aria-selected="true"]');
+				if (!row) return '';
+				let label = '';
+				try {
+					const labelName = row.querySelector && row.querySelector('.label-name');
+					if (labelName && typeof labelName.textContent === 'string') {
+						label = labelName.textContent;
+					}
+				} catch { /* ignore */ }
+				if (!label) {
+					try {
+						label = String((row.getAttribute && row.getAttribute('aria-label')) || '');
+					} catch { /* ignore */ }
+				}
+				label = normalizeSuggestLabel(label);
+				return String(label || '').toLowerCase();
+			} catch {
+				return '';
+			}
+		};
+		const scheduleSuggestPreselect = () => {
+			if (suggestPreselectRaf) return;
+			// Throttle: repeated DOM mutations + cursor moves can happen during filtering.
+			const now = Date.now();
+			if (now - lastPreselectAt < 60) return;
+			lastPreselectAt = now;
+			suggestPreselectRaf = true;
+			try {
+				requestAnimationFrame(() => {
+					suggestPreselectRaf = false;
+					try {
+						if (!editor || typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
+						// Skip if the focused item already matches the current target.
+						let focusedLower = '';
+						try { focusedLower = getFocusedSuggestRowLabelLower(); } catch { focusedLower = ''; }
+						if (focusedLower) {
+							lastPreselectFocusedLower = focusedLower;
+						}
+						// If focus hasn't changed and last target is the same, don't touch Monaco.
+						if (focusedLower && lastPreselectTargetLower && focusedLower === lastPreselectTargetLower) {
+							return;
+						}
+						const did = !!editor.__kustoPreselectExactWordInSuggestIfPresent();
+						if (did) {
+							// Refresh focused label cache after we changed it.
+							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch { /* ignore */ }
+						}
+					} catch { /* ignore */ }
+				});
+			} catch {
+				suggestPreselectRaf = false;
+				setTimeout(() => {
+					try {
+						if (!editor || typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
+						const focusedLower = getFocusedSuggestRowLabelLower();
+						if (focusedLower && lastPreselectTargetLower && focusedLower === lastPreselectTargetLower) {
+							return;
+						}
+						const did = !!editor.__kustoPreselectExactWordInSuggestIfPresent();
+						if (did) {
+							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch { /* ignore */ }
+						}
+					} catch { /* ignore */ }
+				}, 0);
+			}
+		};
+		try { editor.__kustoScheduleSuggestPreselect = scheduleSuggestPreselect; } catch { /* ignore */ }
 
 		const tryRelayoutSuggestWidget = (availablePx) => {
 			// Best-effort poke of Monaco internals so keyboard navigation uses the updated height.
@@ -5560,31 +5692,72 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				const ariaHidden = String((suggest.getAttribute && suggest.getAttribute('aria-hidden')) || '').toLowerCase();
 				const isVisible = ariaHidden !== 'true';
 				if (!isVisible) {
+					try { lastSuggestVisible = false; } catch { /* ignore */ }
+					try { if (suggestListObserver) suggestListObserver.disconnect(); } catch { /* ignore */ }
+					try { suggestListObserver = null; } catch { /* ignore */ }
 					// When hidden, clear any fallback styles we may have applied.
 					clearInjectedSuggestStyles(suggest);
 					// When hidden, keep lastApplied.maxVisible; we'll recompute on next open.
 					return;
 				}
 
-				// Clear any fallback styles before recalculating.
-				clearInjectedSuggestStyles(suggest);
+				// The moment suggest becomes visible (or its rows change), try to preselect immediately.
+				try {
+					if (!lastSuggestVisible) {
+						lastSuggestVisible = true;
+						try { lastPreselectTargetLower = ''; } catch { /* ignore */ }
+						try { lastPreselectFocusedLower = ''; } catch { /* ignore */ }
+						scheduleSuggestPreselect();
+					}
+					// Observe list population/updates while visible; preselect is throttled + guarded.
+					if (!suggestListObserver && typeof MutationObserver !== 'undefined') {
+						suggestListObserver = new MutationObserver(() => {
+							scheduleSuggestPreselect();
+						});
+						// Watch for list population/updates; avoid attribute watching to prevent hover flicker.
+						suggestListObserver.observe(suggest, { subtree: true, childList: true });
+					}
+				} catch { /* ignore */ }
+
+				// Clear any fallback styles only if we previously applied them.
+				try {
+					const hadClamp = (suggest.dataset && suggest.dataset.kustoSuggestClamp === '1')
+						|| !!(suggest.querySelector && suggest.querySelector('[data-kusto-suggest-clamp="1"]'));
+					if (hadClamp) {
+						clearInjectedSuggestStyles(suggest);
+					}
+				} catch { /* ignore */ }
 
 				const boundsRect = boundsDom.getBoundingClientRect();
 				const suggestRect = suggest.getBoundingClientRect();
 				const pad = 4;
 				const topOverflow = Math.ceil(((boundsRect.top || 0) + pad) - (suggestRect.top || 0));
-				// If Monaco placed the widget above the caret (common in short viewports), don't
-				// clamp it in-place (that breaks alignment and can render into the toolbar).
-				// Instead, force a below-caret re-open.
+				let availablePx = 0;
+				// If Monaco chose above-caret placement and it overflows at the top of the editor,
+				// clamp based on the available space ABOVE (bounds.top .. suggest.bottom).
 				if (isFinite(topOverflow) && topOverflow > 0) {
-					tryForceSuggestBelowCaret();
-					return;
+					availablePx = Math.floor((suggestRect.bottom || 0) - (boundsRect.top || 0) - pad);
+				} else {
+					// Default: clamp based on the available space below the widget's top.
+					availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
 				}
-
-				let availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
 				if (!isFinite(availablePx) || availablePx <= 0) {
 					return;
 				}
+
+				// If the internal list viewport collapsed (common "empty but scrollable" crash), recover before sizing.
+				try {
+					const list = suggest.querySelector && (suggest.querySelector('.monaco-list') || (suggest.querySelector('.monaco-list-rows') && suggest.querySelector('.monaco-list-rows').parentElement));
+					if (list) {
+						const clientH = Math.floor(list.clientHeight || 0);
+						const scrollH = Math.floor(list.scrollHeight || 0);
+						if (scrollH > 0 && clientH <= 1) {
+							debugSuggest('listViewportCollapsed', { clientH, scrollH });
+							applyListViewportClampFallback(suggest, availablePx);
+							tryRelayoutSuggestWidget(availablePx);
+						}
+					}
+				} catch { /* ignore */ }
 
 				// If the dropdown would be too small, expand the whole editor section so we can
 				// always show a usable menu (minimum 50px). Only applicable to below-caret placement.
@@ -5631,13 +5804,14 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		};
 
 		let mo = null;
-		try {
-			const root = getEditorDom();
-			if (root && typeof MutationObserver !== 'undefined') {
-				mo = new MutationObserver(() => scheduleClamp());
-				mo.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'aria-hidden'] });
-			}
-		} catch {
+				try {
+					const root = getEditorDom();
+					if (root && typeof MutationObserver !== 'undefined') {
+						mo = new MutationObserver(() => scheduleClamp());
+						// Only watch aria-hidden so hover/selection class changes don't cause clamp loops.
+						mo.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-hidden'] });
+					}
+				} catch {
 			mo = null;
 		}
 
@@ -5649,7 +5823,27 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		};
 		try { safeOn(editor.onDidLayoutChange(() => scheduleClamp())); } catch { /* ignore */ }
 		try { safeOn(editor.onDidScrollChange(() => scheduleClamp())); } catch { /* ignore */ }
-		try { safeOn(editor.onDidChangeCursorPosition(() => scheduleClamp())); } catch { /* ignore */ }
+		try {
+			safeOn(editor.onDidChangeCursorPosition(() => {
+				try {
+					// Cursor moves can happen for every arrow keypress; avoid thrashing Monaco suggest layout.
+					if (cursorClampTimer) return;
+					const now = Date.now();
+					if (now - lastCursorClampAt < 120) return;
+					cursorClampTimer = setTimeout(() => {
+						cursorClampTimer = null;
+						lastCursorClampAt = Date.now();
+						try {
+							const root = getEditorDom();
+							const widget = root && root.querySelector ? root.querySelector('.suggest-widget') : null;
+							const ariaHidden = String((widget && widget.getAttribute && widget.getAttribute('aria-hidden')) || '').toLowerCase();
+							const isVisible = widget && ariaHidden !== 'true';
+							if (isVisible) scheduleClamp();
+						} catch { /* ignore */ }
+					}, 120);
+				} catch { /* ignore */ }
+			}));
+		} catch { /* ignore */ }
 		try { safeOn(editor.onDidFocusEditorWidget(() => scheduleClamp())); } catch { /* ignore */ }
 		try { safeOn(editor.onDidFocusEditorText(() => scheduleClamp())); } catch { /* ignore */ }
 		// Prevent a suggest widget in one editor from lingering and stealing clicks/focus.
@@ -5690,6 +5884,14 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		const dispose = () => {
 			try { if (mo) mo.disconnect(); } catch { /* ignore */ }
 			try { mo = null; } catch { /* ignore */ }
+			try { if (suggestListObserver) suggestListObserver.disconnect(); } catch { /* ignore */ }
+			try { suggestListObserver = null; } catch { /* ignore */ }
+			try {
+				if (cursorClampTimer) {
+					clearTimeout(cursorClampTimer);
+					cursorClampTimer = null;
+				}
+			} catch { /* ignore */ }
 			try { lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null }; } catch { /* ignore */ }
 			try {
 				if (pendingAdjustTimer) {
@@ -5704,6 +5906,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			} catch { /* ignore */ }
 			disposables = [];
 			try { delete editor.__kustoScheduleSuggestClamp; } catch { /* ignore */ }
+			try { delete editor.__kustoScheduleSuggestPreselect; } catch { /* ignore */ }
 		};
 
 		try {
@@ -6467,7 +6670,20 @@ function initQueryEditor(boxId) {
 				const w = model.getWordAtPosition(pos);
 				const currentWord = w && typeof w.word === 'string' ? w.word : '';
 				if (!currentWord || !String(currentWord).trim()) return;
-				const target = String(currentWord).trim();
+				const normalize = (s) => {
+					try {
+						let x = String(s || '').trim();
+						// Strip common wrappers seen in Kusto identifiers.
+						x = x.replace(/^(\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
+						// For aria labels like "ColumnName, field" keep only the identifier.
+						x = x.split(/[\s,\(]/g).filter(Boolean)[0] || x;
+						return String(x || '').trim();
+					} catch {
+						return String(s || '').trim();
+					}
+				};
+				const target = normalize(currentWord);
+				if (!target) return;
 				const targetLower = target.toLowerCase();
 
 				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
@@ -6496,19 +6712,53 @@ function initQueryEditor(boxId) {
 							label = String(aria || '');
 						} catch { /* ignore */ }
 					}
-					label = String(label || '').trim();
+					label = normalize(label);
 					if (!label) continue;
-					// aria-label often includes extra info (e.g. "TableName, class"); keep the first token.
-					const first = label.split(/[\s,\(]/g).filter(Boolean)[0] || label;
-					if (String(first).toLowerCase() === targetLower) {
+					if (String(label).toLowerCase() === targetLower) {
 						matchRow = row;
 						break;
 					}
 				}
 				if (!matchRow) return;
 
-				// Try to focus/select without accepting.
-				// Prefer gentle mousemove/over events; avoid click/mousedown.
+				// Prefer focusing the Monaco list via internal APIs (more reliable than DOM hover).
+				try {
+					let idx = NaN;
+					try {
+						const s = (matchRow.getAttribute && matchRow.getAttribute('data-index')) || '';
+						idx = parseInt(String(s || ''), 10);
+					} catch { /* ignore */ }
+					if (!isFinite(idx)) {
+						try {
+							const ds = matchRow.dataset && (matchRow.dataset.index || matchRow.dataset.row);
+							idx = parseInt(String(ds || ''), 10);
+						} catch { /* ignore */ }
+					}
+
+					if (isFinite(idx) && typeof ed.getContribution === 'function') {
+						const ctrl = ed.getContribution('editor.contrib.suggestController');
+						const candidates = [];
+						try { if (ctrl && ctrl._widget) candidates.push(ctrl._widget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl.widget) candidates.push(ctrl.widget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch { /* ignore */ }
+						for (const w0 of candidates) {
+							const w1 = (w0 && w0.value) ? w0.value : w0;
+							if (!w1) continue;
+							const list = w1._list || w1.list || w1._tree || w1.tree;
+							if (!list) continue;
+							try { if (typeof list.reveal === 'function') list.reveal(idx); } catch { /* ignore */ }
+							// Only change focus (highlight). Do NOT set selection; some Monaco builds treat
+							// selection changes as an accept/commit signal.
+								try { if (typeof list.setFocus === 'function') list.setFocus([idx]); } catch { /* ignore */ }
+								return true;
+						}
+					}
+				} catch {
+					// ignore
+				}
+
+				// Fallback: try to focus/select without accepting via gentle hover.
 				try {
 					const rect = matchRow.getBoundingClientRect ? matchRow.getBoundingClientRect() : null;
 					const clientX = rect ? Math.floor(rect.left + Math.min(12, Math.max(2, rect.width / 2))) : 1;
@@ -6517,12 +6767,14 @@ function initQueryEditor(boxId) {
 					try { matchRow.dispatchEvent(new MouseEvent('mouseover', evInit)); } catch { /* ignore */ }
 					try { matchRow.dispatchEvent(new MouseEvent('mousemove', evInit)); } catch { /* ignore */ }
 					try { matchRow.dispatchEvent(new MouseEvent('mouseenter', evInit)); } catch { /* ignore */ }
+					return true;
 				} catch {
 					// ignore
 				}
 			} catch {
 				// ignore
 			}
+			return false;
 		};
 
 		const __kustoTriggerAutocomplete = (ed) => {
@@ -6595,10 +6847,16 @@ function initQueryEditor(boxId) {
 					const model = ed.getModel && ed.getModel();
 					versionId = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
 				} catch { /* ignore */ }
+				// Record the trigger context so the suggest widget observer can preselect when rows arrive.
+				try {
+					ed.__kustoLastSuggestTriggerAt = Date.now();
+					ed.__kustoLastSuggestTriggerModelVersionId = (typeof versionId === 'number') ? versionId : null;
+				} catch { /* ignore */ }
 				const triggerNow = () => {
 					try {
 						ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
 						try { if (typeof ed.__kustoScheduleSuggestClamp === 'function') ed.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
+						try { if (typeof ed.__kustoScheduleSuggestPreselect === 'function') ed.__kustoScheduleSuggestPreselect(); } catch { /* ignore */ }
 					} catch { /* ignore */ }
 				};
 				if (shouldDeferTrigger) {
@@ -6620,13 +6878,45 @@ function initQueryEditor(boxId) {
 				// Use longer delays and only hide if the model didn't change.
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 1200);
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 2500);
-				// Try to preselect the existing word if it appears in the list. Keep this fast and optional.
-				setTimeout(() => __kustoPreselectExactWordInSuggestIfPresent(ed, versionId), 80);
-				setTimeout(() => __kustoPreselectExactWordInSuggestIfPresent(ed, versionId), 200);
+				// Best-effort preselect is now driven by the suggest widget observer (fires when rows populate).
+				// Keep a single quick attempt for cases where the list is already populated.
+				setTimeout(() => {
+					try { __kustoPreselectExactWordInSuggestIfPresent(ed, versionId); } catch { /* ignore */ }
+				}, 0);
 			} catch {
 				// ignore
 			}
 		};
+
+		// Expose the preselect helper so the suggest widget sizing/visibility observer can call it.
+		try {
+			editor.__kustoPreselectExactWordInSuggestIfPresent = () => {
+				try {
+					// Cache the current target word (best-effort) so callers can avoid redundant focus changes.
+					try {
+						const model = editor.getModel && editor.getModel();
+						const pos = typeof editor.getPosition === 'function' ? editor.getPosition() : null;
+						if (model && pos && typeof model.getWordAtPosition === 'function') {
+							const w = model.getWordAtPosition(pos);
+							const currentWord = w && typeof w.word === 'string' ? w.word : '';
+							const t = String(currentWord || '').trim();
+							if (t) {
+								editor.__kustoLastSuggestPreselectTargetLower = t.toLowerCase();
+							}
+						}
+					} catch { /* ignore */ }
+					const model = editor.getModel && editor.getModel();
+					const vid = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+					// Prefer the version at trigger time (prevents selecting after typing changes the context).
+					const expected = (typeof editor.__kustoLastSuggestTriggerModelVersionId === 'number')
+						? editor.__kustoLastSuggestTriggerModelVersionId
+						: (typeof vid === 'number' ? vid : null);
+					return __kustoPreselectExactWordInSuggestIfPresent(editor, expected);
+				} catch {
+					return false;
+				}
+			};
+		} catch { /* ignore */ }
 
 		// Expose for toolbar / other scripts.
 		try {
