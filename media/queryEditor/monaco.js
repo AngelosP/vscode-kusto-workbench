@@ -5205,6 +5205,18 @@ function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
 function __kustoInstallSmartSuggestWidgetSizing(editor) {
 	try {
 		if (!editor) return () => { };
+		const __kustoSafeEditorTrigger = (ed, commandId) => {
+			try {
+				if (!ed || !commandId) return;
+				const result = ed.trigger('keyboard', commandId, {});
+				// Some Monaco commands return a Promise; avoid unhandled rejections.
+				if (result && typeof result.then === 'function') {
+					result.catch(() => { /* ignore */ });
+				}
+			} catch {
+				// ignore
+			}
+		};
 		const getEditorDom = () => {
 			try {
 				return (typeof editor.getDomNode === 'function') ? editor.getDomNode() : null;
@@ -5326,12 +5338,85 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				if (!suggest) return;
 				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
 				if (!avail) return;
+				// Keep this non-destructive: setting a hard `height` + `overflow:hidden` can
+				// cause Monaco's internal list to render as an empty/blank box.
 				suggest.style.maxHeight = avail + 'px';
-				suggest.style.height = avail + 'px';
-				suggest.style.overflow = 'hidden';
+				suggest.style.height = '';
+				suggest.style.overflow = '';
 				try {
 					if (suggest.dataset) suggest.dataset.kustoSuggestClamp = '1';
 				} catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		};
+
+		let lastForceBelowKey = '';
+		let lastForceBelowAt = 0;
+		const tryForceSuggestBelowCaret = () => {
+			// When Monaco decides to render the suggest widget above the caret (common when the
+			// editor viewport is short), it can overlap our internal toolbar. If we detect that,
+			// expand the wrapper if needed and re-open suggest so Monaco takes the below-caret path.
+			try {
+				const pos = (typeof editor.getPosition === 'function') ? editor.getPosition() : null;
+				const model = (typeof editor.getModel === 'function') ? editor.getModel() : null;
+				const versionId = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+				const key = String(versionId || '') + ':' + String(pos ? pos.lineNumber : '') + ':' + String(pos ? pos.column : '');
+				const now = Date.now();
+				if (key && key === lastForceBelowKey && (now - lastForceBelowAt) < 400) {
+					return;
+				}
+				lastForceBelowKey = key;
+				lastForceBelowAt = now;
+
+				// Ensure we have some room below; if not, grow the wrapper.
+				try {
+					const cursor = (pos && typeof editor.getScrolledVisiblePosition === 'function')
+						? editor.getScrolledVisiblePosition(pos)
+						: null;
+					const layout = (typeof editor.getLayoutInfo === 'function') ? editor.getLayoutInfo() : null;
+					if (cursor && layout && typeof layout.height === 'number') {
+						const pad = 8;
+						let availableBelowPx = Math.floor((layout.height || 0) - (cursor.top || 0) - (cursor.height || 0) - pad);
+						if (!isFinite(availableBelowPx)) availableBelowPx = 0;
+						// Reuse the same minimum threshold we use elsewhere.
+						if (availableBelowPx < MIN_DROPDOWN_PX) {
+							ensureMinimumDropdownSpace(availableBelowPx);
+						}
+						// Nudge maxVisibleSuggestions down so the below-caret option becomes viable.
+						const rowHeightPx = 22;
+						const overheadPx = 16;
+						const usable = Math.max(0, Math.max(availableBelowPx, MIN_DROPDOWN_PX) - overheadPx);
+						const maxVisible = Math.max(1, Math.floor(usable / Math.max(1, rowHeightPx)));
+						applyMaxVisibleSuggestions(maxVisible);
+					}
+				} catch { /* ignore */ }
+
+				try { editor.layout(); } catch { /* ignore */ }
+				// IMPORTANT: do NOT auto-trigger suggestions here.
+				// If Monaco placed the widget outside bounds (e.g. into the toolbar), close it.
+				// The next user-triggered suggest (Ctrl+Space / toolbar) will open with the updated layout.
+				__kustoSafeEditorTrigger(editor, 'hideSuggestWidget');
+				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		};
+
+		const scheduleHideSuggestIfTrulyBlurred = () => {
+			try {
+				setTimeout(() => {
+					try {
+						const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+						const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+						if (hasWidgetFocus || hasTextFocus) {
+							return;
+						}
+					} catch {
+						// ignore
+					}
+					__kustoSafeEditorTrigger(editor, 'hideSuggestWidget');
+				}, 0);
 			} catch {
 				// ignore
 			}
@@ -5488,15 +5573,15 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				const suggestRect = suggest.getBoundingClientRect();
 				const pad = 4;
 				const topOverflow = Math.ceil(((boundsRect.top || 0) + pad) - (suggestRect.top || 0));
-				let availablePx = 0;
-				// If Monaco chose above-caret placement and it overflows at the top of the editor,
-				// clamp based on the available space ABOVE (bounds.top .. suggest.bottom).
+				// If Monaco placed the widget above the caret (common in short viewports), don't
+				// clamp it in-place (that breaks alignment and can render into the toolbar).
+				// Instead, force a below-caret re-open.
 				if (isFinite(topOverflow) && topOverflow > 0) {
-					availablePx = Math.floor((suggestRect.bottom || 0) - (boundsRect.top || 0) - pad);
-				} else {
-					// Default: clamp based on the available space below the widget's top.
-					availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
+					tryForceSuggestBelowCaret();
+					return;
 				}
+
+				let availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
 				if (!isFinite(availablePx) || availablePx <= 0) {
 					return;
 				}
@@ -5567,6 +5652,9 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		try { safeOn(editor.onDidChangeCursorPosition(() => scheduleClamp())); } catch { /* ignore */ }
 		try { safeOn(editor.onDidFocusEditorWidget(() => scheduleClamp())); } catch { /* ignore */ }
 		try { safeOn(editor.onDidFocusEditorText(() => scheduleClamp())); } catch { /* ignore */ }
+		// Prevent a suggest widget in one editor from lingering and stealing clicks/focus.
+		try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
 
 		// Install one global viewport listener to update all visible suggest widgets across editors.
 		try {

@@ -446,6 +446,14 @@ function addQueryBox(options) {
 	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
+	// For newly added sections, if the prefilled cluster+db matches an existing favorite,
+	// automatically switch to Favorites mode.
+	try {
+		if (!isComparison) {
+			__kustoMarkNewBoxForFavoritesAutoEnter(id);
+			__kustoTryAutoEnterFavoritesModeForNewBox(id);
+		}
+	} catch { /* ignore */ }
 	// If this is the first section and the user has favorites, default to Favorites mode.
 	// (Otherwise, keep the normal cluster+database dropdowns visible.)
 	try {
@@ -3589,6 +3597,61 @@ function __kustoGetFavoritesSorted() {
 // This is intended to run only for boxes restored from disk, not for arbitrary user selections.
 let __kustoAutoEnterFavoritesByBoxId = Object.create(null);
 
+// For newly-added sections (not restore): if the prefilled cluster+db matches an existing
+// favorite, switch that box into Favorites mode.
+let __kustoAutoEnterFavoritesForNewBoxByBoxId = Object.create(null);
+
+function __kustoMarkNewBoxForFavoritesAutoEnter(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		// Never treat restore-created boxes as "new".
+		if (typeof __kustoRestoreInProgress === 'boolean' && __kustoRestoreInProgress) {
+			return;
+		}
+	} catch { /* ignore */ }
+	try {
+		__kustoAutoEnterFavoritesForNewBoxByBoxId = __kustoAutoEnterFavoritesForNewBoxByBoxId || Object.create(null);
+		__kustoAutoEnterFavoritesForNewBoxByBoxId[id] = true;
+	} catch { /* ignore */ }
+}
+
+function __kustoTryAutoEnterFavoritesModeForNewBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	let pending = false;
+	try {
+		pending = !!(__kustoAutoEnterFavoritesForNewBoxByBoxId && __kustoAutoEnterFavoritesForNewBoxByBoxId[id]);
+	} catch { pending = false; }
+	if (!pending) return;
+
+	// Don't override an explicit choice for this box.
+	try {
+		if (favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+			try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
+			return;
+		}
+	} catch { /* ignore */ }
+
+	// Wait until favorites are available.
+	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+	if (!hasAny) return;
+
+	const clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
+	const db = __kustoGetCurrentDatabaseForBox(id);
+	if (!clusterUrl || !db) return;
+
+	const fav = __kustoFindFavorite(clusterUrl, db);
+	try {
+		if (fav) {
+			__kustoApplyFavoritesMode(id, true);
+			__kustoUpdateFavoritesUiForBox(id);
+		}
+	} catch { /* ignore */ }
+	// Either way, we've reached a stable selection; only do this once.
+	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
+}
+
 window.__kustoSetAutoEnterFavoritesForBox = function (boxId, clusterUrl, database) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -3636,6 +3699,7 @@ window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 	try {
 		for (const id of (queryBoxes || [])) {
 			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch { /* ignore */ }
+			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 };
@@ -5104,6 +5168,7 @@ function updateDatabaseSelect(boxId, databases) {
 		} catch { /* ignore */ }
 
 		// Only trigger schema refresh if the selected DB actually changed.
+		try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
 		if (target && target !== prevValue) {
 			onDatabaseChanged(boxId);
 		}
