@@ -2099,6 +2099,9 @@ function __kustoRerenderResultsTable(boxId) {
 			tbody.innerHTML = tbodyHtml;
 		}
 	} catch { /* ignore */ }
+
+	// Ensure mouse drag selection handlers are attached once per table container.
+	try { __kustoEnsureDragSelectionHandlers(boxId); } catch { /* ignore */ }
 }
 
 function displayResult(result) {
@@ -3283,6 +3286,116 @@ function __kustoCellToClipboardString(cell) {
 	return s;
 }
 
+// Drag selection support: allow mouse-drag to select a rectangular range of cells.
+function __kustoEnsureDragSelectionHandlers(boxId) {
+	try {
+		if (!boxId) return;
+		const containerId = boxId + '_table_container';
+		const container = document.getElementById(containerId);
+		if (!container) return;
+		// Avoid installing multiple handlers.
+		if (container.__kustoDragHandlersInstalled) return;
+
+		let isDragging = false;
+		let anchorCell = null; // {row, col}
+
+		const getCellFromEvent = (ev) => {
+			try {
+				const td = ev.target && ev.target.closest ? ev.target.closest('td[data-row][data-col]') : null;
+				if (!td) return null;
+				const r = parseInt(td.getAttribute('data-row'), 10);
+				const c = parseInt(td.getAttribute('data-col'), 10);
+				if (!isFinite(r) || !isFinite(c)) return null;
+				return { row: r, col: c };
+			} catch {
+				return null;
+			}
+		};
+
+		const onMouseDown = (ev) => {
+			try {
+				// Only left button
+				if (ev.button !== 0) return;
+				const cell = getCellFromEvent(ev);
+				if (!cell) return;
+				ev.preventDefault();
+				container.focus();
+
+				const state = __kustoGetResultsState(boxId);
+				if (!state) return;
+
+				// If shift key, extend from existing anchor/caret; otherwise set new anchor
+				const extend = !!ev.shiftKey;
+				if (!extend) {
+					anchorCell = cell;
+				} else {
+					// use existing anchor if present
+					if (state.cellSelectionAnchor) {
+						anchorCell = { row: state.cellSelectionAnchor.row, col: state.cellSelectionAnchor.col };
+					} else {
+						anchorCell = cell;
+					}
+				}
+
+				isDragging = true;
+				// Apply initial selection
+				__kustoSetCellSelectionState(boxId, state, cell.row, cell.col, { extend: extend });
+				__kustoRerenderResultsTable(boxId);
+			} catch { /* ignore */ }
+		};
+
+		const onMouseMove = (ev) => {
+			try {
+				if (!isDragging) return;
+				const cell = getCellFromEvent(ev);
+				if (!cell) return;
+				const state = __kustoGetResultsState(boxId);
+				if (!state) return;
+				// When dragging, always extend from the anchor we captured on mousedown.
+				if (anchorCell) {
+					state.cellSelectionAnchor = { row: anchorCell.row, col: anchorCell.col };
+				}
+				__kustoSetCellSelectionState(boxId, state, cell.row, cell.col, { extend: true });
+				__kustoRerenderResultsTable(boxId);
+			} catch { /* ignore */ }
+		};
+
+		const onMouseUp = (ev) => {
+			try {
+				if (!isDragging) return;
+				isDragging = false;
+				const state = __kustoGetResultsState(boxId);
+				if (!state) return;
+				// final selection already applied in mousemove/mousedown; ensure focus
+				try { const containerEl = document.getElementById(boxId + '_table_container'); if (containerEl) containerEl.focus(); } catch { }
+			} catch { /* ignore */ }
+		};
+
+		// Attach on the container and document for global mouseup
+		container.addEventListener('mousedown', onMouseDown);
+		container.addEventListener('mousemove', onMouseMove);
+		document.addEventListener('mouseup', onMouseUp);
+
+		// Mark installed and keep references for possible cleanup.
+		container.__kustoDragHandlersInstalled = true;
+		container.__kustoDragHandlers = { onMouseDown, onMouseMove, onMouseUp };
+	} catch { /* ignore */ }
+}
+
+function __kustoRemoveDragSelectionHandlers(boxId) {
+	try {
+		if (!boxId) return;
+		const container = document.getElementById(boxId + '_table_container');
+		if (!container || !container.__kustoDragHandlersInstalled) return;
+		const h = container.__kustoDragHandlers || {};
+		if (h.onMouseDown) container.removeEventListener('mousedown', h.onMouseDown);
+		if (h.onMouseMove) container.removeEventListener('mousemove', h.onMouseMove);
+		if (h.onMouseUp) document.removeEventListener('mouseup', h.onMouseUp);
+		container.__kustoDragHandlersInstalled = false;
+		container.__kustoDragHandlers = null;
+	} catch { /* ignore */ }
+}
+
 function copyVisibleResultsToClipboard(boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
@@ -3372,7 +3485,37 @@ function handleTableContextMenu(event, boxId) {
 			const r = parseInt(td.getAttribute('data-row'), 10);
 			const c = parseInt(td.getAttribute('data-col'), 10);
 			if (isFinite(r) && isFinite(c)) {
-				selectCell(event, r, c, boxId);
+				// Only change the selection/focus if the clicked cell is NOT already part of
+				// the current selection (range or selected rows). This preserves an existing
+				// rectangular selection so the user can right-click -> Copy the whole range.
+				try {
+					const state = __kustoGetResultsState(boxId);
+					let clickedInsideRange = false;
+					if (state) {
+						// Check cellSelectionRange (which uses display row indices).
+						const range = (state && state.cellSelectionRange && typeof state.cellSelectionRange === 'object') ? state.cellSelectionRange : null;
+						if (range) {
+							const inv = Array.isArray(state.rowIndexToDisplayIndex) ? state.rowIndexToDisplayIndex : null;
+							const displayIdx = (inv && isFinite(inv[r])) ? inv[r] : r;
+							if (isFinite(displayIdx) && isFinite(range.displayRowMin) && isFinite(range.displayRowMax) && isFinite(range.colMin) && isFinite(range.colMax)) {
+								if (displayIdx >= range.displayRowMin && displayIdx <= range.displayRowMax && c >= range.colMin && c <= range.colMax) {
+									clickedInsideRange = true;
+								}
+							}
+						}
+						// Check selected rows
+						if (!clickedInsideRange && state.selectedRows && state.selectedRows.has && state.selectedRows.has(r)) {
+							clickedInsideRange = true;
+						}
+						// Check single selectedCell
+						if (!clickedInsideRange && state.selectedCell && state.selectedCell.row === r && state.selectedCell.col === c) {
+							clickedInsideRange = true;
+						}
+					}
+					if (!clickedInsideRange) {
+						selectCell(event, r, c, boxId);
+					}
+				} catch { /* ignore */ }
 			}
 		}
 	} catch { /* ignore */ }
