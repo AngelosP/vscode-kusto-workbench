@@ -1,3 +1,78 @@
+function __kustoIndexToAlphaName(index) {
+	// Excel-like column naming: 0->A, 25->Z, 26->AA, ...
+	try {
+		let n = Math.max(0, Math.floor(Number(index) || 0));
+		let out = '';
+		while (true) {
+			const r = n % 26;
+			out = String.fromCharCode(65 + r) + out;
+			n = Math.floor(n / 26) - 1;
+			if (n < 0) break;
+		}
+		return out || 'A';
+	} catch {
+		return 'A';
+	}
+}
+
+function __kustoGetUsedSectionNamesUpper(excludeBoxId) {
+	const used = new Set();
+	try {
+		const excludeId = excludeBoxId ? (String(excludeBoxId) + '_name') : '';
+		const inputs = document.querySelectorAll ? document.querySelectorAll('input.query-name') : [];
+		for (const el of inputs) {
+			try {
+				if (!el) continue;
+				if (excludeId && el.id === excludeId) continue;
+				const v = String(el.value || '').trim();
+				if (!v) continue;
+				used.add(v.toUpperCase());
+			} catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+	return used;
+}
+
+function __kustoPickNextAvailableSectionLetterName(excludeBoxId) {
+	try {
+		const used = __kustoGetUsedSectionNamesUpper(excludeBoxId);
+		for (let i = 0; i < 5000; i++) {
+			const candidate = __kustoIndexToAlphaName(i).toUpperCase();
+			if (!used.has(candidate)) {
+				return candidate;
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return 'A';
+}
+
+function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return '';
+		const input = document.getElementById(id + '_name');
+		if (!input) return '';
+		const current = String(input.value || '').trim();
+		if (current) return current;
+		const next = __kustoPickNextAvailableSectionLetterName(id);
+		input.value = next;
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		return next;
+	} catch {
+		return '';
+	}
+}
+
+// Expose for persistence + extra box types.
+try {
+	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
+	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
+} catch { /* ignore */ }
+
 function addQueryBox(options) {
 	const isFirstBox = !(Array.isArray(queryBoxes) && queryBoxes.length > 0);
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
@@ -367,6 +442,7 @@ function addQueryBox(options) {
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
 	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
 	updateConnectionSelects();
@@ -950,7 +1026,10 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 				dataMatches: false,
 				rowOrderMatches: false,
 				columnOrderMatches: false,
-				columnHeaderNamesMatch: false
+				columnHeaderNamesMatch: false,
+				reason: 'columnCountMismatch',
+				columnCountA: aCols.length,
+				columnCountB: bCols.length
 			};
 		}
 
@@ -961,7 +1040,10 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 				dataMatches: false,
 				rowOrderMatches: false,
 				columnOrderMatches: false,
-				columnHeaderNamesMatch: __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState)
+				columnHeaderNamesMatch: __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState),
+				reason: 'rowCountMismatch',
+				rowCountA: aRows.length,
+				rowCountB: bRows.length
 			};
 		}
 
@@ -1017,7 +1099,9 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 					dataMatches: false,
 					rowOrderMatches,
 					columnOrderMatches,
-					columnHeaderNamesMatch
+					columnHeaderNamesMatch,
+					reason: 'extraOrMismatchedRow',
+					firstMismatchedRowKey: key
 				};
 			}
 			if (prev === 1) {
@@ -1027,13 +1111,28 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 			}
 		}
 		const dataMatches = counts.size === 0;
+		if (!dataMatches) {
+			let firstMissingKey = '';
+			try {
+				for (const k of counts.keys()) { firstMissingKey = k; break; }
+			} catch { /* ignore */ }
+			return {
+				dataMatches,
+				rowOrderMatches,
+				columnOrderMatches,
+				columnHeaderNamesMatch,
+				reason: 'missingRow',
+				firstMismatchedRowKey: firstMissingKey
+			};
+		}
 		return { dataMatches, rowOrderMatches, columnOrderMatches, columnHeaderNamesMatch };
 	} catch {
 		return {
 			dataMatches: false,
 			rowOrderMatches: false,
 			columnOrderMatches: false,
-			columnHeaderNamesMatch: false
+			columnHeaderNamesMatch: false,
+			reason: 'exception'
 		};
 	}
 }
@@ -1769,6 +1868,27 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	if (!sourceState || !comparisonState) {
 		return;
 	}
+
+	const escapeHtml = (s) => {
+		return String(s ?? '')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	};
+	const getBoxLabel = (boxId) => {
+		try {
+			const el = document.getElementById(String(boxId || '') + '_name');
+			const name = el ? String(el.value || '').trim() : '';
+			return name || String(boxId || '').trim() || 'Dataset';
+		} catch {
+			return String(boxId || '').trim() || 'Dataset';
+		}
+	};
+	const sourceLabel = getBoxLabel(sourceBoxId);
+	const comparisonLabel = getBoxLabel(comparisonBoxId);
+	const pluralRows = (n) => (Number(n) === 1 ? 'row' : 'rows');
 	
 	const sourceRows = sourceState.rows ? sourceState.rows.length : 0;
 	const comparisonRows = comparisonState.rows ? comparisonState.rows.length : 0;
@@ -1814,6 +1934,21 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	const columnOrderMatches = !!(details && details.columnOrderMatches);
 	const columnHeaderNamesMatch = !!(details && details.columnHeaderNamesMatch);
 	const warningNeeded = dataMatches && !(rowOrderMatches && columnOrderMatches && columnHeaderNamesMatch);
+	const diffReason = (details && typeof details.reason === 'string' && details.reason) ? details.reason : '';
+	const diffReasonParts = [];
+	try {
+		if (diffReason) diffReasonParts.push('Reason: ' + diffReason);
+		if (details && typeof details.columnCountA === 'number' && typeof details.columnCountB === 'number') {
+			diffReasonParts.push('Columns: ' + String(details.columnCountA) + ' vs ' + String(details.columnCountB));
+		}
+		if (details && typeof details.rowCountA === 'number' && typeof details.rowCountB === 'number') {
+			diffReasonParts.push('Rows: ' + String(details.rowCountA) + ' vs ' + String(details.rowCountB));
+		}
+		if (details && typeof details.firstMismatchedRowKey === 'string' && details.firstMismatchedRowKey) {
+			diffReasonParts.push('Key: ' + details.firstMismatchedRowKey);
+		}
+	} catch { /* ignore */ }
+	const diffTitle = diffReasonParts.length ? ('View diff\n' + diffReasonParts.join('\n')) : 'View diff';
 
 	const yesNo = (v) => (v ? 'yes' : 'no');
 	const warningTitle =
@@ -1829,6 +1964,26 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 				? '<span class="comparison-warning-icon" title="' + warningTitle.replace(/"/g, '&quot;') + '">\u26a0</span>'
 				: '');
 	} else {
+		let countsLabel = '';
+		try {
+			const dv = (window && window.__kustoDiffView) ? window.__kustoDiffView : null;
+			if (dv && typeof dv.buildModelFromResultsStates === 'function') {
+				const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
+				const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
+				const commonCount = Array.isArray(p && p.common) ? p.common.length : 0;
+				const onlyACount = Array.isArray(p && p.onlyA) ? p.onlyA.length : 0;
+				const onlyBCount = Array.isArray(p && p.onlyB) ? p.onlyB.length : 0;
+				countsLabel =
+					' (' +
+					String(commonCount) + ' matching ' + pluralRows(commonCount) +
+					', ' +
+					String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
+					', ' +
+					String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
+					')';
+			}
+		} catch { /* ignore */ }
+
 		// Use JSON.stringify to produce a valid JS string literal (double-quoted) so the
 		// inline onclick handler never breaks due to escaping.
 		const aBoxIdLit = JSON.stringify(String(sourceBoxId || ''));
@@ -1837,7 +1992,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			'<span class="comparison-data-diff-icon" aria-hidden="true">\u26a0</span> ' +
 			'<a href="#" class="comparison-data-diff comparison-diff-link" ' +
 			"onclick='try{openDiffViewModal({ aBoxId: " + aBoxIdLit + ", bBoxId: " + bBoxIdLit + " })}catch{}; return false;' " +
-			'title="View diff">Data differs</a>';
+			'title="' + diffTitle.replace(/"/g, '&quot;') + '">Data differs' + countsLabel + '</a>';
 	}
 	
 	// Create or update comparison summary banner
@@ -2137,6 +2292,24 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 		return;
 	}
 
+	// Optimization naming rule:
+	// - If the source section has no name, assign the next available letter (A, B, C, ...)
+	// - The optimized section will then use "<source name> (optimized)"
+	try {
+		const nameEl = document.getElementById(boxId + '_name');
+		if (nameEl) {
+			let sourceName = String(nameEl.value || '').trim();
+			if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+				sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
+				nameEl.value = sourceName;
+				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			}
+			if (sourceName) {
+				req.queryName = sourceName;
+			}
+		}
+	} catch { /* ignore */ }
+
 	const modelId = (document.getElementById(boxId + '_optimize_model') || {}).value || '';
 	const promptText = (document.getElementById(boxId + '_optimize_prompt') || {}).value || '';
 	try {
@@ -2223,6 +2396,33 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 		alert('No comparison query provided');
 		return '';
 	}
+	// Optimization naming rule (applies when we are creating an "optimized" comparison section):
+	// - If the source section has no name, assign the next available letter (A, B, C, ...)
+	// - Name the optimized section "<source name> (optimized)"
+	//
+	// This applies to:
+	// - The Copilot optimize flow (optimized override query provided)
+	// - The "Compare two queries" button (creates the optimized comparison section first)
+	const isCompareButtonScenario = isManualCompareOnly && (comparisonQueryOverride == null);
+	const isOptimizeScenario = ((comparisonQueryOverride != null) && !!overrideText.trim()) || isCompareButtonScenario;
+	let sourceNameForOptimize = '';
+	let desiredOptimizedName = '';
+	if (isOptimizeScenario) {
+		try {
+			const nameInput = document.getElementById(boxId + '_name');
+			sourceNameForOptimize = nameInput ? String(nameInput.value || '').trim() : '';
+			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
+				if (nameInput) {
+					nameInput.value = sourceNameForOptimize;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				}
+			}
+			if (sourceNameForOptimize) {
+				desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
+			}
+		} catch { /* ignore */ }
+	}
 	
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
@@ -2267,6 +2467,31 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 						__kustoSetLinkedOptimizationMode(boxId, existingComparisonBoxId, true);
 					}
 				} catch { /* ignore */ }
+				// Set the comparison box name.
+				try {
+					const nameEl = document.getElementById(existingComparisonBoxId + '_name');
+					if (nameEl) {
+						if (desiredOptimizedName) {
+							nameEl.value = desiredOptimizedName;
+							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						} else {
+							// If the comparison box name is missing (or still using the legacy suffix naming),
+							// set it to the next available letter.
+							const currentName = String(nameEl.value || '').trim();
+							let shouldReplace = !currentName;
+							if (!shouldReplace) {
+								const upper = currentName.toUpperCase();
+								if (upper.endsWith(' (COMPARISON)') || upper.endsWith(' (OPTIMIZED)')) {
+									shouldReplace = true;
+								}
+							}
+							if (shouldReplace) {
+								nameEl.value = __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId);
+								try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+							}
+						}
+					}
+				} catch { /* ignore */ }
 				try {
 					if (typeof __kustoSetResultsVisible === 'function') {
 						__kustoSetResultsVisible(boxId, false);
@@ -2293,21 +2518,12 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 		}
 	} catch { /* ignore */ }
 
-	// Check if query has a name, if not, set one
+	// Do not auto-name the source section for plain comparisons.
+	// For optimization scenarios, we already ensured a name above.
 	const nameInput = document.getElementById(boxId + '_name');
-	let queryName = nameInput ? nameInput.value.trim() : '';
-	if (!queryName) {
-		// Generate a random funny name
-		const adjectives = ['Sneaky', 'Dizzy', 'Bouncy', 'Grumpy', 'Fancy', 'Zippy', 'Wobbly', 'Quirky', 'Sleepy', 'Dancing', 'Giggling', 'Hungry', 'Sparkly', 'Fuzzy', 'Clever', 'Mighty', 'Turbo', 'Cosmic', 'Ninja', 'Jolly'];
-		const nouns = ['Penguin', 'Octopus', 'Banana', 'Unicorn', 'Dragon', 'Waffle', 'Narwhal', 'Llama', 'Hedgehog', 'Platypus', 'Flamingo', 'Koala', 'Pineapple', 'Dolphin', 'Raccoon', 'Capybara', 'Axolotl', 'Toucan', 'Gecko', 'Otter'];
-		const randomAdj = adjectives[Math.floor(Math.random() * adjectives.length)];
-		const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
-		const randomNum = Math.floor(Math.random() * 1000);
-		queryName = `${randomAdj} ${randomNoun} ${randomNum}`;
-		if (nameInput) {
-			nameInput.value = queryName;
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-		}
+	let queryName = sourceNameForOptimize || (nameInput ? String(nameInput.value || '').trim() : '');
+	if (!desiredOptimizedName && isOptimizeScenario && queryName) {
+		desiredOptimizedName = queryName + ' (optimized)';
 	}
 
 	// Create a comparison query box below the source box.
@@ -2394,7 +2610,15 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	try {
 		const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
 		if (comparisonNameInput) {
-			comparisonNameInput.value = queryName + ' (Comparison)';
+			if (desiredOptimizedName) {
+				comparisonNameInput.value = desiredOptimizedName;
+			} else {
+				const existing = String(comparisonNameInput.value || '').trim();
+				if (!existing) {
+					// Use the next available letter name (A, B, C, ...) instead of suffix-based naming.
+					comparisonNameInput.value = __kustoPickNextAvailableSectionLetterName(comparisonBoxId);
+				}
+			}
 		}
 	} catch { /* ignore */ }
 
@@ -3024,6 +3248,20 @@ function removeQueryBox(boxId) {
 		}
 		delete queryEditorResizeObservers[boxId];
 	}
+
+	// Disconnect any visibility observers
+	try {
+		if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers && queryEditorVisibilityObservers[boxId]) {
+			try { queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
+			delete queryEditorVisibilityObservers[boxId];
+		}
+	} catch { /* ignore */ }
+	try {
+		if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers && queryEditorVisibilityMutationObservers[boxId]) {
+			try { queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
+			delete queryEditorVisibilityMutationObservers[boxId];
+		}
+	} catch { /* ignore */ }
 
 	// Dispose editor if present
 	if (queryEditors[boxId]) {

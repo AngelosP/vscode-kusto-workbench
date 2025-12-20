@@ -1293,7 +1293,30 @@ window.addEventListener('message', async event => {
 					}
 				} catch { /* ignore */ }
 				const optimizedQuery = message.optimizedQuery || '';
-				const queryName = message.queryName || '';
+				let queryName = message.queryName || '';
+				// Ensure the source section has a name for optimization.
+				// If missing, assign the next unused letter (A, B, C, ...).
+				try {
+					const nameEl = document.getElementById(sourceBoxId + '_name');
+					if (nameEl) {
+						let sourceName = String(nameEl.value || '').trim();
+						if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+							sourceName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
+							nameEl.value = sourceName;
+							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						}
+						if (sourceName) {
+							queryName = sourceName;
+						}
+					}
+				} catch { /* ignore */ }
+				// Fallback: if we still don't have a name (e.g. input missing), pick one.
+				if (!String(queryName || '').trim() && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+					try {
+						queryName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
+					} catch { /* ignore */ }
+				}
+				const desiredOptimizedName = String(queryName || '').trim() ? (String(queryName || '').trim() + ' (optimized)') : '';
 				const connectionId = message.connectionId || '';
 				const database = message.database || '';
 				let prettifiedOptimizedQuery = optimizedQuery;
@@ -1311,6 +1334,16 @@ window.addEventListener('message', async event => {
 						try {
 							comparisonEditor.setValue(prettifiedOptimizedQuery);
 							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						} catch { /* ignore */ }
+						// Name the optimized section "<source name> (optimized)".
+						try {
+							const nameEl = document.getElementById(comparisonBoxId + '_name');
+							if (nameEl) {
+								if (desiredOptimizedName) {
+									nameEl.value = desiredOptimizedName;
+									try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+								}
+							}
 						} catch { /* ignore */ }
 						try {
 							optimizationMetadataByBoxId[comparisonBoxId] = optimizationMetadataByBoxId[comparisonBoxId] || {};
@@ -1408,7 +1441,9 @@ window.addEventListener('message', async event => {
 				// Set the query name
 				const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
 				if (comparisonNameInput) {
-					comparisonNameInput.value = queryName + ' (Optimized)';
+					if (desiredOptimizedName) {
+						comparisonNameInput.value = desiredOptimizedName;
+					}
 				}
 				
 				// Execute both queries for comparison

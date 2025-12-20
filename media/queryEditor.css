@@ -3598,7 +3598,8 @@
 			border-radius: 4px;
 			width: 92%;
 			max-width: 1400px;
-			height: 86%;
+			height: auto;
+			max-height: 86vh;
 			display: flex;
 			flex-direction: column;
 			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -3639,7 +3640,7 @@
 		}
 
 		.diff-view-body {
-			flex: 1;
+			flex: 0 1 auto;
 			overflow: auto;
 			padding: 10px;
 			min-height: 0;
@@ -3745,6 +3746,33 @@
 		.diff-cell-val {
 			flex: 1 1 auto;
 			min-width: 0;
+		}
+
+		.diff-section {
+			margin-bottom: 14px;
+		}
+
+		/* Section headers removed by design. */
+
+		.diff-results-host {
+			min-height: 0;
+		}
+
+		.diff-join-controls {
+			display: flex;
+			gap: 10px;
+			align-items: center;
+			flex-wrap: wrap;
+			margin-bottom: 8px;
+		}
+
+		.diff-join-select {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 4px 6px;
+			font-size: 12px;
 		}
 
 		.object-viewer-section {

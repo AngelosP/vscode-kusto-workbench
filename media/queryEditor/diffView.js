@@ -196,267 +196,445 @@
 		return pairs;
 	};
 
-	const buildDiffModelFromStates = (aState, bState, labels, pairingMode) => {
+	const buildCanonicalColumnsSorted = (aState, bState) => {
 		const aCols = getColumns(aState);
 		const bCols = getColumns(bState);
+		const normalizeName = (n) => {
+			try {
+				if (typeof window.__kustoNormalizeColumnNameForComparison === 'function') {
+					return window.__kustoNormalizeColumnNameForComparison(n);
+				}
+			} catch { /* ignore */ }
+			return safeString(n).trim().toLowerCase();
+		};
+
+		// Build a *multiset* union of column names (by normalized name), preserving duplicates.
+		// This prevents us from collapsing e.g. "Count" + "count" into one column and
+		// accidentally masking differences.
+		const aNorm = aCols.map(normalizeName);
+		const bNorm = bCols.map(normalizeName);
+
+		const labelByBase = new Map();
+		for (let i = 0; i < aCols.length; i++) {
+			const base = aNorm[i];
+			if (!labelByBase.has(base)) labelByBase.set(base, safeString(aCols[i]));
+		}
+		for (let i = 0; i < bCols.length; i++) {
+			const base = bNorm[i];
+			if (!labelByBase.has(base)) labelByBase.set(base, safeString(bCols[i]));
+		}
+
+		const countByBaseA = new Map();
+		for (const base of aNorm) {
+			countByBaseA.set(base, (countByBaseA.get(base) || 0) + 1);
+		}
+		const countByBaseB = new Map();
+		for (const base of bNorm) {
+			countByBaseB.set(base, (countByBaseB.get(base) || 0) + 1);
+		}
+		const baseNames = Array.from(new Set([...
+			countByBaseA.keys(),
+			countByBaseB.keys()
+		]));
+
+		const maxCountByBase = new Map();
+		for (const base of baseNames) {
+			const aCount = countByBaseA.get(base) || 0;
+			const bCount = countByBaseB.get(base) || 0;
+			maxCountByBase.set(base, Math.max(aCount, bCount));
+		}
+
+		const canonical = [];
+		for (const base of baseNames) {
+			const maxCount = maxCountByBase.get(base) || 0;
+			for (let occ = 0; occ < maxCount; occ++) {
+				canonical.push({ base, occ });
+			}
+		}
+
+		canonical.sort((x, y) => {
+			const lx = safeString(labelByBase.get(x.base) || x.base).toLowerCase();
+			const ly = safeString(labelByBase.get(y.base) || y.base).toLowerCase();
+			if (lx < ly) return -1;
+			if (lx > ly) return 1;
+			if (x.base < y.base) return -1;
+			if (x.base > y.base) return 1;
+			return x.occ - y.occ;
+		});
+
+		const canonicalBasesForMapping = canonical.map(c => c.base);
+		const aMap = buildColumnMappingByName(aState, canonicalBasesForMapping);
+		const bMap = buildColumnMappingByName(bState, canonicalBasesForMapping);
+
+		const columns = canonical.map((c, idx) => {
+			const aIdx = (aMap && idx < aMap.length) ? aMap[idx] : -1;
+			const bIdx = (bMap && idx < bMap.length) ? bMap[idx] : -1;
+			const aName = (aIdx >= 0 && aIdx < aCols.length) ? aCols[aIdx] : '';
+			const bName = (bIdx >= 0 && bIdx < bCols.length) ? bCols[bIdx] : '';
+			const baseLabel = safeString(labelByBase.get(c.base) || aName || bName || c.base || ('col_' + String(idx + 1)));
+			const needsSuffix = (maxCountByBase.get(c.base) || 0) > 1;
+			const label = needsSuffix ? (baseLabel + ' #' + String(c.occ + 1)) : baseLabel;
+			const key = (c.base || ('col_' + String(idx + 1))) + '#' + String(c.occ + 1);
+			return { key, label, aIndex: aIdx, bIndex: bIdx, aName, bName };
+		});
+
+		return { columns, aMap, bMap };
+	};
+
+	const buildRowKeyAndDisplayValues = (row, columnSideIndices) => {
+		// Build a stable key based on the canonical column order.
+		// Important: treat missing columns as a distinct marker (not the same as null).
+		const r = Array.isArray(row) ? row : [];
+		const keyParts = [];
+		const displayValues = [];
+		for (const idx of columnSideIndices) {
+			if (typeof idx !== 'number' || idx < 0) {
+				keyParts.push(['missing-col', 1]);
+				displayValues.push('');
+				continue;
+			}
+			const cell = (idx < r.length) ? r[idx] : undefined;
+			keyParts.push(normalizeCell(cell));
+			displayValues.push(formatCellForDisplay(cell));
+		}
+		let key = '';
+		try {
+			key = JSON.stringify(keyParts);
+		} catch {
+			key = String(keyParts);
+		}
+		return { key, displayValues };
+	};
+
+	const buildPartitionedRows = (aState, bState, columns) => {
 		const aRows = getRows(aState);
 		const bRows = getRows(bState);
 
-		let details = null;
-		try {
-			if (typeof window.__kustoAreResultsEquivalentWithDetails === 'function') {
-				details = window.__kustoAreResultsEquivalentWithDetails(aState, bState);
+		const aSideIndices = columns.map(c => c.aIndex);
+		const bSideIndices = columns.map(c => c.bIndex);
+
+		const aMap = new Map();
+		const aRowData = new Array(aRows.length);
+		for (let i = 0; i < aRows.length; i++) {
+			const rd = buildRowKeyAndDisplayValues(aRows[i], aSideIndices);
+			aRowData[i] = rd;
+			if (!aMap.has(rd.key)) aMap.set(rd.key, []);
+			aMap.get(rd.key).push(i);
+		}
+
+		const bMap = new Map();
+		const bRowData = new Array(bRows.length);
+		for (let i = 0; i < bRows.length; i++) {
+			const rd = buildRowKeyAndDisplayValues(bRows[i], bSideIndices);
+			bRowData[i] = rd;
+			if (!bMap.has(rd.key)) bMap.set(rd.key, []);
+			bMap.get(rd.key).push(i);
+		}
+
+		const allKeys = Array.from(new Set([...aMap.keys(), ...bMap.keys()]));
+		allKeys.sort();
+
+		const common = [];
+		const onlyA = [];
+		const onlyB = [];
+
+		for (const key of allKeys) {
+			const aList = aMap.get(key) || [];
+			const bList = bMap.get(key) || [];
+			const sharedCount = Math.min(aList.length, bList.length);
+			for (let i = 0; i < sharedCount; i++) {
+				const aRowIndex = aList[i];
+				const bRowIndex = bList[i];
+				common.push({
+					aRowIndex,
+					bRowIndex,
+					values: (aRowData[aRowIndex] && aRowData[aRowIndex].displayValues) ? aRowData[aRowIndex].displayValues : []
+				});
 			}
-		} catch { /* ignore */ }
-		const columnHeaderNamesMatch = !!(details && details.columnHeaderNamesMatch);
-		const rowOrderMatches = !!(details && details.rowOrderMatches);
-
-		let columns = [];
-		let aMap = null;
-		let bMap = null;
-
-		if (columnHeaderNamesMatch) {
-			const normalizeName = (n) => {
-				try {
-					if (typeof window.__kustoNormalizeColumnNameForComparison === 'function') {
-						return window.__kustoNormalizeColumnNameForComparison(n);
-					}
-				} catch { /* ignore */ }
-				return safeString(n).trim().toLowerCase();
-			};
-
-			const canonical = aCols.map(normalizeName).slice().sort();
-			aMap = buildColumnMappingByName(aState, canonical);
-			bMap = buildColumnMappingByName(bState, canonical);
-
-			columns = canonical.map((normName, idx) => {
-				const aIdx = (aMap && idx < aMap.length) ? aMap[idx] : -1;
-				const bIdx = (bMap && idx < bMap.length) ? bMap[idx] : -1;
-				const aName = (aIdx >= 0 && aIdx < aCols.length) ? aCols[aIdx] : '';
-				const bName = (bIdx >= 0 && bIdx < bCols.length) ? bCols[bIdx] : '';
-				const label = aName || bName || normName || ('col_' + String(idx + 1));
-				return { key: normName || ('col_' + String(idx + 1)), label, aIndex: aIdx, bIndex: bIdx, aName, bName };
-			});
-		} else {
-			const max = Math.max(aCols.length, bCols.length);
-			columns = [];
-			for (let i = 0; i < max; i++) {
-				columns.push({
-					key: String(i),
-					label: 'Col ' + String(i + 1),
-					aIndex: i < aCols.length ? i : -1,
-					bIndex: i < bCols.length ? i : -1,
-					aName: i < aCols.length ? aCols[i] : '',
-					bName: i < bCols.length ? bCols[i] : ''
+			for (let i = sharedCount; i < aList.length; i++) {
+				const aRowIndex = aList[i];
+				onlyA.push({
+					aRowIndex,
+					values: (aRowData[aRowIndex] && aRowData[aRowIndex].displayValues) ? aRowData[aRowIndex].displayValues : []
+				});
+			}
+			for (let i = sharedCount; i < bList.length; i++) {
+				const bRowIndex = bList[i];
+				onlyB.push({
+					bRowIndex,
+					values: (bRowData[bRowIndex] && bRowData[bRowIndex].displayValues) ? bRowData[bRowIndex].displayValues : []
 				});
 			}
 		}
 
-		const getCell = (rows, rowIndex, colIndex) => {
-			try {
-				if (rowIndex < 0) return undefined;
-				const row = rows[rowIndex];
-				if (!Array.isArray(row)) return undefined;
-				if (colIndex < 0) return undefined;
-				return row[colIndex];
-			} catch {
-				return undefined;
+		return { common, onlyA, onlyB };
+	};
+
+	const sanitizeDomIdPart = (s) => {
+		try {
+			return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+		} catch {
+			return 'x';
+		}
+	};
+
+	const renderUsingSharedResultsTable = (hostEl, boxId, label, columns, rows) => {
+		try {
+			if (!hostEl) return;
+			if (typeof window.displayResultForBox !== 'function') {
+				hostEl.innerHTML = '<div class="diff-empty">Results table renderer not available.</div>';
+				return;
 			}
-		};
+			window.displayResultForBox(
+				{ columns: Array.isArray(columns) ? columns : [], rows: Array.isArray(rows) ? rows : [], metadata: {} },
+				String(boxId || ''),
+				{ resultsDiv: hostEl, label: String(label || 'Results'), showExecutionTime: false }
+			);
+			// Diff-view tables use synthetic boxIds that don't have a surrounding *_results_wrapper.
+			// If the user (or previous state) hid results for that boxId, the shared results
+			// visibility handler will hide the entire body, making it look like rows are missing.
+			try {
+				if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+					window.__kustoResultsVisibleByBoxId = {};
+				}
+				window.__kustoResultsVisibleByBoxId[String(boxId || '')] = true;
+				if (typeof window.__kustoApplyResultsVisibility === 'function') {
+					window.__kustoApplyResultsVisibility(String(boxId || ''));
+				}
+				// Belt-and-suspenders: ensure the body isn't hidden.
+				const body = document.getElementById(String(boxId || '') + '_results_body');
+				if (body) {
+					body.style.display = '';
+				}
+			} catch { /* ignore */ }
+		} catch {
+			try { hostEl.innerHTML = '<div class="diff-empty">Failed to render table.</div>'; } catch { /* ignore */ }
+		}
+	};
 
-		let pairs = [];
-		const mode = (pairingMode === 'byIndex') ? 'byIndex' : 'auto';
-		if (mode === 'byIndex') {
-			pairs = buildPairsByIndex(aRows, bRows);
-		} else {
-			// Auto:
-			// - If order matches, diff by index (best for per-cell diagnostics)
-			// - Else, pair exact matches and show unmatched rows as missing
-			if (rowOrderMatches) {
-				pairs = buildPairsByIndex(aRows, bRows);
-			} else {
-				let rowKeyForA = null;
-				let rowKeyForB = null;
-				try {
-					if (columnHeaderNamesMatch && typeof window.__kustoRowKeyForComparisonWithColumnMapping === 'function' && aMap && bMap) {
-						rowKeyForA = (row) => window.__kustoRowKeyForComparisonWithColumnMapping(row, aMap);
-						rowKeyForB = (row) => window.__kustoRowKeyForComparisonWithColumnMapping(row, bMap);
-					} else if (typeof window.__kustoRowKeyForComparison === 'function') {
-						rowKeyForA = window.__kustoRowKeyForComparison;
-						rowKeyForB = window.__kustoRowKeyForComparison;
-					}
-				} catch { /* ignore */ }
+	const clampSharedResultsTableToMaxRows = (resultsHostEl, maxRows) => {
+		try {
+			const host = resultsHostEl;
+			if (!host) return;
+			const tableContainer = host.querySelector('.table-container');
+			const table = host.querySelector('table');
+			if (!tableContainer || !table) return;
+			const rowEls = table.querySelectorAll('tbody tr');
 
-				if (typeof rowKeyForA === 'function' && typeof rowKeyForB === 'function') {
-					pairs = buildPairsByExactRowMatch(rowKeyForA, rowKeyForB, aRows, bRows);
-				} else {
-					pairs = buildPairsByIndex(aRows, bRows);
+			const max = (typeof maxRows === 'number' && isFinite(maxRows) && maxRows > 0) ? Math.floor(maxRows) : 10;
+			// If the table is already short, remove any previous clamp so it can size to content.
+			if (rowEls.length <= max) {
+				tableContainer.style.maxHeight = '';
+				tableContainer.style.height = '';
+				tableContainer.style.overflow = '';
+				return;
+			}
+			const headerEl = table.querySelector('thead');
+			const headerH = headerEl ? Math.ceil(headerEl.getBoundingClientRect().height) : 0;
+
+			const take = Math.min(max, rowEls.length);
+			let rowsH = 0;
+			for (let i = 0; i < take; i++) {
+				rowsH += Math.ceil(rowEls[i].getBoundingClientRect().height);
+			}
+			// Fallback heuristic if measurement fails.
+			if (!rowsH && take > 0) {
+				rowsH = take * 24;
+			}
+			const extra = 6; // borders/padding
+			const capPx = headerH + rowsH + extra;
+			tableContainer.style.maxHeight = String(capPx) + 'px';
+			tableContainer.style.overflow = 'auto';
+		} catch {
+			// ignore
+		}
+	};
+
+	const getCellFromState = (state, rowIndex, colIndex) => {
+		try {
+			if (!state || rowIndex == null || colIndex == null) return undefined;
+			const rows = getRows(state);
+			if (rowIndex < 0 || rowIndex >= rows.length) return undefined;
+			const row = rows[rowIndex];
+			if (!Array.isArray(row)) return undefined;
+			if (colIndex < 0) return undefined;
+			return row[colIndex];
+		} catch {
+			return undefined;
+		}
+	};
+
+	const buildInnerJoinResult = (model, joinColumnKey) => {
+		const m = (model && typeof model === 'object') ? model : null;
+		if (!m) return { columns: [], rows: [] };
+		const columns = Array.isArray(m.columns) ? m.columns : [];
+		const partitions = (m.partitions && typeof m.partitions === 'object') ? m.partitions : { onlyA: [], onlyB: [] };
+		const onlyA = Array.isArray(partitions.onlyA) ? partitions.onlyA : [];
+		const onlyB = Array.isArray(partitions.onlyB) ? partitions.onlyB : [];
+		const aState = m._aState;
+		const bState = m._bState;
+
+		const selected = columns.find(c => c && String(c.key) === String(joinColumnKey || '')) || null;
+		if (!selected) {
+			return { columns: [], rows: [] };
+		}
+		const joinCanonIdx = columns.findIndex(c => c && String(c.key) === String(selected.key));
+		if (joinCanonIdx < 0) {
+			return { columns: [], rows: [] };
+		}
+		if (typeof selected.aIndex !== 'number' || selected.aIndex < 0) {
+			return { columns: [], rows: [] };
+		}
+		if (typeof selected.bIndex !== 'number' || selected.bIndex < 0) {
+			return { columns: [], rows: [] };
+		}
+
+		const aByKey = new Map();
+		for (const r of onlyA) {
+			if (!r || typeof r.aRowIndex !== 'number') continue;
+			const cell = getCellFromState(aState, r.aRowIndex, selected.aIndex);
+			// Ignore missing join values.
+			if (cell === undefined) continue;
+			let key = '';
+			try { key = JSON.stringify(normalizeCell(cell)); } catch { try { key = String(normalizeCell(cell)); } catch { key = String(cell); } }
+			if (!aByKey.has(key)) aByKey.set(key, { display: formatCellForDisplay(cell), rows: [] });
+			aByKey.get(key).rows.push(r);
+		}
+
+		const bByKey = new Map();
+		for (const r of onlyB) {
+			if (!r || typeof r.bRowIndex !== 'number') continue;
+			const cell = getCellFromState(bState, r.bRowIndex, selected.bIndex);
+			if (cell === undefined) continue;
+			let key = '';
+			try { key = JSON.stringify(normalizeCell(cell)); } catch { try { key = String(normalizeCell(cell)); } catch { key = String(cell); } }
+			if (!bByKey.has(key)) bByKey.set(key, { display: formatCellForDisplay(cell), rows: [] });
+			bByKey.get(key).rows.push(r);
+		}
+
+		const outRows = [];
+		const keys = Array.from(new Set([...aByKey.keys(), ...bByKey.keys()]));
+		keys.sort();
+
+		for (const key of keys) {
+			const aGroup = aByKey.get(key);
+			const bGroup = bByKey.get(key);
+			if (!aGroup || !bGroup) continue;
+			const joinDisplay = aGroup.display || bGroup.display || '';
+			// SQL-style inner join semantics: duplicates form a cross-product.
+			for (const aRow of aGroup.rows) {
+				for (const bRow of bGroup.rows) {
+					const aVals = Array.isArray(aRow.values) ? aRow.values : [];
+					const bVals = Array.isArray(bRow.values) ? bRow.values : [];
+					const aTrimmed = aVals.filter((_, i) => i !== joinCanonIdx);
+					const bTrimmed = bVals.filter((_, i) => i !== joinCanonIdx);
+					outRows.push([joinDisplay, ...aTrimmed, ...bTrimmed]);
 				}
 			}
 		}
 
-		const rowModels = pairs.map((p, pairIndex) => {
-			const aRowIndex = (p && typeof p.aRowIndex === 'number') ? p.aRowIndex : -1;
-			const bRowIndex = (p && typeof p.bRowIndex === 'number') ? p.bRowIndex : -1;
-			let hasAnyDiff = false;
-			let fullyMatched = true;
-			const cells = columns.map((col) => {
-				const aVal = getCell(aRows, aRowIndex, col.aIndex);
-				const bVal = getCell(bRows, bRowIndex, col.bIndex);
-				const aMissing = aRowIndex < 0 || col.aIndex < 0;
-				const bMissing = bRowIndex < 0 || col.bIndex < 0;
-				let equal = false;
-				if (!aMissing && !bMissing) {
-					equal = cellEquals(aVal, bVal);
-				}
-				if (aMissing !== bMissing) {
-					hasAnyDiff = true;
-					fullyMatched = false;
-				} else if (!equal) {
-					hasAnyDiff = true;
-					fullyMatched = false;
-				}
-				return {
-					aMissing,
-					bMissing,
-					aText: aMissing ? '' : formatCellForDisplay(aVal),
-					bText: bMissing ? '' : formatCellForDisplay(bVal),
-					equal
-				};
-			});
-			// If one side missing entirely, it's not a full match.
-			if (aRowIndex < 0 || bRowIndex < 0) {
-				fullyMatched = false;
-				hasAnyDiff = true;
-			}
-			return {
-				pairIndex,
-				aRowIndex,
-				bRowIndex,
-				fullyMatched,
-				hasAnyDiff,
-				cells
-			};
-		});
+		const colLabels = columns.map(c => String((c && c.label) ? c.label : ''));
+		const aColLabels = colLabels
+			.filter((_, i) => i !== joinCanonIdx)
+			.map(n => String(m.aLabel || 'A') + '.' + n);
+		const bColLabels = colLabels
+			.filter((_, i) => i !== joinCanonIdx)
+			.map(n => String(m.bLabel || 'B') + '.' + n);
+		const outColumns = [String(selected.label || '')]
+			.concat(aColLabels)
+			.concat(bColLabels);
 
-		const colFullyMatched = columns.map((col, colIdx) => {
-			let anyCompared = false;
-			for (const row of rowModels) {
-				const cell = row.cells[colIdx];
-				if (!cell) continue;
-				if (cell.aMissing || cell.bMissing) {
-					return false;
-				}
-				anyCompared = true;
-				if (!cell.equal) {
-					return false;
-				}
-			}
-			return anyCompared;
-		});
+		return { columns: outColumns, rows: outRows };
+	};
 
+	const buildDiffModelFromStates = (aState, bState, labels) => {
+		const { columns } = buildCanonicalColumnsSorted(aState, bState);
+		const partitions = buildPartitionedRows(aState, bState, columns);
 		return {
 			aLabel: (labels && labels.aLabel) ? String(labels.aLabel) : 'A',
 			bLabel: (labels && labels.bLabel) ? String(labels.bLabel) : 'B',
 			columns,
-			rows: rowModels,
-			colFullyMatched
+			partitions,
+			_aState: aState,
+			_bState: bState
 		};
 	};
 
 	const renderInto = (containerEl, model, options) => {
 		if (!containerEl) return;
 		const opts = (options && typeof options === 'object') ? options : {};
-		const hideMatchedRows = (typeof opts.hideMatchedRows === 'boolean') ? opts.hideMatchedRows : true;
-		const hideMatchedColumns = (typeof opts.hideMatchedColumns === 'boolean') ? opts.hideMatchedColumns : true;
-		const hideMatchedCells = (typeof opts.hideMatchedCells === 'boolean') ? opts.hideMatchedCells : false;
+		const joinColumnKey = (opts && opts.joinColumnKey != null) ? String(opts.joinColumnKey) : '';
+		const diffKeyPrefix = sanitizeDomIdPart(opts && opts.diffKeyPrefix ? opts.diffKeyPrefix : 'diff');
 
-		const m = (model && typeof model === 'object') ? model : { columns: [], rows: [], colFullyMatched: [] };
+		const m = (model && typeof model === 'object') ? model : { columns: [], partitions: { common: [], onlyA: [], onlyB: [] } };
+		const columns = Array.isArray(m.columns) ? m.columns : [];
+		const partitions = (m.partitions && typeof m.partitions === 'object') ? m.partitions : { common: [], onlyA: [], onlyB: [] };
+		const common = Array.isArray(partitions.common) ? partitions.common : [];
+		const onlyA = Array.isArray(partitions.onlyA) ? partitions.onlyA : [];
+		const onlyB = Array.isArray(partitions.onlyB) ? partitions.onlyB : [];
 
-		const visibleColIndices = [];
-		for (let c = 0; c < (m.columns || []).length; c++) {
-			if (hideMatchedColumns && m.colFullyMatched && m.colFullyMatched[c]) continue;
-			visibleColIndices.push(c);
-		}
-
-		const visibleRows = (m.rows || []).filter(r => {
-			if (!r) return false;
-			if (hideMatchedRows && r.fullyMatched) return false;
-			return true;
-		});
-
-		const headerColsHtml = visibleColIndices.map((c) => {
-			const col = m.columns[c];
-			if (!col) return '';
-			const aName = String(col.aName || '').trim();
-			const bName = String(col.bName || '').trim();
-			if (aName && bName && aName !== bName) {
-				return (
-					'<th class="diff-col">' +
-					'<div class="diff-col-label">' + (String(col.label || '')) + '</div>' +
-					'<div class="diff-col-names">' +
-					'<span class="diff-col-a">' + escapeHtml(m.aLabel) + ': ' + escapeHtml(aName) + '</span>' +
-					'<span class="diff-col-b">' + escapeHtml(m.bLabel) + ': ' + escapeHtml(bName) + '</span>' +
-					'</div>' +
-					'</th>'
-				);
-			}
-			return '<th class="diff-col"><div class="diff-col-label">' + escapeHtml(String(col.label || '')) + '</div></th>';
-		}).join('');
-
-		const bodyHtml = visibleRows.map((r) => {
-			const rowLabelParts = [];
-			if (typeof r.aRowIndex === 'number' && r.aRowIndex >= 0) rowLabelParts.push(escapeHtml(m.aLabel) + ' #' + String(r.aRowIndex + 1));
-			if (typeof r.bRowIndex === 'number' && r.bRowIndex >= 0) rowLabelParts.push(escapeHtml(m.bLabel) + ' #' + String(r.bRowIndex + 1));
-			const rowLabel = rowLabelParts.length ? rowLabelParts.join(' / ') : 'Row';
-
-			const cellsHtml = visibleColIndices.map((c) => {
-				const cell = r.cells[c];
-				if (!cell) return '<td class="diff-cell"></td>';
-
-				if (cell.aMissing && cell.bMissing) {
-					return '<td class="diff-cell diff-cell-empty"></td>';
-				}
-
-				if (!cell.aMissing && !cell.bMissing && cell.equal) {
-					if (hideMatchedCells) {
-						return '<td class="diff-cell diff-cell-match diff-cell-empty"></td>';
-					}
-					return '<td class="diff-cell diff-cell-match"><div class="diff-cell-single">' + escapeHtml(cell.aText) + '</div></td>';
-				}
-
-				const aLine = cell.aMissing ? '' : ('<div class="diff-cell-line diff-cell-a"><span class="diff-cell-tag">' + escapeHtml(m.aLabel) + '</span><span class="diff-cell-val">' + escapeHtml(cell.aText) + '</span></div>');
-				const bLine = cell.bMissing ? '' : ('<div class="diff-cell-line diff-cell-b"><span class="diff-cell-tag">' + escapeHtml(m.bLabel) + '</span><span class="diff-cell-val">' + escapeHtml(cell.bText) + '</span></div>');
-				return '<td class="diff-cell diff-cell-diff">' + aLine + bLine + '</td>';
-			}).join('');
-
+		const renderSection = (hostId) => {
 			return (
-				'<tr class="diff-row' + (r.fullyMatched ? ' diff-row-match' : '') + '">' +
-				'<th class="diff-row-label">' + rowLabel + '</th>' +
-				cellsHtml +
-				'</tr>'
+				'<section class="diff-section">' +
+				'<div class="diff-results-host" id="' + escapeHtml(hostId) + '"></div>' +
+				'</section>'
 			);
+		};
+
+		const joinSelectOptionsHtml = columns.map((c) => {
+			const key = c ? String(c.key) : '';
+			const label = c ? String(c.label || '') : '';
+			const selectedAttr = (key && joinColumnKey && key === joinColumnKey) ? ' selected' : '';
+			return '<option value="' + escapeHtml(key) + '"' + selectedAttr + '>' + escapeHtml(label) + '</option>';
 		}).join('');
 
-		const emptyHtml = (visibleRows.length === 0)
-			? '<div class="diff-empty">No differences to show.</div>'
-			: '';
+		const joinHostId = diffKeyPrefix + '_join_host';
+		const joinSectionHtml = (
+			'<section class="diff-section">' +
+			'<div class="diff-join-controls">' +
+			'<label class="diff-view-toggle" for="diffJoinColumnSelect">Join column</label>' +
+			'<select id="diffJoinColumnSelect" class="diff-join-select">' + joinSelectOptionsHtml + '</select>' +
+			'</div>' +
+			'<div class="diff-results-host" id="' + escapeHtml(joinHostId) + '"></div>' +
+			'</section>'
+		);
 
 		containerEl.innerHTML = (
 			'<div class="diff-view">' +
-			'<div class="diff-view-meta">' +
-			'<div class="diff-view-meta-item"><span class="diff-meta-label">' + escapeHtml(m.aLabel) + '</span></div>' +
-			'<div class="diff-view-meta-item"><span class="diff-meta-label">' + escapeHtml(m.bLabel) + '</span></div>' +
-			'</div>' +
-			emptyHtml +
-			'<div class="diff-table-wrap">' +
-			'<table class="diff-table" aria-label="Dataset diff">' +
-			'<thead><tr><th class="diff-corner"></th>' + headerColsHtml + '</tr></thead>' +
-			'<tbody>' + bodyHtml + '</tbody>' +
-			'</table>' +
-			'</div>' +
+			renderSection(diffKeyPrefix + '_common_host') +
+			renderSection(diffKeyPrefix + '_onlyA_host') +
+			renderSection(diffKeyPrefix + '_onlyB_host') +
+			joinSectionHtml +
 			'</div>'
 		);
+
+		// Now that DOM hosts exist, render each section using the shared results table control.
+		try {
+			const canonicalLabels = columns.map(c => String((c && c.label) ? c.label : ''));
+			{
+				const host = document.getElementById(diffKeyPrefix + '_common_host');
+				renderUsingSharedResultsTable(host, diffKeyPrefix + '_common', 'Rows common to both', canonicalLabels, common.map(r => Array.isArray(r && r.values) ? r.values : []));
+				clampSharedResultsTableToMaxRows(host, 10);
+			}
+			{
+				const host = document.getElementById(diffKeyPrefix + '_onlyA_host');
+				const cols = ['Row'].concat(canonicalLabels);
+				const rows = onlyA.map(r => ['Row #' + String((r && typeof r.aRowIndex === 'number') ? (r.aRowIndex + 1) : ''), ...(Array.isArray(r && r.values) ? r.values : [])]);
+				renderUsingSharedResultsTable(host, diffKeyPrefix + '_onlyA', 'Rows only in ' + String(m.aLabel || 'A'), cols, rows);
+				clampSharedResultsTableToMaxRows(host, 10);
+			}
+			{
+				const host = document.getElementById(diffKeyPrefix + '_onlyB_host');
+				const cols = ['Row'].concat(canonicalLabels);
+				const rows = onlyB.map(r => ['Row #' + String((r && typeof r.bRowIndex === 'number') ? (r.bRowIndex + 1) : ''), ...(Array.isArray(r && r.values) ? r.values : [])]);
+				renderUsingSharedResultsTable(host, diffKeyPrefix + '_onlyB', 'Rows only in ' + String(m.bLabel || 'B'), cols, rows);
+				clampSharedResultsTableToMaxRows(host, 10);
+			}
+			const joinHost = document.getElementById(joinHostId);
+			const join = buildInnerJoinResult(m, joinColumnKey || (columns[0] ? columns[0].key : ''));
+			renderUsingSharedResultsTable(joinHost, diffKeyPrefix + '_join', 'Inner join: only in ' + String(m.aLabel || 'A') + ' ⨝ only in ' + String(m.bLabel || 'B'), join.columns, join.rows);
+			clampSharedResultsTableToMaxRows(joinHost, 10);
+		} catch { /* ignore */ }
 	};
 
 	const ensureModalHookups = () => {
@@ -522,45 +700,42 @@
 		if (!modal || !bodyEl) return;
 		try { if (titleEl) titleEl.textContent = 'Diff: ' + aLabel + ' vs ' + bLabel; } catch { /* ignore */ }
 
-		const hideMatchedRowsEl = document.getElementById('diffHideMatchedRows');
-		const hideMatchedColsEl = document.getElementById('diffHideMatchedCols');
-		const hideMatchedCellsEl = document.getElementById('diffHideMatchedCells');
+		let joinColumnKey = '';
 
 		const readOptions = () => {
+			const diffKeyPrefix = 'diff_' + sanitizeDomIdPart(aBoxId) + '_' + sanitizeDomIdPart(bBoxId);
 			return {
-				hideMatchedRows: hideMatchedRowsEl ? !!hideMatchedRowsEl.checked : true,
-				hideMatchedColumns: hideMatchedColsEl ? !!hideMatchedColsEl.checked : true,
-				hideMatchedCells: hideMatchedCellsEl ? !!hideMatchedCellsEl.checked : false
+				joinColumnKey: joinColumnKey,
+				diffKeyPrefix: diffKeyPrefix
 			};
 		};
 
 		let model = null;
 		try {
-			model = buildDiffModelFromStates(aState, bState, { aLabel, bLabel }, 'auto');
+			model = buildDiffModelFromStates(aState, bState, { aLabel, bLabel });
 		} catch {
 			model = null;
 		}
 
 		const rerender = () => {
 			try {
+				if (!joinColumnKey) {
+					try {
+						const cols = model && Array.isArray(model.columns) ? model.columns : [];
+						joinColumnKey = cols && cols.length ? String(cols[0].key || '') : '';
+					} catch { /* ignore */ }
+				}
 				renderInto(bodyEl, model, readOptions());
+				const selectEl = document.getElementById('diffJoinColumnSelect');
+				if (selectEl) {
+					try { selectEl.value = joinColumnKey || ''; } catch { /* ignore */ }
+					selectEl.onchange = () => {
+						try { joinColumnKey = String(selectEl.value || ''); } catch { joinColumnKey = ''; }
+						rerender();
+					};
+				}
 			} catch { /* ignore */ }
 		};
-
-		try {
-			if (hideMatchedRowsEl && !hideMatchedRowsEl.__kustoWired) {
-				hideMatchedRowsEl.__kustoWired = true;
-				hideMatchedRowsEl.addEventListener('change', rerender);
-			}
-			if (hideMatchedColsEl && !hideMatchedColsEl.__kustoWired) {
-				hideMatchedColsEl.__kustoWired = true;
-				hideMatchedColsEl.addEventListener('change', rerender);
-			}
-			if (hideMatchedCellsEl && !hideMatchedCellsEl.__kustoWired) {
-				hideMatchedCellsEl.__kustoWired = true;
-				hideMatchedCellsEl.addEventListener('change', rerender);
-			}
-		} catch { /* ignore */ }
 
 		rerender();
 

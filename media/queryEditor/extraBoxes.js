@@ -791,6 +791,7 @@ function addMarkdownBox(options) {
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	// Do not auto-assign a name; section names are user-defined.
 
 	// Apply any persisted height before initializing the editor/mode.
 	try {
@@ -1494,6 +1495,7 @@ function addPythonBox(options) {
 		'</div>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
+	// Do not auto-assign a name; this section type does not use names.
 	initPythonEditor(id);
 	setPythonOutput(id, '');
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }

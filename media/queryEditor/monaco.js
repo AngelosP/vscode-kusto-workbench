@@ -5418,17 +5418,37 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 						const boundsRect = boundsDom.getBoundingClientRect();
 						const suggestRect = suggest.getBoundingClientRect();
 						const pad = 4;
+						// Handle bottom overflow.
 						const overflow = Math.ceil((suggestRect.bottom || 0) - ((boundsRect.bottom || 0) - pad));
-						if (!isFinite(overflow) || overflow <= 0) return;
+						// Handle top overflow (common when Monaco chooses above-caret placement).
+						const topOverflow = Math.ceil(((boundsRect.top || 0) + pad) - (suggestRect.top || 0));
+
+						if ((!isFinite(overflow) || overflow <= 0) && (!isFinite(topOverflow) || topOverflow <= 0)) {
+							return;
+						}
+
 						const rowHeight = getRowHeightPx(suggest);
-						const reduceBy = Math.max(1, Math.ceil(overflow / Math.max(1, rowHeight)));
-						const next = Math.max(1, (lastApplied.maxVisible || DEFAULT_MAX_VISIBLE) - reduceBy);
+						let next = lastApplied.maxVisible || DEFAULT_MAX_VISIBLE;
+						try {
+							if (isFinite(overflow) && overflow > 0) {
+								const reduceBy = Math.max(1, Math.ceil(overflow / Math.max(1, rowHeight)));
+								next = Math.max(1, next - reduceBy);
+							}
+							if (isFinite(topOverflow) && topOverflow > 0) {
+								const reduceByTop = Math.max(1, Math.ceil(topOverflow / Math.max(1, rowHeight)));
+								next = Math.max(1, next - reduceByTop);
+							}
+						} catch { /* ignore */ }
 						applyMaxVisibleSuggestions(next);
 						// If Monaco still overflows, apply DOM clamp and relayout as a fallback.
 						try {
 							const boundsRect2 = boundsDom.getBoundingClientRect();
 							const suggestRect2 = suggest.getBoundingClientRect();
-							const availablePx = Math.floor((boundsRect2.bottom || 0) - (suggestRect2.top || 0) - pad);
+							let availablePx = Math.floor((boundsRect2.bottom || 0) - (suggestRect2.top || 0) - pad);
+							// If it's anchored above the caret, clamp to available space above instead.
+							if (isFinite(topOverflow) && topOverflow > 0) {
+								availablePx = Math.floor((suggestRect2.bottom || 0) - (boundsRect2.top || 0) - pad);
+							}
 							if (isFinite(availablePx) && availablePx > 0 && (suggestRect2.height || 0) > availablePx + 2) {
 								applyDomClampFallback(suggest, availablePx);
 								tryRelayoutSuggestWidget(availablePx);
@@ -5467,18 +5487,29 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				const boundsRect = boundsDom.getBoundingClientRect();
 				const suggestRect = suggest.getBoundingClientRect();
 				const pad = 4;
-				let availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
+				const topOverflow = Math.ceil(((boundsRect.top || 0) + pad) - (suggestRect.top || 0));
+				let availablePx = 0;
+				// If Monaco chose above-caret placement and it overflows at the top of the editor,
+				// clamp based on the available space ABOVE (bounds.top .. suggest.bottom).
+				if (isFinite(topOverflow) && topOverflow > 0) {
+					availablePx = Math.floor((suggestRect.bottom || 0) - (boundsRect.top || 0) - pad);
+				} else {
+					// Default: clamp based on the available space below the widget's top.
+					availablePx = Math.floor((boundsRect.bottom || 0) - (suggestRect.top || 0) - pad);
+				}
 				if (!isFinite(availablePx) || availablePx <= 0) {
 					return;
 				}
 
 				// If the dropdown would be too small, expand the whole editor section so we can
-				// always show a usable menu (minimum 50px).
+				// always show a usable menu (minimum 50px). Only applicable to below-caret placement.
 				try {
-					if (ensureMinimumDropdownSpace(availablePx)) {
-						// Layout changed; recompute on next frame.
-						scheduleClamp();
-						return;
+					if (!(isFinite(topOverflow) && topOverflow > 0)) {
+						if (ensureMinimumDropdownSpace(availablePx)) {
+							// Layout changed; recompute on next frame.
+							scheduleClamp();
+							return;
+						}
 					}
 				} catch { /* ignore */ }
 
@@ -6329,6 +6360,15 @@ function initQueryEditor(boxId) {
 		const __kustoTriggerAutocomplete = (ed) => {
 			try {
 				if (!ed) return;
+				let shouldDeferTrigger = false;
+				// Ensure the editor's layout info is up-to-date before Monaco decides
+				// whether the suggest widget should render above or below the caret.
+				try {
+					ed.layout();
+					// Layout changes can be async in VS Code webviews; defer the trigger by a frame
+					// so Monaco computes widget placement from the updated dimensions.
+					shouldDeferTrigger = true;
+				} catch { /* ignore */ }
 				// Monaco decides whether to render the suggest widget above vs below the caret
 				// based on the *estimated* widget height and the available space below.
 				// In our auto-resizing editors, later instances can end up with very little
@@ -6355,7 +6395,10 @@ function initQueryEditor(boxId) {
 								const need = Math.max(0, MIN_BELOW_PX - availableBelowPx);
 								if (currentH > 0 && need > 0) {
 									wrapper.style.height = (currentH + need) + 'px';
-									try { ed.layout(); } catch { /* ignore */ }
+									try {
+										ed.layout();
+										shouldDeferTrigger = true;
+									} catch { /* ignore */ }
 									availableBelowPx += need;
 								}
 							}
@@ -6374,6 +6417,7 @@ function initQueryEditor(boxId) {
 						const maxVisible = Math.max(1, Math.floor(usable / Math.max(1, rowHeightPx)));
 						try {
 							ed.updateOptions({ suggest: { maxVisibleSuggestions: maxVisible } });
+							shouldDeferTrigger = true;
 						} catch { /* ignore */ }
 					}
 				} catch { /* ignore */ }
@@ -6383,7 +6427,27 @@ function initQueryEditor(boxId) {
 					const model = ed.getModel && ed.getModel();
 					versionId = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
 				} catch { /* ignore */ }
-				ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
+				const triggerNow = () => {
+					try {
+						ed.trigger('keyboard', 'editor.action.triggerSuggest', {});
+						try { if (typeof ed.__kustoScheduleSuggestClamp === 'function') ed.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
+					} catch { /* ignore */ }
+				};
+				if (shouldDeferTrigger) {
+					try {
+						requestAnimationFrame(() => {
+							try { ed.layout(); } catch { /* ignore */ }
+							triggerNow();
+						});
+					} catch {
+						setTimeout(() => {
+							try { ed.layout(); } catch { /* ignore */ }
+							triggerNow();
+						}, 0);
+					}
+				} else {
+					triggerNow();
+				}
 				// Let Monaco render and providers settle before we decide to hide.
 				// Use longer delays and only hide if the model didn't change.
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 1200);
@@ -7086,6 +7150,8 @@ function initQueryEditor(boxId) {
 			setTimeout(() => {
 				try { activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
 				try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { editor.layout(); } catch { /* ignore */ }
+				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
 				try { editor.focus(); } catch { /* ignore */ }
 			}, 0);
 		};
@@ -7159,10 +7225,75 @@ function initQueryEditor(boxId) {
 			}
 			const ro = new ResizeObserver(() => {
 				try { editor.layout(); } catch { /* ignore */ }
+				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
 			});
 			ro.observe(wrapper);
 			queryEditorResizeObservers[boxId] = ro;
 		}
+
+		// In multi-editor layouts (e.g. Copilot split panes), editors can be created while hidden.
+		// Ensure we relayout when the wrapper becomes visible again so Monaco widgets position correctly.
+		try {
+			if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers && queryEditorVisibilityObservers[boxId]) {
+				try { queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
+				try { delete queryEditorVisibilityObservers[boxId]; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		try {
+			if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers && queryEditorVisibilityMutationObservers[boxId]) {
+				try { queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
+				try { delete queryEditorVisibilityMutationObservers[boxId]; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+
+		const scheduleRelayoutSoon = () => {
+			try {
+				requestAnimationFrame(() => {
+					try { editor.layout(); } catch { /* ignore */ }
+					try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
+				});
+			} catch {
+				setTimeout(() => {
+					try { editor.layout(); } catch { /* ignore */ }
+					try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
+				}, 0);
+			}
+		};
+
+		try {
+			const observedEl = wrapper || container;
+			if (observedEl && typeof IntersectionObserver !== 'undefined') {
+				const io = new IntersectionObserver((entries) => {
+					try {
+						if (!entries || !entries.length) return;
+						for (const e of entries) {
+							if (e && e.isIntersecting) {
+								scheduleRelayoutSoon();
+								break;
+							}
+						}
+					} catch { /* ignore */ }
+				});
+				io.observe(observedEl);
+				try { if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers) queryEditorVisibilityObservers[boxId] = io; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+
+		try {
+			if (wrapper && typeof MutationObserver !== 'undefined') {
+				const mo = new MutationObserver(() => {
+					try {
+						// Only relayout if the wrapper is measurable (visible).
+						const h = wrapper.getBoundingClientRect ? Math.round(wrapper.getBoundingClientRect().height || 0) : 0;
+						if (h > 0) {
+							scheduleRelayoutSoon();
+						}
+					} catch { /* ignore */ }
+				});
+				mo.observe(wrapper, { attributes: true, attributeFilter: ['class', 'style', 'aria-hidden'] });
+				try { if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers) queryEditorVisibilityMutationObservers[boxId] = mo; } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
 
 		// Drag handle resize (more reliable than CSS resize in VS Code webviews).
 		if (resizer) {
