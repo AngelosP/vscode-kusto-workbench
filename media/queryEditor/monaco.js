@@ -5205,6 +5205,143 @@ function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
 function __kustoInstallSmartSuggestWidgetSizing(editor) {
 	try {
 		if (!editor) return () => { };
+
+		// Minimal behavior: when suggest becomes visible, preselect the matching item once.
+		// After that, do not interact with the suggest list/widget at all; let Monaco own it.
+		// This avoids destabilizing Monaco suggest rendering across multiple editors.
+		const minimalDispose = (() => {
+			const safeTrigger = (ed, commandId) => {
+				try {
+					if (!ed || !commandId) return;
+					const result = ed.trigger('keyboard', commandId, {});
+					if (result && typeof result.then === 'function') {
+						result.catch(() => { /* ignore */ });
+					}
+				} catch { /* ignore */ }
+			};
+
+			const getEditorDomMinimal = () => {
+				try {
+					return (typeof editor.getDomNode === 'function') ? editor.getDomNode() : null;
+				} catch {
+					return null;
+				}
+			};
+
+			// Keep existing call sites safe, but intentionally no-op.
+			try { editor.__kustoScheduleSuggestClamp = () => { }; } catch { /* ignore */ }
+
+			let didPreselectThisOpen = false;
+			let lastVisible = false;
+			let preselectScheduled = false;
+
+			const schedulePreselectOnce = () => {
+				try {
+					if (didPreselectThisOpen) return;
+					if (preselectScheduled) return;
+					preselectScheduled = true;
+					requestAnimationFrame(() => {
+						preselectScheduled = false;
+						try {
+							if (didPreselectThisOpen) return;
+							if (typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
+							editor.__kustoPreselectExactWordInSuggestIfPresent();
+						} catch { /* ignore */ }
+						didPreselectThisOpen = true;
+					});
+				} catch {
+					preselectScheduled = false;
+					setTimeout(() => {
+						try {
+							preselectScheduled = false;
+							if (didPreselectThisOpen) return;
+							if (typeof editor.__kustoPreselectExactWordInSuggestIfPresent !== 'function') return;
+							editor.__kustoPreselectExactWordInSuggestIfPresent();
+						} catch { /* ignore */ }
+						didPreselectThisOpen = true;
+					}, 0);
+				}
+			};
+
+			try { editor.__kustoScheduleSuggestPreselect = schedulePreselectOnce; } catch { /* ignore */ }
+
+			const checkSuggestVisibilityTransition = () => {
+				try {
+					const root = getEditorDomMinimal();
+					if (!root || typeof root.querySelector !== 'function') return;
+					const widget = root.querySelector('.suggest-widget');
+					if (!widget || typeof widget.getAttribute !== 'function') return;
+					const ariaHidden = String(widget.getAttribute('aria-hidden') || '').toLowerCase();
+					const visible = ariaHidden !== 'true';
+					if (!visible) {
+						lastVisible = false;
+						didPreselectThisOpen = false;
+						return;
+					}
+					if (!lastVisible) {
+						lastVisible = true;
+						schedulePreselectOnce();
+					}
+				} catch { /* ignore */ }
+			};
+
+			const scheduleHideSuggestIfTrulyBlurred = () => {
+				try {
+					setTimeout(() => {
+						try {
+							const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+							const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+							if (hasWidgetFocus || hasTextFocus) return;
+						} catch { /* ignore */ }
+						safeTrigger(editor, 'hideSuggestWidget');
+					}, 150);
+				} catch { /* ignore */ }
+			};
+
+			let disposables = [];
+			const safeOn = (fn) => {
+				try { if (fn && typeof fn.dispose === 'function') disposables.push(fn); } catch { /* ignore */ }
+			};
+			try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
+			try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
+
+			let mo = null;
+			try {
+				const root = getEditorDomMinimal();
+				if (root && typeof MutationObserver !== 'undefined') {
+					mo = new MutationObserver(() => checkSuggestVisibilityTransition());
+					mo.observe(root, { subtree: true, attributes: true, attributeFilter: ['aria-hidden'] });
+				}
+			} catch {
+				mo = null;
+			}
+
+			try { checkSuggestVisibilityTransition(); } catch { /* ignore */ }
+
+			const dispose = () => {
+				try { if (mo) mo.disconnect(); } catch { /* ignore */ }
+				try { mo = null; } catch { /* ignore */ }
+				try {
+					for (const d of disposables) {
+						try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+				disposables = [];
+				try { delete editor.__kustoScheduleSuggestClamp; } catch { /* ignore */ }
+				try { delete editor.__kustoScheduleSuggestPreselect; } catch { /* ignore */ }
+			};
+
+			try {
+				if (typeof editor.onDidDispose === 'function') {
+					editor.onDidDispose(() => dispose());
+				}
+			} catch { /* ignore */ }
+
+			return dispose;
+		})();
+
+		return minimalDispose;
+
 		const __kustoSafeEditorTrigger = (ed, commandId) => {
 			try {
 				if (!ed || !commandId) return;
