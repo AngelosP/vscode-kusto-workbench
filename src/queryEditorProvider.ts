@@ -85,6 +85,8 @@ type KqlLanguageRequestMessage = {
 
 type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
 
+type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
+
 type IncomingWebviewMessage =
 	| { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
@@ -97,6 +99,7 @@ type IncomingWebviewMessage =
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
+	| SaveResultsCsvMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
@@ -562,6 +565,9 @@ export class QueryEditorProvider {
 			case 'showInfo':
 				vscode.window.showInformationMessage(message.message);
 				return;
+			case 'saveResultsCsv':
+				await this.saveResultsCsvFromWebview(message);
+				return;
 			case 'checkCopilotAvailability':
 				await this.checkCopilotAvailability(message.boxId);
 				return;
@@ -610,6 +616,44 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private async saveResultsCsvFromWebview(message: SaveResultsCsvMessage): Promise<void> {
+		try {
+			const csv = String(message.csv || '');
+			if (!csv.trim()) {
+				vscode.window.showInformationMessage('No results to save.');
+				return;
+			}
+
+			const suggestedFileName = String(message.suggestedFileName || 'kusto-results.csv') || 'kusto-results.csv';
+			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
+			const defaultUri = vscode.Uri.joinPath(baseDir, suggestedFileName);
+
+			const picked = await vscode.window.showSaveDialog({
+				defaultUri,
+				filters: { CSV: ['csv'] }
+			});
+
+			if (!picked) {
+				return;
+			}
+
+			let targetUri = picked;
+			try {
+				const lower = picked.fsPath.toLowerCase();
+				if (!lower.endsWith('.csv')) {
+					targetUri = vscode.Uri.file(picked.fsPath + '.csv');
+				}
+			} catch {
+				// ignore
+			}
+
+			await vscode.workspace.fs.writeFile(targetUri, Buffer.from(csv, 'utf8'));
+			vscode.window.showInformationMessage(`Saved results to ${targetUri.fsPath}`);
+		} catch {
+			vscode.window.showErrorMessage('Failed to save results to CSV file.');
 		}
 	}
 

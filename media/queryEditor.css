@@ -2225,6 +2225,15 @@
 			min-width: 0;
 		}
 
+		.results-sep {
+			display: inline-block;
+			width: 0;
+			height: 18px;
+			border-left: 1px solid var(--vscode-panel-border);
+			margin: 0 4px;
+			opacity: 0.9;
+		}
+
 		/* Clickable error locations (line/column) */
 		.kusto-error-location {
 			display: inline-flex;
@@ -2288,6 +2297,71 @@
 		.tool-toggle-btn.is-active {
 			background: var(--vscode-button-background);
 			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-split-btn {
+			display: inline-flex;
+			align-items: stretch;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn {
+			border-radius: 0;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn:first-child {
+			border-top-left-radius: 2px;
+			border-bottom-left-radius: 2px;
+		}
+
+		.kusto-split-btn.kusto-split-single > .tool-toggle-btn:first-child {
+			border-top-right-radius: 2px;
+			border-bottom-right-radius: 2px;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn:last-child {
+			border-top-right-radius: 2px;
+			border-bottom-right-radius: 2px;
+			border-left: none;
+			padding-left: 6px;
+			padding-right: 6px;
+			min-width: 22px;
+			font-size: 12px;
+		}
+
+		.kusto-split-menu {
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+			padding: 4px;
+			display: inline-block;
+			width: max-content;
+			max-width: calc(100vw - 16px);
+		}
+
+		.kusto-split-menu-item {
+			display: block;
+			width: auto;
+			text-align: left;
+			background: transparent;
+			color: inherit;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			padding: 6px 8px;
+			cursor: pointer;
+			font-size: 12px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.kusto-split-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-split-menu-item:focus-visible {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
 		}
 
 		.data-search {

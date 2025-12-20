@@ -29,6 +29,16 @@ function __kustoGetCopyIconSvg() {
 	);
 }
 
+function __kustoGetSaveIconSvg() {
+	return (
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 2.5h8.2L13.5 4.8V13.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1z" />' +
+		'<path d="M5 2.8V6h6V2.8" />' +
+		'<path d="M5 14.5V9.5h6v5" />' +
+		'</svg>'
+	);
+}
+
 function __kustoGetFilterIconSvg(size) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 12;
 	return (
@@ -73,11 +83,41 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	const columnBtn = document.getElementById(boxId + '_results_column_btn');
 	const sortBtn = document.getElementById(boxId + '_results_sort_btn');
 	const copyBtn = document.getElementById(boxId + '_results_copy_btn');
+	const saveBtn = document.getElementById(boxId + '_results_save_btn');
+	const copyMenuBtn = document.getElementById(boxId + '_results_copy_menu_btn');
+	const saveMenuBtn = document.getElementById(boxId + '_results_save_menu_btn');
+	const copySplit = document.getElementById(boxId + '_results_copy_split');
+	const saveSplit = document.getElementById(boxId + '_results_save_split');
+	const sep1 = document.getElementById(boxId + '_results_sep_1');
+	const sep2 = document.getElementById(boxId + '_results_sep_2');
 	const display = visible ? '' : 'none';
 	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (sortBtn) { sortBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (copyBtn) { copyBtn.style.display = display; } } catch { /* ignore */ }
+	try { if (saveBtn) { saveBtn.style.display = display; } } catch { /* ignore */ }
+	// Split carets follow filtered state; don't force them visible just because tools are shown.
+	try {
+		if (!visible) {
+			if (copyMenuBtn) { copyMenuBtn.style.display = 'none'; }
+			if (saveMenuBtn) { saveMenuBtn.style.display = 'none'; }
+		} else {
+			const state = __kustoGetResultsState(boxId);
+			const filtered = __kustoIsResultsFiltered(state);
+			if (typeof __kustoSetSplitCaretsVisible === 'function') {
+				__kustoSetSplitCaretsVisible(boxId, filtered);
+			} else {
+				// Fallback: show/hide directly.
+				const caretDisplay = filtered ? '' : 'none';
+				if (copyMenuBtn) { copyMenuBtn.style.display = caretDisplay; }
+				if (saveMenuBtn) { saveMenuBtn.style.display = caretDisplay; }
+			}
+		}
+	} catch { /* ignore */ }
+	try { if (copySplit) { copySplit.style.display = display; } } catch { /* ignore */ }
+	try { if (saveSplit) { saveSplit.style.display = display; } } catch { /* ignore */ }
+	try { if (sep1) { sep1.style.display = display; } } catch { /* ignore */ }
+	try { if (sep2) { sep2.style.display = display; } } catch { /* ignore */ }
 }
 
 function __kustoHideResultsTools(boxId) {
@@ -2019,7 +2059,7 @@ function __kustoRerenderResultsTable(boxId) {
 		for (let i = 0; i < (state.columns || []).length; i++) {
 			const el = document.getElementById(boxId + '_filter_link_' + i);
 			if (!el) continue;
-			const active = !!filters[String(i)];
+			const active = __kustoIsFilterSpecActive(filters[String(i)]);
 			el.innerHTML = active
 				? ('<a href="#" class="kusto-filtered-link" onclick="openColumnFilter(event, ' + String(i) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); return false;">(filtered)</a>')
 				: '';
@@ -2102,6 +2142,7 @@ function __kustoRerenderResultsTable(boxId) {
 
 	// Ensure mouse drag selection handlers are attached once per table container.
 	try { __kustoEnsureDragSelectionHandlers(boxId); } catch { /* ignore */ }
+	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 }
 
 function displayResult(result) {
@@ -2189,6 +2230,7 @@ function displayResultForBox(result, boxId, options) {
 	const resultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg();
 	const sortIconSvg = __kustoGetSortIconSvg();
 	const copyIconSvg = __kustoGetCopyIconSvg();
+	const saveIconSvg = __kustoGetSaveIconSvg();
 
 	const stateForRender = __kustoGetResultsState(boxId);
 	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_, i) => i);
@@ -2199,10 +2241,19 @@ function displayResultForBox(result, boxId, options) {
 		'<strong>' + label + ':</strong> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns' +
 		execPart +
 		'<button class="tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
-		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
+		'<span class="results-sep" id="' + boxId + '_results_sep_1" aria-hidden="true"></span>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
-		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="copyVisibleResultsToClipboard(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
+		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
+		'<span class="results-sep" id="' + boxId + '_results_sep_2" aria-hidden="true"></span>' +
+		'<span class="kusto-split-btn" id="' + boxId + '_results_save_split">' +
+		'<button class="tool-toggle-btn tool-save-results-btn" id="' + boxId + '_results_save_btn" onclick="__kustoOnSavePrimary(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\')" title="Save results to file" aria-label="Save results to file">' + saveIconSvg + '</button>' +
+		'<button class="tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_save_menu_btn" style="display: none;" onclick="__kustoOnSaveMenu(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\', this)" title="More save options" aria-label="More save options">▾</button>' +
+		'</span>' +
+		'<span class="kusto-split-btn" id="' + boxId + '_results_copy_split">' +
+		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="__kustoOnCopyPrimary(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
+		'<button class="tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_copy_menu_btn" style="display: none;" onclick="__kustoOnCopyMenu(\'' + boxId + '\', this)" title="More copy options" aria-label="More copy options">▾</button>' +
+		'</span>' +
 		'</div>' +
 		'</div>' +
 		'<div class="results-body" id="' + boxId + '_results_body">' +
@@ -2283,6 +2334,7 @@ function displayResultForBox(result, boxId, options) {
 
 	resultsDiv.innerHTML = html;
 	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 	try {
 		if (typeof __kustoApplyResultsVisibility === 'function') {
 			__kustoApplyResultsVisibility(boxId);
@@ -3286,6 +3338,287 @@ function __kustoCellToClipboardString(cell) {
 	return s;
 }
 
+function __kustoCellToCsvString(cell) {
+	const raw = __kustoGetRawCellValue(cell);
+	if (raw === null || raw === undefined) return '';
+	let s = String(raw);
+	// RFC4180-ish: quote if needed, escape quotes by doubling them.
+	const needsQuotes = /[",\r\n]/.test(s);
+	if (needsQuotes) {
+		s = s.replace(/"/g, '""');
+		s = '"' + s + '"';
+	}
+	return s;
+}
+
+function __kustoGetVisibleResultsAsCsv(boxId) {
+	return __kustoGetResultsAsCsv(boxId, 'visible');
+}
+
+function __kustoGetAllResultsAsCsv(boxId) {
+	return __kustoGetResultsAsCsv(boxId, 'all');
+}
+
+function __kustoGetResultsAsCsv(boxId, mode) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return '';
+
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	const cols = Array.isArray(state.columns) ? state.columns : [];
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_, i) => i)) : rows.map((_, i) => i);
+
+	const header = cols.map(c => __kustoCellToCsvString(c)).join(',');
+	const body = rowIndices.map(rowIdx => {
+		const row = rows[rowIdx] || [];
+		return row.map(cell => __kustoCellToCsvString(cell)).join(',');
+	}).join('\r\n');
+
+	// Always end with newline so CSV viewers behave nicely.
+	return header + (body ? ('\r\n' + body) : '') + '\r\n';
+}
+
+
+function __kustoMakeSafeCsvFileNameFromLabel(label) {
+	try {
+		let base = String(label || '').trim();
+		if (!base) {
+			return 'kusto-results.csv';
+		}
+		// Windows filename sanitization.
+		base = base.replace(/[\\/:*?"<>|]/g, '_');
+		base = base.replace(/\s+/g, ' ').trim();
+		base = base.replace(/[\.\s]+$/g, '');
+		if (!base) {
+			return 'kusto-results.csv';
+		}
+		if (!base.toLowerCase().endsWith('.csv')) {
+			base = base + '.csv';
+		}
+		return base;
+	} catch {
+		return 'kusto-results.csv';
+	}
+}
+
+
+function __kustoSaveResultsToCsvFile(boxId, sectionLabel, mode) {
+	try {
+		const csv = (mode === 'visible') ? __kustoGetVisibleResultsAsCsv(boxId) : __kustoGetAllResultsAsCsv(boxId);
+		if (!csv || !csv.trim()) {
+			try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
+			return;
+		}
+		if (typeof vscode === 'undefined' || !vscode || typeof vscode.postMessage !== 'function') {
+			try { alert('Save to file is unavailable in this view.'); } catch { /* ignore */ }
+			return;
+		}
+		vscode.postMessage({
+			type: 'saveResultsCsv',
+			boxId: boxId,
+			csv: csv,
+			suggestedFileName: __kustoMakeSafeCsvFileNameFromLabel(sectionLabel)
+		});
+	} catch (err) {
+		console.error('Failed to prepare CSV:', err);
+		try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
+	}
+}
+
+// Back-compat entrypoint (still used by older markup/hosts).
+function saveVisibleResultsToCsvFile(boxId, sectionLabel) {
+	__kustoSaveResultsToCsvFile(boxId, sectionLabel, 'visible');
+}
+
+function __kustoIsResultsFiltered(state) {
+	try {
+		if (!state) return false;
+		const rows = Array.isArray(state.rows) ? state.rows : [];
+		const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+		if (disp && disp.length !== rows.length) return true;
+		if (state.filteredRowIndices && Array.isArray(state.filteredRowIndices) && state.filteredRowIndices.length !== rows.length) return true;
+		const filters = state.columnFilters && typeof state.columnFilters === 'object' ? state.columnFilters : null;
+		if (filters) {
+			for (const k of Object.keys(filters)) {
+				if (__kustoIsFilterSpecActive(filters[k])) return true;
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoIsFilterSpecActive(spec) {
+	try {
+		if (!spec) return false;
+		if (typeof spec !== 'object') return true;
+		const kind = String(spec.kind || '');
+		if (kind === 'compound') {
+			return __kustoIsFilterSpecActive(spec.values) || __kustoIsFilterSpecActive(spec.rules);
+		}
+		if (kind === 'values') {
+			// Any persisted values spec is considered an active filter (normalization should have removed no-ops).
+			return true;
+		}
+		if (kind === 'rules') {
+			const rules = Array.isArray(spec.rules) ? spec.rules : null;
+			// Empty rules is a no-op; don't treat it as filtered.
+			if (!rules || rules.length === 0) {
+				// Back-compat: single-rule form.
+				if (spec.op) return true;
+				return false;
+			}
+			// Consider active only if at least one rule has an operator.
+			return rules.some(r => r && typeof r === 'object' && String(r.op || ''));
+		}
+		// Unknown spec shapes: treat as active.
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoOnSavePrimary(boxId, sectionLabel) {
+	const state = __kustoGetResultsState(boxId);
+	const filtered = __kustoIsResultsFiltered(state);
+	// Default: when filtered, save the filtered view; otherwise, save full results.
+	__kustoSaveResultsToCsvFile(boxId, sectionLabel, filtered ? 'visible' : 'all');
+}
+
+function __kustoOnSaveSecondary(boxId, sectionLabel) {
+	const state = __kustoGetResultsState(boxId);
+	const filtered = __kustoIsResultsFiltered(state);
+	// When filtered, secondary is the full/unfiltered export.
+	__kustoSaveResultsToCsvFile(boxId, sectionLabel, filtered ? 'all' : 'visible');
+}
+
+function __kustoHideSplitMenu() {
+	try {
+		if (window.__kustoSplitMenuEl) {
+			window.__kustoSplitMenuEl.remove();
+		}
+	} catch { /* ignore */ }
+	try { window.__kustoSplitMenuEl = null; } catch { /* ignore */ }
+}
+
+function __kustoShowSplitMenu(anchorEl, label, onClick) {
+	__kustoShowSplitMenuItems(anchorEl, [{ label, onClick }]);
+}
+
+function __kustoShowSplitMenuItems(anchorEl, items) {
+	try { __kustoHideSplitMenu(); } catch { /* ignore */ }
+	try {
+		if (!anchorEl) return;
+		const safeItems = Array.isArray(items) ? items : [];
+		if (safeItems.length === 0) return;
+
+		const r = anchorEl.getBoundingClientRect();
+		const el = document.createElement('div');
+		el.className = 'kusto-split-menu';
+		el.style.position = 'fixed';
+		el.style.left = Math.round(r.left) + 'px';
+		el.style.top = Math.round(r.bottom + 4) + 'px';
+		el.style.zIndex = '3000';
+		el.style.visibility = 'hidden';
+
+		for (const it of safeItems) {
+			if (!it || !it.label) continue;
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.className = 'kusto-split-menu-item';
+			btn.textContent = it.label;
+			btn.addEventListener('click', (ev) => {
+				try { ev.preventDefault(); ev.stopPropagation(); } catch { /* ignore */ }
+				try { __kustoHideSplitMenu(); } catch { /* ignore */ }
+				try { it.onClick && it.onClick(); } catch { /* ignore */ }
+			});
+			el.appendChild(btn);
+		}
+
+		window.__kustoSplitMenuEl = el;
+		document.body.appendChild(el);
+
+		// Auto-size to content, but clamp to viewport and keep on-screen.
+		try {
+			const margin = 8;
+			const maxW = Math.max(120, (window && window.innerWidth ? (window.innerWidth - margin * 2) : 400));
+			// Use scrollWidth for a true fit-to-contents measurement.
+			el.style.width = 'max-content';
+			el.style.maxWidth = String(maxW) + 'px';
+			const desiredW = Math.min((el.scrollWidth || 0) || maxW, maxW);
+			el.style.width = Math.round(desiredW) + 'px';
+			let left = Math.round(r.left);
+			if ((left + desiredW) > (window.innerWidth - margin)) {
+				left = Math.round(window.innerWidth - margin - desiredW);
+			}
+			if (left < margin) left = margin;
+			el.style.left = String(left) + 'px';
+		} catch { /* ignore */ }
+		try { el.style.visibility = ''; } catch { /* ignore */ }
+		setTimeout(() => {
+			try {
+				document.addEventListener('mousedown', function __kustoSplitMenuDismiss(ev) {
+					try {
+						if (!window.__kustoSplitMenuEl) {
+							document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
+							return;
+						}
+						if (window.__kustoSplitMenuEl.contains(ev.target) || anchorEl.contains(ev.target)) return;
+						__kustoHideSplitMenu();
+						document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
+					} catch { /* ignore */ }
+				});
+			} catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+}
+
+function __kustoSetSplitCaretsVisible(boxId, visible) {
+	try {
+		const saveCaret = document.getElementById(boxId + '_results_save_menu_btn');
+		const copyCaret = document.getElementById(boxId + '_results_copy_menu_btn');
+		const saveSplit = document.getElementById(boxId + '_results_save_split');
+		const copySplit = document.getElementById(boxId + '_results_copy_split');
+		const display = visible ? '' : 'none';
+		if (saveCaret) saveCaret.style.display = display;
+		if (copyCaret) copyCaret.style.display = display;
+		// When carets are hidden, make the primary button look like a normal (non-split) button.
+		if (saveSplit) saveSplit.classList.toggle('kusto-split-single', !visible);
+		if (copySplit) copySplit.classList.toggle('kusto-split-single', !visible);
+	} catch { /* ignore */ }
+}
+
+function __kustoUpdateSplitButtonState(boxId) {
+	try {
+		const state = __kustoGetResultsState(boxId);
+		const filtered = __kustoIsResultsFiltered(state);
+		__kustoSetSplitCaretsVisible(boxId, filtered);
+		if (!filtered) {
+			try { __kustoHideSplitMenu(); } catch { /* ignore */ }
+		}
+
+		const saveBtn = document.getElementById(boxId + '_results_save_btn');
+		const copyBtn = document.getElementById(boxId + '_results_copy_btn');
+		const saveTooltip = filtered ? 'Save filtered results' : 'Save results to file';
+		const copyTooltip = filtered ? 'Copy filtered results to clipboard' : 'Copy results to clipboard';
+		if (saveBtn) { saveBtn.title = saveTooltip; saveBtn.setAttribute('aria-label', saveTooltip); }
+		if (copyBtn) { copyBtn.title = copyTooltip; copyBtn.setAttribute('aria-label', copyTooltip); }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnSaveMenu(boxId, sectionLabel, anchor) {
+	try {
+		const state = __kustoGetResultsState(boxId);
+		if (!__kustoIsResultsFiltered(state)) return;
+		__kustoShowSplitMenuItems(anchor, [
+			{ label: 'Save filtered results', onClick: () => __kustoSaveResultsToCsvFile(boxId, sectionLabel, 'visible') },
+			{ label: 'Save all results', onClick: () => __kustoSaveResultsToCsvFile(boxId, sectionLabel, 'all') }
+		]);
+	} catch { /* ignore */ }
+}
+
 // Drag selection support: allow mouse-drag to select a rectangular range of cells.
 function __kustoEnsureDragSelectionHandlers(boxId) {
 	try {
@@ -3397,23 +3730,56 @@ function __kustoRemoveDragSelectionHandlers(boxId) {
 }
 
 function copyVisibleResultsToClipboard(boxId) {
+	__kustoCopyResultsToClipboard(boxId, 'visible');
+}
+
+function copyAllResultsToClipboard(boxId) {
+	__kustoCopyResultsToClipboard(boxId, 'all');
+}
+
+function __kustoCopyResultsToClipboard(boxId, mode) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
 	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
 	const cols = Array.isArray(state.columns) ? state.columns : [];
-	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
 	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
+	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_, i) => i)) : rows.map((_, i) => i);
 
-	const visibleRows = disp ? disp : rows.map((_, i) => i);
 	const header = cols.map(c => __kustoCellToClipboardString(c)).join('\t');
-	const body = visibleRows.map(rowIdx => {
+	const body = rowIndices.map(rowIdx => {
 		const row = rows[rowIdx] || [];
 		return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
 	}).join('\n');
 
 	const text = header + (body ? ('\n' + body) : '');
 	__kustoCopyTextToClipboard(text);
+}
+
+function __kustoOnCopyPrimary(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	const filtered = __kustoIsResultsFiltered(state);
+	// Default: when filtered, copy the filtered view; otherwise, copy full results.
+	__kustoCopyResultsToClipboard(boxId, filtered ? 'visible' : 'all');
+}
+
+function __kustoOnCopySecondary(boxId) {
+	const state = __kustoGetResultsState(boxId);
+	const filtered = __kustoIsResultsFiltered(state);
+	// When filtered, secondary is the full/unfiltered copy.
+	__kustoCopyResultsToClipboard(boxId, filtered ? 'all' : 'visible');
+}
+
+function __kustoOnCopyMenu(boxId, anchor) {
+	try {
+		const state = __kustoGetResultsState(boxId);
+		if (!__kustoIsResultsFiltered(state)) return;
+		__kustoShowSplitMenuItems(anchor, [
+			{ label: 'Copy filtered results to clipboard', onClick: () => __kustoCopyResultsToClipboard(boxId, 'visible') },
+			{ label: 'Copy all results to clipboard', onClick: () => __kustoCopyResultsToClipboard(boxId, 'all') }
+		]);
+	} catch { /* ignore */ }
 }
 
 function copySelectionToClipboard(boxId) {
