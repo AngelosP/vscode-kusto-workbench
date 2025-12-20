@@ -381,6 +381,16 @@
 			border-radius: 0;
 			border: 1px solid var(--vscode-input-border);
 		}
+		/* Remove any default margins to avoid extra vertical gaps */
+		.kusto-copilot-chat-msg {
+			margin: 0;
+		}
+		/* When two assistant (received) messages are adjacent, cancel the container gap
+		   by pulling them together so they appear visually grouped. */
+		.kusto-copilot-chat-msg-assistant + .kusto-copilot-chat-msg-assistant {
+			margin-top: -6px;
+			margin-bottom: 0;
+		}
 		.kusto-copilot-chat-msg-user {
 			align-self: flex-end;
 			background: var(--vscode-editorWidget-background);
