@@ -74,6 +74,7 @@
 		'queryEditor/copilotQueryBoxes.js',
 		'queryEditor/extraBoxes.js',
 		'queryEditor/resultsTable.js',
+		'queryEditor/diffView.js',
 		'queryEditor/objectViewer.js',
 		'queryEditor/columnAnalysis.js',
 		'queryEditor/main.js'

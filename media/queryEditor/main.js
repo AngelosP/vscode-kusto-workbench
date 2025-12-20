@@ -65,6 +65,21 @@ document.addEventListener('keydown', (event) => {
 
 		let handled = false;
 
+		// Diff View
+		if (!handled) {
+			try {
+				const modal = document.getElementById('diffViewModal');
+				if (modal && modal.classList && modal.classList.contains('visible')) {
+					handled = true;
+					if (typeof window.closeDiffView === 'function') {
+						window.closeDiffView();
+					} else {
+						modal.classList.remove('visible');
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
 		// Object Viewer
 		try {
 			const modal = document.getElementById('objectViewer');

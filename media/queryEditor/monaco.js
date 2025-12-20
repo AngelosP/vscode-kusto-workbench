@@ -6329,6 +6329,55 @@ function initQueryEditor(boxId) {
 		const __kustoTriggerAutocomplete = (ed) => {
 			try {
 				if (!ed) return;
+				// Monaco decides whether to render the suggest widget above vs below the caret
+				// based on the *estimated* widget height and the available space below.
+				// In our auto-resizing editors, later instances can end up with very little
+				// slack below the last line, making Monaco flip the widget above the caret.
+				// Pre-compute space below the caret and temporarily lower maxVisibleSuggestions
+				// (and, if needed, expand the wrapper) so Monaco chooses the below-caret path.
+				try {
+					const pos = (typeof ed.getPosition === 'function') ? ed.getPosition() : null;
+					const cursor = (pos && typeof ed.getScrolledVisiblePosition === 'function')
+						? ed.getScrolledVisiblePosition(pos)
+						: null;
+					const layout = (typeof ed.getLayoutInfo === 'function') ? ed.getLayoutInfo() : null;
+					if (cursor && layout && typeof layout.height === 'number') {
+						const pad = 8;
+						let availableBelowPx = Math.floor((layout.height || 0) - (cursor.top || 0) - (cursor.height || 0) - pad);
+						if (!isFinite(availableBelowPx)) availableBelowPx = 0;
+						const MIN_BELOW_PX = 60;
+						if (availableBelowPx < MIN_BELOW_PX) {
+							const root = (typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
+							const wrapper = (root && root.closest) ? root.closest('.query-editor-wrapper') : null;
+							if (wrapper && typeof wrapper.getBoundingClientRect === 'function') {
+								const rect = wrapper.getBoundingClientRect();
+								const currentH = Math.max(0, Math.round(rect.height || 0));
+								const need = Math.max(0, MIN_BELOW_PX - availableBelowPx);
+								if (currentH > 0 && need > 0) {
+									wrapper.style.height = (currentH + need) + 'px';
+									try { ed.layout(); } catch { /* ignore */ }
+									availableBelowPx += need;
+								}
+							}
+						}
+
+						// Estimate an appropriate max visible count from the available space.
+						let rowHeightPx = 22;
+						try {
+							if (monaco && monaco.editor && monaco.editor.EditorOption && typeof ed.getOption === 'function') {
+								const lh = ed.getOption(monaco.editor.EditorOption.lineHeight);
+								if (typeof lh === 'number' && lh > 0) rowHeightPx = Math.floor(lh);
+							}
+						} catch { /* ignore */ }
+						const overheadPx = 16;
+						const usable = Math.max(0, availableBelowPx - overheadPx);
+						const maxVisible = Math.max(1, Math.floor(usable / Math.max(1, rowHeightPx)));
+						try {
+							ed.updateOptions({ suggest: { maxVisibleSuggestions: maxVisible } });
+						} catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+
 				let versionId = null;
 				try {
 					const model = ed.getModel && ed.getModel();

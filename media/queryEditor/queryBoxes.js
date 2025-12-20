@@ -1829,7 +1829,15 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 				? '<span class="comparison-warning-icon" title="' + warningTitle.replace(/"/g, '&quot;') + '">\u26a0</span>'
 				: '');
 	} else {
-		dataMessage = '<span class="comparison-data-diff">\u26a0 Data differs</span>';
+		// Use JSON.stringify to produce a valid JS string literal (double-quoted) so the
+		// inline onclick handler never breaks due to escaping.
+		const aBoxIdLit = JSON.stringify(String(sourceBoxId || ''));
+		const bBoxIdLit = JSON.stringify(String(comparisonBoxId || ''));
+		dataMessage =
+			'<span class="comparison-data-diff-icon" aria-hidden="true">\u26a0</span> ' +
+			'<a href="#" class="comparison-data-diff comparison-diff-link" ' +
+			"onclick='try{openDiffViewModal({ aBoxId: " + aBoxIdLit + ", bBoxId: " + bBoxIdLit + " })}catch{}; return false;' " +
+			'title="View diff">Data differs</a>';
 	}
 	
 	// Create or update comparison summary banner
