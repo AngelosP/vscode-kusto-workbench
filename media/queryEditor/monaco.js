@@ -6445,6 +6445,86 @@ function initQueryEditor(boxId) {
 			}
 		};
 
+		// Enhancement (best-effort): when the suggest widget opens and the caret is inside a word,
+		// preselect the suggestion that exactly matches the current word (if present).
+		// This is intentionally defensive: if Monaco DOM/structure differs, it does nothing.
+		const __kustoPreselectExactWordInSuggestIfPresent = (ed, expectedModelVersionId) => {
+			try {
+				if (!ed) return;
+				try {
+					if (typeof expectedModelVersionId === 'number') {
+						const model = ed.getModel && ed.getModel();
+						const current = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+						if (typeof current === 'number' && current !== expectedModelVersionId) {
+							return;
+						}
+					}
+				} catch { /* ignore */ }
+
+				const model = ed.getModel && ed.getModel();
+				const pos = typeof ed.getPosition === 'function' ? ed.getPosition() : null;
+				if (!model || !pos || typeof model.getWordAtPosition !== 'function') return;
+				const w = model.getWordAtPosition(pos);
+				const currentWord = w && typeof w.word === 'string' ? w.word : '';
+				if (!currentWord || !String(currentWord).trim()) return;
+				const target = String(currentWord).trim();
+				const targetLower = target.toLowerCase();
+
+				const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
+				if (!root || typeof root.querySelector !== 'function') return;
+				const widget = root.querySelector('.suggest-widget');
+				if (!widget || typeof widget.querySelectorAll !== 'function') return;
+				const ariaHidden = String((widget.getAttribute && widget.getAttribute('aria-hidden')) || '').toLowerCase();
+				if (ariaHidden === 'true') return;
+
+				const rows = widget.querySelectorAll('.monaco-list-row');
+				if (!rows || !rows.length) return;
+
+				let matchRow = null;
+				for (const row of rows) {
+					if (!row) continue;
+					let label = '';
+					try {
+						const labelName = row.querySelector && row.querySelector('.label-name');
+						if (labelName && typeof labelName.textContent === 'string') {
+							label = labelName.textContent;
+						}
+					} catch { /* ignore */ }
+					if (!label) {
+						try {
+							const aria = row.getAttribute ? row.getAttribute('aria-label') : '';
+							label = String(aria || '');
+						} catch { /* ignore */ }
+					}
+					label = String(label || '').trim();
+					if (!label) continue;
+					// aria-label often includes extra info (e.g. "TableName, class"); keep the first token.
+					const first = label.split(/[\s,\(]/g).filter(Boolean)[0] || label;
+					if (String(first).toLowerCase() === targetLower) {
+						matchRow = row;
+						break;
+					}
+				}
+				if (!matchRow) return;
+
+				// Try to focus/select without accepting.
+				// Prefer gentle mousemove/over events; avoid click/mousedown.
+				try {
+					const rect = matchRow.getBoundingClientRect ? matchRow.getBoundingClientRect() : null;
+					const clientX = rect ? Math.floor(rect.left + Math.min(12, Math.max(2, rect.width / 2))) : 1;
+					const clientY = rect ? Math.floor(rect.top + Math.min(8, Math.max(2, rect.height / 2))) : 1;
+					const evInit = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+					try { matchRow.dispatchEvent(new MouseEvent('mouseover', evInit)); } catch { /* ignore */ }
+					try { matchRow.dispatchEvent(new MouseEvent('mousemove', evInit)); } catch { /* ignore */ }
+					try { matchRow.dispatchEvent(new MouseEvent('mouseenter', evInit)); } catch { /* ignore */ }
+				} catch {
+					// ignore
+				}
+			} catch {
+				// ignore
+			}
+		};
+
 		const __kustoTriggerAutocomplete = (ed) => {
 			try {
 				if (!ed) return;
@@ -6540,6 +6620,9 @@ function initQueryEditor(boxId) {
 				// Use longer delays and only hide if the model didn't change.
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 1200);
 				setTimeout(() => __kustoHideSuggestIfNoSuggestions(ed, versionId), 2500);
+				// Try to preselect the existing word if it appears in the list. Keep this fast and optional.
+				setTimeout(() => __kustoPreselectExactWordInSuggestIfPresent(ed, versionId), 80);
+				setTimeout(() => __kustoPreselectExactWordInSuggestIfPresent(ed, versionId), 200);
 			} catch {
 				// ignore
 			}
