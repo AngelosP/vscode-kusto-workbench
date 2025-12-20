@@ -243,6 +243,11 @@
 		const tools = Array.isArray(st.tools) ? st.tools : [];
 		const enabled = new Set(__kustoGetEnabledToolsForNextMessage(id));
 
+		const FINAL_TOOL_NAMES = new Set([
+			'respond_to_query_performance_optimization_request',
+			'respond_to_all_other_queries'
+		]);
+
 		try { listHost.innerHTML = ''; } catch { /* ignore */ }
 
 		if (!tools || tools.length === 0) {
@@ -266,8 +271,15 @@
 			}
 		} catch { /* ignore */ }
 
-		for (const t of tools) {
-			if (!t || !t.name) continue;
+		function appendGroupHeader(title, isFirst) {
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tools-group-title' + (isFirst ? ' is-first' : '');
+			header.textContent = String(title || '');
+			listHost.appendChild(header);
+		}
+
+		function appendToolItem(t) {
+			if (!t || !t.name) return;
 			const name = String(t.name);
 			const label = String(t.label || t.name);
 			const desc = String(t.description || '');
@@ -313,6 +325,29 @@
 			row.appendChild(cb);
 			row.appendChild(textWrap);
 			listHost.appendChild(row);
+		}
+
+		const finalTools = [];
+		const optionalTools = [];
+		for (const t of tools) {
+			if (!t || !t.name) continue;
+			if (FINAL_TOOL_NAMES.has(String(t.name))) {
+				finalTools.push(t);
+			} else {
+				optionalTools.push(t);
+			}
+		}
+
+		let hasRenderedAnyGroup = false;
+		if (finalTools.length) {
+			appendGroupHeader('Final step', !hasRenderedAnyGroup);
+			hasRenderedAnyGroup = true;
+			for (const t of finalTools) appendToolItem(t);
+		}
+		if (optionalTools.length) {
+			appendGroupHeader('Optional tools', !hasRenderedAnyGroup);
+			hasRenderedAnyGroup = true;
+			for (const t of optionalTools) appendToolItem(t);
 		}
 	}
 

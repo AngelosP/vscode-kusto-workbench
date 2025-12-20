@@ -536,6 +536,17 @@
 			flex-direction: column;
 			gap: 6px;
 		}
+		.kusto-copilot-tools-group-title {
+			margin: 10px 0 2px;
+			font-weight: 600;
+			color: var(--vscode-descriptionForeground);
+			letter-spacing: 0.2px;
+			text-transform: uppercase;
+			font-size: 11px;
+		}
+		.kusto-copilot-tools-group-title.is-first {
+			margin-top: 0;
+		}
 		.kusto-copilot-tool-item {
 			display: flex;
 			gap: 8px;

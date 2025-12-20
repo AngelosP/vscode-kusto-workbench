@@ -178,10 +178,17 @@ export class QueryEditorProvider {
 				enabledByDefault: true
 			},
 			{
-				name: 'validate_query_performance_improvements',
-				label: 'Validate query performance improvements',
+				name: 'respond_to_query_performance_optimization_request',
+				label: 'Respond to query performance optimization request',
 				description:
 					'Creates a comparison section with your proposed query, prettifies it, and runs both queries to compare performance.',
+				enabledByDefault: true
+			},
+			{
+				name: 'respond_to_all_other_queries',
+				label: 'Respond to all other queries',
+				description:
+					'Returns a runnable query for all other requests. The extension will set it in the editor and run it.',
 				enabledByDefault: true
 			}
 		];
@@ -210,7 +217,31 @@ export class QueryEditorProvider {
 	}
 
 	private normalizeToolName(value: unknown): string {
-		return String(value || '').trim().toLowerCase();
+		const raw = String(value || '').trim().toLowerCase();
+		// Back-compat: old tool name is treated as the new performance-optimization responder.
+		if (raw === 'validate_query_performance_improvements') {
+			return 'respond_to_query_performance_optimization_request';
+		}
+		return raw;
+	}
+
+	private extractQueryArgument(args: unknown): string {
+		try {
+			if (args && typeof args === 'object') {
+				const a = args as any;
+				const q = a.query || a.newQuery;
+				if (typeof q === 'string') {
+					return q;
+				}
+				// If JSON parsing failed, we store the raw tool payload under args.raw
+				if (typeof a.raw === 'string') {
+					return String(a.raw);
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return '';
 	}
 
 	private getErrorMessage(error: unknown): string {
@@ -1047,27 +1078,30 @@ export class QueryEditorProvider {
 				return '';
 			}
 			const lines: string[] = [];
-			lines.push('Local tools (optional):');
+			lines.push('Local tools (REQUIRED response format):');
 			for (const t of enabledLocalTools) {
 				const n = this.normalizeToolName(t.name);
 				if (n === 'get_extended_schema') {
 					lines.push('- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:');
 					lines.push('  @tool get_extended_schema {"database":"<database>"}');
-					lines.push('- After you receive the tool result, respond with the final query in a single ```kusto block.');
+					lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
 					continue;
 				}
 				if (n === 'get_query_optimization_best_practices') {
 					lines.push('- If you want to consult the repository\'s optimization best practices, respond with EXACTLY this and nothing else:');
 					lines.push('  @tool get_query_optimization_best_practices');
-					lines.push('- After you receive the tool result, continue with the final query in a single ```kusto block.');
+					lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
 					continue;
 				}
-				if (n === 'validate_query_performance_improvements') {
-					lines.push('- If you have a performance-improved query and want to validate it by running a comparison, respond with EXACTLY this and nothing else:');
-					lines.push('  @tool validate_query_performance_improvements {"query":"<full kusto query>"}');
-					lines.push(
-						'- IMPORTANT: If the user asks you to improve/optimize query performance and this tool is available, you MUST use this tool as the final step (instead of returning a ```kusto block).'
-					);
+				if (n === 'respond_to_query_performance_optimization_request') {
+					lines.push('- If the user asks you to improve/optimize query performance, your FINAL response MUST be EXACTLY this and nothing else:');
+					lines.push('  @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}');
+					lines.push('- Do not include explanations or code blocks when using this tool.');
+					continue;
+				}
+				if (n === 'respond_to_all_other_queries') {
+					lines.push('- For ALL other requests, your FINAL response MUST be EXACTLY this and nothing else:');
+					lines.push('  @tool respond_to_all_other_queries {"query":"<full kusto query>"}');
 					lines.push('- Do not include explanations or code blocks when using this tool.');
 					continue;
 				}
@@ -1102,9 +1136,10 @@ export class QueryEditorProvider {
 			request +
 			'\n\n' +
 			'Hard constraints:\n' +
-			'- Return ONLY the query in a single ```kusto code block.\n' +
-			'- Do not include explanations, bullets, or extra text.\n' +
-			'- Always return the FULL query (not a diff).\n\n' +
+			'- You MUST respond with ONLY a single @tool call and nothing else.\n' +
+			'- Do NOT output plain text, explanations, bullets, or code blocks (including ```kusto```).\n' +
+			'- Use as many tool calls as needed across turns (one per message): get schema, get best practices, then finish with exactly one of the two final tools.\n' +
+			'- Always provide the FULL query (not a diff) as the tool argument.\n\n' +
 			(localToolsText ? localToolsText : '')
 		);
 	}
@@ -1292,8 +1327,8 @@ export class QueryEditorProvider {
 						continue;
 					}
 
-					if (toolCall?.tool === 'validate_query_performance_improvements') {
-						if (!this.isCopilotToolEnabled('validate_query_performance_improvements', enabledTools)) {
+					if (toolCall?.tool === 'respond_to_query_performance_optimization_request') {
+						if (!this.isCopilotToolEnabled('respond_to_query_performance_optimization_request', enabledTools)) {
 							priorAttempts.push({
 								attempt,
 								error: 'Copilot requested a local tool that was disabled for this message.'
@@ -1302,23 +1337,7 @@ export class QueryEditorProvider {
 							generatedText = '';
 							break;
 						}
-						const rawQuery = (() => {
-							try {
-								if (toolCall.args && typeof toolCall.args === 'object') {
-									const q = (toolCall.args as any).query || (toolCall.args as any).newQuery;
-									if (typeof q === 'string') {
-										return q;
-									}
-									// If JSON parsing failed, we store the raw tool payload under args.raw
-									if (typeof (toolCall.args as any).raw === 'string') {
-										return String((toolCall.args as any).raw);
-									}
-								}
-							} catch {
-								// ignore
-							}
-							return '';
-						})();
+						const rawQuery = this.extractQueryArgument(toolCall.args);
 						const improvedQuery = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!improvedQuery) {
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
@@ -1456,7 +1475,7 @@ export class QueryEditorProvider {
 									}
 
 									postStatus('Query failed to execute. Asking Copilot to try again…');
-									const fixPrompt =
+										const fixPrompt =
 										'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
 										'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
 										`Cluster: ${String(connection.clusterUrl || '')}\n` +
@@ -1465,8 +1484,8 @@ export class QueryEditorProvider {
 										'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
 										'Execution error:\n' + lastExecErrorText + '\n\n' +
 										'Hard constraints:\n' +
-										'- Return ONLY the full query in a single ```kusto``` code block.\n' +
-										'- Do not include explanations or any other text.\n';
+											'- Return ONLY a single @tool call and nothing else.\n' +
+											'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
 
 									const fixResponse = await model.sendRequest(
 										[vscode.LanguageModelChatMessage.User(fixPrompt)],
@@ -1480,10 +1499,14 @@ export class QueryEditorProvider {
 										}
 										fixText += fragment;
 									}
-									const fixed = this.extractKustoCodeBlock(fixText).trim();
-									if (fixed) {
-										candidate = fixed;
-									}
+											const fixToolCall = this.tryParseCopilotToolCall(fixText);
+											const fixedRaw = fixToolCall?.tool === 'respond_to_query_performance_optimization_request'
+												? this.extractQueryArgument(fixToolCall.args)
+												: '';
+											const fixed = this.extractKustoCodeBlock(fixedRaw || fixText).trim();
+											if (fixed) {
+												candidate = fixed;
+											}
 								}
 							}
 
@@ -1543,8 +1566,8 @@ export class QueryEditorProvider {
 								'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
 								'Previous optimized query (data mismatch):\n```kusto\n' + candidate + '\n```\n\n' +
 								'Hard constraints:\n' +
-								'- Return ONLY the full query in a single ```kusto``` code block.\n' +
-								'- Do not include explanations or any other text.\n';
+								'- Return ONLY a single @tool call and nothing else.\n' +
+								'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
 
 							const retryResponse = await model.sendRequest(
 								[vscode.LanguageModelChatMessage.User(retryPrompt)],
@@ -1558,7 +1581,11 @@ export class QueryEditorProvider {
 								}
 								retryText += fragment;
 							}
-							const next = this.extractKustoCodeBlock(retryText).trim();
+							const retryToolCall = this.tryParseCopilotToolCall(retryText);
+							const nextRaw = retryToolCall?.tool === 'respond_to_query_performance_optimization_request'
+								? this.extractQueryArgument(retryToolCall.args)
+								: '';
+							const next = this.extractKustoCodeBlock(nextRaw || retryText).trim();
 							if (next) {
 								candidate = next;
 							}
@@ -1566,96 +1593,106 @@ export class QueryEditorProvider {
 						return;
 					}
 
-					break;
-				}
-
-				const query = this.extractKustoCodeBlock(generatedText);
-				if (!query) {
-					priorAttempts.push({ attempt, error: 'Copilot returned an empty query.' });
-					postStatus('Copilot returned an empty query. Retrying…');
-					continue;
-				}
-
-				try {
-					this.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query } as any);
-				} catch {
-					// ignore
-				}
-
-				postStatus('Running query…');
-				try {
-					this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true } as any);
-				} catch {
-					// ignore
-				}
-
-				// Cancel any in-flight manual run and run using default editor mode.
-				this.cancelRunningQuery(boxId);
-				const queryWithMode = this.appendQueryMode(query, 'take100');
-				const cacheDirective = this.buildCacheDirective(true, 1, 'days');
-				const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
-
-				const cancelClientKey = `${boxId}::${connection.id}::copilot`;
-				const { promise, cancel } = this.kustoClient.executeQueryCancelable(
-					connection,
-					database,
-					finalQuery,
-					cancelClientKey
-				);
-				const runSeq = ++this.queryRunSeq;
-				this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
-				try {
-					const result = await promise;
-					if (isActive()) {
-						this.postMessage({ type: 'queryResult', result, boxId } as any);
-						this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
-						this.postMessage({
-							type: 'copilotWriteQueryDone',
-							boxId,
-							ok: true,
-							message: 'Query ran successfully. Review the results and adjust if needed.'
-						} as any);
-						return;
-					}
-				} catch (error) {
-					if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
-						if (isActive()) {
-							try {
-								this.postMessage({ type: 'queryCancelled', boxId } as any);
-							} catch {
-								// ignore
-							}
+					if (toolCall?.tool === 'respond_to_all_other_queries') {
+						if (!this.isCopilotToolEnabled('respond_to_all_other_queries', enabledTools)) {
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							break;
 						}
-						throw new Error('Copilot write-query canceled');
-					}
 
-					const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
-					this.logQueryExecutionError(error, connection, database, boxId, finalQuery);
-					if (isActive()) {
+						const rawQuery = this.extractQueryArgument(toolCall.args);
+						const query = this.extractKustoCodeBlock(rawQuery).trim();
+						if (!query) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
+							postStatus('Tool call missing query argument. Retrying…');
+							generatedText = '';
+							break;
+						}
+
 						try {
-							// Keep chat UX clean: don't surface raw backend/exception details.
-							this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+							this.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query } as any);
 						} catch {
 							// ignore
 						}
+
+						postStatus('Running query…');
+						try {
+							this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true } as any);
+						} catch {
+							// ignore
+						}
+
+						// Cancel any in-flight manual run and run using default editor mode.
+						this.cancelRunningQuery(boxId);
+						const queryWithMode = this.appendQueryMode(query, 'take100');
+						const cacheDirective = this.buildCacheDirective(true, 1, 'days');
+						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+
+						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
+						const { promise, cancel } = this.kustoClient.executeQueryCancelable(
+							connection,
+							database,
+							finalQuery,
+							cancelClientKey
+						);
+						const runSeq = ++this.queryRunSeq;
+						this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
+						try {
+							const result = await promise;
+							if (isActive()) {
+								this.postMessage({ type: 'queryResult', result, boxId } as any);
+								this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
+								this.postMessage({
+									type: 'copilotWriteQueryDone',
+									boxId,
+									ok: true,
+									message: 'Query ran successfully. Review the results and adjust if needed.'
+								} as any);
+								return;
+							}
+						} catch (error) {
+							if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
+								if (isActive()) {
+									try {
+										this.postMessage({ type: 'queryCancelled', boxId } as any);
+									} catch {
+										// ignore
+									}
+								}
+								throw new Error('Copilot write-query canceled');
+							}
+
+							const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
+							this.logQueryExecutionError(error, connection, database, boxId, finalQuery);
+							if (isActive()) {
+								try {
+									this.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+								} catch {
+									// ignore
+								}
+							}
+
+							priorAttempts.push({ attempt, query, error: userMessage });
+							postStatus('Query failed to execute. Retrying…');
+							generatedText = '';
+							break;
+						}
 					}
 
-					priorAttempts.push({ attempt, query, error: userMessage });
-					postStatus('Query failed to execute. Retrying…');
-					continue;
-				} finally {
-					try {
-						if (isActive()) {
-							this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
-						}
-					} catch {
-						// ignore
-					}
-					const current = this.runningQueriesByBoxId.get(boxId);
-					if (current?.cancel === cancel && current.runSeq === runSeq) {
-						this.runningQueriesByBoxId.delete(boxId);
-					}
+					// Non-tool response or unknown tool: treat as non-compliant and retry.
+					priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
+					postStatus('Copilot returned a non-tool response. Retrying…');
+					generatedText = '';
+					break;
 				}
+
+				// If we reach here, we did not get a valid final tool call this attempt.
+				// Continue to the next attempt.
+				continue;
 			}
 
 			this.postMessage({

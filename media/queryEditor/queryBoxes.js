@@ -134,7 +134,7 @@ function addQueryBox(options) {
 			'title="Run both queries to compare results. This will be enabled only when results match." aria-label="Accept Optimizations">Accept Optimizations</button>')
 		: (
 			'<span class="optimize-inline" id="' + id + '_optimize_inline">' +
-				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\')" ' +
+				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\', null, { skipExecute: true })" ' +
 					'title="Compare two queries" aria-label="Compare two queries">' +
 					diffIconSvg +
 				'</button>' +
@@ -713,9 +713,16 @@ function __kustoLockCacheForBenchmark(boxId) {
 }
 
 function __kustoNormalizeCellForComparison(cell) {
+	const stripNumericGrouping = (s) => {
+		try {
+			return String(s).trim().replace(/[, _]/g, '');
+		} catch {
+			return '';
+		}
+	};
 	const isNumericString = (s) => {
 		try {
-			const t = String(s).trim();
+			const t = stripNumericGrouping(s);
 			if (!t) return false;
 			return /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/.test(t);
 		} catch {
@@ -732,7 +739,21 @@ function __kustoNormalizeCellForComparison(cell) {
 			if (!s) return null;
 			// Don't treat pure numbers as dates.
 			if (isNumericString(s)) return null;
-			const t = Date.parse(s);
+			// First attempt: native parse
+			let t = Date.parse(s);
+			if (isFinite(t)) return t;
+			// Kusto-ish: "YYYY-MM-DD HH:mm:ss(.fffffff)?(Z)?" -> convert to ISO-ish
+			let iso = s;
+			if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(iso)) {
+				iso = iso.replace(' ', 'T');
+			}
+			// Trim fractional seconds beyond milliseconds for JS Date.parse
+			iso = iso.replace(/\.(\d{3})\d+/, '.$1');
+			// If it looks like a timestamp but lacks timezone, treat as UTC to stabilize comparisons.
+			if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(iso)) {
+				iso = iso + 'Z';
+			}
+			t = Date.parse(iso);
 			return isFinite(t) ? t : null;
 		} catch {
 			return null;
@@ -782,7 +803,7 @@ function __kustoNormalizeCellForComparison(cell) {
 			if (t === 'string') {
 				const s = String(v);
 				if (isNumericString(s)) {
-					const num = parseFloat(s);
+					const num = parseFloat(stripNumericGrouping(s));
 					if (isFinite(num)) return ['num', num];
 				}
 				const ms = tryParseDateMs(s);
@@ -2171,6 +2192,15 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	}
 
 	const shouldExecute = !(options && options.skipExecute === true);
+	const isManualCompareOnly = !shouldExecute;
+
+	// Defensive: opening the comparison/diff view should never trigger/keep any
+	// optimize (LLM) prompt state. If the optimize prompt was open or pending from
+	// earlier, clear it so the diff view remains strictly non-LLM.
+	if (isManualCompareOnly) {
+		try { __kustoHideOptimizePromptForBox(boxId); } catch { /* ignore */ }
+		try { __kustoSetOptimizeInProgress(boxId, false, ''); } catch { /* ignore */ }
+	}
 
 	// Hide results to keep the UI focused during comparison setup.
 	try { __kustoSetResultsVisible(boxId, false); } catch { /* ignore */ }
@@ -5121,12 +5151,17 @@ function executeQuery(boxId, mode) {
 	const cacheValue = parseInt(document.getElementById(boxId + '_cache_value').value) || 1;
 	const cacheUnit = document.getElementById(boxId + '_cache_unit').value;
 
+	let sourceBoxIdForComparison = '';
+	let isComparisonBox = false;
+
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
 		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
 			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = meta.sourceBoxId;
+				isComparisonBox = true;
+				sourceBoxIdForComparison = String(sourceBoxId || '');
 				const sourceConn = document.getElementById(sourceBoxId + '_connection');
 				const sourceDb = document.getElementById(sourceBoxId + '_database');
 				if (sourceConn && sourceConn.value) {
@@ -5141,6 +5176,34 @@ function executeQuery(boxId, mode) {
 				|| !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
 			if (hasLinkedOptimization) {
 				cacheEnabled = false;
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Cache consistency policy for comparisons:
+	// If the source box was last executed with caching enabled, rerun it once with caching disabled
+	// before (or alongside) running the comparison box. This avoids cached-vs-live drift causing
+	// false mismatches when queries are otherwise unchanged.
+	try {
+		if (isComparisonBox && sourceBoxIdForComparison) {
+			const cacheMap = window.__kustoLastRunCacheEnabledByBoxId;
+			const sourceLastRunUsedCaching = !!(cacheMap && typeof cacheMap === 'object' && cacheMap[sourceBoxIdForComparison]);
+			if (sourceLastRunUsedCaching) {
+				// Prevent transient comparisons against stale cached source results.
+				try {
+					if (window.__kustoResultsByBoxId && typeof window.__kustoResultsByBoxId === 'object') {
+						delete window.__kustoResultsByBoxId[sourceBoxIdForComparison];
+					}
+				} catch { /* ignore */ }
+				try {
+					__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
+						sourceBoxId: sourceBoxIdForComparison
+					});
+				} catch { /* ignore */ }
+				try {
+					// This run will inherit the linked-optimization behavior and force cacheEnabled=false.
+					executeQuery(sourceBoxIdForComparison, effectiveMode);
+				} catch { /* ignore */ }
 			}
 		}
 	} catch { /* ignore */ }
