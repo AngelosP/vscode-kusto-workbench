@@ -1022,6 +1022,11 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 			'<button type="button" class="kusto-filter-mini-btn" onclick="__kustoFilterSetAllValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ', false)" title="Deselect all" aria-label="Deselect all"><span class="kusto-filter-mini-btn-icon">' + __kustoGetDeselectAllIconSvg(14) + '</span>Deselect all</button>' +
 			'</div>' +
 			'</div>' +
+			'<div class="kusto-filter-values-columns" role="group" aria-label="Value list columns">' +
+			'<span class="kusto-filter-values-columns-spacer" aria-hidden="true"></span>' +
+			'<span class="kusto-filter-values-columns-value">Values</span>' +
+			'<span class="kusto-filter-values-columns-count">Number of rows containing it</span>' +
+			'</div>' +
 			'<div class="kusto-filter-values" id="' + boxId + '_filter_values_list">' +
 			((uniq.nullCount > 0)
 				? (() => {

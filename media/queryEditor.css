@@ -2910,7 +2910,7 @@
 			border-radius: 6px;
 			width: 760px;
 			max-width: calc(100% - 24px);
-			height: 460px;
+			height: 490px;
 			max-height: 85vh;
 			overflow: hidden;
 			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -3212,6 +3212,25 @@
 			gap: 4px;
 			max-height: 220px;
 			overflow: auto;
+		}
+
+		.kusto-filter-values-columns {
+			display: grid;
+			grid-template-columns: 16px 1fr auto;
+			align-items: center;
+			gap: 8px;
+			padding: 0 6px;
+			font-size: 11px;
+			font-weight: bold;
+			opacity: 0.85;
+			user-select: none;
+			margin-bottom: 5px;
+			margin-top:20px;
+		}
+
+		.kusto-filter-values-columns-count {
+			text-align: right;
+			padding-left: 8px;
 		}
 
 		.kusto-filter-value {
