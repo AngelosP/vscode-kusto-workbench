@@ -198,7 +198,6 @@ function __kustoGetDeselectAllIconSvg(size) {
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<rect x="2.5" y="2.5" width="11" height="11" rx="2" ry="2" />' +
-		'<path d="M4.6 8h6.8" />' +
 		'</svg>'
 	);
 }
@@ -1014,9 +1013,14 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 		const truncNote = uniq.truncated ? '<div class="kusto-filter-note">Too many distinct values; showing first 200.</div>' : '';
 		body += (
 			'<div class="kusto-filter-section kusto-filter-values-toolbar">' +
-			'<input type="text" class="kusto-filter-search kusto-filter-values-search" id="' + boxId + '_filter_value_search" placeholder="Search values..." oninput="__kustoFilterSearchValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ')" />' +
+			'<div class="kusto-filter-searchbox kusto-filter-values-searchbox">' +
+			'<span class="kusto-filter-search-icon" aria-hidden="true">' + __kustoGetSearchIconSvg() + '</span>' +
+			'<input type="text" class="kusto-filter-search kusto-filter-values-search kusto-filter-search-with-icon" id="' + boxId + '_filter_value_search" placeholder="Search values..." oninput="__kustoFilterSearchValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ')" />' +
+			'</div>' +
+			'<div class="kusto-filter-values-actions-row">' +
 			'<button type="button" class="kusto-filter-mini-btn" onclick="__kustoFilterSetAllValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ', true)" title="Select all" aria-label="Select all"><span class="kusto-filter-mini-btn-icon">' + __kustoGetSelectAllIconSvg(14) + '</span>Select all</button>' +
 			'<button type="button" class="kusto-filter-mini-btn" onclick="__kustoFilterSetAllValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ', false)" title="Deselect all" aria-label="Deselect all"><span class="kusto-filter-mini-btn-icon">' + __kustoGetDeselectAllIconSvg(14) + '</span>Deselect all</button>' +
+			'</div>' +
 			'</div>' +
 			'<div class="kusto-filter-values" id="' + boxId + '_filter_values_list">' +
 			((uniq.nullCount > 0)
@@ -1077,6 +1081,7 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 	const footer = (
 		'<div class="kusto-filter-footer">' +
 		'<button type="button" class="kusto-filter-btn danger" onclick="clearColumnFilter(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ')"><span class="kusto-filter-btn-icon">' + __kustoGetTrashIconSvg(14) + '</span>Remove</button>' +
+		'<button type="button" class="kusto-filter-btn secondary" onclick="closeColumnFilterPopover()"><span class="kusto-filter-btn-icon">' + __kustoGetCloseIconSvg(14) + '</span>Close</button>' +
 		'<button type="button" class="kusto-filter-btn" onclick="applyColumnFilter(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ')"><span class="kusto-filter-btn-icon">' + __kustoGetFilterIconSvg(14) + '</span>Apply</button>' +
 		'</div>'
 	);
