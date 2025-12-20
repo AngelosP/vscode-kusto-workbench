@@ -5223,6 +5223,82 @@ function __kustoIsElementVisibleForSuggest(el) {
 	}
 }
 
+function __kustoGetWordNearCursor(ed) {
+	try {
+		if (!ed) return '';
+		const model = ed.getModel && ed.getModel();
+		const pos = (typeof ed.getPosition === 'function') ? ed.getPosition() : null;
+		if (!model || !pos) return '';
+
+		const lineNumber = Number(pos.lineNumber) || 0;
+		const column = Number(pos.column) || 0;
+		if (lineNumber <= 0 || column <= 0) return '';
+
+		const tryWordAtColumn = (col) => {
+			try {
+				const c = Number(col) || 0;
+				if (c <= 0) return '';
+				if (typeof model.getWordAtPosition !== 'function') return '';
+				const w = model.getWordAtPosition({ lineNumber, column: c });
+				const word = w && typeof w.word === 'string' ? w.word : '';
+				return String(word || '').trim();
+			} catch {
+				return '';
+			}
+		};
+
+		// Normal case: caret is inside a word.
+		let word = tryWordAtColumn(column);
+		if (word) return word;
+
+		// Boundary case: caret is right *before* the first character of a word.
+		word = tryWordAtColumn(column + 1);
+		if (word) return word;
+
+		// Boundary case: caret is right *after* the last character of a word.
+		word = tryWordAtColumn(column - 1);
+		if (word) return word;
+
+		// Robust fallback: inspect the line text (fast and avoids Monaco quirks at boundaries).
+		try {
+			if (typeof model.getLineContent !== 'function') return '';
+			const line = String(model.getLineContent(lineNumber) || '');
+			if (!line) return '';
+
+			const isWordCh = (c) => /[A-Za-z0-9_]/.test(String(c || ''));
+			let idx = Math.max(0, column - 1);
+			if (idx >= line.length) idx = line.length - 1;
+			if (idx < 0) return '';
+
+			// If we're sitting on whitespace, allow a small bounded lookahead (covers "caret before word"
+			// including cases with multiple spaces/tabs).
+			try {
+				if (!isWordCh(line[idx]) && /\s/.test(String(line[idx] || ''))) {
+					let j = idx;
+					while (j < line.length && /\s/.test(String(line[j] || '')) && (j - idx) < 24) j++;
+					if (j < line.length) idx = j;
+				}
+			} catch { /* ignore */ }
+
+			// If char under idx isn't a word char but the left char is, treat it as end-of-word.
+			if (!isWordCh(line[idx]) && idx > 0 && isWordCh(line[idx - 1])) {
+				idx = idx - 1;
+			}
+			if (!isWordCh(line[idx])) return '';
+
+			let start = idx;
+			let end = idx;
+			while (start > 0 && isWordCh(line[start - 1])) start--;
+			while (end + 1 < line.length && isWordCh(line[end + 1])) end++;
+			return String(line.slice(start, end + 1) || '').trim();
+		} catch {
+			return '';
+		}
+	} catch {
+		return '';
+	}
+}
+
 function __kustoFindSuggestWidgetForEditor(ed, opts) {
 	try {
 		const options = opts || {};
@@ -5408,54 +5484,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 
 			const getWordAtCursor = () => {
 				try {
-					const model = editor.getModel && editor.getModel();
-					const pos = (typeof editor.getPosition === 'function') ? editor.getPosition() : null;
-					if (!model || !pos || typeof model.getWordAtPosition !== 'function') return '';
-					const readWordAt = (p) => {
-						try {
-							const w = model.getWordAtPosition(p);
-							const word = w && typeof w.word === 'string' ? w.word : '';
-							return String(word || '').trim();
-						} catch {
-							return '';
-						}
-					};
-					// Normal case: caret is inside a word.
-					let word = readWordAt(pos);
-					if (word) return word;
-
-					// Edge case: caret is at the *start* of a word.
-					// Monaco can treat the caret as "between" tokens and return no word.
-					try {
-						if (typeof model.getLineContent === 'function') {
-							const line = String(model.getLineContent(pos.lineNumber) || '');
-							const idx = Math.max(0, (Number(pos.column) || 1) - 1);
-							const chRight = (idx >= 0 && idx < line.length) ? line[idx] : '';
-							if (chRight && /[A-Za-z0-9_]/.test(chRight)) {
-								word = readWordAt({ lineNumber: pos.lineNumber, column: (Number(pos.column) || 1) + 1 });
-								if (word) return word;
-							}
-
-							// Robust fallback: scan the actual line text for an identifier run
-							// under or adjacent to the caret.
-							const isWordCh = (c) => /[A-Za-z0-9_]/.test(String(c || ''));
-							let scanIdx = idx;
-							if (!isWordCh(line[scanIdx]) && scanIdx > 0 && isWordCh(line[scanIdx - 1])) {
-								scanIdx = scanIdx - 1;
-							}
-							if (isWordCh(line[scanIdx])) {
-								let start = scanIdx;
-								let end = scanIdx;
-								while (start > 0 && isWordCh(line[start - 1])) start--;
-								while (end + 1 < line.length && isWordCh(line[end + 1])) end++;
-								const s = line.slice(start, end + 1);
-								word = String(s || '').trim();
-								if (word) return word;
-							}
-						}
-					} catch { /* ignore */ }
-
-					return '';
+					return __kustoGetWordNearCursor(editor);
 				} catch {
 					return '';
 				}
@@ -5502,6 +5531,19 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				}
 			};
 
+			const scheduleDelayedPreselectSweep = () => {
+				// Some Monaco builds populate the suggest list asynchronously (and slower when unfiltered),
+				// which disproportionately affects the "caret at start of word" scenario.
+				// Do a few delayed sweeps, but stop as soon as we succeed.
+				try {
+					if (didPreselectThisOpen) return;
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 60);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 160);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 320);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 650);
+				} catch { /* ignore */ }
+			};
+
 			const checkSuggestVisibilityTransition = () => {
 				try {
 					const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: false, maxDistancePx: 320 });
@@ -5516,9 +5558,10 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 					if (!lastVisible) {
 						lastVisible = true;
 						targetWordAtOpen = getWordAtCursor();
-						// Allow a few frames for async suggest providers to populate rows.
-						preselectAttemptsRemaining = 8;
+						// Allow multiple frames + a few delayed sweeps for async suggest providers to populate rows.
+						preselectAttemptsRemaining = 24;
 						schedulePreselectAttempt();
+						scheduleDelayedPreselectSweep();
 					}
 				} catch { /* ignore */ }
 			};
@@ -7042,11 +7085,7 @@ function initQueryEditor(boxId) {
 				if (typeof forcedWord === 'string' && forcedWord.trim()) {
 					currentWord = forcedWord;
 				} else {
-					const model = ed.getModel && ed.getModel();
-					const pos = typeof ed.getPosition === 'function' ? ed.getPosition() : null;
-					if (!model || !pos || typeof model.getWordAtPosition !== 'function') return;
-					const w = model.getWordAtPosition(pos);
-					currentWord = w && typeof w.word === 'string' ? w.word : '';
+					currentWord = __kustoGetWordNearCursor(ed);
 				}
 				if (!currentWord || !String(currentWord).trim()) return;
 				const normalize = (s) => {
@@ -7054,8 +7093,8 @@ function initQueryEditor(boxId) {
 						let x = String(s || '').trim();
 						// Strip common wrappers seen in Kusto identifiers.
 						x = x.replace(/^(\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
-						// For aria labels like "ColumnName, field" keep only the identifier.
-						x = x.split(/[\s,\(]/g).filter(Boolean)[0] || x;
+						// For aria labels like "ColumnName, field" or "ColumnName: type" keep only the identifier.
+						x = x.split(/[\s,\(:]/g).filter(Boolean)[0] || x;
 						return String(x || '').trim();
 					} catch {
 						return String(s || '').trim();
@@ -7068,33 +7107,139 @@ function initQueryEditor(boxId) {
 				const widget = __kustoFindSuggestWidgetForEditor(ed, { requireVisible: true, maxDistancePx: 320 });
 				if (!widget || typeof widget.querySelectorAll !== 'function') return;
 
-				const rows = widget.querySelectorAll('.monaco-list-row');
-				if (!rows || !rows.length) return;
-
-				let matchRow = null;
-				for (const row of rows) {
-					if (!row) continue;
-					let label = '';
+				const tryFocusByInternalListModel = () => {
+					// Monaco virtualizes list rows; when the suggest list is large/unfiltered the exact
+					// matching item may not be present in the DOM yet. In that case, use internal list/tree
+					// models to locate the item and focus it.
 					try {
-						const labelName = row.querySelector && row.querySelector('.label-name');
-						if (labelName && typeof labelName.textContent === 'string') {
-							label = labelName.textContent;
+						if (typeof ed.getContribution !== 'function') return false;
+						const ctrl = ed.getContribution('editor.contrib.suggestController');
+						if (!ctrl) return false;
+
+						const candidates = [];
+						try { if (ctrl && ctrl._widget) candidates.push(ctrl._widget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl.widget) candidates.push(ctrl.widget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch { /* ignore */ }
+						try { if (ctrl && ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch { /* ignore */ }
+
+						const tryGetList = (w0) => {
+							try {
+								const w = (w0 && w0.value) ? w0.value : w0;
+								if (!w) return null;
+								return w._list || w.list || w._tree || w.tree || null;
+							} catch {
+								return null;
+							}
+						};
+
+						const getListLength = (list) => {
+							try {
+								if (!list) return 0;
+								if (typeof list.length === 'number') return Math.max(0, Math.floor(list.length));
+								if (typeof list.getLength === 'function') return Math.max(0, Math.floor(list.getLength()));
+								const m = list._model || list.model;
+								if (m) {
+									if (typeof m.length === 'number') return Math.max(0, Math.floor(m.length));
+									if (typeof m.size === 'number') return Math.max(0, Math.floor(m.size));
+									if (typeof m.getLength === 'function') return Math.max(0, Math.floor(m.getLength()));
+									if (typeof m.getSize === 'function') return Math.max(0, Math.floor(m.getSize()));
+								}
+							} catch { /* ignore */ }
+							return 0;
+						};
+
+						const getElementAt = (list, idx) => {
+							try {
+								if (!list || !isFinite(idx)) return null;
+								if (typeof list.element === 'function') return list.element(idx);
+								if (typeof list.getElementAt === 'function') return list.getElementAt(idx);
+								const m = list._model || list.model;
+								if (m) {
+									if (typeof m.get === 'function') return m.get(idx);
+									if (typeof m.element === 'function') return m.element(idx);
+									if (typeof m.getElementAt === 'function') return m.getElementAt(idx);
+								}
+							} catch { /* ignore */ }
+							return null;
+						};
+
+						const getLabelFromElement = (el) => {
+							try {
+								if (!el) return '';
+								// Try common shapes across Monaco builds.
+								const direct = el.label || el.textLabel || el.insertText || el.filterText;
+								if (typeof direct === 'string') return direct;
+								const completion = el.completion || el.suggestion || el.item || el._item || el._completionItem;
+								if (completion) {
+									const l = completion.label || completion.textLabel || completion.insertText || completion.filterText;
+									if (typeof l === 'string') return l;
+									if (l && typeof l.label === 'string') return l.label;
+								}
+								// Some builds store label as an object.
+								if (el.label && typeof el.label.label === 'string') return el.label.label;
+							} catch { /* ignore */ }
+							return '';
+						};
+
+						for (const w0 of candidates) {
+							const list = tryGetList(w0);
+							const len = getListLength(list);
+							if (!list || !len) continue;
+							// Bound work: suggest lists can be large when unfiltered.
+							const limit = Math.min(len, 2500);
+							for (let i = 0; i < limit; i++) {
+								const el = getElementAt(list, i);
+								let label = getLabelFromElement(el);
+								label = normalize(label);
+								if (!label) continue;
+								if (String(label).toLowerCase() === targetLower) {
+									try { if (typeof list.reveal === 'function') list.reveal(i); } catch { /* ignore */ }
+									try { if (typeof list.setFocus === 'function') list.setFocus([i]); } catch { /* ignore */ }
+									try { if (typeof list.setSelection === 'function') list.setSelection([]); } catch { /* ignore */ }
+									return true;
+								}
+							}
 						}
 					} catch { /* ignore */ }
-					if (!label) {
-						try {
-							const aria = row.getAttribute ? row.getAttribute('aria-label') : '';
-							label = String(aria || '');
-						} catch { /* ignore */ }
+					return false;
+				};
+
+				// First attempt: DOM rows (fast when the list is already rendered/filtered).
+				let matchRow = null;
+				try {
+					const rows = widget.querySelectorAll('.monaco-list-row');
+					if (rows && rows.length) {
+						for (const row of rows) {
+							if (!row) continue;
+							let label = '';
+							try {
+								const labelName = row.querySelector && row.querySelector('.label-name');
+								if (labelName && typeof labelName.textContent === 'string') {
+									label = labelName.textContent;
+								}
+							} catch { /* ignore */ }
+							if (!label) {
+								try {
+									const aria = row.getAttribute ? row.getAttribute('aria-label') : '';
+									label = String(aria || '');
+								} catch { /* ignore */ }
+							}
+							label = normalize(label);
+							if (!label) continue;
+							if (String(label).toLowerCase() === targetLower) {
+								matchRow = row;
+								break;
+							}
+						}
 					}
-					label = normalize(label);
-					if (!label) continue;
-					if (String(label).toLowerCase() === targetLower) {
-						matchRow = row;
-						break;
-					}
+				} catch { /* ignore */ }
+
+				// If the matching row isn't rendered yet, fall back to internal list model.
+				if (!matchRow) {
+					const did = tryFocusByInternalListModel();
+					if (did) return true;
+					return;
 				}
-				if (!matchRow) return;
 
 				// Prefer focusing the Monaco list via internal APIs (more reliable than DOM hover).
 				try {
@@ -7267,15 +7412,9 @@ function initQueryEditor(boxId) {
 						if (typeof forcedWord === 'string' && forcedWord.trim()) {
 							editor.__kustoLastSuggestPreselectTargetLower = forcedWord.trim().toLowerCase();
 						} else {
-							const model = editor.getModel && editor.getModel();
-							const pos = typeof editor.getPosition === 'function' ? editor.getPosition() : null;
-							if (model && pos && typeof model.getWordAtPosition === 'function') {
-								const w = model.getWordAtPosition(pos);
-								const currentWord = w && typeof w.word === 'string' ? w.word : '';
-								const t = String(currentWord || '').trim();
-								if (t) {
-									editor.__kustoLastSuggestPreselectTargetLower = t.toLowerCase();
-								}
+							const t = String(__kustoGetWordNearCursor(editor) || '').trim();
+							if (t) {
+								editor.__kustoLastSuggestPreselectTargetLower = t.toLowerCase();
 							}
 						}
 					} catch { /* ignore */ }
