@@ -5230,6 +5230,15 @@ function __kustoFindSuggestWidgetForEditor(ed, opts) {
 		const maxDistancePx = (typeof options.maxDistancePx === 'number') ? options.maxDistancePx : 320;
 
 		const root = (ed && typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
+		const editorHost = (() => {
+			try {
+				if (!root) return null;
+				// Prefer the actual Monaco root so we can scope queries when multiple editors exist.
+				return (root.closest && root.closest('.monaco-editor')) ? root.closest('.monaco-editor') : root;
+			} catch {
+				return root;
+			}
+		})();
 		const doc = (root && root.ownerDocument) ? root.ownerDocument : (typeof document !== 'undefined' ? document : null);
 		if (!doc || typeof doc.querySelectorAll !== 'function') return null;
 
@@ -5248,12 +5257,34 @@ function __kustoFindSuggestWidgetForEditor(ed, opts) {
 			}
 		} catch { /* ignore */ }
 
-		const widgets = doc.querySelectorAll('.suggest-widget');
+		// IMPORTANT:
+		// With multiple editors on the same page, querying the whole document can pick the wrong
+		// suggest widget (e.g. from another editor) and cause preselect/auto-hide logic to behave
+		// inconsistently. Prefer scoping to this editor's DOM subtree first.
+		let widgets = null;
+		try {
+			if (editorHost && typeof editorHost.querySelectorAll === 'function') {
+				widgets = editorHost.querySelectorAll('.suggest-widget');
+			}
+		} catch { widgets = null; }
+		if (!widgets || !widgets.length) {
+			try {
+				widgets = doc.querySelectorAll('.suggest-widget');
+			} catch { widgets = null; }
+		}
 		if (!widgets || !widgets.length) return null;
 		let best = null;
 		let bestDist2 = Infinity;
 		for (const w of widgets) {
 			if (!w || !w.getBoundingClientRect) continue;
+			// If we had to fall back to a document-wide scan, try to keep the selection within
+			// the current editor's Monaco root when possible.
+			try {
+				if (editorHost && w.closest) {
+					const wHost = w.closest('.monaco-editor');
+					if (wHost && wHost !== editorHost) continue;
+				}
+			} catch { /* ignore */ }
 			if (requireVisible && !__kustoIsElementVisibleForSuggest(w)) continue;
 			const rect = w.getBoundingClientRect();
 			// distance from point to rect (0 if inside)
