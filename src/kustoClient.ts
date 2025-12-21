@@ -19,7 +19,25 @@ export interface DatabaseSchemaIndex {
 	 * Keys and values are best-effort and depend on the server/driver schema shape.
 	 */
 	columnTypesByTable?: Record<string, Record<string, string>>;
+	/**
+	 * Optional list of database-scoped (user-defined) functions.
+	 * Populated best-effort; schema loading should still succeed even if this fails.
+	 */
+	functions?: KustoFunctionInfo[];
 }
+
+export type KustoFunctionParameter = {
+	name: string;
+	type?: string;
+	defaultValue?: string;
+	raw?: string;
+};
+
+export type KustoFunctionInfo = {
+	name: string;
+	parametersText?: string;
+	parameters?: KustoFunctionParameter[];
+};
 
 export interface DatabaseSchemaResult {
 	schema: DatabaseSchemaIndex;
@@ -998,6 +1016,17 @@ export class KustoQueryClient {
 				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
 				const debug = this.buildSchemaDebug(result, command);
 				const schema = this.parseDatabaseSchemaResult(result);
+
+				// Best-effort: also cache database-scoped functions (name + parameters).
+				try {
+					const funcs = await this.tryGetDatabaseFunctions(connection, database);
+					if (funcs && funcs.length > 0) {
+						schema.functions = funcs;
+					}
+				} catch {
+					// Ignore function schema errors; table/column schema is still useful.
+				}
+
 				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
 				return { schema, fromCache: false, debug };
 			} catch (e) {
@@ -1008,6 +1037,120 @@ export class KustoQueryClient {
 		throw new Error(
 			`Failed to fetch database schema: ${lastError instanceof Error ? lastError.message : String(lastError)}`
 		);
+	}
+
+	private async tryGetDatabaseFunctions(connection: KustoConnection, database: string): Promise<KustoFunctionInfo[] | undefined> {
+		// Keep this intentionally light-weight: name + signature only.
+		// Some environments may restrict metadata commands; treat as optional.
+		const command = '.show functions | project Name, Parameters';
+		const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
+		const primary = result?.primaryResults?.[0];
+		if (!primary || !primary.rows) {
+			return undefined;
+		}
+
+		const colNames: string[] = (primary.columns ?? [])
+			.map((c: any) => String(c?.name ?? c?.type ?? ''))
+			.filter(Boolean);
+		const lowered = colNames.map((c) => c.toLowerCase());
+		const nameColIdx = lowered.indexOf('name');
+		const paramsColIdx = lowered.indexOf('parameters');
+		const findVal = (row: any, idx: number, colName: string): any => {
+			if (!row) {
+				return undefined;
+			}
+			// Object-shaped row (driver dependent)
+			if (typeof row === 'object' && !Array.isArray(row)) {
+				if ((row as any)[colName] !== undefined) {
+					return (row as any)[colName];
+				}
+				// sometimes uses lowercase
+				const alt = Object.keys(row).find((k) => String(k).toLowerCase() === String(colName).toLowerCase());
+				if (alt) {
+					return (row as any)[alt];
+				}
+				// fall back to ordinal if present
+				if (typeof idx === 'number' && idx >= 0 && (row as any)[idx] !== undefined) {
+					return (row as any)[idx];
+				}
+				return undefined;
+			}
+			// Array-shaped row
+			if (Array.isArray(row) && typeof idx === 'number' && idx >= 0) {
+				return row[idx];
+			}
+			return undefined;
+		};
+
+		const funcs: KustoFunctionInfo[] = [];
+		for (const row of primary.rows()) {
+			const nameRaw = findVal(row, nameColIdx, 'Name');
+			const paramsRaw = findVal(row, paramsColIdx, 'Parameters');
+			const name = String(nameRaw ?? '').trim();
+			if (!name) {
+				continue;
+			}
+			const parametersText = String(paramsRaw ?? '').trim();
+			const parameters = this.parseKustoFunctionParameters(parametersText);
+			funcs.push({
+				name,
+				parametersText: parametersText || undefined,
+				parameters: parameters.length ? parameters : undefined
+			});
+		}
+
+		// Dedup by name (case-insensitive) and sort for stable caching.
+		const seen = new Set<string>();
+		const deduped: KustoFunctionInfo[] = [];
+		for (const f of funcs) {
+			const key = f.name.toLowerCase();
+			if (seen.has(key)) {
+				continue;
+			}
+			seen.add(key);
+			deduped.push(f);
+		}
+		deduped.sort((a, b) => a.name.localeCompare(b.name));
+		return deduped;
+	}
+
+	private parseKustoFunctionParameters(parametersText: string): KustoFunctionParameter[] {
+		let text = String(parametersText || '').trim();
+		if (!text) {
+			return [];
+		}
+		// `.show functions` typically returns "(p1:type, p2:type)".
+		if (text.startsWith('(') && text.endsWith(')')) {
+			text = text.slice(1, -1).trim();
+		}
+		if (!text) {
+			return [];
+		}
+
+		// Split on commas. Kusto parameter lists are usually simple; keep parsing robust but not over-engineered.
+		const parts = text
+			.split(',')
+			.map((p) => String(p || '').trim())
+			.filter(Boolean);
+
+		const parsed: KustoFunctionParameter[] = [];
+		for (const part of parts) {
+			const raw = part;
+			// Support defaults like: param:type = value
+			const eqIdx = part.indexOf('=');
+			const left = (eqIdx >= 0 ? part.slice(0, eqIdx) : part).trim();
+			const defaultValue = eqIdx >= 0 ? part.slice(eqIdx + 1).trim() : undefined;
+
+			const colonIdx = left.indexOf(':');
+			if (colonIdx < 0) {
+				parsed.push({ name: left || raw, defaultValue, raw });
+				continue;
+			}
+			const name = left.slice(0, colonIdx).trim();
+			const type = left.slice(colonIdx + 1).trim();
+			parsed.push({ name: name || raw, type: type || undefined, defaultValue, raw });
+		}
+		return parsed;
 	}
 
 	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {

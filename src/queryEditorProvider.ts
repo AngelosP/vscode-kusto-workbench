@@ -9,6 +9,7 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
+import { SCHEMA_CACHE_VERSION } from './schemaCache';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
 
@@ -25,7 +26,7 @@ const STORAGE_KEYS = {
 
 type KustoFavorite = { name: string; clusterUrl: string; database: string };
 
-type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
+type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
 
@@ -380,7 +381,8 @@ export class QueryEditorProvider {
 			if (already) {
 				return;
 			}
-			const legacy = this.context.globalState.get<Record<string, CachedSchemaEntry> | undefined>(
+			// Legacy cache stored in globalState (pre disk-cache migration) did not include a schema version.
+			const legacy = this.context.globalState.get<Record<string, { schema: DatabaseSchemaIndex; timestamp: number }> | undefined>(
 				STORAGE_KEYS.cachedSchemas
 			);
 			if (legacy && typeof legacy === 'object') {
@@ -390,7 +392,7 @@ export class QueryEditorProvider {
 					.slice(0, 25);
 				for (const [key, entry] of entries) {
 					try {
-						await this.saveCachedSchemaToDisk(key, entry);
+						await this.saveCachedSchemaToDisk(key, { schema: entry.schema, timestamp: entry.timestamp, version: SCHEMA_CACHE_VERSION });
 					} catch {
 						// ignore
 					}
@@ -1020,9 +1022,25 @@ export class QueryEditorProvider {
 		let jsonText = '';
 		let label = '';
 		try {
-			const cached = await this.getCachedSchemaFromDisk(diskCacheKey);
+			let cached = await this.getCachedSchemaFromDisk(diskCacheKey);
 			if (token.isCancellationRequested) {
 				throw new Error('Copilot write-query canceled');
+			}
+
+			// Auto-refresh the persisted schema if the cache entry is from an older schema version.
+			// This improves Copilot correctness over time without requiring explicit user refreshes.
+			if (cached?.schema && (cached.version ?? 0) !== SCHEMA_CACHE_VERSION) {
+				try {
+					const refreshed = await this.kustoClient.getDatabaseSchema(connection, db, true);
+					if (token.isCancellationRequested) {
+						throw new Error('Copilot write-query canceled');
+					}
+					const timestamp = Date.now();
+					await this.saveCachedSchemaToDisk(diskCacheKey, { schema: refreshed.schema, timestamp, version: SCHEMA_CACHE_VERSION });
+					cached = { schema: refreshed.schema, timestamp, version: SCHEMA_CACHE_VERSION };
+				} catch {
+					// If refresh fails, continue with the cached schema; the JSON will still be useful.
+				}
 			}
 
 			if (!cached || !cached.schema) {
@@ -1044,8 +1062,9 @@ export class QueryEditorProvider {
 				for (const cols of Object.values(schema.columnsByTable || {})) {
 					columnsCount += cols.length;
 				}
+				const functionsCount = schema.functions?.length ?? 0;
 				const cacheAgeMs = Math.max(0, now - cached.timestamp);
-				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns`;
+				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns, ${functionsCount} functions`;
 				jsonText = JSON.stringify(
 					{
 						database: db,
@@ -1053,7 +1072,9 @@ export class QueryEditorProvider {
 						meta: {
 							cacheAgeMs,
 							tablesCount,
-							columnsCount
+							columnsCount,
+							functionsCount,
+							schemaVersion: cached.version ?? 0
 						}
 					},
 					null,
@@ -2730,11 +2751,12 @@ ${query}
 		try {
 			const fileUri = this.getSchemaCacheFileUri(cacheKey);
 			const buf = await vscode.workspace.fs.readFile(fileUri);
-			const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as CachedSchemaEntry;
+			const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as Partial<CachedSchemaEntry>;
 			if (!parsed || !parsed.schema || typeof parsed.timestamp !== 'number') {
 				return undefined;
 			}
-			return parsed;
+			const version = typeof parsed.version === 'number' && isFinite(parsed.version) ? parsed.version : 0;
+			return { schema: parsed.schema, timestamp: parsed.timestamp, version };
 		} catch {
 			return undefined;
 		}
@@ -3181,9 +3203,12 @@ ${query}
 			const cached = await this.getCachedSchemaFromDisk(cacheKey);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
+			const cachedIsLatest = !!(cached && (cached.version ?? 0) === SCHEMA_CACHE_VERSION);
 
 			// Default path: use persisted cache when it's still fresh.
-			if (!forceRefresh && cached && cachedIsFresh) {
+			// If the cache entry was produced by an older extension version (version mismatch),
+			// keep using it immediately for autocomplete, but also refresh it automatically.
+			if (!forceRefresh && cached && cachedIsFresh && cachedIsLatest) {
 				const schema = cached.schema;
 				const tablesCount = schema.tables?.length ?? 0;
 				let columnsCount = 0;
@@ -3211,6 +3236,35 @@ ${query}
 				return;
 			}
 
+			if (!forceRefresh && cached && cachedIsFresh && !cachedIsLatest) {
+				const schema = cached.schema;
+				const tablesCount = schema.tables?.length ?? 0;
+				let columnsCount = 0;
+				for (const cols of Object.values(schema.columnsByTable || {})) {
+					columnsCount += cols.length;
+				}
+
+				this.output.appendLine(
+					`[schema] loaded (persisted cache, outdated version=${cached.version ?? 0}) db=${database} tables=${tablesCount} columns=${columnsCount}; refreshing…`
+				);
+				this.postMessage({
+					type: 'schemaData',
+					boxId,
+					connectionId,
+					database,
+					requestToken,
+					schema,
+					schemaMeta: {
+						fromCache: true,
+						cacheAgeMs: cachedAgeMs,
+						tablesCount,
+						columnsCount
+					}
+				});
+				// Continue through to fetch a fresh schema below.
+				forceRefresh = true;
+			}
+
 			const result = await this.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
 			const schema = result.schema;
 
@@ -3228,7 +3282,7 @@ ${query}
 			const timestamp = result.fromCache
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
-			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp });
+			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
 			if (tablesCount === 0 || columnsCount === 0) {
 				const d = result.debug;
 				if (d) {

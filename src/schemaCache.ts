@@ -3,7 +3,11 @@ import * as crypto from 'crypto';
 
 import { DatabaseSchemaIndex } from './kustoClient';
 
-export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number };
+// Increment when the persisted schema JSON shape or semantics change.
+// Used to automatically refresh stale cache entries created by older extension versions.
+export const SCHEMA_CACHE_VERSION = 2;
+
+export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number };
 
 export const getSchemaCacheDirUri = (globalStorageUri: vscode.Uri): vscode.Uri => {
 	return vscode.Uri.joinPath(globalStorageUri, 'schemaCache');
@@ -21,11 +25,12 @@ export const readCachedSchemaFromDisk = async (
 	try {
 		const fileUri = getSchemaCacheFileUri(globalStorageUri, cacheKey);
 		const buf = await vscode.workspace.fs.readFile(fileUri);
-		const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as CachedSchemaEntry;
+		const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as Partial<CachedSchemaEntry>;
 		if (!parsed || !parsed.schema || typeof parsed.timestamp !== 'number') {
 			return undefined;
 		}
-		return parsed;
+		const version = typeof parsed.version === 'number' && isFinite(parsed.version) ? parsed.version : 0;
+		return { schema: parsed.schema, timestamp: parsed.timestamp, version };
 	} catch {
 		return undefined;
 	}

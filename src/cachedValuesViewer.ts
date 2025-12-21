@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
+import { readCachedSchemaFromDisk } from './schemaCache';
 
 const VIEW_TITLE = 'Kusto Workbench: Cached Values';
 
@@ -54,7 +55,8 @@ type IncomingMessage =
 	| { type: 'clusterMap.delete'; clusterEndpoint: string }
 	| { type: 'clusterMap.resetAll' }
 	| { type: 'databases.delete'; clusterKey: string }
-	| { type: 'databases.refresh'; clusterKey: string };
+	| { type: 'databases.refresh'; clusterKey: string }
+	| { type: 'schema.get'; clusterKey: string; database: string };
 
 export class CachedValuesViewer {
 	private static current: CachedValuesViewer | undefined;
@@ -75,7 +77,7 @@ export class CachedValuesViewer {
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
-		extensionUri: vscode.Uri,
+		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager
 	) {
 		this.kustoClient = new KustoQueryClient(this.context);
@@ -86,7 +88,7 @@ export class CachedValuesViewer {
 			{
 				enableScripts: true,
 				retainContextWhenHidden: true,
-				localResourceRoots: [extensionUri]
+				localResourceRoots: [this.extensionUri]
 			}
 		);
 
@@ -424,6 +426,106 @@ export class CachedValuesViewer {
 					return;
 				}
 			}
+			case 'schema.get': {
+				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
+				const database = String(msg.database || '').trim();
+				if (!clusterKey || !database) {
+					return;
+				}
+
+				// Prefer a saved connection's clusterUrl for this clusterKey when available.
+				let clusterUrl = '';
+				try {
+					const conns = this.connectionManager.getConnections();
+					for (const c of conns) {
+						if (!c || !c.clusterUrl) {
+							continue;
+						}
+						const key = this.getClusterCacheKey(c.clusterUrl);
+						if (key === clusterKey) {
+							clusterUrl = String(c.clusterUrl || '').trim();
+							break;
+						}
+					}
+				} catch {
+					clusterUrl = '';
+				}
+				if (!clusterUrl) {
+					clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
+				}
+
+				const cacheKey = `${clusterUrl}|${database}`;
+				let jsonText = '';
+				let ok = false;
+				try {
+					const cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+					const now = Date.now();
+					if (!cached || !cached.schema) {
+						jsonText = JSON.stringify(
+							{
+								cluster: clusterUrl,
+								database,
+								error:
+									'No cached schema was found for this database. ' +
+									'Try loading schema for autocomplete (or refresh schema), then try again.'
+							},
+							null,
+							2
+						);
+						ok = false;
+					} else {
+						const schema = cached.schema;
+						const tablesCount = schema.tables?.length ?? 0;
+						let columnsCount = 0;
+						for (const cols of Object.values(schema.columnsByTable || {})) {
+							columnsCount += cols.length;
+						}
+						const functionsCount = schema.functions?.length ?? 0;
+						const cacheAgeMs = Math.max(0, now - cached.timestamp);
+						jsonText = JSON.stringify(
+							{
+								cluster: clusterUrl,
+								database,
+								schema,
+								meta: {
+									cacheAgeMs,
+									tablesCount,
+									columnsCount,
+									functionsCount,
+									timestamp: cached.timestamp
+								}
+							},
+							null,
+							2
+						);
+						ok = true;
+					}
+				} catch {
+					jsonText = JSON.stringify(
+						{
+							cluster: clusterUrl,
+							database,
+							error: 'Failed to read cached schema from disk.'
+						},
+						null,
+						2
+					);
+					ok = false;
+				}
+
+				try {
+					this.panel.webview.postMessage({
+						type: 'schemaResult',
+						clusterKey,
+						database,
+						ok,
+						json: jsonText
+					});
+				} catch {
+					// ignore
+				}
+				return;
+			}
 			default:
 				return;
 		}
@@ -431,11 +533,14 @@ export class CachedValuesViewer {
 
 	private buildHtml(webview: vscode.Webview): string {
 		const nonce = String(Date.now()) + Math.random().toString(16).slice(2);
+		const objectViewerJsUri = webview
+			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor', 'objectViewer.js'))
+			.toString();
 		const csp = [
 			"default-src 'none'",
 			"img-src data:",
-			"style-src 'unsafe-inline'",
-			`script-src 'nonce-${nonce}'`
+			`style-src 'unsafe-inline' ${webview.cspSource}`,
+			`script-src 'nonce-${nonce}' ${webview.cspSource}`
 		].join('; ');
 
 		return `<!doctype html>
@@ -467,6 +572,8 @@ export class CachedValuesViewer {
 		.iconButton:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
 		.iconButton:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground)); }
 		.iconButton svg { width: 16px; height: 16px; fill: currentColor; }
+		.linkButton { background: transparent; border: 0; padding: 0; margin: 0; color: var(--vscode-textLink-foreground); cursor: pointer; }
+		.linkButton:hover { text-decoration: underline; }
 		table { width: 100%; border-collapse: collapse; }
 		th, td { border-bottom: 1px solid var(--vscode-editorWidget-border); padding: 6px 8px; vertical-align: top; }
 		th { text-align: left; font-weight: 600; }
@@ -532,6 +639,189 @@ export class CachedValuesViewer {
 		.listItem:hover { background: var(--vscode-list-hoverBackground); }
 		.listItem.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 		.listItem .count { opacity: 0.8; font-size: 12px; }
+
+		/* Reuse the Query Editor's object/JSON viewer (modal) styling. */
+		.refresh-btn {
+			background: transparent;
+			border: 1px solid var(--vscode-input-border);
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 0;
+			font-size: 12px;
+			border-radius: 4px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+			min-width: 28px;
+			width: 28px;
+			height: 28px;
+		}
+		.refresh-btn svg { display: block; }
+		.refresh-btn.close-btn { border: none; }
+		.refresh-btn:hover { background: var(--vscode-list-hoverBackground); }
+		.refresh-btn:active { opacity: 0.7; }
+
+		.tool-toggle-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			padding: 4px 8px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 14px;
+		}
+		.tool-toggle-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+		.tool-toggle-btn.is-active {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.object-view-btn {
+			margin: 0;
+			padding: 2px 6px;
+			font-size: 11px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 3px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			vertical-align: baseline;
+		}
+		.object-view-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+
+		.object-viewer-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+		.object-viewer-modal.visible { display: flex; }
+		.object-viewer-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 80%;
+			max-width: 1200px;
+			height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+		.object-viewer-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+		.object-viewer-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+		.object-viewer-search { display: flex; gap: 8px; align-items: center; flex: 1; margin: 0 16px; }
+		.object-viewer-search input {
+			flex: 1;
+			max-width: 300px;
+			padding: 4px 8px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 2px;
+		}
+		.object-viewer-search-results { font-size: 11px; color: var(--vscode-descriptionForeground); }
+		.object-viewer-body { flex: 1; overflow: auto; padding: 16px; }
+		.object-viewer-section {
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			background: var(--vscode-editor-background);
+			margin-bottom: 12px;
+		}
+		.object-viewer-section-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+		.object-viewer-props-section .object-viewer-section-header { justify-content: flex-start; }
+		.object-viewer-props-section .object-viewer-section-title { flex: 1; }
+		.object-viewer-section-title {
+			font-size: 12px;
+			font-weight: 600;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.object-viewer-back-btn {
+			padding: 4px 8px;
+			min-width: 28px;
+			height: 28px;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
+		}
+		.object-viewer-back-btn:hover { background: var(--vscode-button-hoverBackground); }
+		.object-viewer-props-section .object-viewer-section-title { white-space: normal; overflow: visible; text-overflow: clip; }
+		.object-viewer-crumb {
+			background: transparent;
+			border: none;
+			padding: 0;
+			margin: 0;
+			font: inherit;
+			color: var(--vscode-textLink-foreground);
+			cursor: pointer;
+			text-decoration: none;
+		}
+		.object-viewer-crumb:hover { background: transparent; text-decoration: underline; }
+		.object-viewer-crumb:focus { outline: none; background: transparent; }
+		.object-viewer-crumb:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; background: transparent; }
+		.object-viewer-crumb:disabled { color: var(--vscode-foreground); cursor: default; text-decoration: none; opacity: 0.9; }
+		.object-viewer-crumb-sep { color: var(--vscode-descriptionForeground); padding: 0 6px; user-select: none; }
+		.object-viewer-props-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+			user-select: text;
+		}
+		.object-viewer-props-table td {
+			padding: 6px 10px;
+			border-top: 1px solid var(--vscode-panel-border);
+			vertical-align: top;
+			word-break: break-word;
+			user-select: text;
+		}
+		.object-viewer-prop-key-cell { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+		.object-viewer-prop-key-text { flex: 1; min-width: 0; word-break: break-word; }
+		.object-viewer-prop-copy-btn { min-width: 22px; width: 22px; height: 22px; opacity: 0; pointer-events: none; user-select: none; }
+		.object-viewer-props-table tr:hover .object-viewer-prop-copy-btn,
+		.object-viewer-props-table tr:focus-within .object-viewer-prop-copy-btn { opacity: 1; pointer-events: auto; }
+		.object-viewer-raw-actions { display: inline-flex; gap: 4px; align-items: center; }
+		.object-viewer-props-table td:first-child { width: 35%; max-width: 360px; font-family: var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); }
+		.object-viewer-props-table td:last-child { font-family: var(--vscode-editor-font-family); vertical-align: middle; }
+		.object-viewer-props-table tr.search-match td { background: var(--vscode-editor-findMatchHighlightBackground); outline: 1px solid var(--vscode-editor-findMatchHighlightBorder); outline-offset: -1px; }
+		.object-viewer-raw-body { padding: 10px 12px; }
+		.object-viewer-json { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre; line-height: 1.6; }
+		.object-viewer-json-wrap { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; }
+		.json-key { color: var(--vscode-symbolIcon-propertyForeground); }
+		.json-string { color: var(--vscode-symbolIcon-stringForeground); }
+		.json-number { color: var(--vscode-symbolIcon-numberForeground); }
+		.json-boolean { color: var(--vscode-symbolIcon-booleanForeground); }
+		.json-null { color: var(--vscode-symbolIcon-nullForeground); }
+		.json-highlight { background: var(--vscode-editor-findMatchHighlightBackground); border-radius: 2px; }
 	</style>
 </head>
 <body>
@@ -568,11 +858,117 @@ export class CachedValuesViewer {
 		<div id="dbContent" class="sectionBody"></div>
 	</section>
 
+	<!-- Object Viewer Modal (reused from query results viewer) -->
+	<div id="objectViewer" class="object-viewer-modal">
+		<div class="object-viewer-content">
+			<div class="object-viewer-header">
+				<h3 id="objectViewerTitle"></h3>
+				<div class="object-viewer-search">
+					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..." />
+					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
+				</div>
+				<button class="refresh-btn close-btn object-viewer-close" type="button" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" />
+						<path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="object-viewer-body">
+				<div class="object-viewer-section object-viewer-props-section">
+					<div class="object-viewer-section-header">
+						<button id="objectViewerBackBtn" class="tool-toggle-btn object-viewer-back-btn" type="button" title="Back" aria-label="Back" style="display:none;">←</button>
+						<div class="object-viewer-section-title" id="objectViewerPropsTitle"></div>
+					</div>
+					<table class="object-viewer-props-table" id="objectViewerPropsTable" aria-label="Properties"></table>
+				</div>
+
+				<div class="object-viewer-section object-viewer-raw-section">
+					<div class="object-viewer-section-header">
+						<div class="object-viewer-section-title">Raw value</div>
+						<div class="object-viewer-raw-actions">
+							<button id="objectViewerRawCopy" class="tool-toggle-btn object-viewer-raw-copy" type="button" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+							<button id="objectViewerRawToggle" class="tool-toggle-btn object-viewer-raw-toggle" type="button" title="Hide raw value" aria-label="Hide raw value"></button>
+						</div>
+					</div>
+					<div id="objectViewerRawBody" class="object-viewer-raw-body">
+						<div id="objectViewerContent" class="object-viewer-json object-viewer-json-wrap"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script nonce="${nonce}" src="${objectViewerJsUri}"></script>
+
 	<script nonce="${nonce}">
 		var vscode = acquireVsCodeApi();
 		var lastSnapshot = null;
 		var selectedDbClusterKey = '';
+		var schemaRequestInFlight = false;
 		var requestPending = false;
+		var objectViewerHandlersInit = false;
+				function openSchemaJsonViewer(title, jsonText) {
+					var modal = document.getElementById('objectViewer');
+					var titleEl = document.getElementById('objectViewerTitle');
+					var searchInput = document.getElementById('objectViewerSearch');
+					if (!modal) {
+						return;
+					}
+					try {
+						if (titleEl) {
+							titleEl.textContent = '';
+							titleEl.appendChild(document.createTextNode(title));
+						}
+					} catch { /* ignore */ }
+					try {
+						// Initialize the raw toggle/copy glyphs.
+						if (typeof __kustoEnsureObjectViewerRawToggleIcon === 'function') {
+							__kustoEnsureObjectViewerRawToggleIcon();
+						}
+						if (typeof __kustoEnsureObjectViewerRawCopyIcon === 'function') {
+							__kustoEnsureObjectViewerRawCopyIcon();
+						}
+					} catch { /* ignore */ }
+					try {
+						window.__kustoObjectViewerRawVisible = true;
+						var rawBody = document.getElementById('objectViewerRawBody');
+						if (rawBody) { rawBody.style.display = ''; }
+						var rawToggle = document.getElementById('objectViewerRawToggle');
+						if (rawToggle) { rawToggle.classList.add('is-active'); }
+					} catch { /* ignore */ }
+
+					var rootValue = null;
+					try {
+						if (typeof __kustoParseMaybeJson === 'function') {
+							rootValue = __kustoParseMaybeJson(jsonText);
+						} else {
+							rootValue = jsonText;
+						}
+					} catch {
+						rootValue = jsonText;
+					}
+
+					window.__kustoObjectViewerState = {
+						columnName: title,
+						stack: [{ label: title, value: rootValue }]
+					};
+					try {
+						if (searchInput) {
+							searchInput.value = '';
+						}
+						var sr = document.getElementById('objectViewerSearchResults');
+						if (sr) { sr.textContent = ''; }
+					} catch { /* ignore */ }
+					try {
+						if (typeof __kustoRenderObjectViewer === 'function') {
+							__kustoRenderObjectViewer();
+						}
+					} catch { /* ignore */ }
+					try {
+						modal.classList.add('visible');
+					} catch { /* ignore */ }
+				}
 		var lastAccountsKey = '';
 		var lastAuthKey = '';
 		var lastClusterKey = '';
@@ -592,6 +988,63 @@ export class CachedValuesViewer {
 			str = str.replace(/"/g, '&quot;');
 			str = str.replace(/'/g, '&#39;');
 			return str;
+		}
+
+		function initObjectViewerHandlersOnce() {
+			if (objectViewerHandlersInit) {
+				return;
+			}
+			objectViewerHandlersInit = true;
+			try {
+				var modal = document.getElementById('objectViewer');
+				if (modal) {
+					modal.addEventListener('click', function (e) {
+						try { closeObjectViewer(e); } catch { /* ignore */ }
+					});
+				}
+				var content = modal ? modal.querySelector('.object-viewer-content') : null;
+				if (content) {
+					content.addEventListener('click', function (e) {
+						try { e.stopPropagation(); } catch { /* ignore */ }
+					});
+				}
+				var closeBtn = modal ? modal.querySelector('.object-viewer-close') : null;
+				if (closeBtn) {
+					closeBtn.addEventListener('click', function (e) {
+						try { e.preventDefault(); } catch { /* ignore */ }
+						try { closeObjectViewer(); } catch { /* ignore */ }
+					});
+				}
+				var searchInput = document.getElementById('objectViewerSearch');
+				if (searchInput) {
+					searchInput.addEventListener('input', function () {
+						try { searchInObjectViewer(); } catch { /* ignore */ }
+					});
+				}
+				var backBtn = document.getElementById('objectViewerBackBtn');
+				if (backBtn) {
+					backBtn.addEventListener('click', function (e) {
+						try { e.preventDefault(); } catch { /* ignore */ }
+						try { objectViewerNavigateBack(); } catch { /* ignore */ }
+					});
+				}
+				var rawCopyBtn = document.getElementById('objectViewerRawCopy');
+				if (rawCopyBtn) {
+					rawCopyBtn.addEventListener('click', function (e) {
+						try { e.preventDefault(); } catch { /* ignore */ }
+						try { copyObjectViewerRawToClipboard(); } catch { /* ignore */ }
+					});
+				}
+				var rawToggleBtn = document.getElementById('objectViewerRawToggle');
+				if (rawToggleBtn) {
+					rawToggleBtn.addEventListener('click', function (e) {
+						try { e.preventDefault(); } catch { /* ignore */ }
+						try { toggleObjectViewerRaw(); } catch { /* ignore */ }
+					});
+				}
+			} catch {
+				// ignore
+			}
 		}
 
 		function getArray(val) {
@@ -1029,7 +1482,9 @@ export class CachedValuesViewer {
 			for (var r = 0; r < selectedList.length; r++) {
 				var db = String(selectedList[r] || '').trim();
 				if (!db) continue;
-				html += '<tr><td class="mono">' + escapeHtml(db) + '</td></tr>';
+				html += '<tr><td>';
+				html += '<button class="linkButton mono" data-db-schema="1" data-cluster-key="' + escapeHtml(selected) + '" data-db-name="' + escapeHtml(db) + '" title="View cached schema JSON">' + escapeHtml(db) + '</button>';
+				html += '</td></tr>';
 			}
 			html += '</tbody>';
 			html += '</table>';
@@ -1136,8 +1591,18 @@ export class CachedValuesViewer {
 				lastSnapshot = msg.snapshot;
 				// Ignore the snapshot's timestamp for change detection; renderAll will re-render only when data changes.
 				renderAll(lastSnapshot);
+				return;
+			}
+			if (msg && msg.type === 'schemaResult') {
+				schemaRequestInFlight = false;
+				var db = String(msg.database || '');
+				var jsonText = String(msg.json || '');
+				var title = 'Cached schema for ' + (db ? db : '(unknown db)');
+				openSchemaJsonViewer(title, jsonText);
 			}
 		});
+
+		initObjectViewerHandlersOnce();
 
 		document.addEventListener('click', function (e) {
 			var t = e.target;
@@ -1168,6 +1633,19 @@ export class CachedValuesViewer {
 								list.focus();
 							}
 						} catch { /* ignore */ }
+					}
+				}
+				return;
+			}
+
+			var dbSchemaBtn = closest(t, '[data-db-schema]');
+			if (dbSchemaBtn) {
+				var clusterKey = String(dbSchemaBtn.getAttribute('data-cluster-key') || '');
+				var dbName = String(dbSchemaBtn.getAttribute('data-db-name') || '');
+				if (clusterKey && dbName) {
+					if (!schemaRequestInFlight) {
+						schemaRequestInFlight = true;
+						vscode.postMessage({ type: 'schema.get', clusterKey: clusterKey, database: dbName });
 					}
 				}
 				return;
@@ -1211,6 +1689,8 @@ export class CachedValuesViewer {
 				vscode.postMessage({ type: 'copyToClipboard', text: token });
 				return;
 			}
+
+
 
 			var saveOverride = closest(t, '[data-save-override]');
 			if (saveOverride) {

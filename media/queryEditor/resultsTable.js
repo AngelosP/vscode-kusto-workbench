@@ -3659,6 +3659,13 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 			try {
 				// Only left button
 				if (ev.button !== 0) return;
+				// Don't steal clicks from interactive controls within cells (e.g. the object/JSON viewer button).
+				try {
+					const t = ev.target;
+					if (t && t.closest && t.closest('button, a, input, textarea, select')) {
+						return;
+					}
+				} catch { /* ignore */ }
 				const cell = getCellFromEvent(ev);
 				if (!cell) return;
 				ev.preventDefault();

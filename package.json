@@ -3,7 +3,7 @@
   "displayName": "Kusto Workbench",
   "description": "Notebook-like experience for Kusto Query Language (KQL) and more",
   "publisher": "angelos-petropoulos",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "MIT",
   "icon": "media/images/kusto-workbench-logo.png",
   "repository": {
