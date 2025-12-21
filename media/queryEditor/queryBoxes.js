@@ -4751,6 +4751,17 @@ function updateDatabaseField(boxId) {
 			databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
 			databaseSelect.disabled = true;
 			if (refreshBtn) {
+				// While auto-loading databases after a cluster change, show a spinner in the refresh button.
+				try {
+					if (!(refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1'))) {
+						if (refreshBtn.dataset) {
+							refreshBtn.dataset.kustoAutoDbInFlight = '1';
+							refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
+						}
+						refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+						refreshBtn.setAttribute('aria-busy', 'true');
+					}
+				} catch { /* ignore */ }
 				refreshBtn.disabled = true;
 			}
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
@@ -5016,13 +5027,14 @@ function onDatabasesError(boxId, error) {
 		}
 		if (refreshBtn) {
 			try {
-				if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
+				if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
 					const prev = refreshBtn.dataset.kustoPrevHtml;
 					if (typeof prev === 'string' && prev) {
 						refreshBtn.innerHTML = prev;
 					}
 					try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
 					try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+					try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
 				}
 				refreshBtn.removeAttribute('aria-busy');
 			} catch { /* ignore */ }
@@ -5175,13 +5187,14 @@ function updateDatabaseSelect(boxId, databases) {
 	}
 	if (refreshBtn) {
 		try {
-			if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
+			if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
 				const prev = refreshBtn.dataset.kustoPrevHtml;
 				if (typeof prev === 'string' && prev) {
 					refreshBtn.innerHTML = prev;
 				}
 				try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
 				try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+				try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
 			}
 			refreshBtn.removeAttribute('aria-busy');
 		} catch { /* ignore */ }
@@ -5248,6 +5261,68 @@ function __kustoIsRunSelectionReady(boxId) {
 	return true;
 }
 
+function __kustoHasValidFavoriteSelection(ownerBoxId) {
+	try {
+		const id = String(ownerBoxId || '').trim();
+		if (!id) return false;
+		// Treat "favorite selected" as: the current (clusterUrl, db) matches a known favorite.
+		const clusterUrl = (typeof __kustoGetCurrentClusterUrlForBox === 'function')
+			? String(__kustoGetCurrentClusterUrlForBox(id) || '').trim()
+			: '';
+		const db = (typeof __kustoGetCurrentDatabaseForBox === 'function')
+			? String(__kustoGetCurrentDatabaseForBox(id) || '').trim()
+			: '';
+		if (!clusterUrl || !db) return false;
+		return typeof __kustoFindFavorite === 'function' ? !!__kustoFindFavorite(clusterUrl, db) : false;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoClearSchemaSummaryIfNoSelection(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const ownerId = __kustoGetEffectiveSelectionOwnerIdForRun(id);
+	let connectionId = '';
+	let database = '';
+	try {
+		const connEl = document.getElementById(ownerId + '_connection');
+		connectionId = connEl ? String(connEl.value || '').trim() : '';
+		const dbEl = document.getElementById(ownerId + '_database');
+		database = dbEl ? String(dbEl.value || '').trim() : '';
+	} catch {
+		connectionId = '';
+		database = '';
+	}
+
+	// If neither a database nor a favorite is selected, blank the schema summary to avoid stale counts.
+	const hasValidCluster = typeof __kustoIsValidConnectionIdForRun === 'function'
+		? __kustoIsValidConnectionIdForRun(connectionId)
+		: !!connectionId;
+	const shouldClear = ((!hasValidCluster || !database) && !__kustoHasValidFavoriteSelection(ownerId));
+
+	// Keep the schema refresh button in sync: hide it when selection isn't valid.
+	try {
+		const btn = document.getElementById(id + '_schema_refresh');
+		if (btn) {
+			btn.style.display = shouldClear ? 'none' : '';
+		}
+	} catch { /* ignore */ }
+
+	if (shouldClear) {
+		try {
+			if (schemaByBoxId) {
+				delete schemaByBoxId[id];
+			}
+		} catch { /* ignore */ }
+		try {
+			if (typeof setSchemaLoadedSummary === 'function') {
+				setSchemaLoadedSummary(id, '', '', false);
+			}
+		} catch { /* ignore */ }
+	}
+}
+
 window.__kustoUpdateRunEnabledForBox = function (boxId) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -5263,6 +5338,9 @@ window.__kustoUpdateRunEnabledForBox = function (boxId) {
 			return;
 		}
 	} catch { /* ignore */ }
+
+	// Also keep schema summary in sync with selection state.
+	try { __kustoClearSchemaSummaryIfNoSelection(id); } catch { /* ignore */ }
 
 	const enabled = __kustoIsRunSelectionReady(id);
 	if (runBtn) {
