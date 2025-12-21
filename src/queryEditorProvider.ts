@@ -10,6 +10,7 @@ import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
+import { countColumns } from './schemaIndexUtils';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
 
@@ -1058,10 +1059,7 @@ export class QueryEditorProvider {
 			} else {
 				const schema = cached.schema;
 				const tablesCount = schema.tables?.length ?? 0;
-				let columnsCount = 0;
-				for (const cols of Object.values(schema.columnsByTable || {})) {
-					columnsCount += cols.length;
-				}
+				const columnsCount = countColumns(schema);
 				const functionsCount = schema.functions?.length ?? 0;
 				const cacheAgeMs = Math.max(0, now - cached.timestamp);
 				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns, ${functionsCount} functions`;
@@ -3211,10 +3209,7 @@ ${query}
 			if (!forceRefresh && cached && cachedIsFresh && cachedIsLatest) {
 				const schema = cached.schema;
 				const tablesCount = schema.tables?.length ?? 0;
-				let columnsCount = 0;
-				for (const cols of Object.values(schema.columnsByTable || {})) {
-					columnsCount += cols.length;
-				}
+				const columnsCount = countColumns(schema);
 
 				this.output.appendLine(
 					`[schema] loaded (persisted cache) db=${database} tables=${tablesCount} columns=${columnsCount}`
@@ -3239,10 +3234,7 @@ ${query}
 			if (!forceRefresh && cached && cachedIsFresh && !cachedIsLatest) {
 				const schema = cached.schema;
 				const tablesCount = schema.tables?.length ?? 0;
-				let columnsCount = 0;
-				for (const cols of Object.values(schema.columnsByTable || {})) {
-					columnsCount += cols.length;
-				}
+				const columnsCount = countColumns(schema);
 
 				this.output.appendLine(
 					`[schema] loaded (persisted cache, outdated version=${cached.version ?? 0}) db=${database} tables=${tablesCount} columns=${columnsCount}; refreshing…`
@@ -3269,10 +3261,7 @@ ${query}
 			const schema = result.schema;
 
 			const tablesCount = schema.tables?.length ?? 0;
-			let columnsCount = 0;
-			for (const cols of Object.values(schema.columnsByTable || {})) {
-				columnsCount += cols.length;
-			}
+			const columnsCount = countColumns(schema);
 
 			this.output.appendLine(
 				`[schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${result.fromCache}`
@@ -3321,10 +3310,7 @@ ${query}
 				if (cached && cached.schema) {
 					const schema = cached.schema;
 					const tablesCount = schema.tables?.length ?? 0;
-					let columnsCount = 0;
-					for (const cols of Object.values(schema.columnsByTable || {})) {
-						columnsCount += cols.length;
-					}
+					const columnsCount = countColumns(schema);
 
 					this.output.appendLine(
 						`[schema] using cached schema after failure db=${database} tables=${tablesCount} columns=${columnsCount}`

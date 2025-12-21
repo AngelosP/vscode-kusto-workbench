@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { readCachedSchemaFromDisk } from './schemaCache';
+import { getSchemaCacheDirUri, readCachedSchemaFromDisk } from './schemaCache';
+import { countColumns } from './schemaIndexUtils';
 
 const VIEW_TITLE = 'Kusto Workbench: Cached Values';
 
@@ -56,6 +57,7 @@ type IncomingMessage =
 	| { type: 'clusterMap.resetAll' }
 	| { type: 'databases.delete'; clusterKey: string }
 	| { type: 'databases.refresh'; clusterKey: string }
+	| { type: 'schema.clearAll' }
 	| { type: 'schema.get'; clusterKey: string; database: string };
 
 export class CachedValuesViewer {
@@ -426,6 +428,31 @@ export class CachedValuesViewer {
 					return;
 				}
 			}
+			case 'schema.clearAll': {
+				// Clear all cached database lists + all cached schema JSON files (all clusters / all databases).
+				try {
+					await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, {});
+				} catch {
+					// ignore
+				}
+				try {
+					await this.context.globalState.update('kusto.cacheClearEpoch', Date.now());
+				} catch {
+					// ignore
+				}
+				try {
+					const dir = getSchemaCacheDirUri(this.context.globalStorageUri);
+					await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false });
+				} catch {
+					// ignore (directory might not exist yet)
+				}
+				try {
+					void vscode.window.setStatusBarMessage('Cleared cached schema data', 2000);
+				} catch {
+					// ignore
+				}
+				return;
+			}
 			case 'schema.get': {
 				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
 				const database = String(msg.database || '').trim();
@@ -476,10 +503,7 @@ export class CachedValuesViewer {
 					} else {
 						const schema = cached.schema;
 						const tablesCount = schema.tables?.length ?? 0;
-						let columnsCount = 0;
-						for (const cols of Object.values(schema.columnsByTable || {})) {
-							columnsCount += cols.length;
-						}
+						const columnsCount = countColumns(schema);
 						const functionsCount = schema.functions?.length ?? 0;
 						const cacheAgeMs = Math.max(0, now - cached.timestamp);
 						jsonText = JSON.stringify(
@@ -853,6 +877,17 @@ export class CachedValuesViewer {
 			<div>
 				<div><strong>Cached list of databases (per cluster)</strong></div>
 				<div class="small">Select a cluster on the left to view its cached databases.</div>
+			</div>
+			<div class="rowActions">
+				<button id="schemaClearAll" class="iconButton" type="button" title="clear all cached schema data" aria-label="clear all cached schema data">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+						<path d="M6 2.5h4" />
+						<path d="M3.5 4.5h9" />
+						<path d="M5 4.5l.7 9h4.6l.7-9" />
+						<path d="M6.6 7v4.8" />
+						<path d="M9.4 7v4.8" />
+					</svg>
+				</button>
 			</div>
 		</header>
 		<div id="dbContent" class="sectionBody"></div>
@@ -1607,6 +1642,13 @@ export class CachedValuesViewer {
 		document.addEventListener('click', function (e) {
 			var t = e.target;
 			if (!t || t.nodeType !== 1) {
+				return;
+			}
+
+			var schemaClearAll = closest(t, '#schemaClearAll');
+			if (schemaClearAll) {
+				vscode.postMessage({ type: 'schema.clearAll' });
+				requestSnapshot();
 				return;
 			}
 

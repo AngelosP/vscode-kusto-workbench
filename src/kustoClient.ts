@@ -13,12 +13,11 @@ export interface QueryResult {
 
 export interface DatabaseSchemaIndex {
 	tables: string[];
-	columnsByTable: Record<string, string[]>;
 	/**
-	 * Optional column type information when available from schema queries.
-	 * Keys and values are best-effort and depend on the server/driver schema shape.
+	 * Column type information (best-effort) keyed by table and then column name.
+	 * This is also the source of truth for which columns exist.
 	 */
-	columnTypesByTable?: Record<string, Record<string, string>>;
+	columnTypesByTable: Record<string, Record<string, string>>;
 	/**
 	 * Optional list of database-scoped (user-defined) functions.
 	 * Populated best-effort; schema loading should still succeed even if this fails.
@@ -96,7 +95,9 @@ export class KustoQueryClient {
 	private static readonly AUTH_SCOPES = ['https://kusto.kusto.windows.net/.default'] as const;
 	private static readonly STORAGE_KEYS = {
 		knownAccounts: 'kusto.auth.knownAccounts',
-		clusterAccountMap: 'kusto.auth.clusterAccountMap'
+		clusterAccountMap: 'kusto.auth.clusterAccountMap',
+		/** Global epoch used to invalidate in-memory caches across extension instances. */
+		cacheClearEpoch: 'kusto.cacheClearEpoch'
 	} as const;
 
 	// If the user cancels the VS Code authentication prompt, multiple concurrent/queued
@@ -107,9 +108,27 @@ export class KustoQueryClient {
 	private readonly context?: vscode.ExtensionContext;
 	private readonly authLocksByCluster = new Map<string, Promise<void>>();
 	private readonly authCancelledAtByCluster = new Map<string, number>();
+	private lastSeenCacheClearEpoch = 0;
 
 	constructor(context?: vscode.ExtensionContext) {
 		this.context = context;
+	}
+
+	private syncCacheClearEpoch(): void {
+		if (!this.context) {
+			return;
+		}
+		try {
+			const epoch = this.context.globalState.get<number>(KustoQueryClient.STORAGE_KEYS.cacheClearEpoch) ?? 0;
+			const next = typeof epoch === 'number' && isFinite(epoch) ? epoch : 0;
+			if (next && next !== this.lastSeenCacheClearEpoch) {
+				this.lastSeenCacheClearEpoch = next;
+				this.databaseCache.clear();
+				this.schemaCache.clear();
+			}
+		} catch {
+			// ignore
+		}
 	}
 
 	private async getEffectiveAccessToken(session: vscode.AuthenticationSession): Promise<string> {
@@ -677,6 +696,7 @@ export class KustoQueryClient {
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: { allowInteractive?: boolean }): Promise<string[]> {
 		try {
+			this.syncCacheClearEpoch();
 			const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 			// Check cache first
 			if (!forceRefresh) {
@@ -992,6 +1012,7 @@ export class KustoQueryClient {
 		database: string,
 		forceRefresh: boolean = false
 	): Promise<DatabaseSchemaResult> {
+		this.syncCacheClearEpoch();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const cacheKey = `${clusterEndpoint}|${database}`;
 		if (!forceRefresh) {
@@ -1154,11 +1175,10 @@ export class KustoQueryClient {
 	}
 
 	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {
-		const columnsByTable: Record<string, Set<string>> = {};
 		const columnTypesByTable: Record<string, Record<string, string>> = {};
 		const primary = result?.primaryResults?.[0];
 		if (!primary) {
-			return { tables: [], columnsByTable: {}, columnTypesByTable: {} };
+			return { tables: [], columnTypesByTable: {} };
 		}
 
 		// Attempt JSON-based schema first.
@@ -1167,8 +1187,8 @@ export class KustoQueryClient {
 			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
 			if (rowCandidate && typeof rowCandidate === 'object') {
 				// If the row itself is already an object/array with schema shape, try it.
-				this.extractSchemaFromJson(rowCandidate, columnsByTable, columnTypesByTable);
-				const direct = this.finalizeSchema(columnsByTable, columnTypesByTable);
+				this.extractSchemaFromJson(rowCandidate, columnTypesByTable);
+				const direct = this.finalizeSchema(columnTypesByTable);
 				if (direct.tables.length > 0) {
 					return direct;
 				}
@@ -1176,8 +1196,8 @@ export class KustoQueryClient {
 				for (const key of Object.keys(rowCandidate)) {
 					const val = (rowCandidate as any)[key];
 					if (val && typeof val === 'object') {
-						this.extractSchemaFromJson(val, columnsByTable, columnTypesByTable);
-						const finalized = this.finalizeSchema(columnsByTable, columnTypesByTable);
+						this.extractSchemaFromJson(val, columnTypesByTable);
+						const finalized = this.finalizeSchema(columnTypesByTable);
 						if (finalized.tables.length > 0) {
 							return finalized;
 						}
@@ -1188,8 +1208,8 @@ export class KustoQueryClient {
 						const trimmed = val.trim();
 						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
 							const parsed = JSON.parse(val);
-							this.extractSchemaFromJson(parsed, columnsByTable, columnTypesByTable);
-							const finalized = this.finalizeSchema(columnsByTable, columnTypesByTable);
+							this.extractSchemaFromJson(parsed, columnTypesByTable);
+							const finalized = this.finalizeSchema(columnTypesByTable);
 							if (finalized.tables.length > 0) {
 								return finalized;
 							}
@@ -1227,16 +1247,12 @@ export class KustoQueryClient {
 				}
 				const t = String(tableName);
 				const c = String(columnName);
-				columnsByTable[t] ??= new Set();
-				columnsByTable[t].add(c);
-				if (columnType !== undefined && columnType !== null) {
-					columnTypesByTable[t] ??= {};
-					columnTypesByTable[t][c] = String(columnType);
-				}
+				columnTypesByTable[t] ??= {};
+				columnTypesByTable[t][c] = columnType !== undefined && columnType !== null ? String(columnType) : '';
 			}
 		}
 
-		return this.finalizeSchema(columnsByTable, columnTypesByTable);
+		return this.finalizeSchema(columnTypesByTable);
 	}
 
 	private buildSchemaDebug(result: any, commandUsed: string): DatabaseSchemaResult['debug'] {
@@ -1261,10 +1277,17 @@ export class KustoQueryClient {
 		}
 	}
 
-	private extractSchemaFromJson(parsed: any, columnsByTable: Record<string, Set<string>>, columnTypesByTable: Record<string, Record<string, string>>) {
+	private extractSchemaFromJson(parsed: any, columnTypesByTable: Record<string, Record<string, string>>) {
 		if (!parsed) {
 			return;
 		}
+
+		const addColumn = (tableName: string, colName: string, colType: any) => {
+			const t = String(tableName);
+			const c = String(colName);
+			columnTypesByTable[t] ??= {};
+			columnTypesByTable[t][c] = colType !== undefined && colType !== null ? String(colType) : '';
+		};
 
 		// Shape observed from `.show database schema as json`:
 		// {
@@ -1289,20 +1312,13 @@ export class KustoQueryClient {
 						if (!tableName) {
 							continue;
 						}
-						const t = String(tableName);
-						columnsByTable[t] ??= new Set();
 						const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 						if (Array.isArray(cols)) {
 							for (const col of cols) {
 								const colName = (col as any)?.Name ?? (col as any)?.name;
 								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
 								if (colName) {
-									const c = String(colName);
-									columnsByTable[t].add(c);
-									if (colType !== undefined && colType !== null) {
-										columnTypesByTable[t] ??= {};
-										columnTypesByTable[t][c] = String(colType);
-									}
+									addColumn(String(tableName), String(colName), colType);
 								}
 							}
 						}
@@ -1311,7 +1327,7 @@ export class KustoQueryClient {
 
 				// Also recurse into each database object for any alternative shapes.
 				if (dbObj && typeof dbObj === 'object') {
-					this.extractSchemaFromJson(dbObj, columnsByTable, columnTypesByTable);
+					this.extractSchemaFromJson(dbObj, columnTypesByTable);
 				}
 			}
 			return;
@@ -1327,20 +1343,13 @@ export class KustoQueryClient {
 				if (!tableName) {
 					continue;
 				}
-				const t = String(tableName);
-				columnsByTable[t] ??= new Set();
 				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 				if (Array.isArray(cols)) {
 					for (const col of cols) {
 						const colName = col?.Name ?? col?.name;
 						const colType = col?.Type ?? col?.type ?? col?.CslType ?? col?.cslType ?? col?.DataType ?? col?.dataType;
 						if (colName) {
-							const c = String(colName);
-							columnsByTable[t].add(c);
-							if (colType !== undefined && colType !== null) {
-								columnTypesByTable[t] ??= {};
-								columnTypesByTable[t][c] = String(colType);
-							}
+							addColumn(String(tableName), String(colName), colType);
 						}
 					}
 				}
@@ -1356,20 +1365,13 @@ export class KustoQueryClient {
 				if (!tableName) {
 					continue;
 				}
-				const t = String(tableName);
-				columnsByTable[t] ??= new Set();
 				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 				if (Array.isArray(cols)) {
 					for (const col of cols) {
 						const colName = (col as any)?.Name ?? (col as any)?.name;
 						const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
 						if (colName) {
-							const c = String(colName);
-							columnsByTable[t].add(c);
-							if (colType !== undefined && colType !== null) {
-								columnTypesByTable[t] ??= {};
-								columnTypesByTable[t][c] = String(colType);
-							}
+							addColumn(String(tableName), String(colName), colType);
 						}
 					}
 				}
@@ -1381,19 +1383,15 @@ export class KustoQueryClient {
 		if (typeof parsed === 'object') {
 			for (const value of Object.values(parsed)) {
 				if (Array.isArray(value) || (value && typeof value === 'object')) {
-					this.extractSchemaFromJson(value, columnsByTable, columnTypesByTable);
+					this.extractSchemaFromJson(value, columnTypesByTable);
 				}
 			}
 		}
 	}
 
-	private finalizeSchema(columnsByTable: Record<string, Set<string>>, columnTypesByTable: Record<string, Record<string, string>>): DatabaseSchemaIndex {
-		const tables = Object.keys(columnsByTable).sort((a, b) => a.localeCompare(b));
-		const out: Record<string, string[]> = {};
-		for (const t of tables) {
-			out[t] = Array.from(columnsByTable[t]).sort((a, b) => a.localeCompare(b));
-		}
-		return { tables, columnsByTable: out, columnTypesByTable };
+	private finalizeSchema(columnTypesByTable: Record<string, Record<string, string>>): DatabaseSchemaIndex {
+		const tables = Object.keys(columnTypesByTable).sort((a, b) => a.localeCompare(b));
+		return { tables, columnTypesByTable };
 	}
 
 	dispose() {

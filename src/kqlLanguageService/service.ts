@@ -1,5 +1,6 @@
 import { DatabaseSchemaIndex } from '../kustoClient';
 import { KqlDiagnostic, KqlDiagnosticSeverity, type KqlPosition, type KqlRange, type KqlTableReference } from './protocol';
+import { getColumnsByTable } from '../schemaIndexUtils';
 
 type Token =
 	| { type: 'ident'; value: string; offset: number; endOffset: number; depth: number }
@@ -645,7 +646,7 @@ export class KqlLanguageService {
 
 		const lineStarts = buildLineStarts(raw);
 		const tables = schema?.tables && Array.isArray(schema.tables) ? schema.tables : [];
-		const columnsByTable = schema?.columnsByTable && typeof schema.columnsByTable === 'object' ? schema.columnsByTable : undefined;
+		const columnsByTable = getColumnsByTable(schema);
 		const columnTypesByTable = schema?.columnTypesByTable && typeof schema.columnTypesByTable === 'object' ? schema.columnTypesByTable : undefined;
 		const tablesByLower = new Map<string, string>();
 		for (const t of tables) {

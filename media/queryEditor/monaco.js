@@ -60,6 +60,34 @@ function isDarkTheme() {
 let monacoThemeObserverStarted = false;
 let lastAppliedIsDarkTheme = null;
 
+// Derive `columnsByTable` from `columnTypesByTable` to avoid storing duplicate column lists.
+// Falls back to legacy `columnsByTable` if present (older cached schema entries).
+const __kustoColumnsByTableCache = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+function __kustoGetColumnsByTable(schema) {
+	try {
+		if (!schema || typeof schema !== 'object') return null;
+		if (schema.columnsByTable && typeof schema.columnsByTable === 'object') return schema.columnsByTable;
+		const types = schema.columnTypesByTable;
+		if (!types || typeof types !== 'object') return null;
+		if (__kustoColumnsByTableCache) {
+			const cached = __kustoColumnsByTableCache.get(schema);
+			if (cached) return cached;
+		}
+		const out = {};
+		for (const t of Object.keys(types)) {
+			const m = types[t];
+			if (!m || typeof m !== 'object') continue;
+			out[t] = Object.keys(m).map((c) => String(c)).sort((a, b) => a.localeCompare(b));
+		}
+		if (__kustoColumnsByTableCache) {
+			__kustoColumnsByTableCache.set(schema, out);
+		}
+		return out;
+	} catch {
+		return null;
+	}
+}
+
 function applyMonacoTheme(monaco) {
 	if (!monaco || !monaco.editor || typeof monaco.editor.setTheme !== 'function') {
 		return;
@@ -2012,7 +2040,8 @@ function ensureMonaco() {
 							};
 
 							const __kustoComputeAvailableColumnsAtOffset = async (fullText, offset) => {
-								if (!schema || !schema.columnsByTable) return null;
+								const columnsByTable = __kustoGetColumnsByTable(schema);
+								if (!schema || !columnsByTable) return null;
 
 								const __kustoParseJoinKind = (stageText) => {
 									try {
@@ -2133,13 +2162,14 @@ function ensureMonaco() {
 									let cols = null;
 									if (src && src.kind === 'fq') {
 										const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
-										if (otherSchema && otherSchema.columnsByTable && otherSchema.columnsByTable[src.table]) {
-											cols = Array.from(otherSchema.columnsByTable[src.table]);
-										}
+											const otherColsByTable = __kustoGetColumnsByTable(otherSchema);
+											if (otherColsByTable && otherColsByTable[src.table]) {
+												cols = Array.from(otherColsByTable[src.table]);
+											}
 									} else if (src && src.kind === 'ident') {
 										const t = __kustoFindSchemaTableName(src.name);
-										if (t && schema.columnsByTable && schema.columnsByTable[t]) {
-											cols = Array.from(schema.columnsByTable[t]);
+											if (t && columnsByTable && columnsByTable[t]) {
+												cols = Array.from(columnsByTable[t]);
 										} else {
 										const lower = String(src.name).toLowerCase();
 										cols = await __kustoComputeLetColumns(lower);
@@ -2286,7 +2316,7 @@ function ensureMonaco() {
 											if (src && typeof src === 'object' && src.tableLower) {
 												if (src.cluster && src.database) {
 													const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
-													if (otherSchema && otherSchema.columnsByTable) {
+															if (otherSchema && __kustoGetColumnsByTable(otherSchema)) {
 														// Best-effort: keep original case as written in query
 														return { schema: otherSchema, table: src.table || String(src.tableLower) };
 													}
@@ -2333,8 +2363,9 @@ function ensureMonaco() {
 								}
 								const activeSchema = resolvedCtx ? resolvedCtx.schema : schema;
 								let table = resolvedCtx ? resolvedCtx.table : null;
-								let cols = (table && activeSchema && activeSchema.columnsByTable && activeSchema.columnsByTable[table])
-									? Array.from(activeSchema.columnsByTable[table])
+								const activeColumnsByTable = __kustoGetColumnsByTable(activeSchema);
+								let cols = (table && activeColumnsByTable && activeColumnsByTable[table])
+									? Array.from(activeColumnsByTable[table])
 									: null;
 								// If the active source is a let-bound tabular variable, override columns with its projected shape.
 								try {
@@ -2378,10 +2409,11 @@ function ensureMonaco() {
 										// union T1, T2 ...  => available columns are the union of referenced tables + current columns
 										const unionBody = stage.replace(/^union\s*/i, '');
 										const set = new Set(cols);
+										const schemaColumnsByTable = __kustoGetColumnsByTable(schema);
 										for (const m of unionBody.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
 											const t = __kustoResolveToSchemaTableName(m[1]);
-											if (t && schema.columnsByTable[t]) {
-												for (const c of schema.columnsByTable[t]) set.add(c);
+											if (t && schemaColumnsByTable && schemaColumnsByTable[t]) {
+												for (const c of schemaColumnsByTable[t]) set.add(c);
 											}
 										}
 										cols = Array.from(set);
@@ -2647,7 +2679,8 @@ function ensureMonaco() {
 																	if (mName && mName[1]) rightName = mName[1];
 																}
 										const resolvedRight = __kustoResolveToSchemaTableNameForCompletion(rightName);
-										const rightCols = (resolvedRight && schema.columnsByTable && schema.columnsByTable[resolvedRight]) ? schema.columnsByTable[resolvedRight] : null;
+										const columnsByTable = __kustoGetColumnsByTable(schema);
+										const rightCols = (resolvedRight && columnsByTable && columnsByTable[resolvedRight]) ? columnsByTable[resolvedRight] : null;
 										const set = new Set(Array.isArray(columns) ? columns : []);
 										if (rightCols) {
 											for (const c of rightCols) set.add(c);
@@ -2658,14 +2691,14 @@ function ensureMonaco() {
 								if (!columns && activeTable) {
 									const resolved = __kustoFindSchemaTableName(activeTable);
 									const key = resolved || activeTable;
-									if (schema.columnsByTable && schema.columnsByTable[key]) {
-										columns = schema.columnsByTable[key];
+										if (columnsByTable && columnsByTable[key]) {
+											columns = columnsByTable[key];
 										activeTable = key;
 									}
 								}
-								if (!columns && schema.tables && schema.tables.length === 1 && schema.columnsByTable && schema.columnsByTable[schema.tables[0]]) {
+									if (!columns && schema.tables && schema.tables.length === 1 && columnsByTable && columnsByTable[schema.tables[0]]) {
 									activeTable = schema.tables[0];
-									columns = schema.columnsByTable[activeTable];
+										columns = columnsByTable[activeTable];
 								}
 
 								if (columns) {
@@ -3366,7 +3399,7 @@ function ensureMonaco() {
 						};
 
 						const tables = (schema && Array.isArray(schema.tables)) ? schema.tables : [];
-						const columnsByTable = (schema && schema.columnsByTable && typeof schema.columnsByTable === 'object') ? schema.columnsByTable : null;
+						const columnsByTable = __kustoGetColumnsByTable(schema);
 						const columnTypesByTable = (schema && schema.columnTypesByTable && typeof schema.columnTypesByTable === 'object') ? schema.columnTypesByTable : null;
 
 						// Any declared `let` identifier is considered a valid tabular reference for diagnostics purposes,
