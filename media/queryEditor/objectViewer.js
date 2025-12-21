@@ -216,14 +216,24 @@ function __kustoEnsureObjectViewerRawToggleIcon() {
 	if (!btn) { return; }
 	if (btn.__kustoHasIcon) { return; }
 	btn.__kustoHasIcon = true;
+	const fallbackIcon = () => (
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>'
+	);
 	try {
 		if (typeof __kustoGetResultsVisibilityIconSvg === 'function') {
 			btn.innerHTML = __kustoGetResultsVisibilityIconSvg();
 		} else {
-			btn.textContent = 'Hide';
+			btn.innerHTML = fallbackIcon();
 		}
 	} catch {
-		btn.textContent = 'Hide';
+		try {
+			btn.innerHTML = fallbackIcon();
+		} catch {
+			// ignore
+		}
 	}
 }
 

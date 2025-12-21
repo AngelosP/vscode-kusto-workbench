@@ -518,9 +518,12 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 		.kusto-copilot-chat-tools.is-active {
-			background: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
-			border-color: var(--vscode-button-border);
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+			border-color: var(--vscode-list-activeSelectionBackground);
+		}
+		.kusto-copilot-chat-tools.is-active:hover {
+			background: var(--vscode-list-activeSelectionBackground);
 		}
 		.kusto-copilot-chat-tools:disabled {
 			opacity: 0.6;
@@ -1557,6 +1560,7 @@
 
 		.kusto-favorites-btn {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-btn:focus {
@@ -1566,6 +1570,7 @@
 
 		.kusto-favorites-btn-text {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn-text alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-primary {
@@ -1579,22 +1584,27 @@
 
 		.kusto-favorites-btn-caret {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn-caret alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-menu {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-menu alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-item {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-item-main {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item-main alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-item.is-active {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item.is-active alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-item:focus {
@@ -1603,10 +1613,12 @@
 
 		.kusto-favorites-item:focus-visible {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item:focus-visible alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-trash {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-trash alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-item:hover .kusto-favorites-trash,
@@ -1624,10 +1636,12 @@
 
 		.kusto-favorites-item:hover {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item:hover alias */
+			--kusto-noop: 0;
 		}
 
 		.kusto-favorites-empty {
 			/* kept for backwards compatibility; styling defined by .kusto-dropdown-empty alias */
+			--kusto-noop: 0;
 		}
 
 		.select-wrapper select {
@@ -1932,8 +1946,14 @@
 		}
 
 		.query-editor-toolbar-btn.is-active {
-			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+			border-color: var(--vscode-list-activeSelectionBackground);
+		}
+
+		.query-editor-toolbar-btn.is-active:hover {
+			background: var(--vscode-list-activeSelectionBackground);
+			border-color: var(--vscode-list-activeSelectionBackground);
 		}
 
 		.query-editor-toolbar-btn:active {
@@ -2298,14 +2318,49 @@
 		}
 
 		.tool-toggle-btn.active {
-			background: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
 		}
 
 		/* The results show/hide toggle uses "is-active"; align its visuals with other tool toggles. */
 		.tool-toggle-btn.is-active {
-			background: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		.tool-toggle-btn.active:hover,
+		.tool-toggle-btn.is-active:hover {
+			background: var(--vscode-list-activeSelectionBackground);
+		}
+
+		/* Results/CSV show-hide toggle: match section header show/hide button (.md-tab) */
+		.tool-toggle-btn.results-visibility-toggle {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+		}
+
+		.tool-toggle-btn.results-visibility-toggle:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.tool-toggle-btn.results-visibility-toggle.is-active,
+		.tool-toggle-btn.results-visibility-toggle.active {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		.tool-toggle-btn.results-visibility-toggle.is-active:hover,
+		.tool-toggle-btn.results-visibility-toggle.active:hover {
+			background: var(--vscode-list-activeSelectionBackground);
 		}
 
 		.kusto-split-btn {
@@ -2578,6 +2633,7 @@
 		th:not(.row-selector) {
 			/* Intentionally do not override `th { position: sticky; }`.
 			   This keeps all headers (including non-# columns) consistent while scrolling. */
+			--kusto-noop: 0;
 		}
 
 		.column-header-content {
@@ -3703,6 +3759,7 @@
 
 		.object-viewer-close {
 			/* Reuse shared icon-button styling (.refresh-btn). */
+			--kusto-noop: 0;
 		}
 
 		.object-viewer-body {
