@@ -3022,9 +3022,9 @@
 		.kusto-filter-mode-btn {
 			flex: 0 0 auto;
 			min-width: 120px;
-			background: var(--vscode-button-secondaryBackground);
 			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border);
+			background-color: transparent;
+			border: 0px;
 			border-radius: 0;
 			padding: 6px 8px;
 			font-size: 12px;
