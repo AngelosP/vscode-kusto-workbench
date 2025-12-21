@@ -88,7 +88,6 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	const saveMenuBtn = document.getElementById(boxId + '_results_save_menu_btn');
 	const copySplit = document.getElementById(boxId + '_results_copy_split');
 	const saveSplit = document.getElementById(boxId + '_results_save_split');
-	const sep1 = document.getElementById(boxId + '_results_sep_1');
 	const sep2 = document.getElementById(boxId + '_results_sep_2');
 	const display = visible ? '' : 'none';
 	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
@@ -116,7 +115,6 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	} catch { /* ignore */ }
 	try { if (copySplit) { copySplit.style.display = display; } } catch { /* ignore */ }
 	try { if (saveSplit) { saveSplit.style.display = display; } } catch { /* ignore */ }
-	try { if (sep1) { sep1.style.display = display; } } catch { /* ignore */ }
 	try { if (sep2) { sep2.style.display = display; } } catch { /* ignore */ }
 }
 
@@ -2251,7 +2249,8 @@ function displayResultForBox(result, boxId, options) {
 		'<strong>' + label + ':</strong> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns' +
 		execPart +
 		'<button class="tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
-		'<span class="results-sep" id="' + boxId + '_results_sep_1" aria-hidden="true"></span>' +
+		'</div>' +
+		'<div class="results-tools-row">' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +

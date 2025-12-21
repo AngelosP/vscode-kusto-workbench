@@ -2225,6 +2225,15 @@
 			min-width: 0;
 		}
 
+		.results-tools-row {
+			display: inline-flex;
+			align-items: center;
+			justify-content: flex-end;
+			gap: 4px;
+			flex-wrap: wrap;
+			margin-left: auto;
+		}
+
 		.results-sep {
 			display: inline-block;
 			width: 0;
