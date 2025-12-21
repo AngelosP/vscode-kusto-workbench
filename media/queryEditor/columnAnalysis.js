@@ -1,4 +1,64 @@
+function __kustoCloseAllColumnMenus() {
+	try {
+		document.querySelectorAll('.column-menu.visible').forEach((m) => {
+			try { m.classList.remove('visible'); } catch { /* ignore */ }
+		});
+	} catch { /* ignore */ }
+	try {
+		if (window.__kustoActiveColumnMenu) {
+			window.__kustoActiveColumnMenu = null;
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoWireColumnMenuAutoClose() {
+	try {
+		if (window.__kustoColumnMenuAutoCloseWired) {
+			return;
+		}
+		window.__kustoColumnMenuAutoCloseWired = true;
+	} catch { /* ignore */ }
+
+	const shouldIgnoreTarget = (target) => {
+		try {
+			const active = window.__kustoActiveColumnMenu;
+			if (active && active.menu) {
+				if (active.menu.contains(target)) return true;
+				if (active.button && active.button.contains && active.button.contains(target)) return true;
+			}
+			// Also ignore clicks on any column menu button (opening another menu will close the current one anyway).
+			if (target && target.closest && target.closest('.column-menu-btn')) return true;
+		} catch { /* ignore */ }
+		return false;
+	};
+
+	// Use capture so we reliably observe the click even if inner handlers call stopPropagation().
+	document.addEventListener('pointerdown', (ev) => {
+		try {
+			const target = ev && ev.target ? ev.target : null;
+			const anyOpen = document.querySelector('.column-menu.visible');
+			if (!anyOpen) return;
+			if (shouldIgnoreTarget(target)) return;
+			__kustoCloseAllColumnMenus();
+		} catch { /* ignore */ }
+	}, true);
+
+	document.addEventListener('keydown', (ev) => {
+		try {
+			const key = String(ev && ev.key ? ev.key : '');
+			if (key !== 'Escape') return;
+			const anyOpen = document.querySelector('.column-menu.visible');
+			if (!anyOpen) return;
+			try { ev.preventDefault(); } catch { /* ignore */ }
+			__kustoCloseAllColumnMenus();
+		} catch { /* ignore */ }
+	}, true);
+}
+
 function toggleColumnMenu(colIdx, boxId) {
+	// Ensure outside-click/Escape dismiss is wired once.
+	try { __kustoWireColumnMenuAutoClose(); } catch { /* ignore */ }
+
 	// Close all other menus
 	const menuId = boxId + '_col_menu_' + colIdx;
 	document.querySelectorAll('.column-menu.visible').forEach(other => {
@@ -13,6 +73,11 @@ function toggleColumnMenu(colIdx, boxId) {
 	const isVisible = menu.classList.contains('visible');
 	if (isVisible) {
 		menu.classList.remove('visible');
+		try {
+			if (window.__kustoActiveColumnMenu && window.__kustoActiveColumnMenu.menu === menu) {
+				window.__kustoActiveColumnMenu = null;
+			}
+		} catch { /* ignore */ }
 		return;
 	}
 
@@ -20,6 +85,7 @@ function toggleColumnMenu(colIdx, boxId) {
 	const button = menu.previousElementSibling;
 	if (!button || typeof button.getBoundingClientRect !== 'function') {
 		menu.classList.add('visible');
+		try { window.__kustoActiveColumnMenu = { menu, button: button || null }; } catch { /* ignore */ }
 		return;
 	}
 
@@ -32,6 +98,7 @@ function toggleColumnMenu(colIdx, boxId) {
 	menu.style.left = '0px';
 	menu.style.top = '0px';
 	menu.classList.add('visible');
+	try { window.__kustoActiveColumnMenu = { menu, button }; } catch { /* ignore */ }
 
 	const menuRect = menu.getBoundingClientRect();
 	const viewportW = Math.max(0, window.innerWidth || 0);
@@ -385,13 +452,3 @@ function closeColumnAnalysis(event) {
 	const modal = document.getElementById('columnAnalysisModal');
 	modal.classList.remove('visible');
 }
-
-// Close column menus when clicking outside
-
-document.addEventListener('click', (event) => {
-	if (!event.target.closest('.column-menu-btn')) {
-		document.querySelectorAll('.column-menu').forEach(menu => {
-			menu.classList.remove('visible');
-		});
-	}
-});
