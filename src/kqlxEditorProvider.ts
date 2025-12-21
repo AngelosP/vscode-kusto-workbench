@@ -291,7 +291,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	): vscode.Disposable {
 		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
-			webviewOptions: { retainContextWhenHidden: true }
+			// VS Code supports a built-in Find widget for webviews.
+			// Our `vscode` typings may lag the runtime API, so we set this defensively.
+			webviewOptions: { retainContextWhenHidden: true, enableFindWidget: true } as any
 		});
 	}
 
