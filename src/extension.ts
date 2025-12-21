@@ -8,11 +8,23 @@ import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
+import { recordTextEditorSelection } from './selectionTracker';
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Kusto Query Editor extension is now active');
+	const isDevMode = context.extensionMode === vscode.ExtensionMode.Development;
+	const isMdSearchDebugEnabled = (): boolean => {
+		try {
+			if (isDevMode) {
+				return true;
+			}
+			return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
+		} catch {
+			return false;
+		}
+	};
 
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
@@ -78,7 +90,158 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 
 	context.subscriptions.push(
-		vscode.workspace.onDidOpenTextDocument((doc) => scheduleDiagnostics(doc, 0))
+		vscode.workspace.onDidOpenTextDocument((doc) => {
+			scheduleDiagnostics(doc, 0);
+			// Best-effort: capture any selection that VS Code may apply during open
+			// (e.g., clicking a result in the global Search view).
+			try {
+				const uri = doc?.uri?.toString();
+				if (!uri) {
+					return;
+				}
+				const snapshot = () => {
+					try {
+						const active = vscode.window.activeTextEditor;
+						if (active && active.document?.uri?.toString() === uri) {
+							recordTextEditorSelection(active);
+							return;
+						}
+						const visible = (vscode.window.visibleTextEditors || []).find((e) => e.document?.uri?.toString() === uri);
+						if (visible) {
+							recordTextEditorSelection(visible);
+						}
+					} catch {
+						// ignore
+					}
+				};
+				snapshot();
+				setTimeout(snapshot, 50);
+				setTimeout(snapshot, 150);
+				setTimeout(snapshot, 350);
+			} catch {
+				// ignore
+			}
+		})
+	);
+	context.subscriptions.push(
+		vscode.window.onDidChangeTextEditorSelection((e) => {
+			try {
+				recordTextEditorSelection(e.textEditor);
+				// Debugging aid: Surface selection changes for .md.
+				// This helps confirm if Search results are producing observable selection events.
+				try {
+					if (!isMdSearchDebugEnabled()) {
+						return;
+					}
+					const doc = e.textEditor?.document;
+					const p = String(doc?.uri?.path || '').toLowerCase();
+					if (!p.endsWith('.md')) {
+						return;
+					}
+					const sel = e.textEditor.selection;
+					const kindStr = (e && e.kind !== undefined)
+						? (e.kind === vscode.TextEditorSelectionChangeKind.Command ? 'Command'
+							: e.kind === vscode.TextEditorSelectionChangeKind.Keyboard ? 'Keyboard'
+								: e.kind === vscode.TextEditorSelectionChangeKind.Mouse ? 'Mouse'
+									: String(e.kind))
+						: 'Unknown';
+					const key = `${doc.uri.toString()}@${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}`;
+					try {
+						if (!(globalThis as any).__kustoMdSelDebugLast) {
+							(globalThis as any).__kustoMdSelDebugLast = { key: '', at: 0 };
+						}
+						const last = (globalThis as any).__kustoMdSelDebugLast;
+						const now = Date.now();
+						if (last.key === key && now - last.at < 1000) {
+							return;
+						}
+						last.key = key;
+						last.at = now;
+					} catch {
+						// ignore
+					}
+					const snippet = (() => {
+						try {
+							if (!sel || sel.isEmpty) {
+								return '';
+							}
+							const t = doc.getText(sel);
+							return typeof t === 'string' ? t.slice(0, 80) : '';
+						} catch {
+							return '';
+						}
+					})();
+					void vscode.window.showInformationMessage(
+						`[kusto md debug] selection(kind=${kindStr}) ${doc.uri.toString()} @ ${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}${snippet ? ` text=\"${snippet}\"` : ''}`
+					);
+				} catch {
+					// ignore
+				}
+			} catch {
+				// ignore
+			}
+		})
+	);
+	context.subscriptions.push(
+		vscode.window.onDidChangeActiveTextEditor((editor) => {
+			try {
+				if (editor) {
+					recordTextEditorSelection(editor);
+				}
+				try {
+					if (!isMdSearchDebugEnabled()) {
+						return;
+					}
+					const doc = editor?.document;
+					if (!doc) {
+						void vscode.window.showInformationMessage('[kusto md debug] activeTextEditor = <none>');
+						return;
+					}
+					const p = String(doc.uri?.path || '').toLowerCase();
+					if (!p.endsWith('.md')) {
+						return;
+					}
+					const sel = editor.selection;
+					void vscode.window.showInformationMessage(
+						`[kusto md debug] activeTextEditor ${doc.uri.toString()} @ ${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}`
+					);
+				} catch {
+					// ignore
+				}
+			} catch {
+				// ignore
+			}
+		})
+	);
+	context.subscriptions.push(
+		vscode.window.onDidChangeVisibleTextEditors((editors) => {
+			try {
+				for (const editor of editors || []) {
+					try {
+						recordTextEditorSelection(editor);
+					} catch {
+						// ignore
+					}
+				}
+				try {
+					if (!isMdSearchDebugEnabled()) {
+						return;
+					}
+					const mdUris = (editors || [])
+						.map((e) => e && e.document ? e.document.uri : null)
+						.filter(Boolean)
+						.map((u) => String((u as vscode.Uri).toString()))
+						.filter((u) => u.toLowerCase().endsWith('.md'));
+					if (mdUris.length) {
+						void vscode.window.showInformationMessage(`[kusto md debug] visibleTextEditors(md) count=${mdUris.length}`);
+					}
+				} catch {
+					// ignore
+				}
+			} catch {
+				// ignore
+			}
+		})
 	);
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeTextDocument((e) => scheduleDiagnostics(e.document, 250))

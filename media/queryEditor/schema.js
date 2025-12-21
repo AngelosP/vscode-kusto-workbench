@@ -102,7 +102,7 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 			link.href = '#';
 			link.className = 'schema-cached-link';
 			link.textContent = '(cached)';
-			link.title = 'See cached values';
+			link.title = 'Show cached values';
 			link.addEventListener('click', (e) => {
 				try {
 					e.preventDefault();

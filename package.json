@@ -19,6 +19,16 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Kusto Workbench",
+      "properties": {
+        "kustoWorkbench.debug.mdSearchReveal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Shows diagnostic popups for Markdown Search-view reveal (Ctrl+Shift+F click) to help debug selection/reveal wiring."
+        }
+      }
+    },
     "languages": [
       {
         "id": "kql",
@@ -122,7 +132,7 @@
       },
       {
         "command": "kusto.seeCachedValues",
-        "title": "See Cached Values",
+        "title": "Show Cached Values",
         "category": "Kusto Workbench"
       }
     ]

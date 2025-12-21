@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
+import { getLastSelectionForUri, onDidRecordSelection } from './selectionTracker';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -22,7 +23,9 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	): vscode.Disposable {
 		const provider = new MdCompatEditorProvider(context, extensionUri, connectionManager);
 		return vscode.window.registerCustomEditorProvider(MdCompatEditorProvider.viewType, provider, {
-			webviewOptions: { retainContextWhenHidden: true }
+			// VS Code supports a built-in Find widget for webviews.
+			// Our `vscode` typings may lag the runtime API, so we set this defensively.
+			webviewOptions: { retainContextWhenHidden: true, enableFindWidget: true } as any
 		});
 	}
 
@@ -49,6 +52,93 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const disposables: vscode.Disposable[] = [];
+		const isDevMode = this.context.extensionMode === vscode.ExtensionMode.Development;
+		const isMdSearchDebugEnabled = (): boolean => {
+			try {
+				if (isDevMode) {
+					return true;
+				}
+				return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
+			} catch {
+				return false;
+			}
+		};
+		let lastDebugKey = '';
+		let lastDebugAt = 0;
+		const debugPopup = (label: string, detail?: string): void => {
+			try {
+				if (!isMdSearchDebugEnabled()) {
+					return;
+				}
+				const msg = `[kusto md debug] ${label}${detail ? ` ${detail}` : ''}`;
+				const now = Date.now();
+				const key = msg;
+				if (key === lastDebugKey && now - lastDebugAt < 1200) {
+					return;
+				}
+				lastDebugKey = key;
+				lastDebugAt = now;
+				void vscode.window.showInformationMessage(msg);
+			} catch {
+				// ignore
+			}
+		};
+
+		// IMPORTANT: When opening from VS Code's global Search view, VS Code may briefly create/focus
+		// a text editor with the correct selection and then swap to the custom editor. If we wait
+		// until after webview initialization to observe the selection, we can miss it.
+		// So: capture + listen early, and queue the reveal until the webview is ready.
+		let webviewReady = false;
+		let pendingRevealRange: vscode.Range | undefined;
+		const queueReveal = (range: vscode.Range | undefined): void => {
+			if (!range) {
+				return;
+			}
+			if (!webviewReady) {
+				pendingRevealRange = range;
+				debugPopup('queueReveal(pending)', `${document.uri.toString()} ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`);
+				return;
+			}
+			debugPopup('queueReveal(sendNow)', `${document.uri.toString()} ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`);
+			postRevealRange(range);
+		};
+		const captureBestEffortRangeNow = (): vscode.Range | undefined => {
+			try {
+				const uri = document.uri.toString();
+				const active = vscode.window.activeTextEditor;
+				if (active && active.document?.uri?.toString() === uri) {
+					debugPopup('capture(activeTextEditor)', `${uri} ${active.selection.start.line}:${active.selection.start.character}-${active.selection.end.line}:${active.selection.end.character}`);
+					return active.selection;
+				}
+				const editor = (vscode.window.visibleTextEditors || []).find((e) => e.document?.uri?.toString() === uri);
+				if (editor) {
+					debugPopup('capture(visibleTextEditor)', `${uri} ${editor.selection.start.line}:${editor.selection.start.character}-${editor.selection.end.line}:${editor.selection.end.character}`);
+					return editor.selection;
+				}
+				const tracked = getLastSelectionForUri(document.uri);
+				if (tracked) {
+					debugPopup('capture(selectionTracker)', `${uri} ${tracked.start.line}:${tracked.start.character}-${tracked.end.line}:${tracked.end.character}`);
+				}
+				return tracked;
+			} catch {
+				return undefined;
+			}
+		};
+		webviewPanel.onDidDispose(() => {
+			try {
+				for (const d of disposables) {
+					try {
+						d.dispose();
+					} catch {
+						// ignore
+					}
+				}
+			} catch {
+				// ignore
+			}
+		});
+
 		const docDir = (() => {
 			try {
 				if (document.uri.scheme === 'file') {
@@ -72,6 +162,113 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
 
+		// Best-effort: if VS Code opened this document with a selection (e.g. from the global Search view),
+		// forward that range into the webview so it can reveal it.
+		let lastRevealedKey = '';
+		const postRevealRange = (range: vscode.Range | undefined): void => {
+			if (!range) {
+				return;
+			}
+			const key = `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
+			if (key === lastRevealedKey) {
+				return;
+			}
+			lastRevealedKey = key;
+			let matchText = '';
+			let startOffset: number | undefined;
+			let endOffset: number | undefined;
+			try {
+				// If the range is a Search result selection, include the selected text.
+				// The webview can use this to find/highlight in preview mode.
+				matchText = range.isEmpty ? '' : document.getText(range);
+				startOffset = document.offsetAt(range.start);
+				endOffset = document.offsetAt(range.end);
+				// Avoid sending very large payloads.
+				if (matchText && matchText.length > 500) {
+					matchText = matchText.slice(0, 500);
+				}
+			} catch {
+				matchText = '';
+				startOffset = undefined;
+				endOffset = undefined;
+			}
+			try {
+				debugPopup(
+					'postRevealRange(host->webview)',
+					`${document.uri.toString()} ${key} matchLen=${matchText ? matchText.length : 0} startOff=${startOffset ?? 'n/a'} endOff=${endOffset ?? 'n/a'}`
+				);
+				void webviewPanel.webview.postMessage({
+					type: 'revealTextRange',
+					documentUri: document.uri.toString(),
+					start: { line: range.start.line, character: range.start.character },
+					end: { line: range.end.line, character: range.end.character },
+					matchText,
+					startOffset,
+					endOffset
+				});
+			} catch {
+				// ignore
+			}
+		};
+
+		const tryRevealFromVisibleTextEditor = (): void => {
+			try {
+				const uri = document.uri.toString();
+				const active = vscode.window.activeTextEditor;
+				if (active && active.document && active.document.uri.toString() === uri) {
+					queueReveal(active.selection);
+					return;
+				}
+				const editor = (vscode.window.visibleTextEditors || []).find((e) => e.document?.uri?.toString() === uri);
+				if (editor) {
+					queueReveal(editor.selection);
+					return;
+				}
+				// Fallback: selection that was applied before the custom editor became visible (e.g., Search view open-at-range).
+				queueReveal(getLastSelectionForUri(document.uri));
+			} catch {
+				// ignore
+			}
+		};
+
+		// Start listening immediately (before webview initialization), and capture any initial range.
+		disposables.push(
+			vscode.window.onDidChangeTextEditorSelection((e) => {
+				try {
+					if (e.textEditor?.document?.uri?.toString() !== document.uri.toString()) {
+						return;
+					}
+					const first = Array.isArray(e.selections) && e.selections.length ? e.selections[0] : e.textEditor.selection;
+					queueReveal(first);
+				} catch {
+					// ignore
+				}
+			})
+		);
+		disposables.push(
+			vscode.window.onDidChangeActiveTextEditor(() => {
+				tryRevealFromVisibleTextEditor();
+			})
+		);
+		disposables.push(
+			onDidRecordSelection((e) => {
+				try {
+					if (!e || e.uri !== document.uri.toString()) {
+						return;
+					}
+					queueReveal(e.range);
+				} catch {
+					// ignore
+				}
+			})
+		);
+		// Grab the best-effort selection immediately.
+		try {
+			pendingRevealRange = captureBestEffortRangeNow();
+		} catch {
+			// ignore
+		}
+
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, hideFooterControls: true });
 
@@ -81,7 +278,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				type: 'persistenceMode',
 				isSessionFile: false,
 				compatibilityMode: true,
-					documentUri: document.uri.toString(),
+				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
 				allowedSectionKinds: ['markdown', 'url'],
@@ -110,6 +307,25 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					sections: [{ type: 'markdown', text: markdownText, title: 'Markdown' }]
 				}
 			});
+			webviewReady = true;
+			debugPopup('webviewReady', document.uri.toString());
+			try {
+				if (pendingRevealRange) {
+					postRevealRange(pendingRevealRange);
+				}
+			} catch {
+				// ignore
+			}
+			// Try to reveal any selection that existed when the editor was opened.
+			// Search-driven selections can land slightly after the custom editor initializes, so retry.
+			tryRevealFromVisibleTextEditor();
+			try {
+				setTimeout(() => tryRevealFromVisibleTextEditor(), 50);
+				setTimeout(() => tryRevealFromVisibleTextEditor(), 150);
+				setTimeout(() => tryRevealFromVisibleTextEditor(), 350);
+			} catch {
+				// ignore
+			}
 		};
 
 		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
@@ -117,6 +333,15 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 			switch (message.type) {
+				case 'debugMdSearchReveal':
+					try {
+						const phase = message && typeof (message as any).phase === 'string' ? String((message as any).phase) : 'webview';
+						const d = message && typeof (message as any).detail === 'string' ? String((message as any).detail) : '';
+						debugPopup(`webview:${phase}`, d);
+					} catch {
+						// ignore
+					}
+					break;
 				case 'requestDocument':
 					// Re-send mode in response to a request (the webview is guaranteed to be listening).
 					try {

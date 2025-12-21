@@ -11,6 +11,352 @@ let markdownEditors = {};
 let markdownViewers = {};
 let pythonEditors = {};
 
+// Pending reveal requests from the extension host (e.g., Search result click).
+// Keyed by markdown boxId.
+let __kustoPendingMarkdownRevealByBoxId = {};
+
+function __kustoTryApplyPendingMarkdownReveal(boxId) {
+	try {
+		const pending = __kustoPendingMarkdownRevealByBoxId && __kustoPendingMarkdownRevealByBoxId[boxId];
+		if (!pending) {
+			return;
+		}
+		try { delete __kustoPendingMarkdownRevealByBoxId[boxId]; } catch { /* ignore */ }
+		try {
+			if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
+				window.__kustoRevealMarkdownRangeInBox(boxId, pending);
+			}
+		} catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+// Called by main.js when the extension host asks us to reveal a range.
+// For .md compatibility mode, there is exactly one markdown section; reveal in that first box.
+try {
+	if (typeof window.__kustoRevealTextRangeFromHost !== 'function') {
+		window.__kustoRevealTextRangeFromHost = (message) => {
+			try {
+				const kind = String(window.__kustoDocumentKind || '');
+				if (kind !== 'md') {
+					return;
+				}
+				const start = message && message.start ? message.start : null;
+				const end = message && message.end ? message.end : null;
+				const sl = start && typeof start.line === 'number' ? start.line : 0;
+				const sc = start && typeof start.character === 'number' ? start.character : 0;
+				const el = end && typeof end.line === 'number' ? end.line : sl;
+				const ec = end && typeof end.character === 'number' ? end.character : sc;
+				const matchText = message && typeof message.matchText === 'string' ? String(message.matchText) : '';
+				const startOffset = message && typeof message.startOffset === 'number' ? message.startOffset : undefined;
+				const endOffset = message && typeof message.endOffset === 'number' ? message.endOffset : undefined;
+
+				const boxId = (markdownBoxes && markdownBoxes.length) ? String(markdownBoxes[0] || '') : '';
+				if (!boxId) {
+					return;
+				}
+				const payload = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchText, startOffset, endOffset };
+				const api = markdownEditors && markdownEditors[boxId] ? markdownEditors[boxId] : null;
+				if (!api || !api._toastui) {
+					try {
+						if (typeof vscode !== 'undefined' && vscode && typeof vscode.postMessage === 'function') {
+							vscode.postMessage({
+								type: 'debugMdSearchReveal',
+								phase: 'markdownReveal(queued)',
+								detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
+							});
+						}
+					} catch { /* ignore */ }
+					__kustoPendingMarkdownRevealByBoxId[boxId] = payload;
+					return;
+				}
+				try {
+					if (typeof vscode !== 'undefined' && vscode && typeof vscode.postMessage === 'function') {
+						vscode.postMessage({
+							type: 'debugMdSearchReveal',
+							phase: 'markdownReveal(apply)',
+							detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
+						});
+					}
+				} catch { /* ignore */ }
+				if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
+					window.__kustoRevealMarkdownRangeInBox(boxId, payload);
+				}
+			} catch {
+				// ignore
+			}
+		};
+	}
+} catch {
+	// ignore
+}
+
+// Reveal a markdown range inside a specific markdown box, by switching to markdown mode
+// (so line/character mapping is stable) and then using ToastUI's selection API.
+try {
+	if (typeof window.__kustoRevealMarkdownRangeInBox !== 'function') {
+		window.__kustoRevealMarkdownRangeInBox = (boxId, payload) => {
+			const id = String(boxId || '');
+			if (!id) return;
+			const sl = payload && typeof payload.startLine === 'number' ? payload.startLine : 0;
+			const sc = payload && typeof payload.startChar === 'number' ? payload.startChar : 0;
+			const el = payload && typeof payload.endLine === 'number' ? payload.endLine : sl;
+			const ec = payload && typeof payload.endChar === 'number' ? payload.endChar : sc;
+			const matchText = payload && typeof payload.matchText === 'string' ? String(payload.matchText) : '';
+			const startOffset = payload && typeof payload.startOffset === 'number' ? payload.startOffset : undefined;
+			const endOffset = payload && typeof payload.endOffset === 'number' ? payload.endOffset : undefined;
+			const desiredUiMode = (typeof window.__kustoGetMarkdownMode === 'function')
+				? String(window.__kustoGetMarkdownMode(id) || 'wysiwyg')
+				: 'wysiwyg';
+
+			try {
+				const boxEl = document.getElementById(id);
+				if (boxEl && typeof boxEl.scrollIntoView === 'function') {
+					boxEl.scrollIntoView({ block: 'center' });
+				}
+			} catch { /* ignore */ }
+
+			const api = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
+			const toast = api && api._toastui ? api._toastui : null;
+			if (!toast || typeof toast.setSelection !== 'function' || typeof toast.changeMode !== 'function') {
+				__kustoPendingMarkdownRevealByBoxId[id] = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchText, startOffset, endOffset };
+				return;
+			}
+
+			// IMPORTANT:
+			// - In markdown mode, ToastUI selection takes [line, char].
+			// - In WYSIWYG mode, ToastUI selection takes ProseMirror positions (numbers).
+			// ToastUI provides convertPosToMatchEditorMode() which can convert a markdown position
+			// into the corresponding WYSIWYG ProseMirror position.
+			// Prefer a stable, mode-agnostic strategy:
+			// - Find the match text in the editor's markdown content.
+			// - Use the host-provided offsets to pick the correct occurrence.
+			// - Convert to the appropriate selection coordinates for the current mode.
+			const mdText = (() => {
+				try {
+					if (typeof toast.getMarkdown === 'function') {
+						return String(toast.getMarkdown() || '');
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof api.getValue === 'function') {
+						return String(api.getValue() || '');
+					}
+				} catch { /* ignore */ }
+				return '';
+			})();
+
+			const findText = (matchText && matchText.trim()) ? matchText : '';
+			const computeLineChar1Based = (text, offset0) => {
+				try {
+					const t = String(text || '');
+					const off = Math.max(0, Math.min(t.length, Math.floor(offset0)));
+					const before = t.slice(0, off);
+					const line = before.split('\n').length; // 1-based
+					const lastNl = before.lastIndexOf('\n');
+					const ch = off - (lastNl >= 0 ? (lastNl + 1) : 0) + 1; // 1-based
+					return [Math.max(1, line), Math.max(1, ch)];
+				} catch {
+					return [1, 1];
+				}
+			};
+
+			const computeOccurrenceIndex = (text, needle, atIndex) => {
+				try {
+					if (!needle) return 0;
+					let occ = 0;
+					let i = 0;
+					while (true) {
+						const next = text.indexOf(needle, i);
+						if (next < 0 || next >= atIndex) break;
+						occ++;
+						i = next + Math.max(1, needle.length);
+					}
+					return occ;
+				} catch {
+					return 0;
+				}
+			};
+
+			let foundStart = 0;
+			let foundEnd = 0;
+			let occurrence = 0;
+			if (findText) {
+				const preferred = (typeof startOffset === 'number' && Number.isFinite(startOffset)) ? Math.max(0, Math.floor(startOffset)) : undefined;
+				let idx = -1;
+				try {
+					if (typeof preferred === 'number' && mdText.startsWith(findText, preferred)) {
+						idx = preferred;
+					} else if (typeof preferred === 'number') {
+						const forward = mdText.indexOf(findText, preferred);
+						const back = mdText.lastIndexOf(findText, preferred);
+						if (forward < 0) {
+							idx = back;
+						} else if (back < 0) {
+							idx = forward;
+						} else {
+							idx = (Math.abs(forward - preferred) <= Math.abs(preferred - back)) ? forward : back;
+						}
+					} else {
+						idx = mdText.indexOf(findText);
+					}
+				} catch {
+					idx = -1;
+				}
+				if (idx < 0) {
+					// Fall back to the host-provided (line,char) if we can't find the text.
+					const mdStartFallback = [Math.max(1, sl + 1), Math.max(1, sc + 1)];
+					const mdEndFallback = [Math.max(1, el + 1), Math.max(1, ec + 1)];
+					foundStart = 0;
+					foundEnd = 0;
+					occurrence = 0;
+					try {
+						// Apply fallback below.
+						payload.__kustoMdStartFallback = mdStartFallback;
+						payload.__kustoMdEndFallback = mdEndFallback;
+					} catch { /* ignore */ }
+				} else {
+					foundStart = idx;
+					foundEnd = idx + findText.length;
+					occurrence = computeOccurrenceIndex(mdText, findText, idx);
+				}
+			}
+
+			const applySelectionNow = () => {
+				// If we're in preview mode, highlight + scroll using the rendered DOM.
+				if (desiredUiMode === 'preview') {
+					try {
+						const viewerHost = document.getElementById(id + '_md_viewer');
+						if (!viewerHost) return;
+						if (!findText) return;
+						const selectInPreviewByOccurrence = () => {
+							try {
+								const root = viewerHost;
+								const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+								let seen = 0;
+								while (walker.nextNode()) {
+									const n = walker.currentNode;
+									const text = n && typeof n.nodeValue === 'string' ? n.nodeValue : '';
+									if (!text) continue;
+									let i = 0;
+									while (true) {
+										const at = text.indexOf(findText, i);
+										if (at < 0) break;
+										if (seen === occurrence) {
+											const range = document.createRange();
+											range.setStart(n, at);
+											range.setEnd(n, at + findText.length);
+											try {
+												const sel = window.getSelection && window.getSelection();
+												if (sel) {
+													sel.removeAllRanges();
+													sel.addRange(range);
+												}
+											} catch { /* ignore */ }
+											try {
+												const el2 = range.startContainer && range.startContainer.parentElement ? range.startContainer.parentElement : null;
+												if (el2 && typeof el2.scrollIntoView === 'function') {
+													el2.scrollIntoView({ block: 'center' });
+												}
+											} catch { /* ignore */ }
+											return true;
+										}
+										seen++;
+										i = at + Math.max(1, findText.length);
+									}
+								}
+							} catch {
+								// ignore
+							}
+							return false;
+						};
+						setTimeout(() => {
+							const ok = selectInPreviewByOccurrence();
+							if (!ok) {
+								try { window.find && window.find(findText); } catch { /* ignore */ }
+							}
+						}, 0);
+					} catch { /* ignore */ }
+					return;
+				}
+
+				// Editor modes: keep the current mode; apply selection in a mode-appropriate way.
+				const mdStart = (findText && foundEnd > foundStart)
+					? computeLineChar1Based(mdText, foundStart)
+					: (payload.__kustoMdStartFallback || [Math.max(1, sl + 1), Math.max(1, sc + 1)]);
+				const mdEnd = (findText && foundEnd > foundStart)
+					? computeLineChar1Based(mdText, foundEnd)
+					: (payload.__kustoMdEndFallback || [Math.max(1, el + 1), Math.max(1, ec + 1)]);
+
+				try {
+					if (desiredUiMode === 'wysiwyg') {
+						let from = 0;
+						let to = 0;
+						try {
+							if (typeof toast.convertPosToMatchEditorMode === 'function') {
+								const converted = toast.convertPosToMatchEditorMode(mdStart, mdEnd, 'wysiwyg');
+								if (converted && typeof converted[0] === 'number' && typeof converted[1] === 'number') {
+									from = converted[0];
+									to = converted[1];
+								}
+							}
+						} catch { /* ignore */ }
+						try { toast.setSelection(from, to); } catch { /* ignore */ }
+					} else {
+						try { toast.setSelection(mdStart, mdEnd); } catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+				try { if (typeof toast.focus === 'function') toast.focus(); } catch { /* ignore */ }
+			};
+
+			// Apply now, and retry a couple times in case the editor is still settling.
+			try {
+				applySelectionNow();
+				setTimeout(applySelectionNow, 50);
+				setTimeout(applySelectionNow, 150);
+			} catch { /* ignore */ }
+			const applySelectionInDesiredMode = () => {
+				const mode = (desiredUiMode === 'markdown' || desiredUiMode === 'wysiwyg') ? desiredUiMode : 'wysiwyg';
+				try { toast.changeMode(mode, true); } catch { /* ignore */ }
+				try {
+					setTimeout(() => {
+						try {
+							if (mode === 'wysiwyg') {
+								let from = 0;
+								let to = 0;
+								try {
+									if (typeof toast.convertPosToMatchEditorMode === 'function') {
+										const converted = toast.convertPosToMatchEditorMode(mdStart, mdEnd, 'wysiwyg');
+										if (converted && typeof converted[0] === 'number' && typeof converted[1] === 'number') {
+											from = converted[0];
+											to = converted[1];
+										}
+									}
+								} catch { /* ignore */ }
+								try { toast.setSelection(from, to); } catch { /* ignore */ }
+							} else {
+								try { toast.setSelection(mdStart, mdEnd); } catch { /* ignore */ }
+							}
+						} catch { /* ignore */ }
+						try { if (typeof toast.focus === 'function') toast.focus(); } catch { /* ignore */ }
+					}, 0);
+				} catch { /* ignore */ }
+			};
+
+			try {
+				// Ensure we are not in preview mode; preview hides the editor surface.
+				if (desiredUiMode === 'preview' && typeof window.__kustoSetMarkdownMode === 'function') {
+					window.__kustoSetMarkdownMode(id, 'wysiwyg');
+				}
+			} catch { /* ignore */ }
+			applySelectionInDesiredMode();
+		};
+	}
+} catch {
+	// ignore
+}
+
 let toastUiThemeObserverStarted = false;
 let lastAppliedToastUiIsDarkTheme = null;
 
@@ -1299,6 +1645,7 @@ function initMarkdownEditor(boxId) {
 
 	markdownEditors[boxId] = api;
 	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
+	try { __kustoTryApplyPendingMarkdownReveal(boxId); } catch { /* ignore */ }
 
 	// Ensure theme switches (dark/light) are reflected without recreating the editor.
 	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }

@@ -846,6 +846,36 @@ window.addEventListener('message', async event => {
 				// ignore
 			}
 			break;
+		case 'revealTextRange':
+			try {
+				try {
+					const s = message && message.start ? message.start : null;
+					const e = message && message.end ? message.end : null;
+					const sl = s && typeof s.line === 'number' ? s.line : 0;
+					const sc = s && typeof s.character === 'number' ? s.character : 0;
+					const el = e && typeof e.line === 'number' ? e.line : sl;
+					const ec = e && typeof e.character === 'number' ? e.character : sc;
+					const matchLen = (message && typeof message.matchText === 'string') ? String(message.matchText).length : 0;
+					vscode.postMessage({
+						type: 'debugMdSearchReveal',
+						phase: 'revealTextRange(received)',
+						detail: `${String(message.documentUri || '')} ${sl}:${sc}-${el}:${ec} matchLen=${matchLen}`
+					});
+				} catch { /* ignore */ }
+				if (typeof window.__kustoRevealTextRangeFromHost === 'function') {
+					window.__kustoRevealTextRangeFromHost(message);
+					try {
+						vscode.postMessage({
+							type: 'debugMdSearchReveal',
+							phase: 'revealTextRange(dispatched)',
+							detail: `${String(message.documentUri || '')}`
+						});
+					} catch { /* ignore */ }
+				}
+			} catch {
+				// ignore
+			}
+			break;
 		case 'resolveResourceUriResult':
 			try {
 				const reqId = String(message.requestId || '');

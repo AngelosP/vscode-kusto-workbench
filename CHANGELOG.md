@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+* Auto-complete improvements and fixes
+* Filter tabular results improvements and fixes
+* Search support for all file types
+
 ## [0.1.5] - 2025-12-20
 
 * Version bump and packaging for the v0.1.5 release.
@@ -26,7 +30,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.1.2]
 
 * Made the schema "(cached)" indicator a hyperlink that opens the cached values viewer.
-
 * Implemented a viewer + editor for all the cached values (authentication tokens, database names, etc.)
 * Improved authentication logic to better handle multi-account scenarios
 
