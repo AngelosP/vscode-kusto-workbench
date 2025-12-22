@@ -511,20 +511,72 @@ function __kustoMaximizeMarkdownBox(boxId) {
 			let contentH = 0;
 			const m = String(mode || '').toLowerCase();
 			if (m === 'wysiwyg') {
-				// In WYSIWYG the scroll container is inside the ww container.
-				const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
-				if (wwContents && typeof wwContents.scrollHeight === 'number') {
-					contentH = Math.max(contentH, wwContents.scrollHeight);
-				}
+				// IMPORTANT: measure intrinsic content height, not a scroll container's scrollHeight.
+				// scrollHeight is >= clientHeight, which prevents shrinking when the wrapper is oversized.
 				const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
-				if (prose && typeof prose.scrollHeight === 'number') {
-					contentH = Math.max(contentH, prose.scrollHeight);
+				if (prose) {
+					try {
+						// ProseMirror itself is often sized to the viewport; derive the real document height
+						// from its rendered child blocks so we can shrink as well as grow.
+						const r = prose.getBoundingClientRect ? prose.getBoundingClientRect() : null;
+						const top = r ? (r.top || 0) : 0;
+						let maxBottom = 0;
+						const kids = prose.children ? Array.from(prose.children) : [];
+						for (const child of kids) {
+							try {
+								const cr = child.getBoundingClientRect ? child.getBoundingClientRect() : null;
+								const b = cr ? (cr.bottom || 0) : 0;
+								if (b && Number.isFinite(b)) maxBottom = Math.max(maxBottom, b);
+							} catch { /* ignore */ }
+						}
+						let docH = 0;
+						if (maxBottom > top) {
+							docH = Math.max(0, maxBottom - top);
+						}
+						try {
+							const cs = getComputedStyle(prose);
+							docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
+						} catch { /* ignore */ }
+						if (docH && Number.isFinite(docH)) {
+							contentH = Math.max(contentH, Math.ceil(docH));
+						}
+					} catch { /* ignore */ }
+					// Fallback: if we couldn't infer from children, use scrollHeight.
+					if (!contentH) {
+						try {
+							if (typeof prose.scrollHeight === 'number') {
+								contentH = Math.max(contentH, prose.scrollHeight);
+							}
+						} catch { /* ignore */ }
+					}
+				}
+				// Fallback: if ProseMirror isn't found, use any contents node's scrollHeight.
+				if (!contentH) {
+					const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
+					if (wwContents && typeof wwContents.scrollHeight === 'number') {
+						contentH = Math.max(contentH, wwContents.scrollHeight);
+					}
 				}
 			} else {
 				// Markdown mode uses CodeMirror.
-				const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
-				if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
-					contentH = Math.max(contentH, cmScroll.scrollHeight);
+				// Prefer the sizer height (intrinsic document height) so Fit can shrink.
+				const cmSizer = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-sizer');
+				if (cmSizer) {
+					try {
+						const oh = (typeof cmSizer.offsetHeight === 'number') ? cmSizer.offsetHeight : 0;
+						if (oh && Number.isFinite(oh)) contentH = Math.max(contentH, oh);
+					} catch { /* ignore */ }
+					try {
+						const rh = cmSizer.getBoundingClientRect ? (cmSizer.getBoundingClientRect().height || 0) : 0;
+						if (rh && Number.isFinite(rh)) contentH = Math.max(contentH, rh);
+					} catch { /* ignore */ }
+				}
+				// Fallback to scrollHeight if the sizer isn't available.
+				if (!contentH) {
+					const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
+					if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
+						contentH = Math.max(contentH, cmScroll.scrollHeight);
+					}
 				}
 				// Fallback: any visible contents area.
 				const mdContents = ui.querySelector('.toastui-editor-md-container .toastui-editor-contents');
@@ -626,18 +678,63 @@ function __kustoAutoExpandMarkdownBoxToContent(boxId) {
 				const mode = (typeof __kustoGetMarkdownMode === 'function') ? String(__kustoGetMarkdownMode(id) || '') : 'wysiwyg';
 				let contentH = 0;
 				if (mode === 'wysiwyg') {
-					const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
-					if (wwContents && typeof wwContents.scrollHeight === 'number') {
-						contentH = Math.max(contentH, wwContents.scrollHeight);
-					}
 					const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
-					if (prose && typeof prose.scrollHeight === 'number') {
-						contentH = Math.max(contentH, prose.scrollHeight);
+					if (prose) {
+						try {
+							const r = prose.getBoundingClientRect ? prose.getBoundingClientRect() : null;
+							const top = r ? (r.top || 0) : 0;
+							let maxBottom = 0;
+							const kids = prose.children ? Array.from(prose.children) : [];
+							for (const child of kids) {
+								try {
+									const cr = child.getBoundingClientRect ? child.getBoundingClientRect() : null;
+									const b = cr ? (cr.bottom || 0) : 0;
+									if (b && Number.isFinite(b)) maxBottom = Math.max(maxBottom, b);
+								} catch { /* ignore */ }
+							}
+							let docH = 0;
+							if (maxBottom > top) {
+								docH = Math.max(0, maxBottom - top);
+							}
+							try {
+								const cs = getComputedStyle(prose);
+								docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
+							} catch { /* ignore */ }
+							if (docH && Number.isFinite(docH)) {
+								contentH = Math.max(contentH, Math.ceil(docH));
+							}
+						} catch { /* ignore */ }
+						if (!contentH) {
+							try {
+								if (typeof prose.scrollHeight === 'number') {
+									contentH = Math.max(contentH, prose.scrollHeight);
+								}
+							} catch { /* ignore */ }
+						}
+					}
+					if (!contentH) {
+						const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
+						if (wwContents && typeof wwContents.scrollHeight === 'number') {
+							contentH = Math.max(contentH, wwContents.scrollHeight);
+						}
 					}
 				} else if (mode === 'markdown') {
-					const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
-					if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
-						contentH = Math.max(contentH, cmScroll.scrollHeight);
+					const cmSizer = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-sizer');
+					if (cmSizer) {
+						try {
+							const oh = (typeof cmSizer.offsetHeight === 'number') ? cmSizer.offsetHeight : 0;
+							if (oh && Number.isFinite(oh)) contentH = Math.max(contentH, oh);
+						} catch { /* ignore */ }
+						try {
+							const rh = cmSizer.getBoundingClientRect ? (cmSizer.getBoundingClientRect().height || 0) : 0;
+							if (rh && Number.isFinite(rh)) contentH = Math.max(contentH, rh);
+						} catch { /* ignore */ }
+					}
+					if (!contentH) {
+						const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
+						if (cmScroll && typeof cmScroll.scrollHeight === 'number') {
+							contentH = Math.max(contentH, cmScroll.scrollHeight);
+						}
 					}
 					const mdContents = ui.querySelector('.toastui-editor-md-container .toastui-editor-contents');
 					if (mdContents && typeof mdContents.scrollHeight === 'number') {
@@ -774,29 +871,83 @@ function __kustoMaximizeUrlBox(boxId) {
 			const contentEl = document.getElementById(id + '_content');
 			if (!contentEl) return;
 
-			let targetScrollH = 0;
-			let targetClientH = 0;
+			// IMPORTANT: compute intrinsic content height. scrollHeight on a scroll container
+			// is >= clientHeight, which prevents shrinking when oversized.
+			let contentPx = 0;
+			let contentClientH = 0;
+			let hasTable = false;
+
+			const addVisibleRectHeight = (el) => {
+				try {
+					if (!el) return 0;
+					try {
+						const cs = getComputedStyle(el);
+						if (cs && cs.display === 'none') return 0;
+						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+						let margin = 0;
+						try {
+							margin += parseFloat(cs.marginTop || '0') || 0;
+							margin += parseFloat(cs.marginBottom || '0') || 0;
+						} catch { /* ignore */ }
+						return Math.max(0, Math.ceil(h + margin));
+					} catch { /* ignore */ }
+					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+					return Math.max(0, Math.ceil(h));
+				} catch {
+					return 0;
+				}
+			};
+
+			try { contentClientH = Math.max(0, contentEl.clientHeight || 0); } catch { /* ignore */ }
+
 			try {
 				const isCsvMode = !!(contentEl.classList && contentEl.classList.contains('url-csv-mode'));
 				if (isCsvMode) {
 					const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
-					if (tableContainer) {
-						targetScrollH = Math.max(targetScrollH, tableContainer.scrollHeight || 0);
-						targetClientH = Math.max(targetClientH, tableContainer.clientHeight || 0);
+					const tableEl = tableContainer && tableContainer.querySelector ? tableContainer.querySelector('table') : null;
+					if (tableContainer && tableEl) {
+						hasTable = true;
+						let tableH = 0;
+						try {
+							const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
+							if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
+						} catch { /* ignore */ }
+						try {
+							const rh = tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0;
+							if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
+						} catch { /* ignore */ }
+						if (!tableH) {
+							try {
+								const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
+								if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
+							} catch { /* ignore */ }
+						}
+						contentPx = Math.max(contentPx, Math.ceil(tableH));
 					}
 				}
 			} catch { /* ignore */ }
-			if (!targetScrollH) {
+
+			// Non-table URL content: sum child heights.
+			if (!contentPx) {
 				try {
-					targetScrollH = Math.max(targetScrollH, contentEl.scrollHeight || 0);
-					targetClientH = Math.max(targetClientH, contentEl.clientHeight || 0);
+					const children = contentEl.children ? Array.from(contentEl.children) : [];
+					if (children.length) {
+						for (const child of children) {
+							contentPx += addVisibleRectHeight(child);
+						}
+					} else {
+						// Last resort: fall back to scrollHeight (better than nothing for text-only nodes).
+						contentPx = Math.max(contentPx, Math.ceil(contentEl.scrollHeight || 0));
+					}
 				} catch { /* ignore */ }
 			}
-			if (!targetScrollH || !Number.isFinite(targetScrollH) || targetScrollH <= 0) return;
+
+			if (!contentPx || !Number.isFinite(contentPx) || contentPx <= 0) return;
 
 			const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
-			const overheadPx = Math.max(0, wrapperH - Math.max(0, targetClientH));
-			const desiredPx = Math.max(120, Math.min(20000, Math.ceil(overheadPx + targetScrollH + 10)));
+			const overheadPx = Math.max(0, wrapperH - Math.max(0, contentClientH));
+			// Keep the same general spacing as before.
+			const desiredPx = Math.max(120, Math.min(20000, Math.ceil(overheadPx + contentPx + 10)));
 
 			wrapper.style.height = desiredPx + 'px';
 			wrapper.style.minHeight = '0';
