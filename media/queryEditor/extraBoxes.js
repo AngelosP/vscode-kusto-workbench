@@ -709,13 +709,51 @@ function __kustoMaximizePythonBox(boxId) {
 	const editorEl = document.getElementById(id + '_py_editor');
 	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
-	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
-	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	const applyFitToContent = () => {
+		try {
+			const ed = (typeof pythonEditors === 'object' && pythonEditors) ? pythonEditors[id] : null;
+			if (!ed) return;
+
+			// IMPORTANT: use content height, not scroll height.
+			// Monaco's getScrollHeight is often >= the viewport height, which prevents shrinking.
+			let contentHeight = 0;
+			try {
+				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
+				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
+			} catch { /* ignore */ }
+			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
+
+			let chrome = 0;
+			try {
+				for (const child of Array.from(wrapper.children || [])) {
+					if (!child || child === editorEl) continue;
+					try {
+						const cs = getComputedStyle(child);
+						if (cs && cs.display === 'none') continue;
+					} catch { /* ignore */ }
+					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
+				}
+			} catch { /* ignore */ }
+			try {
+				const csw = getComputedStyle(wrapper);
+				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+			} catch { /* ignore */ }
+
+			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
+			try {
+				wrapper.style.height = desired + 'px';
+				wrapper.style.minHeight = '0';
+			} catch { /* ignore */ }
+			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try { if (typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
+		} catch { /* ignore */ }
+	};
+
 	try {
-		const ed = (typeof pythonEditors === 'object' && pythonEditors) ? pythonEditors[id] : null;
-		if (ed && typeof ed.layout === 'function') {
-			ed.layout();
-		}
+		applyFitToContent();
+		setTimeout(applyFitToContent, 50);
+		setTimeout(applyFitToContent, 150);
 	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
@@ -725,19 +763,58 @@ function __kustoMaximizeUrlBox(boxId) {
 	if (!id) return;
 	const wrapper = document.getElementById(id + '_wrapper');
 	if (!wrapper) return;
-	try {
-		wrapper.style.height = '900px';
-		if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true';
-	} catch { /* ignore */ }
-	// If this is a URL CSV section, clamp slack once layout settles.
-	try {
-		setTimeout(() => {
+	const applyFitToContent = () => {
+		try {
+			// If collapsed/hidden, we can't measure meaningfully.
+			try {
+				const csw = getComputedStyle(wrapper);
+				if (csw && csw.display === 'none') return;
+			} catch { /* ignore */ }
+
+			const contentEl = document.getElementById(id + '_content');
+			if (!contentEl) return;
+
+			let targetScrollH = 0;
+			let targetClientH = 0;
+			try {
+				const isCsvMode = !!(contentEl.classList && contentEl.classList.contains('url-csv-mode'));
+				if (isCsvMode) {
+					const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
+					if (tableContainer) {
+						targetScrollH = Math.max(targetScrollH, tableContainer.scrollHeight || 0);
+						targetClientH = Math.max(targetClientH, tableContainer.clientHeight || 0);
+					}
+				}
+			} catch { /* ignore */ }
+			if (!targetScrollH) {
+				try {
+					targetScrollH = Math.max(targetScrollH, contentEl.scrollHeight || 0);
+					targetClientH = Math.max(targetClientH, contentEl.clientHeight || 0);
+				} catch { /* ignore */ }
+			}
+			if (!targetScrollH || !Number.isFinite(targetScrollH) || targetScrollH <= 0) return;
+
+			const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
+			const overheadPx = Math.max(0, wrapperH - Math.max(0, targetClientH));
+			const desiredPx = Math.max(120, Math.min(20000, Math.ceil(overheadPx + targetScrollH + 10)));
+
+			wrapper.style.height = desiredPx + 'px';
+			wrapper.style.minHeight = '0';
+			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+			// For CSV, also clamp any slack once layout settles.
 			try {
 				if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
 					window.__kustoClampUrlCsvWrapperHeight(id);
 				}
 			} catch { /* ignore */ }
-		}, 0);
+		} catch { /* ignore */ }
+	};
+
+	try {
+		applyFitToContent();
+		setTimeout(applyFitToContent, 50);
+		setTimeout(applyFitToContent, 150);
 	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
@@ -1122,7 +1199,7 @@ function addMarkdownBox(options) {
 		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
 		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
 		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
-		'<button class="md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleMarkdownBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
@@ -1828,7 +1905,7 @@ function addPythonBox(options) {
 		'<div class="section-title">Python</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Python controls">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'</div>' +
 		'<button class="section-btn" type="button" onclick="runPythonBox(\'' + id + '\')" title="Run Python">▶ Run</button>' +
 		'<button class="section-btn" type="button" onclick="removePythonBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
@@ -2171,7 +2248,7 @@ function addUrlBox(options) {
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeUrlBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeUrlBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleUrlBox(\'' + id + '\')" title="Show" aria-label="Show">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +

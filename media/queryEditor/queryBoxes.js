@@ -340,7 +340,7 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Maximize" aria-label="Maximize">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
 		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
@@ -687,14 +687,208 @@ function __kustoMaximizeQueryBox(boxId) {
 	const editorEl = document.getElementById(id + '_query_editor');
 	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
-	try { wrapper.style.height = '900px'; } catch { /* ignore */ }
-	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+	const applyFitToContent = () => {
+		try {
+			const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
+			if (!ed) return;
+
+			// IMPORTANT: use content height, not scroll height.
+			// Monaco's getScrollHeight is often >= the viewport height, which prevents shrinking.
+			let contentHeight = 0;
+			try {
+				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
+				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
+			} catch { /* ignore */ }
+			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
+
+			let chrome = 0;
+			try {
+				for (const child of Array.from(wrapper.children || [])) {
+					if (!child || child === editorEl) continue;
+					try {
+						const cs = getComputedStyle(child);
+						if (cs && cs.display === 'none') continue;
+					} catch { /* ignore */ }
+					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
+				}
+			} catch { /* ignore */ }
+			try {
+				const csw = getComputedStyle(wrapper);
+				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+			} catch { /* ignore */ }
+
+			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
+			try {
+				wrapper.style.height = desired + 'px';
+				wrapper.style.minHeight = '0';
+			} catch { /* ignore */ }
+			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try {
+				if (typeof ed.layout === 'function') {
+					ed.layout();
+				}
+			} catch { /* ignore */ }
+		} catch { /* ignore */ }
+	};
+
+	// Fit the KQL editor height to the exact visible content (no inner scrollbar).
 	try {
-		const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
-		if (ed && typeof ed.layout === 'function') {
-			ed.layout();
-		}
+		applyFitToContent();
+		setTimeout(applyFitToContent, 50);
+		setTimeout(applyFitToContent, 150);
 	} catch { /* ignore */ }
+
+	// Fit results to their visible contents (tables + non-tables).
+	// This removes vertical scrollbars (by giving the table container enough height)
+	// and removes blank slack above the resize grip.
+	const applyResultsFitToContent = () => {
+		try {
+			const w = document.getElementById(id + '_results_wrapper');
+			const resultsEl = document.getElementById(id + '_results');
+			if (!w || !resultsEl) return;
+			try {
+				const csw = getComputedStyle(w);
+				if (csw && csw.display === 'none') return;
+			} catch { /* ignore */ }
+			try {
+				const csr = getComputedStyle(resultsEl);
+				if (csr && csr.display === 'none') return;
+			} catch { /* ignore */ }
+
+			// Wrapper chrome: resizer + wrapper padding/borders.
+			let chrome = 0;
+			try {
+				for (const child of Array.from(w.children || [])) {
+					if (!child || child === resultsEl) continue;
+					try {
+						const cs = getComputedStyle(child);
+						if (cs && cs.display === 'none') continue;
+					} catch { /* ignore */ }
+					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
+				}
+			} catch { /* ignore */ }
+			try {
+				const csw = getComputedStyle(w);
+				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+			} catch { /* ignore */ }
+
+			// Results content: header + tools/search + table (natural content height).
+			let resultsContent = 0;
+			let hasTable = false;
+			try {
+				const csr = getComputedStyle(resultsEl);
+				resultsContent += (parseFloat(csr.paddingTop || '0') || 0) + (parseFloat(csr.paddingBottom || '0') || 0);
+				resultsContent += (parseFloat(csr.borderTopWidth || '0') || 0) + (parseFloat(csr.borderBottomWidth || '0') || 0);
+			} catch { /* ignore */ }
+
+			const addVisibleRectHeight = (el) => {
+				try {
+					if (!el) return 0;
+					try {
+						const cs = getComputedStyle(el);
+						if (cs && cs.display === 'none') return 0;
+						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+						let margin = 0;
+						try {
+							margin += parseFloat(cs.marginTop || '0') || 0;
+							margin += parseFloat(cs.marginBottom || '0') || 0;
+						} catch { /* ignore */ }
+						return Math.max(0, Math.ceil(h + margin));
+					} catch { /* ignore */ }
+					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+					return Math.max(0, Math.ceil(h));
+				} catch {
+					return 0;
+				}
+			};
+
+			const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+			resultsContent += addVisibleRectHeight(headerEl);
+
+			const bodyEl = resultsEl.querySelector ? resultsEl.querySelector('.results-body') : null;
+			if (bodyEl) {
+				try {
+					const csb = getComputedStyle(bodyEl);
+					resultsContent += (parseFloat(csb.paddingTop || '0') || 0) + (parseFloat(csb.paddingBottom || '0') || 0);
+					resultsContent += (parseFloat(csb.borderTopWidth || '0') || 0) + (parseFloat(csb.borderBottomWidth || '0') || 0);
+				} catch { /* ignore */ }
+
+				// Use simple selectors (avoid ':scope' compatibility issues).
+				const dataSearch = bodyEl.querySelector ? bodyEl.querySelector('.data-search') : null;
+				const colSearch = bodyEl.querySelector ? bodyEl.querySelector('.column-search') : null;
+				resultsContent += addVisibleRectHeight(dataSearch);
+				resultsContent += addVisibleRectHeight(colSearch);
+
+				const tableContainer = bodyEl.querySelector ? bodyEl.querySelector('.table-container') : null;
+				if (tableContainer) {
+					hasTable = true;
+					let tableH = 0;
+					// IMPORTANT: use the table element's natural height. The scroll container's
+					// scrollHeight is >= clientHeight, which prevents shrinking when oversized.
+					try {
+						const tableEl = tableContainer.querySelector ? tableContainer.querySelector('table') : null;
+						if (tableEl) {
+							const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
+							if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
+							const rh = (tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0);
+							if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
+						}
+					} catch { /* ignore */ }
+					// Fallback: if we can't find the table, use the container's scrollHeight.
+					if (!tableH) {
+						try {
+							const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
+							if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
+						} catch { /* ignore */ }
+					}
+					// Last resort: rendered container height.
+					if (!tableH) {
+						tableH = addVisibleRectHeight(tableContainer);
+					}
+					resultsContent += Math.max(0, Math.ceil(tableH));
+				} else {
+					// Non-table results (errors, messages): sum the body's children heights.
+					try {
+						for (const child of Array.from(bodyEl.children || [])) {
+							resultsContent += addVisibleRectHeight(child);
+						}
+					} catch { /* ignore */ }
+				}
+			} else {
+				// Fallback: approximate by summing visible direct children.
+				try {
+					for (const child of Array.from(resultsEl.children || [])) {
+						resultsContent += addVisibleRectHeight(child);
+					}
+				} catch { /* ignore */ }
+			}
+
+			if (!resultsContent || !Number.isFinite(resultsContent) || resultsContent <= 0) return;
+
+			// Extra padding: tabular results need a touch more so the last row isn't clipped.
+			const extraPad = hasTable ? 18 : 8; // +10px compared to previous
+			const desiredPx = Math.max(24, Math.min(200000, Math.ceil(chrome + resultsContent + extraPad)));
+			try {
+				w.style.height = desiredPx + 'px';
+				w.style.minHeight = '0';
+			} catch { /* ignore */ }
+			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+					window.__kustoClampResultsWrapperHeight(id);
+				}
+			} catch { /* ignore */ }
+		} catch { /* ignore */ }
+	};
+
+	try {
+		applyResultsFitToContent();
+		setTimeout(applyResultsFitToContent, 50);
+		setTimeout(applyResultsFitToContent, 150);
+	} catch { /* ignore */ }
+
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
