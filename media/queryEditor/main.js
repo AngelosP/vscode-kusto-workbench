@@ -504,9 +504,12 @@ document.addEventListener('copy', (event) => {
 	void __kustoCopyOrCutFocusedMonaco(event, false);
 }, true);
 
-// Ctrl+Enter (Cmd+Enter on macOS) runs the active query box, same as clicking the main run button.
+// Ctrl+Enter / Ctrl+Shift+Enter (Cmd+Enter / Cmd+Shift+Enter on macOS) runs the active query box,
+// same as clicking the main run button.
 document.addEventListener('keydown', (event) => {
-	if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter') {
+	// Some environments report Enter via `code` more reliably than `key`.
+	const isEnter = (event.key === 'Enter') || (event.code === 'Enter');
+	if (!(event.ctrlKey || event.metaKey) || !isEnter) {
 		return;
 	}
 	if (!activeQueryEditorBoxId) {

@@ -7633,6 +7633,29 @@ function initQueryEditor(boxId) {
 			// ignore
 		}
 
+		// Ctrl+Enter / Ctrl+Shift+Enter should execute the query (same as the Run button).
+		// NOTE: We install this at the Monaco level so Monaco can't consume Ctrl+Shift+Enter before
+		// our document-level capture handler runs.
+		try {
+			const __kustoRunThisQueryBox = () => {
+				try {
+					if (typeof executeQuery === 'function') {
+						executeQuery(boxId);
+						return;
+					}
+					if (window && typeof window.executeQuery === 'function') {
+						window.executeQuery(boxId);
+					}
+				} catch {
+					// ignore
+				}
+			};
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
+		} catch {
+			// ignore
+		}
+
 		// Docs tooltip: keep visible while typing, even when Monaco autocomplete is open.
 		const renderDocMarkdownToHtml = (markdown) => {
 			let raw = String(markdown || '');
