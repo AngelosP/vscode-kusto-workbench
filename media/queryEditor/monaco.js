@@ -2807,8 +2807,8 @@ function ensureMonaco() {
 					const __kustoClamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
 					const __kustoSplitTopLevelStatements = (text) => {
-						// Split on ';' when not inside strings/comments/brackets.
-						const raw = String(text || '');
+						// Split on ';' and blank lines when not inside strings/comments/brackets.
+						const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 						const out = [];
 						let start = 0;
 						let depth = 0;
@@ -2822,8 +2822,9 @@ function ensureMonaco() {
 							if (inLineComment) {
 								if (ch === '\n') {
 									inLineComment = false;
+								} else {
+									continue;
 								}
-								continue;
 							}
 							if (inBlockComment) {
 								if (ch === '*' && next === '/') {
@@ -2891,6 +2892,34 @@ function ensureMonaco() {
 								out.push({ startOffset: start, text: raw.slice(start, i) });
 								start = i + 1;
 								continue;
+							}
+
+							// Blank-line statement separator: treat one-or-more blank lines as a boundary.
+							// IMPORTANT: a single newline without a blank line is NOT a separator.
+							if (ch === '\n' && depth === 0) {
+								let j = i + 1;
+								while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t')) j++;
+								if (raw[j] === '\n') {
+									out.push({ startOffset: start, text: raw.slice(start, i) });
+									start = j + 1;
+									// Consume any additional blank lines so we don't emit empty statements.
+									while (start < raw.length) {
+										const end = raw.indexOf('\n', start);
+										const lineEnd = end < 0 ? raw.length : end;
+										const lineText = raw.slice(start, lineEnd);
+										if (/^[ \t]*$/.test(lineText)) {
+											if (end < 0) {
+												start = raw.length;
+												break;
+											}
+											start = end + 1;
+											continue;
+										}
+										break;
+									}
+									i = start - 1;
+									continue;
+								}
 							}
 						}
 						out.push({ startOffset: start, text: raw.slice(start) });
@@ -3091,8 +3120,11 @@ function ensureMonaco() {
 							const ch = raw[i];
 							const next = raw[i + 1];
 							if (inLineComment) {
-								if (ch === '\n') inLineComment = false;
-								continue;
+								// End line comment at EOL, then continue processing the newline as whitespace.
+								if (ch !== '\n') {
+									continue;
+								}
+								inLineComment = false;
 							}
 							if (inBlockComment) {
 								if (ch === '*' && next === '/') { inBlockComment = false; i++; }
@@ -3117,6 +3149,23 @@ function ensureMonaco() {
 							if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
 							if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
 							if (ch === ';' && depth === 0) { last = i; continue; }
+							// Blank-line statement separator: treat one-or-more blank lines as a boundary.
+							// IMPORTANT: a single newline without a blank line is NOT a separator.
+							if (ch === '\n' && depth === 0) {
+								let j = i + 1;
+								// Skip whitespace on the *next* line.
+								while (j < end) {
+									const c = raw[j];
+									if (c === ' ' || c === '\t' || c === '\r') { j++; continue; }
+									break;
+								}
+								if (j < end && raw[j] === '\n') {
+									// Found a blank line (\n[ \t]*\n). Consider the statement boundary
+									// as ending at this newline so the next statement starts at j+1.
+									last = j;
+								}
+								continue;
+							}
 						}
 						return last + 1;
 					};

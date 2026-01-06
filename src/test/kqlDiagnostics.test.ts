@@ -42,4 +42,50 @@ suite('KQL diagnostics', () => {
 			'Expected at least one KW_EXPECTED_PIPE diagnostic for missing pipe'
 		);
 	});
+
+	test('treats blank lines as statement separators', () => {
+		const text = [
+			'RawEventsVSCodeExt | project Duration | take 10',
+			'',
+			'RawEventsVSCodeExt | take 100',
+			''
+		].join('\n');
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE diagnostics across blank-line-separated statements, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('does not leak projected columns across blank-line-separated statements', () => {
+		const text = [
+			'RawEventsVSCodeExt | project Command | take 10',
+			'',
+			'RawEventsVSCodeExt | project DevDeviceId | take 100',
+			''
+		].join('\n');
+
+		const schema: any = {
+			tables: ['RawEventsVSCodeExt'],
+			columnTypesByTable: {
+				RawEventsVSCodeExt: {
+					Command: 'string',
+					DevDeviceId: 'string'
+				}
+			}
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
+		assert.strictEqual(
+			unknownCols.length,
+			0,
+			`Expected no KW_UNKNOWN_COLUMN diagnostics across blank-line-separated statements, got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+	});
 });

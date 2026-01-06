@@ -7,6 +7,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [unreleased]
 
 * Support for large datasets
+* Improved syntax support (more work to be done there, please send examples that don't work perfectly as that helps a lot)
+
+## [0.1.7] - 2026-01-06
+
+* Run query: Ctrl+Enter and Ctrl+Shift+Enter now both execute (Cmd variants on macOS too)
+* Run query: when the cursor is inside the editor, only the Kusto statement under the cursor executes (statements separated by one or more blank lines)
 
 ## [0.1.6] - 2025-12-21
 

@@ -284,7 +284,7 @@ const scanTokens = (text: string): Token[] => {
 type TextStatement = { startOffset: number; text: string };
 
 const splitTopLevelStatements = (text: string): TextStatement[] => {
-	const raw = String(text ?? '');
+	const raw = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	const out: TextStatement[] = [];
 	let start = 0;
 	let depth = 0;
@@ -296,8 +296,11 @@ const splitTopLevelStatements = (text: string): TextStatement[] => {
 		const ch = raw[i];
 		const next = raw[i + 1];
 		if (inLineComment) {
-			if (ch === '\n') inLineComment = false;
-			continue;
+			if (ch === '\n') {
+				inLineComment = false;
+			} else {
+				continue;
+			}
 		}
 		if (inBlockComment) {
 			if (ch === '*' && next === '/') {
@@ -360,6 +363,34 @@ const splitTopLevelStatements = (text: string): TextStatement[] => {
 			out.push({ startOffset: start, text: raw.slice(start, i) });
 			start = i + 1;
 			continue;
+		}
+
+		// Blank-line separator: treat one-or-more blank lines as a statement boundary.
+		// IMPORTANT: a single newline without a blank line is NOT a separator.
+		if (ch === '\n' && depth === 0) {
+			let j = i + 1;
+			while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t')) j++;
+			if (raw[j] === '\n') {
+				out.push({ startOffset: start, text: raw.slice(start, i) });
+				start = j + 1;
+				// Consume any additional blank lines so we don't emit empty statements.
+				while (start < raw.length) {
+					const end = raw.indexOf('\n', start);
+					const lineEnd = end < 0 ? raw.length : end;
+					const lineText = raw.slice(start, lineEnd);
+					if (/^[ \t]*$/.test(lineText)) {
+						if (end < 0) {
+							start = raw.length;
+							break;
+						}
+						start = end + 1;
+						continue;
+					}
+					break;
+				}
+				i = start - 1;
+				continue;
+			}
 		}
 	}
 	out.push({ startOffset: start, text: raw.slice(start) });
@@ -1256,64 +1287,17 @@ export class KqlLanguageService {
 			const tokens = scanTokens(raw);
 			const commentRanges = buildCommentRanges(raw);
 
-			// Column validation must be statement-scoped in multi-statement scripts.
-			// Otherwise, an operator clause (e.g. `| distinct ...`) could accidentally consume the next statement
-			// (e.g. `;\nlet X = Table`) and treat table names as columns.
-			const stmtRanges = (() => {
+			// Column validation must be statement-scoped in multi-statement scripts (semicolon OR blank-line separated).
+			// Otherwise, a `| project ...` in statement #1 could shrink the column set and make statement #2
+			// incorrectly report unknown columns.
+			const statements = (() => {
 				try {
-					const statements = splitTopLevelStatements(raw);
-					const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
-					return stmts.map((s) => ({
-						start: Number(s.startOffset ?? 0) || 0,
-						end: (Number(s.startOffset ?? 0) || 0) + String(s.text ?? '').length
-					}));
+					const s = splitTopLevelStatements(raw);
+					return s.length ? s : [{ startOffset: 0, text: raw }];
 				} catch {
-					return [{ start: 0, end: raw.length }];
+					return [{ startOffset: 0, text: raw }];
 				}
 			})();
-			const findStatementEndForOffset = (offset: number): number => {
-				for (const r of stmtRanges) {
-					if (r.start <= offset && offset < r.end) return r.end;
-				}
-				return raw.length;
-			};
-
-			let activeTable: string | null = null;
-			try {
-				const ignore = new Set(['let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata']);
-				const lines = raw.split('\n');
-				for (const line of lines) {
-					const trimmed = line.trim();
-					if (!trimmed) continue;
-					if (trimmed.startsWith('|') || trimmed.startsWith('.') || trimmed.startsWith('//')) continue;
-					const m = line.match(/^\s*([A-Za-z_][\w-]*)\b/);
-					if (!m?.[1]) continue;
-					const name = String(m[1]);
-					if (ignore.has(name.toLowerCase())) continue;
-					const found = tables.find((t) => sameLower(String(t), name));
-					if (found && columnsByTable[found]) {
-						activeTable = String(found);
-						break;
-					}
-					const resolvedLet = resolveTabularLetToTable(name.toLowerCase());
-					if (resolvedLet && columnsByTable[resolvedLet]) {
-						activeTable = resolvedLet;
-						break;
-					}
-				}
-			} catch {
-				activeTable = null;
-			}
-			if (!activeTable) {
-				activeTable = null;
-			}
-
-			let colSet: Set<string> | null = null;
-			let dynamicRootCols = new Set<string>();
-			if (activeTable) {
-				colSet = new Set((columnsByTable[activeTable] || []).map((c) => String(c)));
-				dynamicRootCols = getDynamicColumnsForTable(activeTable);
-			}
 
 			const kw = new Set([
 				'let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata',
@@ -1323,150 +1307,187 @@ export class KqlLanguageService {
 			]);
 			const fnNames = KNOWN_FUNCTION_NAMES;
 
-			const currentColumns = () => (colSet ? Array.from(colSet) : []);
+			for (const st of statements) {
+				const stmtText = String(st?.text ?? '');
+				if (!stmtText.trim()) continue;
+				if (isDotCommandStatement(stmtText)) continue;
+				const baseOffset = Number(st?.startOffset ?? 0) || 0;
 
-			for (let i = 0; i < tokens.length; i++) {
-				const t = tokens[i];
-				if (!t || t.depth !== 0 || t.type !== 'pipe') continue;
-				const statementEnd = findStatementEndForOffset(t.offset);
-
-				let opTok: Extract<Token, { type: 'ident' }> | null = null;
-				for (let j = i + 1; j < tokens.length; j++) {
-					const tt = tokens[j];
-					if (!tt || tt.depth !== 0) continue;
-					if (tt.type === 'ident') {
-						opTok = tt;
-						break;
+				let activeTable: string | null = null;
+				try {
+					const ignore = new Set(['let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata']);
+					const lines = stmtText.split('\n');
+					for (const line of lines) {
+						const trimmed = line.trim();
+						if (!trimmed) continue;
+						if (trimmed.startsWith('|') || trimmed.startsWith('.') || trimmed.startsWith('//')) continue;
+						const m = line.match(/^\s*([A-Za-z_][\w-]*)\b/);
+						if (!m?.[1]) continue;
+						const name = String(m[1]);
+						if (ignore.has(name.toLowerCase())) continue;
+						const found = tables.find((t) => sameLower(String(t), name));
+						if (found && columnsByTable[found]) {
+							activeTable = String(found);
+							break;
+						}
+						const resolvedLet = resolveTabularLetToTable(name.toLowerCase());
+						if (resolvedLet && columnsByTable[resolvedLet]) {
+							activeTable = resolvedLet;
+							break;
+						}
 					}
-					if (tt.type === 'pipe') break;
+				} catch {
+					activeTable = null;
 				}
-				if (!opTok) continue;
-				const op = String(opTok.value ?? '').toLowerCase();
-				if (!colSet) continue;
 
-				let clauseStart = opTok.endOffset;
-				let clauseEnd = raw.length;
-				for (let j = i + 1; j < tokens.length; j++) {
-					const tt = tokens[j];
-					if (!tt || tt.depth !== 0) continue;
-					if (tt.type === 'pipe' && tt.offset > opTok.offset) {
-						clauseEnd = tt.offset;
-						break;
+				let colSet: Set<string> | null = null;
+				let dynamicRootCols = new Set<string>();
+				if (activeTable) {
+					colSet = new Set((columnsByTable[activeTable] || []).map((c) => String(c)));
+					dynamicRootCols = getDynamicColumnsForTable(activeTable);
+				}
+
+				const currentColumns = () => (colSet ? Array.from(colSet) : []);
+				const stmtTokens = scanTokens(stmtText);
+
+				for (let i = 0; i < stmtTokens.length; i++) {
+					const t = stmtTokens[i];
+					if (!t || t.depth !== 0 || t.type !== 'pipe') continue;
+
+					let opTok: Extract<Token, { type: 'ident' }> | null = null;
+					for (let j = i + 1; j < stmtTokens.length; j++) {
+						const tt = stmtTokens[j];
+						if (!tt || tt.depth !== 0) continue;
+						if (tt.type === 'ident') {
+							opTok = tt;
+							break;
+						}
+						if (tt.type === 'pipe') break;
 					}
-				}
-				// Clamp the clause to the current statement boundary.
-				clauseEnd = Math.min(clauseEnd, statementEnd);
-				if (clauseStart >= clauseEnd) continue;
-				const clauseText = raw.slice(clauseStart, clauseEnd);
+					if (!opTok) continue;
+					const op = String(opTok.value ?? '').toLowerCase();
+					if (!colSet) continue;
 
-				const inputColSet = colSet ? new Set(colSet) : null;
-				let nextColSet: Set<string> | null = null;
+					let clauseStart = opTok.endOffset;
+					let clauseEnd = stmtText.length;
+					for (let j = i + 1; j < stmtTokens.length; j++) {
+						const tt = stmtTokens[j];
+						if (!tt || tt.depth !== 0) continue;
+						if (tt.type === 'pipe' && tt.offset > opTok.offset) {
+							clauseEnd = tt.offset;
+							break;
+						}
+					}
+					if (clauseStart >= clauseEnd) continue;
+					const clauseText = stmtText.slice(clauseStart, clauseEnd);
 
-				if (op === 'extend') {
-					for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+					const inputColSet = colSet ? new Set(colSet) : null;
+					let nextColSet: Set<string> | null = null;
+
+					if (op === 'extend') {
+						for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+							try {
+								colSet.add(String(m[1]));
+							} catch {
+								// ignore
+							}
+						}
+					}
+
+					if (op === 'project') {
+						const next = new Set<string>();
+						for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+							const name = m[1];
+							if (!name) continue;
+							const nl = name.toLowerCase();
+							if (kw.has(nl)) continue;
+							const after = clauseText.slice((m.index ?? 0) + name.length);
+							if (/^\s*=/.test(after)) {
+								next.add(name);
+								continue;
+							}
+							if (inputColSet && inputColSet.has(name)) next.add(name);
+						}
+						nextColSet = next;
+					}
+
+					if (op === 'summarize') {
+						const next = new Set<string>();
 						try {
-							colSet.add(String(m[1]));
+							let byTok: Extract<Token, { type: 'ident' }> | null = null;
+							for (const tt of stmtTokens) {
+								if (!tt || tt.depth !== 0 || tt.type !== 'ident') continue;
+								if (tt.offset < clauseStart || tt.offset >= clauseEnd) continue;
+								if (String(tt.value ?? '').toLowerCase() === 'by') byTok = tt;
+							}
+							if (byTok) {
+								const byText = stmtText.slice(byTok.endOffset, clauseEnd);
+								for (const m of byText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+									const name = m[1];
+									if (name && inputColSet && inputColSet.has(name)) next.add(name);
+								}
+							}
 						} catch {
 							// ignore
 						}
+						for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+							try {
+								next.add(String(m[1]));
+							} catch {
+								// ignore
+							}
+						}
+						nextColSet = next;
 					}
-				}
 
-				if (op === 'project') {
-					const next = new Set<string>();
+					const shouldValidateColumns =
+						op === 'where' || op === 'project' || op === 'extend' || op === 'summarize' || op === 'distinct' || op === 'take' || op === 'top' || op === 'order' || op === 'sort';
+					if (!shouldValidateColumns) continue;
+
+					const validateSet = op === 'project' || op === 'summarize' ? (inputColSet || colSet) : colSet;
 					for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
 						const name = m[1];
 						if (!name) continue;
 						const nl = name.toLowerCase();
 						if (kw.has(nl)) continue;
-						const after = clauseText.slice((m.index ?? 0) + name.length);
-						if (/^\s*=/.test(after)) {
-							next.add(name);
-							continue;
-						}
-						if (inputColSet && inputColSet.has(name)) next.add(name);
-					}
-					nextColSet = next;
-				}
+						if (fnNames.has(nl)) continue;
 
-				if (op === 'summarize') {
-					const next = new Set<string>();
-					try {
-						let byTok: Extract<Token, { type: 'ident' }> | null = null;
-						for (const tt of tokens) {
-							if (!tt || tt.depth !== 0 || tt.type !== 'ident') continue;
-							if (tt.offset < clauseStart || tt.offset >= clauseEnd) continue;
-							if (String(tt.value ?? '').toLowerCase() === 'by') byTok = tt;
-						}
-						if (byTok) {
-							const byText = raw.slice(byTok.endOffset, clauseEnd);
-							for (const m of byText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
-								const name = m[1];
-								if (name && inputColSet && inputColSet.has(name)) next.add(name);
-							}
-						}
-					} catch {
-						// ignore
-					}
-					for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
 						try {
-							next.add(String(m[1]));
+							const localIndex = typeof m.index === 'number' ? m.index : 0;
+							const root = getDotChainRoot(clauseText, localIndex);
+							if (root && validateSet && validateSet.has(root) && dynamicRootCols.has(root)) {
+								continue;
+							}
 						} catch {
 							// ignore
 						}
-					}
-					nextColSet = next;
-				}
 
-				const shouldValidateColumns =
-					op === 'where' || op === 'project' || op === 'extend' || op === 'summarize' || op === 'distinct' || op === 'take' || op === 'top' || op === 'order' || op === 'sort';
-				if (!shouldValidateColumns) continue;
-
-				const validateSet = op === 'project' || op === 'summarize' ? (inputColSet || colSet) : colSet;
-				for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
-					const name = m[1];
-					if (!name) continue;
-					const nl = name.toLowerCase();
-					if (kw.has(nl)) continue;
-					if (fnNames.has(nl)) continue;
-
-					// Allow `dynamicColumn.any.property.chain` when the root is a known dynamic column.
-					try {
-						const localIndex = typeof m.index === 'number' ? m.index : 0;
-						const root = getDotChainRoot(clauseText, localIndex);
-						if (root && validateSet && validateSet.has(root) && dynamicRootCols.has(root)) {
-							continue;
+						try {
+							const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
+							if (/^\s*=/.test(afterLocal)) continue;
+						} catch {
+							// ignore
 						}
-					} catch {
-						// ignore
+
+						const absoluteOffset = baseOffset + clauseStart + (typeof m.index === 'number' ? m.index : 0);
+						if (commentRanges.length && isInRanges(commentRanges, absoluteOffset)) continue;
+						if (isInStringLiteral(absoluteOffset)) continue;
+						if (letNames.has(nl)) continue;
+						try {
+							const after = raw.slice(absoluteOffset + name.length, Math.min(raw.length, absoluteOffset + name.length + 6));
+							if (/^\s*\(/.test(after)) continue;
+						} catch {
+							// ignore
+						}
+
+						if (validateSet && !validateSet.has(name)) {
+							reportUnknown('KW_UNKNOWN_COLUMN', 'column', name, absoluteOffset, absoluteOffset + name.length, currentColumns());
+						}
 					}
 
-					// Skip assignment LHS (X = ...)
-					try {
-						const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
-						if (/^\s*=/.test(afterLocal)) continue;
-					} catch {
-						// ignore
+					if (nextColSet) {
+						colSet = nextColSet;
 					}
-
-					const absoluteOffset = clauseStart + (typeof m.index === 'number' ? m.index : 0);
-					if (commentRanges.length && isInRanges(commentRanges, absoluteOffset)) continue;
-					if (isInStringLiteral(absoluteOffset)) continue;
-					if (letNames.has(nl)) continue;
-					try {
-						const after = raw.slice(absoluteOffset + name.length, Math.min(raw.length, absoluteOffset + name.length + 6));
-						if (/^\s*\(/.test(after)) continue;
-					} catch {
-						// ignore
-					}
-
-					if (validateSet && !validateSet.has(name)) {
-						reportUnknown('KW_UNKNOWN_COLUMN', 'column', name, absoluteOffset, absoluteOffset + name.length, currentColumns());
-					}
-				}
-
-				if (nextColSet) {
-					colSet = nextColSet;
 				}
 			}
 		}
