@@ -315,10 +315,12 @@ function __kustoSetUrlOutputHeightPx(boxId, heightPx) {
 		if (!wrapper) return;
 		const h = Number(heightPx);
 		if (!Number.isFinite(h) || h <= 0) return;
-		wrapper.style.height = Math.round(h) + 'px';
+		// Keep within the same bounds as the URL drag-resize affordance.
+		const clamped = Math.max(120, Math.min(900, Math.round(h)));
+		wrapper.style.height = clamped + 'px';
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-		// If this is a URL CSV section and the persisted height is larger than its contents,
-		// clamp it once the DOM has finished laying out.
+		// If the persisted height is larger than a rendered table's contents, clamp it once
+		// the DOM has finished laying out.
 		try {
 			setTimeout(() => {
 				try {
@@ -373,7 +375,9 @@ function __kustoSetQueryResultsOutputHeightPx(boxId, heightPx) {
 		if (!wrapper) return;
 		const h = Number(heightPx);
 		if (!Number.isFinite(h) || h <= 0) return;
-		wrapper.style.height = Math.round(h) + 'px';
+		// Query results resizer bounds use ~900px max; keep persisted restore within that.
+		const clamped = Math.max(120, Math.min(900, Math.round(h)));
+		wrapper.style.height = clamped + 'px';
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 		// If this section currently has short non-table content (errors, etc.), clamp on next tick.
 		try {

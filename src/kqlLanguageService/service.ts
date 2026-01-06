@@ -1090,11 +1090,13 @@ export class KqlLanguageService {
 				let runningOffset = baseOffset;
 				let sawPipe = false;
 				let allowIndentedContinuation = false;
+				let expectPipeAfterBareId = false;
 				for (const line of lines) {
 					const trimmed = line.trim();
 					if (!trimmed || trimmed === ';') {
 						sawPipe = false;
 						allowIndentedContinuation = false;
+						expectPipeAfterBareId = false;
 						runningOffset += line.length + 1;
 						continue;
 					}
@@ -1102,11 +1104,47 @@ export class KqlLanguageService {
 						runningOffset += line.length + 1;
 						continue;
 					}
+					// Allow closing a let/function body block after a piped query, e.g.
+					// let Base = () { T | where ... };
+					if (/^\}\s*;?\s*$/.test(trimmed)) {
+						sawPipe = false;
+						allowIndentedContinuation = false;
+						expectPipeAfterBareId = false;
+						runningOffset += line.length + 1;
+						continue;
+					}
 					if (trimmed.startsWith('|')) {
 						sawPipe = true;
 						allowIndentedContinuation = /^\|\s*(where|filter|summarize|extend|project\b|project-rename\b|project-away\b|project-keep\b|project-reorder\b|project-smart\b|distinct\b)\b/i.test(trimmed);
+						expectPipeAfterBareId = false;
 						runningOffset += line.length + 1;
 						continue;
+					}
+					if (!sawPipe) {
+						// If a statement starts with a bare identifier on its own line (e.g. a tabular name like `Base`),
+						// the next non-empty line should start with '|'. This catches common missing-pipe errors.
+						const isBareIdentLine = /^([A-Za-z_][\w-]*)\s*(?:\/\/.*)?$/.test(trimmed);
+						if (expectPipeAfterBareId) {
+							const localStart = line.search(/\S/);
+							const startOffset = runningOffset + Math.max(0, localStart);
+							const firstToken = localStart >= 0 ? line.slice(localStart).match(/^([A-Za-z_][\w-]*)/) : null;
+							const tokLen = firstToken?.[1] ? firstToken[1].length : 1;
+							diagnostics.push({
+								range: toRange(lineStarts, startOffset, startOffset + tokLen),
+								severity: KqlDiagnosticSeverity.Error,
+								message: 'Unexpected text after a query source. Did you forget to prefix this line with `|`?',
+								code: 'KW_EXPECTED_PIPE',
+								source: 'Kusto Workbench'
+							});
+							expectPipeAfterBareId = false;
+							runningOffset += line.length + 1;
+							continue;
+						}
+						if (isBareIdentLine) {
+							expectPipeAfterBareId = true;
+							runningOffset += line.length + 1;
+							continue;
+						}
 					}
 					if (sawPipe) {
 						const isIndented = /^\s+/.test(line);

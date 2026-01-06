@@ -2426,6 +2426,20 @@ ${query}
 		if (!boxId) {
 			return;
 		}
+
+		const formatBytes = (n: number): string => {
+			if (!Number.isFinite(n) || n < 0) {
+				return '0 B';
+			}
+			if (n >= 1024 * 1024) {
+				return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+			}
+			if (n >= 1024) {
+				return `${Math.round(n / 1024)} KB`;
+			}
+			return `${n} B`;
+		};
+
 		let url: URL;
 		try {
 			url = new URL(rawUrl);
@@ -2440,7 +2454,8 @@ ${query}
 
 		const timeoutMs = 15000;
 		const maxChars = 200000;
-		const maxBytes = 5 * 1024 * 1024; // 5MB cap for binary content (images/pages/etc.)
+		const maxBytesForTextLike = 100 * 1024 * 1024; // 100MB cap for URL/CSV content.
+		const maxBytesForImages = 5 * 1024 * 1024; // Keep images smaller since they're sent to the webview as a data URI.
 		const ac = new AbortController();
 		const timer = setTimeout(() => ac.abort(), timeoutMs);
 		try {
@@ -2451,18 +2466,6 @@ ${query}
 			const contentType = resp.headers.get('content-type') || '';
 			const ctLower = contentType.toLowerCase();
 			const finalUrl = resp.url || url.toString();
-
-			// Read as bytes so we can support images and other non-text content.
-			const ab = await resp.arrayBuffer();
-			const bytes = Buffer.from(ab);
-			if (bytes.byteLength > maxBytes) {
-				this.postMessage({
-					type: 'urlError',
-					boxId,
-					error: `Response too large (${Math.round(bytes.byteLength / 1024)} KB). Max is ${Math.round(maxBytes / 1024)} KB.`
-				});
-				return;
-			}
 
 			const pathLower = (() => {
 				try {
@@ -2476,6 +2479,37 @@ ${query}
 			const looksLikeHtml = ctLower.includes('text/html') || pathLower.endsWith('.html') || pathLower.endsWith('.htm');
 			const looksLikeImage = ctLower.startsWith('image/');
 			const looksLikeText = ctLower.startsWith('text/') || ctLower.includes('json') || ctLower.includes('xml') || ctLower.includes('yaml');
+
+			const maxBytes = looksLikeImage ? maxBytesForImages : maxBytesForTextLike;
+
+			// Read as bytes so we can support images and other non-text content.
+			const ab = await resp.arrayBuffer();
+			const bytes = Buffer.from(ab);
+			if (bytes.byteLength > maxBytes) {
+				this.postMessage({
+					type: 'urlError',
+					boxId,
+					error: `Response too large (${formatBytes(bytes.byteLength)}). Max is ${formatBytes(maxBytes)}.`
+				});
+				return;
+			}
+
+			if (!resp.ok) {
+				const status = resp.status;
+				const statusText = (resp.statusText || '').trim();
+				const hint = (() => {
+					if (ctLower.includes('text/html') && pathLower.endsWith('.csv')) {
+						return ' The server returned HTML, not CSV. Try using a raw download link.';
+					}
+					return '';
+				})();
+				this.postMessage({
+					type: 'urlError',
+					boxId,
+					error: `HTTP ${status}${statusText ? ' ' + statusText : ''}.${hint}`
+				});
+				return;
+			}
 
 			if (looksLikeImage) {
 				const mime = contentType.split(';')[0].trim() || 'image/*';
@@ -2494,7 +2528,7 @@ ${query}
 				return;
 			}
 
-			// Default: decode as UTF-8 text.
+			// Decode as UTF-8 text for sniffing and rendering.
 			let body = bytes.toString('utf8');
 			let truncated = false;
 			if (body.length > maxChars) {
@@ -2502,13 +2536,25 @@ ${query}
 				truncated = true;
 			}
 
+			const sniff = body.slice(0, 4096).trimStart().toLowerCase();
+			const looksLikeHtmlByBody = sniff.startsWith('<!doctype html') || sniff.startsWith('<html') || sniff.startsWith('<head');
+
+			const isCsvByType = ctLower.includes('text/csv') || ctLower.includes('application/csv');
+			const isHtmlByType = ctLower.includes('text/html');
+			const isCsvByExt = pathLower.endsWith('.csv') && !isHtmlByType && !looksLikeHtmlByBody;
+			const kind = (isCsvByType || isCsvByExt)
+				? 'csv'
+				: ((looksLikeHtml || isHtmlByType || looksLikeHtmlByBody)
+					? 'html'
+					: (looksLikeText ? 'text' : 'text'));
+
 			this.postMessage({
 				type: 'urlContent',
 				boxId,
 				url: finalUrl,
 				contentType,
 				status: resp.status,
-				kind: looksLikeCsv ? 'csv' : (looksLikeHtml ? 'html' : (looksLikeText ? 'text' : 'text')),
+				kind,
 				body,
 				truncated,
 				byteLength: bytes.byteLength

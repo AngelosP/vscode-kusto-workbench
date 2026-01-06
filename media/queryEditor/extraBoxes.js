@@ -204,23 +204,6 @@ try {
 				} catch {
 					idx = -1;
 				}
-				if (idx < 0) {
-					// Fall back to the host-provided (line,char) if we can't find the text.
-					const mdStartFallback = [Math.max(1, sl + 1), Math.max(1, sc + 1)];
-					const mdEndFallback = [Math.max(1, el + 1), Math.max(1, ec + 1)];
-					foundStart = 0;
-					foundEnd = 0;
-					occurrence = 0;
-					try {
-						// Apply fallback below.
-						payload.__kustoMdStartFallback = mdStartFallback;
-						payload.__kustoMdEndFallback = mdEndFallback;
-					} catch { /* ignore */ }
-				} else {
-					foundStart = idx;
-					foundEnd = idx + findText.length;
-					occurrence = computeOccurrenceIndex(mdText, findText, idx);
-				}
 			}
 
 			const applySelectionNow = () => {
@@ -901,29 +884,26 @@ function __kustoMaximizeUrlBox(boxId) {
 			try { contentClientH = Math.max(0, contentEl.clientHeight || 0); } catch { /* ignore */ }
 
 			try {
-				const isCsvMode = !!(contentEl.classList && contentEl.classList.contains('url-csv-mode'));
-				if (isCsvMode) {
-					const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
-					const tableEl = tableContainer && tableContainer.querySelector ? tableContainer.querySelector('table') : null;
-					if (tableContainer && tableEl) {
-						hasTable = true;
-						let tableH = 0;
+				const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
+				const tableEl = tableContainer && tableContainer.querySelector ? tableContainer.querySelector('table') : null;
+				if (tableContainer && tableEl) {
+					hasTable = true;
+					let tableH = 0;
+					try {
+						const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
+						if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
+					} catch { /* ignore */ }
+					try {
+						const rh = tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0;
+						if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
+					} catch { /* ignore */ }
+					if (!tableH) {
 						try {
-							const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
-							if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
+							const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
+							if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
 						} catch { /* ignore */ }
-						try {
-							const rh = tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0;
-							if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
-						} catch { /* ignore */ }
-						if (!tableH) {
-							try {
-								const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
-								if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
-							} catch { /* ignore */ }
-						}
-						contentPx = Math.max(contentPx, Math.ceil(tableH));
 					}
+					contentPx = Math.max(contentPx, Math.ceil(tableH));
 				}
 			} catch { /* ignore */ }
 
@@ -947,15 +927,19 @@ function __kustoMaximizeUrlBox(boxId) {
 			const wrapperH = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height || 0));
 			const overheadPx = Math.max(0, wrapperH - Math.max(0, contentClientH));
 			// Keep the same general spacing as before.
-			const desiredPx = Math.max(120, Math.min(20000, Math.ceil(overheadPx + contentPx + 10)));
+			let desiredPx = Math.max(120, Math.min(20000, Math.ceil(overheadPx + contentPx + 10)));
+			// For tables, "Fit to contents" must not expand to thousands of rows.
+			if (hasTable) {
+				desiredPx = Math.max(120, Math.min(900, desiredPx));
+			}
 
 			wrapper.style.height = desiredPx + 'px';
 			wrapper.style.minHeight = '0';
 			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 
-			// For CSV, also clamp any slack once layout settles.
+			// Best-effort: clamp any slack once layout settles for table content.
 			try {
-				if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
+				if (hasTable && typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
 					window.__kustoClampUrlCsvWrapperHeight(id);
 				}
 			} catch { /* ignore */ }
@@ -2453,31 +2437,8 @@ function addUrlBox(options) {
 					wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
 				} catch { /* ignore */ }
 
-				let minH = 120;
-				let maxH = 900;
-				let csvMaxH = null;
-				try {
-					const contentEl = document.getElementById(id + '_content');
-					const isCsvMode = !!(contentEl && contentEl.classList && contentEl.classList.contains('url-csv-mode'));
-					if (isCsvMode) {
-						// Prevent a resize "jump" when auto-sized smaller than 120px, but still allow
-						// shrinking below the current height when the content is tall.
-						minH = Math.max(0, Math.min(120, Math.ceil(startHeight)));
-						// Also clamp the maximum height to the natural content height to avoid
-						// blank slack below short CSV results.
-						try {
-							const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
-							if (tableContainer && typeof tableContainer.scrollHeight === 'number') {
-								const overheadPx = Math.max(0, Math.ceil(wrapper.getBoundingClientRect().height) - (tableContainer.clientHeight || 0));
-								const desiredPx = Math.max(0, Math.ceil(overheadPx + tableContainer.scrollHeight + 10));
-								if (desiredPx > 0) {
-									csvMaxH = desiredPx;
-									maxH = Math.min(maxH, desiredPx);
-								}
-							}
-						} catch { /* ignore */ }
-					}
-				} catch { /* ignore */ }
+				const minH = 120;
+				const maxH = 900;
 
 				const onMove = (moveEvent) => {
 					try {
@@ -2489,12 +2450,6 @@ function addUrlBox(options) {
 					const delta = pageY - startPageY;
 					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
-					// Best-effort: keep CSV wrappers from ever being taller than contents.
-					try {
-						if (csvMaxH && nextHeight > (csvMaxH + 1) && typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
-							window.__kustoClampUrlCsvWrapperHeight(id);
-						}
-					} catch { /* ignore */ }
 				};
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
@@ -2619,9 +2574,17 @@ function __kustoParseCsv(text) {
 			continue;
 		}
 		if (ch === '\r') {
+			// Treat CRLF or CR-only line endings as row breaks.
+			if (next === '\n') {
+				i++;
+			}
+			row.push(field);
+			rows.push(row);
+			row = [];
+			field = '';
 			continue;
 		}
-		if (ch === '\n') {
+		if (ch === '\n' || ch === '\u2028' || ch === '\u2029') {
 			row.push(field);
 			rows.push(row);
 			row = [];
@@ -2635,9 +2598,18 @@ function __kustoParseCsv(text) {
 	return rows;
 }
 
-// Clamp the URL CSV output wrapper height so it cannot be taller than its contents.
-// This avoids blank slack below short CSV results while still allowing the user to
-// resize smaller than contents (scrolling).
+function __kustoLooksLikeHtmlText(text) {
+	try {
+		const s = String(text || '').slice(0, 4096).trimStart().toLowerCase();
+		return s.startsWith('<!doctype html') || s.startsWith('<html') || s.startsWith('<head') || s.startsWith('<body');
+	} catch {
+		return false;
+	}
+}
+
+// Clamp the URL output wrapper height so it cannot be taller than its table contents.
+// This avoids blank slack below short tables while still allowing the user to resize
+// smaller than contents (scrolling).
 function __kustoClampUrlCsvWrapperHeight(boxId) {
 	try {
 		const id = String(boxId || '').trim();
@@ -2645,7 +2617,6 @@ function __kustoClampUrlCsvWrapperHeight(boxId) {
 		const wrapper = document.getElementById(id + '_wrapper');
 		const contentEl = document.getElementById(id + '_content');
 		if (!wrapper || !contentEl) return;
-		if (!(contentEl.classList && contentEl.classList.contains('url-csv-mode'))) return;
 		const tableContainer = contentEl.querySelector ? contentEl.querySelector('.table-container') : null;
 		if (!tableContainer) return;
 
@@ -2682,7 +2653,6 @@ function __kustoRenderUrlContent(contentEl, st) {
 		// Default for rich render.
 		try { contentEl.style.whiteSpace = 'normal'; } catch { /* ignore */ }
 		// Reset any mode-specific layout from previous renders.
-		try { contentEl.classList.remove('url-csv-mode'); } catch { /* ignore */ }
 		try { contentEl.style.overflow = ''; } catch { /* ignore */ }
 		try { contentEl.style.display = ''; } catch { /* ignore */ }
 		try { contentEl.style.flexDirection = ''; } catch { /* ignore */ }
@@ -2750,10 +2720,18 @@ function __kustoRenderUrlContent(contentEl, st) {
 		}
 
 		if (kind === 'csv' && typeof st.body === 'string') {
+			// Defensive: some endpoints return HTML (auth/error pages) even when the URL ends with .csv.
+			if (__kustoLooksLikeHtmlText(st.body)) {
+				try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
+				const pre = document.createElement('pre');
+				pre.style.whiteSpace = 'pre-wrap';
+				pre.style.margin = '0';
+				pre.textContent = 'This URL returned HTML instead of CSV. Try using a raw download link.\n\n' + String(st.body || '').slice(0, 2000);
+				contentEl.appendChild(pre);
+				return;
+			}
+
 			// Match the query-results UX: summary row stays fixed; table scrolls.
-			try {
-				contentEl.classList.add('url-csv-mode');
-			} catch { /* ignore */ }
 			const boxId = (() => {
 				try {
 					const id = contentEl && contentEl.id ? String(contentEl.id) : '';
@@ -2764,6 +2742,18 @@ function __kustoRenderUrlContent(contentEl, st) {
 			})();
 
 			const csvRows = __kustoParseCsv(st.body);
+			const maxSaneCols = 2000;
+			try {
+				if (csvRows && csvRows[0] && Array.isArray(csvRows[0]) && csvRows[0].length > maxSaneCols) {
+					try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
+					const pre = document.createElement('pre');
+					pre.style.whiteSpace = 'pre-wrap';
+					pre.style.margin = '0';
+					pre.textContent = `This doesn't look like a normal CSV (detected ${csvRows[0].length} columns). Showing as text instead.\n\n` + String(st.body || '').slice(0, 2000);
+					contentEl.appendChild(pre);
+					return;
+				}
+			} catch { /* ignore */ }
 			let columns = [];
 			let dataRows = [];
 			if (csvRows.length > 0) {
@@ -2791,37 +2781,26 @@ function __kustoRenderUrlContent(contentEl, st) {
 			});
 
 			// Reuse the same tabular control as Kusto query results.
+			// IMPORTANT: this runs inside the URL/CSV output area, which is separate from the main
+			// query results area for the same query box. If we reuse the same `boxId`, the generated
+			// DOM ids (e.g. `${boxId}_table_container`) collide and virtualization/sort/scroll rerenders
+			// can target the wrong (hidden) table. Use a stable synthetic id instead.
 			if (boxId && typeof displayResultForBox === 'function') {
+				const tableBoxId = String(boxId) + '__url_output_table';
 				const resultsDiv = document.createElement('div');
 				resultsDiv.className = 'results visible';
-				resultsDiv.id = boxId + '_results';
+				resultsDiv.id = tableBoxId + '_results';
 				contentEl.appendChild(resultsDiv);
 
 				displayResultForBox(
 					{ columns: columns, rows: dataRows, metadata: {} },
-					boxId,
+					tableBoxId,
 					{ label: 'CSV', showExecutionTime: false, resultsDiv: resultsDiv }
 				);
 
-				// Ensure only the table scrolls (not the whole URL output), just like query results.
-				try {
-					const tc = resultsDiv.querySelector('.table-container');
-					if (tc && tc.style) {
-						tc.style.maxHeight = 'none';
-						tc.style.overflow = 'auto';
-					}
-				} catch { /* ignore */ }
+				// Prevent nested scrollbars: for table content, the table container is the only scroller.
+				try { contentEl.style.overflow = 'hidden'; } catch { /* ignore */ }
 
-				// If a persisted/manual height is larger than the CSV contents, clamp it.
-				try {
-					setTimeout(() => {
-						try {
-							if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
-								window.__kustoClampUrlCsvWrapperHeight(boxId);
-							}
-						} catch { /* ignore */ }
-					}, 0);
-				} catch { /* ignore */ }
 				return;
 			}
 
@@ -2854,6 +2833,8 @@ function __kustoRenderUrlContent(contentEl, st) {
 			table.appendChild(tbody);
 			wrapper.appendChild(table);
 			contentEl.appendChild(wrapper);
+			// Prevent nested scrollbars for the fallback table too.
+			try { contentEl.style.overflow = 'hidden'; } catch { /* ignore */ }
 			return;
 		}
 
@@ -2915,11 +2896,13 @@ function updateUrlContent(boxId) {
 		return;
 	}
 	if (st.loading) {
+		try { contentEl.style.overflow = ''; } catch { /* ignore */ }
 		try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
 		contentEl.textContent = 'Loading…';
 		return;
 	}
 	if (st.error) {
+		try { contentEl.style.overflow = ''; } catch { /* ignore */ }
 		try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
 		contentEl.textContent = st.error;
 		return;
@@ -2929,6 +2912,7 @@ function updateUrlContent(boxId) {
 		return;
 	}
 	try { contentEl.style.whiteSpace = 'pre-wrap'; } catch { /* ignore */ }
+	try { contentEl.style.overflow = ''; } catch { /* ignore */ }
 	contentEl.textContent = st.url ? 'Ready to load.' : 'Enter a URL above.';
 }
 
@@ -2980,6 +2964,8 @@ function onUrlContent(message) {
 	} catch { /* ignore */ }
 	// Keep a simple fallback string for older rendering.
 	st.content = st.body || '';
+
+	// Do not auto-expand/shrink the URL wrapper when content arrives.
 	updateUrlContent(boxId);
 }
 

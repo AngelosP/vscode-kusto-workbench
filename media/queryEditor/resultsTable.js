@@ -22,7 +22,7 @@ function __kustoGetScrollToColumnIconSvg() {
 
 function __kustoGetCopyIconSvg() {
 	return (
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+			'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<rect x="5" y="5" width="9" height="9" rx="2" ry="2" />' +
 		'<path d="M3 11V4a2 2 0 0 1 2-2h7" />' +
 		'</svg>'
@@ -90,7 +90,7 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	const saveSplit = document.getElementById(boxId + '_results_save_split');
 	const sep2 = document.getElementById(boxId + '_results_sep_2');
 	const display = visible ? '' : 'none';
-	try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
+		try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (sortBtn) { sortBtn.style.display = display; } } catch { /* ignore */ }
 	try { if (copyBtn) { copyBtn.style.display = display; } } catch { /* ignore */ }
@@ -1707,6 +1707,14 @@ function __kustoSetSortSpecAndRerender(boxId, nextSpec) {
 	if (!state) return;
 	state.sortSpec = __kustoNormalizeSortSpec(nextSpec, (state.columns || []).length);
 	__kustoEnsureDisplayRowIndexMaps(state);
+	try {
+		const v = __kustoGetVirtualizationState(state);
+		if (v) {
+			v.lastStart = -1;
+			v.lastEnd = -1;
+			v.lastDisplayVersion = -1;
+		}
+	} catch { /* ignore */ }
 	__kustoRerenderResultsTable(boxId);
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
@@ -2043,6 +2051,229 @@ function __kustoRerenderResultsTable(boxId) {
 	const table = document.getElementById(boxId + '_table');
 	if (!table) return;
 
+	try { __kustoRerenderResultsTableBody(boxId); } catch { /* ignore */ }
+	return;
+}
+
+function __kustoGetVirtualizationState(state) {
+	if (!state || typeof state !== 'object') return null;
+	if (!state.__kustoVirtual) {
+		state.__kustoVirtual = {
+			enabled: false,
+			rowHeight: 22,
+			overScan: 8,
+			lastStart: -1,
+			lastEnd: -1,
+			lastDisplayVersion: -1,
+			lastVisualVersion: -1,
+			rafPending: false,
+			resizeObserver: null,
+			scrollEl: null,
+			scrollHandler: null,
+			observedEls: []
+		};
+	}
+	return state.__kustoVirtual;
+}
+
+function __kustoResolveVirtualScrollElement(containerEl) {
+	if (!containerEl) return null;
+	// Prefer the table container itself when it is scrollable.
+	try {
+		const sh = Math.max(0, containerEl.scrollHeight || 0);
+		const ch = Math.max(0, containerEl.clientHeight || 0);
+		if (sh > (ch + 1)) return containerEl;
+	} catch { /* ignore */ }
+
+	// Otherwise, find the nearest scrollable ancestor.
+	let el = null;
+	try { el = containerEl.parentElement; } catch { el = null; }
+	for (let i = 0; el && i < 12; i++) {
+		try {
+			const sh = Math.max(0, el.scrollHeight || 0);
+			const ch = Math.max(0, el.clientHeight || 0);
+			if (sh > (ch + 1)) {
+				let oy = '';
+				try { oy = String(window.getComputedStyle(el).overflowY || '').toLowerCase(); } catch { oy = ''; }
+				if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+					return el;
+				}
+			}
+		} catch { /* ignore */ }
+		try { el = el.parentElement; } catch { el = null; }
+	}
+
+	// Fallback to document scroller.
+	try {
+		const se = document.scrollingElement || document.documentElement;
+		if (se) {
+			const sh = Math.max(0, se.scrollHeight || 0);
+			const ch = Math.max(0, se.clientHeight || 0);
+			if (sh > (ch + 1)) return se;
+		}
+	} catch { /* ignore */ }
+
+	return containerEl;
+}
+
+function __kustoResolveScrollSourceForEvent(ev, containerEl) {
+	try {
+		if (!containerEl) return null;
+		const t = ev && ev.target ? ev.target : null;
+		// Scroll events do not bubble; when we capture on document, the target can be the
+		// actual scroller (element) or the document.
+		if (t && t.nodeType === 9) {
+			try { return document.scrollingElement || document.documentElement || null; } catch { return null; }
+		}
+		if (t && t.nodeType === 1) {
+			let el = t;
+			for (let i = 0; el && i < 16; i++) {
+				try {
+					// Only consider ancestors related to this table container.
+					if (!el.contains(containerEl) && !containerEl.contains(el)) {
+						// Keep climbing; a higher ancestor might contain both.
+						el = el.parentElement;
+						continue;
+					}
+					const sh = Math.max(0, el.scrollHeight || 0);
+					const ch = Math.max(0, el.clientHeight || 0);
+					if (sh > (ch + 1)) {
+						let oy = '';
+						try { oy = String(window.getComputedStyle(el).overflowY || '').toLowerCase(); } catch { oy = ''; }
+						if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+							return el;
+						}
+					}
+				} catch { /* ignore */ }
+				try { el = el.parentElement; } catch { el = null; }
+			}
+		}
+	} catch { /* ignore */ }
+	return __kustoResolveVirtualScrollElement(containerEl);
+}
+
+function __kustoGetVirtualScrollMetrics(scrollEl, containerEl) {
+	let scrollTop = 0;
+	let clientH = 0;
+	try {
+		if (scrollEl && containerEl && scrollEl !== containerEl) {
+			// When the scroll container is an ancestor (or the document), compute effective
+			// scrollTop as the amount the table container's top has scrolled past the top
+			// of the scroll viewport. Compute clientH as the visible intersection height.
+			const sRect = scrollEl.getBoundingClientRect ? scrollEl.getBoundingClientRect() : null;
+			const cRect = containerEl.getBoundingClientRect ? containerEl.getBoundingClientRect() : null;
+			if (sRect && cRect) {
+				scrollTop = Math.max(0, Math.floor((sRect.top - cRect.top) || 0));
+				const visTop = Math.max(cRect.top, sRect.top);
+				const visBottom = Math.min(cRect.bottom, sRect.bottom);
+				clientH = Math.max(0, Math.floor(visBottom - visTop));
+			}
+			if (!clientH) {
+				try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch { /* ignore */ }
+			}
+		} else if (containerEl) {
+			try { scrollTop = Math.max(0, Math.floor(containerEl.scrollTop || 0)); } catch { /* ignore */ }
+			try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+	return { scrollTop, clientH };
+}
+
+function __kustoBumpVisualVersion(state) {
+	try {
+		if (!state || typeof state !== 'object') return;
+		const cur = (typeof state.__kustoVisualVersion === 'number' && isFinite(state.__kustoVisualVersion))
+			? state.__kustoVisualVersion
+			: 0;
+		state.__kustoVisualVersion = cur + 1;
+	} catch { /* ignore */ }
+}
+
+function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, options) {
+	const v = __kustoGetVirtualizationState(state);
+	const total = Array.isArray(displayRowIndices) ? displayRowIndices.length : 0;
+	if (!v || !containerEl || total <= 0) {
+		return { start: 0, end: total };
+	}
+	const rowH = Math.max(12, Math.floor(v.rowHeight || 22));
+	let scrollTop = 0;
+	let clientH = 0;
+	try {
+		const scrollEl = (options && options.scrollEl) ? options.scrollEl : __kustoResolveVirtualScrollElement(containerEl);
+		const m = __kustoGetVirtualScrollMetrics(scrollEl, containerEl);
+		scrollTop = Math.max(0, Math.floor(m.scrollTop || 0));
+		clientH = Math.max(0, Math.floor(m.clientH || 0));
+	} catch { /* ignore */ }
+	const visibleCount = Math.max(1, Math.ceil(clientH / rowH));
+	const overscan = Math.max(2, Math.floor(v.overScan || 8));
+	let start = Math.max(0, Math.floor(scrollTop / rowH) - overscan);
+	let end = Math.min(total, start + visibleCount + overscan * 2);
+
+	// If a specific display row should be visible (selected cell, current search match),
+	// expand/shift the window so it is included.
+	const forceDisplayRow = options && isFinite(options.forceDisplayRow) ? Math.floor(options.forceDisplayRow) : null;
+	if (forceDisplayRow !== null && forceDisplayRow >= 0 && forceDisplayRow < total) {
+		if (forceDisplayRow < start) {
+			start = Math.max(0, forceDisplayRow - overscan);
+			end = Math.min(total, start + visibleCount + overscan * 2);
+		} else if (forceDisplayRow >= end) {
+			start = Math.max(0, forceDisplayRow - visibleCount - overscan);
+			end = Math.min(total, start + visibleCount + overscan * 2);
+		}
+	}
+
+	return { start, end };
+}
+
+function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, matchSet, currentKey) {
+	const rows = Array.isArray(state.rows) ? state.rows : [];
+	const row = rows[rowIdx] || [];
+	const range = (state && state.cellSelectionRange && typeof state.cellSelectionRange === 'object') ? state.cellSelectionRange : null;
+	const trClass = state.selectedRows && state.selectedRows.has(rowIdx) ? ' class="selected-row"' : '';
+	const boxIdArg = __kustoEscapeForHtmlAttribute(JSON.stringify(String(boxId)));
+	return (
+		'<tr data-row="' + rowIdx + '"' + trClass + '>' +
+		'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', ' + boxIdArg + ')">' + (displayIdx + 1) + '</td>' +
+		row.map((cell, colIdx) => {
+			const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+			const displayValue = hasHover ? cell.display : cell;
+			const fullValue = hasHover ? cell.full : cell;
+			const isObject = cell && cell.isObject;
+			const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
+			const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', ' + boxIdArg + ')">View</button>' : '';
+			const cellHtml = isObject ? '' : __kustoFormatCellDisplayValueForTable(displayValue);
+			let tdClass = '';
+			if (range && isFinite(range.displayRowMin) && isFinite(range.displayRowMax) && isFinite(range.colMin) && isFinite(range.colMax)) {
+				if (displayIdx >= range.displayRowMin && displayIdx <= range.displayRowMax && colIdx >= range.colMin && colIdx <= range.colMax) {
+					tdClass += (tdClass ? ' ' : '') + 'selected-cell';
+				}
+			}
+			if (state.selectedCell && state.selectedCell.row === rowIdx && state.selectedCell.col === colIdx) {
+				tdClass += (tdClass ? ' ' : '') + 'selected-cell-focus';
+			}
+			if (matchSet && matchSet.has(String(rowIdx) + ',' + String(colIdx))) {
+				tdClass += (tdClass ? ' ' : '') + 'search-match';
+				if (currentKey && currentKey === (String(rowIdx) + ',' + String(colIdx))) {
+					tdClass += ' search-match-current';
+				}
+			}
+			const classAttr = tdClass ? (' class="' + tdClass + '"') : '';
+			return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', ' + boxIdArg + ')">' +
+				cellHtml + viewBtn +
+			'</td>';
+		}).join('') +
+		'</tr>'
+	);
+}
+
+function __kustoRerenderResultsTableBody(boxId, options) {
+	const state = __kustoGetResultsState(boxId);
+	if (!state) return;
+	const table = document.getElementById(boxId + '_table');
+	if (!table) return;
+	const container = document.getElementById(boxId + '_table_container');
+	const boxIdArg = __kustoEscapeForHtmlAttribute(JSON.stringify(String(boxId)));
+
 	// Update sort indicators.
 	try {
 		const spec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
@@ -2069,7 +2300,7 @@ function __kustoRerenderResultsTable(boxId) {
 			if (!el) continue;
 			const active = __kustoIsFilterSpecActive(filters[String(i)]);
 			el.innerHTML = active
-				? ('<a href="#" class="kusto-filtered-link" onclick="openColumnFilter(event, ' + String(i) + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\'); return false;">(filtered)</a>')
+				? ('<a href="#" class="kusto-filtered-link" onclick="openColumnFilter(event, ' + String(i) + ', ' + boxIdArg + '); return false;">(filtered)</a>')
 				: '';
 		}
 	} catch { /* ignore */ }
@@ -2093,7 +2324,7 @@ function __kustoRerenderResultsTable(boxId) {
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i);
-	const range = (state && state.cellSelectionRange && typeof state.cellSelectionRange === 'object') ? state.cellSelectionRange : null;
+
 	try {
 		const countEl = document.getElementById(boxId + '_results_count');
 		if (countEl) {
@@ -2103,52 +2334,200 @@ function __kustoRerenderResultsTable(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	const tbodyHtml = displayRowIndices.map((rowIdx, displayIdx) => {
-		const row = rows[rowIdx] || [];
-		const trClass = state.selectedRows && state.selectedRows.has(rowIdx) ? ' class="selected-row"' : '';
-		return (
-			'<tr data-row="' + rowIdx + '"' + trClass + '>' +
-			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' + (displayIdx + 1) + '</td>' +
-			row.map((cell, colIdx) => {
-				const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
-				const displayValue = hasHover ? cell.display : cell;
-				const fullValue = hasHover ? cell.full : cell;
-				const isObject = cell && cell.isObject;
-				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
-				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">View</button>' : '';
-				const cellHtml = isObject ? '' : __kustoFormatCellDisplayValueForTable(displayValue);
-				let tdClass = '';
-				if (range && isFinite(range.displayRowMin) && isFinite(range.displayRowMax) && isFinite(range.colMin) && isFinite(range.colMax)) {
-					if (displayIdx >= range.displayRowMin && displayIdx <= range.displayRowMax && colIdx >= range.colMin && colIdx <= range.colMax) {
-						tdClass += (tdClass ? ' ' : '') + 'selected-cell';
-					}
+	// Enable virtualization only for larger results.
+	const v = __kustoGetVirtualizationState(state);
+	const virtualThreshold = 500;
+	try { if (v) v.enabled = (displayRowIndices.length > virtualThreshold); } catch { /* ignore */ }
+
+	// Determine which display row should be forced into view (selected cell or current search match).
+	let forceDisplayRow = null;
+	try {
+		if (v && v.enabled) {
+			const inv = Array.isArray(state.rowIndexToDisplayIndex) ? state.rowIndexToDisplayIndex : null;
+			if (state.selectedCell && inv && isFinite(inv[state.selectedCell.row])) {
+				forceDisplayRow = inv[state.selectedCell.row];
+			} else if (state.searchMatches && state.currentSearchIndex >= 0 && state.currentSearchIndex < state.searchMatches.length) {
+				const m = state.searchMatches[state.currentSearchIndex];
+				if (m && inv && isFinite(inv[m.row])) {
+					forceDisplayRow = inv[m.row];
 				}
-				if (state.selectedCell && state.selectedCell.row === rowIdx && state.selectedCell.col === colIdx) {
-					tdClass += (tdClass ? ' ' : '') + 'selected-cell-focus';
-				}
-				if (matchSet && matchSet.has(String(rowIdx) + ',' + String(colIdx))) {
-					tdClass += (tdClass ? ' ' : '') + 'search-match';
-					if (currentKey && currentKey === (String(rowIdx) + ',' + String(colIdx))) {
-						tdClass += ' search-match-current';
-					}
-				}
-				const classAttr = tdClass ? (' class="' + tdClass + '"') : '';
-				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
-					cellHtml + viewBtn +
-				'</td>';
-			}).join('') +
-			'</tr>'
-		);
-	}).join('');
+			}
+		}
+	} catch { /* ignore */ }
+
+	const visibleRange = (v && v.enabled)
+		? __kustoComputeVirtualRange(state, container, displayRowIndices, { forceDisplayRow, scrollEl: (v && v.scrollSourceEl) ? v.scrollSourceEl : null })
+		: { start: 0, end: displayRowIndices.length };
+
+	const colSpan = (cols ? cols.length : 0) + 1;
+	const rowH = v ? Math.max(12, Math.floor(v.rowHeight || 22)) : 22;
+	const topPad = (v && v.enabled) ? (visibleRange.start * rowH) : 0;
+	const bottomPad = (v && v.enabled) ? ((displayRowIndices.length - visibleRange.end) * rowH) : 0;
+	const displayVersion = (typeof state.__kustoDisplayRowVersion === 'number' && isFinite(state.__kustoDisplayRowVersion))
+		? state.__kustoDisplayRowVersion
+		: 0;
+	const visualVersion = (typeof state.__kustoVisualVersion === 'number' && isFinite(state.__kustoVisualVersion))
+		? state.__kustoVisualVersion
+		: 0;
+
+	let tbodyHtml = '';
+	if (v && v.enabled && topPad > 0) {
+		// Spacer rows must reliably contribute to table height so the scroll container
+		// gets a real scrollbar. Some table layouts ignore an empty cell's height, so
+		// include an inner block element and set height on both TR + TD.
+		tbodyHtml += '<tr class="kusto-virtual-spacer" aria-hidden="true" style="height:' + topPad + 'px;">' +
+			'<td colspan="' + colSpan + '" style="height:' + topPad + 'px; min-height:' + topPad + 'px; padding:0; border:0;">' +
+			'<div style="height:' + topPad + 'px; overflow:hidden; font-size:0; line-height:0;"></div>' +
+			'</td></tr>';
+	}
+	for (let displayIdx = visibleRange.start; displayIdx < visibleRange.end; displayIdx++) {
+		const rowIdx = displayRowIndices[displayIdx];
+		tbodyHtml += __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, matchSet, currentKey);
+	}
+	if (v && v.enabled && bottomPad > 0) {
+		tbodyHtml += '<tr class="kusto-virtual-spacer" aria-hidden="true" style="height:' + bottomPad + 'px;">' +
+			'<td colspan="' + colSpan + '" style="height:' + bottomPad + 'px; min-height:' + bottomPad + 'px; padding:0; border:0;">' +
+			'<div style="height:' + bottomPad + 'px; overflow:hidden; font-size:0; line-height:0;"></div>' +
+			'</td></tr>';
+	}
 
 	try {
 		const tbody = table.querySelector('tbody');
 		if (tbody) {
-			tbody.innerHTML = tbodyHtml;
+			if (!v || !v.enabled || v.lastStart !== visibleRange.start || v.lastEnd !== visibleRange.end || v.lastDisplayVersion !== displayVersion || v.lastVisualVersion !== visualVersion) {
+				tbody.innerHTML = tbodyHtml;
+				if (v && v.enabled) {
+					v.lastStart = visibleRange.start;
+					v.lastEnd = visibleRange.end;
+					v.lastDisplayVersion = displayVersion;
+					v.lastVisualVersion = visualVersion;
+				}
+			}
 		}
 	} catch { /* ignore */ }
 
-	// Ensure mouse drag selection handlers are attached once per table container.
+	// Measure row height once (after first render) to make virtualization accurate.
+	try {
+		if (v && v.enabled && (!v.rowHeight || v.rowHeight === 22)) {
+			const sample = table.querySelector('tbody tr[data-row]');
+			if (sample) {
+				const h = Math.max(12, Math.round(sample.getBoundingClientRect().height || 0));
+				if (h && isFinite(h)) {
+					v.rowHeight = h;
+					v.lastStart = -1;
+					v.lastEnd = -1;
+				}
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Attach scroll/resize handlers for virtualization.
+	// IMPORTANT: the actual scroller can differ by host (query results vs URL/CSV embeds).
+	// Always attach to the table container, and also attach to the resolved scroll element
+	// (which can be an ancestor) to avoid missing scroll events.
+	try {
+		if (container) {
+			const st = __kustoGetResultsState(boxId);
+			const vv = __kustoGetVirtualizationState(st);
+			const scrollEl = __kustoResolveVirtualScrollElement(container);
+			if (vv && scrollEl) {
+				if (!vv.scrollHandler) {
+					vv.scrollHandler = (ev) => {
+						try {
+							// Ignore scroll/wheel events that clearly don't relate to this table.
+							try {
+								const cont = document.getElementById(boxId + '_table_container');
+								const t = ev && ev.target ? ev.target : null;
+								if (cont && t && t !== cont) {
+									if (t.nodeType === 1) {
+										const te = t;
+										// If the scroll target neither contains the container nor is contained by it,
+										// it's unrelated (e.g. a different scrollable panel).
+										if (!te.contains(cont) && !cont.contains(te)) return;
+									}
+								}
+							} catch { /* ignore */ }
+
+							// Record the actual scroll source so range calculation matches the host's scroll behavior.
+							try {
+								const cont = document.getElementById(boxId + '_table_container');
+								if (cont) {
+									const src = __kustoResolveScrollSourceForEvent(ev, cont);
+									if (src) vv.scrollSourceEl = src;
+								}
+							} catch { /* ignore */ }
+
+							const st2 = __kustoGetResultsState(boxId);
+							const vv2 = __kustoGetVirtualizationState(st2);
+							if (!vv2 || !vv2.enabled) return;
+							if (vv2.rafPending) return;
+							vv2.rafPending = true;
+							requestAnimationFrame(() => {
+								vv2.rafPending = false;
+								try { __kustoRerenderResultsTableBody(boxId, { reason: 'scroll' }); } catch { /* ignore */ }
+							});
+						} catch { /* ignore */ }
+					};
+				}
+				// Always listen on the table container (ideal scroller in most hosts).
+				try { container.addEventListener('scroll', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
+				try { container.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
+
+				try {
+					if (vv.scrollEl && vv.scrollEl !== scrollEl && vv.scrollHandler) {
+						vv.scrollEl.removeEventListener('scroll', vv.scrollHandler);
+					}
+				} catch { /* ignore */ }
+				try {
+					if (scrollEl !== container) {
+						scrollEl.addEventListener('scroll', vv.scrollHandler, { passive: true });
+						try { scrollEl.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
+					}
+					vv.scrollEl = scrollEl;
+				} catch { /* ignore */ }
+
+				// Fallback: capture scroll/wheel at the document level.
+				// Scroll events do not bubble, and in some hosts the scroller can be an ancestor or the
+				// document itself. Capturing ensures we still get notified.
+				try {
+					if (!vv.documentCaptureAttached) {
+						vv.documentCaptureAttached = true;
+						document.addEventListener('scroll', vv.scrollHandler, { passive: true, capture: true });
+						document.addEventListener('wheel', vv.scrollHandler, { passive: true, capture: true });
+					}
+				} catch { /* ignore */ }
+
+				try {
+					if (typeof ResizeObserver !== 'undefined') {
+						if (!vv.resizeObserver) {
+							vv.resizeObserver = new ResizeObserver(() => {
+								try {
+									const st3 = __kustoGetResultsState(boxId);
+									const vv3 = __kustoGetVirtualizationState(st3);
+									if (vv3) {
+										vv3.lastStart = -1;
+										vv3.lastEnd = -1;
+									}
+									__kustoRerenderResultsTableBody(boxId, { reason: 'resize' });
+								} catch { /* ignore */ }
+							});
+						}
+						if (vv.resizeObserver && Array.isArray(vv.observedEls)) {
+							if (vv.observedEls.indexOf(container) < 0) {
+								vv.resizeObserver.observe(container);
+								vv.observedEls.push(container);
+							}
+							if (scrollEl && vv.observedEls.indexOf(scrollEl) < 0) {
+								vv.resizeObserver.observe(scrollEl);
+								vv.observedEls.push(scrollEl);
+							}
+						}
+					}
+				} catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+
 	try { __kustoEnsureDragSelectionHandlers(boxId); } catch { /* ignore */ }
 	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 }
@@ -2306,26 +2685,7 @@ function displayResultForBox(result, boxId, options) {
 			'</th>'
 		).join('') +
 		'</tr></thead>' +
-		'<tbody>' +
-		displayRowIndices.map((rowIdx, displayIdx) => {
-			const row = rows[rowIdx] || [];
-			return '<tr data-row="' + rowIdx + '">' +
-			'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' + (displayIdx + 1) + '</td>' +
-			row.map((cell, colIdx) => {
-				const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
-				const displayValue = hasHover ? cell.display : cell;
-				const fullValue = hasHover ? cell.full : cell;
-				const isObject = cell && cell.isObject;
-				const title = hasHover && displayValue !== fullValue && !isObject ? ' title="' + __kustoEscapeForHtmlAttribute(fullValue) + '"' : '';
-				const viewBtn = isObject ? '<button class="object-view-btn" onclick="event.stopPropagation(); openObjectViewer(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">View</button>' : '';
-				const cellHtml = isObject ? '' : __kustoFormatCellDisplayValueForTable(displayValue);
-				return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + title + ' ' +
-					'onclick="selectCell(' + rowIdx + ', ' + colIdx + ', \'' + boxId + '\')">' +
-					cellHtml + viewBtn + '</td>';
-			}).join('') +
-			'</tr>'
-		}).join('') +
-		'</tbody>' +
+		'<tbody></tbody>' +
 		'</table>' +
 		'</div>' +
 		'</div>' +
@@ -2342,7 +2702,54 @@ function displayResultForBox(result, boxId, options) {
 		'</div>';
 
 	resultsDiv.innerHTML = html;
-	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+	// Ensure the results UI establishes a consistent scroll surface everywhere it is embedded.
+	// Some hosts (e.g. URL/CSV) don't have the same wrapper DOM as query results, so we
+	// apply minimal inline flex/overflow styles to make virtualization + selection reliable.
+	try {
+		resultsDiv.style.display = 'flex';
+		resultsDiv.style.flexDirection = 'column';
+		resultsDiv.style.flex = '1 1 auto';
+		resultsDiv.style.minHeight = '0';
+		resultsDiv.style.minWidth = '0';
+		resultsDiv.style.overflow = 'hidden';
+	} catch { /* ignore */ }
+	try {
+		const body = document.getElementById(boxId + '_results_body');
+		if (body && body.style) {
+			body.style.display = 'flex';
+			body.style.flexDirection = 'column';
+			body.style.flex = '1 1 auto';
+			body.style.minHeight = '0';
+			body.style.overflow = 'hidden';
+		}
+	} catch { /* ignore */ }
+	try {
+		const container = document.getElementById(boxId + '_table_container');
+		if (container && container.style) {
+			container.style.display = 'block';
+			container.style.flex = '1 1 auto';
+			container.style.minHeight = '0';
+			container.style.minWidth = '0';
+			container.style.maxHeight = 'none';
+			container.style.overflowX = 'auto';
+			container.style.overflowY = 'auto';
+		}
+	} catch { /* ignore */ }
+	try { __kustoRerenderResultsTableBody(boxId, { reason: 'initial' }); } catch { /* ignore */ }
+	// Some hosts (notably URL/CSV previews) can inject the table before the container has a
+	// real height, so virtualization may bind scroll handlers to the wrong element until a
+	// later rerender (e.g. on click). Do a one-time post-layout rerender to rebind.
+	try {
+		const st = __kustoGetResultsState(boxId);
+		if (st && !st.__kustoPostLayoutRerenderScheduled) {
+			st.__kustoPostLayoutRerenderScheduled = true;
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					try { __kustoRerenderResultsTableBody(boxId, { reason: 'post-layout' }); } catch { /* ignore */ }
+				});
+			});
+		}
+	} catch { /* ignore */ }
 	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 	try {
 		if (typeof __kustoApplyResultsVisibility === 'function') {
@@ -2854,6 +3261,7 @@ function __kustoSetCellSelectionState(boxId, state, nextRow, nextCol, options) {
 
 	// Clearing row-selection avoids ambiguity about what Ctrl+C will copy.
 	try { if (state.selectedRows && state.selectedRows.size > 0) state.selectedRows.clear(); } catch { /* ignore */ }
+	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 }
 
 function selectCell(a, b, c, d) {
@@ -2993,6 +3401,7 @@ function searchData(boxId) {
 
 	state.searchMatches = [];
 	state.currentSearchIndex = -1;
+	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 
 	if (!searchTerm) {
 		infoSpan.textContent = '';
@@ -3035,16 +3444,9 @@ function searchData(boxId) {
 		prevBtn.disabled = false;
 		nextBtn.disabled = false;
 
-		// Highlight all matches
-		state.searchMatches.forEach(match => {
-			const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
-			if (cell) {
-				cell.classList.add('search-match');
-			}
-		});
-
 		// Jump to first match
 		state.currentSearchIndex = 0;
+		try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 		highlightCurrentSearchMatch(boxId);
 	} else {
 		infoSpan.textContent = 'No matches';
@@ -3061,6 +3463,7 @@ function nextSearchMatch(boxId) {
 	if (matches.length === 0) { return; }
 
 	state.currentSearchIndex = (state.currentSearchIndex + 1) % matches.length;
+	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 	highlightCurrentSearchMatch(boxId);
 }
 
@@ -3072,6 +3475,7 @@ function previousSearchMatch(boxId) {
 	if (matches.length === 0) { return; }
 
 	state.currentSearchIndex = (state.currentSearchIndex - 1 + matches.length) % matches.length;
+	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 	highlightCurrentSearchMatch(boxId);
 }
 
@@ -3084,16 +3488,12 @@ function highlightCurrentSearchMatch(boxId) {
 
 	if (currentIndex < 0 || currentIndex >= matches.length) { return; }
 
-	// Remove current highlight from all cells
-	document.querySelectorAll('#' + boxId + '_table td.search-match-current')
-		.forEach(cell => cell.classList.remove('search-match-current'));
+	// Re-render so virtualization can materialize the current match row/cell.
+	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
 
-	// Highlight current match
 	const match = matches[currentIndex];
 	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
-
 	if (cell) {
-		cell.classList.add('search-match-current');
 		cell.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
 	}
 

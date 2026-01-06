@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+* Support for large datasets
+
+## [0.1.6] - 2025-12-21
+
 * Auto-complete improvements and fixes
 * Filter tabular results improvements and fixes
 * Search support for all file types

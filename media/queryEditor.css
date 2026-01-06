@@ -1136,6 +1136,9 @@
 			max-height: none;
 			flex: 1 1 auto;
 			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			min-width: 0;
 		}
 
 		.url-output-wrapper {
@@ -2184,7 +2187,33 @@
 		}
 
 		.results.visible {
-			display: block;
+			display: flex;
+			flex-direction: column;
+			flex: 1 1 auto;
+			min-height: 0;
+			min-width: 0;
+			overflow: hidden;
+		}
+
+		/* Constrain the results body so the table container can scroll inside it.
+		   This is required anywhere the reusable tabular control is embedded, not just
+		   inside .results-wrapper. */
+		.results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
+
+		.results-body > .data-search,
+		.results-body > .column-search {
+			flex: 0 0 auto;
+		}
+
+		.results-body > .table-container {
+			flex: 1 1 auto;
+			min-height: 0;
 		}
 
 		/* Query results inside our resizable wrapper use flex layout and the wrapper owns the separator line. */
@@ -2549,7 +2578,8 @@
 		.table-container {
 			overflow: auto;
 			max-width: 100%;
-			max-height: 600px;
+			max-height: none;
+			min-height: 0;
 			position: relative;
 			border: 1px solid var(--vscode-panel-border);
 			border-radius: 2px;
@@ -2569,34 +2599,8 @@
 			border-radius: 0;
 		}
 
-		/* URL CSV previews using the shared tabular control: avoid nested scrollbars. */
-		.url-output.url-csv-mode {
-			overflow: hidden;
-			display: flex;
-			flex-direction: column;
-			min-height: 0;
-		}
-
-		.url-output.url-csv-mode .results {
-			flex: 1 1 auto;
-			display: flex;
-			flex-direction: column;
-			min-height: 0;
-			max-width: 100%;
-		}
-
-		/* URL CSV: when results are hidden, keep the container tight (no extra bottom padding). */
-		.url-output.url-csv-mode .results.is-results-hidden {
-			padding-bottom: 0;
-		}
-
-		/* In CSV mode, the table container is the scroller (like query results). */
-		.url-output.url-csv-mode .table-container {
-			flex: 1 1 auto;
-			min-height: 0;
-			max-height: none;
-			overflow: auto;
-		}
+		/* (Removed URL/CSV-specific layout rules.)
+		   The reusable tabular control now defines a scrollable layout everywhere it is used. */
 
 		table {
 			width: max-content;

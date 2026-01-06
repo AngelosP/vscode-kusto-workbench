@@ -869,7 +869,10 @@ function __kustoMaximizeQueryBox(boxId) {
 
 			// Extra padding: tabular results need a touch more so the last row isn't clipped.
 			const extraPad = hasTable ? 18 : 8; // +10px compared to previous
-			const desiredPx = Math.max(24, Math.min(200000, Math.ceil(chrome + resultsContent + extraPad)));
+			// NOTE: For large tables, "Fit to contents" must not expand to thousands of rows.
+			// Keep a reasonable max so the table remains scrollable and virtualization can work.
+			const maxDesiredPx = hasTable ? 900 : 200000;
+			const desiredPx = Math.max(24, Math.min(maxDesiredPx, Math.ceil(chrome + resultsContent + extraPad)));
 			try {
 				w.style.height = desiredPx + 'px';
 				w.style.minHeight = '0';
@@ -1460,13 +1463,16 @@ function __kustoApplyResultsVisibility(boxId) {
 				__kustoHideResultsTools(boxId);
 			}
 		} catch { /* ignore */ }
-		// URL CSV: make the outer URL section auto-fit its contents (no slack) when
-		// hiding/showing results.
+		// URL (table results): preserve the outer URL section height when hiding/showing results.
+		// Height changes should only happen via explicit user resize or explicit "Fit to contents".
 		try {
 			const urlWrapper = document.getElementById(boxId + '_wrapper');
 			const urlContent = document.getElementById(boxId + '_content');
-			if (urlWrapper && urlContent && urlContent.classList && urlContent.classList.contains('url-csv-mode')) {
-				// When hiding results, always collapse to minimal height.
+			let hasTable = false;
+			try {
+				hasTable = !!(urlContent && urlContent.querySelector && urlContent.querySelector('.table-container'));
+			} catch { /* ignore */ }
+			if (urlWrapper && urlContent && hasTable) {
 				// If the user explicitly resized the URL section, remember that height and restore it
 				// when results are shown again.
 				const userResized = !!(urlWrapper.dataset && urlWrapper.dataset.kustoUserResized === 'true');
@@ -1484,29 +1490,14 @@ function __kustoApplyResultsVisibility(boxId) {
 							}
 						}
 					} catch { /* ignore */ }
-					urlWrapper.style.height = 'auto';
-					urlWrapper.style.minHeight = '0';
 				} else {
-					// Showing results: restore prior user height if present, otherwise auto-fit.
+					// Showing results: restore prior user height if present. Otherwise keep as-is.
 					try {
 						if (userResized) {
 							const prev = (urlWrapper.dataset && urlWrapper.dataset.kustoPrevHeight) ? String(urlWrapper.dataset.kustoPrevHeight) : '';
 							if (prev && prev !== 'auto') {
 								urlWrapper.style.height = prev;
 							}
-							urlWrapper.style.minHeight = '';
-							try {
-								setTimeout(() => {
-									try {
-										if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
-											window.__kustoClampUrlCsvWrapperHeight(boxId);
-										}
-									} catch { /* ignore */ }
-								}, 0);
-							} catch { /* ignore */ }
-						} else {
-							urlWrapper.style.height = 'auto';
-							urlWrapper.style.minHeight = '0';
 						}
 					} catch { /* ignore */ }
 				}
@@ -1573,6 +1564,21 @@ function __kustoApplyResultsVisibility(boxId) {
 						wrapper.style.height = '240px';
 					}
 				}
+				// Guardrail: never allow the wrapper to become so tall that the table can't scroll.
+				// A huge persisted/previous height makes the container as tall as the full table,
+				// which removes the scrollbar and kills virtualization performance.
+				try {
+					const m = String(wrapper.style.height || '').trim().match(/^([0-9]+)px$/i);
+					if (m) {
+						const px = parseInt(m[1], 10);
+						if (isFinite(px)) {
+							const clamped = Math.max(120, Math.min(900, px));
+							if (clamped !== px) {
+								wrapper.style.height = clamped + 'px';
+							}
+						}
+					}
+				} catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 	}

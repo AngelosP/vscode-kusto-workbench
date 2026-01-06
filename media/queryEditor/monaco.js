@@ -3687,12 +3687,14 @@ function ensureMonaco() {
 								let sawPipe = false;
 								let allowIndentedContinuation = false;
 								let lastPipeHeader = null;
+									let expectPipeAfterBareId = false;
 								for (const line of lines) {
 									const trimmed = line.trim();
 										if (!trimmed || trimmed === ';') {
 										sawPipe = false;
 										allowIndentedContinuation = false;
 										lastPipeHeader = null;
+										expectPipeAfterBareId = false;
 										runningOffset += line.length + 1;
 										continue;
 									}
@@ -3700,10 +3702,21 @@ function ensureMonaco() {
 										runningOffset += line.length + 1;
 										continue;
 									}
+									// Allow closing a let/function body block after a piped query, e.g.
+									// let Base = () { T | where ... };
+									if (/^\}\s*;?\s*$/.test(trimmed)) {
+										sawPipe = false;
+										allowIndentedContinuation = false;
+										lastPipeHeader = null;
+										expectPipeAfterBareId = false;
+										runningOffset += line.length + 1;
+										continue;
+									}
 										if (trimmed.startsWith('|')) {
 										sawPipe = true;
 										lastPipeHeader = __kustoParsePipeHeaderFromLine(trimmed);
 										allowIndentedContinuation = __kustoPipeHeaderAllowsIndentedContinuation(lastPipeHeader);
+										expectPipeAfterBareId = false;
 										__kustoDiagLog('pipe line', {
 											stmtStartOffset: baseOffset,
 											lineRaw: line,
@@ -3712,6 +3725,34 @@ function ensureMonaco() {
 										});
 										runningOffset += line.length + 1;
 										continue;
+									}
+									if (!sawPipe) {
+										const isBareIdentLine = /^([A-Za-z_][\w-]*)\s*(?:\/\/.*)?$/.test(trimmed);
+										if (expectPipeAfterBareId) {
+											const localStart = line.search(/\S/);
+											const startOffset = runningOffset + Math.max(0, localStart);
+											const firstToken = (localStart >= 0 ? line.slice(localStart).match(/^([A-Za-z_][\w-]*)/) : null);
+											const tokLen = firstToken && firstToken[1] ? firstToken[1].length : 1;
+											const start = __kustoOffsetToPosition(lineStarts, startOffset);
+											const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, startOffset + tokLen));
+											markers.push({
+												severity: monaco.MarkerSeverity.Error,
+												startLineNumber: start.lineNumber,
+												startColumn: start.column,
+												endLineNumber: end.lineNumber,
+												endColumn: end.column,
+												message: 'Unexpected text after a query source. Did you forget to prefix this line with `|`?',
+												code: 'KW_EXPECTED_PIPE'
+											});
+											expectPipeAfterBareId = false;
+											runningOffset += line.length + 1;
+											continue;
+										}
+										if (isBareIdentLine) {
+											expectPipeAfterBareId = true;
+											runningOffset += line.length + 1;
+											continue;
+										}
 									}
 									if (sawPipe) {
 										const tLower = String(trimmed || '').toLowerCase();
