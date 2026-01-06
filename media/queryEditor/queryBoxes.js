@@ -133,9 +133,10 @@ function addQueryBox(options) {
 
 	const caretDocsIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 3.5h10v7H8.2L6 13V10.5H3v-7z"/>' +
-		'<path d="M5.2 5.6h5.6"/>' +
-		'<path d="M5.2 7.8h4.2"/>' +
+		'<path d="M3 3.5h10v9H3v-9z"/>' +
+		'<path d="M3 6h10"/>' +
+		'<path d="M5 8.2h6"/>' +
+		'<path d="M5 10.4h4.2"/>' +
 		'</svg>';
 
 	const autocompleteIconSvg =
@@ -150,6 +151,23 @@ function addQueryBox(options) {
 	const singleLineIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M2 8h12"/>' +
+		'</svg>';
+
+	const qualifyTablesIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/>' +
+		'</svg>';
+
+	const doubleToSingleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
+		'</svg>';
+
+	const singleToDoubleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
 		'</svg>';
 
 	const previewIconSvg =
@@ -215,6 +233,22 @@ function addQueryBox(options) {
 				'</button>' +
 			'</span>'
 		);
+
+	const toolsIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+			'<rect x="3" y="3" width="8" height="8" rx="1.5" />' +
+			'<path d="M6 13h7.5A1.5 1.5 0 0 0 15 11.5V4" />' +
+		'</svg>';
+
+	const toolsDropdownHtml =
+		'<span class="qe-toolbar-menu-wrapper" id="' + id + '_tools_wrapper">' +
+			'<button type="button" class="query-editor-toolbar-btn qe-toolbar-dropdown-btn" id="' + id + '_tools_btn" onclick="toggleToolsDropdown(\'' + id + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
+				'<span class="qe-icon qe-tools-icon" aria-hidden="true">' + toolsIconSvg + '</span>' +
+				'<span class="qe-toolbar-caret" aria-hidden="true">▾</span>' +
+				'<span class="schema-spinner qe-tools-spinner" aria-hidden="true" style="display:none;"></span>' +
+			'</button>' +
+			'<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="' + id + '_tools_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+		'</span>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
@@ -222,16 +256,7 @@ function addQueryBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'doubleToSingle\')" title="Replace &quot; with &#39;\nReplaces all double quotes with single quotes">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleToDouble\')" title="Replace &#39; with &quot;\nReplaces all single quotes with double quotes">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>' +
-		'</span>' +
-		'</button>' +
+		toolsDropdownHtml +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
@@ -247,21 +272,13 @@ function addQueryBox(options) {
 		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation tooltips\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
 		'<button type="button" id="' + id + '_copilot_chat_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
 		'<span class="qe-icon" aria-hidden="true">' + copilotLogoHtml + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="query-editor-toolbar-btn" data-qe-action="qualifyTables" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\')" title="Fully qualify tables\nEnsures table references are fully qualified as cluster(\'...\').database(\'...\').Table" aria-label="Fully qualify tables">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleLine\')" title="Copy query as single line\nCopies a single-line version to your clipboard (does not modify the editor)">' +
-		'<span class="qe-icon" aria-hidden="true">' + singleLineIconSvg + '</span>' +
-		'</button>' +
 		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>' +
@@ -1798,7 +1815,7 @@ function toggleCaretDocsEnabled() {
 	} else {
 		// When turning on, show the banner immediately (watermark) without waiting for cursor movement.
 		try {
-			const watermarkTitle = 'Smart documentation tooltips';
+			const watermarkTitle = 'Smart documentation';
 			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
 			for (const boxId of queryBoxes) {
 				try {
@@ -1927,25 +1944,177 @@ function setToolbarActionBusy(boxId, action, busy) {
 		const root = document.getElementById(boxId);
 		if (!root) return;
 		const btn = root.querySelector('.query-editor-toolbar-btn[data-qe-action="' + action + '"]');
-		if (!btn) return;
-		if (busy) {
-			if (!btn.dataset.qePrevHtml) {
-				btn.dataset.qePrevHtml = btn.innerHTML;
+		if (btn) {
+			if (busy) {
+				if (!btn.dataset.qePrevHtml) {
+					btn.dataset.qePrevHtml = btn.innerHTML;
+				}
+				btn.disabled = true;
+				btn.setAttribute('aria-busy', 'true');
+				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
+			} else {
+				btn.disabled = false;
+				btn.removeAttribute('aria-busy');
+				if (btn.dataset.qePrevHtml) {
+					btn.innerHTML = btn.dataset.qePrevHtml;
+					delete btn.dataset.qePrevHtml;
+				}
 			}
-			btn.disabled = true;
-			btn.setAttribute('aria-busy', 'true');
-			btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
-		} else {
-			btn.disabled = false;
-			btn.removeAttribute('aria-busy');
-			if (btn.dataset.qePrevHtml) {
-				btn.innerHTML = btn.dataset.qePrevHtml;
-				delete btn.dataset.qePrevHtml;
-			}
+		}
+
+		// If the action button is not present (because it lives inside a dropdown menu),
+		// reflect the busy state on the tools dropdown button.
+		if (!btn && action === 'qualifyTables') {
+			const toolsBtn = document.getElementById(boxId + '_tools_btn');
+			if (!toolsBtn) return;
+			try {
+				const icon = toolsBtn.querySelector('.qe-tools-icon');
+				const caret = toolsBtn.querySelector('.qe-toolbar-caret');
+				const spinner = toolsBtn.querySelector('.qe-tools-spinner');
+				if (busy) {
+					toolsBtn.classList.add('is-busy');
+					toolsBtn.setAttribute('aria-busy', 'true');
+					if (icon) icon.style.display = 'none';
+					if (caret) caret.style.display = 'none';
+					if (spinner) spinner.style.display = '';
+				} else {
+					toolsBtn.classList.remove('is-busy');
+					toolsBtn.removeAttribute('aria-busy');
+					if (icon) icon.style.display = '';
+					if (caret) caret.style.display = '';
+					if (spinner) spinner.style.display = 'none';
+				}
+			} catch { /* ignore */ }
 		}
 	} catch {
 		// ignore
 	}
+}
+
+function closeToolsDropdown(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
+			window.__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
+			return;
+		}
+	} catch { /* ignore */ }
+	try {
+		const menu = document.getElementById(id + '_tools_menu');
+		if (menu) menu.style.display = 'none';
+	} catch { /* ignore */ }
+	try {
+		const btn = document.getElementById(id + '_tools_btn');
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+	} catch { /* ignore */ }
+}
+
+function toggleToolsDropdown(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const menu = document.getElementById(id + '_tools_menu');
+	const btn = document.getElementById(id + '_tools_btn');
+	if (!menu || !btn) return;
+
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
+			window.__kustoDropdown.toggleMenuDropdown({
+				buttonId: id + '_tools_btn',
+				menuId: id + '_tools_menu',
+				beforeOpen: () => {
+					try { renderToolsMenuForBox(id); } catch { /* ignore */ }
+				},
+				afterOpen: () => {
+					// Shared dropdown helper wires keyboard navigation.
+				}
+			});
+			return;
+		}
+	} catch { /* ignore */ }
+
+	// Fallback (legacy behavior)
+	const next = menu.style.display === 'block' ? 'none' : 'block';
+	try { closeAllRunMenus(); } catch { /* ignore */ }
+	try { closeAllFavoritesDropdowns && closeAllFavoritesDropdowns(); } catch { /* ignore */ }
+	if (next === 'block') {
+		try { renderToolsMenuForBox(id); } catch { /* ignore */ }
+	}
+	menu.style.display = next;
+	btn.setAttribute('aria-expanded', next === 'block' ? 'true' : 'false');
+	if (next === 'block') {
+		try { window.__kustoDropdown && window.__kustoDropdown.wireMenuInteractions && window.__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+		try { menu.focus(); } catch { /* ignore */ }
+	}
+}
+
+function renderToolsMenuForBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const menu = document.getElementById(id + '_tools_menu');
+	if (!menu) return;
+
+	// IMPORTANT: keep icons local here.
+	// The toolbar HTML builder defines some SVG consts in a different scope; referencing them here can
+	// throw at runtime and prevent the menu from rendering/opening.
+	const __toolsDoubleToSingleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
+		'</svg>';
+
+	const __toolsSingleToDoubleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
+		'</svg>';
+
+	const __toolsQualifyTablesIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/>' +
+		'</svg>';
+
+	const __toolsSingleLineIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 8h12"/>' +
+		'</svg>';
+
+	const toolsItemHtml = (iconSvg, labelText) => {
+		return (
+			'<span class="qe-icon" aria-hidden="true">' + String(iconSvg || '') + '</span>' +
+			'<span class="qe-toolbar-menu-label">' + String(labelText || '') + '</span>'
+		);
+	};
+
+	const items = [
+		{ key: 'doubleToSingle', html: toolsItemHtml(__toolsDoubleToSingleIconSvg, 'Replace &quot; with &#39;'), ariaLabel: 'Replace " with \'', selected: false },
+		{ key: 'singleToDouble', html: toolsItemHtml(__toolsSingleToDoubleIconSvg, 'Replace &#39; with &quot;'), ariaLabel: 'Replace \' with "', selected: false },
+		{ key: 'qualifyTables', html: toolsItemHtml(__toolsQualifyTablesIconSvg, 'Fully qualify tables'), ariaLabel: 'Fully qualify tables', selected: false },
+		{ key: 'singleLine', html: toolsItemHtml(__toolsSingleLineIconSvg, 'Copy query as single line'), ariaLabel: 'Copy query as single line', selected: false }
+	];
+
+	try {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
+			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
+				dropdownId: id + '_tools',
+				onSelectJs: (keyEnc) => {
+					return (
+						"onQueryEditorToolbarAction('" + id + "', '" + keyEnc + "');" +
+						" try{window.__kustoDropdown&&window.__kustoDropdown.closeMenuDropdown&&window.__kustoDropdown.closeMenuDropdown('" + id + "_tools_btn','" + id + "_tools_menu')}catch{}"
+					);
+				}
+			});
+			return;
+		}
+	} catch { /* ignore */ }
+
+	// Minimal fallback markup (should rarely be used)
+	menu.innerHTML = [
+		'<div class="kusto-dropdown-item" role="option" tabindex="-1" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'doubleToSingle\'); closeToolsDropdown(\'' + id + '\')"><div class="kusto-dropdown-item-main">' + toolsItemHtml(__toolsDoubleToSingleIconSvg, 'Replace &quot; with &#39;') + '</div></div>',
+		'<div class="kusto-dropdown-item" role="option" tabindex="-1" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleToDouble\'); closeToolsDropdown(\'' + id + '\')"><div class="kusto-dropdown-item-main">' + toolsItemHtml(__toolsSingleToDoubleIconSvg, 'Replace &#39; with &quot;') + '</div></div>',
+		'<div class="kusto-dropdown-item" role="option" tabindex="-1" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\'); closeToolsDropdown(\'' + id + '\')"><div class="kusto-dropdown-item-main">' + toolsItemHtml(__toolsQualifyTablesIconSvg, 'Fully qualify tables') + '</div></div>',
+		'<div class="kusto-dropdown-item" role="option" tabindex="-1" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'singleLine\'); closeToolsDropdown(\'' + id + '\')"><div class="kusto-dropdown-item-main">' + toolsItemHtml(__toolsSingleLineIconSvg, 'Copy query as single line') + '</div></div>'
+	].join('');
 }
 
 function runMonacoAction(boxId, actionId) {
@@ -1998,7 +2167,28 @@ async function exportQueryToPowerBI(boxId) {
 	if (!model) {
 		return;
 	}
-	const query = model.getValue() || '';
+	let query = model.getValue() || '';
+	// Match the same "active statement" logic used by Run Query.
+	try {
+		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
+		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
+		if (editor && (hasTextFocus || isActiveEditor)) {
+			const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
+				? window.__kustoExtractStatementTextAtCursor(editor)
+				: null;
+			if (statement) {
+				query = statement;
+			} else {
+				try {
+					vscode.postMessage({
+						type: 'showInfo',
+						message: 'Place the cursor inside a query statement (not on a separator) to export that statement to Power BI.'
+					});
+				} catch { /* ignore */ }
+				return;
+			}
+		}
+	} catch { /* ignore */ }
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
 	if (!connectionId) {
@@ -5730,6 +5920,11 @@ function executeQuery(boxId, mode) {
 	} catch { /* ignore */ }
 	const __kustoExtractStatementAtCursor = (editor) => {
 		try {
+			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+				return window.__kustoExtractStatementTextAtCursor(editor);
+			}
+		} catch { /* ignore */ }
+		try {
 			if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') {
 				return null;
 			}
@@ -5813,7 +6008,7 @@ function executeQuery(boxId, mode) {
 				try {
 					vscode.postMessage({
 						type: 'showInfo',
-						message: 'Place the cursor inside a query statement (not on a blank line) to run that statement.'
+						message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
 					});
 				} catch { /* ignore */ }
 				return;

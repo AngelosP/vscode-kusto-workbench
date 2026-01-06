@@ -1493,6 +1493,21 @@
 			gap: 6px;
 		}
 
+		.kusto-dropdown-item-main .qe-icon,
+		.kusto-favorites-item-main .qe-icon {
+			width: 16px;
+			height: 16px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 16px;
+		}
+
+		.kusto-dropdown-item-main .qe-icon svg,
+		.kusto-favorites-item-main .qe-icon svg {
+			display: block;
+		}
+
 		.kusto-dropdown-item.is-active,
 		.kusto-favorites-item.is-active {
 			background: var(--vscode-list-hoverBackground);
@@ -1978,6 +1993,44 @@
 
 		.query-editor-toolbar-btn svg {
 			display: block;
+		}
+
+		.qe-toolbar-menu-wrapper {
+			position: relative;
+			display: inline-flex;
+			align-items: center;
+		}
+
+		.query-editor-toolbar-btn.qe-toolbar-dropdown-btn {
+			gap: 2px;
+			padding-left: 6px;
+			padding-right: 4px;
+		}
+
+		.query-editor-toolbar-btn.qe-toolbar-dropdown-btn .qe-toolbar-caret {
+			color: var(--vscode-descriptionForeground);
+			font-size: 12px;
+			line-height: 1;
+			margin-left: 1px;
+			pointer-events: none;
+		}
+
+		.qe-toolbar-dropdown-menu {
+			left: 0;
+			top: 100%;
+			z-index: 60;
+		}
+
+		/* Tools dropdown: icon + text should be vertically centered (not baseline). */
+		.qe-toolbar-dropdown-menu .kusto-dropdown-item-main {
+			align-items: center;
+		}
+
+		.qe-toolbar-dropdown-menu .qe-toolbar-menu-label {
+			display: inline-flex;
+			align-items: center;
+			line-height: 16px;
+			margin-left: 5px;
 		}
 
 		/* Copilot logo in the query editor toolbar: ensure good contrast in dark themes.

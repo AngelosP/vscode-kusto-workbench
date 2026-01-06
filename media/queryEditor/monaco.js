@@ -6960,6 +6960,139 @@ function initQueryEditor(boxId) {
 		// Active statement indicator (only when multi-statement via blank-line separators).
 		// We intentionally avoid a background highlight; instead, we draw a subtle gutter bar.
 		try {
+			// Shared statement splitting helpers.
+			// - A "blank line" is a line containing only whitespace.
+			// - Statements are separated by one-or-more blank lines (the existing behavior).
+			// This must match Run Query behavior and the gutter indicator.
+			try {
+				if (typeof window.__kustoStatementSeparatorMinBlankLines !== 'number') {
+					window.__kustoStatementSeparatorMinBlankLines = 1;
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoGetStatementBlocksFromModel !== 'function') {
+					window.__kustoGetStatementBlocksFromModel = function (model) {
+						try {
+							if (!model || typeof model.getLineCount !== 'function' || typeof model.getLineContent !== 'function') return [];
+							const minBlankLines = Math.max(1, Number(window.__kustoStatementSeparatorMinBlankLines) || 1);
+							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
+							if (!lineCount) return [];
+							const blocks = [];
+							let startLine = null;
+							let lastNonBlankLine = null;
+							let blankRun = 0;
+							for (let ln = 1; ln <= lineCount; ln++) {
+								const lineText = String(model.getLineContent(ln) || '');
+								const isBlank = /^\s*$/.test(lineText);
+								if (!isBlank) {
+									if (startLine === null) {
+										startLine = ln;
+									}
+									lastNonBlankLine = ln;
+									blankRun = 0;
+									continue;
+								}
+
+								// Blank line.
+								if (startLine === null) {
+									// Leading blank lines before the first statement.
+									continue;
+								}
+								blankRun++;
+								if (blankRun >= minBlankLines) {
+									// Statement separator: end the current block at the last non-blank line.
+									if (lastNonBlankLine !== null && lastNonBlankLine >= startLine) {
+										blocks.push({ startLine: startLine, endLine: lastNonBlankLine });
+									}
+									startLine = null;
+									lastNonBlankLine = null;
+									blankRun = minBlankLines;
+								}
+							}
+							if (startLine !== null && lastNonBlankLine !== null) {
+								blocks.push({ startLine: startLine, endLine: lastNonBlankLine });
+							}
+							return blocks;
+						} catch {
+							return [];
+						}
+					};
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoIsSeparatorBlankLine !== 'function') {
+					window.__kustoIsSeparatorBlankLine = function (model, lineNumber) {
+						try {
+							if (!model || typeof model.getLineContent !== 'function' || typeof model.getLineCount !== 'function') return false;
+							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
+							const ln = Number(lineNumber) || 0;
+							if (!ln || ln < 1 || ln > lineCount) return false;
+							const minBlankLines = Math.max(1, Number(window.__kustoStatementSeparatorMinBlankLines) || 1);
+							const isBlank = /^\s*$/.test(String(model.getLineContent(ln) || ''));
+							if (!isBlank) return false;
+							let start = ln;
+							while (start > 1) {
+								const prev = String(model.getLineContent(start - 1) || '');
+								if (!/^\s*$/.test(prev)) break;
+								start--;
+							}
+							let end = ln;
+							while (end < lineCount) {
+								const next = String(model.getLineContent(end + 1) || '');
+								if (!/^\s*$/.test(next)) break;
+								end++;
+							}
+							const len = (end - start) + 1;
+							return len >= minBlankLines;
+						} catch {
+							return false;
+						}
+					};
+				}
+			} catch { /* ignore */ }
+			try {
+				if (typeof window.__kustoExtractStatementTextAtCursor !== 'function') {
+					window.__kustoExtractStatementTextAtCursor = function (editor) {
+						try {
+							if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') return null;
+							const model = editor.getModel();
+							const pos = editor.getPosition();
+							if (!model || !pos || !pos.lineNumber) return null;
+							const cursorLine = Number(pos.lineNumber) || 0;
+							if (!cursorLine || cursorLine < 1) return null;
+							// If the cursor is on a separator (2+ blank lines), treat as "no statement".
+							try {
+								if (window.__kustoIsSeparatorBlankLine && window.__kustoIsSeparatorBlankLine(model, cursorLine)) {
+									return null;
+								}
+							} catch { /* ignore */ }
+							const blocks = (window.__kustoGetStatementBlocksFromModel && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+								? window.__kustoGetStatementBlocksFromModel(model)
+								: [];
+							if (!blocks || !blocks.length) return null;
+							let block = null;
+							for (const b of blocks) {
+								if (!b) continue;
+								if (cursorLine >= b.startLine && cursorLine <= b.endLine) { block = b; break; }
+							}
+							if (!block) return null;
+							const endCol = (typeof model.getLineMaxColumn === 'function') ? model.getLineMaxColumn(block.endLine) : 1;
+							const range = {
+								startLineNumber: block.startLine,
+								startColumn: 1,
+								endLineNumber: block.endLine,
+								endColumn: endCol
+							};
+							const text = (typeof model.getValueInRange === 'function') ? model.getValueInRange(range) : '';
+							const trimmed = String(text || '').trim();
+							return trimmed || null;
+						} catch {
+							return null;
+						}
+					};
+				}
+			} catch { /* ignore */ }
+
 			const ACTIVE_STMT_CLASS = 'kusto-active-statement-gutter';
 			let activeStmtDecorationIds = [];
 			let cachedBlocks = null;
@@ -6968,38 +7101,11 @@ function initQueryEditor(boxId) {
 
 			const computeStatementBlocks = (model) => {
 				try {
-					if (!model) return [];
-					const lineCount = Math.max(0, Number(model.getLineCount && model.getLineCount()) || 0);
-					if (!lineCount) return [];
-					const blocks = [];
-					let inBlock = false;
-					let blockStart = 1;
-					let blockEnd = 1;
-					for (let ln = 1; ln <= lineCount; ln++) {
-						const lineText = String(model.getLineContent(ln) || '');
-						const isBlank = /^\s*$/.test(lineText);
-						if (isBlank) {
-							if (inBlock) {
-								blocks.push({ startLine: blockStart, endLine: blockEnd });
-								inBlock = false;
-							}
-							continue;
-						}
-						if (!inBlock) {
-							inBlock = true;
-							blockStart = ln;
-							blockEnd = ln;
-						} else {
-							blockEnd = ln;
-						}
+					if (window.__kustoGetStatementBlocksFromModel && typeof window.__kustoGetStatementBlocksFromModel === 'function') {
+						return window.__kustoGetStatementBlocksFromModel(model);
 					}
-					if (inBlock) {
-						blocks.push({ startLine: blockStart, endLine: blockEnd });
-					}
-					return blocks;
-				} catch {
-					return [];
-				}
+				} catch { /* ignore */ }
+				return [];
 			};
 
 			const getBlocksCached = (model) => {
@@ -7032,10 +7138,9 @@ function initQueryEditor(boxId) {
 						activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
 						return;
 					}
-					// If cursor is on a blank line, don't show an active statement.
+					// If cursor is on a separator blank-line run (2+ blank lines), don't show an active statement.
 					try {
-						const curLineText = String(model.getLineContent(pos.lineNumber) || '');
-						if (/^\s*$/.test(curLineText)) {
+						if (window.__kustoIsSeparatorBlankLine && window.__kustoIsSeparatorBlankLine(model, pos.lineNumber)) {
 							activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
 							return;
 						}
@@ -7779,7 +7884,21 @@ function initQueryEditor(boxId) {
 					try {
 						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
-						const v = ed.getValue ? ed.getValue() : '';
+						let v = ed.getValue ? ed.getValue() : '';
+						// Match Run Query / Export behavior: when the editor is active/focused, operate on the statement under the cursor.
+						try {
+							const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === id);
+							const hasTextFocus = !!(ed && typeof ed.hasTextFocus === 'function' && ed.hasTextFocus());
+							if ((hasTextFocus || isActiveEditor) && typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+								const stmt = window.__kustoExtractStatementTextAtCursor(ed);
+								if (stmt) {
+									v = stmt;
+								} else {
+									try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to copy that statement as a single line.' }); } catch { /* ignore */ }
+									return;
+								}
+							}
+						} catch { /* ignore */ }
 						const single = __kustoToSingleLineKusto(v);
 
 						// Copy to clipboard without modifying the editor.
@@ -7907,7 +8026,7 @@ function initQueryEditor(boxId) {
 			let lastHtml = '';
 			let lastDocsHtml = '';
 			let lastKey = '';
-			const watermarkTitle = 'Smart documentation tooltips';
+			const watermarkTitle = 'Smart documentation';
 			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
 
 			// Persist last docs HTML across editor/overlay recreation (can happen if VS Code detaches the webview DOM).
