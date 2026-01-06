@@ -5728,7 +5728,98 @@ function executeQuery(boxId, mode) {
 			window.__kustoClearAutoFindInQueryEditor(boxId);
 		}
 	} catch { /* ignore */ }
-	const query = queryEditors[boxId] ? queryEditors[boxId].getValue() : '';
+	const __kustoExtractStatementAtCursor = (editor) => {
+		try {
+			if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') {
+				return null;
+			}
+			const model = editor.getModel();
+			const pos = editor.getPosition();
+			if (!model || !pos || typeof model.getLineCount !== 'function') {
+				return null;
+			}
+			const cursorLine = pos.lineNumber;
+			if (typeof cursorLine !== 'number' || !isFinite(cursorLine) || cursorLine < 1) {
+				return null;
+			}
+			const lineCount = model.getLineCount();
+			if (!lineCount || cursorLine > lineCount) {
+				return null;
+			}
+
+			// Statements are separated by one or more blank lines.
+			const blocks = [];
+			let inBlock = false;
+			let startLine = 1;
+			for (let ln = 1; ln <= lineCount; ln++) {
+				let lineText = '';
+				try { lineText = model.getLineContent(ln); } catch { lineText = ''; }
+				const isBlank = !String(lineText || '').trim();
+				if (isBlank) {
+					if (inBlock) {
+						blocks.push({ startLine, endLine: ln - 1 });
+						inBlock = false;
+					}
+					continue;
+				}
+				if (!inBlock) {
+					startLine = ln;
+					inBlock = true;
+				}
+			}
+			if (inBlock) {
+				blocks.push({ startLine, endLine: lineCount });
+			}
+
+			const block = blocks.find(b => cursorLine >= b.startLine && cursorLine <= b.endLine);
+			if (!block) {
+				// Cursor is on a blank separator line (or the editor is empty).
+				return null;
+			}
+
+			const endCol = (typeof model.getLineMaxColumn === 'function')
+				? model.getLineMaxColumn(block.endLine)
+				: 1;
+			const range = {
+				startLineNumber: block.startLine,
+				startColumn: 1,
+				endLineNumber: block.endLine,
+				endColumn: endCol
+			};
+			let text = '';
+			try {
+				text = (typeof model.getValueInRange === 'function') ? model.getValueInRange(range) : '';
+			} catch {
+				text = '';
+			}
+			const trimmed = String(text || '').trim();
+			return trimmed || null;
+		} catch {
+			return null;
+		}
+	};
+
+	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+	let query = editor ? editor.getValue() : '';
+	// If the cursor is inside the active Monaco editor, run only the statement under the cursor.
+	try {
+		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
+		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
+		if (editor && (hasTextFocus || isActiveEditor)) {
+			const statement = __kustoExtractStatementAtCursor(editor);
+			if (statement) {
+				query = statement;
+			} else {
+				try {
+					vscode.postMessage({
+						type: 'showInfo',
+						message: 'Place the cursor inside a query statement (not on a blank line) to run that statement.'
+					});
+				} catch { /* ignore */ }
+				return;
+			}
+		}
+	} catch { /* ignore */ }
 	let connectionId = document.getElementById(boxId + '_connection').value;
 	let database = document.getElementById(boxId + '_database').value;
 	let cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
