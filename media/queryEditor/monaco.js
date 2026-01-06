@@ -6563,6 +6563,11 @@ function initQueryEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			// Reduce the blank gap between the line numbers and the code.
+			// We rely on the line-decorations lane for the active-statement indicator, so keep it
+			// non-zero but tight.
+			glyphMargin: false,
+			lineDecorationsWidth: 8,
 			// Suggest (and other overflow widgets) can be mispositioned when Monaco is nested inside
 			// multiple stacked, scrollable containers (e.g. the 3rd query box on screen).
 			// Fixed overflow widgets use viewport-based geometry and are more reliable in VS Code webviews.
@@ -6948,6 +6953,146 @@ function initQueryEditor(boxId) {
 			try {
 				editor.onDidBlurEditorText(() => hideDiagHover(true));
 			} catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
+
+		// Active statement indicator (only when multi-statement via blank-line separators).
+		// We intentionally avoid a background highlight; instead, we draw a subtle gutter bar.
+		try {
+			const ACTIVE_STMT_CLASS = 'kusto-active-statement-gutter';
+			let activeStmtDecorationIds = [];
+			let cachedBlocks = null;
+			let cachedVersionId = -1;
+			let scheduled = false;
+
+			const computeStatementBlocks = (model) => {
+				try {
+					if (!model) return [];
+					const lineCount = Math.max(0, Number(model.getLineCount && model.getLineCount()) || 0);
+					if (!lineCount) return [];
+					const blocks = [];
+					let inBlock = false;
+					let blockStart = 1;
+					let blockEnd = 1;
+					for (let ln = 1; ln <= lineCount; ln++) {
+						const lineText = String(model.getLineContent(ln) || '');
+						const isBlank = /^\s*$/.test(lineText);
+						if (isBlank) {
+							if (inBlock) {
+								blocks.push({ startLine: blockStart, endLine: blockEnd });
+								inBlock = false;
+							}
+							continue;
+						}
+						if (!inBlock) {
+							inBlock = true;
+							blockStart = ln;
+							blockEnd = ln;
+						} else {
+							blockEnd = ln;
+						}
+					}
+					if (inBlock) {
+						blocks.push({ startLine: blockStart, endLine: blockEnd });
+					}
+					return blocks;
+				} catch {
+					return [];
+				}
+			};
+
+			const getBlocksCached = (model) => {
+				try {
+					const v = (model && typeof model.getVersionId === 'function') ? model.getVersionId() : -1;
+					if (v !== cachedVersionId || !Array.isArray(cachedBlocks)) {
+						cachedVersionId = v;
+						cachedBlocks = computeStatementBlocks(model);
+					}
+					return Array.isArray(cachedBlocks) ? cachedBlocks : [];
+				} catch {
+					cachedVersionId = -1;
+					cachedBlocks = null;
+					return [];
+				}
+			};
+
+			const updateActiveStatementIndicator = () => {
+				scheduled = false;
+				try {
+					const model = editor.getModel && editor.getModel();
+					const pos = editor.getPosition && editor.getPosition();
+					if (!model || !pos || !pos.lineNumber) {
+						activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
+						return;
+					}
+					const blocks = getBlocksCached(model);
+					// Only show when there are 2+ statements separated by blank lines.
+					if (!blocks || blocks.length < 2) {
+						activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
+						return;
+					}
+					// If cursor is on a blank line, don't show an active statement.
+					try {
+						const curLineText = String(model.getLineContent(pos.lineNumber) || '');
+						if (/^\s*$/.test(curLineText)) {
+							activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
+							return;
+						}
+					} catch { /* ignore */ }
+
+					let block = null;
+					for (const b of blocks) {
+						if (!b) continue;
+						if (b.startLine <= pos.lineNumber && pos.lineNumber <= b.endLine) {
+							block = b;
+							break;
+						}
+					}
+					if (!block) {
+						activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
+						return;
+					}
+
+					const range = new monaco.Range(block.startLine, 1, block.endLine, 1);
+					activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, [
+						{
+							range,
+							options: {
+								isWholeLine: true,
+								linesDecorationsClassName: ACTIVE_STMT_CLASS
+							}
+						}
+					]);
+				} catch {
+					try { activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []); } catch { /* ignore */ }
+				}
+			};
+
+			const scheduleUpdate = () => {
+				try {
+					if (scheduled) return;
+					scheduled = true;
+					requestAnimationFrame(updateActiveStatementIndicator);
+				} catch {
+					scheduled = false;
+					try { setTimeout(updateActiveStatementIndicator, 0); } catch { /* ignore */ }
+				}
+			};
+
+			try {
+				editor.onDidChangeCursorPosition(() => scheduleUpdate());
+			} catch { /* ignore */ }
+			try {
+				editor.onDidChangeModelContent(() => {
+					cachedVersionId = -1;
+					scheduleUpdate();
+				});
+			} catch { /* ignore */ }
+			try { editor.onDidFocusEditorText(() => scheduleUpdate()); } catch { /* ignore */ }
+			try { editor.onDidBlurEditorText(() => scheduleUpdate()); } catch { /* ignore */ }
+			// Initial paint.
+			scheduleUpdate();
 		} catch {
 			// ignore
 		}

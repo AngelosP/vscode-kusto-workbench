@@ -2007,6 +2007,29 @@
 			z-index: 1000 !important;
 		}
 
+		/* Active statement indicator (only shown when multiple statements exist).
+		   Uses the gutter/line-decoration lane rather than a background highlight. */
+		.monaco-editor .margin-view-overlays .kusto-active-statement-gutter {
+			box-sizing: border-box;
+			/* The line-decorations lane sits between line numbers and content.
+			   Draw on the RIGHT edge so it hugs the query text, not the line numbers. */
+			/* Avoid `border-style: dotted` since it can render an uneven pattern at some zoom/DPI.
+			   Use a fixed repeating pattern so each "dot" is consistent. */
+			border-right: none;
+			background-image: radial-gradient(
+				circle,
+				var(--vscode-editorLineNumber-activeForeground, var(--vscode-editorLineNumber-foreground)) 0px,
+				var(--vscode-editorLineNumber-activeForeground, var(--vscode-editorLineNumber-foreground)) 1px,
+				transparent 1.2px
+			);
+			background-repeat: repeat-y;
+			background-size: 2px 6px;
+			background-position: right 0 top 0;
+			/* Keep a ~5px gap from the code without widening the gutter. */
+			transform: translateX(-15px);
+			opacity: 0.85;
+		}
+
 		.kusto-doc-widget {
 			max-width: 560px;
 			padding: 8px 10px;
