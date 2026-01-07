@@ -8,6 +8,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Support for large datasets
 * Improved syntax support (more work to be done there, please send examples that don't work perfectly as that helps a lot)
+* Gutter indicator for the currently active Kusto statements (only visible when there are mutliple ones)
+* Toolbar buttons groupped better for less clutter
+* Renamed 'Smart documentation tooltips' to just 'Smart documentation' now that it is a banner and not a tooltip any more (better user experience that way)
+* Added 'Share query as URL' feature that is compatible with Azure Data Explorer
 
 ## [0.1.7] - 2026-01-06
 

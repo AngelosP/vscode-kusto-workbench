@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
@@ -72,6 +73,14 @@ type ExecuteQueryMessage = {
 	cacheUnit?: CacheUnit | string;
 };
 
+type CopyAdeLinkMessage = {
+	type: 'copyAdeLink';
+	query: string;
+	connectionId: string;
+	database: string;
+	boxId: string;
+};
+
 type ImportConnectionsFromXmlMessage = {
 	type: 'importConnectionsFromXml';
 	connections: Array<{ name: string; clusterUrl: string; database?: string }>;
@@ -114,6 +123,7 @@ type IncomingWebviewMessage =
 	| { type: 'cancelOptimizeQuery'; boxId: string }
 	| OptimizeQueryMessage
 	| ExecuteQueryMessage
+	| CopyAdeLinkMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| ImportConnectionsFromXmlMessage
@@ -595,6 +605,9 @@ export class QueryEditorProvider {
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
 				return;
+			case 'copyAdeLink':
+				await this.copyAdeLinkFromWebview(message);
+				return;
 			case 'cancelQuery':
 				this.cancelRunningQuery(message.boxId);
 				return;
@@ -619,6 +632,67 @@ export class QueryEditorProvider {
 				return;
 			default:
 				return;
+		}
+	}
+
+	private async copyAdeLinkFromWebview(
+		message: Extract<IncomingWebviewMessage, { type: 'copyAdeLink' }>
+	): Promise<void> {
+		try {
+			const boxId = String(message.boxId || '').trim();
+			const query = String(message.query || '').trim();
+			const database = String(message.database || '').trim();
+			const connectionId = String(message.connectionId || '').trim();
+			if (!query) {
+				vscode.window.showInformationMessage('No query text to share.');
+				return;
+			}
+			if (!connectionId) {
+				vscode.window.showInformationMessage('Select a cluster connection first.');
+				return;
+			}
+			if (!database) {
+				vscode.window.showInformationMessage('Select a database first.');
+				return;
+			}
+
+			const connection = this.findConnection(connectionId);
+			if (!connection) {
+				vscode.window.showErrorMessage('Connection not found.');
+				return;
+			}
+			const clusterShortName = this.getClusterShortName(String(connection.clusterUrl || '').trim());
+			if (!clusterShortName) {
+				vscode.window.showErrorMessage('Could not determine cluster name for the selected connection.');
+				return;
+			}
+
+			// Azure Data Explorer uses a gzip+base64 payload in the query string.
+			let encoded = '';
+			try {
+				const gz = zlib.gzipSync(Buffer.from(query, 'utf8'));
+				encoded = gz.toString('base64').replace(/=+$/g, '');
+			} catch {
+				vscode.window.showErrorMessage('Failed to encode the query for Azure Data Explorer.');
+				return;
+			}
+
+			const url =
+				`https://dataexplorer.azure.com/clusters/${encodeURIComponent(clusterShortName)}` +
+				`/databases/${encodeURIComponent(database)}` +
+				`?query=${encodeURIComponent(encoded)}`;
+
+			await vscode.env.clipboard.writeText(url);
+			vscode.window.showInformationMessage('Azure Data Explorer link copied to clipboard.');
+			try {
+				if (boxId) {
+					this.postMessage({ type: 'showInfo', message: 'Azure Data Explorer link copied to clipboard.' });
+				}
+			} catch {
+				// ignore
+			}
+		} catch {
+			vscode.window.showErrorMessage('Failed to copy Azure Data Explorer link.');
 		}
 	}
 

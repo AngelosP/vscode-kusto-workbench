@@ -280,6 +280,11 @@ function addQueryBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>' +
 		'</span>' +
 		'</button>' +
+		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
+		'<span class="qe-icon" aria-hidden="true">' +
+		'<span class="codicon codicon-link" aria-hidden="true"></span>' +
+		'</span>' +
+		'</button>' +
 		'</div>';
 
 	// Reusable dropdown markup helpers (loaded via media/queryEditor/dropdown.js)
@@ -1917,6 +1922,9 @@ function onQueryEditorToolbarAction(boxId, action) {
 	if (action === 'exportPowerBI') {
 		return exportQueryToPowerBI(boxId);
 	}
+	if (action === 'copyAdeLink') {
+		return copyQueryAsAdeLink(boxId);
+	}
 	if (action === 'qualifyTables') {
 		try {
 			if (qualifyTablesInFlightByBoxId && qualifyTablesInFlightByBoxId[boxId]) {
@@ -1934,6 +1942,156 @@ function onQueryEditorToolbarAction(boxId, action) {
 			}
 		})();
 		return;
+	}
+}
+
+function copyQueryAsAdeLink(boxId) {
+	const __kustoExtractStatementAtCursor = (editor) => {
+		try {
+			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+				return window.__kustoExtractStatementTextAtCursor(editor);
+			}
+		} catch { /* ignore */ }
+		try {
+			if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') {
+				return null;
+			}
+			const model = editor.getModel();
+			const pos = editor.getPosition();
+			if (!model || !pos || typeof model.getLineCount !== 'function') {
+				return null;
+			}
+			const cursorLine = pos.lineNumber;
+			if (typeof cursorLine !== 'number' || !isFinite(cursorLine) || cursorLine < 1) {
+				return null;
+			}
+			const lineCount = model.getLineCount();
+			if (!lineCount || cursorLine > lineCount) {
+				return null;
+			}
+
+			// Statements are separated by one or more blank lines.
+			const blocks = [];
+			let inBlock = false;
+			let startLine = 1;
+			for (let ln = 1; ln <= lineCount; ln++) {
+				let lineText = '';
+				try { lineText = model.getLineContent(ln); } catch { lineText = ''; }
+				const isBlank = !String(lineText || '').trim();
+				if (isBlank) {
+					if (inBlock) {
+						blocks.push({ startLine, endLine: ln - 1 });
+						inBlock = false;
+					}
+					continue;
+				}
+				if (!inBlock) {
+					startLine = ln;
+					inBlock = true;
+				}
+			}
+			if (inBlock) {
+				blocks.push({ startLine, endLine: lineCount });
+			}
+
+			const block = blocks.find(b => cursorLine >= b.startLine && cursorLine <= b.endLine);
+			if (!block) {
+				// Cursor is on a blank separator line (or the editor is empty).
+				return null;
+			}
+
+			const endCol = (typeof model.getLineMaxColumn === 'function')
+				? model.getLineMaxColumn(block.endLine)
+				: 1;
+			const range = {
+				startLineNumber: block.startLine,
+				startColumn: 1,
+				endLineNumber: block.endLine,
+				endColumn: endCol
+			};
+			let text = '';
+			try {
+				text = (typeof model.getValueInRange === 'function') ? model.getValueInRange(range) : '';
+			} catch {
+				text = '';
+			}
+			const trimmed = String(text || '').trim();
+			return trimmed || null;
+		} catch {
+			return null;
+		}
+	};
+
+	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+	let query = editor ? editor.getValue() : '';
+	// If the cursor is inside the active Monaco editor, use only the statement under the cursor.
+	try {
+		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
+		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
+		if (editor && (hasTextFocus || isActiveEditor)) {
+			const statement = __kustoExtractStatementAtCursor(editor);
+			if (statement) {
+				query = statement;
+			} else {
+				try {
+					vscode.postMessage({
+						type: 'showInfo',
+						message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
+					});
+				} catch { /* ignore */ }
+				return;
+			}
+		}
+	} catch { /* ignore */ }
+
+	let connectionId = '';
+	let database = '';
+	try {
+		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
+		database = String((document.getElementById(boxId + '_database') || {}).value || '');
+	} catch { /* ignore */ }
+
+	// In optimized/comparison sections, inherit connection/database from the source box.
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				const sourceBoxId = String(meta.sourceBoxId || '');
+				const sourceConn = document.getElementById(sourceBoxId + '_connection');
+				const sourceDb = document.getElementById(sourceBoxId + '_database');
+				if (sourceConn && sourceConn.value) {
+					connectionId = sourceConn.value;
+				}
+				if (sourceDb && sourceDb.value) {
+					database = sourceDb.value;
+				}
+			}
+		}
+	} catch { /* ignore */ }
+
+	if (!String(query || '').trim()) {
+		try { vscode.postMessage({ type: 'showInfo', message: 'There is no query text to share.' }); } catch { /* ignore */ }
+		return;
+	}
+	if (!String(connectionId || '').trim()) {
+		try { vscode.postMessage({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch { /* ignore */ }
+		return;
+	}
+	if (!String(database || '').trim()) {
+		try { vscode.postMessage({ type: 'showInfo', message: 'Select a database first.' }); } catch { /* ignore */ }
+		return;
+	}
+
+	try {
+		vscode.postMessage({
+			type: 'copyAdeLink',
+			query,
+			connectionId,
+			database,
+			boxId
+		});
+	} catch {
+		// ignore
 	}
 }
 
