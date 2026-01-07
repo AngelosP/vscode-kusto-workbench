@@ -2806,6 +2806,94 @@ function ensureMonaco() {
 					// --- Live diagnostics (markers) + quick fixes ---
 					const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
 
+					const __kustoMaskCommentsPreserveLayout = (text) => {
+						try {
+							const s = String(text || '');
+							if (!s) return s;
+							const out = new Array(s.length);
+							let inLineComment = false;
+							let inBlockComment = false;
+							let inSingle = false;
+							let inDouble = false;
+							for (let i = 0; i < s.length; i++) {
+								const ch = s[i];
+								const next = s[i + 1];
+
+								if (inLineComment) {
+									if (ch === '\n') {
+										out[i] = ch;
+										inLineComment = false;
+									} else {
+										out[i] = ' ';
+									}
+									continue;
+								}
+								if (inBlockComment) {
+									if (ch === '*' && next === '/') {
+										out[i] = '*';
+										out[i + 1] = '/';
+										inBlockComment = false;
+										i++;
+										continue;
+									}
+									out[i] = (ch === '\n') ? ch : ' ';
+									continue;
+								}
+								if (inSingle) {
+									out[i] = ch;
+									if (ch === "'") {
+										if (next === "'") {
+											out[i + 1] = next;
+											i++;
+											continue;
+										}
+										inSingle = false;
+									}
+									continue;
+								}
+								if (inDouble) {
+									out[i] = ch;
+									if (ch === '\\') {
+										if (next !== undefined) {
+											out[i + 1] = next;
+											i++;
+										}
+										continue;
+									}
+									if (ch === '"') {
+										inDouble = false;
+									}
+									continue;
+								}
+
+								if (ch === '/' && next === '/') {
+									out[i] = '/';
+									out[i + 1] = '/';
+									inLineComment = true;
+									i++;
+									continue;
+								}
+								if (ch === '/' && next === '*') {
+									out[i] = '/';
+									out[i + 1] = '*';
+									inBlockComment = true;
+									i++;
+									continue;
+								}
+
+								out[i] = ch;
+								if (ch === "'") {
+									inSingle = true;
+								} else if (ch === '"') {
+									inDouble = true;
+								}
+							}
+							return out.join('');
+						} catch {
+							return String(text || '');
+						}
+					};
+
 					const __kustoFilterMarkersByAutocomplete = async (model, markers) => {
 						try {
 							if (!model || !Array.isArray(markers) || markers.length === 0) return markers;
@@ -4035,12 +4123,15 @@ function ensureMonaco() {
 								if (!stmtRaw.trim()) continue;
 
 								// Statement-local string ranges (so semicolons don't confuse offsets).
+								// IMPORTANT: run this over comment-masked text so apostrophes inside comments can't
+								// accidentally open/close string literals and corrupt downstream identifier validation.
 								const stringRanges = [];
 								try {
+									const stmtLex = __kustoMaskCommentsPreserveLayout(stmtRaw);
 									let quote = null;
 									let start = -1;
-									for (let i = 0; i < stmtRaw.length; i++) {
-										const ch = stmtRaw[i];
+									for (let i = 0; i < stmtLex.length; i++) {
+										const ch = stmtLex[i];
 										if (quote) {
 											if (ch === '\\') { i++; continue; }
 											if (ch === quote) {

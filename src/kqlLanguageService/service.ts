@@ -177,6 +177,99 @@ const buildCommentRanges = (text: string): TextRange[] => {
 	return ranges;
 };
 
+// Replace comment *contents* with spaces while preserving newlines and offsets.
+// This lets us run lightweight tokenization/string scanning without comments ever affecting
+// parsing, while keeping diagnostic ranges valid.
+const maskCommentsPreserveLayout = (text: string): string => {
+	const s = String(text ?? '');
+	if (!s) return s;
+	const out: string[] = new Array(s.length);
+	let inLineComment = false;
+	let inBlockComment = false;
+	let inSingle = false;
+	let inDouble = false;
+	for (let i = 0; i < s.length; i++) {
+		const ch = s[i]!;
+		const next = s[i + 1];
+
+		if (inLineComment) {
+			if (ch === '\n') {
+				out[i] = ch;
+				inLineComment = false;
+			} else {
+				// Preserve the leading //, but mask the comment body.
+				out[i] = ' ';
+			}
+			continue;
+		}
+		if (inBlockComment) {
+			if (ch === '*' && next === '/') {
+				out[i] = '*';
+				out[i + 1] = '/';
+				inBlockComment = false;
+				i++;
+				continue;
+			}
+			out[i] = ch === '\n' ? ch : ' ';
+			continue;
+		}
+		if (inSingle) {
+			out[i] = ch;
+			if (ch === "'") {
+				// Kusto escape for single quotes: ''
+				if (next === "'") {
+					out[i + 1] = next;
+					i++;
+					continue;
+				}
+				inSingle = false;
+			}
+			continue;
+		}
+		if (inDouble) {
+			out[i] = ch;
+			if (ch === '\\') {
+				if (next !== undefined) {
+					out[i + 1] = next;
+					i++;
+				}
+				continue;
+			}
+			if (ch === '"') {
+				inDouble = false;
+			}
+			continue;
+		}
+
+		// Enter comments (only when not inside strings)
+		if (ch === '/' && next === '/') {
+			out[i] = '/';
+			out[i + 1] = '/';
+			inLineComment = true;
+			i++;
+			continue;
+		}
+		if (ch === '/' && next === '*') {
+			out[i] = '/';
+			out[i + 1] = '*';
+			inBlockComment = true;
+			i++;
+			continue;
+		}
+
+		out[i] = ch;
+		if (ch === "'") {
+			inSingle = true;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			continue;
+		}
+	}
+	return out.join('');
+};
+
 const isInRanges = (ranges: TextRange[], offset: number): boolean => {
 	let lo = 0;
 	let hi = ranges.length - 1;
@@ -671,6 +764,7 @@ export class KqlLanguageService {
 	getDiagnostics(text: string, schema: DatabaseSchemaIndex | undefined | null): KqlDiagnostic[] {
 		const diagnostics: KqlDiagnostic[] = [];
 		const raw = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+		const rawForParse = maskCommentsPreserveLayout(raw);
 		if (!raw.trim()) {
 			return diagnostics;
 		}
@@ -729,7 +823,7 @@ export class KqlLanguageService {
 			return null;
 		};
 		try {
-			const lines = raw.split('\n');
+			const lines = rawForParse.split('\n');
 			for (let i = 0; i < lines.length; i++) {
 				const trimmed = lines[i].trim();
 				if (!/^let\s+/i.test(trimmed)) continue;
@@ -778,7 +872,7 @@ export class KqlLanguageService {
 		const tabularParamScopes: TabularParamScope[] = (() => {
 			try {
 				const scopes: TabularParamScope[] = [];
-				const s = raw;
+				const s = rawForParse;
 				const re = /(^|\n)\s*let\s+[A-Za-z_][\w-]*\s*=\s*\(/gi;
 				for (const m of s.matchAll(re)) {
 					const idx = typeof m.index === 'number' ? m.index : -1;
@@ -919,8 +1013,8 @@ export class KqlLanguageService {
 					return false;
 				}
 			};
-			const statements = splitTopLevelStatements(raw);
-			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
+			const statements = splitTopLevelStatements(rawForParse);
+			const stmts = statements.length ? statements : [{ startOffset: 0, text: rawForParse }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
 				if (isDotCommandStatement(stmtText)) continue;
@@ -1066,8 +1160,8 @@ export class KqlLanguageService {
 				}
 			};
 
-			const statements = splitTopLevelStatements(raw);
-			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
+			const statements = splitTopLevelStatements(rawForParse);
+			const stmts = statements.length ? statements : [{ startOffset: 0, text: rawForParse }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
 				const baseOffset = Number(st?.startOffset ?? 0) || 0;
@@ -1111,8 +1205,8 @@ export class KqlLanguageService {
 		// Basic syntax-ish check: once a statement has started piping, any subsequent non-empty line
 		// should either start with '|' or be an indented continuation of a multiline operator (e.g. summarize, where).
 		try {
-			const statements = splitTopLevelStatements(raw);
-			const stmts = statements.length ? statements : [{ startOffset: 0, text: raw }];
+			const statements = splitTopLevelStatements(rawForParse);
+			const stmts = statements.length ? statements : [{ startOffset: 0, text: rawForParse }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
 				if (isDotCommandStatement(stmtText)) continue;
@@ -1242,7 +1336,7 @@ export class KqlLanguageService {
 
 			const letNames = new Set<string>();
 			try {
-				for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
+				for (const m of rawForParse.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
 					if (m?.[2]) letNames.add(String(m[2]).toLowerCase());
 				}
 			} catch {
@@ -1254,8 +1348,8 @@ export class KqlLanguageService {
 			try {
 				let quote: '"' | '\'' | null = null;
 				let start = -1;
-				for (let i = 0; i < raw.length; i++) {
-					const ch = raw[i];
+				for (let i = 0; i < rawForParse.length; i++) {
+					const ch = rawForParse[i];
 					if (quote) {
 						if (ch === '\\') {
 							i++;
@@ -1286,8 +1380,8 @@ export class KqlLanguageService {
 				return !!r && r.start <= absoluteOffset && absoluteOffset < r.end;
 			};
 
-			const tokens = scanTokens(raw);
-			const commentRanges = buildCommentRanges(raw);
+			const tokens = scanTokens(rawForParse);
+			const commentRanges = buildCommentRanges(rawForParse);
 
 			// Column validation must be statement-scoped in multi-statement scripts (semicolon OR blank-line separated).
 			// Otherwise, a `| project ...` in statement #1 could shrink the column set and make statement #2
@@ -1548,7 +1642,7 @@ export class KqlLanguageService {
 						if (isInStringLiteral(absoluteOffset)) continue;
 						if (letNames.has(nl)) continue;
 						try {
-							const after = raw.slice(absoluteOffset + name.length, Math.min(raw.length, absoluteOffset + name.length + 6));
+							const after = rawForParse.slice(absoluteOffset + name.length, Math.min(rawForParse.length, absoluteOffset + name.length + 6));
 							if (/^\s*\(/.test(after)) continue;
 						} catch {
 							// ignore

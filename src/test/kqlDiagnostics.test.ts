@@ -215,4 +215,41 @@ suite('KQL diagnostics', () => {
 			`Expected KW_UNKNOWN_COLUMN for _startTime, got: ${JSON.stringify(unknownCols, null, 2)}`
 		);
 	});
+
+	// Regression: apostrophes in `//` comments must NOT confuse string-literal parsing.
+	// Bug: the apostrophe in "People's" starts a string in the lightweight lexer, causing
+	// the later literal 'Visual Studio Code' to be mis-tokenized and its words to squiggle.
+	test("does not flag words inside a quoted string literal when a preceding // comment contains an apostrophe (People's)", () => {
+		const text = [
+			"// People's last day in Azure MCP + VS Code",
+			'AzureMCP_DailyActivity',
+			"    | where ClientName == 'Visual Studio Code'",
+			''
+		].join('\n');
+
+		const schema: any = {
+			tables: ['AzureMCP_DailyActivity'],
+			columnTypesByTable: {
+				AzureMCP_DailyActivity: {
+					ClientName: 'string'
+				}
+			}
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('Visual')),
+			`Expected no KW_UNKNOWN_COLUMN for Visual (string literal word), got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('Studio')),
+			`Expected no KW_UNKNOWN_COLUMN for Studio (string literal word), got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('Code')),
+			`Expected no KW_UNKNOWN_COLUMN for Code (string literal word), got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+	});
 });
