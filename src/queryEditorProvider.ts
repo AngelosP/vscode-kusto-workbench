@@ -517,7 +517,7 @@ export class QueryEditorProvider {
 					const key = `${sourceBoxId}::${comparisonBoxId}`;
 					const summary = {
 						dataMatches: !!message.dataMatches,
-						headersMatch: message.headersMatch == null ? true : !!message.headersMatch
+						headersMatch: message.headersMatch === null || message.headersMatch === undefined ? true : !!message.headersMatch
 					};
 					this.latestComparisonSummaryByKey.set(key, { ...summary, timestamp: Date.now() });
 					const pending = this.pendingComparisonSummaryByKey.get(key);

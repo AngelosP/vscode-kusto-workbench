@@ -19,7 +19,9 @@ export default [{
             format: ["camelCase", "PascalCase"],
         }],
 
-        curly: "warn",
+        // Allow one-line control statements without braces; enforce braces for multi-line blocks.
+        // This keeps lint clean without rewriting large existing files.
+        curly: ["warn", "multi-line"],
         eqeqeq: "warn",
         "no-throw-literal": "warn",
         semi: "warn",
