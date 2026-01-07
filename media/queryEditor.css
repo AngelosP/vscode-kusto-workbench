@@ -1569,6 +1569,15 @@
 			background: var(--vscode-list-hoverBackground);
 		}
 
+		/* Tools dropdown: the selected item should match hover background (not the default selected grey). */
+		.qe-toolbar-dropdown-menu .kusto-dropdown-item:hover,
+		.qe-toolbar-dropdown-menu .kusto-dropdown-item.is-active,
+		.qe-toolbar-dropdown-menu .kusto-dropdown-item.is-selected,
+		.qe-toolbar-dropdown-menu .kusto-dropdown-item[aria-selected="true"] {
+			background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+			color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+		}
+
 		.kusto-dropdown-empty,
 		.kusto-favorites-empty {
 			padding: 8px;
@@ -1832,9 +1841,21 @@
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 2px;
 			background: var(--vscode-input-background);
+			/* Allow toolbar dropdown menus to overlay outside the editor frame. */
+			overflow: visible;
+			display: flex;
+			flex-direction: column;
+		}
+
+		/* Clip the editor surface (Monaco + banners) so it still respects rounded corners. */
+		.qe-editor-clip {
+			flex: 1 1 auto;
+			min-height: 0;
 			overflow: hidden;
 			display: flex;
 			flex-direction: column;
+			border-bottom-left-radius: 2px;
+			border-bottom-right-radius: 2px;
 		}
 
 		.query-editor-toolbar {
@@ -1847,6 +1868,8 @@
 			background: var(--vscode-editorWidget-background);
 			color: var(--vscode-foreground);
 			flex: 0 0 auto;
+			border-top-left-radius: 2px;
+			border-top-right-radius: 2px;
 		}
 
 		.qe-missing-clusters-banner {

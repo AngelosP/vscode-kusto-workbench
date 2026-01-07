@@ -401,6 +401,7 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="query-editor-wrapper">' +
 		toolbarHtml +
+		'<div class="qe-editor-clip">' +
 		'<div class="qe-caret-docs-banner" id="' + id + '_caret_docs" style="display:none;" role="status" aria-live="polite">' +
 		'<div class="qe-caret-docs-text" id="' + id + '_caret_docs_text"></div>' +
 		'</div>' +
@@ -413,6 +414,7 @@ function addQueryBox(options) {
 		'<div class="query-editor" id="' + id + '_query_editor"></div>' +
 		'<div class="query-editor-placeholder" id="' + id + '_query_placeholder">Enter your KQL query here...</div>' +
 		'<div class="query-editor-resizer" id="' + id + '_query_resizer" title="Drag to resize editor"></div>' +
+		'</div>' +
 		'</div>' +
 		'<div class="query-actions">' +
 		'<div class="query-run">' +
@@ -2006,7 +2008,10 @@ function closeToolsDropdown(boxId) {
 	} catch { /* ignore */ }
 	try {
 		const btn = document.getElementById(id + '_tools_btn');
-		if (btn) btn.setAttribute('aria-expanded', 'false');
+		if (btn) {
+			btn.setAttribute('aria-expanded', 'false');
+			try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
+		}
 	} catch { /* ignore */ }
 }
 
@@ -2042,6 +2047,13 @@ function toggleToolsDropdown(boxId) {
 	}
 	menu.style.display = next;
 	btn.setAttribute('aria-expanded', next === 'block' ? 'true' : 'false');
+	try {
+		if (next === 'block') {
+			btn.classList && btn.classList.add('is-active');
+		} else {
+			btn.classList && btn.classList.remove('is-active');
+		}
+	} catch { /* ignore */ }
 	if (next === 'block') {
 		try { window.__kustoDropdown && window.__kustoDropdown.wireMenuInteractions && window.__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
 		try { menu.focus(); } catch { /* ignore */ }

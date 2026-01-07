@@ -192,9 +192,10 @@
 			for (const m of menus) {
 				try { m.style.display = 'none'; } catch { /* ignore */ }
 			}
-			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn'));
+			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn'));
 			for (const b of buttons) {
 				try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+				try { b.classList && b.classList.remove('is-active'); } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 	};
@@ -210,7 +211,10 @@
 		} catch { /* ignore */ }
 		try {
 			const btn = document.getElementById(bid);
-			if (btn) btn.setAttribute('aria-expanded', 'false');
+			if (btn) {
+				btn.setAttribute('aria-expanded', 'false');
+				try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
+			}
 		} catch { /* ignore */ }
 	};
 
@@ -245,6 +249,7 @@
 		try {
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
+			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		// Close the dropdown automatically if focus leaves the dropdown wrapper
@@ -311,6 +316,7 @@
 						if (String(menu.style.display || '') === 'block') {
 							try { menu.style.display = 'none'; } catch { /* ignore */ }
 							try { btn.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+							try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
 						}
 					} catch { /* ignore */ }
 				}, 0);
