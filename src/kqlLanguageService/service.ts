@@ -1497,6 +1497,469 @@ export class KqlLanguageService {
 						}
 					}
 
+
+					// Lightweight schema propagation for schema-combining operators.
+					// Goal: any column introduced by the RHS of join/lookup should be in-scope after the operator.
+					if (op === 'join' || op === 'lookup' || op === 'union') {
+						const joinKindForStage = (stageText: string, defaultKind: string): string => {
+							try {
+								const mKind = String(stageText || '').match(/\bkind\s*=\s*([A-Za-z_][\w-]*)\b/i);
+								return mKind?.[1] ? String(mKind[1]).toLowerCase() : defaultKind;
+							} catch {
+								return defaultKind;
+							}
+						};
+
+						const joinOutputMode = (kindLower: string): 'left' | 'right' | 'both' => {
+							const k = String(kindLower || '').toLowerCase();
+							if (k === 'leftsemi' || k === 'leftanti' || k === 'anti' || k === 'leftantisemi') return 'left';
+							if (k === 'rightsemi' || k === 'rightanti' || k === 'rightantisemi') return 'right';
+							return 'both';
+						};
+
+						const addWithDedupe = (out: Set<string>, name: string): void => {
+							try {
+								const base = String(name);
+								if (!base) return;
+								if (!out.has(base)) {
+									out.add(base);
+									return;
+								}
+								// Kusto de-dupes right-side name conflicts automatically.
+								let i = 1;
+								while (out.has(`${base}${i}`)) i++;
+								out.add(`${base}${i}`);
+							} catch {
+								// ignore
+							}
+						};
+
+						const extractFirstParenGroup = (s: string): string | null => {
+							try {
+								const text = String(s || '');
+								const open = text.indexOf('(');
+								if (open < 0) return null;
+								let depth = 0;
+								for (let i = open; i < text.length; i++) {
+									const ch = text[i];
+									if (ch === '(') depth++;
+									else if (ch === ')') {
+										depth--;
+										if (depth === 0) {
+											return text.slice(open + 1, i);
+										}
+									}
+								}
+								return null;
+							} catch {
+								return null;
+							}
+						};
+
+						const splitTopLevelCommaList = (s: string): string[] => {
+							try {
+								const text = String(s ?? '');
+								const parts: string[] = [];
+								let start = 0;
+								let paren = 0;
+								let bracket = 0;
+								let brace = 0;
+								let quote: '"' | "'" | null = null;
+								for (let i = 0; i < text.length; i++) {
+									const ch = text[i];
+									if (quote) {
+										if (ch === '\\') {
+											i++;
+											continue;
+										}
+										if (ch === quote) quote = null;
+										continue;
+									}
+									if (ch === '"' || ch === "'") {
+										quote = ch as '"' | "'";
+										continue;
+									}
+									if (ch === '(') paren++;
+									else if (ch === ')' && paren > 0) paren--;
+									else if (ch === '[') bracket++;
+									else if (ch === ']' && bracket > 0) bracket--;
+									else if (ch === '{') brace++;
+									else if (ch === '}' && brace > 0) brace--;
+									else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+										parts.push(text.slice(start, i).trim());
+										start = i + 1;
+									}
+								}
+								parts.push(text.slice(start).trim());
+								return parts.filter(Boolean);
+							} catch {
+								return [];
+							}
+						};
+
+						// Map tabular let name -> RHS expression text (best-effort).
+						const letExprByNameLower = (() => {
+							const map = new Map<string, string>();
+							try {
+								const stmts = splitTopLevelStatements(rawForParse);
+								for (const st2 of (stmts.length ? stmts : [{ startOffset: 0, text: rawForParse }])) {
+									const txt = String(st2?.text ?? '');
+									const mLet = txt.match(/^\s*;*\s*let\s+([A-Za-z_][\w-]*)\s*=\s*/i);
+									if (!mLet?.[1]) continue;
+									const nameLower = String(mLet[1]).toLowerCase();
+									const rhs = txt.slice(mLet[0].length).trim();
+									if (!rhs) continue;
+									// Skip scalar function-like lets (datetime(...), toscalar(...), etc.).
+									const mFirst = rhs.match(/^([A-Za-z_][\w-]*)\b/);
+									if (mFirst?.[1]) {
+										const after = rhs.slice(mFirst[0].length);
+										if (/^\s*\(/.test(after)) continue;
+									}
+									map.set(nameLower, rhs);
+								}
+							} catch {
+								// ignore
+							}
+							return map;
+						})();
+
+						const inferColumnsForTabularExpr = (exprText: string, memo: Map<string, Set<string> | null>, stack: Set<string>): Set<string> | null => {
+							try {
+								const text = String(exprText ?? '').trim();
+								if (!text) return null;
+
+								// Simple identifier expression (table or let variable).
+								const mIdent = text.match(/^([A-Za-z_][\w-]*)\b/);
+								if (mIdent?.[1]) {
+									const ident = String(mIdent[1]);
+									const after = text.slice(mIdent[0].length);
+									const afterTrim = after.trimStart();
+									// If the next non-whitespace token is a pipe, this is a pipeline expression
+									// starting with a table/let name (e.g. `T | summarize ...`). Handle via pipeline logic.
+									if (!afterTrim.startsWith('(') && !afterTrim.startsWith('|')) {
+										const found = tables.find((t) => sameLower(String(t), ident));
+										if (found && columnsByTable[found]) {
+											return new Set((columnsByTable[found] || []).map((c) => String(c)));
+										}
+										const key = ident.toLowerCase();
+										if (memo.has(key)) return memo.get(key) || null;
+										if (stack.has(key)) return null;
+										stack.add(key);
+										let result: Set<string> | null = null;
+										const rhs = letExprByNameLower.get(key);
+										if (rhs) {
+											result = inferColumnsForTabularExpr(rhs, memo, stack);
+										} else {
+											// Fallback: treat as alias of its ultimate source table when we can't infer the RHS.
+											const resolvedSimpleLet = resolveTabularLetToTable(key);
+											if (resolvedSimpleLet && columnsByTable[resolvedSimpleLet]) {
+												result = new Set((columnsByTable[resolvedSimpleLet] || []).map((c) => String(c)));
+											}
+										}
+										stack.delete(key);
+										memo.set(key, result);
+										return result;
+									}
+								}
+
+								// Pipeline expression: infer source + apply supported operators.
+								let active: Set<string> | null = null;
+								let activeTableLocal: string | null = null;
+								try {
+									const ignore = new Set(['let', 'set', 'declare', 'print', 'range', 'datatable', 'externaldata']);
+									const lines = text.split('\n');
+									for (const line of lines) {
+										const trimmed = String(line || '').trim();
+										if (!trimmed || trimmed === ';') continue;
+										if (trimmed.startsWith('|') || trimmed.startsWith('.') || trimmed.startsWith('//')) continue;
+										const m = String(line || '').match(/^\s*([A-Za-z_][\w-]*)\b/);
+										if (!m?.[1]) continue;
+										const name = String(m[1]);
+										if (ignore.has(name.toLowerCase())) continue;
+										const found = tables.find((t) => sameLower(String(t), name));
+										if (found && columnsByTable[found]) {
+											activeTableLocal = String(found);
+											break;
+										}
+										const resolvedLet = resolveTabularLetToTable(name.toLowerCase());
+										if (resolvedLet && columnsByTable[resolvedLet]) {
+											activeTableLocal = resolvedLet;
+											break;
+										}
+										const memoKey = name.toLowerCase();
+										const rhsCols = inferColumnsForTabularExpr(memoKey, memo, stack);
+										if (rhsCols) {
+											active = new Set(rhsCols);
+											break;
+										}
+									}
+								} catch {
+									// ignore
+								}
+								if (!active && activeTableLocal) {
+									active = new Set((columnsByTable[activeTableLocal] || []).map((c) => String(c)));
+								}
+								if (!active) return null;
+
+								const localTokens = scanTokens(text);
+								let pd = Number.POSITIVE_INFINITY;
+								for (const tok of localTokens) {
+									if (tok?.type === 'pipe') pd = Math.min(pd, tok.depth);
+								}
+								if (!Number.isFinite(pd)) return active;
+
+								for (let i2 = 0; i2 < localTokens.length; i2++) {
+									const t2 = localTokens[i2];
+									if (!t2 || t2.depth !== pd || t2.type !== 'pipe') continue;
+									let opTok2: Extract<Token, { type: 'ident' }> | null = null;
+									for (let j2 = i2 + 1; j2 < localTokens.length; j2++) {
+										const tt2 = localTokens[j2];
+										if (!tt2 || tt2.depth !== pd) continue;
+										if (tt2.type === 'ident') {
+											opTok2 = tt2;
+											break;
+										}
+										if (tt2.type === 'pipe') break;
+									}
+									if (!opTok2) continue;
+									const op2 = String(opTok2.value ?? '').toLowerCase();
+									let cs2 = opTok2.endOffset;
+									let ce2 = text.length;
+									for (let j2 = i2 + 1; j2 < localTokens.length; j2++) {
+										const tt2 = localTokens[j2];
+										if (!tt2 || tt2.depth !== pd) continue;
+										if (tt2.type === 'pipe' && tt2.offset > opTok2.offset) {
+											ce2 = tt2.offset;
+											break;
+										}
+									}
+												const ct2 = text.slice(cs2, ce2);
+												const input2: Set<string> = new Set<string>(active);
+									let next2: Set<string> | null = null;
+									if (op2 === 'extend') {
+										for (const m of ct2.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+											active.add(String(m[1]));
+										}
+									}
+									if (op2 === 'project') {
+										const next = new Set<string>();
+										for (const m of ct2.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
+											const nm = m[1];
+											if (!nm) continue;
+											const after = ct2.slice((m.index ?? 0) + nm.length);
+											if (/^\s*=/.test(after)) {
+												next.add(nm);
+												continue;
+											}
+											if (input2.has(nm)) next.add(nm);
+										}
+										next2 = next;
+									}
+									if (op2 === 'summarize') {
+										const next = new Set<string>();
+										for (const m of ct2.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
+											next.add(String(m[1]));
+										}
+										next2 = next;
+									}
+									if (op2 === 'join' || op2 === 'lookup') {
+										const stage = text.slice(opTok2.offset, ce2);
+										const defKind = (op2 === 'lookup') ? 'leftouter' : 'innerunique';
+										const kind = joinKindForStage(stage, defKind);
+										const mode = joinOutputMode(kind);
+										let rightExpr = extractFirstParenGroup(stage);
+										if (!rightExpr) {
+											let afterOp = stage.replace(/^(join|lookup)\b/i, '').trim();
+											afterOp = afterOp
+												.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+												.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^\s)]+/ig, ' ')
+												.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+												.trim();
+											const mName = afterOp.match(/^([A-Za-z_][\w-]*)\b/);
+											rightExpr = mName?.[1] ? String(mName[1]) : null;
+										}
+										const rightCols = rightExpr ? inferColumnsForTabularExpr(rightExpr, memo, stack) : null;
+										if (rightCols) {
+											const out = new Set<string>();
+											const leftOut = mode === 'right' ? null : input2;
+											const rightOut = mode === 'left' ? null : rightCols;
+											if (leftOut) for (const c of leftOut) addWithDedupe(out, c);
+											if (rightOut) {
+												// lookup doesn't repeat right-side key columns.
+												let rightKeyExcludes = new Set<string>();
+												if (op2 === 'lookup') {
+													const onIdx = stage.toLowerCase().lastIndexOf(' on ');
+													if (onIdx >= 0) {
+														const onBody = stage.slice(onIdx + 4);
+														// Collect $right.X keys, and simple `on Col` keys.
+														for (const m of onBody.matchAll(/\$right\s*\.\s*([A-Za-z_][\w-]*)\b/gi)) {
+															rightKeyExcludes.add(String(m[1]));
+														}
+														if (rightKeyExcludes.size === 0) {
+															for (const part of splitTopLevelCommaList(onBody)) {
+																const mKey = String(part || '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+																if (mKey?.[1]) rightKeyExcludes.add(String(mKey[1]));
+															}
+														}
+													}
+												}
+												for (const c of rightOut) {
+													if (rightKeyExcludes.has(String(c))) continue;
+													addWithDedupe(out, c);
+												}
+											}
+											next2 = out;
+										}
+									}
+												if (op2 === 'union') {
+										const stage = text.slice(opTok2.offset, ce2);
+										const kind = joinKindForStage(stage, 'outer');
+										const unionBody = stage.replace(/^union\b/i, '').trim();
+										let withSourceCol: string | null = null;
+										try {
+											const mWs = unionBody.match(/\bwithsource\s*=\s*([A-Za-z_][\w-]*)\b/i);
+											if (mWs?.[1]) withSourceCol = String(mWs[1]);
+										} catch {
+											// ignore
+										}
+										// Remove options before splitting legs.
+										let legsText = unionBody
+											.replace(/\bkind\s*=\s*(inner|outer)\b/ig, ' ')
+											.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+											.replace(/\bisfuzzy\s*=\s*(true|false)\b/ig, ' ')
+											.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^\s)]+/ig, ' ')
+											.trim();
+										const legs = splitTopLevelCommaList(legsText);
+										if (String(kind).toLowerCase() === 'inner') {
+											// Be conservative: if we can't infer all legs, don't narrow.
+											let ok = true;
+														let acc: Set<string> = new Set<string>(input2);
+											for (const leg of legs) {
+												const cols = inferColumnsForTabularExpr(leg, memo, stack);
+												if (!cols) {
+													ok = false;
+													break;
+												}
+															acc = new Set<string>(Array.from(acc).filter((c) => cols.has(c)));
+											}
+											if (ok) {
+												next2 = acc;
+															if (withSourceCol) addWithDedupe(acc, withSourceCol);
+											}
+										} else {
+														const acc: Set<string> = new Set<string>(input2);
+											for (const leg of legs) {
+												const cols = inferColumnsForTabularExpr(leg, memo, stack);
+												if (!cols) continue;
+												for (const c of cols) addWithDedupe(acc, c);
+											}
+											next2 = acc;
+														if (withSourceCol) addWithDedupe(acc, withSourceCol);
+										}
+									}
+									if (next2) active = next2;
+								}
+								return active;
+							} catch {
+								return null;
+							}
+						};
+
+						const memo = new Map<string, Set<string> | null>();
+						const stack = new Set<string>();
+
+						if (op === 'union') {
+							// `T | union kind=... (Other) ...`
+							const stage = stmtText.slice(opTok.offset, clauseEnd);
+							const kind = joinKindForStage(stage, 'outer');
+							let body = stage.replace(/^union\b/i, '').trim();
+							let withSourceCol: string | null = null;
+							try {
+								const mWs = body.match(/\bwithsource\s*=\s*([A-Za-z_][\w-]*)\b/i);
+								if (mWs?.[1]) withSourceCol = String(mWs[1]);
+							} catch {
+								// ignore
+							}
+							body = body
+								.replace(/\bkind\s*=\s*(inner|outer)\b/ig, ' ')
+								.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+								.replace(/\bisfuzzy\s*=\s*(true|false)\b/ig, ' ')
+								.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^\s)]+/ig, ' ')
+								.trim();
+							const legs = splitTopLevelCommaList(body);
+							if (String(kind).toLowerCase() === 'inner') {
+								let ok = true;
+								let acc = new Set<string>(inputColSet || colSet);
+								for (const leg of legs) {
+									const cols = inferColumnsForTabularExpr(leg, memo, stack);
+									if (!cols) {
+										ok = false;
+										break;
+									}
+									acc = new Set(Array.from(acc).filter((c) => cols.has(c)));
+								}
+								if (ok) {
+									nextColSet = acc;
+									if (withSourceCol) addWithDedupe(nextColSet, withSourceCol);
+								}
+							} else {
+								const acc = new Set<string>(inputColSet || colSet);
+								for (const leg of legs) {
+									const cols = inferColumnsForTabularExpr(leg, memo, stack);
+									if (!cols) continue;
+									for (const c of cols) addWithDedupe(acc, c);
+								}
+								nextColSet = acc;
+								if (withSourceCol) addWithDedupe(nextColSet, withSourceCol);
+							}
+						} else {
+							const stage = stmtText.slice(opTok.offset, clauseEnd);
+							const defKind = (op === 'lookup') ? 'leftouter' : 'innerunique';
+							const kind = joinKindForStage(stage, defKind);
+							const mode = joinOutputMode(kind);
+							let rightExpr = extractFirstParenGroup(stage);
+							if (!rightExpr) {
+								let afterOp = stage.replace(/^(join|lookup)\b/i, '').trim();
+								afterOp = afterOp
+									.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+									.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^\s)]+/ig, ' ')
+									.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+									.trim();
+								const mName = afterOp.match(/^([A-Za-z_][\w-]*)\b/);
+								rightExpr = mName?.[1] ? String(mName[1]) : null;
+							}
+							const rightCols = rightExpr ? inferColumnsForTabularExpr(rightExpr, memo, stack) : null;
+							if (rightCols) {
+								const out = new Set<string>();
+								const leftOut = mode === 'right' ? null : (inputColSet || colSet);
+								const rightOut = mode === 'left' ? null : rightCols;
+								if (leftOut) for (const c of leftOut) addWithDedupe(out, c);
+								if (rightOut) {
+									let rightKeyExcludes = new Set<string>();
+									if (op === 'lookup') {
+										const onIdx = stage.toLowerCase().lastIndexOf(' on ');
+										if (onIdx >= 0) {
+											const onBody = stage.slice(onIdx + 4);
+											for (const m of onBody.matchAll(/\$right\s*\.\s*([A-Za-z_][\w-]*)\b/gi)) {
+												rightKeyExcludes.add(String(m[1]));
+											}
+											if (rightKeyExcludes.size === 0) {
+												for (const part of splitTopLevelCommaList(onBody)) {
+													const mKey = String(part || '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+													if (mKey?.[1]) rightKeyExcludes.add(String(mKey[1]));
+												}
+											}
+										}
+									}
+									for (const c of rightOut) {
+										if (rightKeyExcludes.has(String(c))) continue;
+										addWithDedupe(out, c);
+									}
+								}
+								nextColSet = out;
+							}
+						}
+					}
 					if (op === 'project') {
 						const next = new Set<string>();
 						for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
@@ -1604,6 +2067,10 @@ export class KqlLanguageService {
 						nextColSet = next;
 					}
 
+					if (nextColSet) {
+						colSet = nextColSet;
+					}
+
 					const shouldValidateColumns =
 						op === 'where' || op === 'project' || op === 'extend' || op === 'summarize' || op === 'distinct' || op === 'take' || op === 'top' || op === 'order' || op === 'sort';
 					if (!shouldValidateColumns) continue;
@@ -1651,10 +2118,6 @@ export class KqlLanguageService {
 						if (validateSet && !validateSet.has(name)) {
 							reportUnknown('KW_UNKNOWN_COLUMN', 'column', name, absoluteOffset, absoluteOffset + name.length, currentColumns());
 						}
-					}
-
-					if (nextColSet) {
-						colSet = nextColSet;
 					}
 				}
 			}

@@ -252,4 +252,55 @@ suite('KQL diagnostics', () => {
 			`Expected no KW_UNKNOWN_COLUMN for Code (string literal word), got: ${JSON.stringify(unknownCols, null, 2)}`
 		);
 	});
+
+	// Regression: columns created in the RHS of a lookup should be in-scope after lookup.
+	// Bug: `TotalAfterPivot` is incorrectly squiggled as an unknown column.
+	test('does not flag RHS lookup columns referenced after lookup (TotalAfterPivot)', () => {
+		const text = [
+			'let pivotDay = datetime(20251114);',
+			';',
+			'let usageBeforePivot = DailyActivity',
+			"    | where ClientLabel == 'Fictional Product Name'",
+			'        and Day < pivotDay',
+			'    | summarize',
+			'        TotalBeforePivot = sum(CallCount)',
+			'        by',
+			'        DeviceId',
+			';',
+			'let usageAfterPivot = DailyActivity',
+			"    | where ClientLabel == 'Fictional Product Name'",
+			'        and Day >= pivotDay',
+			'    | summarize',
+			'        TotalAfterPivot = sum(CallCount)',
+			'        by',
+			'        DeviceId',
+			';',
+			'usageBeforePivot',
+			'    | lookup (usageAfterPivot) on DeviceId',
+			'    | summarize',
+			'        AllUsers = dcount(DeviceId, 2)',
+			'        ChurnedUsers = dcountif(DeviceId, isempty(TotalAfterPivot), 2)',
+			''
+		].join('\n');
+
+		const schema: any = {
+			tables: ['DailyActivity'],
+			columnTypesByTable: {
+				DailyActivity: {
+					ClientLabel: 'string',
+					Day: 'datetime',
+					CallCount: 'long',
+					DeviceId: 'string'
+				}
+			}
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('TotalAfterPivot')),
+			`Expected TotalAfterPivot to be valid after lookup, got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+	});
 });

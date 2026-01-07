@@ -2188,6 +2188,31 @@ function ensureMonaco() {
 										if (/^where\b/i.test(lower)) continue;
 										if (/^(take|top|limit)\b/i.test(lower)) continue;
 										if (/^order\s+by\b/i.test(lower) || /^sort\s+by\b/i.test(lower)) continue;
+											if (lower === 'count' || lower.startsWith('count ')) {
+												cols = ['Count'];
+												continue;
+											}
+											if (/^union\b/i.test(lower)) {
+												// union outputs the union of columns across sources (best-effort).
+												try {
+													let unionBody = stage.replace(/^union\b/i, '').trim();
+													unionBody = unionBody
+														.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+														.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+														.replace(/\bisfuzzy\s*=\s*(true|false)\b/ig, ' ')
+														.trim();
+													const set = new Set(cols);
+													for (const item of __kustoSplitCommaList(unionBody)) {
+														const expr = String(item || '').trim();
+														if (!expr) continue;
+														const otherCols = await __kustoComputeColumnsForPipelineText(expr.replace(/^\(\s*/g, '').replace(/\s*\)$/g, '').trim());
+														if (!otherCols) continue;
+														for (const c of otherCols) set.add(c);
+													}
+													cols = Array.from(set);
+												} catch { /* ignore */ }
+												continue;
+											}
 										if (/^distinct\b/i.test(lower)) {
 											const afterKw = stage.replace(/^distinct\s+/i, '');
 											const nextCols = [];
@@ -2198,6 +2223,37 @@ function ensureMonaco() {
 											if (nextCols.length) cols = nextCols;
 											continue;
 										}
+											if (/^project-rename\b/i.test(lower)) {
+												const afterKw = stage.replace(/^project-rename\b/i, '').trim();
+												for (const item of __kustoSplitCommaList(afterKw)) {
+													const m = item.match(/^([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)\b/);
+													if (m && m[1] && m[2]) {
+														cols = cols.filter(c => c !== m[2]);
+														if (!cols.includes(m[1])) cols.push(m[1]);
+													}
+												}
+												continue;
+											}
+											if (/^project-away\b/i.test(lower)) {
+												const afterKw = stage.replace(/^project-away\b/i, '').trim();
+												const remove = new Set();
+												for (const item of __kustoSplitCommaList(afterKw)) {
+													const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+													if (mId && mId[1]) remove.add(mId[1]);
+												}
+												if (remove.size) cols = cols.filter(c => !remove.has(c));
+												continue;
+											}
+											if (/^project-keep\b/i.test(lower)) {
+												const afterKw = stage.replace(/^project-keep\b/i, '').trim();
+												const keep = [];
+												for (const item of __kustoSplitCommaList(afterKw)) {
+													const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+													if (mId && mId[1]) keep.push(mId[1]);
+												}
+												if (keep.length) cols = keep;
+												continue;
+											}
 										if (/^project\b/i.test(lower)) {
 											const afterKw = stage.replace(/^project\b/i, '').trim();
 											const nextCols = [];
@@ -2210,6 +2266,89 @@ function ensureMonaco() {
 											if (nextCols.length) cols = nextCols;
 											continue;
 										}
+											if (/^extend\b/i.test(lower)) {
+												try {
+													const set = new Set(cols);
+													const body = stage.replace(/^extend\b/i, '');
+													for (const m of body.matchAll(/\b([A-Za-z_][\w]*)\s*=/g)) {
+														if (m && m[1]) set.add(String(m[1]));
+													}
+													cols = Array.from(set);
+												} catch { /* ignore */ }
+												continue;
+											}
+											if (/^parse(-where)?\b/i.test(lower)) {
+												// parse/parse-where extends the table with extracted columns.
+												try {
+													const set = new Set(cols);
+													const withIdx = stage.toLowerCase().indexOf(' with ');
+													if (withIdx >= 0) {
+														const body = stage.slice(withIdx + 6);
+														for (const m of body.matchAll(/(?:"[^"]*"|'[^']*'|\*)\s*([A-Za-z_][\w]*)\s*(?::\s*[A-Za-z_][\w]*)?/g)) {
+															const name = m && m[1] ? String(m[1]) : '';
+															if (!name) continue;
+															const nl = name.toLowerCase();
+															if (nl === 'kind' || nl === 'flags' || nl === 'with') continue;
+															set.add(name);
+														}
+													}
+													cols = Array.from(set);
+												} catch { /* ignore */ }
+												continue;
+											}
+											if (/^mv-expand\b/i.test(lower)) {
+												try {
+													const set = new Set(cols);
+													const body = stage.replace(/^mv-expand\s*/i, '');
+													const body2 = body.split(/\blimit\b/i)[0] || body;
+													for (const part of __kustoSplitCommaList(body2)) {
+														const mAssign = part.match(/^([A-Za-z_][\w]*)\s*=/);
+														if (mAssign && mAssign[1]) set.add(mAssign[1]);
+													}
+													cols = Array.from(set);
+												} catch { /* ignore */ }
+												continue;
+											}
+											if (/^make-series\b/i.test(lower)) {
+												// make-series output: axis column + assigned series columns + by columns (best-effort).
+												try {
+													const next = new Set();
+													const mOn = stage.match(/\bon\s+([A-Za-z_][\w]*)\b/i);
+													if (mOn && mOn[1]) next.add(mOn[1]);
+													const preOn = stage.split(/\bon\b/i)[0] || stage;
+													for (const m of preOn.matchAll(/\b([A-Za-z_][\w]*)\s*=/g)) {
+														if (m && m[1]) next.add(String(m[1]));
+													}
+													const mBy = stage.match(/\bby\b([\s\S]*)$/i);
+													if (mBy && mBy[1]) {
+														for (const item of __kustoSplitCommaList(mBy[1])) {
+															const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+															if (mId && mId[1]) next.add(mId[1]);
+														}
+													}
+													if (next.size > 0) cols = Array.from(next);
+												} catch { /* ignore */ }
+												continue;
+											}
+											if (/^summarize\b/i.test(lower)) {
+												// summarize output columns are aggregates + group-by keys.
+												const summarizeBody = stage.replace(/^summarize\b/i, '').trim();
+												const parts2 = summarizeBody.split(/\bby\b/i);
+												const aggPart = parts2[0] || '';
+												const byPart = parts2.length > 1 ? parts2.slice(1).join('by') : '';
+
+												const nextCols = [];
+												for (const item of __kustoSplitCommaList(byPart)) {
+													const mId = item.match(/^([A-Za-z_][\w]*)\b/);
+													if (mId && mId[1]) nextCols.push(mId[1]);
+												}
+												for (const item of __kustoSplitCommaList(aggPart)) {
+													const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
+													if (mAssign && mAssign[1]) nextCols.push(mAssign[1]);
+												}
+												if (nextCols.length) cols = nextCols;
+												continue;
+											}
 										if (/^(join|lookup)\b/i.test(lower)) {
 											const kind = __kustoParseJoinKind(stage);
 											const mode = __kustoJoinOutputMode(kind);
