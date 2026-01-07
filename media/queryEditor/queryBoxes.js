@@ -5277,6 +5277,15 @@ function updateDatabaseField(boxId) {
 	}
 	if (connectionSelect) {
 		connectionSelect.dataset.prevValue = connectionId;
+		// Persist selection immediately so VS Code Problems can reflect current schema context.
+		try {
+			vscode.postMessage({
+				type: 'saveLastSelection',
+				connectionId: String(connectionId || ''),
+				// Connection change invalidates any prior DB selection until the DB dropdown refreshes.
+				database: ''
+			});
+		} catch { /* ignore */ }
 	}
 	const databaseSelect = document.getElementById(boxId + '_database');
 	const refreshBtn = document.getElementById(boxId + '_refresh');

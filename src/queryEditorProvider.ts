@@ -103,6 +103,7 @@ type IncomingWebviewMessage =
 	| { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
@@ -575,6 +576,21 @@ export class QueryEditorProvider {
 				return;
 			case 'refreshDatabases':
 				await this.sendDatabases(message.connectionId, message.boxId, true);
+				return;
+			case 'saveLastSelection':
+				{
+					const cid = String(message.connectionId || '').trim();
+					if (!cid) {
+						return;
+					}
+					await this.saveLastSelection(cid, message.database);
+				}
+				try {
+					// Ensure VS Code Problems reflects the new schema context immediately.
+					await vscode.commands.executeCommand('kusto.refreshTextEditorDiagnostics');
+				} catch {
+					// ignore
+				}
 				return;
 			case 'showInfo':
 				vscode.window.showInformationMessage(message.message);

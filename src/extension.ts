@@ -84,10 +84,29 @@ export function activate(context: vscode.ExtensionContext) {
 					kqlDiagnostics.set(doc.uri, vsDiagnostics);
 				} catch {
 					// Non-fatal: avoid spamming users with background errors.
+					// But DO clear stale diagnostics so Problems reflects the current best-effort state.
+					try {
+						kqlDiagnostics.set(doc.uri, []);
+					} catch {
+						// ignore
+					}
 				}
 			}, delayMs)
 		);
 	};
+
+	// Allow other parts of the extension (e.g. webviews) to request an immediate refresh.
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.refreshTextEditorDiagnostics', async () => {
+			try {
+				for (const doc of vscode.workspace.textDocuments || []) {
+					scheduleDiagnostics(doc, 0);
+				}
+			} catch {
+				// ignore
+			}
+		})
+	);
 
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument((doc) => {

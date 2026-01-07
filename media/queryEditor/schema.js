@@ -257,6 +257,18 @@ function onDatabaseChanged(boxId) {
 		}
 	} catch { /* ignore */ }
 	setSchemaLoadedSummary(boxId, '', '', false);
+	// Persist selection immediately so VS Code Problems can reflect current schema context.
+	try {
+		const connectionSelect = document.getElementById(boxId + '_connection');
+		const databaseSelect = document.getElementById(boxId + '_database');
+		const connectionId = connectionSelect ? connectionSelect.value : '';
+		const database = databaseSelect ? databaseSelect.value : '';
+		vscode.postMessage({
+			type: 'saveLastSelection',
+			connectionId: String(connectionId || ''),
+			database: String(database || '')
+		});
+	} catch { /* ignore */ }
 	ensureSchemaForBox(boxId, false);
 	try {
 		if (typeof __kustoUpdateFavoritesUiForBox === 'function') {
