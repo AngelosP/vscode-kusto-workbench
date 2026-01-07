@@ -46,8 +46,10 @@ async function main() {
 	// Copy/bundle them into media so they are included in the VSIX (node_modules is excluded).
 	const toastuiSrcDir = path.join(__dirname, 'node_modules', '@toast-ui', 'editor', 'dist');
 	const toastuiDestDir = path.join(__dirname, 'media', 'queryEditor', 'vendor', 'toastui-editor');
+	const toastuiWebviewJsDestDir = path.join(__dirname, 'dist', 'queryEditor', 'vendor', 'toastui-editor');
 	try {
 		await fs.promises.mkdir(toastuiDestDir, { recursive: true });
+		await fs.promises.mkdir(toastuiWebviewJsDestDir, { recursive: true });
 		await fs.promises.copyFile(
 			path.join(toastuiSrcDir, 'toastui-editor.css'),
 			path.join(toastuiDestDir, 'toastui-editor.css')
@@ -77,7 +79,7 @@ async function main() {
 			format: 'iife',
 			minify: production,
 			sourcemap: false,
-			outfile: path.join(toastuiDestDir, 'toastui-editor.webview.js'),
+			outfile: path.join(toastuiWebviewJsDestDir, 'toastui-editor.webview.js'),
 			logLevel: 'silent'
 		});
 	} catch (e) {

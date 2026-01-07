@@ -8,6 +8,10 @@ src/**
 .yarnrc
 esbuild.js
 vsc-extension-quickstart.md
+dev-backlog.md
+scripts/**
+**/*.vsix
+media/queryEditor/vendor/toastui-editor/toastui-editor.webview.js
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map

@@ -58,6 +58,15 @@
 	};
 
 	const baseUrl = getBaseUrl();
+	// `queryEditor.js` is loaded from `media/`, so baseUrl typically points at `.../media/`.
+	// Assets under `dist/` are siblings of `media/`, so resolve those from the extension root.
+	const extensionRootUrl = (() => {
+		try {
+			return new URL('..', baseUrl);
+		} catch {
+			return baseUrl;
+		}
+	})();
 	const scriptPaths = [
 		'queryEditor/vscode.js',
 		'queryEditor/state.js',
@@ -66,7 +75,7 @@
 		'queryEditor/dropdown.js',
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
-		'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
+		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'queryEditor/controlCommands.generated.js',
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
@@ -93,7 +102,8 @@
 	const loadScript = (relativePath) => {
 		return new Promise((resolve, reject) => {
 			const el = document.createElement('script');
-			const url = new URL(relativePath, baseUrl);
+			const urlBase = String(relativePath || '').startsWith('dist/') ? extensionRootUrl : baseUrl;
+			const url = new URL(relativePath, urlBase);
 			const bust = getCacheBuster();
 			if (bust) {
 				url.searchParams.set('v', bust);
@@ -105,7 +115,8 @@
 			// - Our markdown editor expects `window.toastui.Editor`.
 			// For these scripts, temporarily disable AMD/CommonJS detection so they take the
 			// globals path.
-			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath);
+			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
+				|| /(^|\/)(dist\/queryEditor\/vendor\/toastui-editor\/toastui-editor\.webview\.js)$/i.test(relativePath);
 			let restore = null;
 			if (isVendorLib) {
 				try {
