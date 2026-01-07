@@ -7,11 +7,11 @@ suite('KQL diagnostics', () => {
 	test('does not flag closing brace/semicolon after pipe inside let body', () => {
 		const text = [
 			'let Base = () {',
-			'    RawEventsVSCodeExt',
-			'    | where ExtensionName == "GitHub.copilot-chat"',
+			'    SampleEvents',
+			'    | where AppId == "com.example.app"',
 			'};',
 			'Base',
-			'| where EventName == "github.copilot-chat/response.success"',
+			'| where ActionName == "example.app/action.success"',
 			'| take 10',
 			''
 		].join('\n');
@@ -45,9 +45,9 @@ suite('KQL diagnostics', () => {
 
 	test('treats blank lines as statement separators', () => {
 		const text = [
-			'RawEventsVSCodeExt | project Duration | take 10',
+			'SampleEvents | project LatencyMs | take 10',
 			'',
-			'RawEventsVSCodeExt | take 100',
+			'SampleEvents | take 100',
 			''
 		].join('\n');
 
@@ -65,15 +65,15 @@ suite('KQL diagnostics', () => {
 	// Today this incorrectly produces KW_EXPECTED_PIPE squiggles on GenTPS/RPS/Users/by/Second.
 	test('does not flag KW_EXPECTED_PIPE for multiline summarize output + by (unindented)', () => {
 		const text = [
-			'RawEventsVSCodeExt',
-			'| where ExtensionName == "GitHub.copilot-chat"',
-			'| where EventName == "github.copilot-chat/response.success"',
+			'SampleEvents',
+			'| where AppId == "com.example.app"',
+			'| where ActionName == "example.app/action.success"',
 			'| summarize',
-			'GenTPS = sum(todouble(Measures.tokencount)),',
+			'GenTPS = sum(todouble(Metrics.itemCount)),',
 			'RPS = count(),',
-			'Users = dcount(VSCodeMachineId)',
+			'Users = dcount(UserId)',
 			'by',
-			'Second = bin(ServerTimestamp, 1sec), Model',
+			'Second = bin(EventTime, 1sec), Variant',
 			'| where ',
 			''
 		].join('\n');
@@ -90,18 +90,18 @@ suite('KQL diagnostics', () => {
 
 	test('does not leak projected columns across blank-line-separated statements', () => {
 		const text = [
-			'RawEventsVSCodeExt | project Command | take 10',
+			'SampleEvents | project Operation | take 10',
 			'',
-			'RawEventsVSCodeExt | project DevDeviceId | take 100',
+			'SampleEvents | project DeviceId | take 100',
 			''
 		].join('\n');
 
 		const schema: any = {
-			tables: ['RawEventsVSCodeExt'],
+			tables: ['SampleEvents'],
 			columnTypesByTable: {
-				RawEventsVSCodeExt: {
-					Command: 'string',
-					DevDeviceId: 'string'
+				SampleEvents: {
+					Operation: 'string',
+					DeviceId: 'string'
 				}
 			}
 		};
@@ -118,17 +118,17 @@ suite('KQL diagnostics', () => {
 
 	test('narrows columns after summarize (post-summarize input columns are invalid)', () => {
 		const text = [
-			'RawEventsVSCodeExt',
-			'| summarize RPS = count() by Second = bin(ServerTimestamp, 1sec)',
-			'| where Second > 0 and ServerTimestamp > 0',
+			'SampleEvents',
+			'| summarize RPS = count() by Second = bin(EventTime, 1sec)',
+			'| where Second > 0 and EventTime > 0',
 			''
 		].join('\n');
 
 		const schema: any = {
-			tables: ['RawEventsVSCodeExt'],
+			tables: ['SampleEvents'],
 			columnTypesByTable: {
-				RawEventsVSCodeExt: {
-					ServerTimestamp: 'datetime'
+				SampleEvents: {
+					EventTime: 'datetime'
 				}
 			}
 		};
@@ -137,8 +137,8 @@ suite('KQL diagnostics', () => {
 		const diags = svc.getDiagnostics(text, schema);
 		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
 		assert.ok(
-			unknownCols.some((d) => String(d.message || '').includes('ServerTimestamp')),
-			`Expected KW_UNKNOWN_COLUMN for ServerTimestamp after summarize, got: ${JSON.stringify(unknownCols, null, 2)}`
+			unknownCols.some((d) => String(d.message || '').includes('EventTime')),
+			`Expected KW_UNKNOWN_COLUMN for EventTime after summarize, got: ${JSON.stringify(unknownCols, null, 2)}`
 		);
 		assert.ok(
 			!unknownCols.some((d) => String(d.message || '').includes('Second')),
@@ -150,30 +150,30 @@ suite('KQL diagnostics', () => {
 	// Today `Adsasd = 'title'` is incorrectly treated like an assignment LHS and is not flagged.
 	test('flags unknown columns in multiline where after summarize (Adsasd)', () => {
 		const text = [
-			'RawEventsVSCodeExt',
-			'| where ExtensionName == "GitHub.copilot-chat"',
-			'| where EventName == "github.copilot-chat/response.success"',
+			'SampleEvents',
+			'| where AppId == "com.example.app"',
+			'| where ActionName == "example.app/action.success"',
 			'| summarize',
-			'    GenTPS = sum(todouble(Measures.tokencount)),',
+			'    GenTPS = sum(todouble(Metrics.itemCount)),',
 			'    RPS = count(),',
-			'    Users = dcount(VSCodeMachineId)',
+			'    Users = dcount(UserId)',
 			'    by',
-			'    Second = bin(ServerTimestamp, 1sec), Model',
+			'    Second = bin(EventTime, 1sec), Variant',
 			'| where',
 			"    Adsasd = 'title'",
 			''
 		].join('\n');
 
 		const schema: any = {
-			tables: ['RawEventsVSCodeExt'],
+			tables: ['SampleEvents'],
 			columnTypesByTable: {
-				RawEventsVSCodeExt: {
-					ExtensionName: 'string',
-					EventName: 'string',
-					Measures: 'dynamic',
-					VSCodeMachineId: 'string',
-					ServerTimestamp: 'datetime',
-					Model: 'string'
+				SampleEvents: {
+					AppId: 'string',
+					ActionName: 'string',
+					Metrics: 'dynamic',
+					UserId: 'string',
+					EventTime: 'datetime',
+					Variant: 'string'
 				}
 			}
 		};
@@ -187,11 +187,11 @@ suite('KQL diagnostics', () => {
 		);
 	});
 
-	test('flags unknown identifiers inside let function bodies (e.g. _startTime)', () => {
+	test('flags unknown identifiers inside let function bodies (e.g. _rangeStart)', () => {
 		const text = [
 			'let Base = () {',
-			'    RawEventsVSCodeExt',
-			'    | where ServerTimestamp between (ago(totimespan(_startTime)) .. now())',
+			'    SampleEvents',
+			'    | where EventTime between (ago(totimespan(_rangeStart)) .. now())',
 			'};',
 			'Base',
 			'| take 1',
@@ -199,10 +199,10 @@ suite('KQL diagnostics', () => {
 		].join('\n');
 
 		const schema: any = {
-			tables: ['RawEventsVSCodeExt'],
+			tables: ['SampleEvents'],
 			columnTypesByTable: {
-				RawEventsVSCodeExt: {
-					ServerTimestamp: 'datetime'
+				SampleEvents: {
+					EventTime: 'datetime'
 				}
 			}
 		};
@@ -211,27 +211,27 @@ suite('KQL diagnostics', () => {
 		const diags = svc.getDiagnostics(text, schema);
 		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
 		assert.ok(
-			unknownCols.some((d) => String(d.message || '').includes('_startTime')),
-			`Expected KW_UNKNOWN_COLUMN for _startTime, got: ${JSON.stringify(unknownCols, null, 2)}`
+			unknownCols.some((d) => String(d.message || '').includes('_rangeStart')),
+			`Expected KW_UNKNOWN_COLUMN for _rangeStart, got: ${JSON.stringify(unknownCols, null, 2)}`
 		);
 	});
 
 	// Regression: apostrophes in `//` comments must NOT confuse string-literal parsing.
 	// Bug: the apostrophe in "People's" starts a string in the lightweight lexer, causing
-	// the later literal 'Visual Studio Code' to be mis-tokenized and its words to squiggle.
+	// the later quoted literal to be mis-tokenized and its words to squiggle.
 	test("does not flag words inside a quoted string literal when a preceding // comment contains an apostrophe (People's)", () => {
 		const text = [
-			"// People's last day in Azure MCP + VS Code",
-			'AzureMCP_DailyActivity',
-			"    | where ClientName == 'Visual Studio Code'",
+			"// People's example comment",
+			'DailyActivity',
+			"    | where ClientLabel == 'Fictional Product Name'",
 			''
 		].join('\n');
 
 		const schema: any = {
-			tables: ['AzureMCP_DailyActivity'],
+			tables: ['DailyActivity'],
 			columnTypesByTable: {
-				AzureMCP_DailyActivity: {
-					ClientName: 'string'
+				DailyActivity: {
+					ClientLabel: 'string'
 				}
 			}
 		};
