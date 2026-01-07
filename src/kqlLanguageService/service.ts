@@ -1180,7 +1180,9 @@ export class KqlLanguageService {
 					if (sawPipe) {
 						const isIndented = /^\s+/.test(line);
 						const isCommaLedContinuation = trimmed.startsWith(',');
-						if (allowIndentedContinuation && (isIndented || isCommaLedContinuation || trimmed.startsWith('(') || trimmed.startsWith(')'))) {
+						// In KQL, newlines are whitespace. For operators that support multiline clauses
+						// (summarize/project/extend/where/etc.), don't require indentation on continuation lines.
+						if (allowIndentedContinuation || isIndented || isCommaLedContinuation || trimmed.startsWith('(') || trimmed.startsWith(')')) {
 							runningOffset += line.length + 1;
 							continue;
 						}
@@ -1349,15 +1351,22 @@ export class KqlLanguageService {
 
 				const currentColumns = () => (colSet ? Array.from(colSet) : []);
 				const stmtTokens = scanTokens(stmtText);
+				// Pipelines can appear at depth 1 inside `let ... { ... }` bodies.
+				// Instead of hard-coding depth==0, validate at the shallowest pipeline depth in this statement.
+				let pipelineDepth = Number.POSITIVE_INFINITY;
+				for (const tok of stmtTokens) {
+					if (tok?.type === 'pipe') pipelineDepth = Math.min(pipelineDepth, tok.depth);
+				}
+				if (!Number.isFinite(pipelineDepth)) continue;
 
 				for (let i = 0; i < stmtTokens.length; i++) {
 					const t = stmtTokens[i];
-					if (!t || t.depth !== 0 || t.type !== 'pipe') continue;
+					if (!t || t.depth !== pipelineDepth || t.type !== 'pipe') continue;
 
 					let opTok: Extract<Token, { type: 'ident' }> | null = null;
 					for (let j = i + 1; j < stmtTokens.length; j++) {
 						const tt = stmtTokens[j];
-						if (!tt || tt.depth !== 0) continue;
+						if (!tt || tt.depth !== pipelineDepth) continue;
 						if (tt.type === 'ident') {
 							opTok = tt;
 							break;
@@ -1372,7 +1381,7 @@ export class KqlLanguageService {
 					let clauseEnd = stmtText.length;
 					for (let j = i + 1; j < stmtTokens.length; j++) {
 						const tt = stmtTokens[j];
-						if (!tt || tt.depth !== 0) continue;
+						if (!tt || tt.depth !== pipelineDepth) continue;
 						if (tt.type === 'pipe' && tt.offset > opTok.offset) {
 							clauseEnd = tt.offset;
 							break;
@@ -1416,15 +1425,76 @@ export class KqlLanguageService {
 						try {
 							let byTok: Extract<Token, { type: 'ident' }> | null = null;
 							for (const tt of stmtTokens) {
-								if (!tt || tt.depth !== 0 || tt.type !== 'ident') continue;
+								if (!tt || tt.depth !== pipelineDepth || tt.type !== 'ident') continue;
 								if (tt.offset < clauseStart || tt.offset >= clauseEnd) continue;
 								if (String(tt.value ?? '').toLowerCase() === 'by') byTok = tt;
 							}
 							if (byTok) {
 								const byText = stmtText.slice(byTok.endOffset, clauseEnd);
-								for (const m of byText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
-									const name = m[1];
-									if (name && inputColSet && inputColSet.has(name)) next.add(name);
+								// Only include the *group key output columns*.
+								// - `X = expr` => output `X`
+								// - bare `Col` => output `Col`
+								// - best-effort: `bin(Col, ...)` without alias => output `Col`
+								const splitTopLevelCommaList = (s: string): string[] => {
+									try {
+										const text = String(s ?? '');
+										const parts: string[] = [];
+										let start = 0;
+										let paren = 0;
+										let bracket = 0;
+										let brace = 0;
+										let quote: '"' | "'" | null = null;
+										for (let i = 0; i < text.length; i++) {
+											const ch = text[i];
+											if (quote) {
+												if (ch === '\\') {
+													i++;
+													continue;
+												}
+												if (ch === quote) {
+													quote = null;
+												}
+												continue;
+											}
+											if (ch === '"' || ch === "'") {
+												quote = ch;
+												continue;
+											}
+											if (ch === '(') paren++;
+											else if (ch === ')' && paren > 0) paren--;
+											else if (ch === '[') bracket++;
+											else if (ch === ']' && bracket > 0) bracket--;
+											else if (ch === '{') brace++;
+											else if (ch === '}' && brace > 0) brace--;
+											else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+												parts.push(text.slice(start, i).trim());
+												start = i + 1;
+											}
+										}
+										parts.push(text.slice(start).trim());
+										return parts.filter(Boolean);
+									} catch {
+										return [];
+									}
+								};
+								for (const item of splitTopLevelCommaList(byText)) {
+									const mAssign = item.match(/^([A-Za-z_][\w-]*)\s*=/);
+									if (mAssign?.[1]) {
+										next.add(String(mAssign[1]));
+										continue;
+									}
+									const mBare = item.match(/^([A-Za-z_][\w-]*)\s*$/);
+									if (mBare?.[1]) {
+										const name = String(mBare[1]);
+										if (!inputColSet || inputColSet.has(name)) next.add(name);
+										continue;
+									}
+									const mBin = item.match(/^bin\s*\(\s*([A-Za-z_][\w-]*)\b/i);
+									if (mBin?.[1]) {
+										const name = String(mBin[1]);
+										if (!inputColSet || inputColSet.has(name)) next.add(name);
+										continue;
+									}
 								}
 							}
 						} catch {
@@ -1462,11 +1532,15 @@ export class KqlLanguageService {
 							// ignore
 						}
 
-						try {
-							const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
-							if (/^\s*=/.test(afterLocal)) continue;
-						} catch {
-							// ignore
+						// Only skip assignment LHS for operators that actually assign/rename columns.
+						// In `where`, `Name = 'x'` is a comparison and must still validate `Name`.
+						if (op === 'extend' || op === 'project' || op === 'summarize') {
+							try {
+								const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
+								if (/^\s*=/.test(afterLocal)) continue;
+							} catch {
+								// ignore
+							}
 						}
 
 						const absoluteOffset = baseOffset + clauseStart + (typeof m.index === 'number' ? m.index : 0);

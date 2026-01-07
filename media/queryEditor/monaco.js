@@ -1531,7 +1531,10 @@ function ensureMonaco() {
 					startMonacoThemeObserver(monaco);
 
 					// Autocomplete: pipe operators + (optionally) schema tables/columns.
-					monaco.languages.registerCompletionItemProvider('kusto', {
+					// Keep a reference to our completion provider so diagnostics can be filtered
+					// using the exact same suggestion logic ("if it's in autocomplete, it must not squiggle").
+					let __kustoProvideCompletionItemsForDiagnostics = null;
+					const __kustoCompletionProvider = {
 						triggerCharacters: [' ', '|', '.'],
 						provideCompletionItems: async function (model, position) {
 							const suggestions = [];
@@ -2182,10 +2185,10 @@ function ensureMonaco() {
 										const stage = String(parts[i] || '').trim();
 										if (!stage) continue;
 										const lower = stage.toLowerCase();
-										if (lower.startsWith('where ') || lower === 'where') continue;
-										if (lower.startsWith('take ') || lower.startsWith('top ') || lower.startsWith('limit ')) continue;
-										if (lower.startsWith('order by ') || lower.startsWith('sort by ')) continue;
-										if (lower.startsWith('distinct ')) {
+										if (/^where\b/i.test(lower)) continue;
+										if (/^(take|top|limit)\b/i.test(lower)) continue;
+										if (/^order\s+by\b/i.test(lower) || /^sort\s+by\b/i.test(lower)) continue;
+										if (/^distinct\b/i.test(lower)) {
 											const afterKw = stage.replace(/^distinct\s+/i, '');
 											const nextCols = [];
 											for (const item of __kustoSplitCommaList(afterKw)) {
@@ -2195,8 +2198,8 @@ function ensureMonaco() {
 											if (nextCols.length) cols = nextCols;
 											continue;
 										}
-										if (lower.startsWith('project ')) {
-											const afterKw = stage.replace(/^project\s+/i, '');
+										if (/^project\b/i.test(lower)) {
+											const afterKw = stage.replace(/^project\b/i, '').trim();
 											const nextCols = [];
 											for (const item of __kustoSplitCommaList(afterKw)) {
 												const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
@@ -2207,7 +2210,7 @@ function ensureMonaco() {
 											if (nextCols.length) cols = nextCols;
 											continue;
 										}
-										if (lower.startsWith('join ') || lower === 'join' || lower.startsWith('lookup ') || lower === 'lookup') {
+										if (/^(join|lookup)\b/i.test(lower)) {
 											const kind = __kustoParseJoinKind(stage);
 											const mode = __kustoJoinOutputMode(kind);
 											let rightExpr = __kustoExtractFirstParenGroup(stage);
@@ -2389,10 +2392,10 @@ function ensureMonaco() {
 									if (!stage) continue;
 									const lower = stage.toLowerCase();
 
-									if (lower.startsWith('where ') || lower === 'where') {
+															if (/^where\b/i.test(lower)) {
 										continue;
 									}
-									if (lower.startsWith('take ') || lower.startsWith('top ') || lower.startsWith('limit ')) {
+															if (/^(take|top|limit)\b/i.test(lower)) {
 										continue;
 									}
 
@@ -2401,13 +2404,13 @@ function ensureMonaco() {
 										cols = ['Count'];
 										continue;
 									}
-									if (lower.startsWith('order by ') || lower.startsWith('sort by ')) {
+															if (/^order\s+by\b/i.test(lower) || /^sort\s+by\b/i.test(lower)) {
 										continue;
 									}
 
-									if (lower.startsWith('union ') || lower === 'union') {
+															if (/^union\b/i.test(lower)) {
 										// union T1, T2 ...  => available columns are the union of referenced tables + current columns
-										const unionBody = stage.replace(/^union\s*/i, '');
+																const unionBody = stage.replace(/^union\b/i, '').trim();
 										const set = new Set(cols);
 										const schemaColumnsByTable = __kustoGetColumnsByTable(schema);
 										for (const m of unionBody.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
@@ -2420,7 +2423,7 @@ function ensureMonaco() {
 										continue;
 									}
 
-														if (lower.startsWith('join ') || lower === 'join' || lower.startsWith('lookup ') || lower === 'lookup') {
+																		if (/^(join|lookup)\b/i.test(lower)) {
 															const kind = __kustoParseJoinKind(stage);
 															const mode = __kustoJoinOutputMode(kind);
 															let rightExpr = __kustoExtractFirstParenGroup(stage);
@@ -2450,8 +2453,8 @@ function ensureMonaco() {
 															continue;
 														}
 
-									if (lower.startsWith('extend ') || lower.startsWith('project-reorder ') || lower.startsWith('project-smart ')) {
-										const afterKw = stage.replace(/^\w[\w-]*\s+/i, '');
+										if (/^(extend|project-reorder|project-smart)\b/i.test(lower)) {
+											const afterKw = stage.replace(/^\w[\w-]*\b/i, '').trim();
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const m = item.match(/^([A-Za-z_][\w]*)\s*=/);
 											if (m && m[1] && !cols.includes(m[1])) {
@@ -2460,9 +2463,8 @@ function ensureMonaco() {
 										}
 										continue;
 									}
-
-									if (lower.startsWith('project-away ')) {
-										const afterKw = stage.replace(/^project-away\s+/i, '');
+										if (/^project-away\b/i.test(lower)) {
+											const afterKw = stage.replace(/^project-away\b/i, '').trim();
 										const toRemove = new Set();
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const m = item.match(/^([A-Za-z_][\w]*)\b/);
@@ -2471,9 +2473,8 @@ function ensureMonaco() {
 										cols = cols.filter(c => !toRemove.has(c));
 										continue;
 									}
-
-									if (lower.startsWith('project-keep ')) {
-										const afterKw = stage.replace(/^project-keep\s+/i, '');
+										if (/^project-keep\b/i.test(lower)) {
+											const afterKw = stage.replace(/^project-keep\b/i, '').trim();
 										const keep = new Set();
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const m = item.match(/^([A-Za-z_][\w]*)\b/);
@@ -2482,9 +2483,8 @@ function ensureMonaco() {
 										cols = cols.filter(c => keep.has(c));
 										continue;
 									}
-
-									if (lower.startsWith('project-rename ')) {
-										const afterKw = stage.replace(/^project-rename\s+/i, '');
+										if (/^project-rename\b/i.test(lower)) {
+											const afterKw = stage.replace(/^project-rename\b/i, '').trim();
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const m = item.match(/^([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)\b/);
 											if (m && m[1] && m[2]) {
@@ -2495,8 +2495,8 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('project ')) {
-										const afterKw = stage.replace(/^project\s+/i, '');
+										if (/^project\b/i.test(lower)) {
+											const afterKw = stage.replace(/^project\b/i, '').trim();
 										const nextCols = [];
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const mAssign = item.match(/^([A-Za-z_][\w]*)\s*=/);
@@ -2511,8 +2511,8 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('distinct ')) {
-										const afterKw = stage.replace(/^distinct\s+/i, '');
+										if (/^distinct\b/i.test(lower)) {
+											const afterKw = stage.replace(/^distinct\b/i, '').trim();
 										const nextCols = [];
 										for (const item of __kustoSplitCommaList(afterKw)) {
 											const mId = item.match(/^([A-Za-z_][\w]*)\b/);
@@ -2522,7 +2522,7 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('parse ') || lower.startsWith('parse-where ') || lower === 'parse' || lower === 'parse-where') {
+										if (/^parse(-where)?\b/i.test(lower)) {
 										// parse/parse-where extends the table with extracted columns.
 										try {
 											const set = new Set(cols);
@@ -2543,7 +2543,7 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('mv-expand ') || lower === 'mv-expand') {
+										if (/^mv-expand\b/i.test(lower)) {
 										// mv-expand can introduce a new column name when using `Name = ArrayExpression`.
 										try {
 											const set = new Set(cols);
@@ -2558,7 +2558,7 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('make-series ') || lower === 'make-series') {
+										if (/^make-series\b/i.test(lower)) {
 										// make-series output: axis column + assigned series columns + by columns (best-effort).
 										try {
 											const next = new Set();
@@ -2583,8 +2583,8 @@ function ensureMonaco() {
 										continue;
 									}
 
-									if (lower.startsWith('summarize ') || lower === 'summarize') {
-										const summarizeBody = stage.replace(/^summarize\s*/i, '');
+										if (/^summarize\b/i.test(lower)) {
+											const summarizeBody = stage.replace(/^summarize\b/i, '').trim();
 										const parts2 = summarizeBody.split(/\bby\b/i);
 										const aggPart = parts2[0] || '';
 										const byPart = parts2.length > 1 ? parts2.slice(1).join('by') : '';
@@ -2799,10 +2799,77 @@ function ensureMonaco() {
 
 							return { suggestions };
 						}
-					});
+					};
+					__kustoProvideCompletionItemsForDiagnostics = __kustoCompletionProvider.provideCompletionItems;
+					monaco.languages.registerCompletionItemProvider('kusto', __kustoCompletionProvider);
 
 					// --- Live diagnostics (markers) + quick fixes ---
 					const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
+
+					const __kustoFilterMarkersByAutocomplete = async (model, markers) => {
+						try {
+							if (!model || !Array.isArray(markers) || markers.length === 0) return markers;
+							if (typeof __kustoProvideCompletionItemsForDiagnostics !== 'function') return markers;
+
+							const suppressibleCodes = new Set([
+								'KW_UNKNOWN_COLUMN',
+								'KW_UNKNOWN_TABLE',
+								'KW_UNKNOWN_VARIABLE'
+							]);
+
+							// Cache completion labels per position so multiple markers on the same token don't recompute.
+							const labelsByPos = new Map();
+							const getLabelsAt = async (lineNumber, column) => {
+								const key = String(lineNumber) + ':' + String(column);
+								if (labelsByPos.has(key)) return labelsByPos.get(key);
+								let set = null;
+								try {
+									const res = await __kustoProvideCompletionItemsForDiagnostics(model, { lineNumber, column });
+									const suggestions = res && Array.isArray(res.suggestions) ? res.suggestions : [];
+									set = new Set();
+									for (const s of suggestions) {
+										if (!s) continue;
+										const label = (typeof s.label === 'string') ? s.label : (s.label && typeof s.label.label === 'string' ? s.label.label : null);
+										if (!label) continue;
+										set.add(String(label).toLowerCase());
+									}
+								} catch {
+									set = null;
+								}
+								labelsByPos.set(key, set);
+								return set;
+							};
+
+							const out = [];
+							for (const m of markers) {
+								try {
+									const code = m && m.code ? String(m.code) : '';
+									if (!suppressibleCodes.has(code)) {
+										out.push(m);
+										continue;
+									}
+									const range = new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn);
+									const tokenText = String(model.getValueInRange(range) || '').trim();
+									// Only attempt suppression for identifier-like tokens.
+									if (!tokenText || !/^[A-Za-z_][\w-]*$/.test(tokenText)) {
+										out.push(m);
+										continue;
+									}
+									const labels = await getLabelsAt(m.endLineNumber, m.endColumn);
+									if (labels && labels.has(tokenText.toLowerCase())) {
+										// Autocomplete suggests this exact token here; don't show a squiggle.
+										continue;
+									}
+									out.push(m);
+								} catch {
+									out.push(m);
+								}
+							}
+							return out;
+						} catch {
+							return markers;
+						}
+					};
 
 					const __kustoClamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
@@ -2927,8 +2994,41 @@ function ensureMonaco() {
 					};
 
 					const __kustoSplitPipelineStagesDeep = (text) => {
-						// Split at top-level pipes (not inside parentheses/brackets/braces, strings, or comments).
+						// Split at the *shallowest* pipeline depth (not inside strings or comments).
+						// This allows pipes inside `let ... { ... }` bodies (depth 1) to behave like top-level pipelines.
 						const s = String(text || '');
+						const scanMinPipeDepth = () => {
+							let depth = 0;
+							let inSingle = false;
+							let inDouble = false;
+							let inLineComment = false;
+							let inBlockComment = false;
+							let minDepth = Number.POSITIVE_INFINITY;
+							for (let i = 0; i < s.length; i++) {
+								const ch = s[i];
+								const next = s[i + 1];
+								if (inLineComment) { if (ch === '\n') inLineComment = false; continue; }
+								if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i++; } continue; }
+								if (inSingle) {
+									if (ch === "'") { if (next === "'") { i++; continue; } inSingle = false; }
+									continue;
+								}
+								if (inDouble) {
+									if (ch === '\\') { i++; continue; }
+									if (ch === '"') inDouble = false;
+									continue;
+								}
+								if (ch === '/' && next === '/') { inLineComment = true; i++; continue; }
+								if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
+								if (ch === "'") { inSingle = true; continue; }
+								if (ch === '"') { inDouble = true; continue; }
+								if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+								if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
+								if (ch === '|') { minDepth = Math.min(minDepth, depth); continue; }
+							}
+							return Number.isFinite(minDepth) ? minDepth : 0;
+						};
+						const targetDepth = scanMinPipeDepth();
 						const parts = [];
 						let start = 0;
 						let depth = 0;
@@ -2939,23 +3039,10 @@ function ensureMonaco() {
 						for (let i = 0; i < s.length; i++) {
 							const ch = s[i];
 							const next = s[i + 1];
-							if (inLineComment) {
-								if (ch === '\n') inLineComment = false;
-								continue;
-							}
-							if (inBlockComment) {
-								if (ch === '*' && next === '/') {
-									inBlockComment = false;
-									i++;
-								}
-								continue;
-							}
+							if (inLineComment) { if (ch === '\n') inLineComment = false; continue; }
+							if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i++; } continue; }
 							if (inSingle) {
-								if (ch === "'") {
-									// Kusto escape for single quote: ''
-									if (next === "'") { i++; continue; }
-									inSingle = false;
-								}
+								if (ch === "'") { if (next === "'") { i++; continue; } inSingle = false; }
 								continue;
 							}
 							if (inDouble) {
@@ -2967,9 +3054,9 @@ function ensureMonaco() {
 							if (ch === '/' && next === '*') { inBlockComment = true; i++; continue; }
 							if (ch === "'") { inSingle = true; continue; }
 							if (ch === '"') { inDouble = true; continue; }
-							if (ch === '(' || ch === '[' || ch === '{') depth++;
-							else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
-							else if (ch === '|' && depth === 0) {
+							if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+							if (ch === ')' || ch === ']' || ch === '}') { depth = Math.max(0, depth - 1); continue; }
+							if (ch === '|' && depth === targetDepth) {
 								parts.push(s.slice(start, i));
 								start = i + 1;
 							}
@@ -3979,7 +4066,7 @@ function ensureMonaco() {
 									return !!r && r[0] <= localOffset && localOffset < r[1];
 								};
 
-								const tokens = __kustoScanIdentifiers(stmtRaw);
+																	const tokens = __kustoScanIdentifiers(stmtRaw);
 
 								// Infer active table from the statement (supports `let X = Table`).
 								let activeTable = null;
@@ -4050,15 +4137,23 @@ function ensureMonaco() {
 									}
 								};
 
-								for (let i = 0; i < tokens.length; i++) {
-									const t = tokens[i];
-									if (!t || t.depth !== 0) continue;
-									if (t.type !== 'pipe') continue;
+																	let pipelineDepth = Number.POSITIVE_INFINITY;
+																	for (const tok of tokens) {
+																		if (tok && tok.type === 'pipe') pipelineDepth = Math.min(pipelineDepth, tok.depth);
+																	}
+																	if (!Number.isFinite(pipelineDepth)) {
+																		continue;
+																	}
 
-									let opTok = null;
-									for (let j = i + 1; j < tokens.length; j++) {
-										const tt = tokens[j];
-										if (!tt || tt.depth !== 0) continue;
+																	for (let i = 0; i < tokens.length; i++) {
+																		const t = tokens[i];
+																		if (!t || t.depth !== pipelineDepth) continue;
+																		if (t.type !== 'pipe') continue;
+
+																		let opTok = null;
+																		for (let j = i + 1; j < tokens.length; j++) {
+																			const tt = tokens[j];
+																			if (!tt || tt.depth !== pipelineDepth) continue;
 										if (tt.type === 'ident') { opTok = tt; break; }
 										if (tt.type === 'pipe') break;
 									}
@@ -4066,11 +4161,11 @@ function ensureMonaco() {
 									const op = String(opTok.value || '').toLowerCase();
 									if (!colSet) continue;
 
-									let clauseStart = opTok.endOffset;
-									let clauseEnd = stmtRaw.length;
-									for (let j = i + 1; j < tokens.length; j++) {
-										const tt = tokens[j];
-										if (!tt || tt.depth !== 0) continue;
+																		let clauseStart = opTok.endOffset;
+																		let clauseEnd = stmtRaw.length;
+																		for (let j = i + 1; j < tokens.length; j++) {
+																			const tt = tokens[j];
+																			if (!tt || tt.depth !== pipelineDepth) continue;
 										if (tt.type === 'pipe' && tt.offset > opTok.offset) { clauseEnd = tt.offset; break; }
 									}
 
@@ -4111,9 +4206,9 @@ function ensureMonaco() {
 									// by keys (multiline-friendly): locate the last `by` token within this clause.
 									try {
 										let byTok = null;
-										for (let j = 0; j < tokens.length; j++) {
-											const tt = tokens[j];
-											if (!tt || tt.depth !== 0) continue;
+																				for (let j = 0; j < tokens.length; j++) {
+																					const tt = tokens[j];
+																					if (!tt || tt.depth !== pipelineDepth) continue;
 											if (tt.type !== 'ident') continue;
 											if (tt.offset < clauseStart || tt.offset >= clauseEnd) continue;
 											if (String(tt.value || '').toLowerCase() === 'by') {
@@ -4122,10 +4217,45 @@ function ensureMonaco() {
 										}
 										if (byTok) {
 											const byText = stmtRaw.slice(byTok.endOffset, clauseEnd);
-											for (const m of byText.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
-												const name = m[1];
-												if (name && inputColSet && inputColSet.has(name)) next.add(name);
-											}
+												// Only include group-by output columns (aliases and bare keys).
+												const splitTopLevelCommaList = (s) => {
+													try {
+														const text = String(s || '');
+														const parts = [];
+														let start = 0;
+														let paren = 0, bracket = 0, brace = 0;
+														let quote = null;
+														for (let i = 0; i < text.length; i++) {
+															const ch = text[i];
+															if (quote) {
+																if (ch === '\\') { i++; continue; }
+																if (ch === quote) quote = null;
+																continue;
+															}
+															if (ch === '"' || ch === "'") { quote = ch; continue; }
+															if (ch === '(') paren++;
+															else if (ch === ')' && paren > 0) paren--;
+															else if (ch === '[') bracket++;
+															else if (ch === ']' && bracket > 0) bracket--;
+															else if (ch === '{') brace++;
+															else if (ch === '}' && brace > 0) brace--;
+															else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+																parts.push(text.slice(start, i).trim());
+																start = i + 1;
+															}
+														}
+														parts.push(text.slice(start).trim());
+														return parts.filter(Boolean);
+													} catch { return []; }
+												};
+												for (const item of splitTopLevelCommaList(byText)) {
+													const mAssign = String(item || '').match(/^([A-Za-z_][\w-]*)\s*=/);
+													if (mAssign && mAssign[1]) { next.add(String(mAssign[1])); continue; }
+													const mBare = String(item || '').match(/^([A-Za-z_][\w-]*)\s*$/);
+													if (mBare && mBare[1]) { const name = String(mBare[1]); if (!inputColSet || inputColSet.has(name)) next.add(name); continue; }
+													const mBin = String(item || '').match(/^bin\s*\(\s*([A-Za-z_][\w-]*)\b/i);
+													if (mBin && mBin[1]) { const name = String(mBin[1]); if (!inputColSet || inputColSet.has(name)) next.add(name); continue; }
+												}
 										}
 									} catch { /* ignore */ }
 									// assigned aggregates
@@ -4148,11 +4278,14 @@ function ensureMonaco() {
 									const nl = name.toLowerCase();
 									if (kw.has(nl)) continue;
 									if (fnNames.has(nl)) continue;
-									// Skip assignment LHS (X = ...)
-									try {
-										const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
-										if (/^\s*=/.test(afterLocal)) continue;
-									} catch { /* ignore */ }
+										// Only skip assignment LHS for operators that actually assign/rename columns.
+										// In `where`, `Name = 'x'` is a comparison and must still validate `Name`.
+										if (op === 'extend' || op === 'project' || op === 'summarize') {
+											try {
+												const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
+												if (/^\s*=/.test(afterLocal)) continue;
+											} catch { /* ignore */ }
+										}
 											// Skip if it's inside a string literal (statement-local offsets).
 											const localOffset = clauseStart + (typeof m.index === 'number' ? m.index : 0);
 											if (isInStringLiteral(localOffset)) {
@@ -4256,13 +4389,15 @@ function ensureMonaco() {
 														code: d && d.code ? String(d.code) : undefined
 												};
 											});
-												monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
+															markers = await __kustoFilterMarkersByAutocomplete(model, markers);
+															monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
 												return;
 											}
 										}
 										} catch { /* ignore */ }
 
-										const markers = __kustoComputeDiagnostics(text, schema);
+												let markers = __kustoComputeDiagnostics(text, schema);
+												markers = await __kustoFilterMarkersByAutocomplete(model, markers);
 										monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
 									} catch { /* ignore */ }
 								})();
