@@ -9160,7 +9160,8 @@ function initQueryEditor(boxId) {
 					} catch { /* ignore */ }
 					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
-					const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
+					// Manual resizing should not have a max height cap.
+					const nextHeight = Math.max(120, startHeight + delta);
 					w.style.height = nextHeight + 'px';
 					try {
 						if (window.__kustoManualQueryEditorHeightPxByBoxId && typeof window.__kustoManualQueryEditorHeightPxByBoxId === 'object') {

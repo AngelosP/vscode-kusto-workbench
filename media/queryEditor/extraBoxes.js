@@ -482,6 +482,7 @@ function __kustoMaximizeMarkdownBox(boxId) {
 	const viewerHost = document.getElementById(id + '_md_viewer');
 	const wrapper = editorHost && editorHost.closest ? editorHost.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
+	const FIT_SLACK_PX = 5;
 
 	const tryComputeDesiredWrapperHeight = (mode) => {
 		try {
@@ -499,22 +500,30 @@ function __kustoMaximizeMarkdownBox(boxId) {
 				const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
 				if (prose) {
 					try {
-						// ProseMirror itself is often sized to the viewport; derive the real document height
-						// from its rendered child blocks so we can shrink as well as grow.
-						const r = prose.getBoundingClientRect ? prose.getBoundingClientRect() : null;
-						const top = r ? (r.top || 0) : 0;
+						// Preferred: compute from layout offsets so the result is NOT affected by the
+						// current scroll position or viewport size.
+						let minTop = Infinity;
 						let maxBottom = 0;
 						const kids = prose.children ? Array.from(prose.children) : [];
 						for (const child of kids) {
 							try {
-								const cr = child.getBoundingClientRect ? child.getBoundingClientRect() : null;
-								const b = cr ? (cr.bottom || 0) : 0;
-								if (b && Number.isFinite(b)) maxBottom = Math.max(maxBottom, b);
+								if (!child || child.nodeType !== 1) continue;
+								const top = (typeof child.offsetTop === 'number') ? child.offsetTop : 0;
+								const h = (typeof child.offsetHeight === 'number') ? child.offsetHeight : 0;
+								let mt = 0;
+								let mb = 0;
+								try {
+									const cs = getComputedStyle(child);
+									mt = parseFloat(cs.marginTop || '0') || 0;
+									mb = parseFloat(cs.marginBottom || '0') || 0;
+								} catch { /* ignore */ }
+								minTop = Math.min(minTop, Math.max(0, top - mt));
+								maxBottom = Math.max(maxBottom, Math.max(0, top + h + mb));
 							} catch { /* ignore */ }
 						}
 						let docH = 0;
-						if (maxBottom > top) {
-							docH = Math.max(0, maxBottom - top);
+						if (Number.isFinite(minTop) && maxBottom > minTop) {
+							docH = Math.max(0, maxBottom - minTop);
 						}
 						try {
 							const cs = getComputedStyle(prose);
@@ -524,11 +533,14 @@ function __kustoMaximizeMarkdownBox(boxId) {
 							contentH = Math.max(contentH, Math.ceil(docH));
 						}
 					} catch { /* ignore */ }
-					// Fallback: if we couldn't infer from children, use scrollHeight.
+					// Fallback: only use scrollHeight if it actually indicates overflow content;
+					// otherwise it will just mirror the viewport height and create a feedback loop.
 					if (!contentH) {
 						try {
-							if (typeof prose.scrollHeight === 'number') {
-								contentH = Math.max(contentH, prose.scrollHeight);
+							if (typeof prose.scrollHeight === 'number' && typeof prose.clientHeight === 'number') {
+								if (prose.scrollHeight > prose.clientHeight + 1) {
+									contentH = Math.max(contentH, prose.scrollHeight);
+								}
 							}
 						} catch { /* ignore */ }
 					}
@@ -536,8 +548,10 @@ function __kustoMaximizeMarkdownBox(boxId) {
 				// Fallback: if ProseMirror isn't found, use any contents node's scrollHeight.
 				if (!contentH) {
 					const wwContents = ui.querySelector('.toastui-editor-ww-container .toastui-editor-contents');
-					if (wwContents && typeof wwContents.scrollHeight === 'number') {
-						contentH = Math.max(contentH, wwContents.scrollHeight);
+					if (wwContents && typeof wwContents.scrollHeight === 'number' && typeof wwContents.clientHeight === 'number') {
+						if (wwContents.scrollHeight > wwContents.clientHeight + 1) {
+							contentH = Math.max(contentH, wwContents.scrollHeight);
+						}
 					}
 				}
 			} else {
@@ -579,7 +593,7 @@ function __kustoMaximizeMarkdownBox(boxId) {
 			const resizerH = 12;
 			const padding = 18;
 			const minH = 120;
-			return Math.max(minH, Math.ceil(toolbarH + contentH + resizerH + padding));
+			return Math.max(minH, Math.ceil(toolbarH + contentH + resizerH + padding + FIT_SLACK_PX));
 		} catch {
 			return undefined;
 		}
@@ -618,9 +632,8 @@ function __kustoMaximizeMarkdownBox(boxId) {
 			if (typeof desired === 'number' && Number.isFinite(desired) && desired > 0) {
 				wrapper.style.height = Math.round(desired) + 'px';
 			} else {
-				// Fallback: bump the current height upward.
-				const current = wrapper.getBoundingClientRect ? wrapper.getBoundingClientRect().height : 0;
-				wrapper.style.height = Math.max(120, Math.round(current + 400)) + 'px';
+				// Fallback: if we can't measure, do not change height (avoid runaway growth).
+				return;
 			}
 		} catch { /* ignore */ }
 		try {
