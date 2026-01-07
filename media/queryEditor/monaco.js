@@ -2902,7 +2902,6 @@ function ensureMonaco() {
 											label: c,
 											kind: monaco.languages.CompletionItemKind.Field,
 											insertText: c,
-											filterText: (__kustoIsInFunctionArgs && typedRaw) ? typedRaw : undefined,
 											sortText: '0_' + String(c).toLowerCase(),
 											range
 										}, 'col:' + c);
