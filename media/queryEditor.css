@@ -2140,6 +2140,7 @@
 			overflow: hidden;
 			font-family: var(--vscode-editor-font-family);
 			font-size: 13px;
+			border-top: 5px solid var(--vscode-editor-background);
 		}
 
 		.query-editor-resizer {
@@ -2190,7 +2191,7 @@
 		.query-editor-placeholder {
 			position: absolute;
 			left: 56px;
-			top: 33px;
+			top: 43px;
 			right: 10px;
 			pointer-events: none;
 			user-select: none;

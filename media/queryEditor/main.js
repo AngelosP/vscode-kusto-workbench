@@ -375,6 +375,70 @@ function __kustoGetFocusedMonacoEditor() {
 	return editor;
 }
 
+// --- Toolbar focus behavior ---
+// Goal: when the Monaco editor has focus and the user clicks toolbar buttons (normal, toggle,
+// dropdown) with the mouse, don't leave focus on the button; return focus to Monaco.
+// We do this in a central place because toolbar HTML is generated dynamically.
+(function __kustoInitToolbarMouseFocusBehavior() {
+	const focusEditorForTarget = (target) => {
+		try {
+			// Prefer focusing the editor for the query box that owns the toolbar/menu.
+			const t = target && target.closest ? target : null;
+			const box = t ? t.closest('.query-box') : null;
+			const boxId = box && typeof box.id === 'string' ? box.id : '';
+			if (boxId && typeof queryEditors === 'object' && queryEditors && queryEditors[boxId] && typeof queryEditors[boxId].focus === 'function') {
+				try { activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+				queryEditors[boxId].focus();
+				return;
+			}
+		} catch { /* ignore */ }
+
+		// Fallback: focus whichever Monaco editor is currently focused/active.
+		try {
+			const editor = (typeof __kustoGetFocusedMonacoEditor === 'function') ? __kustoGetFocusedMonacoEditor() : null;
+			if (editor && typeof editor.focus === 'function') {
+				editor.focus();
+			}
+		} catch { /* ignore */ }
+	};
+
+	// Prevent mouse focus from moving onto toolbar buttons.
+	document.addEventListener('mousedown', (ev) => {
+		try {
+			const e = ev || window.event;
+			if (!e || e.button !== 0) return;
+			const t = e.target;
+			if (!t || !t.closest) return;
+			if (t.closest('.query-editor-toolbar') || t.closest('.qe-toolbar-dropdown-menu')) {
+				// Prevent the browser from focusing the clicked element.
+				e.preventDefault();
+			}
+		} catch { /* ignore */ }
+	}, true);
+
+	// After toolbar clicks, return focus to Monaco.
+	// Important: do NOT do this for the dropdown *toggle* button itself, otherwise we would
+	// immediately steal focus from the opened menu and close it.
+	document.addEventListener('click', (ev) => {
+		try {
+			const e = ev || window.event;
+			const t = e && e.target ? e.target : null;
+			if (!t || !t.closest) return;
+
+			const inToolbar = !!t.closest('.query-editor-toolbar');
+			const inToolbarMenu = !!t.closest('.qe-toolbar-dropdown-menu');
+			if (!inToolbar && !inToolbarMenu) return;
+
+			const isDropdownToggle = inToolbar && !!t.closest('.qe-toolbar-dropdown-btn');
+			if (isDropdownToggle) {
+				return;
+			}
+
+			setTimeout(() => focusEditorForTarget(t), 0);
+		} catch { /* ignore */ }
+	}, true);
+})();
+
 function __kustoGetSelectionOrCurrentLineRange(editor) {
 	try {
 		const selection = editor && typeof editor.getSelection === 'function' ? editor.getSelection() : null;

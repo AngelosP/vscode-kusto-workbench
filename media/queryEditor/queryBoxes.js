@@ -234,11 +234,7 @@ function addQueryBox(options) {
 			'</span>'
 		);
 
-	const toolsIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-			'<rect x="3" y="3" width="8" height="8" rx="1.5" />' +
-			'<path d="M6 13h7.5A1.5 1.5 0 0 0 15 11.5V4" />' +
-		'</svg>';
+	const toolsIconSvg = '<span class="codicon codicon-tools" aria-hidden="true"></span>';
 
 	const toolsDropdownHtml =
 		'<span class="qe-toolbar-menu-wrapper" id="' + id + '_tools_wrapper">' +
