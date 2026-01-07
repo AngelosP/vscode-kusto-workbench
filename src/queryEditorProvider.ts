@@ -12,6 +12,7 @@ import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
 import { countColumns } from './schemaIndexUtils';
+import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
 
@@ -2940,6 +2941,104 @@ ${query}
 			caretDocsEnabled,
 			caretDocsEnabledUserSet
 		});
+	}
+
+	/**
+	 * Best-effort inference for plain `.kql/.csl` files (no embedded cluster/db metadata):
+	 *
+	 * - Extract table + function identifiers from the query
+	 * - Compare against *cached* schemas we can locate via cached database lists
+	 * - Pick the (clusterUrl, database) with the highest match score
+	 */
+	public async inferClusterDatabaseForKqlQuery(
+		queryText: string
+	): Promise<{ clusterUrl: string; database: string } | undefined> {
+		const text = String(queryText ?? '').trim();
+		if (!text) {
+			return undefined;
+		}
+
+		const tokens = extractKqlSchemaMatchTokens(text);
+		if (!tokens.allNamesLower.size) {
+			return undefined;
+		}
+
+		const favorites = this.getFavorites();
+		const favoriteKeys = new Set<string>();
+		for (const f of favorites) {
+			try {
+				favoriteKeys.add(this.favoriteKey(f.clusterUrl, f.database));
+			} catch {
+				// ignore
+			}
+		}
+
+		const cachedDatabases = this.getCachedDatabases();
+		const connections = this.connectionManager.getConnections();
+
+		// Avoid worst-case blowups when users have large cached DB lists.
+		const MAX_CANDIDATES = 300;
+		let candidatesSeen = 0;
+
+		let best:
+			| { clusterUrl: string; database: string; score: number; isFavorite: boolean }
+			| undefined;
+
+		for (const conn of connections) {
+			const clusterUrl = String(conn?.clusterUrl || '').trim();
+			if (!clusterUrl) continue;
+			const clusterKey = this.getClusterCacheKey(clusterUrl);
+			const dbList = (cachedDatabases && clusterKey && cachedDatabases[clusterKey]) ? cachedDatabases[clusterKey] : [];
+			if (!Array.isArray(dbList) || dbList.length === 0) continue;
+
+			for (const dbRaw of dbList) {
+				if (candidatesSeen >= MAX_CANDIDATES) break;
+				const database = String(dbRaw || '').trim();
+				if (!database) continue;
+				candidatesSeen++;
+
+				const cacheKey = `${clusterUrl}|${database}`;
+				const cached = await this.getCachedSchemaFromDisk(cacheKey);
+				const schema = cached?.schema;
+				if (!schema) continue;
+
+				const score = scoreSchemaMatch(tokens, schema);
+				if (score <= 0) continue;
+
+				const isFavorite = favoriteKeys.has(this.favoriteKey(clusterUrl, database));
+
+				if (!best) {
+					best = { clusterUrl, database, score, isFavorite };
+					continue;
+				}
+
+				if (score > best.score) {
+					best = { clusterUrl, database, score, isFavorite };
+					continue;
+				}
+				if (score === best.score) {
+					// Tie-breaker: prefer favorites (UX), then stable sort by cluster/db.
+					if (isFavorite && !best.isFavorite) {
+						best = { clusterUrl, database, score, isFavorite };
+						continue;
+					}
+					if (isFavorite === best.isFavorite) {
+						const a = `${clusterUrl.toLowerCase()}|${database.toLowerCase()}`;
+						const b = `${best.clusterUrl.toLowerCase()}|${best.database.toLowerCase()}`;
+						if (a < b) {
+							best = { clusterUrl, database, score, isFavorite };
+						}
+					}
+				}
+			}
+
+			if (candidatesSeen >= MAX_CANDIDATES) break;
+		}
+
+		if (!best) {
+			return undefined;
+		}
+		return { clusterUrl: best.clusterUrl, database: best.database };
 	}
 
 	private async promptAddFavorite(

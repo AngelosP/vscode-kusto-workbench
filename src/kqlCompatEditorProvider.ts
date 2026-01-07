@@ -56,6 +56,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
+		// Best-effort default selection for plain `.kql/.csl` files (no embedded metadata).
+		// This is intentionally non-fatal: if we can't infer, the UI falls back to last selection.
+		let inferredSelection: { clusterUrl: string; database: string } | undefined;
+		try {
+			inferredSelection = await queryEditor.inferClusterDatabaseForKqlQuery(document.getText());
+		} catch {
+			inferredSelection = undefined;
+		}
+
 		// Inform the webview it's operating in compatibility mode.
 		try {
 			void webviewPanel.webview.postMessage({
@@ -87,7 +96,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				upgradeRequestType: 'requestUpgradeToKqlx',
 				compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.',
 				state: {
-					sections: [{ type: 'query', query: queryText }]
+					sections: [
+						{
+							type: 'query',
+							query: queryText,
+							...(inferredSelection ? { clusterUrl: inferredSelection.clusterUrl, database: inferredSelection.database } : {})
+						}
+					]
 				}
 			});
 		};

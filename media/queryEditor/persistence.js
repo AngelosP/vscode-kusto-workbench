@@ -734,6 +734,8 @@ function applyKqlxState(state) {
 		if (window.__kustoCompatibilityMode) {
 			const singleKind = String(window.__kustoCompatibilitySingleKind || 'query');
 			let singleText = '';
+			let suggestedClusterUrl = '';
+			let suggestedDatabase = '';
 			try {
 				const sections = Array.isArray(s.sections) ? s.sections : [];
 				const first = sections.find(sec => sec && String(sec.type || '') === singleKind);
@@ -741,6 +743,11 @@ function applyKqlxState(state) {
 					singleText = first ? String(first.text || '') : '';
 				} else {
 					singleText = first ? String(first.query || '') : '';
+					// Optional: extension host can provide a best-effort suggested selection for .kql/.csl.
+					try {
+						suggestedClusterUrl = first ? String(first.clusterUrl || '') : '';
+						suggestedDatabase = first ? String(first.database || '') : '';
+					} catch { /* ignore */ }
 				}
 			} catch {
 				// ignore
@@ -753,6 +760,47 @@ function applyKqlxState(state) {
 				return;
 			}
 			const boxId = addQueryBox();
+			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
+			try {
+				const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
+				const db = String(suggestedDatabase || '').trim();
+				const connEl = document.getElementById(boxId + '_connection');
+				const dbEl = document.getElementById(boxId + '_database');
+				if (desiredClusterUrl && connEl && connEl.dataset) {
+					connEl.dataset.desiredClusterUrl = desiredClusterUrl;
+					// addQueryBox() calls updateConnectionSelects() immediately and may have
+					// auto-filled lastConnectionId already. Clear it so the desired selection
+					// can win on the next updateConnectionSelects() run.
+					try { connEl.value = ''; } catch { /* ignore */ }
+					try { delete connEl.dataset.prevValue; } catch { /* ignore */ }
+				}
+				if (db && dbEl && dbEl.dataset) {
+					dbEl.dataset.desired = db;
+					// Optimistic prefill (matches .kqlx restore behavior) so the user sees the intended DB immediately.
+					try {
+						const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
+						dbEl.innerHTML =
+							'<option value="" disabled hidden>Select Database...</option>' +
+							'<option value="' + esc + '">' + esc + '</option>';
+						dbEl.value = db;
+					} catch { /* ignore */ }
+				}
+				// If this suggested selection exists in favorites, switch to Favorites mode by default.
+				try {
+					if (desiredClusterUrl && db && typeof window.__kustoSetAutoEnterFavoritesForBox === 'function') {
+						window.__kustoSetAutoEnterFavoritesForBox(boxId, desiredClusterUrl, db);
+					}
+				} catch { /* ignore */ }
+				// Ensure dropdowns see the desired selection once connections/favorites are available.
+				try { updateConnectionSelects(); } catch { /* ignore */ }
+				try {
+					if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+						window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
+					}
+				} catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
 			try {
 				window.__kustoPendingQueryTextByBoxId[boxId] = singleText;
 			} catch {
