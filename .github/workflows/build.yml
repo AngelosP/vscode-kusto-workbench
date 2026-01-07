@@ -1,0 +1,132 @@
+# CI/CD build + (optional) publish workflow
+#
+# - Runs on pushes to main and on version tags (v*)
+# - Uses Nerdbank.GitVersioning (NBgv) to compute a SemVer and stamp it into package.json
+# - Builds and packages a .vsix
+# - Publishes to VS Code Marketplace and creates a GitHub Release only on:
+#     - tag push refs/tags/v*
+#     - or manual workflow_dispatch with publish=true
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.gitignore'
+      - '**/*.gitattributes'
+      - '.github/**'
+      - 'resources/**'
+      - 'docs/**'
+      - 'sample/**'
+      - 'scripts/**'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to Marketplace + create GitHub Release'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history required by NBgv)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Setup .NET (for NBgv tool)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install NBgv tool (into runner temp)
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/nbgv" nbgv
+          echo "$RUNNER_TEMP/nbgv" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compute version (NBgv)
+        id: nbgv
+        shell: bash
+        run: |
+          set -euo pipefail
+          nbgv cloud
+
+          VERSION_JSON=$(nbgv get-version -f json)
+          echo "$VERSION_JSON" | head -c 2000
+
+          VERSION=$(VERSION_JSON="$VERSION_JSON" node -e "const v=JSON.parse(process.env.VERSION_JSON); process.stdout.write(String(v.SemVer2 || v.SemVer || v.Version));")
+          echo "Computed version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Stamp package.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Stamping package.json => ${{ steps.nbgv.outputs.version }}"
+          npm version "${{ steps.nbgv.outputs.version }}" --no-git-tag-version
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build (package)
+        run: npm run package
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package VSIX (vsce)
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @vscode/vsce
+          VSIX_NAME="${{ github.event.repository.name }}-${{ steps.nbgv.outputs.version }}.vsix"
+          echo "VSIX_NAME=$VSIX_NAME" >> $GITHUB_ENV
+          vsce package -o "$VSIX_NAME"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ steps.nbgv.outputs.version }}
+          path: ${{ env.VSIX_NAME }}
+
+      - name: Publish to VS Code Marketplace
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "VSCE_PAT is not set. Add it as a repository secret to publish."
+            exit 1
+          fi
+          npm install -g @vscode/vsce
+          vsce publish --pat "$VSCE_PAT"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+        uses: softprops/action-gh-release@v0.1.15
+        with:
+          tag_name: v${{ steps.nbgv.outputs.version }}
+          name: v${{ steps.nbgv.outputs.version }}
+          generate_release_notes: true
+          files: ${{ env.VSIX_NAME }}
