@@ -707,6 +707,7 @@ function __kustoMaximizeQueryBox(boxId) {
 	const editorEl = document.getElementById(id + '_query_editor');
 	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
+	const FIT_SLACK_PX = 5;
 	const applyFitToContent = () => {
 		try {
 			const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
@@ -721,16 +722,34 @@ function __kustoMaximizeQueryBox(boxId) {
 			} catch { /* ignore */ }
 			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
 
+			const addVisibleRectHeight = (el) => {
+				try {
+					if (!el) return 0;
+					try {
+						const cs = getComputedStyle(el);
+						if (cs && cs.display === 'none') return 0;
+						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+						let margin = 0;
+						try {
+							margin += parseFloat(cs.marginTop || '0') || 0;
+							margin += parseFloat(cs.marginBottom || '0') || 0;
+						} catch { /* ignore */ }
+						return Math.max(0, Math.ceil(h + margin));
+					} catch { /* ignore */ }
+					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+					return Math.max(0, Math.ceil(h));
+				} catch {
+					return 0;
+				}
+			};
+
+			// IMPORTANT: do NOT include the editor clip container height in "chrome".
+			// The clip grows/shrinks with the wrapper height; counting it creates a feedback
+			// loop where each click increases height further.
 			let chrome = 0;
 			try {
-				for (const child of Array.from(wrapper.children || [])) {
-					if (!child || child === editorEl) continue;
-					try {
-						const cs = getComputedStyle(child);
-						if (cs && cs.display === 'none') continue;
-					} catch { /* ignore */ }
-					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
-				}
+				const toolbarEl = wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null;
+				chrome += addVisibleRectHeight(toolbarEl);
 			} catch { /* ignore */ }
 			try {
 				const csw = getComputedStyle(wrapper);
@@ -738,7 +757,27 @@ function __kustoMaximizeQueryBox(boxId) {
 				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
 			} catch { /* ignore */ }
 
-			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
+			// Extra elements inside the clip area that also take vertical space (banners, resizer, etc.)
+			let clipExtras = 0;
+			try {
+				const clip = (editorEl && editorEl.closest) ? editorEl.closest('.qe-editor-clip') : null;
+				if (clip && clip.children) {
+					for (const child of Array.from(clip.children)) {
+						if (!child || child === editorEl) continue;
+						clipExtras += addVisibleRectHeight(child);
+					}
+				}
+			} catch { /* ignore */ }
+			try {
+				const clip = (editorEl && editorEl.closest) ? editorEl.closest('.qe-editor-clip') : null;
+				if (clip) {
+					const csc = getComputedStyle(clip);
+					clipExtras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
+					clipExtras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
+				}
+			} catch { /* ignore */ }
+
+			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
 			try {
 				wrapper.style.height = desired + 'px';
 				wrapper.style.minHeight = '0';

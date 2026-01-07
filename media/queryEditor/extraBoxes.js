@@ -2126,6 +2126,7 @@ function initPythonEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			scrollbar: { alwaysConsumeMouseWheel: false },
 			fixedOverflowWidgets: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,

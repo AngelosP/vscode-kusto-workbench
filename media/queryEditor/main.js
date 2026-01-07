@@ -54,6 +54,46 @@ document.addEventListener('keydown', async (event) => {
 	}
 }, true);
 
+// If the mouse is over a surface that *looks* scrollable (Monaco, CodeMirror, results tables)
+// but currently has no vertical scrollbar, scroll the whole page instead.
+// This keeps the notebook feel: wheel always scrolls the document unless there's actually
+// something under the cursor that can scroll.
+try {
+	if (!window.__kustoWheelPassthroughInstalled) {
+		window.__kustoWheelPassthroughInstalled = true;
+		document.addEventListener('wheel', (event) => {
+			try {
+				if (!event || event.defaultPrevented) return;
+				// Don't interfere with pinch-zoom/zoom gestures.
+				if (event.ctrlKey || event.metaKey) return;
+				const t = event.target;
+				const el = (t && t.nodeType === 1) ? t : (t && t.parentElement ? t.parentElement : null);
+				if (!el || !el.closest) return;
+
+				// Only apply passthrough when the cursor is over one of our known scroll-capturing areas.
+				const scrollSurface = el.closest('.monaco-scrollable-element, .CodeMirror-scroll, .table-container, .results-body');
+				if (!scrollSurface) return;
+
+				// If the surface actually has a vertical scrollbar, let it handle the wheel.
+				const hasVScroll = (scrollSurface.scrollHeight > (scrollSurface.clientHeight + 1));
+				if (hasVScroll) return;
+
+				// Otherwise, scroll the page.
+				const dy = (typeof event.deltaY === 'number' && Number.isFinite(event.deltaY)) ? event.deltaY : 0;
+				const dx = (typeof event.deltaX === 'number' && Number.isFinite(event.deltaX)) ? event.deltaX : 0;
+				if (!dy && !dx) return;
+				try { window.scrollBy(dx, dy); } catch { /* ignore */ }
+				try { event.preventDefault(); } catch { /* ignore */ }
+				try { event.stopPropagation(); } catch { /* ignore */ }
+			} catch {
+				// ignore
+			}
+		}, { capture: true, passive: false });
+	}
+} catch {
+	// ignore
+}
+
 // Close open modal dialogs on Escape.
 // Only intercept Escape when a modal is visible, so we don't interfere with
 // Monaco/editor keybindings during normal editing.

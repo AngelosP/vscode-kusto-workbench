@@ -4734,6 +4734,28 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 			return;
 		}
 
+		const FIT_SLACK_PX = 5;
+		const addVisibleRectHeight = (el) => {
+			try {
+				if (!el) return 0;
+				try {
+					const cs = getComputedStyle(el);
+					if (cs && cs.display === 'none') return 0;
+					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+					let margin = 0;
+					try {
+						margin += parseFloat(cs.marginTop || '0') || 0;
+						margin += parseFloat(cs.marginBottom || '0') || 0;
+					} catch { /* ignore */ }
+					return Math.max(0, Math.ceil(h + margin));
+				} catch { /* ignore */ }
+				const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+				return Math.max(0, Math.ceil(h));
+			} catch {
+				return 0;
+			}
+		};
+
 		const apply = () => {
 			try {
 				if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
@@ -4754,19 +4776,52 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 					return;
 				}
 
-				// Wrapper total = fixed chrome (toolbars/resizers) + Monaco content height.
+				// Wrapper total = fixed chrome (toolbars/resizers/banners) + Monaco content height.
+				// IMPORTANT: Do NOT count the editor clip container height as chrome; it tracks the wrapper
+				// height and causes a feedback loop (each resize makes the next one bigger).
 				let chrome = 0;
 				try {
-					for (const child of Array.from(wrapper.children || [])) {
-						if (!child || !child.classList) continue;
-						if (child.classList.contains('query-editor')) continue;
-						chrome += (child.getBoundingClientRect ? child.getBoundingClientRect().height : 0);
-					}
-				} catch {
-					// ignore
-				}
+					const csw = getComputedStyle(wrapper);
+					chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+					chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+				} catch { /* ignore */ }
 
-				const next = Math.max(120, Math.ceil(chrome + contentHeight));
+				let extras = 0;
+				try {
+					const clip = containerEl.closest('.qe-editor-clip');
+					if (clip) {
+						// Count wrapper children except the clip itself (toolbar, etc.).
+						try {
+							for (const child of Array.from(wrapper.children || [])) {
+								if (!child || child === clip) continue;
+								chrome += addVisibleRectHeight(child);
+							}
+						} catch { /* ignore */ }
+						// Count visible clip children except the editor container (resizer, banners, placeholders).
+						try {
+							for (const child of Array.from(clip.children || [])) {
+								if (!child || child === containerEl) continue;
+								extras += addVisibleRectHeight(child);
+							}
+						} catch { /* ignore */ }
+						// Clip padding/borders.
+						try {
+							const csc = getComputedStyle(clip);
+							extras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
+							extras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
+						} catch { /* ignore */ }
+					} else {
+						// No clip (e.g. Python box): count wrapper children other than the editor container.
+						try {
+							for (const child of Array.from(wrapper.children || [])) {
+								if (!child || child === containerEl) continue;
+								chrome += addVisibleRectHeight(child);
+							}
+						} catch { /* ignore */ }
+					}
+				} catch { /* ignore */ }
+
+				const next = Math.max(120, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX));
 				wrapper.style.height = next + 'px';
 				try {
 					if (wrapper.dataset) {
@@ -6928,6 +6983,7 @@ function initQueryEditor(boxId) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
+			scrollbar: { alwaysConsumeMouseWheel: false },
 			// Reduce the blank gap between the line numbers and the code.
 			// We rely on the line-decorations lane for the active-statement indicator, so keep it
 			// non-zero but tight.
