@@ -77,6 +77,7 @@
 		'queryEditor/vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'queryEditor/controlCommands.generated.js',
+		'queryEditor/functions.generated.js',
 		'queryEditor/schema.js',
 		'queryEditor/monaco.js',
 		'queryEditor/queryBoxes.js',

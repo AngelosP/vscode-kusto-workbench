@@ -1537,6 +1537,50 @@ function ensureMonaco() {
 					const __kustoCompletionProvider = {
 						triggerCharacters: [' ', '|', '.'],
 						provideCompletionItems: async function (model, position) {
+							// Generated Kusto function names (from Microsoft Learn TOC) are loaded by `queryEditor/functions.generated.js`.
+							// Merge those into our hand-authored docs so completions are comprehensive even when we don't
+							// have detailed arg/return docs for every function.
+							try {
+								if (typeof window !== 'undefined' && window) {
+									if (!window.__kustoGeneratedFunctionsMerged) {
+										window.__kustoGeneratedFunctionsMerged = true;
+										const raw = Array.isArray(window.__kustoFunctionEntries) ? window.__kustoFunctionEntries : [];
+										const docs = (window.__kustoFunctionDocs && typeof window.__kustoFunctionDocs === 'object') ? window.__kustoFunctionDocs : null;
+										for (const ent of raw) {
+											const name = Array.isArray(ent) ? ent[0] : (ent && ent.name);
+											if (!name) continue;
+											const fn = String(name).trim();
+											if (!fn) continue;
+											if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(fn)) continue;
+											if (KUSTO_FUNCTION_DOCS[fn]) continue;
+
+											const g = (docs && docs[fn] && typeof docs[fn] === 'object') ? docs[fn] : null;
+											let args = [];
+											let description = 'Kusto function.';
+											let signature = undefined;
+											let docUrl = undefined;
+											try {
+												if (g) {
+													if (Array.isArray(g.args)) args = g.args;
+													if (g.description) description = String(g.description);
+													if (g.signature) signature = String(g.signature);
+													if (g.docUrl) docUrl = String(g.docUrl);
+												}
+											} catch { /* ignore */ }
+
+											KUSTO_FUNCTION_DOCS[fn] = {
+												args,
+												returnType: 'scalar',
+												description,
+												signature,
+												docUrl
+											};
+										}
+									}
+								}
+							} catch {
+								// ignore
+							}
 							const suggestions = [];
 							const seen = new Set();
 
@@ -1750,9 +1794,21 @@ function ensureMonaco() {
 										if (typed && !fn.toLowerCase().startsWith(typed)) {
 											continue;
 										}
-										const doc = KUSTO_FUNCTION_DOCS[fn];
-										const detail = doc && doc.returnType ? String(doc.returnType) : undefined;
-										const documentation = doc && doc.description ? { value: String(doc.description) } : undefined;
+											const doc = KUSTO_FUNCTION_DOCS[fn];
+											const detail = doc && (doc.signature || doc.returnType) ? String(doc.signature || doc.returnType) : undefined;
+											const documentation = (() => {
+												try {
+													const desc = doc && doc.description ? String(doc.description) : '';
+													const url = doc && doc.docUrl ? String(doc.docUrl) : '';
+													if (!desc && !url) return undefined;
+													if (url) {
+														return { value: desc ? (desc + `\n\n[Open documentation](${url})`) : `[Open documentation](${url})` };
+													}
+													return { value: desc };
+												} catch {
+													return undefined;
+												}
+											})();
 										const insert = __kustoBuildFnInsertText(fn, doc);
 										pushSuggestion({
 											label: fn,
