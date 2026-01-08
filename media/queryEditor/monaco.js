@@ -4897,6 +4897,181 @@ function ensureMonaco() {
 						}
 					};
 
+					// Track which cross-cluster schemas have been loaded or requested
+					// Key: "clusterName|database" -> { status: 'pending'|'loaded'|'error', rawSchemaJson?: object }
+					window.__kustoCrossClusterSchemas = {};
+
+					// Parse query text to extract cluster() and database() references
+					// Returns array of { clusterName, database } objects
+					window.__kustoExtractCrossClusterRefs = function (queryText) {
+						const refs = [];
+						if (!queryText || typeof queryText !== 'string') {
+							return refs;
+						}
+
+						// Pattern matches:
+						// cluster('name').database('dbname')
+						// cluster("name").database("dbname")
+						// cluster(name).database(dbname) - without quotes
+						const pattern = /cluster\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)\s*\.\s*database\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
+						let match;
+						while ((match = pattern.exec(queryText)) !== null) {
+							const clusterName = match[1];
+							const database = match[2];
+							if (clusterName && database) {
+								// Avoid duplicates
+								const exists = refs.some(r => 
+									r.clusterName.toLowerCase() === clusterName.toLowerCase() &&
+									r.database.toLowerCase() === database.toLowerCase()
+								);
+								if (!exists) {
+									refs.push({ clusterName, database });
+								}
+							}
+						}
+						return refs;
+					};
+
+					// Request schema for a cross-cluster reference
+					window.__kustoRequestCrossClusterSchema = function (clusterName, database, boxId) {
+						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+						
+						// Skip if already loaded or pending
+						if (window.__kustoCrossClusterSchemas[key]) {
+							console.log('[cross-cluster] Schema already', window.__kustoCrossClusterSchemas[key].status, 'for', key);
+							return;
+						}
+
+						// Mark as pending
+						window.__kustoCrossClusterSchemas[key] = { status: 'pending' };
+						console.log('[cross-cluster] Requesting schema for', clusterName, database);
+
+						const requestToken = 'crosscluster_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+						
+						if (typeof vscode !== 'undefined' && vscode.postMessage) {
+							vscode.postMessage({
+								type: 'requestCrossClusterSchema',
+								clusterName,
+								database,
+								boxId: boxId || '',
+								requestToken
+							});
+						}
+					};
+
+					// Apply a cross-cluster schema to monaco-kusto
+					window.__kustoApplyCrossClusterSchema = async function (clusterName, clusterUrl, database, rawSchemaJson) {
+						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+						
+						try {
+							// Parse the raw schema JSON
+							let schemaObj;
+							if (typeof rawSchemaJson === 'string') {
+								try {
+									schemaObj = JSON.parse(rawSchemaJson);
+								} catch (e) {
+									console.error('[cross-cluster] Failed to parse schema JSON:', e);
+									window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Failed to parse schema' };
+									return;
+								}
+							} else {
+								schemaObj = rawSchemaJson;
+							}
+
+							if (!schemaObj || !schemaObj.Databases) {
+								console.error('[cross-cluster] Schema missing Databases property');
+								window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Invalid schema format' };
+								return;
+							}
+
+							// Get the kusto worker
+							if (monaco && monaco.languages && monaco.languages.kusto && typeof monaco.languages.kusto.getKustoWorker === 'function') {
+								const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+								const models = monaco.editor.getModels();
+								
+								if (models && models.length > 0) {
+									const model = models[0];
+									const worker = await workerAccessor(model.uri);
+
+									if (worker && typeof worker.addDatabaseToSchema === 'function') {
+										// Convert showSchema format to Database format for addDatabaseToSchema
+										// The raw schema has Databases as object: { "dbname": { Tables: {...}, Functions: {...}, ... } }
+										const dbSchema = schemaObj.Databases[database] || Object.values(schemaObj.Databases)[0];
+										
+										if (dbSchema) {
+											// Convert to the Database interface format expected by addDatabaseToSchema
+											const databaseSchema = {
+												name: database,
+												tables: Object.entries(dbSchema.Tables || {}).map(([name, table]) => ({
+													name,
+													entityType: table.EntityType || 'Table',
+													columns: Object.entries(table.OrderedColumns || {}).map(([colName, col]) => ({
+														name: col.Name || colName,
+														type: col.CslType || col.Type || 'string',
+														docstring: col.Docstring || ''
+													})),
+													docstring: table.Docstring || ''
+												})),
+												functions: Object.entries(dbSchema.Functions || {}).map(([name, func]) => ({
+													name,
+													inputParameters: (func.InputParameters || []).map(p => ({
+														name: p.Name || '',
+														type: p.CslType || p.Type || 'string',
+														cslDefaultValue: p.CslDefaultValue
+													})),
+													body: func.Body || '',
+													docstring: func.Docstring || ''
+												})),
+												graphs: [], // Empty for now, could be populated from ExternalTables or similar
+												entityGroups: [], // Empty for now
+												majorVersion: 1,
+												minorVersion: 0
+											};
+
+											console.log('[cross-cluster] Adding database to schema:', clusterName, database);
+											// clusterName should be exactly what the user typed (e.g., 'help' or 'https://help.kusto.windows.net')
+											await worker.addDatabaseToSchema(model.uri.toString(), clusterName, databaseSchema);
+											
+											window.__kustoCrossClusterSchemas[key] = { 
+												status: 'loaded', 
+												rawSchemaJson: schemaObj,
+												clusterUrl
+											};
+											console.log('[cross-cluster] Schema added successfully for', clusterName, database);
+											
+											// Show notification to user that cross-cluster schema was loaded
+											try {
+												if (typeof vscode !== 'undefined' && vscode.postMessage) {
+													vscode.postMessage({
+														type: 'showInfo',
+														message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
+													});
+												}
+											} catch { /* ignore */ }
+										} else {
+											console.error('[cross-cluster] No database found in schema for', database);
+											window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
+										}
+									} else {
+										console.warn('[cross-cluster] Worker missing addDatabaseToSchema method');
+										window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+									}
+								}
+							}
+						} catch (e) {
+							console.error('[cross-cluster] Failed to apply schema:', e);
+							window.__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
+						}
+					};
+
+					// Check for cross-cluster references in a query and request schemas
+					window.__kustoCheckCrossClusterRefs = function (queryText, boxId) {
+						const refs = window.__kustoExtractCrossClusterRefs(queryText);
+						for (const ref of refs) {
+							window.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
+						}
+					};
+
 					resolve(monaco);
 								} catch (e) {
 									reject(e);
@@ -9115,6 +9290,19 @@ function initQueryEditor(boxId) {
 				}
 			} catch { /* ignore */ }
 			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			// Check for cross-cluster references and request their schemas
+			try {
+				if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
+					// Debounce the check to avoid excessive requests while typing
+					if (!window.__kustoCrossClusterCheckTimeout) {
+						window.__kustoCrossClusterCheckTimeout = {};
+					}
+					clearTimeout(window.__kustoCrossClusterCheckTimeout[boxId]);
+					window.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
+						window.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+					}, 500);
+				}
+			} catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;

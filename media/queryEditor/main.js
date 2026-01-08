@@ -1362,6 +1362,40 @@ window.addEventListener('message', async event => {
 				// ignore
 			}
 			break;
+		case 'crossClusterSchemaData':
+			// Handle cross-cluster schema response
+			try {
+				const clusterName = message.clusterName;
+				const clusterUrl = message.clusterUrl;
+				const database = message.database;
+				const rawSchemaJson = message.rawSchemaJson;
+				
+				console.log('[crossClusterSchemaData] Received schema for', clusterName, database);
+				
+				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
+					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
+				}
+			} catch (e) {
+				console.error('[crossClusterSchemaData] Error:', e);
+			}
+			break;
+		case 'crossClusterSchemaError':
+			// Handle cross-cluster schema error
+			try {
+				const clusterName = message.clusterName;
+				const database = message.database;
+				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+				
+				console.warn('[crossClusterSchemaError]', message.error);
+				
+				// Mark as error so we don't keep retrying
+				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
+					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
+				}
+			} catch (e) {
+				console.error('[crossClusterSchemaError] Error handling:', e);
+			}
+			break;
 			case 'connectionAdded':
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {

@@ -2635,6 +2635,13 @@
 			z-index: 1000 !important;
 		}
 
+		/* Disable monaco-kusto's default command background highlighting.
+		   The selectionHighlight class is used by KustoCommandHighlighter to highlight
+		   the entire current command, but we use our own gutter indicator instead. */
+		.monaco-editor .selectionHighlight {
+			background-color: transparent !important;
+		}
+
 		/* Active statement indicator (only shown when multiple statements exist).
 		   Uses the gutter/line-decoration lane rather than a background highlight. */
 		.monaco-editor .margin-view-overlays .kusto-active-statement-gutter {
