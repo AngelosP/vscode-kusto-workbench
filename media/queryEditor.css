@@ -260,6 +260,198 @@
 			margin: 0;
 		}
 
+		/* Chart section builder */
+		.chart-box .query-editor {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			min-height: 0;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+		}
+
+		.chart-box .query-editor-wrapper {
+			border: none;
+		}
+
+		.kusto-chart-builder {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			padding: 8px;
+			min-height: 0;
+			height: 100%;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-chart-controls {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.kusto-chart-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		.kusto-chart-row label,
+		.kusto-chart-mapping-row label {
+			font-size: 12px;
+			white-space: nowrap;
+			min-width: 40px;
+		}
+
+		/* Legend label doesn't need the extra width for alignment */
+		.kusto-chart-mapping-row label.kusto-chart-label-legend {
+			min-width: auto;
+		}
+
+		/* Hide the 'Type' label at narrow widths, but keep the chart type picker visible */
+		@media (max-width: 450px) {
+			.kusto-chart-row-type > label {
+				display: none;
+			}
+		}
+
+		.kusto-chart-row-type {
+			margin-bottom: 4px;
+		}
+
+		.kusto-chart-row-type > label {
+			align-self: center;
+		}
+
+		/* Align X/Y mapping row labels with Data label above */
+		.kusto-chart-mapping-row > label:first-child {
+			min-width: 32px;
+		}
+
+		.kusto-chart-row select,
+		.kusto-chart-mapping-row select {
+			min-width: 140px;
+		}
+
+		.kusto-chart-row .select-wrapper,
+		.kusto-chart-mapping-row .select-wrapper {
+			min-width: 140px;
+		}
+
+		.kusto-chart-mapping {
+			margin-top: 2px;
+		}
+
+		.kusto-chart-mapping-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		/* Keep label + dropdown together as a unit when wrapping */
+		.kusto-chart-field-group {
+			display: inline-flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: nowrap;
+		}
+
+		.kusto-chart-canvas {
+			width: 100%;
+			height: 100%;
+			flex: 1 1 auto;
+			min-height: 0;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+		}
+
+		/* Chart type picker with icons */
+		.kusto-chart-type-picker {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 4px;
+			align-items: center;
+		}
+
+		.kusto-chart-type-btn {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 2px;
+			padding: 4px 6px;
+			min-width: 44px;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			background: transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			transition: all 0.1s ease;
+		}
+
+		.kusto-chart-type-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-chart-type-btn.is-selected {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+			border-color: transparent;
+		}
+
+		.kusto-chart-type-btn svg {
+			width: 22px;
+			height: 22px;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+		}
+
+		.kusto-chart-type-btn:hover svg {
+			opacity: 0.9;
+		}
+
+		.kusto-chart-type-btn.is-selected svg {
+			opacity: 1;
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		.kusto-chart-type-btn span {
+			font-size: 10px;
+			text-align: center;
+			white-space: nowrap;
+		}
+
+		/* Data labels toggle */
+		.kusto-chart-toggle-label {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			cursor: pointer;
+			user-select: none;
+			padding: 4px 8px;
+			border-radius: 4px;
+			margin-left: 8px;
+		}
+
+		.kusto-chart-toggle-label:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-chart-toggle-label span {
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.kusto-chart-toggle {
+			width: 16px;
+			height: 16px;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+		}
+
 		.kusto-copilot-editor-pane {
 			flex: 1 1 auto;
 			min-width: 0;
@@ -1687,6 +1879,75 @@
 			cursor: not-allowed;
 		}
 
+		/* Unified dropdown styling for chart controls (single-select and multi-select) */
+		.kusto-single-select-dropdown,
+		.kusto-checkbox-dropdown {
+			min-width: 140px;
+		}
+
+		/* Match native <select> styling for unified dropdown buttons */
+		.kusto-single-select-dropdown .kusto-dropdown-btn,
+		.kusto-checkbox-dropdown .kusto-dropdown-btn {
+			padding: 4px 24px 4px 8px;
+			min-height: auto;
+		}
+
+		/* Disabled state for unified dropdown buttons */
+		.kusto-dropdown-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.kusto-checkbox-menu {
+			max-height: 200px;
+			overflow-y: auto;
+		}
+
+		.kusto-checkbox-item {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 6px 10px;
+			cursor: pointer;
+			user-select: none;
+			justify-content: flex-start;
+		}
+
+		.kusto-checkbox-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-checkbox-item input[type="checkbox"] {
+			width: 14px;
+			height: 14px;
+			margin: 0;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+			flex-shrink: 0;
+		}
+
+		.kusto-checkbox-label {
+			font-size: 12px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			flex: 1 1 auto;
+		}
+
+		/* Ensure checkbox dropdown button text is left-aligned */
+		.kusto-checkbox-dropdown .kusto-dropdown-btn-text {
+			text-align: left;
+			justify-content: flex-start;
+		}
+
+		.kusto-checkbox-item.is-disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.kusto-checkbox-item.is-disabled input[type="checkbox"] {
+			cursor: not-allowed;
+		}
 
 
 		.refresh-btn {
@@ -1776,13 +2037,13 @@
 		}
 
 		@media (max-width: 800px) {
-			.select-wrapper {
+			.query-header .select-wrapper {
 				flex: 0 0 40px;
 				width: 40px;
 				min-width: 40px;
 			}
 
-			.select-wrapper.kusto-favorites-combo {
+			.query-header .select-wrapper.kusto-favorites-combo {
 				/* Override the icon-only sizing so favorites can shrink smoothly instead of snapping. */
 				flex: 1 1 448px;
 				width: auto;
@@ -1802,31 +2063,31 @@
 				min-width: 100%;
 			}
 
-			.select-wrapper.half-width {
+			.query-header .select-wrapper.half-width {
 				flex: 0 0 40px;
 				width: 40px;
 				max-width: 40px;
 			}
 			
-			.select-wrapper select {
+			.query-header .select-wrapper select {
 				padding-left: 8px;
 				padding-right: 8px;
 				text-indent: -9999px;
 				color: transparent;
 			}
 
-			.select-wrapper.has-icon select {
+			.query-header .select-wrapper.has-icon select {
 				padding-left: 8px;
 			}
 
 			/* (favorites button no longer uses a left icon) */
 			
-			.select-wrapper select option {
+			.query-header .select-wrapper select option {
 				text-indent: 0;
 				color: var(--vscode-dropdown-foreground);
 			}
 
-			.select-wrapper.has-icon .select-icon {
+			.query-header .select-wrapper.has-icon .select-icon {
 				left: 50%;
 				transform: translate(-50%, -50%);
 			}

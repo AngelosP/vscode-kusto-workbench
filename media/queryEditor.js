@@ -6,14 +6,14 @@
 	// If the user clicks one of the add buttons before scripts are fully loaded,
 	// queue those clicks and replay them once initialization completes.
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
-		window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0, copilotQuery: 0 };
+		window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, markdown: 0, python: 0, url: 0, copilotQuery: 0 };
 	}
 	const pendingAdds = window.__kustoQueryEditorPendingAdds;
 	if (typeof window.__kustoRequestAddSection !== 'function') {
 		window.__kustoRequestAddSection = function (kind) {
 			const k = String(kind || '').trim();
 			if (!k) return;
-			if (k === 'query' || k === 'markdown' || k === 'python' || k === 'url' || k === 'copilotQuery') {
+			if (k === 'query' || k === 'chart' || k === 'markdown' || k === 'python' || k === 'url' || k === 'copilotQuery') {
 				pendingAdds[k] = (pendingAdds[k] || 0) + 1;
 			}
 		};
@@ -26,6 +26,11 @@
 	if (typeof window.addMarkdownBox !== 'function') {
 		window.addMarkdownBox = function () {
 			pendingAdds.markdown = (pendingAdds.markdown || 0) + 1;
+		};
+	}
+	if (typeof window.addChartBox !== 'function') {
+		window.addChartBox = function () {
+			pendingAdds.chart = (pendingAdds.chart || 0) + 1;
 		};
 	}
 	if (typeof window.addPythonBox !== 'function') {
@@ -76,6 +81,7 @@
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
+		'dist/queryEditor/vendor/echarts/echarts.webview.js',
 		'queryEditor/controlCommands.generated.js',
 		'queryEditor/functions.generated.js',
 		'queryEditor/schema.js',

@@ -252,8 +252,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		return 'kqlx';
 	}
 
-	private static getAllowedSectionKinds(kind: KqlxFileKind): Array<'query' | 'markdown' | 'python' | 'url'> {
-		return kind === 'mdx' ? ['markdown', 'url'] : ['query', 'markdown', 'python', 'url'];
+	private static getAllowedSectionKinds(kind: KqlxFileKind): Array<'query' | 'chart' | 'markdown' | 'python' | 'url'> {
+		return kind === 'mdx' ? ['markdown', 'url'] : ['query', 'chart', 'markdown', 'python', 'url'];
 	}
 
 	private static sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {

@@ -73,7 +73,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				compatibilityMode: true,
 				documentKind: 'kql',
 				compatibilitySingleKind: 'query',
-				allowedSectionKinds: ['query', 'markdown', 'python', 'url'],
+						allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
 				defaultSectionKind: 'query',
 				upgradeRequestType: 'requestUpgradeToKqlx',
 				compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.'
@@ -91,7 +91,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				compatibilityMode: true,
 				documentKind: 'kql',
 				compatibilitySingleKind: 'query',
-				allowedSectionKinds: ['query', 'markdown', 'python', 'url'],
+				allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
 				defaultSectionKind: 'query',
 				upgradeRequestType: 'requestUpgradeToKqlx',
 				compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.',
@@ -121,7 +121,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							compatibilityMode: true,
 							documentKind: 'kql',
 							compatibilitySingleKind: 'query',
-							allowedSectionKinds: ['query', 'markdown', 'python', 'url'],
+								allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
 							defaultSectionKind: 'query',
 							upgradeRequestType: 'requestUpgradeToKqlx',
 							compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.'
@@ -188,7 +188,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		}
 
 		const choice = await vscode.window.showInformationMessage(
-			'To add sections (Query/Markdown/Python/URL), this file needs to be upgraded to the .kqlx format. This is a non-destructive change and it’s easy to go back later.',
+			'To add sections (Query/Chart/Markdown/Python/URL), this file needs to be upgraded to the .kqlx format. This is a non-destructive change and it’s easy to go back later.',
 			{ modal: true },
 			'Upgrade to .kqlx'
 		);
@@ -207,7 +207,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const oldUri = document.uri;
 		const newUri = oldUri.with({ path: oldUri.path.replace(/\.(kql|csl)$/i, '.kqlx') });
-		const normalizedAddKind = ['query', 'markdown', 'python', 'url'].includes(String(addKind)) ? String(addKind) : '';
+		const normalizedAddKind = ['query', 'chart', 'markdown', 'python', 'url'].includes(String(addKind)) ? String(addKind) : '';
 
 		// Build .kqlx content with the current query as the first section.
 		const queryText = document.getText();

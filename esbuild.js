@@ -86,6 +86,25 @@ async function main() {
 		console.warn('[watch] failed to copy TOAST UI Editor assets:', e && e.message ? e.message : e);
 	}
 
+	// ECharts is used by the webview for Chart sections.
+	// Bundle a browser-ready script that attaches `window.echarts`.
+	const echartsWebviewJsDestDir = path.join(__dirname, 'dist', 'queryEditor', 'vendor', 'echarts');
+	try {
+		await fs.promises.mkdir(echartsWebviewJsDestDir, { recursive: true });
+		await esbuild.build({
+			entryPoints: [path.join(__dirname, 'scripts', 'echarts-webview-entry.js')],
+			bundle: true,
+			platform: 'browser',
+			format: 'iife',
+			minify: production,
+			sourcemap: false,
+			outfile: path.join(echartsWebviewJsDestDir, 'echarts.webview.js'),
+			logLevel: 'silent'
+		});
+	} catch (e) {
+		console.warn('[watch] failed to bundle ECharts:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'

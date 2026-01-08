@@ -2,6 +2,7 @@ export type KqlxVersion = 1;
 
 export type KqlxSectionV1 =
 	| {
+			id?: string;
 			type: 'query';
 			name?: string;
 			expanded?: boolean;
@@ -25,6 +26,7 @@ export type KqlxSectionV1 =
 			copilotChatWidthPx?: number;
 		}
 	| {
+			id?: string;
 			type: 'copilotQuery';
 			name?: string;
 			expanded?: boolean;
@@ -44,6 +46,7 @@ export type KqlxSectionV1 =
 			copilotChatWidthPx?: number;
 		}
 	| {
+			id?: string;
 			type: 'markdown';
 			title?: string;
 			text?: string;
@@ -55,17 +58,35 @@ export type KqlxSectionV1 =
 			editorHeightPx?: number;
 		}
 	| {
+			id?: string;
 			type: 'python';
 			code?: string;
 			output?: string;
 			editorHeightPx?: number;
 		}
 	| {
+			id?: string;
 			type: 'url';
 			name?: string;
 			url?: string;
 			expanded?: boolean;
 			outputHeightPx?: number;
+		}
+	| {
+			id?: string;
+			type: 'chart';
+			name?: string;
+			mode?: 'edit' | 'preview';
+			expanded?: boolean;
+			editorHeightPx?: number;
+			// Chart builder configuration (optional; webview-specific).
+			dataSourceId?: string;
+			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie';
+			xColumn?: string;
+			yColumns?: string[];
+			yColumn?: string;
+			labelColumn?: string;
+			valueColumn?: string;
 		}
 	| {
 			type: string;

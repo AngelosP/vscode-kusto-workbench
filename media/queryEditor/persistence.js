@@ -20,7 +20,7 @@ window.__kustoCompatibilityMode = false;
 // - allowedSectionKinds controls which add buttons are shown/enabled.
 // - defaultSectionKind controls which section we create for an empty document.
 // - upgradeRequestType controls which message we send when in compatibility mode.
-window.__kustoAllowedSectionKinds = window.__kustoAllowedSectionKinds || ['query', 'markdown', 'python', 'url'];
+window.__kustoAllowedSectionKinds = window.__kustoAllowedSectionKinds || ['query', 'chart', 'markdown', 'python', 'url'];
 window.__kustoDefaultSectionKind = window.__kustoDefaultSectionKind || 'query';
 window.__kustoCompatibilitySingleKind = window.__kustoCompatibilitySingleKind || 'query';
 window.__kustoUpgradeRequestType = window.__kustoUpgradeRequestType || 'requestUpgradeToKqlx';
@@ -89,7 +89,7 @@ function __kustoSetCompatibilityMode(enabled) {
 		if (enabled) {
 			try {
 				if (window.__kustoQueryEditorPendingAdds && typeof window.__kustoQueryEditorPendingAdds === 'object') {
-					window.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+					window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, markdown: 0, python: 0, url: 0 };
 				}
 			} catch {
 				// ignore
@@ -108,7 +108,7 @@ function __kustoRequestAddSection(kind) {
 	try {
 		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
 			? window.__kustoAllowedSectionKinds.map(v => String(v))
-			: ['query', 'markdown', 'python', 'url'];
+			: ['query', 'chart', 'markdown', 'python', 'url'];
 		if (allowed.length > 0 && !allowed.includes(k)) {
 			return;
 		}
@@ -133,6 +133,7 @@ function __kustoRequestAddSection(kind) {
 
 	// Normal .kqlx flow.
 	if (k === 'query') return addQueryBox();
+	if (k === 'chart') return addChartBox();
 	if (k === 'markdown') return addMarkdownBox();
 	if (k === 'python') return addPythonBox();
 	if (k === 'url') return addUrlBox();
@@ -507,6 +508,7 @@ function getKqlxState() {
 				}
 			} catch { /* ignore */ }
 			sections.push({
+				id,
 				type: querySectionType,
 				name,
 				clusterUrl,
@@ -523,6 +525,56 @@ function getKqlxState() {
 				resultsHeightPx: __kustoGetQueryResultsOutputHeightPx(id),
 				...(typeof copilotChatVisible === 'boolean' ? { copilotChatVisible } : {}),
 				...(typeof copilotChatWidthPx === 'number' ? { copilotChatWidthPx } : {})
+			});
+			continue;
+		}
+
+		if (id.startsWith('chart_')) {
+			const name = (document.getElementById(id + '_name') || {}).value || '';
+			let mode = 'edit';
+			let expanded = true;
+			let dataSourceId = '';
+			let chartType = '';
+			let xColumn = '';
+			let yColumn = '';
+			let yColumns = [];
+			let legendColumn = '';
+			let labelColumn = '';
+			let valueColumn = '';
+			let showDataLabels = false;
+			try {
+				const st = (typeof chartStateByBoxId === 'object' && chartStateByBoxId && chartStateByBoxId[id]) ? chartStateByBoxId[id] : null;
+				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
+				if (m === 'preview' || m === 'edit') {
+					mode = m;
+				}
+				expanded = (st && typeof st.expanded === 'boolean') ? !!st.expanded : true;
+				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
+				chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
+				xColumn = (st && typeof st.xColumn === 'string') ? String(st.xColumn) : '';
+				yColumn = (st && typeof st.yColumn === 'string') ? String(st.yColumn) : '';
+				yColumns = (st && Array.isArray(st.yColumns)) ? st.yColumns.filter(c => c) : [];
+				legendColumn = (st && typeof st.legendColumn === 'string') ? String(st.legendColumn) : '';
+				labelColumn = (st && typeof st.labelColumn === 'string') ? String(st.labelColumn) : '';
+				valueColumn = (st && typeof st.valueColumn === 'string') ? String(st.valueColumn) : '';
+				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
+			} catch { /* ignore */ }
+			sections.push({
+				id,
+				type: 'chart',
+				name,
+				mode,
+				expanded,
+				...(dataSourceId ? { dataSourceId } : {}),
+				...(chartType ? { chartType } : {}),
+				...(xColumn ? { xColumn } : {}),
+				...(yColumn ? { yColumn } : {}),
+				...(yColumns.length ? { yColumns } : {}),
+				...(legendColumn ? { legendColumn } : {}),
+				...(labelColumn ? { labelColumn } : {}),
+				...(valueColumn ? { valueColumn } : {}),
+				...(showDataLabels ? { showDataLabels } : {}),
+				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
 			});
 			continue;
 		}
@@ -574,6 +626,7 @@ function getKqlxState() {
 				} catch { /* ignore */ }
 			}
 			sections.push({
+				id,
 				type: 'markdown',
 				title,
 				text,
@@ -589,6 +642,7 @@ function getKqlxState() {
 			const code = pythonEditors && pythonEditors[id] ? (pythonEditors[id].getValue() || '') : '';
 			const output = (document.getElementById(id + '_py_output') || {}).textContent || '';
 			sections.push({
+				id,
 				type: 'python',
 				code,
 				output,
@@ -603,6 +657,7 @@ function getKqlxState() {
 			const url = st ? (String(st.url || '')) : ((document.getElementById(id + '_input') || {}).value || '');
 			const expanded = !!(st && st.expanded);
 			sections.push({
+				id,
 				type: 'url',
 				name,
 				url,
@@ -677,6 +732,13 @@ function __kustoClearAllSections() {
 	try {
 		for (const id of (queryBoxes || []).slice()) {
 			try { removeQueryBox(id); } catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		for (const id of (chartBoxes || []).slice()) {
+			try { removeChartBox(id); } catch { /* ignore */ }
 		}
 	} catch {
 		// ignore
@@ -1013,6 +1075,35 @@ function applyKqlxState(state) {
 							}
 						} catch { /* ignore */ }
 					}, 0);
+				} catch { /* ignore */ }
+				continue;
+			}
+
+			if (t === 'chart') {
+				const boxId = addChartBox({
+					id: (section.id ? String(section.id) : undefined),
+					name: String(section.name || ''),
+					mode: (typeof section.mode === 'string') ? String(section.mode) : 'edit',
+					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
+					editorHeightPx: (typeof section.editorHeightPx === 'number') ? section.editorHeightPx : undefined,
+					dataSourceId: (typeof section.dataSourceId === 'string') ? section.dataSourceId : undefined,
+					chartType: (typeof section.chartType === 'string') ? section.chartType : undefined,
+					xColumn: (typeof section.xColumn === 'string') ? section.xColumn : undefined,
+					yColumns: (Array.isArray(section.yColumns) ? section.yColumns : undefined),
+					yColumn: (typeof section.yColumn === 'string') ? section.yColumn : undefined,
+					legendColumn: (typeof section.legendColumn === 'string') ? section.legendColumn : undefined,
+					labelColumn: (typeof section.labelColumn === 'string') ? section.labelColumn : undefined,
+					valueColumn: (typeof section.valueColumn === 'string') ? section.valueColumn : undefined,
+					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false
+				});
+				try {
+					// Ensure buttons/UI reflect persisted state.
+					if (typeof __kustoApplyChartMode === 'function') {
+						__kustoApplyChartMode(boxId);
+					}
+					if (typeof __kustoApplyChartBoxVisibility === 'function') {
+						__kustoApplyChartBoxVisibility(boxId);
+					}
 				} catch { /* ignore */ }
 				continue;
 			}

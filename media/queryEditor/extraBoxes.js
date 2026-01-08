@@ -6,10 +6,1577 @@
 let markdownBoxes = [];
 let pythonBoxes = [];
 let urlBoxes = [];
+let chartBoxes = [];
 
 let markdownEditors = {};
 let markdownViewers = {};
 let pythonEditors = {};
+
+// Chart UI state keyed by boxId.
+// - mode: 'edit' | 'preview'
+// - expanded: boolean (show/hide)
+// - dataSourceId: boxId of the data source section
+// - chartType: 'line' | 'area' | 'bar' | 'scatter' | 'pie'
+// - xColumn/yColumn: for line/area/bar/scatter
+// - labelColumn/valueColumn: for pie
+// - showDataLabels: boolean (show labels on data points)
+let chartStateByBoxId = {};
+
+// SVG icons for chart types
+const __kustoChartTypeIcons = {
+	line: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,24 10,16 16,20 22,8 28,12"/></svg>',
+	area: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4,24 L10,16 L16,20 L22,8 L28,12 L28,28 L4,28 Z"/></svg>',
+	bar: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><rect x="4" y="16" width="5" height="12" rx="1"/><rect x="11" y="10" width="5" height="18" rx="1"/><rect x="18" y="14" width="5" height="14" rx="1"/><rect x="25" y="6" width="5" height="22" rx="1"/></svg>',
+	scatter: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor"><circle cx="8" cy="20" r="2.5"/><circle cx="14" cy="12" r="2.5"/><circle cx="20" cy="18" r="2.5"/><circle cx="26" cy="8" r="2.5"/><circle cx="11" cy="24" r="2.5"/><circle cx="23" cy="22" r="2.5"/></svg>',
+	pie: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="16" cy="16" r="12" fill="currentColor" fill-opacity="0.2"/><path d="M16,16 L16,4 A12,12 0 0,1 27.2,20.8 Z" fill="currentColor" fill-opacity="0.5"/><path d="M16,16 L27.2,20.8 A12,12 0 0,1 8,25.6 Z" fill="currentColor" fill-opacity="0.7"/></svg>'
+};
+
+const __kustoChartTypeLabels = {
+	line: 'Line',
+	area: 'Area',
+	bar: 'Bar',
+	scatter: 'Scatter',
+	pie: 'Pie'
+};
+
+function __kustoFormatNumber(value) {
+	try {
+		if (value === null || value === undefined) return '';
+		const n = typeof value === 'number' ? value : Number(value);
+		if (!Number.isFinite(n)) return String(value);
+		// Use locale formatting for nice thousands separators
+		return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
+	} catch {
+		return String(value);
+	}
+}
+
+function __kustoComputeAxisFontSize(labelCount, axisPixelWidth, isYAxis) {
+	try {
+		const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
+		const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
+		if (!w || !n) return 12; // default
+		// For Y-axis, always use reasonable size
+		if (isYAxis) return 11;
+		// For X-axis, adjust based on density
+		const pixelsPerLabel = w / n;
+		if (pixelsPerLabel < 30) return 9;
+		if (pixelsPerLabel < 50) return 10;
+		if (pixelsPerLabel < 80) return 11;
+		return 12;
+	} catch {
+		return 12;
+	}
+}
+
+function __kustoGetChartState(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return { mode: 'edit', expanded: true };
+		if (!chartStateByBoxId || typeof chartStateByBoxId !== 'object') {
+			chartStateByBoxId = {};
+		}
+		if (!chartStateByBoxId[id] || typeof chartStateByBoxId[id] !== 'object') {
+			chartStateByBoxId[id] = { mode: 'edit', expanded: true };
+		}
+		return chartStateByBoxId[id];
+	} catch {
+		return { mode: 'edit', expanded: true };
+	}
+}
+
+function __kustoGetChartDatasetsInDomOrder() {
+	const out = [];
+	try {
+		const container = document.getElementById('queries-container');
+		const children = container ? Array.from(container.children || []) : [];
+		for (const child of children) {
+			try {
+				const id = child && child.id ? String(child.id) : '';
+				if (!id) continue;
+				if (!(id.startsWith('query_') || id.startsWith('url_'))) continue;
+				if (typeof __kustoGetResultsState !== 'function') continue;
+				const st = __kustoGetResultsState(id);
+				const cols = st && Array.isArray(st.columns) ? st.columns : [];
+				const rows = st && Array.isArray(st.rows) ? st.rows : [];
+				if (!cols.length) continue;
+				let name = '';
+				try {
+					name = String(((document.getElementById(id + '_name') || {}).value || '')).trim();
+				} catch { /* ignore */ }
+				const label = name ? name : id;
+				out.push({
+					id,
+					label,
+					columns: cols,
+					rows
+				});
+			} catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+	return out;
+}
+
+function __kustoGetRawCellValueForChart(cell) {
+	try {
+		if (typeof __kustoGetRawCellValue === 'function') {
+			return __kustoGetRawCellValue(cell);
+		}
+	} catch { /* ignore */ }
+	try {
+		if (cell && typeof cell === 'object') {
+			if ('full' in cell && cell.full !== undefined && cell.full !== null) return cell.full;
+			if ('display' in cell && cell.display !== undefined && cell.display !== null) return cell.display;
+		}
+	} catch { /* ignore */ }
+	return cell;
+}
+
+function __kustoCellToChartString(cell) {
+	try {
+		const raw = __kustoGetRawCellValueForChart(cell);
+		if (raw === null || raw === undefined) return '';
+		if (raw instanceof Date) return raw.toISOString();
+		if (typeof raw === 'string') return raw;
+		if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+		if (typeof raw === 'object') {
+			try { return JSON.stringify(raw); } catch { return '[object]'; }
+		}
+		return String(raw);
+	} catch {
+		try { return String(cell); } catch { return ''; }
+	}
+}
+
+function __kustoCellToChartNumber(cell) {
+	try {
+		const raw = __kustoGetRawCellValueForChart(cell);
+		if (typeof __kustoTryParseNumber === 'function') {
+			return __kustoTryParseNumber(raw);
+		}
+		const n = (typeof raw === 'number') ? raw : Number(raw);
+		return Number.isFinite(n) ? n : null;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoCellToChartTimeMs(cell) {
+	try {
+		const raw = __kustoGetRawCellValueForChart(cell);
+		if (typeof __kustoTryParseDateMs === 'function') {
+			return __kustoTryParseDateMs(raw);
+		}
+		const t = Date.parse(String(raw || ''));
+		return Number.isFinite(t) ? t : null;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoInferTimeXAxisFromRows(rows, xIndex) {
+	try {
+		const r = Array.isArray(rows) ? rows : [];
+		let seen = 0;
+		let dateCount = 0;
+		for (let i = 0; i < r.length && seen < 50; i++) {
+			const row = r[i];
+			if (!row) continue;
+			const raw = __kustoGetRawCellValueForChart(row[xIndex]);
+			if (raw === null || raw === undefined) continue;
+			const s = String(raw).trim();
+			if (!s) continue;
+			seen++;
+			const t = __kustoCellToChartTimeMs(raw);
+			if (typeof t === 'number' && Number.isFinite(t)) dateCount++;
+		}
+		if (seen === 0) return false;
+		return (dateCount / seen) >= 0.8;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoNormalizeResultsColumnName(c) {
+	try {
+		if (typeof c === 'string') return c;
+		if (c && typeof c === 'object') {
+			if (typeof c.name === 'string') return c.name;
+			if (typeof c.columnName === 'string') return c.columnName;
+		}
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoSetSelectOptions(selectEl, values, selectedValue, labelMap) {
+	if (!selectEl) return;
+	try {
+		const selected = (typeof selectedValue === 'string') ? selectedValue : '';
+		const opts = Array.isArray(values) ? values : [];
+		const labels = (labelMap && typeof labelMap === 'object') ? labelMap : {};
+		let html = '';
+		for (const v of opts) {
+			const s = String(v ?? '');
+			const labelText = (s in labels) ? labels[s] : s;
+			if (!labelText) continue;
+			const escVal = (typeof escapeHtml === 'function') ? escapeHtml(s) : s;
+			const escLabel = (typeof escapeHtml === 'function') ? escapeHtml(labelText) : labelText;
+			html += '<option value="' + escVal + '">' + escLabel + '</option>';
+		}
+		if (!html) {
+			html = '<option value="">(select)</option>';
+		}
+		selectEl.innerHTML = html;
+		selectEl.value = selected;
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoPickFirstNonEmpty(arr) {
+	try {
+		for (const v of (arr || [])) {
+			const s = String(v || '');
+			if (s) return s;
+		}
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoUpdateChartBuilderUI(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const datasets = __kustoGetChartDatasetsInDomOrder();
+	const dsSelect = document.getElementById(id + '_chart_ds');
+	try {
+		if (dsSelect) {
+			let html = '<option value="">(select)</option>';
+			for (const ds of datasets) {
+				const value = String(ds.id || '');
+				const label = String(ds.label || value);
+				const escValue = (typeof escapeHtml === 'function') ? escapeHtml(value) : value;
+				const escLabel = (typeof escapeHtml === 'function') ? escapeHtml(label) : label;
+				html += '<option value="' + escValue + '">' + escLabel + '</option>';
+			}
+			dsSelect.innerHTML = html;
+			dsSelect.value = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
+		}
+	} catch { /* ignore */ }
+
+	// Update chart type picker selection (visual buttons)
+	try {
+		const picker = document.getElementById(id + '_chart_type_picker');
+		if (picker) {
+			const buttons = picker.querySelectorAll('.kusto-chart-type-btn');
+			const currentType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
+			for (const btn of buttons) {
+				const btnType = btn.getAttribute('data-type') || '';
+				btn.classList.toggle('is-selected', btnType === currentType);
+				btn.setAttribute('aria-pressed', btnType === currentType ? 'true' : 'false');
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Update data labels toggle checkbox
+	try {
+		const labelsCheckbox = document.getElementById(id + '_chart_labels');
+		if (labelsCheckbox) labelsCheckbox.checked = !!st.showDataLabels;
+		const labelsCheckboxPie = document.getElementById(id + '_chart_labels_pie');
+		if (labelsCheckboxPie) labelsCheckboxPie.checked = !!st.showDataLabels;
+	} catch { /* ignore */ }
+
+	let ds = null;
+	try {
+		const desired = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
+		ds = datasets.find(d => String(d.id) === desired) || null;
+	} catch { /* ignore */ }
+
+	const colNames = (() => {
+		try {
+			const cols = ds && Array.isArray(ds.columns) ? ds.columns : [];
+			return cols.map(__kustoNormalizeResultsColumnName).filter(Boolean);
+		} catch {
+			return [];
+		}
+	})();
+
+	const mappingLineHost = document.getElementById(id + '_chart_mapping_xy');
+	const mappingPieHost = document.getElementById(id + '_chart_mapping_pie');
+	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
+	try {
+		if (mappingLineHost) mappingLineHost.style.display = (chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter') ? '' : 'none';
+		if (mappingPieHost) mappingPieHost.style.display = (chartType === 'pie') ? '' : 'none';
+	} catch { /* ignore */ }
+
+	// Populate X select.
+	let desiredX = '';
+	try { desiredX = String(((document.getElementById(id + '_chart_x') || {}).value || st.xColumn || '')).trim(); } catch { desiredX = String(st.xColumn || ''); }
+	const xOptions = colNames.filter(c => c);
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX);
+	// Sync the unified dropdown button text for X.
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch { /* ignore */ }
+
+	// Populate Y checkbox dropdown (for line/area/bar).
+	const yMenu = document.getElementById(id + '_chart_y_menu');
+	if (yMenu) {
+		const yOptions = colNames.filter(c => c && c !== desiredX);
+		// Get currently selected Y columns from state.
+		let desiredYCols = Array.isArray(st.yColumns) ? st.yColumns.filter(c => c) : [];
+		// Fall back to single yColumn if no array.
+		if (!desiredYCols.length && st.yColumn) {
+			desiredYCols = [st.yColumn];
+		}
+		// Build checkbox items.
+		const items = yOptions.map(c => ({
+			key: c,
+			label: c,
+			checked: desiredYCols.includes(c)
+		}));
+		try {
+			yMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
+				dropdownId: id + '_chart_y',
+				onChangeJs: '__kustoOnChartYCheckboxChanged'
+			});
+		} catch {
+			yMenu.innerHTML = '<div class="kusto-dropdown-empty">No columns available.</div>';
+		}
+		// Update button text.
+		const selected = desiredYCols.filter(c => yOptions.includes(c));
+		try {
+			window.__kustoDropdown.updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
+		} catch { /* ignore */ }
+	}
+
+	// Legend dropdown: prepend "(none)" option for no legend grouping.
+	const legendSelect = document.getElementById(id + '_chart_legend');
+	if (legendSelect) {
+		const legendOptions = ['', ...colNames.filter(c => c && c !== desiredX)];
+		const yCount = (Array.isArray(st.yColumns) ? st.yColumns.filter(Boolean).length : 0) || (st.yColumn ? 1 : 0);
+		const disableLegend = yCount > 1;
+		if (disableLegend) {
+			try { st.legendColumn = ''; } catch { /* ignore */ }
+		}
+		__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
+		try { legendSelect.disabled = disableLegend; } catch { /* ignore */ }
+		// Sync the unified dropdown button text and disabled state for Legend.
+		try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch { /* ignore */ }
+		// Also sync the button's disabled state.
+		try {
+			const legendBtn = document.getElementById(id + '_chart_legend_btn');
+			if (legendBtn) {
+				legendBtn.disabled = disableLegend;
+				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
+			}
+		} catch { /* ignore */ }
+	}
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
+
+	// Best-effort defaults once we have a dataset.
+	try {
+		if (colNames.length) {
+			if ((chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter')) {
+				if (!st.xColumn) st.xColumn = colNames[0] || '';
+				// Prefer a distinct Y column.
+				if ((!st.yColumns || !st.yColumns.length) && (!st.yColumn || st.yColumn === st.xColumn)) {
+					st.yColumn = __kustoPickFirstNonEmpty(colNames.filter(c => c !== st.xColumn)) || '';
+					st.yColumns = st.yColumn ? [st.yColumn] : [];
+				}
+			}
+			if (chartType === 'pie') {
+				if (!st.labelColumn) st.labelColumn = colNames[0] || '';
+				if (!st.valueColumn) st.valueColumn = __kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
+			}
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoGetChartActiveCanvasElementId(boxId) {
+	const st = __kustoGetChartState(boxId);
+	const mode = st && st.mode ? String(st.mode) : 'edit';
+	return (mode === 'preview') ? (boxId + '_chart_canvas_preview') : (boxId + '_chart_canvas_edit');
+}
+
+function __kustoGetIsDarkThemeForEcharts() {
+	try {
+		if (typeof isDarkTheme === 'function') {
+			return !!isDarkTheme();
+		}
+	} catch { /* ignore */ }
+	try {
+		const cls = document && document.body && document.body.classList;
+		if (cls) {
+			if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) return false;
+			if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) return true;
+		}
+	} catch { /* ignore */ }
+	return true;
+}
+
+function __kustoFormatUtcDateTime(ms, showTime) {
+	const v = (typeof ms === 'number') ? ms : Number(ms);
+	if (!Number.isFinite(v)) return '';
+	const d = new Date(v);
+	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+	const dd = String(d.getUTCDate()).padStart(2, '0');
+	const mon = months[d.getUTCMonth()] || 'Jan';
+	const yyyy = String(d.getUTCFullYear());
+	const date = `${dd}-${mon}-${yyyy}`;
+	if (!showTime) return date;
+	const hh = String(d.getUTCHours()).padStart(2, '0');
+	const mm = String(d.getUTCMinutes()).padStart(2, '0');
+	const ss = String(d.getUTCSeconds()).padStart(2, '0');
+	return (ss === '00') ? `${date} ${hh}:${mm}` : `${date} ${hh}:${mm}:${ss}`;
+}
+
+function __kustoShouldShowTimeForUtcAxis(timeMsValues) {
+	try {
+		for (const t of (timeMsValues || [])) {
+			const v = (typeof t === 'number') ? t : Number(t);
+			if (!Number.isFinite(v)) continue;
+			const d = new Date(v);
+			if (d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0 || d.getUTCSeconds() !== 0 || d.getUTCMilliseconds() !== 0) {
+				return true;
+			}
+		}
+	} catch { /* ignore */ }
+	return false;
+}
+
+function __kustoComputeTimeAxisLabelRotation(axisPixelWidth, labelCount, showTime) {
+	const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
+	const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
+	if (!w || !n) return 0;
+
+	// Our UTC format is either:
+	// - DD-MMM-YYYY (11 chars)
+	// - DD-MMM-YYYY HH:MM (17 chars)
+	const approxChars = showTime ? 17 : 11;
+	const approxCharPx = 7; // heuristic in typical VS Code fonts
+	const approxLabelPx = approxChars * approxCharPx + 10; // add a bit of padding
+	const maxNoRotate = Math.max(1, Math.floor(w / Math.max(1, approxLabelPx)));
+
+	// If we have many labels relative to available width, rotate.
+	// We cap `n` because ECharts won't render all labels anyway.
+	const effectiveLabels = Math.min(n, 24);
+	if (effectiveLabels > maxNoRotate * 2) return 60;
+	if (effectiveLabels > maxNoRotate * 1.3) return 45;
+	return 0;
+}
+
+let __kustoEchartsThemeObserverStarted = false;
+let __kustoLastAppliedEchartsIsDarkTheme = null;
+
+function __kustoRefreshChartsForThemeChange() {
+	let dark = true;
+	try { dark = __kustoGetIsDarkThemeForEcharts(); } catch { dark = true; }
+	if (__kustoLastAppliedEchartsIsDarkTheme === dark) return;
+	__kustoLastAppliedEchartsIsDarkTheme = dark;
+	try {
+		for (const id of (chartBoxes || [])) {
+			try { __kustoDisposeChartEcharts(id); } catch { /* ignore */ }
+			try { __kustoRenderChart(id); } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoStartEchartsThemeObserver() {
+	if (__kustoEchartsThemeObserverStarted) return;
+	__kustoEchartsThemeObserverStarted = true;
+	try { __kustoRefreshChartsForThemeChange(); } catch { /* ignore */ }
+
+	let pending = false;
+	const schedule = () => {
+		if (pending) return;
+		pending = true;
+		setTimeout(() => {
+			pending = false;
+			try { __kustoRefreshChartsForThemeChange(); } catch { /* ignore */ }
+		}, 0);
+	};
+
+	try {
+		const observer = new MutationObserver(() => schedule());
+		if (document && document.body) {
+			observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+		if (document && document.documentElement) {
+			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoDisposeChartEcharts(boxId) {
+	try {
+		const st = __kustoGetChartState(boxId);
+		if (st && st.__echarts && st.__echarts.instance) {
+			try { st.__echarts.instance.dispose(); } catch { /* ignore */ }
+		}
+		if (st) {
+			try {
+				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
+					st.__resizeObserver.disconnect();
+				}
+			} catch { /* ignore */ }
+			try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+			try { delete st.__echarts; } catch { /* ignore */ }
+			try { delete st.__resizeObserver; } catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoRenderChart(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	try { __kustoStartEchartsThemeObserver(); } catch { /* ignore */ }
+	const st = __kustoGetChartState(id);
+	try {
+		const wrapper = document.getElementById(id + '_chart_wrapper');
+		if (wrapper && wrapper.style && String(wrapper.style.display || '').toLowerCase() === 'none') {
+			return;
+		}
+	} catch { /* ignore */ }
+	const canvasId = __kustoGetChartActiveCanvasElementId(id);
+	const canvas = document.getElementById(canvasId);
+	if (!canvas) return;
+
+	// If ECharts isn't loaded yet, show a simple placeholder.
+	if (!window.echarts || typeof window.echarts.init !== 'function') {
+		try { canvas.textContent = 'Loading chart…'; } catch { /* ignore */ }
+		return;
+	}
+
+	// Find dataset.
+	let dsState = null;
+	try {
+		if (typeof __kustoGetResultsState === 'function' && typeof st.dataSourceId === 'string' && st.dataSourceId) {
+			dsState = __kustoGetResultsState(st.dataSourceId);
+		}
+	} catch { /* ignore */ }
+	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
+	const rows = dsState && Array.isArray(dsState.rows) ? dsState.rows : [];
+	const colNames = cols.map(__kustoNormalizeResultsColumnName);
+	const indexOf = (name) => {
+		const n = String(name || '');
+		if (!n) return -1;
+		return colNames.findIndex(cn => String(cn) === n);
+	};
+
+	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
+	if (!st.dataSourceId) {
+		try { canvas.textContent = 'Select a data source.'; } catch { /* ignore */ }
+		return;
+	}
+	if (!chartType) {
+		try { canvas.textContent = 'Select a chart type.'; } catch { /* ignore */ }
+		return;
+	}
+	if (!cols.length) {
+		try { canvas.textContent = 'No data available yet.'; } catch { /* ignore */ }
+		return;
+	}
+
+	// Ensure we have an instance bound to the active element.
+	try {
+		const isDark = __kustoGetIsDarkThemeForEcharts();
+		const themeName = isDark ? 'dark' : undefined;
+		const prev = st.__echarts && st.__echarts.instance ? st.__echarts : null;
+		if (!prev || prev.canvasId !== canvasId || prev.isDark !== isDark) {
+			try { if (prev && prev.instance) prev.instance.dispose(); } catch { /* ignore */ }
+			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark };
+			// Canvas changed (Edit <-> Preview). Rebind resize observer.
+			try {
+				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
+					st.__resizeObserver.disconnect();
+				}
+			} catch { /* ignore */ }
+			try { delete st.__resizeObserver; } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+
+	const inst = st.__echarts && st.__echarts.instance ? st.__echarts.instance : null;
+	if (!inst) return;
+
+	let canvasWidthPx = 0;
+	try {
+		const r = canvas.getBoundingClientRect();
+		canvasWidthPx = r && typeof r.width === 'number' ? r.width : 0;
+	} catch { /* ignore */ }
+	if (!canvasWidthPx) {
+		try { canvasWidthPx = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0; } catch { /* ignore */ }
+	}
+
+	let option = null;
+	try {
+		if (chartType === 'pie') {
+			const li = indexOf(st.labelColumn);
+			const vi = indexOf(st.valueColumn);
+			const valueColName = st.valueColumn || 'Value';
+			if (li < 0 || vi < 0) {
+				option = { title: { text: 'Select columns.' } };
+			} else {
+				const data = (rows || []).map(r => {
+					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
+					const value = (r && r.length > vi) ? __kustoCellToChartNumber(r[vi]) : null;
+					return { name: label, value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0 };
+				});
+				const showLabels = !!st.showDataLabels;
+				option = {
+					backgroundColor: 'transparent',
+					tooltip: {
+						trigger: 'item',
+						formatter: (params) => {
+							try {
+								const name = params && params.name ? params.name : '';
+								const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
+								const percent = params && typeof params.percent === 'number' ? params.percent.toFixed(1) : '';
+								return `${name}<br/>${valueColName}: ${value} (${percent}%)`;
+							} catch {
+								return '';
+							}
+						}
+					},
+					legend: { type: 'scroll' },
+					series: [{
+						type: 'pie',
+						radius: '60%',
+						data,
+						label: {
+							show: showLabels,
+							fontFamily: 'monospace',
+							formatter: (params) => {
+								try {
+									// For pie charts, show labels only for larger slices (>5%) to reduce clutter
+									const percent = params && typeof params.percent === 'number' ? params.percent : 0;
+									if (percent < 5) return '';
+									const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
+									return value;
+								} catch {
+									return '';
+								}
+							}
+						}
+					}]
+				};
+			}
+		} else if (chartType === 'scatter') {
+			const xi = indexOf(st.xColumn);
+			const yi = indexOf(st.yColumn);
+			const xColName = st.xColumn || 'X';
+			const yColName = st.yColumn || 'Y';
+			const showLabels = !!st.showDataLabels;
+			if (xi < 0 || yi < 0) {
+				option = { title: { text: 'Select columns.' } };
+			} else {
+				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
+				const points = [];
+				for (const r of (rows || [])) {
+					const x = useTime
+						? ((r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null)
+						: ((r && r.length > xi) ? __kustoCellToChartNumber(r[xi]) : null);
+					const y = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
+					if (typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)) {
+						points.push([x, y]);
+					}
+				}
+				// Ensure stable left-to-right plotting for numeric/time axes.
+				try {
+					points.sort((a, b) => {
+						const ax = a && a.length ? a[0] : 0;
+						const bx = b && b.length ? b[0] : 0;
+						if (ax === bx) return 0;
+						return ax < bx ? -1 : 1;
+					});
+				} catch { /* ignore */ }
+				const showTime = useTime ? __kustoShouldShowTimeForUtcAxis(points.map(p => p && p.length ? p[0] : null)) : false;
+				const rotate = useTime ? __kustoComputeTimeAxisLabelRotation(canvasWidthPx, points.length, showTime) : 0;
+				const axisFontSize = __kustoComputeAxisFontSize(points.length, canvasWidthPx, false);
+				// Calculate bottom margin for rotated labels.
+				const bottomMargin = rotate > 30 ? 70 : 50;
+				option = {
+					backgroundColor: 'transparent',
+					grid: {
+						left: 60,
+						right: 20,
+						top: 20,
+						bottom: bottomMargin,
+						containLabel: false
+					},
+					tooltip: {
+						trigger: 'item',
+						formatter: (params) => {
+							try {
+								const v = params && params.value ? params.value : null;
+								const x = v && v.length ? v[0] : null;
+								const y = v && v.length > 1 ? v[1] : null;
+								const xStr = useTime ? __kustoFormatUtcDateTime(x, showTime) : __kustoFormatNumber(x);
+								const yStr = __kustoFormatNumber(y);
+								return `${xColName}: ${xStr}<br/>${yColName}: ${yStr}`;
+							} catch {
+								return '';
+							}
+						}
+					},
+					xAxis: useTime ? {
+						type: 'time',
+						name: xColName,
+						nameLocation: 'middle',
+						nameGap: 30,
+						axisLabel: {
+							rotate,
+							fontSize: axisFontSize,
+							fontFamily: 'monospace',
+							formatter: (value) => __kustoFormatUtcDateTime(value, showTime)
+						},
+						axisPointer: { label: { formatter: (p) => __kustoFormatUtcDateTime(p && p.value, showTime) } }
+					} : {
+						type: 'value',
+						name: xColName,
+						nameLocation: 'middle',
+						nameGap: 30,
+						axisLabel: {
+							fontSize: axisFontSize,
+							fontFamily: 'monospace',
+							formatter: (value) => __kustoFormatNumber(value)
+						}
+					},
+					yAxis: {
+						type: 'value',
+						name: yColName,
+						nameLocation: 'middle',
+						nameGap: 45,
+						axisLabel: {
+							fontSize: 11,
+							fontFamily: 'monospace',
+							formatter: (value) => __kustoFormatNumber(value)
+						}
+					},
+					series: [{
+						type: 'scatter',
+						name: yColName,
+						data: points,
+						label: {
+							show: showLabels,
+							position: 'top',
+							fontSize: 10,
+							fontFamily: 'monospace',
+							formatter: (params) => {
+								try {
+									// Only show label for ~10% of data points to reduce clutter
+									const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
+									const total = points.length || 1;
+									const interval = Math.max(1, Math.floor(total / 10));
+									if (idx % interval !== 0) return '';
+									const v = params && params.value ? params.value : null;
+									const y = v && v.length > 1 ? v[1] : null;
+									return __kustoFormatNumber(y);
+								} catch {
+									return '';
+								}
+							}
+						}
+					}]
+				};
+				if (useTime) {
+					st.__lastTimeAxis = { showTime, labelCount: points.length, rotate };
+				} else {
+					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+				}
+			}
+		} else {
+			// line / bar / area
+			const xi = indexOf(st.xColumn);
+			const xColName = st.xColumn || 'X';
+			const showLabels = !!st.showDataLabels;
+			const legendCol = st.legendColumn || '';
+			const li = legendCol ? indexOf(legendCol) : -1;
+			
+			// Get Y columns (support multi-select or fallback to single).
+			let yCols = Array.isArray(st.yColumns) && st.yColumns.length ? st.yColumns : (st.yColumn ? [st.yColumn] : []);
+			// Filter to valid columns only.
+			yCols = yCols.filter(c => indexOf(c) >= 0);
+			
+			if (xi < 0 || !yCols.length) {
+				option = { title: { text: 'Select columns.' } };
+			} else {
+				const isArea = chartType === 'area';
+				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
+					let timeKeys = [];
+					let timeLabels = [];
+					let timeShowTime = false;
+					if (useTime) {
+						try {
+							const all = [];
+							for (const r of (rows || [])) {
+								const t = (r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null;
+								if (typeof t === 'number' && Number.isFinite(t)) all.push(t);
+							}
+							all.sort((a, b) => a - b);
+							const seen = new Set();
+							const uniq = [];
+							for (const t of all) {
+								const k = String(t);
+								if (seen.has(k)) continue;
+								seen.add(k);
+								uniq.push(t);
+							}
+							timeKeys = uniq;
+							timeShowTime = __kustoShouldShowTimeForUtcAxis(timeKeys);
+							timeLabels = timeKeys.map(t => __kustoFormatUtcDateTime(t, timeShowTime));
+						} catch { /* ignore */ }
+					}
+				
+				// Build series based on legend grouping or multiple Y columns.
+				let seriesData = [];
+				let xLabelsSet = new Set();
+				
+				if (li >= 0 && yCols.length === 1) {
+					// Legend grouping: group data by legend column values.
+					const yi = indexOf(yCols[0]);
+					const yColName = yCols[0] || 'Y';
+					const groups = {};
+					for (const r of (rows || [])) {
+						const legendValue = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '(empty)';
+						const xVal = useTime
+							? ((r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null)
+							: ((r && r.length > xi) ? __kustoCellToChartString(r[xi]) : '');
+						const yVal = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
+						if (!groups[legendValue]) groups[legendValue] = [];
+						groups[legendValue].push({ x: xVal, y: yVal });
+						if (useTime) {
+							// For time axis, collect all x values.
+						} else {
+							xLabelsSet.add(xVal);
+						}
+					}
+					const legendNames = Object.keys(groups).sort();
+					
+					if (useTime) {
+							// Time-based X axis with legend grouping (render as category labels so all values show).
+						for (const legendName of legendNames) {
+							const pts = groups[legendName] || [];
+							// Sort by time.
+							pts.sort((a, b) => (a.x || 0) - (b.x || 0));
+								const map = {};
+								for (const p of pts) {
+									const tx = p && typeof p.x === 'number' && Number.isFinite(p.x) ? p.x : null;
+									if (tx === null) continue;
+									map[String(tx)] = p.y;
+								}
+							seriesData.push({
+								name: legendName,
+								type: (chartType === 'bar') ? 'bar' : 'line',
+								...(isArea ? { areaStyle: {} } : {}),
+									data: timeKeys.map(t => (String(t) in map) ? map[String(t)] : null),
+								label: {
+									show: showLabels,
+									position: 'top',
+									fontSize: 10,
+									fontFamily: 'monospace',
+									formatter: (params) => {
+										try {
+											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
+												const total = timeKeys.length || 1;
+											const interval = Math.max(1, Math.floor(total / 10));
+											if (idx % interval !== 0) return '';
+											const v = params && params.value ? params.value : null;
+												return __kustoFormatNumber(v);
+										} catch {
+											return '';
+										}
+									}
+								}
+							});
+						}
+					} else {
+						// Category X axis with legend grouping.
+						const xLabels = Array.from(xLabelsSet);
+						for (const legendName of legendNames) {
+							const pts = groups[legendName] || [];
+							// Map to x labels order.
+							const dataMap = {};
+							for (const p of pts) {
+								dataMap[p.x] = p.y;
+							}
+							seriesData.push({
+								name: legendName,
+								type: (chartType === 'bar') ? 'bar' : 'line',
+								...(isArea ? { areaStyle: {} } : {}),
+								data: xLabels.map(xl => dataMap[xl] ?? null),
+								label: {
+									show: showLabels,
+									position: 'top',
+									fontSize: 10,
+									fontFamily: 'monospace',
+									formatter: (params) => {
+										try {
+											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
+											const total = xLabels.length || 1;
+											const interval = Math.max(1, Math.floor(total / 10));
+											if (idx % interval !== 0) return '';
+											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
+											return (typeof v === 'number') ? __kustoFormatNumber(v) : '';
+										} catch {
+											return '';
+										}
+									}
+								}
+							});
+						}
+					}
+				} else {
+					// Multiple Y columns (no legend grouping, or legend not set).
+					for (const yCol of yCols) {
+						const yi = indexOf(yCol);
+						if (yi < 0) continue;
+						
+						if (useTime) {
+								const map = {};
+								for (const r of (rows || [])) {
+									const x = (r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null;
+									const y = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
+									if (typeof x === 'number' && Number.isFinite(x)) {
+										map[String(x)] = y;
+									}
+								}
+							seriesData.push({
+								name: yCol,
+								type: (chartType === 'bar') ? 'bar' : 'line',
+								...(isArea ? { areaStyle: {} } : {}),
+									data: timeKeys.map(t => (String(t) in map) ? map[String(t)] : null),
+								label: {
+									show: showLabels,
+									position: 'top',
+									fontSize: 10,
+									fontFamily: 'monospace',
+									formatter: (params) => {
+										try {
+											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
+												const total = timeKeys.length || 1;
+											const interval = Math.max(1, Math.floor(total / 10));
+											if (idx % interval !== 0) return '';
+												const v = params && params.value ? params.value : null;
+												return __kustoFormatNumber(v);
+										} catch {
+											return '';
+										}
+									}
+								}
+							});
+						} else {
+							for (const r of (rows || [])) {
+								const xVal = (r && r.length > xi) ? __kustoCellToChartString(r[xi]) : '';
+								xLabelsSet.add(xVal);
+							}
+							const xLabels = Array.from(xLabelsSet);
+							const yData = (rows || []).map(r => (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null);
+							seriesData.push({
+								name: yCol,
+								type: (chartType === 'bar') ? 'bar' : 'line',
+								...(isArea ? { areaStyle: {} } : {}),
+								data: yData,
+								label: {
+									show: showLabels,
+									position: 'top',
+									fontSize: 10,
+									fontFamily: 'monospace',
+									formatter: (params) => {
+										try {
+											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
+											const total = yData.length || 1;
+											const interval = Math.max(1, Math.floor(total / 10));
+											if (idx % interval !== 0) return '';
+											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
+											return (typeof v === 'number') ? __kustoFormatNumber(v) : '';
+										} catch {
+											return '';
+										}
+									}
+								}
+							});
+						}
+					}
+				}
+				
+					const xLabels = useTime ? timeLabels : Array.from(xLabelsSet);
+					const showTime = useTime ? timeShowTime : false;
+					const rotate = useTime ? __kustoComputeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime) : 0;
+					const axisFontSize = __kustoComputeAxisFontSize(xLabels.length, canvasWidthPx, false);
+				// Calculate bottom margin for rotated labels.
+				const bottomMargin = rotate > 30 ? 70 : 40;
+				
+				option = {
+					backgroundColor: 'transparent',
+					grid: {
+						left: 60,
+						right: 20,
+						top: seriesData.length > 1 ? 50 : 20,
+						bottom: bottomMargin,
+						containLabel: false
+					},
+					legend: seriesData.length > 1 ? { type: 'scroll', top: 0 } : undefined,
+					tooltip: {
+						trigger: 'axis',
+						formatter: (params) => {
+							try {
+								const arr = Array.isArray(params) ? params : (params ? [params] : []);
+								const first = arr.length ? arr[0] : null;
+								const axisValue = first ? first.axisValue : null;
+									const title = String(axisValue || '');
+									let lines = [`<strong>${xColName}</strong>: ${title}`];
+								for (const p of arr) {
+									const seriesName = p && p.seriesName ? p.seriesName : '';
+									const v = p && p.data ? (Array.isArray(p.data) ? p.data[1] : p.data) : '';
+									const formatted = (typeof v === 'number') ? __kustoFormatNumber(v) : String(v);
+									lines.push(`<strong>${seriesName}</strong>: ${formatted}`);
+								}
+								return lines.join('<br/>');
+							} catch {
+								return '';
+							}
+						}
+					},
+						xAxis: {
+							type: 'category',
+							data: xLabels,
+							boundaryGap: (chartType === 'bar'),
+							axisTick: { alignWithLabel: true },
+							axisLabel: {
+								fontSize: axisFontSize,
+								fontFamily: 'monospace',
+								interval: 0,
+								rotate
+							}
+						},
+					yAxis: {
+						type: 'value',
+						axisLabel: {
+							fontSize: 11,
+							fontFamily: 'monospace',
+							formatter: (value) => __kustoFormatNumber(value)
+						}
+					},
+					series: seriesData
+				};
+				
+				if (useTime) {
+						st.__lastTimeAxis = { showTime, labelCount: xLabels.length, rotate };
+				} else {
+					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+				}
+			}
+		}
+	} catch {
+		option = { title: { text: 'Failed to render chart.' } };
+	}
+
+	try {
+		inst.setOption(option || {}, true);
+	} catch { /* ignore */ }
+	try {
+		requestAnimationFrame(() => {
+			try { inst.resize(); } catch { /* ignore */ }
+		});
+	} catch { /* ignore */ }
+
+	// Keep the chart responsive to wrapper/canvas resizes.
+	try {
+		if (!st.__resizeObserver && typeof ResizeObserver !== 'undefined') {
+			st.__resizeObserver = new ResizeObserver(() => {
+				try { inst.resize(); } catch { /* ignore */ }
+				try {
+					if (st.__lastTimeAxis) {
+						const w = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
+						const rotate = __kustoComputeTimeAxisLabelRotation(w, st.__lastTimeAxis.labelCount, st.__lastTimeAxis.showTime);
+						if (rotate !== st.__lastTimeAxis.rotate) {
+							st.__lastTimeAxis.rotate = rotate;
+							try {
+								inst.setOption({ xAxis: { axisLabel: { rotate } } });
+							} catch { /* ignore */ }
+						}
+					}
+				} catch { /* ignore */ }
+			});
+			try { st.__resizeObserver.observe(canvas); } catch { /* ignore */ }
+			try {
+				const wrapper = document.getElementById(id + '_chart_wrapper');
+				if (wrapper) st.__resizeObserver.observe(wrapper);
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoUpdateChartModeButtons(boxId) {
+	try {
+		const st = chartStateByBoxId && chartStateByBoxId[boxId] ? chartStateByBoxId[boxId] : null;
+		const mode = st && st.mode ? String(st.mode) : 'edit';
+		const editBtn = document.getElementById(boxId + '_chart_mode_edit');
+		const prevBtn = document.getElementById(boxId + '_chart_mode_preview');
+		if (editBtn) {
+			editBtn.classList.toggle('is-active', mode === 'edit');
+			editBtn.setAttribute('aria-selected', mode === 'edit' ? 'true' : 'false');
+		}
+		if (prevBtn) {
+			prevBtn.classList.toggle('is-active', mode === 'preview');
+			prevBtn.setAttribute('aria-selected', mode === 'preview' ? 'true' : 'false');
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoApplyChartMode(boxId) {
+	try {
+		const st = chartStateByBoxId && chartStateByBoxId[boxId] ? chartStateByBoxId[boxId] : null;
+		const mode = st && st.mode ? String(st.mode) : 'edit';
+		const editHost = document.getElementById(boxId + '_chart_edit');
+		const prevHost = document.getElementById(boxId + '_chart_preview');
+		if (editHost) editHost.style.display = (mode === 'edit') ? '' : 'none';
+		if (prevHost) prevHost.style.display = (mode === 'preview') ? '' : 'none';
+		__kustoUpdateChartModeButtons(boxId);
+		try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoSetChartMode(boxId, mode) {
+	const id = String(boxId || '');
+	const m = String(mode || '').toLowerCase();
+	if (!id) return;
+	if (m !== 'edit' && m !== 'preview') return;
+	const st = __kustoGetChartState(id);
+	st.mode = m;
+	try { __kustoApplyChartMode(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoUpdateChartVisibilityToggleButton(boxId) {
+	try {
+		const btn = document.getElementById(boxId + '_chart_toggle');
+		const st = chartStateByBoxId && chartStateByBoxId[boxId] ? chartStateByBoxId[boxId] : null;
+		if (!btn) return;
+		const expanded = !!(st ? st.expanded : true);
+		btn.classList.toggle('is-active', expanded);
+		btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
+		btn.title = expanded ? 'Hide' : 'Show';
+		btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoApplyChartBoxVisibility(boxId) {
+	try {
+		const st = chartStateByBoxId && chartStateByBoxId[boxId] ? chartStateByBoxId[boxId] : null;
+		const expanded = !!(st ? st.expanded : true);
+		const wrapper = document.getElementById(boxId + '_chart_wrapper');
+		if (wrapper) {
+			wrapper.style.display = expanded ? '' : 'none';
+		}
+		__kustoUpdateChartVisibilityToggleButton(boxId);
+		if (expanded) {
+			try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function toggleChartBoxVisibility(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	st.expanded = !st.expanded;
+	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoMaximizeChartBox(boxId) {
+	try {
+		const wrapper = document.getElementById(boxId + '_chart_wrapper');
+		if (!wrapper) return;
+		// Clear user-resized height so the section can size to content.
+		try { wrapper.style.height = ''; } catch { /* ignore */ }
+		try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
+		try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function addChartBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('chart_' + Date.now());
+	chartBoxes.push(id);
+	const st = __kustoGetChartState(id);
+	st.mode = (options && typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
+	st.expanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
+	st.dataSourceId = (options && typeof options.dataSourceId === 'string') ? String(options.dataSourceId) : (st.dataSourceId || '');
+	// Default chart type to 'area' (first alphabetically) if not specified.
+	st.chartType = (options && typeof options.chartType === 'string') ? String(options.chartType) : (st.chartType || 'area');
+	st.xColumn = (options && typeof options.xColumn === 'string') ? String(options.xColumn) : (st.xColumn || '');
+	st.yColumn = (options && typeof options.yColumn === 'string') ? String(options.yColumn) : (st.yColumn || '');
+	st.yColumns = (options && Array.isArray(options.yColumns)) ? options.yColumns.filter(c => c) : (st.yColumns || (st.yColumn ? [st.yColumn] : []));
+	st.legendColumn = (options && typeof options.legendColumn === 'string') ? String(options.legendColumn) : (st.legendColumn || '');
+	st.labelColumn = (options && typeof options.labelColumn === 'string') ? String(options.labelColumn) : (st.labelColumn || '');
+	st.valueColumn = (options && typeof options.valueColumn === 'string') ? String(options.valueColumn) : (st.valueColumn || '');
+	st.showDataLabels = (options && typeof options.showDataLabels === 'boolean') ? !!options.showDataLabels : (st.showDataLabels || false);
+
+	const container = document.getElementById('queries-container');
+	if (!container) {
+		return;
+	}
+
+	const closeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M4 4l8 8"/>' +
+		'<path d="M12 4L4 12"/>' +
+		'</svg>';
+
+	const previewIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>';
+
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
+	const boxHtml =
+		'<div class="query-box chart-box" id="' + id + '">' +
+		'<div class="query-header">' +
+		'<div class="query-header-row query-header-row-top">' +
+		'<div class="query-name-group">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+		'<input type="text" class="query-name" placeholder="Chart name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
+		'</div>' +
+		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="Chart tools">' +
+		'<button class="md-tab md-mode-btn" id="' + id + '_chart_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
+		'<button class="md-tab md-mode-btn" id="' + id + '_chart_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
+		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
+		'<button class="md-tab md-max-btn" id="' + id + '_chart_max" type="button" onclick="__kustoMaximizeChartBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="md-tab" id="' + id + '_chart_toggle" type="button" role="tab" aria-selected="false" onclick="toggleChartBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'</div>' +
+		'<button class="refresh-btn close-btn" type="button" onclick="removeChartBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'</div>' +
+		'</div>' +
+		'</div>' +
+		'<div class="query-editor-wrapper" id="' + id + '_chart_wrapper">' +
+		'<div class="query-editor" id="' + id + '_chart_edit" data-kusto-no-editor-focus="true">' +
+			'<div class="kusto-chart-builder" data-kusto-no-editor-focus="true">' +
+				'<div class="kusto-chart-controls" data-kusto-no-editor-focus="true">' +
+					'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
+						'<label>Type</label>' +
+						'<div class="kusto-chart-type-picker" id="' + id + '_chart_type_picker" data-kusto-no-editor-focus="true">' +
+							'<button type="button" class="kusto-chart-type-btn" data-type="area" onclick="try{__kustoSelectChartType(\'' + id + '\',\'area\')}catch{}" title="Area Chart" aria-label="Area Chart">' + __kustoChartTypeIcons.area + '<span>Area</span></button>' +
+							'<button type="button" class="kusto-chart-type-btn" data-type="bar" onclick="try{__kustoSelectChartType(\'' + id + '\',\'bar\')}catch{}" title="Bar Chart" aria-label="Bar Chart">' + __kustoChartTypeIcons.bar + '<span>Bar</span></button>' +
+							'<button type="button" class="kusto-chart-type-btn" data-type="line" onclick="try{__kustoSelectChartType(\'' + id + '\',\'line\')}catch{}" title="Line Chart" aria-label="Line Chart">' + __kustoChartTypeIcons.line + '<span>Line</span></button>' +
+							'<button type="button" class="kusto-chart-type-btn" data-type="pie" onclick="try{__kustoSelectChartType(\'' + id + '\',\'pie\')}catch{}" title="Pie Chart" aria-label="Pie Chart">' + __kustoChartTypeIcons.pie + '<span>Pie</span></button>' +
+							'<button type="button" class="kusto-chart-type-btn" data-type="scatter" onclick="try{__kustoSelectChartType(\'' + id + '\',\'scatter\')}catch{}" title="Scatter Chart" aria-label="Scatter Chart">' + __kustoChartTypeIcons.scatter + '<span>Scatter</span></button>' +
+						'</div>' +
+					'</div>' +
+					'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
+						'<label>Data</label>' +
+						'<div class="select-wrapper">' +
+							'<select id="' + id + '_chart_ds" onfocus="try{__kustoUpdateChartBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnChartDataSourceChanged(\'' + id + '\')}catch{}"></select>' +
+						'</div>' +
+					'</div>' +
+					'<div id="' + id + '_chart_mapping_xy" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
+						'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true">' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>X</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_x_text">Select...</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_chart_x_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</span>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>Y</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_chart_y_wrapper">' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_y_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_chart_y_btn\',\'' + id + '_chart_y_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_y_text">Select...</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_chart_y_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</span>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label class="kusto-chart-label-legend">Legend</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_legend_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_legend" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_legend_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_legend\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_legend_text">(none)</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_chart_legend_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</span>' +
+							'<label class="kusto-chart-toggle-label" data-kusto-no-editor-focus="true">' +
+								'<input type="checkbox" id="' + id + '_chart_labels" class="kusto-chart-toggle" onchange="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" />' +
+								'<span>Data labels</span>' +
+							'</label>' +
+						'</div>' +
+					'</div>' +
+					'<div id="' + id + '_chart_mapping_pie" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
+						'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true">' +
+							'<label>Label</label>' +
+							'<div class="select-wrapper">' +
+								'<select id="' + id + '_chart_label" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+							'</div>' +
+							'<label>Value</label>' +
+							'<div class="select-wrapper">' +
+								'<select id="' + id + '_chart_value" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+							'</div>' +
+							'<label class="kusto-chart-toggle-label" data-kusto-no-editor-focus="true">' +
+								'<input type="checkbox" id="' + id + '_chart_labels_pie" class="kusto-chart-toggle" onchange="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" />' +
+								'<span>Data labels</span>' +
+							'</label>' +
+						'</div>' +
+					'</div>' +
+				'</div>' +
+				'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_edit" data-kusto-no-editor-focus="true" style="min-height:240px;"></div>' +
+			'</div>' +
+		'</div>' +
+		'<div class="query-editor" id="' + id + '_chart_preview" data-kusto-no-editor-focus="true" style="display:none;">' +
+			'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_preview" data-kusto-no-editor-focus="true" style="min-height:240px;"></div>' +
+		'</div>' +
+		'<div class="query-editor-resizer" id="' + id + '_chart_resizer" title="Drag to resize"></div>' +
+		'</div>' +
+		'</div>';
+
+	container.insertAdjacentHTML('beforeend', boxHtml);
+
+	try {
+		const name = (options && typeof options.name === 'string') ? String(options.name) : '';
+		const nameEl = document.getElementById(id + '_name');
+		if (nameEl) nameEl.value = name;
+	} catch { /* ignore */ }
+
+	// Initialize builder UI from persisted state.
+	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+	try {
+		const dsSelect = document.getElementById(id + '_chart_ds');
+		if (dsSelect && typeof st.dataSourceId === 'string') {
+			dsSelect.value = st.dataSourceId;
+		}
+	} catch { /* ignore */ }
+	try {
+		const typeSelect = document.getElementById(id + '_chart_type');
+		if (typeSelect && typeof st.chartType === 'string') {
+			typeSelect.value = st.chartType;
+		}
+	} catch { /* ignore */ }
+
+	// Apply persisted height if present.
+	try {
+		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
+		if (typeof h === 'number' && Number.isFinite(h) && h > 0) {
+			const wrapper = document.getElementById(id + '_chart_wrapper');
+			if (wrapper) {
+				wrapper.style.height = Math.round(h) + 'px';
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Drag handle resize for chart wrapper.
+	try {
+		const wrapper = document.getElementById(id + '_chart_wrapper');
+		const resizer = document.getElementById(id + '_chart_resizer');
+		if (wrapper && resizer) {
+			resizer.addEventListener('mousedown', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+				} catch { /* ignore */ }
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startHeight = wrapper.getBoundingClientRect().height;
+				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
+
+				const minH = 180;
+				const maxH = 900;
+				const onMove = (moveEvent) => {
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
+					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
+					wrapper.style.height = nextHeight + 'px';
+					try { __kustoRenderChart(id); } catch { /* ignore */ }
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove, true);
+					document.removeEventListener('mouseup', onUp, true);
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { __kustoRenderChart(id); } catch { /* ignore */ }
+				};
+
+				document.addEventListener('mousemove', onMove, true);
+				document.addEventListener('mouseup', onUp, true);
+			});
+		}
+	} catch {
+		// ignore
+	}
+
+	try { __kustoApplyChartMode(id); } catch { /* ignore */ }
+	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		const controls = document.querySelector('.add-controls');
+		if (controls && typeof controls.scrollIntoView === 'function') {
+			controls.scrollIntoView({ block: 'end' });
+		}
+	} catch { /* ignore */ }
+	return id;
+}
+
+function __kustoOnChartDataSourceChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	try {
+		const el = document.getElementById(id + '_chart_ds');
+		st.dataSourceId = el ? String(el.value || '') : '';
+	} catch { /* ignore */ }
+	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnChartTypeChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	try {
+		const el = document.getElementById(id + '_chart_type');
+		st.chartType = el ? String(el.value || '') : '';
+	} catch { /* ignore */ }
+	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoSelectChartType(boxId, chartType) {
+	const id = String(boxId || '');
+	const type = String(chartType || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	st.chartType = type;
+	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnChartLabelsToggled(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	// Check both checkbox IDs (XY and Pie) - use the current checked state
+	try {
+		const cb = document.getElementById(id + '_chart_labels');
+		const cbPie = document.getElementById(id + '_chart_labels_pie');
+		// Determine which checkbox is visible/relevant and use its state
+		const chartType = st.chartType || '';
+		const isPie = chartType === 'pie';
+		const relevantCheckbox = isPie ? cbPie : cb;
+		st.showDataLabels = !!(relevantCheckbox && relevantCheckbox.checked);
+		// Sync both checkboxes
+		if (cb) cb.checked = st.showDataLabels;
+		if (cbPie) cbPie.checked = st.showDataLabels;
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnChartMappingChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	try { st.xColumn = String(((document.getElementById(id + '_chart_x') || {}).value || '')); } catch { /* ignore */ }
+	// Y columns are now handled by checkbox dropdown via __kustoOnChartYCheckboxChanged.
+	try { st.legendColumn = String(((document.getElementById(id + '_chart_legend') || {}).value || '')); } catch { /* ignore */ }
+	try { st.labelColumn = String(((document.getElementById(id + '_chart_label') || {}).value || '')); } catch { /* ignore */ }
+	try { st.valueColumn = String(((document.getElementById(id + '_chart_value') || {}).value || '')); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Handler for Y column checkbox dropdown changes.
+function __kustoOnChartYCheckboxChanged(dropdownId) {
+	// dropdownId is like "boxId_chart_y"
+	const parts = String(dropdownId || '').split('_chart_y');
+	const boxId = parts[0] || '';
+	if (!boxId) return;
+	const st = __kustoGetChartState(boxId);
+	const menuId = boxId + '_chart_y_menu';
+	try {
+		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
+		st.yColumns = selected;
+		st.yColumn = selected.length ? selected[0] : '';
+		// If multiple Y columns are selected, Legend grouping is not supported.
+		try {
+			const legendSelect = document.getElementById(boxId + '_chart_legend');
+			const disableLegend = (selected.length > 1);
+			if (disableLegend) {
+				st.legendColumn = '';
+				if (legendSelect) {
+					legendSelect.value = '';
+				}
+			}
+			if (legendSelect) {
+				legendSelect.disabled = disableLegend;
+			}
+		} catch { /* ignore */ }
+		// Update button text.
+		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function removeChartBox(boxId) {
+	try { __kustoDisposeChartEcharts(boxId); } catch { /* ignore */ }
+	try { delete chartStateByBoxId[boxId]; } catch { /* ignore */ }
+	chartBoxes = (chartBoxes || []).filter(id => id !== boxId);
+	const box = document.getElementById(boxId);
+	if (box && box.parentNode) {
+		box.parentNode.removeChild(box);
+	}
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
 
 // Pending reveal requests from the extension host (e.g., Search result click).
 // Keyed by markdown boxId.

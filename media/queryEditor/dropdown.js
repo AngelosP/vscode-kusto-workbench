@@ -641,4 +641,150 @@
 			try { menu.focus(); } catch { /* ignore */ }
 		}
 	};
+
+	// =====================================
+	// Checkbox Multi-Select Dropdown
+	// =====================================
+
+	// Renders a button+menu dropdown with checkboxes for multi-select.
+	// opts: { wrapperId, buttonId, buttonTextId, menuId, placeholder, onToggle }
+	window.__kustoDropdown.renderCheckboxDropdownHtml = function (opts) {
+		const o = (opts && typeof opts === 'object') ? opts : {};
+		const wrapperClass = String(o.wrapperClass || '').trim();
+		const wrapperId = String(o.wrapperId || '').trim();
+		const buttonId = String(o.buttonId || '').trim();
+		const buttonTextId = String(o.buttonTextId || '').trim();
+		const menuId = String(o.menuId || '').trim();
+		const placeholder = String(o.placeholder || '').trim();
+		const onToggle = String(o.onToggle || '').trim();
+
+		const wrapperClasses = ['select-wrapper', 'kusto-dropdown-wrapper', 'kusto-checkbox-dropdown', wrapperClass]
+			.filter(Boolean)
+			.join(' ');
+
+		const wrapperIdAttr = wrapperId ? (' id="' + escAttr(wrapperId) + '"') : '';
+		const buttonIdAttr = buttonId ? (' id="' + escAttr(buttonId) + '"') : '';
+		const menuIdAttr = menuId ? (' id="' + escAttr(menuId) + '"') : '';
+		const textIdAttr = buttonTextId ? (' id="' + escAttr(buttonTextId) + '"') : '';
+
+		const clickAttr = onToggle
+			? (' onclick="' + escAttr(onToggle) + '; event.stopPropagation();"')
+			: ' onclick="event.stopPropagation();"';
+
+		return (
+			'<div class="' + wrapperClasses + '"' + wrapperIdAttr + '>' +
+				'<button type="button" class="kusto-dropdown-btn"' + buttonIdAttr + clickAttr + ' aria-haspopup="listbox" aria-expanded="false">' +
+					'<span class="kusto-dropdown-btn-text"' + textIdAttr + '>' + escAttr(placeholder || 'Select...') + '</span>' +
+					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+				'</button>' +
+				'<div class="kusto-dropdown-menu kusto-checkbox-menu"' + menuIdAttr + ' role="listbox" tabindex="-1" style="display:none;"></div>' +
+			'</div>'
+		);
+	};
+
+	// Renders checkbox items into a dropdown menu.
+	// items: [{ key: string, label: string, checked?: boolean, disabled?: boolean }]
+	// opts: { dropdownId: string, onChangeJs: string (function name to call with dropdownId) }
+	window.__kustoDropdown.renderCheckboxItemsHtml = function (items, opts) {
+		const list = Array.isArray(items) ? items : [];
+		const o = (opts && typeof opts === 'object') ? opts : {};
+		const dropdownId = String(o.dropdownId || '').trim();
+		const onChangeJs = String(o.onChangeJs || '').trim();
+		const emptyHtml = String(o.emptyHtml || '').trim();
+
+		if (!list.length) {
+			return emptyHtml || '<div class="kusto-dropdown-empty">No items.</div>';
+		}
+
+		const rows = [];
+		for (let idx = 0; idx < list.length; idx++) {
+			const it = list[idx];
+			if (!it) continue;
+			const key = String(it.key || '');
+			const label = String(it.label || key);
+			const isChecked = !!it.checked;
+			const isDisabled = !!it.disabled;
+			const itemId = dropdownId ? (dropdownId + '_chk_' + idx) : ('kusto_chk_' + idx);
+			const checkboxId = itemId + '_input';
+
+			const disabledAttr = isDisabled ? ' disabled' : '';
+			const checkedAttr = isChecked ? ' checked' : '';
+			const classes = ['kusto-dropdown-item', 'kusto-checkbox-item', isDisabled ? 'is-disabled' : '']
+				.filter(Boolean)
+				.join(' ');
+
+			const changeHandler = onChangeJs
+				? (' onchange="' + escAttr(onChangeJs) + '(\'' + escAttr(dropdownId) + '\')"')
+				: '';
+
+			rows.push(
+				'<label class="' + classes + '" for="' + escAttr(checkboxId) + '">' +
+					'<input type="checkbox" id="' + escAttr(checkboxId) + '" value="' + escAttr(key) + '"' + checkedAttr + disabledAttr + changeHandler + ' />' +
+					'<span class="kusto-checkbox-label">' + escAttr(label) + '</span>' +
+				'</label>'
+			);
+		}
+
+		return rows.join('');
+	};
+
+	// Get all selected values from a checkbox dropdown menu.
+	window.__kustoDropdown.getCheckboxSelections = function (menuId) {
+		const menu = document.getElementById(menuId);
+		if (!menu) return [];
+		const checkboxes = Array.from(menu.querySelectorAll('input[type="checkbox"]:checked'));
+		return checkboxes.map(cb => cb.value);
+	};
+
+	// Update the button text for a checkbox dropdown to show selected items.
+	window.__kustoDropdown.updateCheckboxButtonText = function (buttonTextId, selectedValues, placeholder) {
+		const btnText = document.getElementById(buttonTextId);
+		if (!btnText) return;
+		const ph = String(placeholder || 'Select...').trim();
+		if (!selectedValues || !selectedValues.length) {
+			btnText.textContent = ph;
+			btnText.title = '';
+		} else if (selectedValues.length === 1) {
+			btnText.textContent = selectedValues[0];
+			btnText.title = selectedValues[0];
+		} else {
+			const text = selectedValues.length + ' selected';
+			btnText.textContent = text;
+			btnText.title = selectedValues.join(', ');
+		}
+	};
+
+	// Toggle a checkbox dropdown.
+	window.__kustoDropdown.toggleCheckboxMenu = function (buttonId, menuId) {
+		const btn = document.getElementById(buttonId);
+		const menu = document.getElementById(menuId);
+		if (!btn || !menu) return;
+		if (btn.disabled) return;
+
+		const wasOpen = String(menu.style.display || '') === 'block';
+		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+
+		if (wasOpen) return;
+
+		menu.style.display = 'block';
+		btn.setAttribute('aria-expanded', 'true');
+		try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+
+		// Prevent clicks inside the menu from closing it via global document click handler.
+		try {
+			if (!menu.dataset.kustoStopPropagationWired) {
+				menu.addEventListener('click', (ev) => {
+					try { ev.stopPropagation(); } catch { /* ignore */ }
+				});
+				menu.dataset.kustoStopPropagationWired = '1';
+			}
+		} catch { /* ignore */ }
+
+		// Wire close on focus out.
+		try {
+			window.__kustoDropdown.wireCloseOnFocusOut(btn, menu);
+		} catch { /* ignore */ }
+
+		try { menu.focus(); } catch { /* ignore */ }
+	};
 })();
