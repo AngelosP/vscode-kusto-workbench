@@ -36,7 +36,7 @@
 						oninput="searchInObjectViewer()" />
 					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
 				</div>
-				<button class="refresh-btn close-btn object-viewer-close" type="button" onclick="closeObjectViewer()" title="Close" aria-label="Close">
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn object-viewer-close" type="button" onclick="closeObjectViewer()" title="Close" aria-label="Close">
 					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
 						<path d="M4 4l8 8" />
 						<path d="M12 4L4 12" />
@@ -46,7 +46,7 @@
 			<div class="object-viewer-body">
 				<div class="object-viewer-section object-viewer-props-section">
 					<div class="object-viewer-section-header">
-						<button id="objectViewerBackBtn" class="tool-toggle-btn object-viewer-back-btn" type="button" onclick="objectViewerNavigateBack()" title="Back" aria-label="Back" style="display:none;">←</button>
+						<button id="objectViewerBackBtn" class="unified-btn-secondary tool-toggle-btn object-viewer-back-btn" type="button" onclick="objectViewerNavigateBack()" title="Back" aria-label="Back" style="display:none;">←</button>
 						<div class="object-viewer-section-title" id="objectViewerPropsTitle"></div>
 					</div>
 					<table class="object-viewer-props-table" id="objectViewerPropsTable" aria-label="Properties"></table>
@@ -56,8 +56,8 @@
 					<div class="object-viewer-section-header">
 						<div class="object-viewer-section-title">Raw value</div>
 						<div class="object-viewer-raw-actions">
-							<button id="objectViewerRawCopy" class="tool-toggle-btn object-viewer-raw-copy" type="button" onclick="copyObjectViewerRawToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
-							<button id="objectViewerRawToggle" class="tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
+							<button id="objectViewerRawCopy" class="unified-btn-secondary tool-toggle-btn object-viewer-raw-copy" type="button" onclick="copyObjectViewerRawToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+							<button id="objectViewerRawToggle" class="unified-btn-secondary tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
 						</div>
 					</div>
 					<div id="objectViewerRawBody" class="object-viewer-raw-body">
@@ -73,7 +73,7 @@
 		<div class="column-analysis-content" onclick="event.stopPropagation()">
 			<div class="column-analysis-header">
 				<h3 id="columnAnalysisTitle">Column Analysis</h3>
-				<button class="refresh-btn close-btn column-analysis-close" type="button" onclick="closeColumnAnalysis()" title="Close" aria-label="Close">
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn column-analysis-close" type="button" onclick="closeColumnAnalysis()" title="Close" aria-label="Close">
 					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
 						<path d="M4 4l8 8" />
 						<path d="M12 4L4 12" />
@@ -89,7 +89,7 @@
 		<div class="diff-view-content" onclick="event.stopPropagation()">
 			<div class="diff-view-header">
 				<h3 id="diffViewTitle">Diff</h3>
-				<button id="diffViewCloseBtn" class="refresh-btn close-btn diff-view-close" type="button" onclick="closeDiffView()" title="Close" aria-label="Close">
+				<button id="diffViewCloseBtn" class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn diff-view-close" type="button" onclick="closeDiffView()" title="Close" aria-label="Close">
 					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
 						<path d="M4 4l8 8" />
 						<path d="M12 4L4 12" />

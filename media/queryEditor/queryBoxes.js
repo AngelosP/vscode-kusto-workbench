@@ -116,13 +116,18 @@ function addQueryBox(options) {
 		'</svg>';
 
 	const favoritesListIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M4 4h9" />' +
-		'<path d="M4 8h9" />' +
-		'<path d="M4 12h9" />' +
-		'<path d="M2.5 4h.2" />' +
-		'<path d="M2.5 8h.2" />' +
-		'<path d="M2.5 12h.2" />' +
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
+		'<line x1="10" y1="10.5" x2="14.5" y2="10.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'<line x1="10" y1="12.5" x2="14.5" y2="12.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'<line x1="10" y1="14.5" x2="14.5" y2="14.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'</svg>';
+
+	const clusterPickerIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<ellipse cx="8" cy="4" rx="5" ry="2" />' +
+		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4" />' +
+		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />' +
 		'</svg>';
 
 	const closeIconSvg =
@@ -193,11 +198,11 @@ function addQueryBox(options) {
 
 	const diffIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M5 2.5H3.5A1.5 1.5 0 0 0 2 4v8a1.5 1.5 0 0 0 1.5 1.5H5" />' +
-		'<path d="M11 2.5h1.5A1.5 1.5 0 0 1 14 4v8a1.5 1.5 0 0 1-1.5 1.5H11" />' +
-		'<path d="M6.5 5.5h3" />' +
-		'<path d="M6.5 8h3" />' +
-		'<path d="M6.5 10.5h3" />' +
+		'<rect x="2" y="2" width="5" height="12" rx="1" />' +
+		'<rect x="9" y="2" width="5" height="12" rx="1" />' +
+		'<line x1="3.5" y1="5" x2="5.5" y2="5" />' +
+		'<line x1="4.5" y1="4" x2="4.5" y2="6" />' +
+		'<line x1="10.5" y1="5" x2="12.5" y2="5" />' +
 		'</svg>';
 
 	const copilotLogoUri = (() => {
@@ -238,49 +243,49 @@ function addQueryBox(options) {
 
 	const toolsDropdownHtml =
 		'<span class="qe-toolbar-menu-wrapper" id="' + id + '_tools_wrapper">' +
-			'<button type="button" class="query-editor-toolbar-btn qe-toolbar-dropdown-btn" id="' + id + '_tools_btn" onclick="toggleToolsDropdown(\'' + id + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
+			'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-toolbar-dropdown-btn" id="' + id + '_tools_btn" onclick="toggleToolsDropdown(\'' + id + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
 				'<span class="qe-icon qe-tools-icon" aria-hidden="true">' + toolsIconSvg + '</span>' +
-				'<span class="qe-toolbar-caret" aria-hidden="true">▾</span>' +
+				'<span class="qe-toolbar-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
 				'<span class="schema-spinner qe-tools-spinner" aria-hidden="true" style="display:none;"></span>' +
 			'</button>' +
 			'<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="' + id + '_tools_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 		'</span>';
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
 		'</button>' +
 		toolsDropdownHtml +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M6.5 2a4.5 4.5 0 1 0 2.67 8.13l3.02 3.02a.75.75 0 0 0 1.06-1.06l-3.02-3.02A4.5 4.5 0 0 0 6.5 2zm0 1.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'replace\')" title="Search and replace\nFind and replace in the current query">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'replace\')" title="Search and replace\nFind and replace in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M2.5 4.5h8V3l3 2.5-3 2.5V6.5h-8v-2zM13.5 11.5h-8V13l-3-2.5 3-2.5v1.5h8v2z"/></svg>' +
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
+		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_copilot_chat_toggle" class="query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
+		'<button type="button" id="' + id + '_copilot_chat_toggle" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
 		'<span class="qe-icon" aria-hidden="true">' + copilotLogoHtml + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<span class="codicon codicon-link" aria-hidden="true"></span>' +
 		'</span>' +
@@ -358,10 +363,10 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
-		'<button class="refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="query-header-row query-header-row-bottom">' +
@@ -369,7 +374,7 @@ function addQueryBox(options) {
 			('<div class="kusto-favorites-combo select-wrapper" id="' + id + '_favorites_wrapper" style="display:none;" title="Favorites">' +
 			'<button type="button" class="kusto-favorites-btn" id="' + id + '_favorites_btn" onclick="toggleFavoritesDropdown(\'' + id + '\'); event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 			'<span class="kusto-favorites-btn-text" id="' + id + '_favorites_btn_text">Select favorite...</span>' +
-			'<span class="kusto-favorites-btn-caret" aria-hidden="true">▾</span>' +
+			'<span class="kusto-favorites-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
 			'</button>' +
 			'<div class="kusto-favorites-menu" id="' + id + '_favorites_menu" role="listbox" style="display:none;"></div>' +
 			'</div>')) +
@@ -387,16 +392,16 @@ function addQueryBox(options) {
 			'<option value="" disabled selected hidden>Select Database...</option>' +
 			'</select>' +
 			'</div>')) +
-		'<button class="refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
-		'<button class="refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
-		'<button class="refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only unified-btn-bordered refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
 		'<div class="schema-area" aria-label="Schema status">' +
 		'<span class="schema-status" id="' + id + '_schema_status" style="display: none;" title="Loading schema for autocomplete...">' +
 		'<span class="schema-spinner" aria-hidden="true"></span>' +
 		'<span>Schema…</span>' +
 		'</span>' +
 		'<span class="schema-loaded" id="' + id + '_schema_loaded" style="display: none;"></span>' +
-		'<button class="refresh-btn" onclick="refreshSchema(\'' + id + '\')" id="' + id + '_schema_refresh" title="Refresh schema" aria-label="Refresh schema">' + refreshIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only unified-btn-bordered refresh-btn" onclick="refreshSchema(\'' + id + '\')" id="' + id + '_schema_refresh" title="Refresh schema" aria-label="Refresh schema">' + refreshIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'</div>' +
@@ -409,7 +414,7 @@ function addQueryBox(options) {
 		'<div class="qe-missing-clusters-banner" id="' + id + '_missing_clusters" style="display:none;" role="status" aria-live="polite">' +
 		'<div class="qe-missing-clusters-text" id="' + id + '_missing_clusters_text"></div>' +
 		'<div class="qe-missing-clusters-actions">' +
-		'<button type="button" class="qe-missing-clusters-btn" onclick="addMissingClusterConnections(\'' + id + '\')">Add connections</button>' +
+		'<button type="button" class="unified-btn-primary qe-missing-clusters-btn" onclick="addMissingClusterConnections(\'' + id + '\')">Add connections</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="query-editor" id="' + id + '_query_editor"></div>' +
@@ -419,13 +424,13 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="query-actions">' +
 		'<div class="query-run">' +
-		'<div class="split-button" id="' + id + '_run_split">' +
-		'<button class="split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Select a cluster and database first (or select a favorite)">▶ Run Query (take 100)</button>' +
-		'<button class="split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options">▾</button>' +
-		'<div class="split-menu" id="' + id + '_run_menu" role="menu">' +
-		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'plain\');">Run Query</div>' +
-		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'take100\');">Run Query (take 100)</div>' +
-		'<div class="split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'sample100\');">Run Query (sample 100)</div>' +
+		'<div class="unified-btn-split" id="' + id + '_run_split">' +
+		'<button class="unified-btn-split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Select a cluster and database first (or select a favorite)">▶ Run Query (take 100)</button>' +
+		'<button class="unified-btn-split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
+		'<div class="unified-btn-split-menu" id="' + id + '_run_menu" role="menu">' +
+		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'plain\');">Run Query</div>' +
+		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'take100\');">Run Query (take 100)</div>' +
+		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'sample100\');">Run Query (sample 100)</div>' +
 		'</div>' +
 		'</div>' +
 		optimizeOrAcceptHtml +
@@ -4458,6 +4463,7 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 	favoritesModeByBoxId[boxId] = !!enabled;
 	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
 	const favToggleBtn = document.getElementById(boxId + '_favorite_toggle');
+	const favShowBtn = document.getElementById(boxId + '_favorites_show');
 	const clusterWrap = document.getElementById(boxId + '_connection')
 		? document.getElementById(boxId + '_connection').closest('.select-wrapper')
 		: null;
@@ -4466,6 +4472,21 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 		: null;
 	const refreshBtn = document.getElementById(boxId + '_refresh');
 
+	// Icons for toggle button state
+	const favoritesListIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
+		'<line x1="10" y1="10.5" x2="14.5" y2="10.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'<line x1="10" y1="12.5" x2="14.5" y2="12.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'<line x1="10" y1="14.5" x2="14.5" y2="14.5" stroke-width="1.4" stroke-linecap="round" />' +
+		'</svg>';
+	const clusterPickerIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<ellipse cx="8" cy="4" rx="5" ry="2" />' +
+		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4" />' +
+		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />' +
+		'</svg>';
+
 	if (enabled) {
 		__kustoSetElementDisplay(clusterWrap, 'none');
 		__kustoSetElementDisplay(dbWrap, 'none');
@@ -4473,6 +4494,12 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 		// In favorites mode, hide the "add/remove favorite" star button (applies only when selecting cluster+db).
 		__kustoSetElementDisplay(favToggleBtn, 'none');
 		__kustoSetElementDisplay(favWrap, 'flex');
+		// Update the show button to now show "cluster picker" option
+		if (favShowBtn) {
+			favShowBtn.title = 'Show cluster and database picker';
+			favShowBtn.setAttribute('aria-label', 'Show cluster and database picker');
+			favShowBtn.innerHTML = clusterPickerIconSvg;
+		}
 		try { renderFavoritesMenuForBox(boxId); } catch { /* ignore */ }
 	} else {
 		__kustoSetElementDisplay(favWrap, 'none');
@@ -4480,6 +4507,12 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 		__kustoSetElementDisplay(dbWrap, 'flex');
 		__kustoSetElementDisplay(refreshBtn, 'flex');
 		__kustoSetElementDisplay(favToggleBtn, 'flex');
+		// Update the show button back to "show favorites"
+		if (favShowBtn) {
+			favShowBtn.title = 'Show favorites';
+			favShowBtn.setAttribute('aria-label', 'Show favorites');
+			favShowBtn.innerHTML = favoritesListIconSvg;
+		}
 		// When switching from favorites -> cluster/database view, the selection may have been set
 		// programmatically; ensure the unified dropdown buttons reflect the current hidden <select> values.
 		try {

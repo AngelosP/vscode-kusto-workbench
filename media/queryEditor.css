@@ -213,8 +213,11 @@
 		}
 
 		.add-control-btn {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			color: var(--vscode-foreground);
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
 			padding: 6px 10px;
@@ -224,8 +227,258 @@
 		}
 
 		.add-control-btn:hover {
-			background: var(--vscode-button-secondaryHoverBackground);
+			background: var(--vscode-list-hoverBackground);
+			border-color: var(--vscode-input-border);
 		}
+
+		/* ==========================================================================
+		   UNIFIED BUTTON SYSTEM
+		   ==========================================================================
+		   
+		   This section defines reusable button styles for consistent UI across the app.
+		   
+		   Categories:
+		   - .unified-btn-primary    : Prominent action buttons (colored background)
+		   - .unified-btn-secondary  : Subtle buttons (transparent/minimal background)
+		   - .kusto-dropdown-btn     : Dropdown buttons (defined elsewhere, see dropdown section)
+		   - .unified-btn-split      : Split buttons (primary action + dropdown toggle)
+		   
+		   Toggle State:
+		   - Use .is-active class for toggled/selected state on any button type
+		   
+		   Modifiers:
+		   - .unified-btn-icon-only  : Square icon-only button (28x28px)
+		   - .unified-btn-bordered   : Adds visible border to secondary buttons
+		   ========================================================================== */
+
+		/* --- PRIMARY BUTTON ---
+		   Use for main actions like "Run Query", "Send", "Apply".
+		   Reference: Run Query button styling. */
+		.unified-btn-primary {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: none;
+			border-radius: 2px;
+			padding: 6px 14px;
+			font-size: 13px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+			white-space: nowrap;
+			line-height: 1.4;
+		}
+
+		.unified-btn-primary:hover:not(:disabled) {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.unified-btn-primary:active:not(:disabled) {
+			opacity: 0.85;
+		}
+
+		.unified-btn-primary:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.unified-btn-primary:focus:not(:focus-visible) {
+			outline: none;
+		}
+
+		.unified-btn-primary:disabled {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-disabledForeground);
+			cursor: not-allowed;
+			opacity: 1;
+		}
+
+		/* Primary button toggle state */
+		.unified-btn-primary.is-active {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		/* --- SECONDARY BUTTON ---
+		   Use for less prominent actions, icon buttons, toggles.
+		   Reference: Show/Hide toggle button, Refresh button. */
+		.unified-btn-secondary {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 4px 8px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			white-space: nowrap;
+			line-height: 1.4;
+		}
+
+		.unified-btn-secondary:hover:not(:disabled) {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.unified-btn-secondary:active:not(:disabled) {
+			opacity: 0.75;
+		}
+
+		.unified-btn-secondary:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+
+		.unified-btn-secondary:focus:not(:focus-visible) {
+			outline: none;
+		}
+
+		.unified-btn-secondary:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		/* Secondary button toggle state */
+		.unified-btn-secondary.is-active {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		/* Secondary button with visible border (like refresh buttons) */
+		.unified-btn-secondary.unified-btn-bordered {
+			border-color: var(--vscode-input-border);
+		}
+
+		/* Icon-only button modifier (square 28x28px) */
+		.unified-btn-icon-only {
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			padding: 0;
+		}
+
+		.unified-btn-icon-only svg {
+			display: block;
+		}
+
+		/* --- SPLIT BUTTON ---
+		   Use for actions with multiple modes/options.
+		   Reference: Run Query (take 100) / Run Query / Run Query (sample 100). */
+		.unified-btn-split {
+			position: relative;
+			display: inline-flex;
+			align-items: stretch;
+		}
+
+		.unified-btn-split-main {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: none;
+			border-radius: 2px 0 0 2px;
+			padding: 6px 14px;
+			font-size: 13px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+			white-space: nowrap;
+			line-height: 1.4;
+		}
+
+		.unified-btn-split-main:hover:not(:disabled) {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.unified-btn-split-main:active:not(:disabled) {
+			opacity: 0.85;
+		}
+
+		.unified-btn-split-main:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.unified-btn-split-main:focus:not(:focus-visible) {
+			outline: none;
+		}
+
+		.unified-btn-split-main:disabled {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-disabledForeground);
+			cursor: not-allowed;
+			opacity: 1;
+		}
+
+		.unified-btn-split-toggle {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: none;
+			border-left: 1px solid var(--vscode-button-border, rgba(255,255,255,0.2));
+			border-radius: 0 2px 2px 0;
+			padding: 6px 10px;
+			min-width: 28px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.unified-btn-split-toggle:hover:not(:disabled) {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.unified-btn-split-toggle:active:not(:disabled) {
+			opacity: 0.85;
+		}
+
+		.unified-btn-split-toggle:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.unified-btn-split-toggle:focus:not(:focus-visible) {
+			outline: none;
+		}
+
+		.unified-btn-split-toggle:disabled {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-disabledForeground);
+			cursor: not-allowed;
+			opacity: 1;
+		}
+
+		/* Split button menu */
+		.unified-btn-split-menu {
+			position: absolute;
+			top: calc(100% + 4px);
+			left: 0;
+			min-width: 220px;
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+			z-index: 2000;
+			display: none;
+			box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+		}
+
+		.unified-btn-split-menu-item {
+			padding: 8px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.unified-btn-split-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		/* ==========================================================================
+		   END UNIFIED BUTTON SYSTEM
+		   ========================================================================== */
 
 		.kusto-copilot-chat {
 			margin: 0;
@@ -268,10 +521,12 @@
 			min-height: 0;
 			background: var(--vscode-editor-background);
 			color: var(--vscode-foreground);
+			overflow: hidden;
 		}
 
 		.chart-box .query-editor-wrapper {
 			border: none;
+			overflow: hidden;
 		}
 
 		.kusto-chart-builder {
@@ -283,12 +538,15 @@
 			height: 100%;
 			background: var(--vscode-editor-background);
 			color: var(--vscode-foreground);
+			overflow: hidden;
 		}
 
 		.kusto-chart-controls {
 			display: flex;
 			flex-direction: column;
 			gap: 8px;
+			overflow: visible;
+			flex-shrink: 0;
 		}
 
 		.kusto-chart-row {
@@ -359,6 +617,11 @@
 			flex-wrap: nowrap;
 		}
 
+		/* Chart dropdown menus need position:fixed to escape the overflow:hidden container */
+		.kusto-chart-controls .kusto-dropdown-menu {
+			position: fixed;
+		}
+
 		.kusto-chart-canvas {
 			width: 100%;
 			height: 100%;
@@ -366,6 +629,7 @@
 			min-height: 0;
 			background: var(--vscode-editor-background);
 			color: var(--vscode-foreground);
+			overflow: hidden;
 		}
 
 		/* Chart type picker with icons */
@@ -396,7 +660,7 @@
 			background: var(--vscode-toolbar-hoverBackground);
 		}
 
-		.kusto-chart-type-btn.is-selected {
+		.kusto-chart-type-btn.is-active {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
 			border-color: transparent;
@@ -413,7 +677,7 @@
 			opacity: 0.9;
 		}
 
-		.kusto-chart-type-btn.is-selected svg {
+		.kusto-chart-type-btn.is-active svg {
 			opacity: 1;
 			color: var(--vscode-list-activeSelectionForeground);
 		}
@@ -473,14 +737,14 @@
 		}
 
 		.kusto-copilot-splitter.query-editor-resizer::after {
-			width: 6px;
+			width: 4px;
 			height: 34px;
 			background-image: repeating-linear-gradient(
-				0deg,
+				90deg,
 				var(--vscode-input-placeholderForeground),
-				var(--vscode-input-placeholderForeground) 2px,
-				transparent 2px,
-				transparent 6px
+				var(--vscode-input-placeholderForeground) 1px,
+				transparent 1px,
+				transparent 3px
 			);
 		}
 
@@ -634,15 +898,21 @@
 			line-height: 1.35;
 		}
 
+		/* Copilot Send button */
 		.kusto-copilot-chat-send {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
 			background: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
 			border: 1px solid var(--vscode-button-border);
 			border-radius: 0;
+			color: var(--vscode-button-foreground);
+			cursor: pointer;
 			padding: 6px 10px;
 			font-size: 12px;
-			cursor: pointer;
-			white-space: nowrap;
+		}
+		.kusto-copilot-chat-send:hover:not(:disabled) {
+			background: var(--vscode-button-hoverBackground);
 		}
 		.kusto-copilot-chat-send .kusto-copilot-chat-send-spinner {
 			display: none;
@@ -676,30 +946,38 @@
 		}
 
 		.kusto-copilot-chat-cancel {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-input-border);
-			border-radius: 0;
-			padding: 6px 10px;
-			font-size: 12px;
-			cursor: pointer;
-			white-space: nowrap;
-		}
-
-		.kusto-copilot-chat-tools {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-input-border);
-			border-radius: 0;
-			width: 28px;
-			height: 28px;
-			padding: 0;
-			font-size: 12px;
-			cursor: pointer;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
-			line-height: 0;
+			background: transparent;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 6px 10px;
+			font-size: 12px;
+		}
+		.kusto-copilot-chat-cancel:hover:not(:disabled) {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+		.kusto-copilot-chat-cancel:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+
+		/* Copilot tools button */
+		.kusto-copilot-chat-tools {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			width: 28px;
+			height: 28px;
+			padding: 0;
 			flex: 0 0 auto;
 		}
 		.kusto-copilot-chat-tools .codicon {
@@ -712,14 +990,9 @@
 		.kusto-copilot-chat-tools.is-active {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
-			border-color: var(--vscode-list-activeSelectionBackground);
 		}
 		.kusto-copilot-chat-tools.is-active:hover {
 			background: var(--vscode-list-activeSelectionBackground);
-		}
-		.kusto-copilot-chat-tools:disabled {
-			opacity: 0.6;
-			cursor: default;
 		}
 
 		.kusto-copilot-tools-panel {
@@ -1138,6 +1411,11 @@
 		.query-box.is-collapsed .results-wrapper,
 		.query-box.is-collapsed .comparison-summary-banner {
 			display: none !important;
+		}
+
+		/* Collapsed sections need a bit more breathing room at the bottom. */
+		.query-box.is-collapsed {
+			padding-bottom: 2px;
 		}
 
 		.markdown-viewer {
@@ -1629,14 +1907,25 @@
 
 		.kusto-dropdown-btn-caret,
 		.kusto-favorites-btn-caret {
-			color: var(--vscode-descriptionForeground);
 			position: absolute;
 			right: 8px;
 			top: 50%;
 			transform: translateY(-50%);
 			pointer-events: none;
-			font-size: 14px;
-			line-height: 1;
+			width: 16px;
+			height: 16px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-dropdown-btn-caret svg,
+		.kusto-favorites-btn-caret svg {
+			width: 16px;
+			height: 16px;
+			fill: currentColor;
+			color: var(--vscode-foreground);
+			opacity: 0.8;
 		}
 
 		.kusto-dropdown-menu,
@@ -1652,15 +1941,15 @@
 			max-height: 280px;
 			overflow: auto;
 			z-index: 50;
-			background: var(--vscode-editorWidget-background);
-			border: 1px solid var(--vscode-input-border);
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 			box-sizing: border-box;
 		}
 
 		.kusto-dropdown-item,
 		.kusto-favorites-item {
-			padding: 6px 8px;
+			padding: 4px 8px;
 			cursor: pointer;
 			font-size: 12px;
 			line-height: 1.4;
@@ -1683,6 +1972,8 @@
 			display: inline-flex;
 			align-items: baseline;
 			gap: 6px;
+			/* Match the font styling of the dropdown button text for consistency */
+			color: var(--vscode-dropdown-foreground);
 		}
 
 		.kusto-dropdown-item-main .qe-icon,
@@ -1703,6 +1994,12 @@
 		.kusto-dropdown-item.is-active,
 		.kusto-favorites-item.is-active {
 			background: var(--vscode-list-hoverBackground);
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-dropdown-item.is-active .kusto-dropdown-item-main,
+		.kusto-favorites-item.is-active .kusto-favorites-item-main {
+			color: var(--vscode-foreground);
 		}
 
 		.kusto-dropdown-item.is-disabled {
@@ -1759,15 +2056,12 @@
 		.kusto-dropdown-item:hover,
 		.kusto-favorites-item:hover {
 			background: var(--vscode-list-hoverBackground);
+			color: var(--vscode-foreground);
 		}
 
-		/* Tools dropdown: the selected item should match hover background (not the default selected grey). */
-		.qe-toolbar-dropdown-menu .kusto-dropdown-item:hover,
-		.qe-toolbar-dropdown-menu .kusto-dropdown-item.is-active,
-		.qe-toolbar-dropdown-menu .kusto-dropdown-item.is-selected,
-		.qe-toolbar-dropdown-menu .kusto-dropdown-item[aria-selected="true"] {
-			background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
-			color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+		.kusto-dropdown-item:hover .kusto-dropdown-item-main,
+		.kusto-favorites-item:hover .kusto-favorites-item-main {
+			color: var(--vscode-foreground);
 		}
 
 		.kusto-dropdown-empty,
@@ -1967,6 +2261,10 @@
 			height: 28px;
 		}
 
+		.refresh-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
 		.refresh-btn svg {
 			display: block;
 		}
@@ -1983,11 +2281,14 @@
 			fill: none;
 		}
 
-		.refresh-btn.favorite-btn.is-favorite {
+		/* Favorite toggle uses .is-active (standardized from .is-favorite) */
+		.refresh-btn.favorite-btn.is-favorite,
+		.refresh-btn.favorite-btn.is-active {
 			color: var(--vscode-charts-yellow);
 		}
 
-		.refresh-btn.favorite-btn.is-favorite svg {
+		.refresh-btn.favorite-btn.is-favorite svg,
+		.refresh-btn.favorite-btn.is-active svg {
 			fill: currentColor;
 		}
 
@@ -1997,19 +2298,6 @@
 			align-items: center;
 			gap: 8px;
 			text-align: right;
-		}
-
-		.refresh-btn:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-
-		.refresh-btn:active {
-			opacity: 0.7;
-		}
-
-		.refresh-btn:disabled {
-			opacity: 0.5;
-			cursor: not-allowed;
 		}
 
 		/* Cancel button: reuse icon-button sizing but show an error-colored glyph */
@@ -2205,10 +2493,21 @@
 			gap: 6px;
 		}
 
+		/* Missing clusters button */
 		.qe-missing-clusters-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: var(--vscode-button-background);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 4px;
+			color: var(--vscode-button-foreground);
+			cursor: pointer;
 			padding: 4px 10px;
 			font-size: 12px;
-			border-radius: 2px;
+		}
+		.qe-missing-clusters-btn:hover {
+			background: var(--vscode-button-hoverBackground);
 		}
 
 		.query-editor-toolbar-sep {
@@ -2229,17 +2528,18 @@
 		}
 
 		.query-editor-toolbar-btn {
-			background: transparent;
-			color: var(--vscode-foreground);
-			border: 1px solid transparent;
-			padding: 4px 6px;
-			cursor: pointer;
-			border-radius: 4px;
-			height: 28px;
-			min-width: 28px;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 6px;
+			height: 28px;
+			min-width: 28px;
 		}
 
 		.query-editor-toolbar-btn:hover {
@@ -2249,22 +2549,13 @@
 
 		.query-editor-toolbar-btn.is-active {
 			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
 			border-color: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
 		}
 
 		.query-editor-toolbar-btn.is-active:hover {
 			background: var(--vscode-list-activeSelectionBackground);
 			border-color: var(--vscode-list-activeSelectionBackground);
-		}
-
-		.query-editor-toolbar-btn:active {
-			opacity: 0.8;
-		}
-
-		.query-editor-toolbar-btn:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
 		}
 
 		.query-editor-toolbar-btn .qe-icon {
@@ -2419,16 +2710,16 @@
 			left: 50%;
 			top: 50%;
 			width: 34px;
-			height: 6px;
+			height: 4px;
 			transform: translate(-50%, -50%);
-			border-radius: 3px;
+			border-radius: 2px;
 			opacity: 0.55;
 			background-image: repeating-linear-gradient(
-				90deg,
+				0deg,
 				var(--vscode-input-placeholderForeground),
-				var(--vscode-input-placeholderForeground) 2px,
-				transparent 2px,
-				transparent 6px
+				var(--vscode-input-placeholderForeground) 1px,
+				transparent 1px,
+				transparent 3px
 			);
 		}
 
@@ -2474,16 +2765,13 @@
 			border-radius: 2px;
 		}
 
-		button:hover:not(:disabled) {
-			background-color: var(--vscode-button-hoverBackground);
-		}
-
 		button:active:not(:disabled) {
 			opacity: 0.8;
 		}
 
 		/* Disabled buttons: match VS Code's disabled feel.
 		   Keep this scoped to our primary "Run" button to avoid fighting other component-specific rules. */
+		/* LEGACY: .split-button system - migrated to .unified-btn-split. Keeping for backward compatibility. */
 		.split-button .split-main:disabled {
 			background-color: var(--vscode-button-secondaryBackground);
 			color: var(--vscode-disabledForeground);
@@ -2534,6 +2822,7 @@
 		.split-button .split-menu-item:hover {
 			background: var(--vscode-list-hoverBackground);
 		}
+		/* END LEGACY .split-button */
 
 		.results {
 			background: var(--vscode-editor-background);
@@ -2690,15 +2979,15 @@
 		}
 
 		.tool-toggle-btn {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border);
-			border-radius: 2px;
-			padding: 4px 8px;
-			cursor: pointer;
-			display: flex;
+			display: inline-flex;
 			align-items: center;
 			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 8px;
 			font-size: 14px;
 		}
 
@@ -2706,13 +2995,13 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 
-		.tool-toggle-btn.active {
+		.tool-toggle-btn.is-active {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
 		}
 
-		/* The results show/hide toggle uses "is-active"; align its visuals with other tool toggles. */
-		.tool-toggle-btn.is-active {
+		/* Keep .active for backwards compatibility */
+		.tool-toggle-btn.active {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
 		}
@@ -2722,19 +3011,13 @@
 			background: var(--vscode-list-activeSelectionBackground);
 		}
 
-		/* Results/CSV show-hide toggle: match section header show/hide button (.md-tab) */
+		/* Results show/hide toggle: icon-button style */
 		.tool-toggle-btn.results-visibility-toggle {
 			background: transparent;
 			border: 1px solid transparent;
-			color: var(--vscode-foreground);
 			padding: 0;
 			width: 28px;
 			height: 28px;
-			border-radius: 4px;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			line-height: 0;
 		}
 
 		.tool-toggle-btn.results-visibility-toggle:hover {

@@ -150,7 +150,7 @@
 					'<div class="kusto-copilot-chat-model">' +
 						'<label for="' + boxId + '_copilot_model">Model</label>' +
 						modelDropdown +
-						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
+						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
 							'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
 						'</button>' +
 					'</div>' +
@@ -163,11 +163,11 @@
 				'<div class="kusto-copilot-chat-input">' +
 					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query…" spellcheck="true"></textarea>' +
 					'<div class="kusto-copilot-chat-actions">' +
-						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">' +
+						'<button type="button" id="' + boxId + '_copilot_send" class="unified-btn-primary kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">' +
 							'<span class="kusto-copilot-chat-send-label">Send</span>' +
 							'<span class="kusto-copilot-chat-send-spinner" aria-hidden="true"></span>' +
 						'</button>' +
-						'<button type="button" id="' + boxId + '_copilot_cancel" class="kusto-copilot-chat-cancel" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
+						'<button type="button" id="' + boxId + '_copilot_cancel" class="unified-btn-secondary kusto-copilot-chat-cancel" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
 					'</div>' +
 				'</div>' +
 			'</div>'

@@ -1056,7 +1056,7 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 	const header = (
 		'<div class="kusto-filter-header">' +
 		'<div class="kusto-filter-title">Filter applied to the column &#39;' + __kustoEscapeForHtml(colName) + '&#39;</div>' +
-		'<button type="button" class="refresh-btn close-btn kusto-filter-close-btn" onclick="closeColumnFilterPopover()" title="Close" aria-label="Close">' + __kustoGetCloseIconSvg(14) + '</button>' +
+		'<button type="button" class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn kusto-filter-close-btn" onclick="closeColumnFilterPopover()" title="Close" aria-label="Close">' + __kustoGetCloseIconSvg(14) + '</button>' +
 		'</div>'
 	);
 
@@ -2627,20 +2627,20 @@ function displayResultForBox(result, boxId, options) {
 		'<div class="results-title-row">' +
 		'<strong>' + label + ':</strong> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns' +
 		execPart +
-		'<button class="tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
 		'</div>' +
 		'<div class="results-tools-row">' +
-		'<button class="tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
-		'<button class="tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
-		'<button class="tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
 		'<span class="results-sep" id="' + boxId + '_results_sep_2" aria-hidden="true"></span>' +
 		'<span class="kusto-split-btn" id="' + boxId + '_results_save_split">' +
-		'<button class="tool-toggle-btn tool-save-results-btn" id="' + boxId + '_results_save_btn" onclick="__kustoOnSavePrimary(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\')" title="Save results to file" aria-label="Save results to file">' + saveIconSvg + '</button>' +
-		'<button class="tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_save_menu_btn" style="display: none;" onclick="__kustoOnSaveMenu(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\', this)" title="More save options" aria-label="More save options">▾</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn tool-save-results-btn" id="' + boxId + '_results_save_btn" onclick="__kustoOnSavePrimary(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\')" title="Save results to file" aria-label="Save results to file">' + saveIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_save_menu_btn" style="display: none;" onclick="__kustoOnSaveMenu(\'' + boxId + '\', \'' + __kustoEscapeJsStringLiteral(label) + '\', this)" title="More save options" aria-label="More save options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
 		'</span>' +
 		'<span class="kusto-split-btn" id="' + boxId + '_results_copy_split">' +
-		'<button class="tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="__kustoOnCopyPrimary(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
-		'<button class="tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_copy_menu_btn" style="display: none;" onclick="__kustoOnCopyMenu(\'' + boxId + '\', this)" title="More copy options" aria-label="More copy options">▾</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="__kustoOnCopyPrimary(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
+		'<button class="unified-btn-secondary tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_copy_menu_btn" style="display: none;" onclick="__kustoOnCopyMenu(\'' + boxId + '\', this)" title="More copy options" aria-label="More copy options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
 		'</span>' +
 		'</div>' +
 		'</div>' +

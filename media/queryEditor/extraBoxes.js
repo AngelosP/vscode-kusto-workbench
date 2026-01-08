@@ -262,9 +262,22 @@ function __kustoUpdateChartBuilderUI(boxId) {
 				html += '<option value="' + escValue + '">' + escLabel + '</option>';
 			}
 			dsSelect.innerHTML = html;
-			dsSelect.value = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
+			// Restore selection from state. Use unescaped value since browser parses HTML attributes.
+			const desired = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
+			dsSelect.value = desired;
+			// If setting value failed (option doesn't exist), try to find a matching option manually.
+			if (dsSelect.value !== desired && desired) {
+				for (const opt of dsSelect.options) {
+					if (opt.value === desired) {
+						dsSelect.value = desired;
+						break;
+					}
+				}
+			}
 		}
 	} catch { /* ignore */ }
+	// Sync the unified dropdown button text for Data.
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch { /* ignore */ }
 
 	// Update chart type picker selection (visual buttons)
 	try {
@@ -274,7 +287,7 @@ function __kustoUpdateChartBuilderUI(boxId) {
 			const currentType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
 			for (const btn of buttons) {
 				const btnType = btn.getAttribute('data-type') || '';
-				btn.classList.toggle('is-selected', btnType === currentType);
+				btn.classList.toggle('is-active', btnType === currentType);
 				btn.setAttribute('aria-pressed', btnType === currentType ? 'true' : 'false');
 			}
 		}
@@ -374,6 +387,9 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	}
 	__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
 	__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
+	// Sync the unified dropdown button text for Label and Value.
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
 
 	// Best-effort defaults once we have a dataset.
 	try {
@@ -392,6 +408,9 @@ function __kustoUpdateChartBuilderUI(boxId) {
 			}
 		}
 	} catch { /* ignore */ }
+
+	// Auto-fit if the chart canvas is being clipped after control changes.
+	try { __kustoAutoFitChartIfClipped(id); } catch { /* ignore */ }
 }
 
 function __kustoGetChartActiveCanvasElementId(boxId) {
@@ -535,6 +554,15 @@ function __kustoRenderChart(boxId) {
 	if (!id) return;
 	try { __kustoStartEchartsThemeObserver(); } catch { /* ignore */ }
 	const st = __kustoGetChartState(id);
+
+	// Defensive: ensure dataSourceId is synced from the DOM dropdown in case state became stale.
+	try {
+		const dsEl = document.getElementById(id + '_chart_ds');
+		if (dsEl && dsEl.value) {
+			st.dataSourceId = String(dsEl.value || '');
+		}
+	} catch { /* ignore */ }
+
 	try {
 		const wrapper = document.getElementById(id + '_chart_wrapper');
 		if (wrapper && wrapper.style && String(wrapper.style.display || '').toLowerCase() === 'none') {
@@ -567,17 +595,29 @@ function __kustoRenderChart(boxId) {
 		return colNames.findIndex(cn => String(cn) === n);
 	};
 
+	// Helper to dispose ECharts instance before showing error text.
+	// Setting textContent destroys ECharts DOM, so we must dispose the instance first.
+	const showErrorAndReturn = (msg) => {
+		try {
+			if (st.__echarts && st.__echarts.instance) {
+				st.__echarts.instance.dispose();
+				delete st.__echarts;
+			}
+		} catch { /* ignore */ }
+		try { canvas.textContent = msg; } catch { /* ignore */ }
+	};
+
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
 	if (!st.dataSourceId) {
-		try { canvas.textContent = 'Select a data source.'; } catch { /* ignore */ }
+		showErrorAndReturn('Select a data source.');
 		return;
 	}
 	if (!chartType) {
-		try { canvas.textContent = 'Select a chart type.'; } catch { /* ignore */ }
+		showErrorAndReturn('Select a chart type.');
 		return;
 	}
 	if (!cols.length) {
-		try { canvas.textContent = 'No data available yet.'; } catch { /* ignore */ }
+		showErrorAndReturn('No data available yet.');
 		return;
 	}
 
@@ -618,7 +658,8 @@ function __kustoRenderChart(boxId) {
 			const vi = indexOf(st.valueColumn);
 			const valueColName = st.valueColumn || 'Value';
 			if (li < 0 || vi < 0) {
-				option = { title: { text: 'Select columns.' } };
+				showErrorAndReturn('Select columns.');
+				return;
 			} else {
 				const data = (rows || []).map(r => {
 					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
@@ -671,7 +712,8 @@ function __kustoRenderChart(boxId) {
 			const yColName = st.yColumn || 'Y';
 			const showLabels = !!st.showDataLabels;
 			if (xi < 0 || yi < 0) {
-				option = { title: { text: 'Select columns.' } };
+				showErrorAndReturn('Select columns.');
+				return;
 			} else {
 				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
 				const points = [];
@@ -802,7 +844,8 @@ function __kustoRenderChart(boxId) {
 			yCols = yCols.filter(c => indexOf(c) >= 0);
 			
 			if (xi < 0 || !yCols.length) {
-				option = { title: { text: 'Select columns.' } };
+				showErrorAndReturn('Select columns.');
+				return;
 			} else {
 				const isArea = chartType === 'area';
 				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
@@ -1072,10 +1115,17 @@ function __kustoRenderChart(boxId) {
 			}
 		}
 	} catch {
-		option = { title: { text: 'Failed to render chart.' } };
+		showErrorAndReturn('Failed to render chart.');
+		return;
 	}
 
 	try {
+		// Clear any text nodes (error messages) without destroying ECharts child elements.
+		for (const child of Array.from(canvas.childNodes)) {
+			if (child.nodeType === Node.TEXT_NODE) {
+				canvas.removeChild(child);
+			}
+		}
 		inst.setOption(option || {}, true);
 	} catch { /* ignore */ }
 	try {
@@ -1202,11 +1252,111 @@ function __kustoMaximizeChartBox(boxId) {
 	try {
 		const wrapper = document.getElementById(boxId + '_chart_wrapper');
 		if (!wrapper) return;
-		// Clear user-resized height so the section can size to content.
-		try { wrapper.style.height = ''; } catch { /* ignore */ }
+		
+		const st = __kustoGetChartState(boxId);
+		const isPreview = st.mode === 'preview';
+		
+		// Get the active editor (edit or preview)
+		const editEditor = document.getElementById(boxId + '_chart_edit');
+		const previewEditor = document.getElementById(boxId + '_chart_preview');
+		const activeEditor = isPreview ? previewEditor : editEditor;
+		
+		if (!activeEditor) return;
+		
+		// Minimum height for the chart canvas when it has actual content
+		const CHART_MIN_HEIGHT = 240;
+		// Height for empty/unconfigured state (just shows placeholder text)
+		const CHART_EMPTY_HEIGHT = 40;
+		const SLACK_PX = 10;
+		
+		// Determine if chart is configured (has data source and chart type)
+		const hasDataSource = typeof st.dataSourceId === 'string' && st.dataSourceId;
+		const hasChartType = typeof st.chartType === 'string' && st.chartType;
+		const isConfigured = hasDataSource && hasChartType;
+		
+		// Use smaller height when chart is not fully configured
+		const canvasHeight = isConfigured ? CHART_MIN_HEIGHT : CHART_EMPTY_HEIGHT;
+		
+		let desiredHeight = canvasHeight;
+		
+		if (isPreview) {
+			// Preview mode: just the chart canvas
+			desiredHeight = canvasHeight + SLACK_PX;
+		} else {
+			// Edit mode: controls + chart canvas
+			const controls = activeEditor.querySelector('.kusto-chart-controls');
+			const builder = activeEditor.querySelector('.kusto-chart-builder');
+			
+			let controlsHeight = 0;
+			if (controls) {
+				try {
+					const rect = controls.getBoundingClientRect();
+					controlsHeight = rect.height || 0;
+				} catch { /* ignore */ }
+			}
+			
+			// Get builder padding
+			let builderPadding = 0;
+			if (builder) {
+				try {
+					const cs = getComputedStyle(builder);
+					builderPadding = (parseFloat(cs.paddingTop || '0') || 0) + 
+					                 (parseFloat(cs.paddingBottom || '0') || 0) +
+					                 (parseFloat(cs.gap || '0') || 0); // gap between controls and canvas
+				} catch { /* ignore */ }
+			}
+			
+			desiredHeight = controlsHeight + canvasHeight + builderPadding + SLACK_PX;
+		}
+		
+		// Apply the calculated height
+		wrapper.style.height = Math.ceil(desiredHeight) + 'px';
 		try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
+		
 		try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+// Check if the chart canvas is partially clipped and auto-fit if needed.
+function __kustoAutoFitChartIfClipped(boxId) {
+	try {
+		const wrapper = document.getElementById(boxId + '_chart_wrapper');
+		if (!wrapper) return;
+		
+		const st = __kustoGetChartState(boxId);
+		const isPreview = st.mode === 'preview';
+		
+		// Get the active canvas
+		const canvasId = isPreview ? (boxId + '_chart_canvas_preview') : (boxId + '_chart_canvas_edit');
+		const canvas = document.getElementById(canvasId);
+		if (!canvas) return;
+		
+		// Get minimum height from inline style (default 240px)
+		let minHeight = 240;
+		try {
+			const inlineMinHeight = canvas.style.minHeight;
+			if (inlineMinHeight) {
+				const parsed = parseInt(inlineMinHeight, 10);
+				if (parsed > 0) minHeight = parsed;
+			}
+		} catch { /* ignore */ }
+		
+		// Check if the canvas is being clipped
+		const wrapperRect = wrapper.getBoundingClientRect();
+		const canvasRect = canvas.getBoundingClientRect();
+		
+		// If canvas bottom extends past wrapper bottom, or canvas height is less than minHeight, auto-fit
+		const isClipped = (canvasRect.bottom > wrapperRect.bottom + 2) || (canvasRect.height < minHeight - 2);
+		
+		if (isClipped) {
+			// Defer to avoid layout thrashing during control updates
+			requestAnimationFrame(() => {
+				try { __kustoMaximizeChartBox(boxId); } catch { /* ignore */ }
+			});
+		}
 	} catch {
 		// ignore
 	}
@@ -1264,13 +1414,13 @@ function addChartBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Chart tools">' +
-		'<button class="md-tab md-mode-btn" id="' + id + '_chart_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
-		'<button class="md-tab md-mode-btn" id="' + id + '_chart_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
 		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
-		'<button class="md-tab md-max-btn" id="' + id + '_chart_max" type="button" onclick="__kustoMaximizeChartBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="md-tab" id="' + id + '_chart_toggle" type="button" role="tab" aria-selected="false" onclick="toggleChartBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_chart_max" type="button" onclick="__kustoMaximizeChartBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab" id="' + id + '_chart_toggle" type="button" role="tab" aria-selected="false" onclick="toggleChartBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
-		'<button class="refresh-btn close-btn" type="button" onclick="removeChartBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeChartBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'</div>' +
@@ -1281,17 +1431,22 @@ function addChartBox(options) {
 					'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
 						'<label>Type</label>' +
 						'<div class="kusto-chart-type-picker" id="' + id + '_chart_type_picker" data-kusto-no-editor-focus="true">' +
-							'<button type="button" class="kusto-chart-type-btn" data-type="area" onclick="try{__kustoSelectChartType(\'' + id + '\',\'area\')}catch{}" title="Area Chart" aria-label="Area Chart">' + __kustoChartTypeIcons.area + '<span>Area</span></button>' +
-							'<button type="button" class="kusto-chart-type-btn" data-type="bar" onclick="try{__kustoSelectChartType(\'' + id + '\',\'bar\')}catch{}" title="Bar Chart" aria-label="Bar Chart">' + __kustoChartTypeIcons.bar + '<span>Bar</span></button>' +
-							'<button type="button" class="kusto-chart-type-btn" data-type="line" onclick="try{__kustoSelectChartType(\'' + id + '\',\'line\')}catch{}" title="Line Chart" aria-label="Line Chart">' + __kustoChartTypeIcons.line + '<span>Line</span></button>' +
-							'<button type="button" class="kusto-chart-type-btn" data-type="pie" onclick="try{__kustoSelectChartType(\'' + id + '\',\'pie\')}catch{}" title="Pie Chart" aria-label="Pie Chart">' + __kustoChartTypeIcons.pie + '<span>Pie</span></button>' +
-							'<button type="button" class="kusto-chart-type-btn" data-type="scatter" onclick="try{__kustoSelectChartType(\'' + id + '\',\'scatter\')}catch{}" title="Scatter Chart" aria-label="Scatter Chart">' + __kustoChartTypeIcons.scatter + '<span>Scatter</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="area" onclick="try{__kustoSelectChartType(\'' + id + '\',\'area\')}catch{}" title="Area Chart" aria-label="Area Chart">' + __kustoChartTypeIcons.area + '<span>Area</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="bar" onclick="try{__kustoSelectChartType(\'' + id + '\',\'bar\')}catch{}" title="Bar Chart" aria-label="Bar Chart">' + __kustoChartTypeIcons.bar + '<span>Bar</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="line" onclick="try{__kustoSelectChartType(\'' + id + '\',\'line\')}catch{}" title="Line Chart" aria-label="Line Chart">' + __kustoChartTypeIcons.line + '<span>Line</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="pie" onclick="try{__kustoSelectChartType(\'' + id + '\',\'pie\')}catch{}" title="Pie Chart" aria-label="Pie Chart">' + __kustoChartTypeIcons.pie + '<span>Pie</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="scatter" onclick="try{__kustoSelectChartType(\'' + id + '\',\'scatter\')}catch{}" title="Scatter Chart" aria-label="Scatter Chart">' + __kustoChartTypeIcons.scatter + '<span>Scatter</span></button>' +
 						'</div>' +
 					'</div>' +
 					'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
 						'<label>Data</label>' +
-						'<div class="select-wrapper">' +
-							'<select id="' + id + '_chart_ds" onfocus="try{__kustoUpdateChartBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnChartDataSourceChanged(\'' + id + '\')}catch{}"></select>' +
+						'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_ds_wrapper">' +
+							'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_ds" onfocus="try{__kustoUpdateChartBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnChartDataSourceChanged(\'' + id + '\')}catch{}"></select>' +
+							'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_ds_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_ds\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+								'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_ds_text">(select)</span>' +
+								'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+							'</button>' +
+							'<div class="kusto-dropdown-menu" id="' + id + '_chart_ds_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 						'</div>' +
 					'</div>' +
 					'<div id="' + id + '_chart_mapping_xy" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
@@ -1302,7 +1457,7 @@ function addChartBox(options) {
 									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_x_text">Select...</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
 									'</button>' +
 									'<div class="kusto-dropdown-menu" id="' + id + '_chart_x_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
@@ -1312,7 +1467,7 @@ function addChartBox(options) {
 								'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_chart_y_wrapper">' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_y_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_chart_y_btn\',\'' + id + '_chart_y_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_y_text">Select...</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
 									'</button>' +
 									'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_chart_y_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
@@ -1323,7 +1478,7 @@ function addChartBox(options) {
 									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_legend" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_legend_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_legend\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_legend_text">(none)</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
 									'</button>' +
 									'<div class="kusto-dropdown-menu" id="' + id + '_chart_legend_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
@@ -1336,14 +1491,28 @@ function addChartBox(options) {
 					'</div>' +
 					'<div id="' + id + '_chart_mapping_pie" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
 						'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true">' +
-							'<label>Label</label>' +
-							'<div class="select-wrapper">' +
-								'<select id="' + id + '_chart_label" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
-							'</div>' +
-							'<label>Value</label>' +
-							'<div class="select-wrapper">' +
-								'<select id="' + id + '_chart_value" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
-							'</div>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>Label</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_label_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_label" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_label_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_label\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_label_text">Select...</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_chart_label_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</span>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>Value</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_value_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_value" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_value_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_value\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_value_text">Select...</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_chart_value_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</span>' +
 							'<label class="kusto-chart-toggle-label" data-kusto-no-editor-focus="true">' +
 								'<input type="checkbox" id="' + id + '_chart_labels_pie" class="kusto-chart-toggle" onchange="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" />' +
 								'<span>Data labels</span>' +
@@ -1525,11 +1694,16 @@ function __kustoOnChartMappingChanged(boxId) {
 	const id = String(boxId || '');
 	if (!id) return;
 	const st = __kustoGetChartState(id);
+	const oldX = st.xColumn;
 	try { st.xColumn = String(((document.getElementById(id + '_chart_x') || {}).value || '')); } catch { /* ignore */ }
 	// Y columns are now handled by checkbox dropdown via __kustoOnChartYCheckboxChanged.
 	try { st.legendColumn = String(((document.getElementById(id + '_chart_legend') || {}).value || '')); } catch { /* ignore */ }
 	try { st.labelColumn = String(((document.getElementById(id + '_chart_label') || {}).value || '')); } catch { /* ignore */ }
 	try { st.valueColumn = String(((document.getElementById(id + '_chart_value') || {}).value || '')); } catch { /* ignore */ }
+	// If X column changed, rebuild Y column options (excluding the new X) to keep UI in sync.
+	if (oldX !== st.xColumn) {
+		try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+	}
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
@@ -1549,6 +1723,7 @@ function __kustoOnChartYCheckboxChanged(dropdownId) {
 		// If multiple Y columns are selected, Legend grouping is not supported.
 		try {
 			const legendSelect = document.getElementById(boxId + '_chart_legend');
+			const legendBtn = document.getElementById(boxId + '_chart_legend_btn');
 			const disableLegend = (selected.length > 1);
 			if (disableLegend) {
 				st.legendColumn = '';
@@ -1559,6 +1734,12 @@ function __kustoOnChartYCheckboxChanged(dropdownId) {
 			if (legendSelect) {
 				legendSelect.disabled = disableLegend;
 			}
+			// Sync the button's disabled state and text.
+			if (legendBtn) {
+				legendBtn.disabled = disableLegend;
+				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
+			}
+			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 		// Update button text.
 		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
@@ -2895,7 +3076,6 @@ function addMarkdownBox(options) {
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M3 6V3h3" />' +
 		'<path d="M13 10v3h-3" />' +
-		'<path d="M6 3H3v3" opacity="0" />' +
 		'<path d="M3 3l4 4" />' +
 		'<path d="M13 13l-4-4" />' +
 		'</svg>';
@@ -2910,14 +3090,14 @@ function addMarkdownBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Markdown visibility">' +
-		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_wysiwyg" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\')" title="WYSIWYG" aria-label="WYSIWYG">WYSIWYG</button>' +
-		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
-		'<button class="md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_wysiwyg" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\')" title="WYSIWYG" aria-label="WYSIWYG">WYSIWYG</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
 		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
-		'<button class="md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleMarkdownBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleMarkdownBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
-		'<button class="refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'</div>' +
@@ -3620,10 +3800,10 @@ function addPythonBox(options) {
 		'<div class="section-title">Python</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Python controls">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'</div>' +
 		'<button class="section-btn" type="button" onclick="runPythonBox(\'' + id + '\')" title="Run Python">▶ Run</button>' +
-		'<button class="section-btn" type="button" onclick="removePythonBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only section-btn" type="button" onclick="removePythonBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="query-editor-wrapper">' +
@@ -3964,10 +4144,10 @@ function addUrlBox(options) {
 		'<input class="url-input" id="' + id + '_input" type="text" placeholder="https://example.com" oninput="onUrlChanged(\'' + id + '\')" />' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="URL visibility">' +
-		'<button class="md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeUrlBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleUrlBox(\'' + id + '\')" title="Show" aria-label="Show">' + previewIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeUrlBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleUrlBox(\'' + id + '\')" title="Show" aria-label="Show">' + previewIconSvg + '</button>' +
 		'</div>' +
-		'<button class="refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
 		'<div class="url-output-wrapper" id="' + id + '_wrapper">' +

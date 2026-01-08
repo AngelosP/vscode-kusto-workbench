@@ -11,6 +11,12 @@
 		window.__kustoDropdown = {};
 	}
 
+	// SVG chevron-down icon matching VS Code's style
+	const chevronDownSvg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
+
+	// Export for use by other modules
+	window.__kustoDropdown.getChevronDownSvg = function() { return chevronDownSvg; };
+
 	const escAttr = (value) => {
 		try {
 			// Prefer the existing helper if available.
@@ -112,7 +118,7 @@
 				hiddenSelectHtml +
 				'<button type="button" class="kusto-dropdown-btn"' + buttonIdAttr + clickAttr + ' aria-haspopup="listbox" aria-expanded="false">' +
 					'<span class="kusto-dropdown-btn-text"' + textIdAttr + '>' + escAttr(placeholder || 'Select...') + '</span>' +
-					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">' + chevronDownSvg + '</span>' +
 				'</button>' +
 				'<div class="kusto-dropdown-menu"' + menuIdAttr + ' role="listbox" tabindex="-1" style="display:none;"></div>' +
 			'</div>'
@@ -250,6 +256,17 @@
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+		} catch { /* ignore */ }
+
+		// If menu uses position:fixed, calculate and set top/left from button rect.
+		try {
+			const computedPos = window.getComputedStyle(menu).position;
+			if (computedPos === 'fixed') {
+				const rect = btn.getBoundingClientRect();
+				menu.style.left = rect.left + 'px';
+				menu.style.top = rect.bottom + 'px';
+				menu.style.minWidth = rect.width + 'px';
+			}
 		} catch { /* ignore */ }
 
 		// Close the dropdown automatically if focus leaves the dropdown wrapper
@@ -675,7 +692,7 @@
 			'<div class="' + wrapperClasses + '"' + wrapperIdAttr + '>' +
 				'<button type="button" class="kusto-dropdown-btn"' + buttonIdAttr + clickAttr + ' aria-haspopup="listbox" aria-expanded="false">' +
 					'<span class="kusto-dropdown-btn-text"' + textIdAttr + '>' + escAttr(placeholder || 'Select...') + '</span>' +
-					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">▾</span>' +
+					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">' + chevronDownSvg + '</span>' +
 				'</button>' +
 				'<div class="kusto-dropdown-menu kusto-checkbox-menu"' + menuIdAttr + ' role="listbox" tabindex="-1" style="display:none;"></div>' +
 			'</div>'
@@ -769,6 +786,17 @@
 		menu.style.display = 'block';
 		btn.setAttribute('aria-expanded', 'true');
 		try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+
+		// If menu uses position:fixed, calculate and set top/left from button rect.
+		try {
+			const computedPos = window.getComputedStyle(menu).position;
+			if (computedPos === 'fixed') {
+				const rect = btn.getBoundingClientRect();
+				menu.style.left = rect.left + 'px';
+				menu.style.top = rect.bottom + 'px';
+				menu.style.minWidth = rect.width + 'px';
+			}
+		} catch { /* ignore */ }
 
 		// Prevent clicks inside the menu from closing it via global document click handler.
 		try {
