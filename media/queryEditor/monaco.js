@@ -196,8 +196,45 @@ function ensureMonaco() {
 
 					if (workers && (workers.editor || workers.ts || workers.json || workers.css || workers.html)) {
 						window.MonacoEnvironment = window.MonacoEnvironment || {};
-						window.MonacoEnvironment.getWorker = function (_moduleId, label) {
+						
+						// Use getWorker (returns Worker instance) instead of getWorkerUrl
+						// This gives us more control over worker creation
+						window.MonacoEnvironment.getWorker = function (_workerId, label) {
 							const l = String(label || '').toLowerCase();
+							
+							// For kusto, use the pre-bundled kusto worker that includes all dependencies
+							if (l === 'kusto') {
+								const kustoWorkerUrl = workers['kusto'];
+								if (kustoWorkerUrl) {
+									// VS Code webviews block direct Worker creation from vscode-resource URLs
+									// We must use a blob worker that fetches the script content via XHR
+									// then evals it (importScripts also doesn't work from blob workers to vscode-resource)
+									const blobSource = [
+										'// Kusto Worker Loader',
+										'(function() {',
+										'  var url = ' + JSON.stringify(kustoWorkerUrl) + ';',
+										'  var xhr = new XMLHttpRequest();',
+										'  xhr.open("GET", url, false);', // synchronous
+										'  xhr.send(null);',
+										'  if (xhr.status === 200) {',
+										'    eval(xhr.responseText);',
+										'  } else {',
+										'    throw new Error("Failed to load kusto worker: " + xhr.status);',
+										'  }',
+										'})();'
+									].join('\n');
+									const blob = new Blob([blobSource], { type: 'application/javascript' });
+									const blobUrl = URL.createObjectURL(blob);
+									const worker = new Worker(blobUrl);
+									setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch {} }, 30000);
+									return worker;
+								}
+								// Fall back to standard editor worker if kusto worker not available
+								console.warn('[monaco-kusto] Kusto worker not available, using editor worker');
+								return new Worker(cfg.monacoEditorWorkerUri);
+							}
+							
+							// For other workers, create them directly
 							let key = 'editor';
 							if (l === 'json') key = 'json';
 							else if (l === 'css' || l === 'scss' || l === 'less') key = 'css';
@@ -208,30 +245,19 @@ function ensureMonaco() {
 							if (!url) {
 								throw new Error('Monaco worker asset URL not available for label: ' + label);
 							}
+							
+							// For vscode-resource URLs, we need to create a blob worker
 							const workerUrl = withCache(url);
-
-							// VS Code webviews can fail to construct a Worker directly from a vscode-webview:// URL
-							// (depending on Chromium/webview security restrictions). A common workaround is to
-							// create a Blob worker that importScripts() the actual worker URL.
 							try {
 								return new Worker(workerUrl);
 							} catch {
-								// ignore and fall back
-							}
-
-							try {
-								const blobSource = `/* Monaco Worker Wrapper */\nimportScripts(${JSON.stringify(workerUrl)});`;
-								const blob = new Blob([blobSource], { type: 'text/javascript' });
+								// Fall back to blob worker
+								const blobSource = 'importScripts(' + JSON.stringify(workerUrl) + ');';
+								const blob = new Blob([blobSource], { type: 'application/javascript' });
 								const blobUrl = URL.createObjectURL(blob);
-								const w = new Worker(blobUrl);
-								// Best-effort cleanup: revoke once the worker has had a chance to start.
-								setTimeout(() => {
-									try { URL.revokeObjectURL(blobUrl); } catch { /* ignore */ }
-								}, 30_000);
-								return w;
-							} catch (e) {
-								// If even the Blob worker fails, rethrow so Monaco can fall back to main thread.
-								throw e;
+								const worker = new Worker(blobUrl);
+								setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch {} }, 30000);
+								return worker;
 							}
 						};
 					}
@@ -246,14 +272,22 @@ function ensureMonaco() {
 					return;
 				}
 
+				// Load Monaco editor first, then monaco-kusto contribution module
+				// (monaco-kusto depends on Monaco's Emitter and other core classes being available)
+				// NOTE: monaco-kusto requires 'vs/editor/editor.main' - not the hashed API file
 				req(
-					['vs/editor.api.001a2486'],
+					['vs/editor/editor.main'],
 					() => {
 						try {
 							if (typeof monaco === 'undefined' || !monaco || !monaco.editor) {
 								throw new Error('Monaco loaded but global `monaco` API is missing.');
 							}
-					monaco.languages.register({ id: 'kusto' });
+
+							// Now load monaco-kusto after Monaco is fully initialized
+							req(['vs/language/kusto/monaco.contribution'], () => {
+								try {
+					// monaco-kusto registers the 'kusto' language automatically via monaco.contribution
+					// monaco.languages.register({ id: 'kusto' });
 
 					const KUSTO_KEYWORD_DOCS = {
 						'summarize': {
@@ -2995,7 +3029,8 @@ function ensureMonaco() {
 						}
 					};
 					__kustoProvideCompletionItemsForDiagnostics = __kustoCompletionProvider.provideCompletionItems;
-					monaco.languages.registerCompletionItemProvider('kusto', __kustoCompletionProvider);
+					// DISABLED: Custom completion provider - monaco-kusto now handles completions
+					// monaco.languages.registerCompletionItemProvider('kusto', __kustoCompletionProvider);
 
 					// --- Live diagnostics (markers) + quick fixes ---
 					const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
@@ -4607,90 +4642,12 @@ function ensureMonaco() {
 					return markers;
 				};
 
+				// DISABLED: Custom diagnostics - monaco-kusto now handles validation via its language service
+				// The function stub is kept for backwards compatibility with existing callers.
 				window.__kustoScheduleKustoDiagnostics = function (boxId, delayMs) {
-						try {
-							const id = String(boxId || '');
-							if (!id) return;
-							window.__kustoDiagnosticsTimersByBoxId = window.__kustoDiagnosticsTimersByBoxId || {};
-							const timers = window.__kustoDiagnosticsTimersByBoxId;
-							if (timers[id]) {
-								clearTimeout(timers[id]);
-								timers[id] = null;
-							}
-							const ms = (typeof delayMs === 'number') ? delayMs : 250;
-							timers[id] = setTimeout(() => {
-								(async () => {
-									try {
-										if (!queryEditors || !queryEditors[id]) return;
-										const editor = queryEditors[id];
-										const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
-										if (!model) return;
-
-										// IMPORTANT: Updating markers can close Monaco's quick-fix/lightbulb menu.
-										// If it's open, defer diagnostics updates so the user can interact with it.
-										try {
-											const dom = editor && typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
-											const menu = dom && dom.querySelector ? dom.querySelector('.context-view .monaco-menu-container') : null;
-											if (menu) {
-												const r = menu.getBoundingClientRect();
-												const visible = (r && (r.width || 0) > 2 && (r.height || 0) > 2);
-												if (visible) {
-													// Reschedule shortly and bail.
-													try { window.__kustoScheduleKustoDiagnostics(id, 350); } catch { /* ignore */ }
-													return;
-												}
-											}
-										} catch { /* ignore */ }
-
-										const schema = schemaByBoxId ? (schemaByBoxId[id] || null) : null;
-										const text = model.getValue();
-
-										// Prefer extension-host language service when available.
-										try {
-											if (typeof window.__kustoRequestKqlDiagnostics === 'function') {
-												let connectionId = '';
-												let database = '';
-												try {
-													const c = document.getElementById(id + '_connection');
-													const d = document.getElementById(id + '_database');
-													connectionId = c ? String(c.value || '') : '';
-													database = d ? String(d.value || '') : '';
-												} catch { /* ignore */ }
-
-											const remote = await window.__kustoRequestKqlDiagnostics({ boxId: id, text, connectionId, database });
-											const diags = remote && remote.diagnostics;
-											if (Array.isArray(diags)) {
-												const markers = diags.map(d => {
-													const sev = d && typeof d.severity === 'number' ? d.severity : 1;
-													const s = d && d.range && d.range.start ? d.range.start : { line: 0, character: 0 };
-													const e = d && d.range && d.range.end ? d.range.end : { line: s.line, character: s.character + 1 };
-													return {
-														severity: (sev === 2) ? monaco.MarkerSeverity.Warning : (sev === 3) ? monaco.MarkerSeverity.Info : (sev === 4) ? monaco.MarkerSeverity.Hint : monaco.MarkerSeverity.Error,
-														startLineNumber: (s.line || 0) + 1,
-														startColumn: (s.character || 0) + 1,
-														endLineNumber: (e.line || 0) + 1,
-														endColumn: (e.character || 0) + 1,
-														message: String((d && d.message) || ''),
-														code: d && d.code ? String(d.code) : undefined
-												};
-											});
-															markers = await __kustoFilterMarkersByAutocomplete(model, markers);
-															monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
-												return;
-											}
-										}
-										} catch { /* ignore */ }
-
-												let markers = __kustoComputeDiagnostics(text, schema);
-												markers = await __kustoFilterMarkersByAutocomplete(model, markers);
-										monaco.editor.setModelMarkers(model, KUSTO_DIAGNOSTICS_OWNER, markers);
-									} catch { /* ignore */ }
-								})();
-							}, ms);
-						} catch {
-							// ignore
-						}
-					};
+					// Monaco-kusto provides its own diagnostics/validation, so this is now a no-op.
+					return;
+				};
 
 					// Hover provider for diagnostics (shown on red underline hover).
 					monaco.languages.registerHoverProvider('kusto', {
@@ -4737,7 +4694,214 @@ function ensureMonaco() {
 
 					// Expose a helper so the editor instance can decide whether to auto-show hover.
 					window.__kustoGetHoverInfoAt = getHoverInfoAt;
+
+					// --- monaco-kusto integration ---
+					// Function to set schema in monaco-kusto worker for full IntelliSense support
+					window.__kustoSetMonacoKustoSchema = async function (rawSchemaJson, clusterUrl, database) {
+						console.log('[__kustoSetMonacoKustoSchema] Called with:', { 
+							hasRawSchemaJson: !!rawSchemaJson, 
+							rawSchemaJsonType: typeof rawSchemaJson,
+							clusterUrl, 
+							database 
+						});
+						try {
+							if (!rawSchemaJson || !clusterUrl || !database) {
+								console.warn('[__kustoSetMonacoKustoSchema] Missing required params');
+								return;
+							}
+							
+							// Normalize the schema to match showSchema.Result format expected by monaco-kusto
+							// The setSchemaFromShowSchema API expects: { Plugins: [], Databases: { ... } }
+							let schemaObj = rawSchemaJson;
+							if (typeof rawSchemaJson === 'string') {
+								try {
+									schemaObj = JSON.parse(rawSchemaJson);
+								} catch (e) {
+									console.error('[__kustoSetMonacoKustoSchema] Failed to parse schema JSON:', e);
+									return;
+								}
+							}
+							
+							// Ensure the schema has the required Plugins property
+							if (schemaObj && schemaObj.Databases && !schemaObj.Plugins) {
+								console.log('[__kustoSetMonacoKustoSchema] Adding missing Plugins property');
+								schemaObj = { Plugins: [], ...schemaObj };
+							}
+							
+							console.log('[__kustoSetMonacoKustoSchema] Schema structure:', {
+								hasPlugins: !!(schemaObj && schemaObj.Plugins),
+								hasDatabases: !!(schemaObj && schemaObj.Databases),
+								databaseNames: schemaObj && schemaObj.Databases ? Object.keys(schemaObj.Databases) : []
+							});
+							
+							// Get the kusto worker through the monaco-kusto API
+							console.log('[__kustoSetMonacoKustoSchema] Checking monaco.languages.kusto:', {
+								hasMonaco: !!monaco,
+								hasLanguages: !!(monaco && monaco.languages),
+								hasKusto: !!(monaco && monaco.languages && monaco.languages.kusto),
+								hasGetKustoWorker: !!(monaco && monaco.languages && monaco.languages.kusto && typeof monaco.languages.kusto.getKustoWorker === 'function')
+							});
+							if (monaco && monaco.languages && monaco.languages.kusto && typeof monaco.languages.kusto.getKustoWorker === 'function') {
+								console.log('[__kustoSetMonacoKustoSchema] Getting kusto worker...');
+								
+								// Add timeout to detect if worker is hung
+								const timeoutPromise = new Promise((_, reject) => 
+									setTimeout(() => reject(new Error('Timeout getting kusto worker')), 10000)
+								);
+								
+								const workerAccessor = await Promise.race([
+									monaco.languages.kusto.getKustoWorker(),
+									timeoutPromise
+								]);
+								console.log('[__kustoSetMonacoKustoSchema] Got workerAccessor:', !!workerAccessor);
+								
+								// Get a worker for any model (we just need to set the schema once)
+								const models = monaco.editor.getModels();
+								console.log('[__kustoSetMonacoKustoSchema] Models count:', models?.length);
+								if (models && models.length > 0) {
+									console.log('[__kustoSetMonacoKustoSchema] Getting worker for model:', models[0].uri.toString());
+									
+									const workerPromise = workerAccessor(models[0].uri);
+									const worker = await Promise.race([
+										workerPromise,
+										new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout getting worker proxy')), 10000))
+									]);
+									
+									console.log('[__kustoSetMonacoKustoSchema] Got worker:', !!worker, 'has setSchemaFromShowSchema:', !!(worker && typeof worker.setSchemaFromShowSchema === 'function'));
+									if (worker && typeof worker.setSchemaFromShowSchema === 'function') {
+										// setSchemaFromShowSchema expects: (schemaObject, clusterConnectionString, databaseInContextName)
+										// Note: Pass the object directly, not a JSON string - the API expects an object with Databases property
+										
+										// The databaseInContextName MUST exactly match a key in schema.Databases
+										// Find the correct database name from the schema (may differ in case)
+										let databaseInContext = database;
+										if (schemaObj && schemaObj.Databases) {
+											const dbKeys = Object.keys(schemaObj.Databases);
+											// Try exact match first
+											if (!dbKeys.includes(database)) {
+												// Try case-insensitive match
+												const matchedKey = dbKeys.find(k => k.toLowerCase() === database.toLowerCase());
+												if (matchedKey) {
+													console.log('[__kustoSetMonacoKustoSchema] Database name case mismatch, using:', matchedKey, 'instead of:', database);
+													databaseInContext = matchedKey;
+												}
+											}
+										}
+										
+										console.log('[__kustoSetMonacoKustoSchema] Calling setSchemaFromShowSchema with:', {
+											schemaType: typeof schemaObj,
+											hasPlugins: !!(schemaObj && schemaObj.Plugins),
+											hasDatabases: !!(schemaObj && schemaObj.Databases),
+											databaseNamesInSchema: schemaObj && schemaObj.Databases ? Object.keys(schemaObj.Databases) : [],
+											clusterUrl,
+											requestedDatabase: database,
+											databaseInContext
+										});
+										try {
+											// Pass the schema object, NOT a string
+											await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+											console.log('[monaco-kusto] Schema set successfully for', databaseInContext, 'cluster:', clusterUrl);
+										} catch (schemaError) {
+											console.error('[monaco-kusto] setSchemaFromShowSchema failed:', schemaError);
+											console.error('[monaco-kusto] Schema keys:', schemaObj ? Object.keys(schemaObj) : 'null');
+											if (schemaObj && schemaObj.Databases) {
+												const firstDbKey = Object.keys(schemaObj.Databases)[0];
+												if (firstDbKey) {
+													console.error('[monaco-kusto] First database keys:', Object.keys(schemaObj.Databases[firstDbKey]));
+												}
+											}
+										}
+									} else {
+										console.warn('[__kustoSetMonacoKustoSchema] Worker missing setSchemaFromShowSchema method. Worker methods:', worker ? Object.keys(worker) : 'null');
+									}
+								} else {
+									console.warn('[__kustoSetMonacoKustoSchema] No editor models found');
+								}
+							} else {
+								console.warn('[__kustoSetMonacoKustoSchema] monaco.languages.kusto.getKustoWorker not available');
+							}
+						} catch (e) {
+							console.error('[monaco-kusto] Failed to set schema:', e);
+						}
+					};
+
+					// Function to update monaco-kusto schema when the user focuses a different query box
+					// This checks if the focused box has a different cluster+database than what's currently loaded
+					window.__kustoUpdateSchemaForFocusedBox = function (boxId) {
+						try {
+							if (!boxId) return;
+							
+							// Get the connection and database for this box
+							let ownerId = boxId;
+							try {
+								if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
+									ownerId = window.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+								}
+							} catch { /* ignore */ }
+							
+							const connectionSelect = document.getElementById(ownerId + '_connection');
+							const databaseSelect = document.getElementById(ownerId + '_database');
+							const connectionId = connectionSelect ? connectionSelect.value : '';
+							const database = databaseSelect ? databaseSelect.value : '';
+							
+							if (!connectionId || !database) {
+								console.log('[__kustoUpdateSchemaForFocusedBox] No connection/database selected for box', boxId);
+								return;
+							}
+							
+							// Get the cluster URL for this connection
+							const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
+							const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+							
+							if (!clusterUrl) {
+								console.log('[__kustoUpdateSchemaForFocusedBox] No cluster URL for connection', connectionId);
+								return;
+							}
+							
+							const schemaKey = `${clusterUrl}|${database}`;
+							
+							// If this is already the loaded schema, nothing to do
+							if (schemaKey === currentMonacoKustoSchemaKey) {
+								console.log('[__kustoUpdateSchemaForFocusedBox] Schema already loaded for this cluster+database');
+								return;
+							}
+							
+							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
+							// This is the single source of truth - no duplicate caching
+							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
+							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
+							
+							console.log('[__kustoUpdateSchemaForFocusedBox] Box focused:', {
+								boxId,
+								schemaKey,
+								currentSchemaKey: currentMonacoKustoSchemaKey,
+								hasSchema: !!schema,
+								hasRawSchemaJson: !!rawSchemaJson
+							});
+							
+							if (rawSchemaJson) {
+								console.log('[__kustoUpdateSchemaForFocusedBox] Found schema in cache, updating monaco-kusto...');
+								if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
+									window.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database);
+									currentMonacoKustoSchemaKey = schemaKey;
+								}
+							} else {
+								console.log('[__kustoUpdateSchemaForFocusedBox] No rawSchemaJson in cache, requesting schema refresh...');
+								// Request a fresh schema fetch which will include rawSchemaJson
+								if (typeof ensureSchemaForBox === 'function') {
+									ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
+								}
+							}
+						} catch (e) {
+							console.error('[__kustoUpdateSchemaForFocusedBox] Error:', e);
+						}
+					};
+
 					resolve(monaco);
+								} catch (e) {
+									reject(e);
+								}
+							}, (e) => reject(e)); // monaco-kusto load error handler
 						} catch (e) {
 							reject(e);
 						}
@@ -8959,6 +9123,12 @@ function initQueryEditor(boxId) {
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
 			scheduleDocUpdate();
+			// Update monaco-kusto schema if switching to a different cluster/database
+			try {
+				if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+					window.__kustoUpdateSchemaForFocusedBox(boxId);
+				}
+			} catch { /* ignore */ }
 			try {
 				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
 					window.__kustoScheduleKustoDiagnostics(boxId, 0);

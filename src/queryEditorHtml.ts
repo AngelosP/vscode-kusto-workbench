@@ -124,6 +124,14 @@ export async function getQueryEditorHtml(
 		// If discovery fails, Monaco may still run without workers, but language features may degrade.
 	}
 
+	// Monaco-kusto worker - use the pre-bundled version that includes all dependencies
+	try {
+		const kustoWorkerUri = vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'kusto.worker.bundle.js');
+		monacoWorkers['kusto'] = withCacheBuster(webview.asWebviewUri(kustoWorkerUri).toString());
+	} catch {
+		// If kusto worker discovery fails, monaco-kusto features will degrade.
+	}
+
 	return template
 		.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
 		.replaceAll('{{toastUiEditorCssUri}}', toastUiEditorCssUri)

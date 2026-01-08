@@ -4733,6 +4733,13 @@ function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
 		try { updateConnectionSelects(); } catch { /* ignore */ }
 	}
 
+	// Update monaco-kusto schema when a favorite is selected
+	try {
+		if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+			window.__kustoUpdateSchemaForFocusedBox(id);
+		}
+	} catch { /* ignore */ }
+
 	try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
@@ -5376,6 +5383,12 @@ function updateDatabaseField(boxId) {
 			} catch {
 				// ignore
 			}
+			// Update monaco-kusto schema if we have a cached schema for the new selection
+			try {
+				if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+					window.__kustoUpdateSchemaForFocusedBox(boxId);
+				}
+			} catch { /* ignore */ }
 			if (refreshBtn) {
 				refreshBtn.disabled = false;
 			}

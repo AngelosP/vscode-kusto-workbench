@@ -6,7 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
-* 
+* Initial support for charts
+* Integrated https://github.com/Azure/monaco-kusto 
 
 ## [0.1.8] - 2026-01-06
 

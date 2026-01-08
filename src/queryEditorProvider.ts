@@ -3454,6 +3454,7 @@ ${query}
 					boxId,
 					connectionId,
 					database,
+					clusterUrl: connection.clusterUrl,
 					requestToken,
 					schema,
 					schemaMeta: {
@@ -3479,6 +3480,7 @@ ${query}
 					boxId,
 					connectionId,
 					database,
+					clusterUrl: connection.clusterUrl,
 					requestToken,
 					schema,
 					schemaMeta: {
@@ -3524,6 +3526,7 @@ ${query}
 				boxId,
 				connectionId,
 				database,
+				clusterUrl: connection.clusterUrl,
 				requestToken,
 				schema,
 				schemaMeta: {
@@ -3555,6 +3558,7 @@ ${query}
 						boxId,
 						connectionId,
 						database,
+						clusterUrl: connection.clusterUrl,
 						requestToken,
 						schema,
 						schemaMeta: {

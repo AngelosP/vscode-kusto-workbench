@@ -50,3 +50,7 @@ let runModesByBoxId = {};
 // Caret docs (custom tooltip) toggle
 let caretDocsEnabled = true;
 let caretDocOverlaysByBoxId = {};
+
+// Track the currently loaded monaco-kusto schema key to avoid redundant updates
+// Format: `${clusterUrl}|${database}` - NO DATA is stored here, just the key
+let currentMonacoKustoSchemaKey = null;

@@ -42,6 +42,21 @@ async function main() {
 		console.warn('[watch] failed to copy Monaco assets:', e && e.message ? e.message : e);
 	}
 
+	// Monaco-Kusto assets provide the official Kusto language service (completions, diagnostics, etc.).
+	// Copy them into dist/monaco/vs/language/kusto so they can be loaded as AMD modules.
+	const monacoKustoSrc = path.join(__dirname, 'node_modules', '@kusto', 'monaco-kusto', 'release', 'min');
+	const monacoKustoDest = path.join(__dirname, 'dist', 'monaco', 'vs', 'language', 'kusto');
+	try {
+		await fs.promises.mkdir(monacoKustoDest, { recursive: true });
+		if (fs.promises.cp) {
+			await fs.promises.cp(monacoKustoSrc, monacoKustoDest, { recursive: true, force: true });
+		} else {
+			console.warn('[watch] fs.promises.cp not available; Monaco-Kusto assets may be missing');
+		}
+	} catch (e) {
+		console.warn('[watch] failed to copy Monaco-Kusto assets:', e && e.message ? e.message : e);
+	}
+
 	// TOAST UI Editor assets are used directly by the webview.
 	// Copy/bundle them into media so they are included in the VSIX (node_modules is excluded).
 	const toastuiSrcDir = path.join(__dirname, 'node_modules', '@toast-ui', 'editor', 'dist');

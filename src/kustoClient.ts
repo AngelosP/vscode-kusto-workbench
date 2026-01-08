@@ -23,6 +23,11 @@ export interface DatabaseSchemaIndex {
 	 * Populated best-effort; schema loading should still succeed even if this fails.
 	 */
 	functions?: KustoFunctionInfo[];
+	/**
+	 * Raw JSON output from `.show database schema as json` command.
+	 * This is passed to monaco-kusto's setSchemaFromShowSchema API for full language support.
+	 */
+	rawSchemaJson?: unknown;
 }
 
 export type KustoFunctionParameter = {
@@ -1036,7 +1041,7 @@ export class KustoQueryClient {
 			try {
 				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
 				const debug = this.buildSchemaDebug(result, command);
-				const schema = this.parseDatabaseSchemaResult(result);
+				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
 
 				// Best-effort: also cache database-scoped functions (name + parameters).
 				try {
@@ -1046,6 +1051,14 @@ export class KustoQueryClient {
 					}
 				} catch {
 					// Ignore function schema errors; table/column schema is still useful.
+				}
+
+				// Store the raw schema JSON for monaco-kusto integration
+				if (rawSchemaJson) {
+					schema.rawSchemaJson = rawSchemaJson;
+					console.log(`[kustoClient] rawSchemaJson captured for ${database}, has Databases:`, !!(rawSchemaJson as any)?.Databases);
+				} else {
+					console.log(`[kustoClient] rawSchemaJson NOT captured for ${database}, command was: ${command}`);
 				}
 
 				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
@@ -1172,6 +1185,123 @@ export class KustoQueryClient {
 			parsed.push({ name: name || raw, type: type || undefined, defaultValue, raw });
 		}
 		return parsed;
+	}
+
+	/**
+	 * Parses schema result and also returns the raw JSON if available from `.show database schema as json`.
+	 * The raw JSON is used by monaco-kusto's setSchemaFromShowSchema API for full language support.
+	 */
+	private parseDatabaseSchemaResultWithRaw(result: any, commandUsed: string): { schema: DatabaseSchemaIndex; rawSchemaJson?: unknown } {
+		const columnTypesByTable: Record<string, Record<string, string>> = {};
+		const primary = result?.primaryResults?.[0];
+		if (!primary) {
+			return { schema: { tables: [], columnTypesByTable: {} } };
+		}
+
+		let rawSchemaJson: unknown = undefined;
+
+		// Attempt JSON-based schema first (only from `.show database schema as json` command).
+		const isJsonCommand = commandUsed.includes('as json');
+		try {
+			// Some drivers expose rows() as iterable, not iterator.
+			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
+			if (rowCandidate && typeof rowCandidate === 'object') {
+				// Extract the raw schema JSON for monaco-kusto
+				if (isJsonCommand) {
+					// The schema can be in different shapes depending on the driver
+					for (const key of Object.keys(rowCandidate)) {
+						const val = (rowCandidate as any)[key];
+						if (val && typeof val === 'object' && val.Databases) {
+							// This is already the parsed JSON object
+							rawSchemaJson = val;
+							break;
+						}
+						if (typeof val === 'string') {
+							const trimmed = val.trim();
+							if (trimmed.startsWith('{')) {
+								try {
+									const parsed = JSON.parse(trimmed);
+									if (parsed && parsed.Databases) {
+										rawSchemaJson = parsed;
+										break;
+									}
+								} catch { /* ignore */ }
+							}
+						}
+					}
+					// If still not found, try the row itself
+					if (!rawSchemaJson && (rowCandidate as any).Databases) {
+						rawSchemaJson = rowCandidate;
+					}
+				}
+
+				// If the row itself is already an object/array with schema shape, try it.
+				this.extractSchemaFromJson(rowCandidate, columnTypesByTable);
+				const direct = this.finalizeSchema(columnTypesByTable);
+				if (direct.tables.length > 0) {
+					return { schema: direct, rawSchemaJson };
+				}
+
+				for (const key of Object.keys(rowCandidate)) {
+					const val = (rowCandidate as any)[key];
+					if (val && typeof val === 'object') {
+						this.extractSchemaFromJson(val, columnTypesByTable);
+						const finalized = this.finalizeSchema(columnTypesByTable);
+						if (finalized.tables.length > 0) {
+							return { schema: finalized, rawSchemaJson };
+						}
+						continue;
+					}
+
+					if (typeof val === 'string') {
+						const trimmed = val.trim();
+						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+							const parsed = JSON.parse(val);
+							this.extractSchemaFromJson(parsed, columnTypesByTable);
+							const finalized = this.finalizeSchema(columnTypesByTable);
+							if (finalized.tables.length > 0) {
+								return { schema: finalized, rawSchemaJson };
+							}
+						}
+					}
+				}
+			}
+		} catch {
+			// ignore and fall back to tabular parsing
+		}
+
+		// Tabular fallback: try to infer TableName/ColumnName columns.
+		const colNames: string[] = (primary.columns ?? []).map((c: any) => String(c.name ?? c.type ?? '')).filter(Boolean);
+		const findCol = (candidates: string[]) => {
+			const lowered = colNames.map(c => c.toLowerCase());
+			for (const cand of candidates) {
+				const idx = lowered.indexOf(cand.toLowerCase());
+				if (idx >= 0) {
+					return colNames[idx];
+				}
+			}
+			return null;
+		};
+		const tableCol = findCol(['TableName', 'Table', 'Name']);
+		const columnCol = findCol(['ColumnName', 'Column', 'Column1', 'Name1']);
+		const typeCol = findCol(['ColumnType', 'Type', 'CslType', 'DataType', 'ColumnTypeName']);
+
+		if (primary.rows) {
+			for (const row of primary.rows()) {
+				const tableName = tableCol ? (row as any)[tableCol] : (row as any)['TableName'];
+				const columnName = columnCol ? (row as any)[columnCol] : (row as any)['ColumnName'];
+				const columnType = typeCol ? (row as any)[typeCol] : (row as any)['ColumnType'];
+				if (!tableName || !columnName) {
+					continue;
+				}
+				const t = String(tableName);
+				const c = String(columnName);
+				columnTypesByTable[t] ??= {};
+				columnTypesByTable[t][c] = columnType !== undefined && columnType !== null ? String(columnType) : '';
+			}
+		}
+
+		return { schema: this.finalizeSchema(columnTypesByTable), rawSchemaJson };
 	}
 
 	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {

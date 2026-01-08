@@ -270,6 +270,12 @@ function onDatabaseChanged(boxId) {
 		});
 	} catch { /* ignore */ }
 	ensureSchemaForBox(boxId, false);
+	// Update monaco-kusto schema if we have a cached schema for the new database
+	try {
+		if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+			window.__kustoUpdateSchemaForFocusedBox(boxId);
+		}
+	} catch { /* ignore */ }
 	try {
 		if (typeof __kustoUpdateFavoritesUiForBox === 'function') {
 			__kustoUpdateFavoritesUiForBox(boxId);

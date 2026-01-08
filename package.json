@@ -167,11 +167,12 @@
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",
+    "@kusto/monaco-kusto": "^14.1.0",
     "@toast-ui/editor": "^3.2.2",
     "@toast-ui/editor-plugin-color-syntax": "^3.1.0",
     "azure-kusto-data": "^7.0.3",
     "azure-kusto-ingest": "^7.0.3",
-	"echarts": "^5.5.1",
-    "monaco-editor": "^0.53.0"
+    "echarts": "^5.5.1",
+    "monaco-editor": "^0.52.0"
   }
 }

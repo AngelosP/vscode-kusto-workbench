@@ -1261,13 +1261,54 @@ window.addEventListener('message', async event => {
 			} catch { /* ignore */ }
 
 			// Normal per-editor schema update (autocomplete).
+			// This is the SINGLE source of truth for schema data - no duplicate caching
 			schemaByBoxId[message.boxId] = message.schema;
 			setSchemaLoading(message.boxId, false);
+			
+			// Update monaco-kusto with the raw schema JSON if available
 			try {
-				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
-					window.__kustoScheduleKustoDiagnostics(message.boxId, 0);
+				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : null;
+				console.log('[schemaData] Schema received:', {
+					hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
+					clusterUrl: message.clusterUrl,
+					database: message.database,
+					schemaKey,
+					boxId: message.boxId,
+					activeBoxId: activeQueryEditorBoxId,
+					currentMonacoKustoSchemaKey: currentMonacoKustoSchemaKey
+				});
+				
+				// Determine if we should update monaco-kusto:
+				// 1. This is the active box, OR
+				// 2. No active box yet (initial load), OR
+				// 3. No schema is currently loaded in monaco-kusto
+				const isActiveBox = message.boxId === activeQueryEditorBoxId;
+				const noActiveBox = !activeQueryEditorBoxId;
+				const noSchemaLoaded = !currentMonacoKustoSchemaKey;
+				const shouldUpdate = (isActiveBox || noActiveBox || noSchemaLoaded) && 
+					schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database;
+				
+				if (shouldUpdate && schemaKey !== currentMonacoKustoSchemaKey) {
+					if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
+						console.log('[schemaData] Calling __kustoSetMonacoKustoSchema...', { isActiveBox, noActiveBox, noSchemaLoaded });
+						window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database);
+						currentMonacoKustoSchemaKey = schemaKey;
+					} else {
+						console.warn('[schemaData] __kustoSetMonacoKustoSchema function not found');
+					}
+				} else if (schemaKey === currentMonacoKustoSchemaKey) {
+					console.log('[schemaData] Schema already loaded for this cluster+database, skipping update');
+				} else {
+					console.log('[schemaData] Schema stored in schemaByBoxId (not active box)', { boxId: message.boxId, activeBoxId: activeQueryEditorBoxId });
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[schemaData] Error:', e); }
+			
+			// NOTE: Custom diagnostics are disabled - monaco-kusto handles validation
+			// try {
+			// 	if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
+			// 		window.__kustoScheduleKustoDiagnostics(message.boxId, 0);
+			// 	}
+			// } catch { /* ignore */ }
 			{
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
