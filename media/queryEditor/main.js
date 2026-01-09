@@ -1266,40 +1266,81 @@ window.addEventListener('message', async event => {
 			setSchemaLoading(message.boxId, false);
 			
 			// Update monaco-kusto with the raw schema JSON if available
+			// With aggregate schema approach, we always push schemas to monaco-kusto
+			// The __kustoSetMonacoKustoSchema function handles de-duplication and uses addDatabaseToSchema for subsequent loads
 			try {
 				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : null;
+				
+				// Check if this box is the active/focused box - if so, we should set it as the context
+				const isActiveBox = message.boxId === activeQueryEditorBoxId;
+				
 				console.log('[schemaData] Schema received:', {
 					hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
 					clusterUrl: message.clusterUrl,
 					database: message.database,
 					schemaKey,
 					boxId: message.boxId,
-					activeBoxId: activeQueryEditorBoxId,
-					currentMonacoKustoSchemaKey: currentMonacoKustoSchemaKey
+					isActiveBox
 				});
 				
-				// Determine if we should update monaco-kusto:
-				// 1. This is the active box, OR
-				// 2. No active box yet (initial load), OR
-				// 3. No schema is currently loaded in monaco-kusto
-				const isActiveBox = message.boxId === activeQueryEditorBoxId;
-				const noActiveBox = !activeQueryEditorBoxId;
-				const noSchemaLoaded = !currentMonacoKustoSchemaKey;
-				const shouldUpdate = (isActiveBox || noActiveBox || noSchemaLoaded) && 
-					schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database;
+				// Always push schema to monaco-kusto if we have rawSchemaJson
+				// The __kustoSetMonacoKustoSchema function will:
+				// - Skip if already loaded (unless setAsContext is true)
+				// - Use setSchemaFromShowSchema for first schema
+				// - Use addDatabaseToSchema for subsequent schemas (aggregate approach)
+				// - If setAsContext is true, also switch the database in context
+				const shouldUpdate = schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database;
 				
-				if (shouldUpdate && schemaKey !== currentMonacoKustoSchemaKey) {
-					if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
-						console.log('[schemaData] Calling __kustoSetMonacoKustoSchema...', { isActiveBox, noActiveBox, noSchemaLoaded });
-						window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database);
-						currentMonacoKustoSchemaKey = schemaKey;
-					} else {
-						console.warn('[schemaData] __kustoSetMonacoKustoSchema function not found');
-					}
-				} else if (schemaKey === currentMonacoKustoSchemaKey) {
-					console.log('[schemaData] Schema already loaded for this cluster+database, skipping update');
+				if (shouldUpdate) {
+					const applySchema = async () => {
+						if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
+							// Set as context if this is the active box
+							console.log('[schemaData] Calling __kustoSetMonacoKustoSchema...', { boxId: message.boxId, schemaKey, setAsContext: isActiveBox });
+							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox);
+							
+							// If this is the active box, trigger revalidation to reflect the new schema
+							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {
+								console.log('[schemaData] Triggering revalidation for active box:', message.boxId);
+								window.__kustoTriggerRevalidation(message.boxId);
+							}
+							return true;
+						}
+						return false;
+					};
+					
+					// Try immediately
+					applySchema().then(success => {
+						if (!success) {
+							// If function not available yet, retry after monaco-kusto loads
+							console.log('[schemaData] __kustoSetMonacoKustoSchema not ready, will retry...');
+							const retryDelays = [100, 300, 600, 1000, 2000];
+							let retryIndex = 0;
+							const retry = () => {
+								if (retryIndex < retryDelays.length) {
+									setTimeout(() => {
+										applySchema().then(applied => {
+											if (applied) {
+												console.log('[schemaData] Schema applied after retry', retryIndex + 1);
+											} else {
+												retryIndex++;
+												retry();
+											}
+										});
+									}, retryDelays[retryIndex]);
+								} else {
+									console.warn('[schemaData] __kustoSetMonacoKustoSchema still not available after retries');
+								}
+							};
+							retry();
+						}
+					});
 				} else {
-					console.log('[schemaData] Schema stored in schemaByBoxId (not active box)', { boxId: message.boxId, activeBoxId: activeQueryEditorBoxId });
+					console.log('[schemaData] Schema stored in schemaByBoxId (no rawSchemaJson or missing clusterUrl/database)', { 
+						boxId: message.boxId, 
+						hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
+						hasClusterUrl: !!message.clusterUrl,
+						hasDatabase: !!message.database
+					});
 				}
 			} catch (e) { console.error('[schemaData] Error:', e); }
 			

@@ -1349,5 +1349,32 @@ function handleDocumentDataMessage(message) {
 		// ignore
 	}
 
+	// Update monaco-kusto schema for the FIRST visible/expanded Kusto section only
+	// Monaco-kusto can only have ONE schema in context at a time, so we only load for the first box.
+	// When user clicks on another box, that box's schema will be loaded via __kustoUpdateSchemaForFocusedBox.
+	try {
+		setTimeout(() => {
+			try {
+				if (typeof queryBoxes !== 'undefined' && Array.isArray(queryBoxes)) {
+					for (const boxId of queryBoxes) {
+						// Check if this box is expanded (visible)
+						let expanded = true;
+						try {
+							expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
+						} catch { /* ignore */ }
+						if (expanded && typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+							// Only request schema for the first expanded box, then break
+							console.log('[handleDocumentDataMessage] Requesting schema for first visible box:', boxId);
+							window.__kustoUpdateSchemaForFocusedBox(boxId);
+							break;
+						}
+					}
+				}
+			} catch { /* ignore */ }
+		}, 100); // Small delay to ensure editors are mounted
+	} catch {
+		// ignore
+	}
+
 	// Persistence remains enabled; edits will persist via event hooks.
 }
