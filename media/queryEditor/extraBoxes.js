@@ -3570,6 +3570,20 @@ function initMarkdownEditor(boxId) {
 		return;
 	}
 
+	// Intercept Ctrl+S at the DOM level (capture phase) BEFORE ToastUI's keymap handles it.
+	// This prevents strikethrough and allows VS Code to handle the save.
+	try {
+		container.addEventListener('keydown', (ev) => {
+			try {
+				if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
+					// Prevent ToastUI's strikethrough action.
+					ev.stopPropagation();
+					// Do NOT call ev.preventDefault() - we want VS Code to handle the save.
+				}
+			} catch { /* ignore */ }
+		}, true); // capture phase - fires before the editor's handlers
+	} catch { /* ignore */ }
+
 	// Initial pass (in case the preview has already rendered by the time the hook is attached).
 	try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
 
