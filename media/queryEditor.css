@@ -1599,8 +1599,8 @@
 
 		/* Match typical VS Code input focus cues for the editor outline/border. */
 		.kusto-markdown-editor .toastui-editor-defaultUI {
-			outline: 1px solid var(--vscode-input-border);
-			outline-offset: -1px;
+			border: none;
+			outline: none;
 		}
 		/* Intentionally do not apply a focus ring to the whole Toast UI editor. */
 
