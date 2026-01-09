@@ -470,6 +470,53 @@ function addQueryBox(options) {
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
 	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
+
+	// Default the connection to the query box above this one (if any).
+	// This provides a better UX when adding multiple queries against the same cluster/database.
+	try {
+		if (!options || (!options.clusterUrl && !options.database)) {
+			// Find the previous query box in the DOM (by iterating container children).
+			const children = container ? Array.from(container.children || []) : [];
+			let prevQueryBoxId = null;
+			for (let i = children.length - 1; i >= 0; i--) {
+				const child = children[i];
+				const childId = child && child.id ? String(child.id) : '';
+				if (childId === id) continue; // Skip the box we just added.
+				if (childId.startsWith('query_')) {
+					prevQueryBoxId = childId;
+					break;
+				}
+			}
+			if (prevQueryBoxId) {
+				// Get the connection and database from the previous query box.
+				const prevConnSel = document.getElementById(prevQueryBoxId + '_connection');
+				const prevDbSel = document.getElementById(prevQueryBoxId + '_database');
+				const prevConnectionId = prevConnSel ? String(prevConnSel.value || '') : '';
+				const prevDatabase = prevDbSel ? String(prevDbSel.value || '') : '';
+				if (prevConnectionId && prevConnectionId !== '__enter_new__' && prevConnectionId !== '__import_xml__') {
+					// Find the cluster URL for this connection ID.
+					let prevClusterUrl = '';
+					try {
+						const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === prevConnectionId) : null;
+						prevClusterUrl = conn ? String(conn.clusterUrl || '') : '';
+					} catch { /* ignore */ }
+					if (prevClusterUrl) {
+						const newConnSel = document.getElementById(id + '_connection');
+						if (newConnSel && newConnSel.dataset) {
+							newConnSel.dataset.desiredClusterUrl = prevClusterUrl;
+						}
+					}
+					if (prevDatabase) {
+						const newDbSel = document.getElementById(id + '_database');
+						if (newDbSel && newDbSel.dataset) {
+							newDbSel.dataset.desired = prevDatabase;
+						}
+					}
+				}
+			}
+		}
+	} catch { /* ignore */ }
+
 	updateConnectionSelects();
 	// For newly added sections, if the prefilled cluster+db matches an existing favorite,
 	// automatically switch to Favorites mode.
