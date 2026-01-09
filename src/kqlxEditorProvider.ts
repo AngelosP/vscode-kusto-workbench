@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
+import { renderDiffInWebview } from './diffViewerUtils';
 
 const normalizeClusterUrlKey = (url: string): string => {
 	try {
@@ -303,11 +304,51 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		private readonly connectionManager: ConnectionManager
 	) {}
 
+	/**
+	 * Detects if the custom editor is being opened as part of a diff view.
+	 * 
+	 * VS Code doesn't have a dedicated "custom editor diff" mode - instead, when viewing diffs
+	 * for custom editor file types, VS Code opens two instances of the custom editor side-by-side.
+	 * 
+	 * We detect this by checking if the URI scheme indicates source control (e.g., 'git', 'gitfs').
+	 * Returns the original URI if in diff context, or undefined if not.
+	 */
+	private detectDiffContext(document: vscode.TextDocument): vscode.Uri | undefined {
+		const uri = document.uri;
+		
+		// Common source control schemes that indicate this is a historical version
+		const scmSchemes = ['git', 'gitfs', 'gitlens', 'pr', 'review', 'vscode-vfs'];
+		if (scmSchemes.includes(uri.scheme)) {
+			return uri;
+		}
+		
+		// Check for revision-related query parameters (common patterns used by SCM extensions)
+		const query = uri.query || '';
+		if (query) {
+			// Git extension uses query params like `ref=HEAD` or `ref=~` for staged files
+			const revisionPatterns = [/\bref=/i, /\bcommit=/i, /\bsha=/i, /\brevision=/i];
+			if (revisionPatterns.some(pattern => pattern.test(query))) {
+				return uri;
+			}
+		}
+		
+		return undefined;
+	}
+
 	public async resolveCustomTextEditor(
 		document: vscode.TextDocument,
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		// Detect if this editor is being opened as part of a diff view.
+		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
+		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
+		const diffOriginalUri = this.detectDiffContext(document);
+		if (diffOriginalUri) {
+			// Render the diff viewer directly in this webview panel
+			await renderDiffInWebview(webviewPanel, this.extensionUri, diffOriginalUri);
+			return;
+		}
 		const docDir = (() => {
 			try {
 				if (document.uri.scheme === 'file') {
