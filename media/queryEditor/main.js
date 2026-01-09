@@ -1,7 +1,5 @@
 // VS Code can intercept Ctrl/Cmd+V in webviews; provide a reliable paste path for Monaco.
-// IMPORTANT: We must preventDefault SYNCHRONOUSLY before the async clipboard operation,
-// otherwise the browser's default paste may race with our custom handler.
-document.addEventListener('keydown', (event) => {
+document.addEventListener('keydown', async (event) => {
 	if (!(event.ctrlKey || event.metaKey) || (event.key !== 'v' && event.key !== 'V')) {
 		return;
 	}
@@ -39,31 +37,21 @@ document.addEventListener('keydown', (event) => {
 		return;
 	}
 
-	// Prevent default SYNCHRONOUSLY to avoid double-paste
-	event.preventDefault();
-	event.stopPropagation();
-	if (typeof event.stopImmediatePropagation === 'function') {
-		event.stopImmediatePropagation();
-	}
-
-	// Now do the async clipboard read and paste
-	(async () => {
-		try {
-			const text = await navigator.clipboard.readText();
-			if (typeof text !== 'string') {
-				return;
-			}
-			const selection = editor.getSelection();
-			if (selection) {
-				editor.executeEdits('clipboard', [{ range: selection, text }]);
-				editor.focus();
-			}
-		} catch (e) {
-			// If clipboard read isn't permitted, the paste won't happen.
-			// Unfortunately we already prevented default, so the user may need to retry.
-			console.warn('[paste] Clipboard read failed:', e);
+	try {
+		const text = await navigator.clipboard.readText();
+		if (typeof text !== 'string') {
+			return;
 		}
-	})();
+		event.preventDefault();
+		const selection = editor.getSelection();
+		if (selection) {
+			editor.executeEdits('clipboard', [{ range: selection, text }]);
+			editor.focus();
+		}
+	} catch (e) {
+		// If clipboard read isn't permitted, fall back to default behavior.
+		// (Do not preventDefault in this case.)
+	}
 }, true);
 
 // If the mouse is over a surface that *looks* scrollable (Monaco, CodeMirror, results tables)
@@ -598,57 +586,26 @@ try {
 }
 
 // VS Code can intercept Ctrl/Cmd+X/C; provide reliable cut/copy paths for Monaco.
-// IMPORTANT: We must preventDefault SYNCHRONOUSLY before the async clipboard operation,
-// otherwise the browser's default copy/cut may race with our custom handler.
 document.addEventListener('keydown', (event) => {
 	if (!(event.ctrlKey || event.metaKey)) {
 		return;
 	}
 	if (event.key === 'x' || event.key === 'X') {
-		// Check if we have a focused editor before preventing default
-		const editor = __kustoGetFocusedMonacoEditor();
-		if (editor) {
-			// Prevent default SYNCHRONOUSLY to avoid race with browser's copy/cut
-			event.preventDefault();
-			event.stopPropagation();
-			if (typeof event.stopImmediatePropagation === 'function') {
-				event.stopImmediatePropagation();
-			}
-			void __kustoCopyOrCutMonacoEditorImpl(editor, null, true);
-		}
+		void __kustoCopyOrCutFocusedMonaco(event, true);
 		return;
 	}
 	if (event.key === 'c' || event.key === 'C') {
-		// Check if we have a focused editor before preventing default
-		const editor = __kustoGetFocusedMonacoEditor();
-		if (editor) {
-			// Prevent default SYNCHRONOUSLY to avoid race with browser's copy/cut
-			event.preventDefault();
-			event.stopPropagation();
-			if (typeof event.stopImmediatePropagation === 'function') {
-				event.stopImmediatePropagation();
-			}
-			void __kustoCopyOrCutMonacoEditorImpl(editor, null, false);
-		}
+		void __kustoCopyOrCutFocusedMonaco(event, false);
 		return;
 	}
 }, true);
 
 // Right-click context menu Cut/Copy often routes through these events.
-// For cut/copy events, we need to handle synchronously and prevent default early.
 document.addEventListener('cut', (event) => {
-	const editor = __kustoGetFocusedMonacoEditor();
-	if (editor) {
-		event.preventDefault();
-		void __kustoCopyOrCutMonacoEditorImpl(editor, null, true);
-	}
+	void __kustoCopyOrCutFocusedMonaco(event, true);
 }, true);
 document.addEventListener('copy', (event) => {
-	const editor = __kustoGetFocusedMonacoEditor();
-	if (editor) {
-		event.preventDefault();
-		void __kustoCopyOrCutMonacoEditorImpl(editor, null, false);
-	}
+	void __kustoCopyOrCutFocusedMonaco(event, false);
 }, true);
 
 // Ctrl+Enter / Ctrl+Shift+Enter (Cmd+Enter / Cmd+Shift+Enter on macOS) runs the active query box,
@@ -1281,10 +1238,32 @@ window.addEventListener('message', async event => {
 				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
 					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
+						console.log('[DEBUG:SchemaData] Dropping stale response:', { 
+							boxId: message.boxId, 
+							receivedToken: tok, 
+							expectedToken: expected 
+						});
 						break;
 					}
 				}
 			} catch { /* ignore */ }
+			
+			console.log('[DEBUG:SchemaData] ========== SCHEMA DATA RECEIVED ==========');
+			console.log('[DEBUG:SchemaData] Message details:', {
+				boxId: message.boxId,
+				connectionId: message.connectionId,
+				database: message.database,
+				clusterUrl: message.clusterUrl,
+				hasSchema: !!message.schema,
+				hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
+				rawSchemaJsonType: message.schema && message.schema.rawSchemaJson ? typeof message.schema.rawSchemaJson : null
+			});
+			console.log('[DEBUG:SchemaData] Current active box:', activeQueryEditorBoxId);
+			console.log('[DEBUG:SchemaData] Worker state:', {
+				loadedSchemas: window.__kustoMonacoLoadedSchemas ? Object.keys(window.__kustoMonacoLoadedSchemas).filter(k => window.__kustoMonacoLoadedSchemas[k]) : [],
+				databaseInContext: window.__kustoMonacoDatabaseInContext
+			});
+			
 			try {
 				const cid = String(message.connectionId || '').trim();
 				const db = String(message.database || '').trim();
@@ -1454,13 +1433,26 @@ window.addEventListener('message', async event => {
 				const database = message.database;
 				const rawSchemaJson = message.rawSchemaJson;
 				
-				console.log('[crossClusterSchemaData] Received schema for', clusterName, database);
+				console.log('[DEBUG:CrossClusterSchemaData] ========== CROSS-CLUSTER SCHEMA DATA RECEIVED ==========');
+				console.log('[DEBUG:CrossClusterSchemaData] Message details:', {
+					clusterName,
+					clusterUrl,
+					database,
+					hasRawSchemaJson: !!rawSchemaJson,
+					rawSchemaJsonType: typeof rawSchemaJson
+				});
 				
 				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
+					console.log('[DEBUG:CrossClusterSchemaData] Calling __kustoApplyCrossClusterSchema...');
 					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
+				} else {
+					console.error('[DEBUG:CrossClusterSchemaData] Cannot apply schema:', {
+						hasRawSchemaJson: !!rawSchemaJson,
+						hasApplyFunction: typeof window.__kustoApplyCrossClusterSchema === 'function'
+					});
 				}
 			} catch (e) {
-				console.error('[crossClusterSchemaData] Error:', e);
+				console.error('[DEBUG:CrossClusterSchemaData] Error:', e);
 			}
 			break;
 		case 'crossClusterSchemaError':
@@ -1468,47 +1460,22 @@ window.addEventListener('message', async event => {
 			try {
 				const clusterName = message.clusterName;
 				const database = message.database;
-				const key = `db:${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 				
-				console.warn('[crossClusterSchemaError]', message.error);
-				
-				// Mark as error so we don't keep retrying
-				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
-					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
-				}
-			} catch (e) {
-				console.error('[crossClusterSchemaError] Error handling:', e);
-			}
-			break;
-		case 'clusterDatabasesData':
-			// Handle cluster databases response (for cluster('X'). autocomplete)
-			try {
-				const clusterName = message.clusterName;
-				const databases = message.databases;
-				
-				console.log('[clusterDatabasesData] Received', databases?.length || 0, 'databases for', clusterName);
-				
-				if (databases && typeof window.__kustoApplyClusterDatabases === 'function') {
-					window.__kustoApplyClusterDatabases(clusterName, databases);
-				}
-			} catch (e) {
-				console.error('[clusterDatabasesData] Error:', e);
-			}
-			break;
-		case 'clusterDatabasesError':
-			// Handle cluster databases error
-			try {
-				const clusterName = message.clusterName;
-				const key = `cluster:${clusterName.toLowerCase()}`;
-				
-				console.warn('[clusterDatabasesError]', message.error);
+				console.log('[DEBUG:CrossClusterSchemaError] ========== CROSS-CLUSTER SCHEMA ERROR ==========');
+				console.log('[DEBUG:CrossClusterSchemaError] Error details:', {
+					clusterName,
+					database,
+					key,
+					error: message.error
+				});
 				
 				// Mark as error so we don't keep retrying
 				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
 					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 				}
 			} catch (e) {
-				console.error('[clusterDatabasesError] Error handling:', e);
+				console.error('[DEBUG:CrossClusterSchemaError] Handler error:', e);
 			}
 			break;
 			case 'connectionAdded':

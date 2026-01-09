@@ -128,7 +128,6 @@ type IncomingWebviewMessage =
 	| CopyAdeLinkMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string }
-	| { type: 'requestClusterDatabases'; clusterName: string; boxId: string; requestToken: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
@@ -641,9 +640,6 @@ export class QueryEditorProvider {
 				return;
 			case 'requestCrossClusterSchema':
 				await this.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken);
-				return;
-			case 'requestClusterDatabases':
-				await this.handleClusterDatabasesRequest(message.clusterName, message.boxId, message.requestToken);
 				return;
 			case 'importConnectionsFromXml':
 				await this.importConnectionsFromXml(message.connections);
@@ -3619,6 +3615,9 @@ ${query}
 		boxId: string,
 		requestToken: string
 	): Promise<void> {
+		this.output.appendLine(`[DEBUG:CrossCluster] ========== CROSS-CLUSTER SCHEMA REQUEST ==========`);
+		this.output.appendLine(`[DEBUG:CrossCluster] Input: clusterName=${clusterName}, database=${database}, boxId=${boxId}`);
+		
 		// Normalize the cluster name to a URL
 		let clusterUrl = clusterName.trim();
 		if (clusterUrl && !clusterUrl.includes('.')) {
@@ -3628,12 +3627,12 @@ ${query}
 			clusterUrl = `https://${clusterUrl}`;
 		}
 
-		this.output.appendLine(
-			`[cross-cluster-schema] request cluster=${clusterName} (url=${clusterUrl}) database=${database}`
-		);
+		this.output.appendLine(`[DEBUG:CrossCluster] Normalized URL: ${clusterUrl}`);
 
 		// Find a connection that matches this cluster URL
 		const connections = this.connectionManager.getConnections();
+		this.output.appendLine(`[DEBUG:CrossCluster] Available connections: ${connections.map(c => c.clusterUrl).join(', ')}`);
+		
 		const connection = connections.find(c => {
 			const connUrl = String(c.clusterUrl || '').trim().toLowerCase();
 			const targetUrl = clusterUrl.toLowerCase();
@@ -3649,9 +3648,7 @@ ${query}
 		});
 
 		if (!connection) {
-			this.output.appendLine(
-				`[cross-cluster-schema] no connection found for cluster ${clusterUrl}`
-			);
+			this.output.appendLine(`[DEBUG:CrossCluster] NO CONNECTION FOUND for cluster ${clusterUrl}`);
 			this.postMessage({
 				type: 'crossClusterSchemaError',
 				clusterName,
@@ -3660,21 +3657,25 @@ ${query}
 				requestToken,
 				error: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
 			});
+			this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (no connection) ==========`);
 			return;
 		}
+		
+		this.output.appendLine(`[DEBUG:CrossCluster] Found connection: ${connection.id} -> ${connection.clusterUrl}`);
 
 		try {
 			const cacheKey = `${connection.clusterUrl}|${database}`;
+			this.output.appendLine(`[DEBUG:CrossCluster] Cache key: ${cacheKey}`);
 
 			// Try to load from cache first
 			const cached = await this.getCachedSchemaFromDisk(cacheKey);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
+			
+			this.output.appendLine(`[DEBUG:CrossCluster] Cache check: hasCached=${!!cached}, ageMs=${cachedAgeMs}, isFresh=${cachedIsFresh}, hasRawSchemaJson=${!!(cached?.schema?.rawSchemaJson)}`);
 
 			if (cached && cachedIsFresh && cached.schema.rawSchemaJson) {
-				this.output.appendLine(
-					`[cross-cluster-schema] using cached schema for ${clusterUrl}|${database}`
-				);
+				this.output.appendLine(`[DEBUG:CrossCluster] Using CACHED schema`);
 				this.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -3684,12 +3685,16 @@ ${query}
 					requestToken,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
+				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (cached) ==========`);
 				return;
 			}
 
 			// Fetch fresh schema
+			this.output.appendLine(`[DEBUG:CrossCluster] Fetching FRESH schema...`);
 			const result = await this.kustoClient.getDatabaseSchema(connection, database, false);
 			const schema = result.schema;
+			
+			this.output.appendLine(`[DEBUG:CrossCluster] Schema fetched: hasRawSchemaJson=${!!schema.rawSchemaJson}, tablesCount=${schema.tables?.length}`);
 
 			// Cache the result
 			const timestamp = result.fromCache
@@ -3698,9 +3703,7 @@ ${query}
 			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
 
 			if (schema.rawSchemaJson) {
-				this.output.appendLine(
-					`[cross-cluster-schema] loaded schema for ${clusterUrl}|${database}`
-				);
+				this.output.appendLine(`[DEBUG:CrossCluster] Sending schema to webview SUCCESS`);
 				this.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -3710,10 +3713,9 @@ ${query}
 					requestToken,
 					rawSchemaJson: schema.rawSchemaJson
 				});
+				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (success) ==========`);
 			} else {
-				this.output.appendLine(
-					`[cross-cluster-schema] schema loaded but no rawSchemaJson for ${clusterUrl}|${database}`
-				);
+				this.output.appendLine(`[DEBUG:CrossCluster] Schema loaded but NO rawSchemaJson!`);
 				this.postMessage({
 					type: 'crossClusterSchemaError',
 					clusterName,
@@ -3722,10 +3724,11 @@ ${query}
 					requestToken,
 					error: `Schema loaded but missing raw format required for autocomplete.`
 				});
+				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (no raw json) ==========`);
 			}
 		} catch (error) {
 			const rawMessage = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[cross-cluster-schema] error: ${rawMessage}`);
+			this.output.appendLine(`[DEBUG:CrossCluster] ERROR: ${rawMessage}`);
 			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 			this.postMessage({
 				type: 'crossClusterSchemaError',
@@ -3735,89 +3738,9 @@ ${query}
 				requestToken,
 				error: `Failed to load schema for ${clusterName}.${database}.\n${userMessage}`
 			});
+			this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (error) ==========`);
 		}
 	}
 
-	/**
-	 * Handle request for database list from a cross-cluster reference.
-	 * This is triggered when user types cluster('X'). and we need the database list for autocomplete.
-	 */
-	private async handleClusterDatabasesRequest(
-		clusterName: string,
-		boxId: string,
-		requestToken: string
-	): Promise<void> {
-		// Normalize the cluster name to a URL
-		let clusterUrl = clusterName.trim();
-		if (clusterUrl && !clusterUrl.includes('.')) {
-			// If it's a short name like 'help', assume Azure Data Explorer pattern
-			clusterUrl = `https://${clusterUrl}.kusto.windows.net`;
-		} else if (clusterUrl && !clusterUrl.startsWith('https://') && !clusterUrl.startsWith('http://')) {
-			clusterUrl = `https://${clusterUrl}`;
-		}
-
-		this.output.appendLine(
-			`[cross-cluster-databases] request cluster=${clusterName} (url=${clusterUrl})`
-		);
-
-		// Find a connection that matches this cluster URL
-		const connections = this.connectionManager.getConnections();
-		const connection = connections.find(c => {
-			const connUrl = String(c.clusterUrl || '').trim().toLowerCase();
-			const targetUrl = clusterUrl.toLowerCase();
-			// Match by exact URL or by hostname
-			if (connUrl === targetUrl) { return true; }
-			try {
-				const connHostname = new URL(connUrl.startsWith('http') ? connUrl : `https://${connUrl}`).hostname;
-				const targetHostname = new URL(targetUrl).hostname;
-				return connHostname === targetHostname;
-			} catch {
-				return false;
-			}
-		});
-
-		if (!connection) {
-			this.output.appendLine(
-				`[cross-cluster-databases] no connection found for cluster ${clusterUrl}`
-			);
-			this.postMessage({
-				type: 'clusterDatabasesError',
-				clusterName,
-				boxId,
-				requestToken,
-				error: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
-			});
-			return;
-		}
-
-		try {
-			// Get the list of databases for this cluster
-			const databases = await this.kustoClient.getDatabases(connection);
-			
-			this.output.appendLine(
-				`[cross-cluster-databases] loaded ${databases.length} databases for ${clusterUrl}`
-			);
-			
-			this.postMessage({
-				type: 'clusterDatabasesData',
-				clusterName,
-				clusterUrl: connection.clusterUrl,
-				databases,
-				boxId,
-				requestToken
-			});
-		} catch (error) {
-			const rawMessage = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[cross-cluster-databases] error: ${rawMessage}`);
-			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, undefined);
-			this.postMessage({
-				type: 'clusterDatabasesError',
-				clusterName,
-				boxId,
-				requestToken,
-				error: `Failed to load databases for ${clusterName}.\n${userMessage}`
-			});
-		}
-	}
 	// HTML rendering moved to src/queryEditorHtml.ts
 }
