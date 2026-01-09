@@ -35,18 +35,25 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 	 * Detects if the custom editor is being opened as part of a diff view.
 	 * 
 	 * VS Code doesn't have a dedicated "custom editor diff" mode - instead, when viewing diffs
-	 * for custom editor file types, VS Code opens two instances of the custom editor side-by-side.
+	 * for custom editor file types, VS Code opens two instances of the custom editor side-by-side:
+	 * - Left side: original version (git: scheme or similar)
+	 * - Right side: working copy (file: scheme)
 	 * 
-	 * We detect this by checking if the URI scheme indicates source control (e.g., 'git', 'gitfs').
-	 * Returns the original URI if in diff context, or undefined if not.
+	 * We detect both sides:
+	 * 1. Original side: URI scheme is 'git', 'gitfs', etc. -> Return the URI to render diff
+	 * 2. Modified side: file: scheme but another tab with git: scheme exists -> Return undefined but set flag
+	 * 
+	 * Returns: { isDiff: true, originalUri: Uri } for original side that should render diff,
+	 *          { isDiff: true, originalUri: undefined } for modified side that should close,
+	 *          { isDiff: false } for normal (non-diff) context
 	 */
-	private detectDiffContext(document: vscode.TextDocument): vscode.Uri | undefined {
+	private detectDiffContext(document: vscode.TextDocument): { isDiff: boolean; originalUri?: vscode.Uri } {
 		const uri = document.uri;
 		
-		// Common source control schemes that indicate this is a historical version
+		// Common source control schemes that indicate this is a historical version (original side)
 		const scmSchemes = ['git', 'gitfs', 'gitlens', 'pr', 'review', 'vscode-vfs'];
 		if (scmSchemes.includes(uri.scheme)) {
-			return uri;
+			return { isDiff: true, originalUri: uri };
 		}
 		
 		// Check for revision-related query parameters (common patterns used by SCM extensions)
@@ -55,11 +62,43 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			// Git extension uses query params like `ref=HEAD` or `ref=~` for staged files
 			const revisionPatterns = [/\bref=/i, /\bcommit=/i, /\bsha=/i, /\brevision=/i];
 			if (revisionPatterns.some(pattern => pattern.test(query))) {
-				return uri;
+				return { isDiff: true, originalUri: uri };
 			}
 		}
 		
-		return undefined;
+		// For file: scheme, check if this is the "modified" side of a diff
+		// by looking for a matching git: scheme tab for the same file
+		if (uri.scheme === 'file') {
+			try {
+				const baseFileName = uri.path.split('/').pop() || '';
+				const tabGroups = vscode.window.tabGroups.all;
+				
+				// Check for diff-related tab labels that indicate we're the modified side
+				// VS Code uses labels like "filename.kql (Working Tree)" or "filename.kql (Index)" for diffs
+				const diffLabelPatterns = [
+					/\(Working Tree\)$/i,
+					/\(Index\)$/i,
+					/\(HEAD\)$/i,
+					/↔/,  // Diff arrow in some themes
+				];
+				
+				for (const group of tabGroups) {
+					for (const tab of group.tabs) {
+						// Check if there's a tab with our filename and a diff-related label
+						if (tab.label.includes(baseFileName)) {
+							if (diffLabelPatterns.some(pattern => pattern.test(tab.label))) {
+								// We found a diff tab for our file - we're in diff context
+								return { isDiff: true, originalUri: undefined };
+							}
+						}
+					}
+				}
+			} catch (err) {
+				console.error('[KqlCompatEditor] Tab API error:', err);
+			}
+		}
+		
+		return { isDiff: false };
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
@@ -83,10 +122,21 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		// Detect if this editor is being opened as part of a diff view.
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
-		const diffOriginalUri = this.detectDiffContext(document);
-		if (diffOriginalUri) {
-			// Render the diff viewer directly in this webview panel
-			await renderDiffInWebview(webviewPanel, this.extensionUri, diffOriginalUri);
+		const diffContext = this.detectDiffContext(document);
+		if (diffContext.isDiff) {
+			if (diffContext.originalUri) {
+				// This is the "original" side (git: scheme) - render the diff viewer
+				await renderDiffInWebview(webviewPanel, this.extensionUri, diffContext.originalUri);
+			} else {
+				// This is the "modified" side (file: scheme) - just show a message
+				// The diff is already being shown in the other panel
+				webviewPanel.webview.html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<style>body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+.message { text-align: center; opacity: 0.7; }</style></head>
+<body><div class="message"><p>Diff view is shown in the left panel</p></div></body></html>`;
+			}
 			return;
 		}
 
