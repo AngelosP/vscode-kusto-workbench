@@ -70,13 +70,18 @@ function getDiffHtml(
 	const originalEscaped = escapeForJs(originalContent);
 	const modifiedEscaped = escapeForJs(modifiedContent);
 
-	// Note: Using a very permissive CSP for the CDN resources
+	// CSP needs to allow:
+	// - script-src: inline scripts and CDN for Monaco
+	// - style-src: inline styles and CDN for Monaco CSS
+	// - font-src: CDN for Monaco fonts
+	// - worker-src: blob: for Monaco's web workers (syntax highlighting, etc.)
+	// - connect-src: CDN for loading Monaco modules
 	return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net data:; connect-src https://cdn.jsdelivr.net; img-src https://cdn.jsdelivr.net data:;">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'unsafe-inline' https://cdn.jsdelivr.net; worker-src blob:; font-src https://cdn.jsdelivr.net data:; connect-src https://cdn.jsdelivr.net; img-src https://cdn.jsdelivr.net data:;">
 	<title>Diff: ${fileName}</title>
 	<style>
 		* {
