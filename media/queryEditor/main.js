@@ -1238,31 +1238,10 @@ window.addEventListener('message', async event => {
 				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
 					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
-						console.log('[DEBUG:SchemaData] Dropping stale response:', { 
-							boxId: message.boxId, 
-							receivedToken: tok, 
-							expectedToken: expected 
-						});
 						break;
 					}
 				}
 			} catch { /* ignore */ }
-			
-			console.log('[DEBUG:SchemaData] ========== SCHEMA DATA RECEIVED ==========');
-			console.log('[DEBUG:SchemaData] Message details:', {
-				boxId: message.boxId,
-				connectionId: message.connectionId,
-				database: message.database,
-				clusterUrl: message.clusterUrl,
-				hasSchema: !!message.schema,
-				hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
-				rawSchemaJsonType: message.schema && message.schema.rawSchemaJson ? typeof message.schema.rawSchemaJson : null
-			});
-			console.log('[DEBUG:SchemaData] Current active box:', activeQueryEditorBoxId);
-			console.log('[DEBUG:SchemaData] Worker state:', {
-				loadedSchemas: window.__kustoMonacoLoadedSchemas ? Object.keys(window.__kustoMonacoLoadedSchemas).filter(k => window.__kustoMonacoLoadedSchemas[k]) : [],
-				databaseInContext: window.__kustoMonacoDatabaseInContext
-			});
 			
 			try {
 				const cid = String(message.connectionId || '').trim();
@@ -1296,15 +1275,6 @@ window.addEventListener('message', async event => {
 				// Check if this box is the active/focused box - if so, we should set it as the context
 				const isActiveBox = message.boxId === activeQueryEditorBoxId;
 				
-				console.log('[schemaData] Schema received:', {
-					hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
-					clusterUrl: message.clusterUrl,
-					database: message.database,
-					schemaKey,
-					boxId: message.boxId,
-					isActiveBox
-				});
-				
 				// Always push schema to monaco-kusto if we have rawSchemaJson
 				// The __kustoSetMonacoKustoSchema function will:
 				// - Skip if already loaded (unless setAsContext is true)
@@ -1317,12 +1287,10 @@ window.addEventListener('message', async event => {
 					const applySchema = async () => {
 						if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
 							// Set as context if this is the active box
-							console.log('[schemaData] Calling __kustoSetMonacoKustoSchema...', { boxId: message.boxId, schemaKey, setAsContext: isActiveBox });
 							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox);
 							
 							// If this is the active box, trigger revalidation to reflect the new schema
 							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {
-								console.log('[schemaData] Triggering revalidation for active box:', message.boxId);
 								window.__kustoTriggerRevalidation(message.boxId);
 							}
 							return true;
@@ -1334,34 +1302,22 @@ window.addEventListener('message', async event => {
 					applySchema().then(success => {
 						if (!success) {
 							// If function not available yet, retry after monaco-kusto loads
-							console.log('[schemaData] __kustoSetMonacoKustoSchema not ready, will retry...');
 							const retryDelays = [100, 300, 600, 1000, 2000];
 							let retryIndex = 0;
 							const retry = () => {
 								if (retryIndex < retryDelays.length) {
 									setTimeout(() => {
 										applySchema().then(applied => {
-											if (applied) {
-												console.log('[schemaData] Schema applied after retry', retryIndex + 1);
-											} else {
+											if (!applied) {
 												retryIndex++;
 												retry();
 											}
 										});
 									}, retryDelays[retryIndex]);
-								} else {
-									console.warn('[schemaData] __kustoSetMonacoKustoSchema still not available after retries');
 								}
 							};
 							retry();
 						}
-					});
-				} else {
-					console.log('[schemaData] Schema stored in schemaByBoxId (no rawSchemaJson or missing clusterUrl/database)', { 
-						boxId: message.boxId, 
-						hasRawSchemaJson: !!(message.schema && message.schema.rawSchemaJson),
-						hasClusterUrl: !!message.clusterUrl,
-						hasDatabase: !!message.database
 					});
 				}
 			} catch (e) { console.error('[schemaData] Error:', e); }
@@ -1433,26 +1389,11 @@ window.addEventListener('message', async event => {
 				const database = message.database;
 				const rawSchemaJson = message.rawSchemaJson;
 				
-				console.log('[DEBUG:CrossClusterSchemaData] ========== CROSS-CLUSTER SCHEMA DATA RECEIVED ==========');
-				console.log('[DEBUG:CrossClusterSchemaData] Message details:', {
-					clusterName,
-					clusterUrl,
-					database,
-					hasRawSchemaJson: !!rawSchemaJson,
-					rawSchemaJsonType: typeof rawSchemaJson
-				});
-				
 				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
-					console.log('[DEBUG:CrossClusterSchemaData] Calling __kustoApplyCrossClusterSchema...');
 					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
-				} else {
-					console.error('[DEBUG:CrossClusterSchemaData] Cannot apply schema:', {
-						hasRawSchemaJson: !!rawSchemaJson,
-						hasApplyFunction: typeof window.__kustoApplyCrossClusterSchema === 'function'
-					});
 				}
 			} catch (e) {
-				console.error('[DEBUG:CrossClusterSchemaData] Error:', e);
+				console.error('[crossClusterSchemaData] Error:', e);
 			}
 			break;
 		case 'crossClusterSchemaError':
@@ -1462,20 +1403,12 @@ window.addEventListener('message', async event => {
 				const database = message.database;
 				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 				
-				console.log('[DEBUG:CrossClusterSchemaError] ========== CROSS-CLUSTER SCHEMA ERROR ==========');
-				console.log('[DEBUG:CrossClusterSchemaError] Error details:', {
-					clusterName,
-					database,
-					key,
-					error: message.error
-				});
-				
 				// Mark as error so we don't keep retrying
 				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
 					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 				}
-			} catch (e) {
-				console.error('[DEBUG:CrossClusterSchemaError] Handler error:', e);
+			} catch {
+				// ignore
 			}
 			break;
 			case 'connectionAdded':

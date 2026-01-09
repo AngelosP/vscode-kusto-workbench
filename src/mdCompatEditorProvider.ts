@@ -138,12 +138,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		}
 
 		const disposables: vscode.Disposable[] = [];
-		const isDevMode = this.context.extensionMode === vscode.ExtensionMode.Development;
 		const isMdSearchDebugEnabled = (): boolean => {
 			try {
-				if (isDevMode) {
-					return true;
-				}
 				return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
 			} catch {
 				return false;

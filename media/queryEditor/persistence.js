@@ -1244,14 +1244,6 @@ function __kustoApplyPendingAdds() {
 
 function handleDocumentDataMessage(message) {
 	__kustoDocumentDataApplyCount++;
-	try {
-		const sectionCount = Array.isArray(message && message.state && message.state.sections)
-			? message.state.sections.length
-			: 0;
-		console.log('[kusto] documentData', { count: __kustoDocumentDataApplyCount, ok: !!(message && message.ok), sections: sectionCount });
-	} catch {
-		// ignore
-	}
 
 	// The extension host should only send documentData in response to requestDocument.
 	// If we receive it more than once, re-applying causes noticeable flicker and can leave
@@ -1364,7 +1356,6 @@ function handleDocumentDataMessage(message) {
 						} catch { /* ignore */ }
 						if (expanded && typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
 							// Only request schema for the first expanded box, then break
-							console.log('[handleDocumentDataMessage] Requesting schema for first visible box:', boxId);
 							window.__kustoUpdateSchemaForFocusedBox(boxId);
 							break;
 						}

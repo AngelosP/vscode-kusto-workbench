@@ -13,13 +13,8 @@ import { recordTextEditorSelection } from './selectionTracker';
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-	console.log('Kusto Query Editor extension is now active');
-	const isDevMode = context.extensionMode === vscode.ExtensionMode.Development;
 	const isMdSearchDebugEnabled = (): boolean => {
 		try {
-			if (isDevMode) {
-				return true;
-			}
 			return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
 		} catch {
 			return false;

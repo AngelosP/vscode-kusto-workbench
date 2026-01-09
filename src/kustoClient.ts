@@ -707,25 +707,20 @@ export class KustoQueryClient {
 			if (!forceRefresh) {
 				const cached = this.databaseCache.get(clusterEndpoint);
 				if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
-					console.log('Returning cached databases for:', clusterEndpoint);
 					return cached.databases;
 				}
 			}
 
-			console.log('Fetching databases for cluster:', clusterEndpoint);
-			console.log('Executing .show databases command');
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
 				(client) => client.execute('', '.show databases'),
 				{ allowInteractive: opts?.allowInteractive }
 			);
-			console.log('Query result received:', result);
 			
 			const databases: string[] = [];
 			
 			// Extract database names from the result
 			const primaryResults = result.primaryResults[0];
-			console.log('Primary results columns:', primaryResults.columns);
 			
 			for (const row of primaryResults.rows()) {
 				// Database name is typically in the first column
@@ -734,8 +729,6 @@ export class KustoQueryClient {
 					databases.push(dbName.toString());
 				}
 			}
-			
-			console.log('Databases found:', databases);
 			
 			// Update cache
 			this.databaseCache.set(clusterEndpoint, {
@@ -1056,9 +1049,6 @@ export class KustoQueryClient {
 				// Store the raw schema JSON for monaco-kusto integration
 				if (rawSchemaJson) {
 					schema.rawSchemaJson = rawSchemaJson;
-					console.log(`[kustoClient] rawSchemaJson captured for ${database}, has Databases:`, !!(rawSchemaJson as any)?.Databases);
-				} else {
-					console.log(`[kustoClient] rawSchemaJson NOT captured for ${database}, command was: ${command}`);
 				}
 
 				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
