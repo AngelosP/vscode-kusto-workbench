@@ -5452,6 +5452,10 @@ function ensureMonaco() {
 					};
 					
 					window.__kustoWorkerInitialized = true;
+					
+					// Start the theme observer to handle dynamic theme changes in VS Code
+					startMonacoThemeObserver(monaco);
+					
 					resolve(monaco);
 								} catch (e) {
 									reject(e);

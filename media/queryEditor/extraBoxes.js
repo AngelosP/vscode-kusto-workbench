@@ -3633,6 +3633,30 @@ function initMarkdownEditor(boxId) {
 	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
 	try { __kustoTryApplyPendingMarkdownReveal(boxId); } catch { /* ignore */ }
 
+	// For multi-section files (.kqlx, .mdx), fix the double-border issue by removing
+	// the Toast UI's border (the section wrapper already provides the border).
+	try {
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+		console.log('[KUSTO-DEBUG] initMarkdownEditor border fix: isPlainMd=' + isPlainMd + ', documentKind=' + window.__kustoDocumentKind);
+		if (!isPlainMd) {
+			const defaultUI = container.querySelector('.toastui-editor-defaultUI');
+			console.log('[KUSTO-DEBUG] defaultUI found:', !!defaultUI);
+			if (defaultUI) {
+				defaultUI.style.setProperty('border', 'none', 'important');
+				defaultUI.style.setProperty('border-radius', '0', 'important');
+				console.log('[KUSTO-DEBUG] Applied border:none to defaultUI');
+			}
+			const toolbar = container.querySelector('.toastui-editor-defaultUI-toolbar');
+			console.log('[KUSTO-DEBUG] toolbar found:', !!toolbar);
+			if (toolbar) {
+				// Use negative margin to overlap the wrapper border
+				toolbar.style.setProperty('margin', '-1px -1px 0 -1px', 'important');
+				toolbar.style.setProperty('border-radius', '0', 'important');
+				console.log('[KUSTO-DEBUG] Applied negative margin to toolbar');
+			}
+		}
+	} catch (e) { console.error('[KUSTO-DEBUG] border fix error:', e); }
+
 	// Ensure theme switches (dark/light) are reflected without recreating the editor.
 	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }
 	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }

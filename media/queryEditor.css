@@ -293,10 +293,10 @@
 		}
 
 		.unified-btn-primary:disabled {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-disabledForeground);
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
 			cursor: not-allowed;
-			opacity: 1;
+			opacity: 0.5;
 		}
 
 		/* Primary button toggle state */
@@ -411,10 +411,10 @@
 		}
 
 		.unified-btn-split-main:disabled {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-disabledForeground);
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
 			cursor: not-allowed;
-			opacity: 1;
+			opacity: 0.5;
 		}
 
 		.unified-btn-split-toggle {
@@ -449,10 +449,10 @@
 		}
 
 		.unified-btn-split-toggle:disabled {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-disabledForeground);
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
 			cursor: not-allowed;
-			opacity: 1;
+			opacity: 0.5;
 		}
 
 		/* Split button menu */
@@ -1459,7 +1459,7 @@
 			/* Keep the editor UI (toolbar, dialogs) in VS Code UI font. */
 			font-family: var(--vscode-font-family);
 			font-size: 13px;
-			background: var(--vscode-editor-background);
+			background: var(--vscode-terminal-background);
 			color: var(--vscode-editor-foreground);
 		}
 
@@ -1563,14 +1563,24 @@
 		/* Toast UI's built-in mode switch and preview UI are enabled.
 		   (previewStyle: 'vertical' shows a split preview when in Markdown mode.) */
 
-		/* Ensure the editable surface uses VS Code theme colors (fixes dark theme readability). */
+		/* Ensure the editable surface uses VS Code theme colors (fixes dark theme readability).
+		   Use --vscode-terminal-background for write-capable modes (black in dark themes, white in light themes).
+		   The inline markdown preview pane uses --vscode-editor-background (below) since it's readonly. */
 		.kusto-markdown-editor .toastui-editor-main,
 		.kusto-markdown-editor .toastui-editor-md-container,
 		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor,
 		.kusto-markdown-editor .toastui-editor-main .ProseMirror {
-			background: var(--vscode-editor-background) !important;
+			background: var(--vscode-terminal-background) !important;
 			color: var(--vscode-editor-foreground) !important;
 			font-size: 13px;
+		}
+
+		/* The inline markdown preview (split view in MARKDOWN mode) is readonly,
+		   so it should use the editor background like the Preview viewer. */
+		.kusto-markdown-editor .toastui-editor-md-preview,
+		.kusto-markdown-editor .toastui-editor-md-preview .toastui-editor-contents {
+			background: var(--vscode-editor-background) !important;
+			color: var(--vscode-editor-foreground) !important;
 		}
 
 		/* Markdown editing surface: use the editor (monospace) font. */
