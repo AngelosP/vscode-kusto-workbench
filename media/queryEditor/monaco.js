@@ -291,37 +291,62 @@ function ensureMonaco() {
 							// LAZY DIAGNOSTICS: Intercept setModelMarkers to suppress red squiggles
 							// until the user focuses a query box and schema is loaded.
 							// This prevents "phantom" errors appearing before we have schema context.
+							// Only the FOCUSED section shows red squiggles - other sections are suppressed.
 							// ========================================================================
 							try {
 								const originalSetModelMarkers = monaco.editor.setModelMarkers;
 								
-								// Track which model URIs should have kusto markers enabled
-								window.__kustoMarkersEnabledModels = new Set();
+								// Track which model URI is currently focused (only ONE at a time)
+								// null = no model focused, markers suppressed for all
+								window.__kustoFocusedModelUri = null;
 								
 								monaco.editor.setModelMarkers = function(model, owner, markers) {
 									// Only intercept kusto markers
 									if (owner === 'kusto') {
 										const uri = model && model.uri ? model.uri.toString() : '';
-										if (!window.__kustoMarkersEnabledModels.has(uri)) {
-											// Suppress markers for models that haven't been focused yet
-											console.log('[kusto-lazy] Suppressing markers for unfocused model:', uri);
-											return;
+										if (window.__kustoFocusedModelUri !== uri) {
+											// Suppress markers for models that aren't focused
+											// Also clear any existing markers for this model
+											return originalSetModelMarkers.call(this, model, owner, []);
 										}
 									}
 									return originalSetModelMarkers.call(this, model, owner, markers);
 								};
 								
-								// Function to enable markers for a specific model (called on focus AFTER schema context is set)
-								window.__kustoEnableMarkersForModel = function(modelUri) {
-									if (!modelUri) return;
-									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
-									if (!window.__kustoMarkersEnabledModels.has(uri)) {
-										console.log('[kusto-lazy] Enabling markers for model:', uri);
-										window.__kustoMarkersEnabledModels.add(uri);
+								// Function to set the focused model (only this model gets markers)
+								window.__kustoSetFocusedModel = function(modelUri) {
+									const uri = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : null;
+									const prevUri = window.__kustoFocusedModelUri;
+									
+									if (prevUri === uri) {
+										return; // Already focused
 									}
+									
+									console.log('[kusto-lazy] Switching focused model:', { from: prevUri, to: uri });
+									
+									// Clear markers from the previously focused model
+									if (prevUri && originalSetModelMarkers) {
+										try {
+											const models = monaco.editor.getModels();
+											const prevModel = models.find(m => m.uri && m.uri.toString() === prevUri);
+											if (prevModel) {
+												console.log('[kusto-lazy] Clearing markers from previous model:', prevUri);
+												originalSetModelMarkers.call(monaco.editor, prevModel, 'kusto', []);
+											}
+										} catch (e) {
+											console.warn('[kusto-lazy] Error clearing markers from previous model:', e);
+										}
+									}
+									
+									window.__kustoFocusedModelUri = uri;
 								};
 								
-								console.log('[kusto-lazy] Installed setModelMarkers interception for lazy diagnostics');
+								// Legacy function for compatibility - now just sets the focused model
+								window.__kustoEnableMarkersForModel = function(modelUri) {
+									window.__kustoSetFocusedModel(modelUri);
+								};
+								
+								console.log('[kusto-lazy] Installed setModelMarkers interception for per-section diagnostics');
 							} catch (e) {
 								console.warn('[kusto-lazy] Failed to install setModelMarkers interception:', e);
 							}
@@ -1511,35 +1536,10 @@ function ensureMonaco() {
 						// for this clause so docs keep showing while the user types the rest of the statement.
 						return inferPipeOperatorHoverFromContext();
 					};
-					monaco.languages.setMonarchTokensProvider('kusto', {
-						keywords: [
-							'and', 'as', 'by', 'case', 'contains', 'count', 'dcount', 'distinct', 'extend', 'externaldata',
-							'false', 'from', 'has', 'has_any', 'has_all', 'in', 'invoke', 'join', 'kind', 'let', 'limit',
-							'mv-expand', 'not', 'null', 'on', 'or', 'order', 'project', 'project-away', 'project-keep',
-							'project-rename', 'render', 'sample', 'search', 'serialize', 'sort', 'summarize', 'take',
-							'top', 'toscalar', 'true', 'union', 'where'
-						],
-						tokenizer: {
-							root: [
-								[/\/\*.*?\*\//, 'comment'],
-								[/\/\/.*$/, 'comment'],
-								[/'.*?'/, 'string'],
-								[/"([^"\\]|\\.)*"/, 'string'],
-								[/\b\d+(\.\d+)?\b/, 'number'],
-								[/\|/, 'delimiter'],
-								[/[=><!~]+/, 'operator'],
-								[/\.[a-zA-Z_][\w\-]*/, 'keyword'],
-								[/[a-zA-Z_][\w\-]*/, {
-									cases: {
-										'@keywords': 'keyword',
-										'@default': 'identifier'
-									}
-								}],
-								[/[{}()\[\]]/, '@brackets'],
-								[/[,;.]/, 'delimiter']
-							]
-						}
-					});
+					// NOTE: We intentionally do NOT call setMonarchTokensProvider here.
+					// Monaco-kusto registers its own semantic tokenizer which provides better
+					// highlighting (tables, columns, functions, etc. based on schema).
+					// We only set language configuration for brackets/comments.
 					monaco.languages.setLanguageConfiguration('kusto', {
 						comments: { lineComment: '//', blockComment: ['/*', '*/'] },
 						brackets: [['{', '}'], ['[', ']'], ['(', ')']],
@@ -1916,8 +1916,8 @@ function ensureMonaco() {
 							const __kustoParseFullyQualifiedTableExpr = (text) => {
 								try {
 									const s = String(text || '');
-									// cluster('X').database('Y').Table
-									const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+									// cluster('X').database('Y').Table or cluster("X").database("Y").Table
+									const m = s.match(/\bcluster\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*database\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 									if (m && m[1] && m[2] && m[3]) {
 										return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
 									}
@@ -3989,7 +3989,8 @@ function ensureMonaco() {
 												const __kustoParseFullyQualifiedTableExpr = (text) => {
 													try {
 														const s = String(text || '');
-														const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+														// Support both single and double quotes
+														const m = s.match(/\bcluster\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*database\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 														if (m && m[1] && m[2] && m[3]) {
 															return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
 														}
@@ -5293,43 +5294,216 @@ function ensureMonaco() {
 					};
 
 					// Track which cross-cluster schemas have been loaded or requested
-					// Key: "clusterName|database" -> { status: 'pending'|'loaded'|'error', rawSchemaJson?: object }
+					// Key for clusters: "cluster:clusterName" -> { status: 'pending'|'loaded'|'error' }
+					// Key for databases: "db:clusterName|database" -> { status: 'pending'|'loaded'|'error', rawSchemaJson?: object }
 					window.__kustoCrossClusterSchemas = {};
 
-					// Parse query text to extract cluster() and database() references
-					// Returns array of { clusterName, database } objects
-					window.__kustoExtractCrossClusterRefs = function (queryText) {
-						const refs = [];
-						if (!queryText || typeof queryText !== 'string') {
-							return refs;
-						}
-
-						// Pattern matches:
-						// cluster('name').database('dbname')
-						// cluster("name").database("dbname")
-						// cluster(name).database(dbname) - without quotes
-						const pattern = /cluster\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)\s*\.\s*database\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
-						let match;
-						while ((match = pattern.exec(queryText)) !== null) {
-							const clusterName = match[1];
-							const database = match[2];
-							if (clusterName && database) {
-								// Avoid duplicates
-								const exists = refs.some(r => 
-									r.clusterName.toLowerCase() === clusterName.toLowerCase() &&
-									r.database.toLowerCase() === database.toLowerCase()
-								);
-								if (!exists) {
-									refs.push({ clusterName, database });
+					// Use monaco-kusto's official getClusterReferences API to find cluster refs
+					// This returns only cluster refs that are NOT already in the schema cache
+					// NOTE: The API checks one command block at a time based on cursorOffset
+					// So we call it at multiple positions to check all blocks
+					window.__kustoGetClusterReferences = async function () {
+						try {
+							if (!monaco?.languages?.kusto?.getKustoWorker) {
+								console.log('[cross-cluster] getKustoWorker not available');
+								return [];
+							}
+							
+							const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+							const models = monaco.editor.getModels();
+							
+							if (!models || models.length === 0) {
+								return [];
+							}
+							
+							const model = models[0];
+							const worker = await workerAccessor(model.uri);
+							
+							if (!worker || typeof worker.getClusterReferences !== 'function') {
+								console.log('[cross-cluster] getClusterReferences not available on worker');
+								return [];
+							}
+							
+							// Get all commands in document to check each block
+							const allRefs = [];
+							const seenClusters = new Set();
+							
+							if (typeof worker.getCommandsInDocument === 'function') {
+								const commands = await worker.getCommandsInDocument(model.uri.toString());
+								if (commands && commands.length > 0) {
+									for (const cmd of commands) {
+										// Check at start of each command block
+										const refs = await worker.getClusterReferences(model.uri.toString(), cmd.absoluteStart);
+										if (refs && refs.length > 0) {
+											for (const ref of refs) {
+												if (ref.clusterName && !seenClusters.has(ref.clusterName.toLowerCase())) {
+													seenClusters.add(ref.clusterName.toLowerCase());
+													allRefs.push(ref);
+												}
+											}
+										}
+									}
+								}
+							} else {
+								// Fallback: check at end of document (original behavior)
+								const docLength = model.getValue().length;
+								const refs = await worker.getClusterReferences(model.uri.toString(), docLength);
+								if (refs) {
+									allRefs.push(...refs);
 								}
 							}
+							
+							console.log('[cross-cluster] getClusterReferences returned:', allRefs.length, 'unique refs');
+							return allRefs;
+						} catch (e) {
+							console.error('[cross-cluster] getClusterReferences failed:', e);
+							return [];
 						}
-						return refs;
 					};
 
-					// Request schema for a cross-cluster reference
+					// Use monaco-kusto's official getDatabaseReferences API to find database refs
+					// This returns only refs that are NOT already in the schema cache
+					// NOTE: The API checks one command block at a time based on cursorOffset
+					// So we call it at multiple positions to check all blocks
+					window.__kustoGetDatabaseReferences = async function () {
+						try {
+							if (!monaco?.languages?.kusto?.getKustoWorker) {
+								console.log('[cross-cluster] getKustoWorker not available');
+								return [];
+							}
+							
+							const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+							const models = monaco.editor.getModels();
+							
+							if (!models || models.length === 0) {
+								return [];
+							}
+							
+							const model = models[0];
+							const worker = await workerAccessor(model.uri);
+							
+							if (!worker || typeof worker.getDatabaseReferences !== 'function') {
+								console.log('[cross-cluster] getDatabaseReferences not available on worker');
+								return [];
+							}
+							
+							// Get all commands in document to check each block
+							const allRefs = [];
+							const seenDbs = new Set();
+							
+							if (typeof worker.getCommandsInDocument === 'function') {
+								const commands = await worker.getCommandsInDocument(model.uri.toString());
+								if (commands && commands.length > 0) {
+									for (const cmd of commands) {
+										// Check at start of each command block
+										const refs = await worker.getDatabaseReferences(model.uri.toString(), cmd.absoluteStart);
+										if (refs && refs.length > 0) {
+											for (const ref of refs) {
+												if (ref.clusterName && ref.databaseName) {
+													const key = `${ref.clusterName.toLowerCase()}|${ref.databaseName.toLowerCase()}`;
+													if (!seenDbs.has(key)) {
+														seenDbs.add(key);
+														allRefs.push(ref);
+													}
+												}
+											}
+										}
+									}
+								}
+							} else {
+								// Fallback: check at end of document (original behavior)
+								const docLength = model.getValue().length;
+								const refs = await worker.getDatabaseReferences(model.uri.toString(), docLength);
+								if (refs) {
+									allRefs.push(...refs);
+								}
+							}
+							
+							console.log('[cross-cluster] getDatabaseReferences returned:', allRefs.length, 'unique refs');
+							return allRefs;
+						} catch (e) {
+							console.error('[cross-cluster] getDatabaseReferences failed:', e);
+							return [];
+						}
+					};
+
+					// Request database list for a cluster (for cluster('X'). autocomplete)
+					window.__kustoRequestClusterDatabases = function (clusterName, boxId) {
+						const key = `cluster:${clusterName.toLowerCase()}`;
+						
+						// Skip if already loaded or pending
+						if (window.__kustoCrossClusterSchemas[key]) {
+							console.log('[cross-cluster] Cluster databases already', window.__kustoCrossClusterSchemas[key].status, 'for', key);
+							return;
+						}
+
+						// Mark as pending
+						window.__kustoCrossClusterSchemas[key] = { status: 'pending' };
+						console.log('[cross-cluster] Requesting database list for cluster:', clusterName);
+
+						const requestToken = 'clusterdb_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+						
+						if (typeof vscode !== 'undefined' && vscode.postMessage) {
+							vscode.postMessage({
+								type: 'requestClusterDatabases',
+								clusterName,
+								boxId: boxId || '',
+								requestToken
+							});
+						}
+					};
+
+					// Apply cluster's database list to monaco-kusto (for cluster('X').database( autocomplete)
+					window.__kustoApplyClusterDatabases = async function (clusterName, databases) {
+						const key = `cluster:${clusterName.toLowerCase()}`;
+						
+						try {
+							if (!monaco?.languages?.kusto?.getKustoWorker) {
+								console.error('[cross-cluster] getKustoWorker not available');
+								window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+								return;
+							}
+							
+							const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+							const models = monaco.editor.getModels();
+							
+							if (!models || models.length === 0) {
+								window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'No models' };
+								return;
+							}
+							
+							const model = models[0];
+							const worker = await workerAccessor(model.uri);
+							
+							if (!worker || typeof worker.addClusterToSchema !== 'function') {
+								console.error('[cross-cluster] addClusterToSchema not available');
+								window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+								return;
+							}
+							
+							// Convert databases to the format expected by addClusterToSchema
+							// Expected: readonly { name: string; alternativeName?: string; }[]
+							const dbList = (databases || []).map(db => {
+								if (typeof db === 'string') {
+									return { name: db };
+								}
+								return { name: db.name || db.Name || String(db), alternativeName: db.alternativeName };
+							});
+							
+							console.log('[cross-cluster] Adding cluster to schema:', clusterName, 'with', dbList.length, 'databases');
+							await worker.addClusterToSchema(model.uri.toString(), clusterName, dbList);
+							
+							window.__kustoCrossClusterSchemas[key] = { status: 'loaded', databases: dbList };
+							console.log('[cross-cluster] Cluster added successfully:', clusterName);
+						} catch (e) {
+							console.error('[cross-cluster] Failed to apply cluster databases:', e);
+							window.__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
+						}
+					};
+
+					// Request full schema for a database (for cluster('X').database('Y').Table autocomplete)
 					window.__kustoRequestCrossClusterSchema = function (clusterName, database, boxId) {
-						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+						const key = `db:${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						// Skip if already loaded or pending
 						if (window.__kustoCrossClusterSchemas[key]) {
@@ -5356,7 +5530,7 @@ function ensureMonaco() {
 
 					// Apply a cross-cluster schema to monaco-kusto
 					window.__kustoApplyCrossClusterSchema = async function (clusterName, clusterUrl, database, rawSchemaJson) {
-						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+						const key = `db:${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						try {
 							// Parse the raw schema JSON
@@ -5465,11 +5639,100 @@ function ensureMonaco() {
 						}
 					};
 
-					// Check for cross-cluster references in a query and request schemas
-					window.__kustoCheckCrossClusterRefs = function (queryText, boxId) {
-						const refs = window.__kustoExtractCrossClusterRefs(queryText);
-						for (const ref of refs) {
-							window.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
+					// Check for cross-cluster references using the official monaco-kusto APIs
+					// getClusterReferences returns cluster refs NOT in cache (for cluster('X'). syntax)
+					// getDatabaseReferences returns database refs NOT in cache (for cluster('X').database('Y'). syntax)
+					window.__kustoCheckCrossClusterRefs = async function (boxId, retryCount = 0) {
+						try {
+							console.log('[cross-cluster] __kustoCheckCrossClusterRefs called, boxId:', boxId, 'retry:', retryCount);
+							
+							// Check if worker is ready
+							if (!monaco?.languages?.kusto?.getKustoWorker) {
+								console.log('[cross-cluster] Worker not ready yet, retry:', retryCount);
+								if (retryCount < 5) {
+									setTimeout(() => window.__kustoCheckCrossClusterRefs(boxId, retryCount + 1), 500);
+								}
+								return;
+							}
+							
+							// First check for cluster references (user typed cluster('X').)
+							const clusterRefs = await window.__kustoGetClusterReferences();
+							console.log('[cross-cluster] Checking cluster refs, found:', clusterRefs.length, clusterRefs);
+							
+							for (const ref of clusterRefs) {
+								// ref has { clusterName } from monaco-kusto API
+								if (ref.clusterName) {
+									console.log('[cross-cluster] Requesting cluster databases for:', ref.clusterName);
+									window.__kustoRequestClusterDatabases(ref.clusterName, boxId);
+								}
+							}
+							
+							// Then check for database references (user typed cluster('X').database('Y').)
+							const dbRefs = await window.__kustoGetDatabaseReferences();
+							console.log('[cross-cluster] Checking database refs, found:', dbRefs.length, dbRefs);
+							
+							for (const ref of dbRefs) {
+								// ref has { clusterName, databaseName } from monaco-kusto API
+								const clusterName = ref.clusterName;
+								const database = ref.databaseName;
+								
+								if (clusterName && database) {
+									console.log('[cross-cluster] Requesting schema for:', clusterName, database);
+									window.__kustoRequestCrossClusterSchema(clusterName, database, boxId);
+								}
+							}
+							
+							// If no refs found, also try a fallback regex-based approach for file-load scenario
+							// This handles cases where monaco-kusto doesn't detect refs for some reason
+							if (clusterRefs.length === 0 && dbRefs.length === 0) {
+								console.log('[cross-cluster] No refs from API, trying fallback regex approach');
+								try {
+									const models = monaco.editor.getModels();
+									if (models && models.length > 0) {
+										const text = models[0].getValue();
+										// Pattern matches: cluster('name') or cluster("name")
+										const clusterPattern = /\bcluster\s*\(\s*['"]([^'"]+)['"]\s*\)/gi;
+										// Pattern matches: cluster('name').database('db')
+										const dbPattern = /\bcluster\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*database\s*\(\s*['"]([^'"]+)['"]\s*\)/gi;
+										
+										const foundClusters = new Set();
+										const foundDbs = new Set();
+										
+										let match;
+										// Find database refs first (more specific)
+										while ((match = dbPattern.exec(text)) !== null) {
+											const cName = match[1];
+											const dName = match[2];
+											const key = `${cName.toLowerCase()}|${dName.toLowerCase()}`;
+											if (!foundDbs.has(key)) {
+												foundDbs.add(key);
+												console.log('[cross-cluster] Regex found db ref:', cName, dName);
+												window.__kustoRequestCrossClusterSchema(cName, dName, boxId);
+											}
+											foundClusters.add(cName.toLowerCase());
+										}
+										
+										// Find cluster-only refs (less specific, might just be cluster('X').)
+										while ((match = clusterPattern.exec(text)) !== null) {
+											const cName = match[1];
+											if (!foundClusters.has(cName.toLowerCase())) {
+												foundClusters.add(cName.toLowerCase());
+												console.log('[cross-cluster] Regex found cluster ref:', cName);
+												window.__kustoRequestClusterDatabases(cName, boxId);
+											}
+										}
+									}
+								} catch (e) {
+									console.error('[cross-cluster] Fallback regex failed:', e);
+								}
+							}
+						} catch (e) {
+							console.error('[cross-cluster] __kustoCheckCrossClusterRefs error:', e);
+							// Retry on error if we haven't exceeded retry count
+							if (retryCount < 3) {
+								console.log('[cross-cluster] Retrying in 1s, attempt:', retryCount + 1);
+								setTimeout(() => window.__kustoCheckCrossClusterRefs(boxId, retryCount + 1), 1000);
+							}
 						}
 					};
 
@@ -9757,7 +10020,7 @@ function initQueryEditor(boxId) {
 				}
 			} catch { /* ignore */ }
 			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-			// Check for cross-cluster references and request their schemas
+			// Check for cross-cluster references using official monaco-kusto API
 			try {
 				if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
 					// Debounce the check to avoid excessive requests while typing
@@ -9766,7 +10029,7 @@ function initQueryEditor(boxId) {
 					}
 					clearTimeout(window.__kustoCrossClusterCheckTimeout[boxId]);
 					window.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
-						window.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+						window.__kustoCheckCrossClusterRefs(boxId);
 					}, 500);
 				}
 			} catch { /* ignore */ }
@@ -9787,6 +10050,22 @@ function initQueryEditor(boxId) {
 			try {
 				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
 					window.__kustoScheduleKustoDiagnostics(boxId, 0);
+				}
+			} catch { /* ignore */ }
+			// Check for cross-cluster references when editor gets focus
+			// This handles the case where a file is loaded with existing cross-cluster queries
+			// Delay to allow the primary schema to load first
+			try {
+				if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
+					if (!window.__kustoCrossClusterFocusTimeout) {
+						window.__kustoCrossClusterFocusTimeout = {};
+					}
+					clearTimeout(window.__kustoCrossClusterFocusTimeout[boxId]);
+					window.__kustoCrossClusterFocusTimeout[boxId] = setTimeout(() => {
+						try {
+							window.__kustoCheckCrossClusterRefs(boxId);
+						} catch { /* ignore */ }
+					}, 1500); // Longer delay on focus to allow schema to fully load
 				}
 			} catch { /* ignore */ }
 		});
@@ -9895,6 +10174,23 @@ function initQueryEditor(boxId) {
 		try {
 			if (typeof window.__kustoOnQueryValueChanged === 'function') {
 				window.__kustoOnQueryValueChanged(boxId, editor.getValue());
+			}
+		} catch {
+			// ignore
+		}
+
+		// Check for cross-cluster references in initial content using official monaco-kusto API.
+		// This is needed because onDidChangeModelContent doesn't fire when content is set during create().
+		// We delay to allow the primary schema to load first, since getDatabaseReferences only
+		// returns refs that aren't already in monaco-kusto's internal cache.
+		try {
+			if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
+				// Delay to allow primary schema to load first
+				setTimeout(() => {
+					try {
+						window.__kustoCheckCrossClusterRefs(boxId);
+					} catch { /* ignore */ }
+				}, 1000);
 			}
 		} catch {
 			// ignore

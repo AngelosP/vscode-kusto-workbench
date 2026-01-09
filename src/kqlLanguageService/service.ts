@@ -984,7 +984,8 @@ export class KqlLanguageService {
 						return null;
 					}
 					// Fully-qualified sources are considered valid and not validated against current schema.
-					if (/\bcluster\s*\(\s*'[^']+'\s*\)\s*\.\s*database\s*\(\s*'[^']+'\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(rhs)) {
+					// Support both single and double quotes: cluster('X') or cluster("X")
+					if (/\bcluster\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*database\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(rhs)) {
 						return null;
 					}
 					const m = rhs.match(/^([A-Za-z_][\w-]*)\b/);
@@ -1006,9 +1007,10 @@ export class KqlLanguageService {
 					return null;
 				}
 			};
+			// Support both single and double quotes: cluster('X') or cluster("X")
 			const isFullyQualifiedTableExpr = (line: string): boolean => {
 				try {
-					return /\bcluster\s*\(\s*'[^']+'\s*\)\s*\.\s*database\s*\(\s*'[^']+'\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(String(line || ''));
+					return /\bcluster\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*database\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(String(line || ''));
 				} catch {
 					return false;
 				}
@@ -1129,9 +1131,10 @@ export class KqlLanguageService {
 
 		// Unknown table checks: join/from/lookup.
 		try {
+			// Support both single and double quotes: cluster('X') or cluster("X")
 			const isFullyQualifiedTableExpr = (seg: string): boolean => {
 				try {
-					return /\bcluster\s*\(\s*'[^']+'\s*\)\s*\.\s*database\s*\(\s*'[^']+'\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(String(seg || ''));
+					return /\bcluster\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*database\s*\(\s*['"][^'"]+['"]\s*\)\s*\.\s*[A-Za-z_][\w-]*\b/i.test(String(seg || ''));
 				} catch {
 					return false;
 				}
