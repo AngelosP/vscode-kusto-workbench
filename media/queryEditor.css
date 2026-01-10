@@ -148,7 +148,7 @@
 
 		/* Toast UI toolbar: keep a border just around the toolbar in .md mode. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
-			border: 1px solid var(--vscode-input-border) !important;
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
 			box-shadow: none !important;
 			margin-left: 10px;
 			margin-right: 10px;
@@ -223,7 +223,7 @@
 			justify-content: center;
 			background: transparent;
 			color: var(--vscode-foreground);
-			border: 1px solid var(--vscode-input-border);
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 4px;
 			padding: 6px 10px;
 			cursor: pointer;
@@ -233,7 +233,7 @@
 
 		.add-control-btn:hover {
 			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
+			border-color: var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.35))));
 		}
 
 		/* ==========================================================================
@@ -1352,7 +1352,7 @@
 		.md-tabs-divider {
 			width: 1px;
 			height: 16px;
-			background: var(--vscode-input-border);
+			background: var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.35))));
 			margin: 0 4px;
 			opacity: 0.9;
 		}
@@ -1424,10 +1424,10 @@
 		}
 
 		.markdown-viewer {
-			border: 1px solid var(--vscode-input-border);
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 4px;
 			padding: 0;
-			background: var(--vscode-editor-background);
+			background: transparent;
 			min-height: 80px;
 			font-size: 13px;
 			flex: 1 1 auto;
@@ -1436,7 +1436,7 @@
 		}
 
 		.markdown-viewer .toastui-editor-contents {
-			background: var(--vscode-editor-background);
+			background: transparent;
 			color: var(--vscode-editor-foreground);
 			/* Preview should read like docs, not like code. */
 			font-family: var(--vscode-font-family);
@@ -1459,22 +1459,23 @@
 			/* Keep the editor UI (toolbar, dialogs) in VS Code UI font. */
 			font-family: var(--vscode-font-family);
 			font-size: 13px;
-			background: var(--vscode-terminal-background);
+			background: transparent;
 			color: var(--vscode-editor-foreground);
 		}
 
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
-			border-bottom-color: var(--vscode-input-border);
-			background: var(--vscode-editorWidget-background);
+			border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
+			background: transparent !important;
 			color: var(--vscode-foreground);
-			height: 36px;
+			height: 35px;
+			min-height: 35px;
 			padding: 0 10px;
 			align-items: center;
 			border-radius: 0;
 		}
 
 		.kusto-markdown-editor .toastui-editor-toolbar {
-			height: 36px;
+			height: 35px;
 		}
 
 		/* Toast UI renders each toolbar control inside a wrapper div. Normalizing that wrapper
@@ -1563,23 +1564,28 @@
 		/* Toast UI's built-in mode switch and preview UI are enabled.
 		   (previewStyle: 'vertical' shows a split preview when in Markdown mode.) */
 
-		/* Ensure the editable surface uses VS Code theme colors (fixes dark theme readability).
-		   Use --vscode-terminal-background for write-capable modes (black in dark themes, white in light themes).
-		   The inline markdown preview pane uses --vscode-editor-background (below) since it's readonly. */
+		/* Ensure the editable surface inherits background from container.
+		   This allows Toast UI to match Monaco's actual rendered background. */
 		.kusto-markdown-editor .toastui-editor-main,
 		.kusto-markdown-editor .toastui-editor-md-container,
 		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor,
 		.kusto-markdown-editor .toastui-editor-main .ProseMirror {
-			background: var(--vscode-terminal-background) !important;
+			background: transparent !important;
 			color: var(--vscode-editor-foreground) !important;
 			font-size: 13px;
 		}
 
-		/* The inline markdown preview (split view in MARKDOWN mode) is readonly,
-		   so it should use the editor background like the Preview viewer. */
+		/* WYSIWYG mode container - transparent to inherit from wrapper. */
+		.kusto-markdown-editor .toastui-editor-ww-container,
+		.kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents {
+			background: transparent !important;
+			color: var(--vscode-editor-foreground) !important;
+		}
+
+		/* The inline markdown preview - transparent to inherit from wrapper. */
 		.kusto-markdown-editor .toastui-editor-md-preview,
 		.kusto-markdown-editor .toastui-editor-md-preview .toastui-editor-contents {
-			background: var(--vscode-editor-background) !important;
+			background: transparent !important;
 			color: var(--vscode-editor-foreground) !important;
 		}
 
@@ -1683,7 +1689,7 @@
 		}
 
 		.query-box {
-			border: 1px solid var(--vscode-input-border);
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 0;
 			padding: 12px;
 			margin-bottom: 16px;
@@ -2408,9 +2414,9 @@
 			min-height: 120px;
 			height: 175px;
 			margin: 8px 0;
-			border: 1px solid var(--vscode-input-border);
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 2px;
-			background: var(--vscode-input-background);
+			background: var(--vscode-editor-background);
 			/* Allow toolbar dropdown menus to overlay outside the editor frame. */
 			overflow: visible;
 			display: flex;
@@ -2433,9 +2439,11 @@
 			align-items: center;
 			flex-wrap: wrap;
 			gap: 4px;
-			padding: 6px;
-			border-bottom: 1px solid var(--vscode-input-border);
-			background: var(--vscode-editorWidget-background);
+			padding: 0 6px;
+			height: 35px;
+			min-height: 35px;
+			border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+			background: transparent;
 			color: var(--vscode-foreground);
 			flex: 0 0 auto;
 			border-top-left-radius: 2px;

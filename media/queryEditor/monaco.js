@@ -88,6 +88,44 @@ function __kustoGetColumnsByTable(schema) {
 	}
 }
 
+// Track whether we've defined our custom themes
+let customThemesDefined = false;
+
+function defineCustomThemes(monaco) {
+	if (customThemesDefined) return;
+	if (!monaco || !monaco.editor || typeof monaco.editor.defineTheme !== 'function') return;
+	
+	// Get the actual VS Code editor background color from CSS
+	let bgColor = '#1e1e1e'; // fallback dark
+	try {
+		const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
+		if (bg) bgColor = bg;
+	} catch {}
+	
+	// Define custom themes that inherit from kusto themes but use VS Code's background
+	try {
+		monaco.editor.defineTheme('kusto-workbench-dark', {
+			base: 'vs-dark',
+			inherit: true,
+			rules: [],
+			colors: {
+				'editor.background': bgColor
+			}
+		});
+		monaco.editor.defineTheme('kusto-workbench-light', {
+			base: 'vs',
+			inherit: true,
+			rules: [],
+			colors: {
+				'editor.background': bgColor
+			}
+		});
+		customThemesDefined = true;
+	} catch {
+		// ignore - fall back to default themes
+	}
+}
+
 function applyMonacoTheme(monaco) {
 	if (!monaco || !monaco.editor || typeof monaco.editor.setTheme !== 'function') {
 		return;
@@ -98,14 +136,20 @@ function applyMonacoTheme(monaco) {
 	} catch {
 		dark = true;
 	}
-	if (lastAppliedIsDarkTheme === dark) {
-		return;
-	}
+	
+	// Re-define themes each time to pick up any background color changes
+	customThemesDefined = false;
+	defineCustomThemes(monaco);
+	
 	lastAppliedIsDarkTheme = dark;
 	try {
-		// Use kusto-dark/kusto-light themes from monaco-kusto for proper Kusto syntax highlighting
-		// These themes provide colored strings, functions, operators, etc.
-		monaco.editor.setTheme(dark ? 'kusto-dark' : 'kusto-light');
+		// Use our custom themes that match VS Code's editor background
+		if (customThemesDefined) {
+			monaco.editor.setTheme(dark ? 'kusto-workbench-dark' : 'kusto-workbench-light');
+		} else {
+			// Fall back to kusto themes if custom theme definition failed
+			monaco.editor.setTheme(dark ? 'kusto-dark' : 'kusto-light');
+		}
 	} catch {
 		// ignore
 	}
@@ -1597,8 +1641,8 @@ function ensureMonaco() {
 						}
 					});
 
-								// Use kusto-dark/kusto-light themes from monaco-kusto for proper Kusto syntax highlighting
-								monaco.editor.setTheme(isDarkTheme() ? 'kusto-dark' : 'kusto-light');
+								// Use custom themes that match VS Code's editor background
+								applyMonacoTheme(monaco);
 					// Autocomplete: pipe operators + (optionally) schema tables/columns.
 					// Keep a reference to our completion provider so diagnostics can be filtered
 					// using the exact same suggestion logic ("if it's in autocomplete, it must not squiggle").
