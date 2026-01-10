@@ -2438,7 +2438,7 @@
 		.query-editor-toolbar {
 			display: flex;
 			align-items: center;
-			flex-wrap: wrap;
+			flex-wrap: nowrap;
 			gap: 4px;
 			padding: 0 6px;
 			height: 35px;
@@ -2449,6 +2449,110 @@
 			flex: 0 0 auto;
 			border-top-left-radius: 2px;
 			border-top-right-radius: 2px;
+			overflow: visible;
+			position: relative;
+		}
+
+		/* Container for toolbar items that can overflow */
+		.qe-toolbar-items {
+			display: flex;
+			align-items: center;
+			flex-wrap: nowrap;
+			gap: 4px;
+			flex: 0 1 auto;
+			min-width: 0;
+			overflow: hidden;
+		}
+
+		/* Overflow "more" button - hidden until needed */
+		.qe-toolbar-overflow-wrapper {
+			position: relative;
+			display: none;
+			flex: 0 0 auto;
+		}
+
+		.qe-toolbar-overflow-wrapper.is-visible {
+			display: inline-flex;
+		}
+
+		.qe-toolbar-overflow-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 6px;
+			height: 28px;
+			min-width: 28px;
+			font-weight: bold;
+			font-size: 14px;
+			letter-spacing: 1px;
+		}
+
+		.qe-toolbar-overflow-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.qe-toolbar-overflow-btn.is-active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+		}
+
+		/* Overflow menu dropdown - uses fixed positioning to escape overflow:hidden containers */
+		.qe-toolbar-overflow-menu {
+			position: fixed;
+			z-index: 1000;
+			min-width: 180px;
+			background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background));
+			border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+			border-radius: 4px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+			padding: 4px 0;
+		}
+
+		/* Items inside overflow menu */
+		.qe-toolbar-overflow-item {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 6px 12px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			font-size: 13px;
+			white-space: nowrap;
+		}
+
+		.qe-toolbar-overflow-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.qe-toolbar-overflow-item .qe-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 16px;
+			height: 16px;
+			flex: 0 0 auto;
+		}
+
+		.qe-toolbar-overflow-item .qe-toolbar-overflow-label {
+			flex: 1 1 auto;
+		}
+
+		.qe-toolbar-overflow-sep {
+			height: 1px;
+			background: var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+			margin: 4px 8px;
+		}
+
+		/* Mark toolbar items as hidden when in overflow */
+		.query-editor-toolbar-btn.qe-in-overflow,
+		.query-editor-toolbar-sep.qe-in-overflow,
+		.qe-toolbar-menu-wrapper.qe-in-overflow {
+			display: none !important;
 		}
 
 		.qe-missing-clusters-banner {

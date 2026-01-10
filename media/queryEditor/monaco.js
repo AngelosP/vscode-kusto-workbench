@@ -10009,6 +10009,13 @@ function initQueryEditor(boxId) {
 			}
 		} catch { /* ignore */ }
 
+		// Initialize toolbar overflow handling (shows "..." button when buttons overflow)
+		try {
+			if (typeof initToolbarOverflow === 'function') {
+				initToolbarOverflow(boxId);
+			}
+		} catch { /* ignore */ }
+
 		// Drag handle resize (more reliable than CSS resize in VS Code webviews).
 		if (resizer) {
 			const resolveWrapperForResize = () => {

@@ -251,45 +251,53 @@ function addQueryBox(options) {
 			'<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="' + id + '_tools_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 		'</span>';
 	const toolbarHtml =
-		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools">' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
+		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools" id="' + id + '_toolbar">' +
+		'<div class="qe-toolbar-items">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="prettify" data-qe-overflow-label="Prettify query" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
 		'</span>' +
 		'</button>' +
 		toolsDropdownHtml +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="search" data-qe-overflow-label="Search" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M6.5 2a4.5 4.5 0 1 0 2.67 8.13l3.02 3.02a.75.75 0 0 0 1.06-1.06l-3.02-3.02A4.5 4.5 0 0 0 6.5 2zm0 1.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'replace\')" title="Search and replace\nFind and replace in the current query">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="replace" data-qe-overflow-label="Search and replace" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'replace\')" title="Search and replace\nFind and replace in the current query">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M2.5 4.5h8V3l3 2.5-3 2.5V6.5h-8v-2zM13.5 11.5h-8V13l-3-2.5 3-2.5v1.5h8v2z"/></svg>' +
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
+		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" data-qe-overflow-action="autocomplete" data-qe-overflow-label="Trigger autocomplete" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_copilot_chat_toggle" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
+		'<button type="button" id="' + id + '_copilot_chat_toggle" data-qe-overflow-action="copilotChat" data-qe-overflow-label="Copilot chat" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
 		'<span class="qe-icon" aria-hidden="true">' + copilotLogoHtml + '</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="exportPowerBI" data-qe-overflow-label="Export to Power BI" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>' +
 		'</span>' +
 		'</button>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="copyAdeLink" data-qe-overflow-label="Share query as link" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<span class="codicon codicon-link" aria-hidden="true"></span>' +
 		'</span>' +
 		'</button>' +
+		'</div>' +
+		'<span class="qe-toolbar-overflow-wrapper" id="' + id + '_toolbar_overflow_wrapper">' +
+			'<button type="button" class="qe-toolbar-overflow-btn" id="' + id + '_toolbar_overflow_btn" onclick="toggleToolbarOverflow(\'' + id + '\'); event.stopPropagation();" title="More actions" aria-label="More actions" aria-haspopup="true" aria-expanded="false">' +
+				'<span aria-hidden="true">···</span>' +
+			'</button>' +
+			'<div class="qe-toolbar-overflow-menu kusto-dropdown-menu" id="' + id + '_toolbar_overflow_menu" role="menu" tabindex="-1" style="display:none;"></div>' +
+		'</span>' +
 		'</div>';
 
 	// Reusable dropdown markup helpers (loaded via media/queryEditor/dropdown.js)
@@ -2263,6 +2271,258 @@ function closeToolsDropdown(boxId) {
 			try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
+}
+
+// --- Toolbar overflow handling ---
+// Track ResizeObservers per toolbar
+const __kustoToolbarResizeObservers = {};
+
+/**
+ * Initialize toolbar overflow detection for a query box.
+ * Uses ResizeObserver to detect when buttons overflow and shows a "..." menu.
+ */
+function initToolbarOverflow(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const toolbar = document.getElementById(id + '_toolbar');
+	if (!toolbar) return;
+
+	// Clean up any existing observer
+	if (__kustoToolbarResizeObservers[id]) {
+		try { __kustoToolbarResizeObservers[id].disconnect(); } catch { /* ignore */ }
+	}
+
+	// Create new observer
+	const observer = new ResizeObserver(() => {
+		try { updateToolbarOverflow(id); } catch { /* ignore */ }
+	});
+	observer.observe(toolbar);
+	__kustoToolbarResizeObservers[id] = observer;
+
+	// Initial check
+	requestAnimationFrame(() => {
+		try { updateToolbarOverflow(id); } catch { /* ignore */ }
+	});
+}
+
+/**
+ * Update overflow state for a toolbar - hide overflowing items and show overflow menu
+ */
+function updateToolbarOverflow(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const toolbar = document.getElementById(id + '_toolbar');
+	const itemsContainer = toolbar && toolbar.querySelector('.qe-toolbar-items');
+	const overflowWrapper = document.getElementById(id + '_toolbar_overflow_wrapper');
+	if (!toolbar || !itemsContainer || !overflowWrapper) return;
+
+	// Get all toolbar items (buttons, separators, wrappers)
+	const items = Array.from(itemsContainer.children);
+	if (!items.length) return;
+
+	// First, make all items visible to measure properly
+	items.forEach(item => item.classList.remove('qe-in-overflow'));
+	overflowWrapper.classList.remove('is-visible');
+
+	// Get available width (toolbar width minus padding and overflow button width)
+	const toolbarStyle = getComputedStyle(toolbar);
+	const paddingLeft = parseFloat(toolbarStyle.paddingLeft) || 0;
+	const paddingRight = parseFloat(toolbarStyle.paddingRight) || 0;
+	const gap = parseFloat(getComputedStyle(itemsContainer).gap) || 4;
+	const overflowBtnWidth = 36; // Approximate width of overflow button
+	const availableWidth = toolbar.clientWidth - paddingLeft - paddingRight - overflowBtnWidth - gap;
+
+	// Calculate cumulative widths to find where overflow starts
+	let totalWidth = 0;
+	let overflowStartIndex = -1;
+
+	for (let i = 0; i < items.length; i++) {
+		const item = items[i];
+		const itemWidth = item.offsetWidth + (i > 0 ? gap : 0);
+		totalWidth += itemWidth;
+
+		if (totalWidth > availableWidth && overflowStartIndex === -1) {
+			// Find the previous separator to make a clean break
+			let breakIndex = i;
+			for (let j = i - 1; j >= 0; j--) {
+				if (items[j].classList.contains('query-editor-toolbar-sep')) {
+					breakIndex = j;
+					break;
+				}
+			}
+			overflowStartIndex = breakIndex;
+			break;
+		}
+	}
+
+	// If everything fits, no overflow needed
+	if (overflowStartIndex === -1) {
+		return;
+	}
+
+	// Hide items that overflow
+	for (let i = overflowStartIndex; i < items.length; i++) {
+		items[i].classList.add('qe-in-overflow');
+	}
+
+	// Show the overflow button
+	overflowWrapper.classList.add('is-visible');
+}
+
+/**
+ * Toggle the toolbar overflow menu
+ */
+function toggleToolbarOverflow(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const menu = document.getElementById(id + '_toolbar_overflow_menu');
+	const btn = document.getElementById(id + '_toolbar_overflow_btn');
+	if (!menu || !btn) return;
+
+	const isOpen = menu.style.display === 'block';
+
+	// Close all other menus first
+	try { closeAllRunMenus(); } catch { /* ignore */ }
+	try { closeAllFavoritesDropdowns && closeAllFavoritesDropdowns(); } catch { /* ignore */ }
+	try { closeToolsDropdown(id); } catch { /* ignore */ }
+
+	if (isOpen) {
+		closeToolbarOverflow(id);
+	} else {
+		// Render the menu content
+		renderToolbarOverflowMenu(id);
+		menu.style.display = 'block';
+		btn.setAttribute('aria-expanded', 'true');
+		btn.classList.add('is-active');
+
+		// Position the menu using fixed positioning (to escape overflow:hidden)
+		try {
+			const btnRect = btn.getBoundingClientRect();
+			const menuRect = menu.getBoundingClientRect();
+			const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+			
+			// Start with left-aligned to button
+			let left = btnRect.left;
+			
+			// If menu would overflow right edge, align to right edge of button instead
+			if (left + menuRect.width > viewportWidth - 8) {
+				left = btnRect.right - menuRect.width;
+			}
+			
+			// Ensure it doesn't go off the left edge either
+			if (left < 8) {
+				left = 8;
+			}
+			
+			menu.style.left = left + 'px';
+			menu.style.top = btnRect.bottom + 'px';
+		} catch { /* ignore */ }
+
+		// Wire keyboard nav if available
+		try { window.__kustoDropdown && window.__kustoDropdown.wireMenuInteractions && window.__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+	}
+}
+
+/**
+ * Close the toolbar overflow menu
+ */
+function closeToolbarOverflow(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const menu = document.getElementById(id + '_toolbar_overflow_menu');
+	const btn = document.getElementById(id + '_toolbar_overflow_btn');
+	if (menu) menu.style.display = 'none';
+	if (btn) {
+		btn.setAttribute('aria-expanded', 'false');
+		btn.classList.remove('is-active');
+	}
+}
+
+/**
+ * Close all toolbar overflow menus
+ */
+function closeAllToolbarOverflowMenus() {
+	document.querySelectorAll('.qe-toolbar-overflow-menu').forEach(menu => {
+		menu.style.display = 'none';
+	});
+	document.querySelectorAll('.qe-toolbar-overflow-btn').forEach(btn => {
+		btn.setAttribute('aria-expanded', 'false');
+		btn.classList.remove('is-active');
+	});
+}
+
+/**
+ * Render the overflow menu items based on which buttons are hidden
+ */
+function renderToolbarOverflowMenu(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const toolbar = document.getElementById(id + '_toolbar');
+	const menu = document.getElementById(id + '_toolbar_overflow_menu');
+	if (!toolbar || !menu) return;
+
+	const itemsContainer = toolbar.querySelector('.qe-toolbar-items');
+	if (!itemsContainer) return;
+
+	// Find all hidden items (those with qe-in-overflow class)
+	const hiddenItems = Array.from(itemsContainer.querySelectorAll('.qe-in-overflow'));
+	if (!hiddenItems.length) {
+		menu.innerHTML = '<div class="qe-toolbar-overflow-item" style="opacity:0.6;cursor:default;">No additional actions</div>';
+		return;
+	}
+
+	let menuHtml = '';
+	let prevWasSep = false;
+
+	hiddenItems.forEach(item => {
+		if (item.classList.contains('query-editor-toolbar-sep')) {
+			// Add separator in menu (but avoid consecutive separators)
+			if (!prevWasSep && menuHtml) {
+				menuHtml += '<div class="qe-toolbar-overflow-sep"></div>';
+				prevWasSep = true;
+			}
+			return;
+		}
+		prevWasSep = false;
+
+		// Handle the tools dropdown specially
+		if (item.classList.contains('qe-toolbar-menu-wrapper')) {
+			menuHtml += '<div class="qe-toolbar-overflow-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); toggleToolsDropdown(\'' + id + '\');">' +
+				'<span class="qe-icon" aria-hidden="true"><span class="codicon codicon-tools"></span></span>' +
+				'<span class="qe-toolbar-overflow-label">Tools</span>' +
+				'</div>';
+			return;
+		}
+
+		// Get action and label from data attributes or title
+		const action = item.getAttribute('data-qe-overflow-action') || '';
+		const label = item.getAttribute('data-qe-overflow-label') || item.getAttribute('title') || action;
+		const iconHtml = item.querySelector('.qe-icon') ? item.querySelector('.qe-icon').innerHTML : '';
+		const isDisabled = item.disabled || item.getAttribute('aria-disabled') === 'true';
+
+		if (action && label) {
+			const disabledAttr = isDisabled ? ' style="opacity:0.5;cursor:default;" aria-disabled="true"' : '';
+			let onclick = '';
+			if (!isDisabled) {
+				if (action === 'caretDocs') {
+					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleCaretDocsEnabled();';
+				} else if (action === 'copilotChat') {
+					onclick = 'closeToolbarOverflow(\'' + id + '\'); __kustoToggleCopilotChatForBox(\'' + id + '\');';
+				} else {
+					onclick = 'closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'' + action + '\');';
+				}
+			}
+			menuHtml += '<div class="qe-toolbar-overflow-item" role="menuitem" tabindex="-1"' + disabledAttr + ' onclick="' + onclick + '">' +
+				'<span class="qe-icon" aria-hidden="true">' + iconHtml + '</span>' +
+				'<span class="qe-toolbar-overflow-label">' + label + '</span>' +
+				'</div>';
+		}
+	});
+
+	// Remove trailing separator if any
+	menuHtml = menuHtml.replace(/<div class="qe-toolbar-overflow-sep"><\/div>$/, '');
+
+	menu.innerHTML = menuHtml || '<div class="qe-toolbar-overflow-item" style="opacity:0.6;cursor:default;">No additional actions</div>';
 }
 
 function toggleToolsDropdown(boxId) {

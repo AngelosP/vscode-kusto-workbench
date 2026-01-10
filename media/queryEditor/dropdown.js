@@ -194,11 +194,11 @@
 
 	window.__kustoDropdown.closeAllMenus = function () {
 		try {
-			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu'));
+			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu'));
 			for (const m of menus) {
 				try { m.style.display = 'none'; } catch { /* ignore */ }
 			}
-			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn'));
+			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn, .qe-toolbar-overflow-btn'));
 			for (const b of buttons) {
 				try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
 				try { b.classList && b.classList.remove('is-active'); } catch { /* ignore */ }

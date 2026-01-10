@@ -449,7 +449,7 @@ function __kustoGetFocusedMonacoEditor() {
 			if (!e || e.button !== 0) return;
 			const t = e.target;
 			if (!t || !t.closest) return;
-			if (t.closest('.query-editor-toolbar') || t.closest('.qe-toolbar-dropdown-menu')) {
+			if (t.closest('.query-editor-toolbar') || t.closest('.qe-toolbar-dropdown-menu') || t.closest('.qe-toolbar-overflow-menu')) {
 				// Prevent the browser from focusing the clicked element.
 				e.preventDefault();
 			}
@@ -467,10 +467,12 @@ function __kustoGetFocusedMonacoEditor() {
 
 			const inToolbar = !!t.closest('.query-editor-toolbar');
 			const inToolbarMenu = !!t.closest('.qe-toolbar-dropdown-menu');
-			if (!inToolbar && !inToolbarMenu) return;
+			const inOverflowMenu = !!t.closest('.qe-toolbar-overflow-menu');
+			if (!inToolbar && !inToolbarMenu && !inOverflowMenu) return;
 
 			const isDropdownToggle = inToolbar && !!t.closest('.qe-toolbar-dropdown-btn');
-			if (isDropdownToggle) {
+			const isOverflowToggle = inToolbar && !!t.closest('.qe-toolbar-overflow-btn');
+			if (isDropdownToggle || isOverflowToggle) {
 				return;
 			}
 
