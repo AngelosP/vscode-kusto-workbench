@@ -5033,6 +5033,7 @@
 			align-items: center;
 			gap: 12px;
 			margin-top: 8px;
+			margin-bottom: 10px;
 			width: 100%;
 		}
 
@@ -5040,11 +5041,6 @@
 			display: inline-flex;
 			align-items: center;
 			gap: 8px;
-			margin-bottom: 10px;
-		}
-
-		.query-run button {
-			margin-bottom: 0;
 		}
 
 		.optimize-query-btn {
@@ -5376,6 +5372,7 @@
 			margin-left: auto;
 			justify-content: flex-end;
 			flex-wrap: wrap;
+			align-items: center;
 		}
 
 		.cache-checkbox {
