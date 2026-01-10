@@ -1945,7 +1945,7 @@
 		.kusto-dropdown-btn-caret,
 		.kusto-favorites-btn-caret {
 			position: absolute;
-			right: 8px;
+			right: 3px;
 			top: 50%;
 			transform: translateY(-50%);
 			pointer-events: none;
