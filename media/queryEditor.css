@@ -424,8 +424,8 @@
 			border: none;
 			border-left: 1px solid var(--vscode-button-border, rgba(255,255,255,0.2));
 			border-radius: 0 2px 2px 0;
-			padding: 6px 10px;
-			min-width: 28px;
+			padding: 6px 5px;
+			min-width: 18px;
 			cursor: pointer;
 			display: inline-flex;
 			align-items: center;
@@ -454,6 +454,15 @@
 			color: var(--vscode-button-foreground);
 			cursor: not-allowed;
 			opacity: 0.5;
+		}
+
+		/* Run button label - hide when narrow */
+		.unified-btn-split-main .run-btn-label {
+			margin-left: 4px;
+		}
+
+		.unified-btn-split-main.is-compact .run-btn-label {
+			display: none;
 		}
 
 		/* Split button menu */
@@ -2540,6 +2549,26 @@
 
 		.qe-toolbar-overflow-item .qe-toolbar-overflow-label {
 			flex: 1 1 auto;
+		}
+
+		/* Copilot logo in overflow menu - match toolbar styling */
+		.qe-toolbar-overflow-item img.copilot-logo {
+			width: 16px;
+			height: 16px;
+			display: block;
+		}
+
+		body.vscode-dark .qe-toolbar-overflow-item img.copilot-logo,
+		body.vscode-high-contrast .qe-toolbar-overflow-item img.copilot-logo,
+		body.vscode-high-contrast-light .qe-toolbar-overflow-item img.copilot-logo {
+			filter: invert(1);
+		}
+
+		.qe-toolbar-overflow-item .copilot-logo-svg {
+			width: 16px;
+			height: 16px;
+			display: block;
+			stroke-width: 1.8px;
 		}
 
 		.qe-toolbar-overflow-sep {

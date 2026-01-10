@@ -433,8 +433,8 @@ function addQueryBox(options) {
 		'<div class="query-actions">' +
 		'<div class="query-run">' +
 		'<div class="unified-btn-split" id="' + id + '_run_split">' +
-		'<button class="unified-btn-split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Select a cluster and database first (or select a favorite)">▶ Run Query (take 100)</button>' +
-		'<button class="unified-btn-split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
+		'<button class="unified-btn-split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Run Query (take 100)\nSelect a cluster and database first (or select a favorite)">▶<span class="run-btn-label"> Run Query (take 100)</span></button>' +
+		'<button class="unified-btn-split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options" title="Run query options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
 		'<div class="unified-btn-split-menu" id="' + id + '_run_menu" role="menu">' +
 		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'plain\');">Run Query</div>' +
 		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'take100\');">Run Query (take 100)</div>' +
@@ -2276,6 +2276,8 @@ function closeToolsDropdown(boxId) {
 // --- Toolbar overflow handling ---
 // Track ResizeObservers per toolbar
 const __kustoToolbarResizeObservers = {};
+// Track ResizeObservers for run button responsiveness
+const __kustoRunBtnResizeObservers = {};
 
 /**
  * Initialize toolbar overflow detection for a query box.
@@ -2303,6 +2305,60 @@ function initToolbarOverflow(boxId) {
 	requestAnimationFrame(() => {
 		try { updateToolbarOverflow(id); } catch { /* ignore */ }
 	});
+
+	// Also initialize run button responsiveness
+	initRunButtonResponsive(boxId);
+}
+
+/**
+ * Initialize responsive behavior for the Run button.
+ * When the query box is narrow, hide the label and show only the play icon.
+ */
+function initRunButtonResponsive(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const queryBox = document.getElementById(id);
+	if (!queryBox) return;
+
+	// Clean up any existing observer
+	if (__kustoRunBtnResizeObservers[id]) {
+		try { __kustoRunBtnResizeObservers[id].disconnect(); } catch { /* ignore */ }
+	}
+
+	// Create new observer on the query box itself
+	const observer = new ResizeObserver(() => {
+		try { updateRunButtonResponsive(id); } catch { /* ignore */ }
+	});
+	observer.observe(queryBox);
+	__kustoRunBtnResizeObservers[id] = observer;
+
+	// Initial check
+	requestAnimationFrame(() => {
+		try { updateRunButtonResponsive(id); } catch { /* ignore */ }
+	});
+}
+
+/**
+ * Update run button compact/expanded state based on available width.
+ */
+function updateRunButtonResponsive(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const runBtn = document.getElementById(id + '_run_btn');
+	if (!runBtn) return;
+
+	// Get the query box width
+	const queryBox = document.getElementById(id);
+	if (!queryBox) return;
+	const boxWidth = queryBox.offsetWidth;
+
+	// Threshold: if box is narrower than 400px, use compact mode
+	const compactThreshold = 400;
+	if (boxWidth < compactThreshold) {
+		runBtn.classList.add('is-compact');
+	} else {
+		runBtn.classList.remove('is-compact');
+	}
 }
 
 /**
@@ -6309,9 +6365,10 @@ window.__kustoUpdateRunEnabledForBox = function (boxId) {
 		runBtn.disabled = !enabled;
 		try {
 			// When disabled, provide a helpful tooltip instead of looking "broken".
-			runBtn.title = enabled ? '' : disabledTooltip;
+			const modeLabel = getRunModeLabelText(getRunMode(id));
+			runBtn.title = enabled ? modeLabel : (modeLabel + '\n' + disabledTooltip);
 			// Also keep ARIA label helpful when disabled.
-			runBtn.setAttribute('aria-label', enabled ? 'Run query' : disabledTooltip);
+			runBtn.setAttribute('aria-label', enabled ? modeLabel : disabledTooltip);
 		} catch { /* ignore */ }
 	}
 	// Keep the split dropdown usable so users can change run mode even before selection is ready.
@@ -6343,15 +6400,15 @@ function getRunMode(boxId) {
 	return runModesByBoxId[boxId] || 'take100';
 }
 
-function getRunModeLabel(mode) {
+function getRunModeLabelText(mode) {
 	switch ((mode || '').toLowerCase()) {
 		case 'plain':
-			return '▶ Run Query';
+			return 'Run Query';
 		case 'sample100':
-			return '▶ Run Query (sample 100)';
+			return 'Run Query (sample 100)';
 		case 'take100':
 		default:
-			return '▶ Run Query (take 100)';
+			return 'Run Query (take 100)';
 	}
 }
 
@@ -6359,7 +6416,14 @@ function setRunMode(boxId, mode) {
 	runModesByBoxId[boxId] = (mode || 'take100');
 	const runBtn = document.getElementById(boxId + '_run_btn');
 	if (runBtn) {
-		runBtn.textContent = getRunModeLabel(runModesByBoxId[boxId]);
+		const labelSpan = runBtn.querySelector('.run-btn-label');
+		const labelText = getRunModeLabelText(runModesByBoxId[boxId]);
+		if (labelSpan) {
+			labelSpan.textContent = ' ' + labelText;
+		}
+		// Update tooltip
+		const isEnabled = !runBtn.disabled;
+		runBtn.title = labelText + (isEnabled ? '' : '\nSelect a cluster and database first (or select a favorite)');
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
