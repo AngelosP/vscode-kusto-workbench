@@ -6459,6 +6459,19 @@ document.addEventListener('click', () => {
 	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 });
 
+// Close dropdowns on scroll/wheel so they don't float detached from their buttons.
+document.addEventListener('scroll', () => {
+	closeAllRunMenus();
+	closeAllFavoritesDropdowns();
+	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+}, true); // Use capture to catch scroll events on nested scrollable elements
+
+document.addEventListener('wheel', () => {
+	closeAllRunMenus();
+	closeAllFavoritesDropdowns();
+	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+}, { passive: true });
+
 function formatElapsed(ms) {
 	const totalSeconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(totalSeconds / 60);

@@ -4478,10 +4478,6 @@
 			color: var(--vscode-menu-selectionForeground);
 		}
 
-		td[title]:hover {
-			cursor: help;
-		}
-
 		td.search-match {
 			background: var(--vscode-editor-findMatchBackground);
 			outline: 1px solid var(--vscode-editor-findMatchBorder);

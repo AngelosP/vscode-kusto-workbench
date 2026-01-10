@@ -2233,7 +2233,7 @@ function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, match
 	const boxIdArg = __kustoEscapeForHtmlAttribute(JSON.stringify(String(boxId)));
 	return (
 		'<tr data-row="' + rowIdx + '"' + trClass + '>' +
-		'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', ' + boxIdArg + ')">' + (displayIdx + 1) + '</td>' +
+		'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', ' + boxIdArg + '); event.stopPropagation();">' + (displayIdx + 1) + '</td>' +
 		row.map((cell, colIdx) => {
 			const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 			const displayValue = hasHover ? cell.display : cell;
@@ -3277,6 +3277,27 @@ function selectCell(a, b, c, d) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
+	// If clicking on an already selected single cell (not extending with shift), deselect it.
+	// Check if the clicked cell is the current focus cell and is the only cell selected.
+	const isClickedCellFocused = state.selectedCell &&
+		state.selectedCell.row === row &&
+		state.selectedCell.col === col;
+	const isSingleCellRange = state.cellSelectionRange &&
+		state.cellSelectionRange.colMin === state.cellSelectionRange.colMax &&
+		state.cellSelectionAnchor &&
+		state.cellSelectionAnchor.row === row &&
+		state.cellSelectionAnchor.col === col;
+
+	if (isClickedCellFocused && isSingleCellRange && !(ev && ev.shiftKey)) {
+		// Clear all cell selection.
+		state.selectedCell = null;
+		state.cellSelectionAnchor = null;
+		state.cellSelectionRange = null;
+		try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
+		try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+		return;
+	}
+
 	__kustoSetCellSelectionState(boxId, state, row, col, {
 		extend: !!(ev && ev.shiftKey)
 	});
@@ -3304,16 +3325,40 @@ function toggleRowSelection(row, boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	const rowElement = document.querySelector('#' + boxId + '_table tr[data-row="' + row + '"]');
-	if (!rowElement) { return; }
+	// Try to get the event for shift-key detection.
+	const ev = __kustoTryGetDomEventFromInlineHandler(null);
+	const isShift = !!(ev && ev.shiftKey);
 
-	if (state.selectedRows.has(row)) {
-		state.selectedRows.delete(row);
-		rowElement.classList.remove('selected-row');
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+
+	// SHIFT+click: select range from last selected row (anchor) to clicked row.
+	if (isShift && state.rowSelectionAnchor !== undefined && state.rowSelectionAnchor !== null) {
+		const anchor = state.rowSelectionAnchor;
+		const minRow = Math.min(anchor, row);
+		const maxRow = Math.max(anchor, row);
+		// Add all rows in range to selection.
+		for (let r = minRow; r <= maxRow; r++) {
+			state.selectedRows.add(r);
+		}
 	} else {
-		state.selectedRows.add(row);
-		rowElement.classList.add('selected-row');
+		// Normal click: toggle single row.
+		if (state.selectedRows.has(row)) {
+			state.selectedRows.delete(row);
+		} else {
+			state.selectedRows.add(row);
+			// Set anchor for future shift-click range selection.
+			state.rowSelectionAnchor = row;
+		}
 	}
+
+	// Clear cell selection when row selection changes to avoid ambiguity.
+	try {
+		state.selectedCell = null;
+		state.cellSelectionAnchor = null;
+		state.cellSelectionRange = null;
+		__kustoBumpVisualVersion(state);
+		__kustoRerenderResultsTable(boxId);
+	} catch { /* ignore */ }
 }
 
 function toggleSearchTool(boxId) {
@@ -3738,6 +3783,17 @@ function __kustoGetDisplayRowsInRange(state, displayRowMin, displayRowMax) {
 }
 
 function __kustoCellToClipboardString(cell) {
+	// For cells with display/full structure, prefer display for clipboard (it's usually cleaner for dates).
+	// This gives us ISO-formatted dates instead of the long timezone strings.
+	try {
+		if (cell && typeof cell === 'object' && 'display' in cell && cell.display !== undefined && cell.display !== null) {
+			let s = String(cell.display);
+			s = s.replace(/\r?\n/g, ' ');
+			s = s.replace(/\t/g, ' ');
+			return s;
+		}
+	} catch { /* ignore */ }
+
 	const raw = __kustoGetRawCellValue(cell);
 	if (raw === null || raw === undefined) return '';
 	let s = String(raw);
@@ -3748,7 +3804,19 @@ function __kustoCellToClipboardString(cell) {
 }
 
 function __kustoCellToCsvString(cell) {
-	const raw = __kustoGetRawCellValue(cell);
+	// For cells with display/full structure, prefer display for CSV (it's usually cleaner for dates).
+	// This gives us ISO-formatted dates instead of the long timezone strings.
+	let raw;
+	try {
+		if (cell && typeof cell === 'object' && 'display' in cell && cell.display !== undefined && cell.display !== null) {
+			raw = cell.display;
+		} else {
+			raw = __kustoGetRawCellValue(cell);
+		}
+	} catch {
+		raw = __kustoGetRawCellValue(cell);
+	}
+
 	if (raw === null || raw === undefined) return '';
 	let s = String(raw);
 	// RFC4180-ish: quote if needed, escape quotes by doubling them.
@@ -4073,6 +4141,28 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 				const state = __kustoGetResultsState(boxId);
 				if (!state) return;
 
+				// If clicking on an already selected single cell (not extending with shift), deselect it.
+				const isClickedCellFocused = state.selectedCell &&
+					state.selectedCell.row === cell.row &&
+					state.selectedCell.col === cell.col;
+				const isSingleCellRange = state.cellSelectionRange &&
+					state.cellSelectionRange.colMin === state.cellSelectionRange.colMax &&
+					state.cellSelectionAnchor &&
+					state.cellSelectionAnchor.row === cell.row &&
+					state.cellSelectionAnchor.col === cell.col;
+
+				if (isClickedCellFocused && isSingleCellRange && !ev.shiftKey) {
+					// Clear all cell selection.
+					state.selectedCell = null;
+					state.cellSelectionAnchor = null;
+					state.cellSelectionRange = null;
+					anchorCell = null;
+					isDragging = false;
+					try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
+					try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+					return;
+				}
+
 				// If shift key, extend from existing anchor/caret; otherwise set new anchor
 				const extend = !!ev.shiftKey;
 				if (!extend) {
@@ -4204,12 +4294,21 @@ function copySelectionToClipboard(boxId) {
 
 	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
 
+	const columns = Array.isArray(state.columns) ? state.columns : [];
+
 	// Prefer a cell range selection.
 	if (state.cellSelectionRange && typeof state.cellSelectionRange === 'object') {
 		const r = state.cellSelectionRange;
 		if (isFinite(r.displayRowMin) && isFinite(r.displayRowMax) && isFinite(r.colMin) && isFinite(r.colMax)) {
+			// Build header row for the selected columns.
+			const headerCells = [];
+			for (let col = r.colMin; col <= r.colMax; col++) {
+				headerCells.push(__kustoCellToClipboardString(columns[col] || ''));
+			}
+			const headerLine = headerCells.join('\t');
+
 			const rowIndices = __kustoGetDisplayRowsInRange(state, r.displayRowMin, r.displayRowMax);
-			const lines = rowIndices.map(rowIdx => {
+			const dataLines = rowIndices.map(rowIdx => {
 				const row = (state.rows && state.rows[rowIdx]) ? state.rows[rowIdx] : [];
 				const cells = [];
 				for (let col = r.colMin; col <= r.colMax; col++) {
@@ -4217,23 +4316,26 @@ function copySelectionToClipboard(boxId) {
 				}
 				return cells.join('\t');
 			});
-			__kustoCopyTextToClipboard(lines.join('\n'));
+			__kustoCopyTextToClipboard([headerLine, ...dataLines].join('\n'));
 			return;
 		}
 	}
 
 	// Next: selected rows.
 	if (state.selectedRows && state.selectedRows.size > 0) {
+		// Build header row for all columns.
+		const headerLine = columns.map(col => __kustoCellToClipboardString(col)).join('\t');
+
 		const rowIndices = Array.from(state.selectedRows).sort((a, b) => a - b);
-		const textToCopy = rowIndices.map(rowIdx => {
+		const dataLines = rowIndices.map(rowIdx => {
 			const row = state.rows[rowIdx] || [];
 			return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
-		}).join('\n');
-		__kustoCopyTextToClipboard(textToCopy);
+		});
+		__kustoCopyTextToClipboard([headerLine, ...dataLines].join('\n'));
 		return;
 	}
 
-	// Finally: single cell.
+	// Finally: single cell (no header for single cell copy).
 	if (state.selectedCell) {
 		const cell = state.selectedCell;
 		const value = (state.rows && state.rows[cell.row]) ? state.rows[cell.row][cell.col] : '';

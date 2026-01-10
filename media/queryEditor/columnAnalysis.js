@@ -53,6 +53,23 @@ function __kustoWireColumnMenuAutoClose() {
 			__kustoCloseAllColumnMenus();
 		} catch { /* ignore */ }
 	}, true);
+
+	// Close column menus on scroll/wheel so they don't float detached from their buttons.
+	document.addEventListener('scroll', () => {
+		try {
+			const anyOpen = document.querySelector('.column-menu.visible');
+			if (!anyOpen) return;
+			__kustoCloseAllColumnMenus();
+		} catch { /* ignore */ }
+	}, true); // Use capture to catch scroll events on nested scrollable elements
+
+	document.addEventListener('wheel', () => {
+		try {
+			const anyOpen = document.querySelector('.column-menu.visible');
+			if (!anyOpen) return;
+			__kustoCloseAllColumnMenus();
+		} catch { /* ignore */ }
+	}, { passive: true });
 }
 
 function toggleColumnMenu(colIdx, boxId) {

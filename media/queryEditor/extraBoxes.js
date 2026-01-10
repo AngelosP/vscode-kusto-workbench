@@ -3570,15 +3570,36 @@ function initMarkdownEditor(boxId) {
 		return;
 	}
 
-	// Intercept Ctrl+S at the DOM level (capture phase) BEFORE ToastUI's keymap handles it.
-	// This prevents strikethrough and allows VS Code to handle the save.
+	// Intercept Ctrl+S and Ctrl+Shift+S at the DOM level (capture phase) BEFORE ToastUI's keymap handles it.
+	// ToastUI/ProseMirror binds Ctrl+S to strikethrough, which blocks VS Code's save shortcut.
+	// We completely stop the event from reaching ToastUI, then re-dispatch it at the document level
+	// so VS Code's webview keyboard handling can process it for save functionality.
 	try {
 		container.addEventListener('keydown', (ev) => {
 			try {
 				if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
-					// Prevent ToastUI's strikethrough action.
+					// Stop ToastUI from receiving this event entirely.
 					ev.stopPropagation();
-					// Do NOT call ev.preventDefault() - we want VS Code to handle the save.
+					ev.stopImmediatePropagation();
+					ev.preventDefault(); // Prevent ToastUI's default strikethrough action.
+					
+					// Re-dispatch a new keyboard event at the document level so VS Code can handle save.
+					// VS Code's webview keyboard handling listens at the document level.
+					try {
+						const newEvent = new KeyboardEvent('keydown', {
+							key: ev.key,
+							code: ev.code,
+							keyCode: ev.keyCode,
+							which: ev.which,
+							ctrlKey: ev.ctrlKey,
+							metaKey: ev.metaKey,
+							shiftKey: ev.shiftKey,
+							altKey: ev.altKey,
+							bubbles: true,
+							cancelable: true
+						});
+						document.dispatchEvent(newEvent);
+					} catch { /* ignore */ }
 				}
 			} catch { /* ignore */ }
 		}, true); // capture phase - fires before the editor's handlers
