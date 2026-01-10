@@ -67,7 +67,8 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 			} as any;
 
 			const webviewPanel: vscode.WebviewPanel = {
-				webview
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			const token: vscode.CancellationToken = {
