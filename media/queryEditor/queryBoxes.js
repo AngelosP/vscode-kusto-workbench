@@ -1069,9 +1069,10 @@ function __kustoApplyQueryBoxVisibility(boxId) {
 						ed.layout();
 					}
 					// Update monaco-kusto schema when the section is shown
-					// This ensures the correct schema is loaded and squiggles are accurate
+					// This ensures the correct schema is loaded for autocomplete
+					// Pass false for enableMarkers since the box isn't focused, just visible
 					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-						window.__kustoUpdateSchemaForFocusedBox(boxId);
+						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
 				} catch { /* ignore */ }
 			}, 0);

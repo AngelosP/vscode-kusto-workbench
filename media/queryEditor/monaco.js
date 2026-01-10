@@ -427,6 +427,23 @@ function ensureMonaco() {
 										window.__kustoMarkersEnabledModels.add(uri);
 									}
 								};
+								
+								// Function to disable markers for a specific model (called on blur)
+								// This removes the model from the enabled set and clears existing markers
+								window.__kustoDisableMarkersForModel = function(modelUri) {
+									if (!modelUri) return;
+									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
+									window.__kustoMarkersEnabledModels.delete(uri);
+									// Also clear any existing markers for this model
+									try {
+										const model = monaco.editor.getModels().find(m => m.uri && m.uri.toString() === uri);
+										if (model) {
+											originalSetModelMarkers.call(monaco.editor, model, 'kusto', []);
+										}
+									} catch (e) {
+										// Failed to clear markers, non-critical
+									}
+								};
 							} catch (e) {
 								// Failed to install setModelMarkers interception
 							}
@@ -434,7 +451,6 @@ function ensureMonaco() {
 							// Now load monaco-kusto after Monaco is fully initialized
 							req(['vs/language/kusto/monaco.contribution'], () => {
 								try {
-					// monaco-kusto registers the 'kusto' language automatically via monaco.contribution
 					// monaco.languages.register({ id: 'kusto' });
 
 					const KUSTO_KEYWORD_DOCS = {
@@ -5187,7 +5203,9 @@ function ensureMonaco() {
 					// Function to update monaco-kusto schema when the user focuses a different query box
 					// This ensures the schema is loaded AND switches the "database in context"
 					// so unqualified table names resolve correctly for the focused query box
-					window.__kustoUpdateSchemaForFocusedBox = async function (boxId) {
+					// enableMarkers: if true (default), enables red squiggles for this box; set to false
+					//                when just making a section visible without giving it focus
+					window.__kustoUpdateSchemaForFocusedBox = async function (boxId, enableMarkers = true) {
 						try {
 							if (!boxId) return;
 							
@@ -5196,7 +5214,10 @@ function ensureMonaco() {
 							
 							// Enable markers for this editor's model FIRST (lazy diagnostics)
 							// This allows red squiggles to show after focus
-							window.__kustoEnableMarkersForBox(boxId);
+							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
+							if (enableMarkers) {
+								window.__kustoEnableMarkersForBox(boxId);
+							}
 							
 							// If we need to reload schemas after tab became visible, do it now
 							if (window.__kustoWorkerNeedsSchemaReload) {
@@ -9916,6 +9937,14 @@ function initQueryEditor(boxId) {
 							syncPlaceholder();
 							// Keep existing docs banner content visible while unfocused.
 							// (The overlay's update loop also freezes while unfocused.)
+							
+							// Disable markers (red squiggles) for this editor now that it's unfocused
+							try {
+								const model = editor.getModel();
+								if (model && model.uri && typeof window.__kustoDisableMarkersForModel === 'function') {
+									window.__kustoDisableMarkersForModel(model.uri);
+								}
+							} catch { /* ignore */ }
 						}
 					} catch {
 						// ignore
