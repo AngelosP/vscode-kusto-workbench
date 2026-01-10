@@ -6,9 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [unreleased]
 
+* 
+
+## [0.2.0] - 2026-01-10
+
 * Initial support for charts
 * Initial support for diff views
-* Integrated https://github.com/Azure/monaco-kusto
+* Integrated the official Kusto editor https://github.com/Azure/monaco-kusto
+* A ton of other bug fixes and improvements, but instead of documenting them I was playing Civ VI (deity is BS)
 
 ## [0.1.8] - 2026-01-06
 

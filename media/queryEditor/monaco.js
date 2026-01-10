@@ -91,38 +91,106 @@ function __kustoGetColumnsByTable(schema) {
 // Track whether we've defined our custom themes
 let customThemesDefined = false;
 
-function defineCustomThemes(monaco) {
-	if (customThemesDefined) return;
-	if (!monaco || !monaco.editor || typeof monaco.editor.defineTheme !== 'function') return;
-	
-	// Get the actual VS Code editor background color from CSS
-	let bgColor = '#1e1e1e'; // fallback dark
+// KQL syntax highlighting token rules - using lowercase token names as emitted by the Kusto tokenizer
+// These match the rules from @kusto/monaco-kusto's kusto-dark and kusto-light themes
+const kqlDarkTokenRules = [
+	{ token: '', foreground: 'DCDCDC' },
+	{ token: 'plainText', foreground: 'DCDCDC' },
+	{ token: 'comment', foreground: '608B4E' },
+	{ token: 'punctuation', foreground: 'DCDCDC' },
+	{ token: 'directive', foreground: 'FAFAD2' },
+	{ token: 'literal', foreground: 'DCDCDC' },
+	{ token: 'stringLiteral', foreground: 'D69D85' },
+	{ token: 'type', foreground: '569CD6' },
+	{ token: 'column', foreground: 'DB7093' },
+	{ token: 'table', foreground: 'D7BA7D' },
+	{ token: 'database', foreground: 'D7BA7D' },
+	{ token: 'function', foreground: '569CD6' },
+	{ token: 'parameter', foreground: '92CAF4' },
+	{ token: 'variable', foreground: '92CAF4' },
+	{ token: 'identifier', foreground: 'DCDCDC' },
+	{ token: 'clientParameter', foreground: '2B91AF' },
+	{ token: 'queryParameter', foreground: '2B91AF' },
+	{ token: 'scalarParameter', foreground: '569CD6' },
+	{ token: 'mathOperator', foreground: 'DCDCDC' },
+	{ token: 'queryOperator', foreground: '4EC9B0' },
+	{ token: 'command', foreground: '569CD6' },
+	{ token: 'keyword', foreground: '569CD6' },
+	{ token: 'materializedView', foreground: 'D7BA7D' },
+	{ token: 'schemaMember', foreground: 'DCDCDC' },
+	{ token: 'signatureParameter', foreground: 'DCDCDC' },
+	{ token: 'option', foreground: 'DCDCDC' },
+];
+
+const kqlLightTokenRules = [
+	{ token: '', foreground: '000000' },
+	{ token: 'plainText', foreground: '000000' },
+	{ token: 'comment', foreground: '008000' },
+	{ token: 'punctuation', foreground: '000000' },
+	{ token: 'directive', foreground: '9400D3' },
+	{ token: 'literal', foreground: '000000' },
+	{ token: 'stringLiteral', foreground: 'B22222' },
+	{ token: 'type', foreground: '0000FF' },
+	{ token: 'column', foreground: 'C71585' },
+	{ token: 'table', foreground: '9932CC' },
+	{ token: 'database', foreground: '9932CC' },
+	{ token: 'function', foreground: '0000FF' },
+	{ token: 'parameter', foreground: '191970' },
+	{ token: 'variable', foreground: '191970' },
+	{ token: 'identifier', foreground: '000000' },
+	{ token: 'clientParameter', foreground: '2B91AF' },
+	{ token: 'queryParameter', foreground: '2B91AF' },
+	{ token: 'scalarParameter', foreground: '0000FF' },
+	{ token: 'mathOperator', foreground: '000000' },
+	{ token: 'queryOperator', foreground: 'CE3600' },
+	{ token: 'command', foreground: '0000FF' },
+	{ token: 'keyword', foreground: '0000FF' },
+	{ token: 'materializedView', foreground: '9932CC' },
+	{ token: 'schemaMember', foreground: '000000' },
+	{ token: 'signatureParameter', foreground: '000000' },
+	{ token: 'option', foreground: '000000' },
+];
+
+function getVSCodeEditorBackground() {
 	try {
 		const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
-		if (bg) bgColor = bg;
+		if (bg) return bg;
 	} catch {}
+	return null;
+}
+
+function defineCustomThemes(monaco) {
+	if (!monaco || !monaco.editor || typeof monaco.editor.defineTheme !== 'function') return;
 	
-	// Define custom themes that inherit from kusto themes but use VS Code's background
+	// Get VS Code's editor background color
+	const bgColor = getVSCodeEditorBackground();
+	
 	try {
+		// Define dark theme with KQL syntax rules + VS Code background
+		const darkColors = { 'editorSuggestWidget.selectedBackground': '#004E8C' };
+		if (bgColor) darkColors['editor.background'] = bgColor;
+		
 		monaco.editor.defineTheme('kusto-workbench-dark', {
 			base: 'vs-dark',
 			inherit: true,
-			rules: [],
-			colors: {
-				'editor.background': bgColor
-			}
+			rules: kqlDarkTokenRules,
+			colors: darkColors
 		});
+		
+		// Define light theme with KQL syntax rules + VS Code background
+		const lightColors = {};
+		if (bgColor) lightColors['editor.background'] = bgColor;
+		
 		monaco.editor.defineTheme('kusto-workbench-light', {
 			base: 'vs',
 			inherit: true,
-			rules: [],
-			colors: {
-				'editor.background': bgColor
-			}
+			rules: kqlLightTokenRules,
+			colors: lightColors
 		});
+		
 		customThemesDefined = true;
 	} catch {
-		// ignore - fall back to default themes
+		customThemesDefined = false;
 	}
 }
 
@@ -137,17 +205,17 @@ function applyMonacoTheme(monaco) {
 		dark = true;
 	}
 	
-	// Re-define themes each time to pick up any background color changes
+	// Re-define themes to pick up any VS Code background color changes
 	customThemesDefined = false;
 	defineCustomThemes(monaco);
 	
 	lastAppliedIsDarkTheme = dark;
 	try {
-		// Use our custom themes that match VS Code's editor background
 		if (customThemesDefined) {
+			// Use our custom themes with KQL syntax highlighting + VS Code background
 			monaco.editor.setTheme(dark ? 'kusto-workbench-dark' : 'kusto-workbench-light');
 		} else {
-			// Fall back to kusto themes if custom theme definition failed
+			// Fall back to original kusto themes if custom theme definition failed
 			monaco.editor.setTheme(dark ? 'kusto-dark' : 'kusto-light');
 		}
 	} catch {
