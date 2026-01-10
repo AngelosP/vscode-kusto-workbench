@@ -345,10 +345,11 @@
 			cursor: not-allowed;
 		}
 
-		/* Secondary button toggle state */
+		/* Secondary button toggle state - use toolbar active background for consistency */
 		.unified-btn-secondary.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+			border-color: transparent;
 		}
 
 		/* Secondary button with visible border (like refresh buttons) */
@@ -666,8 +667,8 @@
 		}
 
 		.kusto-chart-type-btn.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 			border-color: transparent;
 		}
 
@@ -684,7 +685,7 @@
 
 		.kusto-chart-type-btn.is-active svg {
 			opacity: 1;
-			color: var(--vscode-list-activeSelectionForeground);
+			color: var(--vscode-foreground);
 		}
 
 		.kusto-chart-type-btn span {
@@ -993,11 +994,11 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 		.kusto-copilot-chat-tools.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 		}
 		.kusto-copilot-chat-tools.is-active:hover {
-			background: var(--vscode-list-activeSelectionBackground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 		}
 
 		.kusto-copilot-tools-panel {
@@ -1396,8 +1397,8 @@
 		}
 
 		.md-tab.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 		}
 
 		/* Markdown section preview mode (Preview button): hide the editor and show the viewer. */
@@ -2577,14 +2578,14 @@
 		}
 
 		.query-editor-toolbar-btn.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			border-color: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			border-color: transparent;
+			color: var(--vscode-foreground);
 		}
 
 		.query-editor-toolbar-btn.is-active:hover {
-			background: var(--vscode-list-activeSelectionBackground);
-			border-color: var(--vscode-list-activeSelectionBackground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			border-color: transparent;
 		}
 
 		.query-editor-toolbar-btn .qe-icon {
