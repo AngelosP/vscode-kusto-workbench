@@ -6252,8 +6252,9 @@ function __kustoPrettifyKusto(input) {
 				.map((s) => String(s || '').trim())
 				.filter(Boolean)
 				.map((s) => s.replace(/^,\s*/, '').replace(/,$/, '').trim());
-			for (const a of aggItems) {
-				out.push('    ' + a);
+			for (let k = 0; k < aggItems.length; k++) {
+				const comma = (k < aggItems.length - 1) ? ',' : '';
+				out.push('    ' + aggItems[k] + comma);
 			}
 
 			const byItems = __kustoSplitTopLevel(byText, ',')
