@@ -2,7 +2,9 @@
 
 A modern, notebook-like workflow for Kusto Query Language (KQL) in VS Code.
 
-Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly—without forcing you to abandon existing `.kql` / `.csl` files.
+Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly; without forcing you to abandon existing `.kql` / `.csl` files.
+
+It uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
 
 It has advanced markdown capabilities (thanks to the amazing folks at [toastui](https://ui.toast.com/)), so you could even just use it as a better markdown editor (with WYSIWYG support) for VS Code. Open existing .md files (open with, or change association), or make new empty .mdx file and give it a go.
 
