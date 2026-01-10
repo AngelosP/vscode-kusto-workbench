@@ -3820,7 +3820,7 @@ function __kustoSaveResultsToCsvFile(boxId, sectionLabel, mode) {
 			return;
 		}
 		if (typeof vscode === 'undefined' || !vscode || typeof vscode.postMessage !== 'function') {
-			try { alert('Save to file is unavailable in this view.'); } catch { /* ignore */ }
+			// vscode API unavailable - cannot show a message
 			return;
 		}
 		vscode.postMessage({

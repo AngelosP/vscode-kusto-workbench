@@ -2770,17 +2770,17 @@ async function exportQueryToPowerBI(boxId) {
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
 	if (!connectionId) {
-		alert('Please select a cluster connection');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		alert('Please select a database');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
 	const conn = (connections || []).find(c => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		alert('Selected connection is missing a cluster URL');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
 		return;
 	}
 
@@ -2833,7 +2833,7 @@ async function exportQueryToPowerBI(boxId) {
 			// ignore
 		}
 	} catch {
-		alert('Failed to copy Power BI query to clipboard.');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch { /* ignore */ }
 	}
 }
 
@@ -3258,7 +3258,7 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	const pending = __kustoEnsureOptimizePrepByBoxId();
 	const req = pending[boxId];
 	if (!req) {
-		alert('Optimization request is no longer available. Please try again.');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch { /* ignore */ }
 		__kustoHideOptimizePromptForBox(boxId);
 		return;
 	}
@@ -3320,7 +3320,7 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 		delete pending[boxId];
 	} catch (err) {
 		console.error('Error sending optimization request:', err);
-		alert('Failed to start query optimization');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch { /* ignore */ }
 		// Restore button state
 		if (optimizeBtn) {
 			optimizeBtn.disabled = false;
@@ -3359,12 +3359,12 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	const query = model.getValue() || '';
 	if (!query.trim()) {
-		alert('No query to compare');
+		try { vscode.postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch { /* ignore */ }
 		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
-		alert('No comparison query provided');
+		try { vscode.postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch { /* ignore */ }
 		return '';
 	}
 	// Optimization naming rule (applies when we are creating an "optimized" comparison section):
@@ -3398,11 +3398,11 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
 	if (!connectionId) {
-		alert('Please select a cluster connection');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return '';
 	}
 	if (!database) {
-		alert('Please select a database');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return '';
 	}
 
@@ -3516,7 +3516,7 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 		});
 	} catch (err) {
 		console.error('Error creating comparison box:', err);
-		alert('Failed to create comparison section');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch { /* ignore */ }
 		return '';
 	}
 
@@ -3618,17 +3618,17 @@ async function fullyQualifyTablesInEditor(boxId) {
 	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
 	const database = (document.getElementById(boxId + '_database') || {}).value || '';
 	if (!connectionId) {
-		alert('Please select a cluster connection');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		alert('Please select a database');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
 	const conn = (connections || []).find(c => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		alert('Selected connection is missing a cluster URL');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
 		return;
 	}
 
@@ -3637,7 +3637,7 @@ async function fullyQualifyTablesInEditor(boxId) {
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
 		try { ensureSchemaForBox(boxId); } catch { /* ignore */ }
-		alert('Schema not loaded yet. Wait for “Schema loaded” then try again.');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch { /* ignore */ }
 		return;
 	}
 
@@ -5863,7 +5863,7 @@ function importConnectionsFromXmlFile(boxId) {
 		// Use the extension host's file picker so we can default to the user's Kusto Explorer folder.
 		vscode.postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
 	} catch (e) {
-		alert('Failed to open file picker: ' + (e && e.message ? e.message : String(e)));
+		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
 	}
 }
 
@@ -6738,11 +6738,11 @@ function executeQuery(boxId, mode) {
 	}
 
 	if (!connectionId) {
-		alert('Please select a cluster connection');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		alert('Please select a database');
+		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });

@@ -9231,7 +9231,7 @@ function initQueryEditor(boxId) {
 						}
 						try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch { /* ignore */ }
 					} catch {
-						try { alert('Failed to copy single-line query to clipboard.'); } catch { /* ignore */ }
+						try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Failed to copy single-line query to clipboard.' }); } catch { /* ignore */ }
 					}
 				};
 			}

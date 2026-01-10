@@ -1085,16 +1085,16 @@ window.addEventListener('message', async event => {
 					? parseKustoExplorerConnectionsXml(text)
 					: [];
 				if (!imported || !imported.length) {
-					alert('No connections found in the selected XML file.');
+					try { vscode.postMessage({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch { /* ignore */ }
 					break;
 				}
 				vscode.postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: message.boxId });
 			} catch (e) {
-				alert('Failed to import connections: ' + (e && e.message ? e.message : String(e)));
+				try { vscode.postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
 			}
 			break;
 		case 'importConnectionsXmlError':
-			alert('Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error'));
+			try { vscode.postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch { /* ignore */ }
 			break;
 		case 'queryResult':
 			try {
