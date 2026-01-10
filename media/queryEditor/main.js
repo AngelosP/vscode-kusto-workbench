@@ -37,20 +37,27 @@ document.addEventListener('keydown', async (event) => {
 		return;
 	}
 
+	// Prevent default immediately to avoid duplicate paste operations.
+	// The browser's native paste would otherwise also fire and cause issues.
+	event.preventDefault();
+	event.stopPropagation();
+	if (typeof event.stopImmediatePropagation === 'function') {
+		event.stopImmediatePropagation();
+	}
+
 	try {
 		const text = await navigator.clipboard.readText();
 		if (typeof text !== 'string') {
 			return;
 		}
-		event.preventDefault();
 		const selection = editor.getSelection();
 		if (selection) {
 			editor.executeEdits('clipboard', [{ range: selection, text }]);
 			editor.focus();
 		}
 	} catch (e) {
-		// If clipboard read isn't permitted, fall back to default behavior.
-		// (Do not preventDefault in this case.)
+		// If clipboard read isn't permitted, we already prevented default,
+		// so the operation simply does nothing. This is acceptable for security reasons.
 	}
 }, true);
 
@@ -592,17 +599,37 @@ document.addEventListener('keydown', (event) => {
 	if (!(event.ctrlKey || event.metaKey)) {
 		return;
 	}
+	const editor = __kustoGetFocusedMonacoEditor();
+	if (!editor) {
+		return;
+	}
 	if (event.key === 'x' || event.key === 'X') {
+		// Prevent default immediately so the native 'cut' event doesn't also fire
+		// and cause a duplicate clipboard operation.
+		event.preventDefault();
+		event.stopPropagation();
+		if (typeof event.stopImmediatePropagation === 'function') {
+			event.stopImmediatePropagation();
+		}
 		void __kustoCopyOrCutFocusedMonaco(event, true);
 		return;
 	}
 	if (event.key === 'c' || event.key === 'C') {
+		// Prevent default immediately so the native 'copy' event doesn't also fire
+		// and cause a duplicate clipboard operation.
+		event.preventDefault();
+		event.stopPropagation();
+		if (typeof event.stopImmediatePropagation === 'function') {
+			event.stopImmediatePropagation();
+		}
 		void __kustoCopyOrCutFocusedMonaco(event, false);
 		return;
 	}
 }, true);
 
 // Right-click context menu Cut/Copy often routes through these events.
+// NOTE: These are intentionally NOT prevented above, because the keydown handler
+// only prevents events when a Monaco editor has focus.
 document.addEventListener('cut', (event) => {
 	void __kustoCopyOrCutFocusedMonaco(event, true);
 }, true);
