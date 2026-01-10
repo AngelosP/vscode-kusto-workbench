@@ -2747,16 +2747,22 @@
 
 		.query-editor-toolbar-btn.qe-toolbar-dropdown-btn .qe-toolbar-caret {
 			color: var(--vscode-descriptionForeground);
-			font-size: 12px;
 			line-height: 1;
-			margin-left: 1px;
+			margin-left: 2px;
 			pointer-events: none;
+			display: inline-flex;
+			align-items: center;
 		}
 
+		.query-editor-toolbar-btn.qe-toolbar-dropdown-btn .qe-toolbar-caret svg {
+			width: 8px;
+			height: 8px;
+		}
+
+		/* Tools dropdown menu - uses fixed positioning to escape overflow:hidden containers */
 		.qe-toolbar-dropdown-menu {
-			left: 0;
-			top: 100%;
-			z-index: 60;
+			position: fixed;
+			z-index: 1000;
 		}
 
 		/* Tools dropdown: icon + text should be vertically centered (not baseline). */

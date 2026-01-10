@@ -353,6 +353,36 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, hideFooterControls: true });
 
+		// Track if the webview has initialized and whether it's currently being edited by the user.
+		let mdWebviewInitialized = false;
+		let lastMdWebviewPersistAt = 0;
+
+		// Listen for external file changes (e.g., from Copilot, git, or other processes).
+		disposables.push(
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				try {
+					if (e.document.uri.toString() !== document.uri.toString()) {
+						return;
+					}
+					if (e.contentChanges.length === 0) {
+						return;
+					}
+					if (!mdWebviewInitialized) {
+						return;
+					}
+					const now = Date.now();
+					if (now - lastMdWebviewPersistAt < 500) {
+						return;
+					}
+					// Notify the webview that the document changed externally.
+					// Use forceReload to ensure the webview updates even if already initialized.
+					postDocument({ forceReload: true });
+				} catch {
+					// ignore
+				}
+			})
+		);
+
 		// Inform the webview it's operating in Markdown compatibility mode.
 		try {
 			void webviewPanel.webview.postMessage({
@@ -371,11 +401,13 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			// ignore
 		}
 
-		const postDocument = () => {
+		const postDocument = (options?: { forceReload?: boolean }) => {
+			const forceReload = options?.forceReload ?? false;
 			const markdownText = document.getText();
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				forceReload,
 				compatibilityMode: true,
 				documentUri: document.uri.toString(),
 				documentKind: 'md',
@@ -389,6 +421,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 			});
 			webviewReady = true;
+			mdWebviewInitialized = true;
 			debugPopup('webviewReady', document.uri.toString());
 			try {
 				if (pendingRevealRange) {
@@ -449,6 +482,10 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					return;
 				}
 				case 'persistDocument': {
+					// Track that the webview is persisting, so we don't treat the resulting
+					// onDidChangeTextDocument event as an external change.
+					lastMdWebviewPersistAt = Date.now();
+
 					// VS Code's text model uses `\n` internally even for CRLF files.
 					// Normalize both sides to that representation to avoid false "dirty" edits.
 					const normalizeToLf = (text: string): string => {

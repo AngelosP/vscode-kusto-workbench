@@ -174,12 +174,14 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			// ignore
 		}
 
-		const postDocument = () => {
+		const postDocument = (options?: { forceReload?: boolean }) => {
+			const forceReload = options?.forceReload ?? false;
 			// For .kql/.csl: the file contents ARE the query text. No .kqlx JSON format.
 			const queryText = document.getText();
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				forceReload,
 				compatibilityMode: true,
 				documentKind: 'kql',
 				compatibilitySingleKind: 'query',
@@ -198,6 +200,43 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				}
 			});
 		};
+
+		// Track if the webview has initialized and whether it's currently being edited by the user.
+		const subscriptions: vscode.Disposable[] = [];
+		let webviewInitialized = false;
+		let lastWebviewPersistAt = 0;
+
+		// Listen for external file changes (e.g., from Copilot, git, or other processes).
+		subscriptions.push(
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				try {
+					if (e.document.uri.toString() !== document.uri.toString()) {
+						return;
+					}
+					if (e.contentChanges.length === 0) {
+						return;
+					}
+					if (!webviewInitialized) {
+						return;
+					}
+					const now = Date.now();
+					if (now - lastWebviewPersistAt < 500) {
+						return;
+					}
+					// Notify the webview that the document changed externally.
+					// Use forceReload to ensure the webview updates even if already initialized.
+					postDocument({ forceReload: true });
+				} catch {
+					// ignore
+				}
+			})
+		);
+
+		webviewPanel.onDidDispose(() => {
+			for (const s of subscriptions) {
+				try { s.dispose(); } catch { /* ignore */ }
+			}
+		});
 
 		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
@@ -222,6 +261,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						// ignore
 					}
 					postDocument();
+					webviewInitialized = true;
 					return;
 				case 'requestUpgradeToKqlx': {
 					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
@@ -229,6 +269,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					return;
 				}
 				case 'persistDocument': {
+					// Track that the webview is persisting, so we don't treat the resulting
+					// onDidChangeTextDocument event as an external change.
+					lastWebviewPersistAt = Date.now();
+
 					// Persist ONLY the first query section's text back into the plain-text document.
 					const sections = (message as any).state && Array.isArray((message as any).state.sections)
 						? ((message as any).state.sections as Array<{ type?: string; query?: string }>)

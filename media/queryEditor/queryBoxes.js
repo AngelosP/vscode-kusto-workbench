@@ -196,13 +196,17 @@ function addQueryBox(options) {
 		'<rect x="10" y="3" width="3" height="11"/>' +
 		'</svg>';
 
+	// Compare queries icon: two panels with left-right arrows showing comparison
+	// Simple bold design that reads well at small sizes
 	const diffIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<rect x="2" y="2" width="5" height="12" rx="1" />' +
-		'<rect x="9" y="2" width="5" height="12" rx="1" />' +
-		'<line x1="3.5" y1="5" x2="5.5" y2="5" />' +
-		'<line x1="4.5" y1="4" x2="4.5" y2="6" />' +
-		'<line x1="10.5" y1="5" x2="12.5" y2="5" />' +
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		// Left panel
+		'<rect x="1.5" y="3" width="4.5" height="10" rx="1" />' +
+		// Right panel
+		'<rect x="10" y="3" width="4.5" height="10" rx="1" />' +
+		// Comparison arrows in center: arrows pointing toward each other
+		'<path d="M7 6l1.5 1.5L7 9" />' +
+		'<path d="M9 6l-1.5 1.5L9 9" />' +
 		'</svg>';
 
 	const copilotLogoUri = (() => {
@@ -245,7 +249,7 @@ function addQueryBox(options) {
 		'<span class="qe-toolbar-menu-wrapper" id="' + id + '_tools_wrapper">' +
 			'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-toolbar-dropdown-btn" id="' + id + '_tools_btn" onclick="toggleToolsDropdown(\'' + id + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
 				'<span class="qe-icon qe-tools-icon" aria-hidden="true">' + toolsIconSvg + '</span>' +
-				'<span class="qe-toolbar-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+				'<span class="qe-toolbar-caret" aria-hidden="true"><svg width="8" height="8" viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 2.5L4 5.5L6.5 2.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
 				'<span class="schema-spinner qe-tools-spinner" aria-hidden="true" style="display:none;"></span>' +
 			'</button>' +
 			'<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="' + id + '_tools_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +

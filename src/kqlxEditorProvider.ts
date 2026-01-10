@@ -541,7 +541,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			return added > 0;
 		};
 
-		const postDocument = async () => {
+		const postDocument = async (options?: { forceReload?: boolean }) => {
+			const forceReload = options?.forceReload ?? false;
 			const parsed = parseKqlxText(document.getText(), {
 				allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
 				defaultKind: documentKind
@@ -550,6 +551,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				void webviewPanel.webview.postMessage({
 					type: 'documentData',
 					ok: false,
+					forceReload,
 					documentUri: document.uri.toString(),
 					error: parsed.error,
 					state: createEmptyKqlxFile().state
@@ -576,6 +578,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				forceReload,
 				documentUri: document.uri.toString(),
 				state: sanitizedState
 			});
@@ -590,6 +593,42 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					lastSavedText = saved.getText();
 					lastSavedEol = saved.eol;
+				} catch {
+					// ignore
+				}
+			})
+		);
+
+		// Track if the webview has initialized and whether it's currently being edited by the user.
+		// This helps us avoid refreshing the webview for changes that originated from the webview itself.
+		let webviewInitialized = false;
+		let lastWebviewPersistAt = 0;
+
+		// Listen for external file changes (e.g., from Copilot, git, or other processes).
+		// When the document changes externally, refresh the webview to show the new content.
+		subscriptions.push(
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				try {
+					if (e.document.uri.toString() !== document.uri.toString()) {
+						return;
+					}
+					// Skip if no actual content changes (metadata-only changes).
+					if (e.contentChanges.length === 0) {
+						return;
+					}
+					// Skip if webview hasn't initialized yet (will get content on requestDocument).
+					if (!webviewInitialized) {
+						return;
+					}
+					// Skip if the change likely originated from the webview (within 500ms of a persist).
+					// This avoids unnecessary round-trips when the user is editing in the webview.
+					const now = Date.now();
+					if (now - lastWebviewPersistAt < 500) {
+						return;
+					}
+					// Notify the webview that the document changed externally.
+					// Use forceReload to ensure the webview updates even if already initialized.
+					void postDocument({ forceReload: true });
 				} catch {
 					// ignore
 				}
@@ -641,6 +680,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
+					webviewInitialized = true;
 
 					// If we were upgraded and a specific "add" action triggered the upgrade,
 					// deliver that intent now (after the webview has definitely attached its message listener).
@@ -662,6 +702,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					return;
 				case 'persistDocument': {
+					// Track that the webview is persisting, so we don't treat the resulting
+					// onDidChangeTextDocument event as an external change.
+					lastWebviewPersistAt = Date.now();
+
 					const persistReason = (() => {
 						try {
 							const r = (message as any)?.reason;
