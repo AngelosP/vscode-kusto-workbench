@@ -879,6 +879,20 @@ function __kustoMaximizeQueryBox(boxId) {
 				if (csr && csr.display === 'none') return;
 			} catch { /* ignore */ }
 
+			// If results are hidden (toggle is off), collapse the wrapper and skip calculations.
+			// This avoids adding extra blank space when the tabular results are toggled off.
+			let resultsVisible = true;
+			try {
+				resultsVisible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
+			} catch { /* ignore */ }
+			if (!resultsVisible) {
+				try {
+					w.style.height = 'auto';
+					w.style.minHeight = '0';
+				} catch { /* ignore */ }
+				return;
+			}
+
 			// Wrapper chrome: resizer + wrapper padding/borders.
 			let chrome = 0;
 			try {
