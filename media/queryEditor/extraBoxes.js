@@ -4209,7 +4209,7 @@ function addUrlBox(options) {
 		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeUrlBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
 		'</div>' +
 		'</div>' +
-		'<div class="url-output-wrapper" id="' + id + '_wrapper">' +
+		'<div class="url-output-wrapper" id="' + id + '_wrapper" data-kusto-no-editor-focus="true">' +
 		'<div class="url-output" id="' + id + '_content" aria-label="URL content"></div>' +
 		'<div class="query-editor-resizer" id="' + id + '_url_resizer" title="Drag to resize"></div>' +
 		'</div>' +

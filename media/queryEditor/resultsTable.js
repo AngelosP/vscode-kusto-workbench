@@ -2644,7 +2644,7 @@ function displayResultForBox(result, boxId, options) {
 		'</span>' +
 		'</div>' +
 		'</div>' +
-		'<div class="results-body" id="' + boxId + '_results_body">' +
+		'<div class="results-body" id="' + boxId + '_results_body" data-kusto-no-editor-focus="true">' +
 		'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +
 		'<input type="text" placeholder="Search data..." id="' + boxId + '_data_search" ' +
 		'oninput="searchData(\'' + boxId + '\')" ' +
@@ -2661,7 +2661,7 @@ function displayResultForBox(result, boxId, options) {
 		'onkeydown="handleColumnSearchKeydown(event, \'' + boxId + '\')" />' +
 		'<div class="column-autocomplete" id="' + boxId + '_column_autocomplete"></div>' +
 		'</div>' +
-		'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" onkeydown="handleTableKeydown(event, \'' + boxId + '\')" oncontextmenu="handleTableContextMenu(event, \'' + boxId + '\')">' +
+		'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" data-kusto-no-editor-focus="true" onkeydown="handleTableKeydown(event, \'' + boxId + '\')" oncontextmenu="handleTableContextMenu(event, \'' + boxId + '\')">' +
 		'<table id="' + boxId + '_table">' +
 		'<thead><tr>' +
 		'<th class="row-selector">#</th>' +
@@ -3358,6 +3358,14 @@ function toggleRowSelection(row, boxId) {
 		state.cellSelectionRange = null;
 		__kustoBumpVisualVersion(state);
 		__kustoRerenderResultsTable(boxId);
+	} catch { /* ignore */ }
+
+	// Focus the container for keyboard navigation (including Ctrl+C).
+	try {
+		const container = document.getElementById(boxId + '_table_container');
+		if (container) {
+			container.focus();
+		}
 	} catch { /* ignore */ }
 }
 
@@ -4134,9 +4142,11 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 					}
 				} catch { /* ignore */ }
 				const cell = getCellFromEvent(ev);
-				if (!cell) return;
+				// Always focus the container on mousedown, even if not clicking a cell.
+				// This ensures the table container receives focus for keyboard navigation and copy.
 				ev.preventDefault();
 				container.focus();
+				if (!cell) return;
 
 				const state = __kustoGetResultsState(boxId);
 				if (!state) return;

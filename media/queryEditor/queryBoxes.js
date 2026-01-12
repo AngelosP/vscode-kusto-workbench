@@ -472,7 +472,7 @@ function addQueryBox(options) {
 		'</select>' +
 		'</div>' +
 		'</div>' +
-		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;">' +
+		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">' +
 		'<div class="results" id="' + id + '_results"></div>' +
 		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results"></div>' +
 		'</div>' +
