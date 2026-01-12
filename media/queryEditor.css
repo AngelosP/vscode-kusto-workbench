@@ -1967,9 +1967,15 @@
 
 		.kusto-dropdown-menu,
 		.kusto-favorites-menu {
-			position: absolute;
+			/*
+				Render menus in a fixed-position overlay so they:
+				- are not clipped by overflow containers in the header/editor/results
+				- can appear above sticky result table headers/row numbers
+				The JS dropdown helper positions fixed menus under the button.
+			*/
+			position: fixed;
 			left: 0;
-			top: 100%;
+			top: 0;
 			/* Allow the menu to grow to fit item text (up to a cap),
 			   but never be narrower than the control itself. */
 			width: max-content;
@@ -1977,7 +1983,8 @@
 			max-width: 350px;
 			max-height: 280px;
 			overflow: auto;
-			z-index: 50;
+			/* Must be above sticky table header/first column and other UI layers. */
+			z-index: 100000;
 			background: var(--vscode-dropdown-background);
 			border: 1px solid var(--vscode-dropdown-border);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);

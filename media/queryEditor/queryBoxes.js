@@ -6468,20 +6468,50 @@ function toggleRunMenu(boxId) {
 	menu.style.display = next;
 }
 
-document.addEventListener('click', () => {
+const __kustoEventIsInsideDropdownUi = (ev) => {
+	try {
+		const t = ev && ev.target ? ev.target : null;
+		if (!t || !t.closest) return false;
+		// Note: dropdowns/menus are used for cluster/database/favorites and some tool UI.
+		return !!(
+			t.closest('.kusto-dropdown-menu') ||
+			t.closest('.kusto-favorites-menu') ||
+			t.closest('.kusto-dropdown-btn') ||
+			t.closest('.kusto-favorites-btn') ||
+			t.closest('.kusto-dropdown-wrapper') ||
+			t.closest('.qe-toolbar-dropdown-menu') ||
+			t.closest('.qe-toolbar-overflow-menu')
+		);
+	} catch {
+		return false;
+	}
+};
+
+document.addEventListener('click', (ev) => {
+	// Clicking inside a dropdown should not dismiss it.
+	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
 	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 });
 
 // Close dropdowns on scroll/wheel so they don't float detached from their buttons.
-document.addEventListener('scroll', () => {
+document.addEventListener('scroll', (ev) => {
+	// The dropdown menus themselves are scrollable; do not dismiss on internal menu scroll.
+	try {
+		const target = ev && ev.target ? ev.target : null;
+		if (target && target.closest && (target.closest('.kusto-dropdown-menu') || target.closest('.kusto-favorites-menu'))) {
+			return;
+		}
+	} catch { /* ignore */ }
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
 	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 }, true); // Use capture to catch scroll events on nested scrollable elements
 
-document.addEventListener('wheel', () => {
+document.addEventListener('wheel', (ev) => {
+	// Allow scrolling inside dropdown menus without dismissing them.
+	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
 	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }

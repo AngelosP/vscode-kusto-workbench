@@ -258,14 +258,51 @@
 			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 
+
+		const positionFixedMenuUnderButton = (buttonEl, menuEl) => {
+			try {
+				const rect = buttonEl.getBoundingClientRect();
+				// Default: below, left-aligned.
+				let left = rect.left;
+				let top = rect.bottom;
+				menuEl.style.minWidth = rect.width + 'px';
+				menuEl.style.left = left + 'px';
+				menuEl.style.top = top + 'px';
+
+				// Clamp within viewport and flip above if it would overflow.
+				const vw = Math.max(0, window.innerWidth || 0);
+				const vh = Math.max(0, window.innerHeight || 0);
+				const menuRect = menuEl.getBoundingClientRect();
+
+				// Horizontal clamp.
+				if (vw > 0) {
+					const overRight = (menuRect.right - vw);
+					if (overRight > 0) {
+						left = Math.max(0, left - overRight);
+					}
+					if (left < 0) left = 0;
+				}
+
+				// Vertical flip if needed.
+				if (vh > 0) {
+					const overBottom = (menuRect.bottom - vh);
+					if (overBottom > 0) {
+						const aboveTop = rect.top - menuRect.height;
+						top = Math.max(0, aboveTop);
+					}
+					if (top < 0) top = 0;
+				}
+
+				menuEl.style.left = left + 'px';
+				menuEl.style.top = top + 'px';
+			} catch { /* ignore */ }
+		};
+
 		// If menu uses position:fixed, calculate and set top/left from button rect.
 		try {
 			const computedPos = window.getComputedStyle(menu).position;
 			if (computedPos === 'fixed') {
-				const rect = btn.getBoundingClientRect();
-				menu.style.left = rect.left + 'px';
-				menu.style.top = rect.bottom + 'px';
-				menu.style.minWidth = rect.width + 'px';
+				positionFixedMenuUnderButton(btn, menu);
 			}
 		} catch { /* ignore */ }
 
@@ -791,10 +828,38 @@
 		try {
 			const computedPos = window.getComputedStyle(menu).position;
 			if (computedPos === 'fixed') {
-				const rect = btn.getBoundingClientRect();
-				menu.style.left = rect.left + 'px';
-				menu.style.top = rect.bottom + 'px';
-				menu.style.minWidth = rect.width + 'px';
+				try {
+					const rect = btn.getBoundingClientRect();
+					let left = rect.left;
+					let top = rect.bottom;
+					menu.style.minWidth = rect.width + 'px';
+					menu.style.left = left + 'px';
+					menu.style.top = top + 'px';
+
+					const vw = Math.max(0, window.innerWidth || 0);
+					const vh = Math.max(0, window.innerHeight || 0);
+					const menuRect = menu.getBoundingClientRect();
+
+					if (vw > 0) {
+						const overRight = (menuRect.right - vw);
+						if (overRight > 0) {
+							left = Math.max(0, left - overRight);
+						}
+						if (left < 0) left = 0;
+					}
+
+					if (vh > 0) {
+						const overBottom = (menuRect.bottom - vh);
+						if (overBottom > 0) {
+							const aboveTop = rect.top - menuRect.height;
+							top = Math.max(0, aboveTop);
+						}
+						if (top < 0) top = 0;
+					}
+
+					menu.style.left = left + 'px';
+					menu.style.top = top + 'px';
+				} catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 
