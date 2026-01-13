@@ -84,6 +84,34 @@
 		</div>
 	</div>
 
+	<!-- Cell Viewer Modal -->
+	<div id="cellViewer" class="cell-viewer-modal" onclick="closeCellViewer(event)">
+		<div class="cell-viewer-content" onclick="event.stopPropagation()">
+			<div class="cell-viewer-header">
+				<h3 id="cellViewerTitle"></h3>
+				<div class="cell-viewer-search">
+					<input type="text" id="cellViewerSearch" placeholder="Search in value..."
+						oninput="searchInCellViewer()" />
+					<span class="cell-viewer-search-results" id="cellViewerSearchResults"></span>
+				</div>
+				<div class="cell-viewer-actions">
+					<button id="cellViewerPrev" class="unified-btn-secondary tool-toggle-btn cell-viewer-nav" type="button" onclick="cellViewerPreviousMatch()" title="Previous match (Shift+Enter)" aria-label="Previous match">↑</button>
+					<button id="cellViewerNext" class="unified-btn-secondary tool-toggle-btn cell-viewer-nav" type="button" onclick="cellViewerNextMatch()" title="Next match (Enter)" aria-label="Next match">↓</button>
+					<button id="cellViewerCopy" class="unified-btn-secondary tool-toggle-btn cell-viewer-copy" type="button" onclick="copyCellViewerToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+				</div>
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn cell-viewer-close" type="button" onclick="closeCellViewer()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" />
+						<path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="cell-viewer-body">
+				<div id="cellViewerContent" class="cell-viewer-value"></div>
+			</div>
+		</div>
+	</div>
+
 	<!-- Diff View Modal -->
 	<div id="diffViewModal" class="diff-view-modal">
 		<div class="diff-view-content" onclick="event.stopPropagation()">

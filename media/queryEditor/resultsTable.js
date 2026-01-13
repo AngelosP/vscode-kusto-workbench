@@ -2258,7 +2258,8 @@ function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, match
 				}
 			}
 			const classAttr = tdClass ? (' class="' + tdClass + '"') : '';
-			return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', ' + boxIdArg + ')">' +
+			const dblClickHandler = ' ondblclick="handleCellDoubleClick(event, ' + rowIdx + ', ' + colIdx + ', ' + boxIdArg + ')"';
+			return '<td data-row="' + rowIdx + '" data-col="' + colIdx + '"' + classAttr + title + ' onclick="selectCell(' + rowIdx + ', ' + colIdx + ', ' + boxIdArg + ')"' + dblClickHandler + '>' +
 				cellHtml + viewBtn +
 			'</td>';
 		}).join('') +
@@ -3277,6 +3278,24 @@ function selectCell(a, b, c, d) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
+	// NOTE: Native `dblclick` doesn't reliably fire because a single click triggers a full
+	// re-render of the results table, replacing the clicked <td>. Detect a rapid second click
+	// on the same cell and treat it as a "double click".
+	let isSyntheticDoubleClick = false;
+	try {
+		const isClickEvent = !!(ev && (ev.type === 'click' || ev.type === 'mousedown' || ev.type === 'pointerdown'));
+		if (isClickEvent) {
+			const now = Date.now();
+			const last = state.__kustoLastCellClick;
+			const sameCell = !!(last && last.row === row && last.col === col);
+			const withinWindow = !!(last && isFinite(last.t) && (now - last.t) <= 400);
+			if (sameCell && withinWindow && !(ev && ev.shiftKey)) {
+				isSyntheticDoubleClick = true;
+			}
+			state.__kustoLastCellClick = { row, col, t: now };
+		}
+	} catch { /* ignore */ }
+
 	// If clicking on an already selected single cell (not extending with shift), deselect it.
 	// Check if the clicked cell is the current focus cell and is the only cell selected.
 	const isClickedCellFocused = state.selectedCell &&
@@ -3289,7 +3308,17 @@ function selectCell(a, b, c, d) {
 		state.cellSelectionAnchor.col === col;
 
 	if (isClickedCellFocused && isSingleCellRange && !(ev && ev.shiftKey)) {
-		// Clear all cell selection.
+		// If this is a rapid second click, open the cell viewer instead of toggling selection off.
+		if (isSyntheticDoubleClick) {
+			try {
+				if (typeof openCellViewer === 'function') {
+					openCellViewer(row, col, boxId);
+				}
+			} catch { /* ignore */ }
+			return;
+		}
+
+		// Otherwise, clear all cell selection.
 		state.selectedCell = null;
 		state.cellSelectionAnchor = null;
 		state.cellSelectionRange = null;
@@ -3303,6 +3332,16 @@ function selectCell(a, b, c, d) {
 	});
 
 	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+
+	// If this was a synthetic double click, open the cell viewer after selection.
+	if (isSyntheticDoubleClick) {
+		try {
+			if (typeof openCellViewer === 'function') {
+				openCellViewer(row, col, boxId);
+			}
+		} catch { /* ignore */ }
+		return;
+	}
 
 	// Scroll focus cell into view
 	try {
@@ -4151,6 +4190,21 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 				const state = __kustoGetResultsState(boxId);
 				if (!state) return;
 
+				// Double-click: open the cell viewer.
+				// IMPORTANT: drag-selection owns cell interactions (mousedown/mousemove) and also
+				// triggers a re-render, so native `dblclick` and inline `onclick` are unreliable.
+				let isSyntheticDoubleClick = false;
+				try {
+					const now = Date.now();
+					const last = state.__kustoLastCellMouseDown;
+					const sameCell = !!(last && last.row === cell.row && last.col === cell.col);
+					const withinWindow = !!(last && isFinite(last.t) && (now - last.t) <= 400);
+					if (sameCell && withinWindow && !ev.shiftKey) {
+						isSyntheticDoubleClick = true;
+					}
+					state.__kustoLastCellMouseDown = { row: cell.row, col: cell.col, t: now };
+				} catch { /* ignore */ }
+
 				// If clicking on an already selected single cell (not extending with shift), deselect it.
 				const isClickedCellFocused = state.selectedCell &&
 					state.selectedCell.row === cell.row &&
@@ -4162,6 +4216,18 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 					state.cellSelectionAnchor.col === cell.col;
 
 				if (isClickedCellFocused && isSingleCellRange && !ev.shiftKey) {
+					// If this is a rapid second click, open the cell viewer instead of clearing selection.
+					if (isSyntheticDoubleClick) {
+						try {
+							if (typeof openCellViewer === 'function') {
+								openCellViewer(cell.row, cell.col, boxId);
+							} else {
+								console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
+							}
+						} catch { /* ignore */ }
+						return;
+					}
+
 					// Clear all cell selection.
 					state.selectedCell = null;
 					state.cellSelectionAnchor = null;
@@ -4190,6 +4256,17 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 				// Apply initial selection
 				__kustoSetCellSelectionState(boxId, state, cell.row, cell.col, { extend: extend });
 				__kustoRerenderResultsTable(boxId);
+
+				// If this was a synthetic double click (same cell, quickly), open the viewer.
+				if (isSyntheticDoubleClick) {
+					try {
+						if (typeof openCellViewer === 'function') {
+							openCellViewer(cell.row, cell.col, boxId);
+						} else {
+							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
+						}
+					} catch { /* ignore */ }
+				}
 			} catch { /* ignore */ }
 		};
 

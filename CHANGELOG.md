@@ -4,9 +4,14 @@ All notable changes to the "vscode-kusto-workbench" extension will be documented
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [unreleased]
+## [0.3.0] - Unreleased
 
-* 
+* Fixed bug that affected CTRL+C from the tabular control.
+* Improving the tabular control with the ability to double click any cell and open its contents up into a 'cell viewer' with search capabilities. This should help with scenarios where the value is just a string, not JSON, but still a very long string that makes it uncomfortable to deal with. 
+
+## [0.2.1] - 2026-01-12
+
+* Fixed embarassing bug that stopped the cluster and database drop-downs from being usable. If I was a user of this thing, I'd be screaming. I'm sorry everybody!
 
 ## [0.2.0] - 2026-01-10
 

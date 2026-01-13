@@ -92,6 +92,7 @@
 		'queryEditor/resultsTable.js',
 		'queryEditor/diffView.js',
 		'queryEditor/objectViewer.js',
+		'queryEditor/cellViewer.js',
 		'queryEditor/columnAnalysis.js',
 		'queryEditor/main.js'
 	];

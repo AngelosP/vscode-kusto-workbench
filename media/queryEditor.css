@@ -5004,6 +5004,138 @@
 			border-radius: 2px;
 		}
 
+		/* Cell Viewer Modal */
+		.cell-viewer-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.cell-viewer-modal.visible {
+			display: flex;
+		}
+
+		.cell-viewer-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 90%;
+			max-width: 1400px;
+			height: 85%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.cell-viewer-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			gap: 12px;
+		}
+
+		.cell-viewer-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			min-width: 0;
+		}
+
+		.cell-viewer-search {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.cell-viewer-search input {
+			flex: 1;
+			max-width: 400px;
+			padding: 6px 10px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+			font-size: 13px;
+		}
+
+		.cell-viewer-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.cell-viewer-search-results {
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+		}
+
+		.cell-viewer-actions {
+			display: inline-flex;
+			gap: 4px;
+			align-items: center;
+		}
+
+		.cell-viewer-close {
+			flex-shrink: 0;
+		}
+
+		.cell-viewer-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+			min-height: 0;
+		}
+
+		.cell-viewer-value {
+			font-family: var(--vscode-editor-font-family);
+			font-size: var(--vscode-editor-font-size);
+			line-height: 1.6;
+			white-space: pre-wrap;
+			word-break: break-word;
+			user-select: text;
+			color: var(--vscode-editor-foreground);
+		}
+
+		.cell-viewer-highlight {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			border-radius: 2px;
+			outline: 1px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -1px;
+		}
+
+		.cell-viewer-highlight-current {
+			background: var(--vscode-editor-findMatchBackground);
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: -2px;
+		}
+
+		.cell-viewer-nav {
+			min-width: 28px;
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			font-size: 14px;
+			line-height: 1;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
 		tr.selected-row {
 			background: var(--vscode-list-inactiveSelectionBackground);
 		}
