@@ -3175,23 +3175,23 @@
 		}
 
 		.tool-toggle-btn:hover {
-			background: var(--vscode-button-secondaryHoverBackground);
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 		}
 
 		.tool-toggle-btn.is-active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 		}
 
 		/* Keep .active for backwards compatibility */
 		.tool-toggle-btn.active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 		}
 
 		.tool-toggle-btn.active:hover,
 		.tool-toggle-btn.is-active:hover {
-			background: var(--vscode-list-activeSelectionBackground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 		}
 
 		/* Results show/hide toggle: icon-button style */
@@ -3209,13 +3209,13 @@
 
 		.tool-toggle-btn.results-visibility-toggle.is-active,
 		.tool-toggle-btn.results-visibility-toggle.active {
-			background: var(--vscode-list-activeSelectionBackground);
-			color: var(--vscode-list-activeSelectionForeground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
 		}
 
 		.tool-toggle-btn.results-visibility-toggle.is-active:hover,
 		.tool-toggle-btn.results-visibility-toggle.active:hover {
-			background: var(--vscode-list-activeSelectionBackground);
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 		}
 
 		.kusto-split-btn {
@@ -3309,9 +3309,54 @@
 			min-width: 0;
 		}
 
+		/*
+		 * Ensure container-specific input rules (e.g. .data-search input { padding: ... })
+		 * don't override the spacing needed for embedded icons/buttons.
+		 */
+		.kusto-search-control .kusto-search-input {
+			padding-left: 26px !important;
+			padding-right: 98px !important;
+		}
+
+		/* Magnifying glass icon on left side of input. */
+		.kusto-search-icon {
+			position: absolute;
+			left: 6px;
+			top: 50%;
+			transform: translateY(-50%);
+			pointer-events: none;
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 0.7;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			z-index: 1;
+		}
+
+		.kusto-search-icon svg {
+			display: block;
+		}
+
+		/* Match status (e.g. "3 / 12") inside search control. */
+		.kusto-search-status {
+			position: absolute;
+			right: 71px;
+			top: 50%;
+			transform: translateY(-50%);
+			font-size: inherit;
+			color: var(--vscode-descriptionForeground);
+			pointer-events: none;
+			white-space: nowrap;
+			user-select: none;
+		}
+
+		.kusto-search-status-error {
+			color: var(--vscode-errorForeground);
+		}
+
 		.kusto-search-mode-toggle {
 			position: absolute;
-			right: 4px;
+			right: 49px;
 			top: 50%;
 			transform: translateY(-50%);
 			width: 20px;
@@ -3337,9 +3382,62 @@
 			display: block;
 		}
 
+		/* Visual divider before navigation buttons. */
+		.kusto-search-nav-divider {
+			position: absolute;
+			right: 48px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 1px;
+			height: 14px;
+			background: var(--vscode-input-foreground);
+			opacity: 0.25;
+			pointer-events: none;
+		}
+
+		/* Navigation buttons (prev/next) inside search control. */
+		.kusto-search-nav-btn {
+			position: absolute;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+
+		.kusto-search-nav-btn:hover:not(:disabled) {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-search-nav-btn:disabled {
+			opacity: 0.35;
+			cursor: default;
+		}
+
+		.kusto-search-nav-btn svg {
+			display: block;
+		}
+
+		.kusto-search-prev {
+			right: 26px;
+		}
+
+		.kusto-search-next {
+			right: 4px;
+		}
+
 		.data-search {
 			display: flex;
-			gap: 4px;
 			align-items: center;
 			min-width: 300px;
 			margin-bottom: 6px;
@@ -3365,36 +3463,6 @@
 		.data-search input:focus {
 			outline: none;
 			border-color: var(--vscode-focusBorder);
-		}
-
-		.data-search-nav {
-			display: flex;
-			gap: 2px;
-		}
-
-		.data-search-nav button {
-			padding: 2px 8px;
-			font-size: 11px;
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border);
-			border-radius: 2px;
-			cursor: pointer;
-		}
-
-		.data-search-nav button:hover:not(:disabled) {
-			background: var(--vscode-button-secondaryHoverBackground);
-		}
-
-		.data-search-nav button:disabled {
-			opacity: 0.5;
-			cursor: not-allowed;
-		}
-
-		.data-search-info {
-			font-size: 11px;
-			color: var(--vscode-descriptionForeground);
-			white-space: nowrap;
 		}
 
 		.column-search {
@@ -5132,12 +5200,6 @@
 			border-color: var(--vscode-focusBorder);
 		}
 
-		.cell-viewer-search-results {
-			font-size: 12px;
-			color: var(--vscode-descriptionForeground);
-			white-space: nowrap;
-		}
-
 		.cell-viewer-actions {
 			display: inline-flex;
 			gap: 4px;
@@ -5176,18 +5238,6 @@
 			background: var(--vscode-editor-findMatchBackground);
 			outline: 2px solid var(--vscode-focusBorder);
 			outline-offset: -2px;
-		}
-
-		.cell-viewer-nav {
-			min-width: 28px;
-			width: 28px;
-			height: 28px;
-			padding: 0;
-			font-size: 14px;
-			line-height: 1;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
 		}
 
 		tr.selected-row {

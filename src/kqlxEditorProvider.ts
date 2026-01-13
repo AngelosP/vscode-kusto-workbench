@@ -671,8 +671,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		webviewPanel.onDidDispose(() => {
-			// Best effort: ensure the session file hits disk even if the debounce hasn't fired yet.
-			if (isSessionFile) {
+			// For session files, we use direct disk writes (saveSessionFileToDisk) which bypass
+			// the in-memory document. The in-memory document may be stale, so we should NOT
+			// save it here as that would overwrite the correct content on disk.
+			// For non-session files, ensure any pending saves complete.
+			if (!isSessionFile) {
 				try {
 					if (saveTimer) {
 						clearTimeout(saveTimer);

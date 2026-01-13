@@ -884,12 +884,15 @@ function __kustoApplyFiltersAndRerender(boxId) {
 	try {
 		state.searchMatches = [];
 		state.currentSearchIndex = -1;
-		const infoSpan = document.getElementById(boxId + '_search_info');
-		const prevBtn = document.getElementById(boxId + '_search_prev');
-		const nextBtn = document.getElementById(boxId + '_search_next');
-		if (infoSpan) infoSpan.textContent = '';
-		if (prevBtn) prevBtn.disabled = true;
-		if (nextBtn) nextBtn.disabled = true;
+		const statusEl = document.getElementById(boxId + '_data_search_status');
+		const prevBtn = document.getElementById(boxId + '_data_search_prev');
+		const nextBtn = document.getElementById(boxId + '_data_search_next');
+		if (typeof __kustoUpdateSearchStatus === 'function') {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		}
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		}
 		document.querySelectorAll('#' + boxId + '_table td.search-match, #' + boxId + '_table td.search-match-current')
 			.forEach(cell => {
 				cell.classList.remove('search-match', 'search-match-current');
@@ -2695,11 +2698,6 @@ function displayResultForBox(result, boxId, options) {
 		'<div class="results-body" id="' + boxId + '_results_body" data-kusto-no-editor-focus="true">' +
 		'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +
 		'<div class="kusto-search-host" id="' + boxId + '_data_search_host"></div>' +
-		'<div class="data-search-nav">' +
-		'<button id="' + boxId + '_search_prev" onclick="previousSearchMatch(\'' + boxId + '\')" disabled title="Previous (Shift+Enter)">↑</button>' +
-		'<button id="' + boxId + '_search_next" onclick="nextSearchMatch(\'' + boxId + '\')" disabled title="Next (Enter)">↓</button>' +
-		'</div>' +
-		'<span class="data-search-info" id="' + boxId + '_search_info"></span>' +
 		'</div>' +
 		'<div class="column-search" id="' + boxId + '_column_search_container" style="display: none;">' +
 		'<div class="kusto-search-host" id="' + boxId + '_column_search_host"></div>' +
@@ -2824,7 +2822,9 @@ function __kustoEnsureResultsSearchControls(boxId) {
 				modeId: boxId + '_data_search_mode',
 				ariaLabel: 'Search data',
 				onInput: function () { searchData(boxId); },
-				onKeyDown: function (e) { handleDataSearchKeydown(e, boxId); }
+				onKeyDown: function (e) { handleDataSearchKeydown(e, boxId); },
+				onPrev: function () { previousSearchMatch(boxId); },
+				onNext: function () { nextSearchMatch(boxId); }
 			});
 		}
 
@@ -3568,9 +3568,10 @@ function searchData(boxId) {
 		}
 	} catch { /* ignore */ }
 	const regex = built && built.regex ? built.regex : null;
-	const infoSpan = document.getElementById(boxId + '_search_info');
-	const prevBtn = document.getElementById(boxId + '_search_prev');
-	const nextBtn = document.getElementById(boxId + '_search_next');
+	// Use embedded status and nav elements from search control.
+	const statusEl = document.getElementById(boxId + '_data_search_status');
+	const prevBtn = document.getElementById(boxId + '_data_search_prev');
+	const nextBtn = document.getElementById(boxId + '_data_search_next');
 
 	// Clear previous search highlights
 	document.querySelectorAll('#' + boxId + '_table td.search-match, #' + boxId + '_table td.search-match-current')
@@ -3583,16 +3584,22 @@ function searchData(boxId) {
 	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 
 	if (!String(query || '').trim()) {
-		infoSpan.textContent = '';
-		prevBtn.disabled = true;
-		nextBtn.disabled = true;
+		if (typeof __kustoUpdateSearchStatus === 'function') {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		}
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		}
 		return;
 	}
 
 	if (built && built.error) {
-		infoSpan.textContent = String(built.error);
-		prevBtn.disabled = true;
-		nextBtn.disabled = true;
+		if (typeof __kustoUpdateSearchStatus === 'function') {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, true, built.error);
+		}
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		}
 		return;
 	}
 
@@ -3626,18 +3633,23 @@ function searchData(boxId) {
 	// Update UI
 	const matchCount = state.searchMatches.length;
 	if (matchCount > 0) {
-		infoSpan.textContent = matchCount + ' match' + (matchCount !== 1 ? 'es' : '');
-		prevBtn.disabled = false;
-		nextBtn.disabled = false;
-
 		// Jump to first match
 		state.currentSearchIndex = 0;
 		try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
+		if (typeof __kustoUpdateSearchStatus === 'function') {
+			__kustoUpdateSearchStatus(statusEl, matchCount, 0, false, '');
+		}
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, true, matchCount);
+		}
 		highlightCurrentSearchMatch(boxId);
 	} else {
-		infoSpan.textContent = 'No matches';
-		prevBtn.disabled = true;
-		nextBtn.disabled = true;
+		if (typeof __kustoUpdateSearchStatus === 'function') {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		}
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		}
 	}
 }
 
@@ -3683,10 +3695,10 @@ function highlightCurrentSearchMatch(boxId) {
 		cell.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
 	}
 
-	// Update info text
-	const infoSpan = document.getElementById(boxId + '_search_info');
-	if (infoSpan) {
-		infoSpan.textContent = (currentIndex + 1) + ' of ' + matches.length;
+	// Update status text using embedded status element.
+	const statusEl = document.getElementById(boxId + '_data_search_status');
+	if (typeof __kustoUpdateSearchStatus === 'function') {
+		__kustoUpdateSearchStatus(statusEl, matches.length, currentIndex, false, '');
 	}
 }
 

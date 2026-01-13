@@ -159,7 +159,14 @@ window.__kustoPendingPythonCodeByBoxId = window.__kustoPendingPythonCodeByBoxId 
 // This stays in-memory and is included in getKqlxState.
 window.__kustoQueryResultJsonByBoxId = window.__kustoQueryResultJsonByBoxId || {};
 
-const __kustoMaxPersistedResultBytes = 200 * 1024;
+// Persisted query results are stored inline in the .kqlx document.
+// Keep a cap to avoid ballooning the file, but try hard to keep *some* results
+// (e.g. truncate rows) instead of dropping them entirely.
+//
+// Note: this is per-query-box, and the document can contain multiple boxes.
+// We intentionally allow several MB because session.kqlx lives in extension global storage.
+const __kustoMaxPersistedResultBytes = 5 * 1024 * 1024;
+const __kustoMaxPersistedResultRowsHardCap = 5000;
 
 function __kustoByteLengthUtf8(text) {
 	try {
@@ -184,12 +191,68 @@ function __kustoTryStoreQueryResult(boxId, result) {
 			delete window.__kustoQueryResultJsonByBoxId[boxId];
 			return;
 		}
-		const bytes = __kustoByteLengthUtf8(json);
+		let bytes = __kustoByteLengthUtf8(json);
 		if (bytes <= __kustoMaxPersistedResultBytes) {
 			window.__kustoQueryResultJsonByBoxId[boxId] = json;
-		} else {
-			delete window.__kustoQueryResultJsonByBoxId[boxId];
+			return;
 		}
+
+		// Too large: attempt to persist a truncated version (keep columns + metadata + top N rows).
+		try {
+			const cols = Array.isArray(result && result.columns) ? result.columns : [];
+			const rows = Array.isArray(result && result.rows) ? result.rows : [];
+			const meta = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
+
+			// If there are no rows to trim, give up.
+			if (!rows || !Array.isArray(rows) || rows.length === 0) {
+				delete window.__kustoQueryResultJsonByBoxId[boxId];
+				return;
+			}
+
+			const totalRows = rows.length;
+			let hi = Math.min(totalRows, __kustoMaxPersistedResultRowsHardCap);
+			let lo = 0;
+			let bestJson = '';
+			let bestCount = 0;
+
+			// Binary search the largest row count that fits.
+			while (lo <= hi) {
+				const mid = Math.floor((lo + hi) / 2);
+				const candidate = {
+					columns: cols,
+					rows: rows.slice(0, mid),
+					metadata: Object.assign({}, meta, {
+						persistedTruncated: true,
+						persistedTotalRows: totalRows,
+						persistedRows: mid
+					})
+				};
+				let candidateJson = '';
+				try {
+					candidateJson = JSON.stringify(candidate);
+				} catch {
+					candidateJson = '';
+				}
+				const candidateBytes = candidateJson ? __kustoByteLengthUtf8(candidateJson) : Number.MAX_SAFE_INTEGER;
+				if (candidateJson && candidateBytes <= __kustoMaxPersistedResultBytes) {
+					bestJson = candidateJson;
+					bestCount = mid;
+					lo = mid + 1;
+				} else {
+					hi = mid - 1;
+				}
+			}
+
+			if (bestJson && bestCount > 0) {
+				window.__kustoQueryResultJsonByBoxId[boxId] = bestJson;
+				return;
+			}
+		} catch {
+			// ignore
+		}
+
+		// Still too large; do not persist.
+		delete window.__kustoQueryResultJsonByBoxId[boxId];
 	} catch {
 		// ignore
 	}

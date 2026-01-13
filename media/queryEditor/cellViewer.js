@@ -6,39 +6,45 @@
  */
 window.__kustoCellViewerState = null;
 
-function __kustoSetCellViewerNavEnabled(enabled) {
+function __kustoSetCellViewerNavEnabled(enabled, matchCount) {
 	try {
-		const prevBtn = document.getElementById('cellViewerPrev');
-		const nextBtn = document.getElementById('cellViewerNext');
-		if (prevBtn) prevBtn.disabled = !enabled;
-		if (nextBtn) nextBtn.disabled = !enabled;
+		// Use embedded nav buttons from search control.
+		const prevBtn = document.getElementById('cellViewerSearch_prev');
+		const nextBtn = document.getElementById('cellViewerSearch_next');
+		if (typeof __kustoSetSearchNavEnabled === 'function') {
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, enabled, matchCount);
+		} else {
+			const canNav = enabled && matchCount > 1;
+			if (prevBtn) prevBtn.disabled = !canNav;
+			if (nextBtn) nextBtn.disabled = !canNav;
+		}
 	} catch { /* ignore */ }
 }
 
 function __kustoUpdateCellViewerSearchStatus() {
 	const st = window.__kustoCellViewerState;
-	const resultsSpan = document.getElementById('cellViewerSearchResults');
-	if (!resultsSpan) return;
-	if (st && st.searchError) {
-		resultsSpan.textContent = String(st.searchError);
-		__kustoSetCellViewerNavEnabled(false);
-		return;
+	// Use embedded status from search control.
+	const statusEl = document.getElementById('cellViewerSearch_status');
+	const total = (st && typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
+	const cur = (st && typeof st.currentMatchIndex === 'number' && isFinite(st.currentMatchIndex)) ? st.currentMatchIndex : 0;
+	const hasError = st && st.searchError;
+	const hasSearch = st && st.searchTerm;
+
+	if (typeof __kustoUpdateSearchStatus === 'function') {
+		if (hasError) {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, true, st.searchError);
+		} else if (!hasSearch) {
+			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		} else {
+			__kustoUpdateSearchStatus(statusEl, total, cur, false, '');
+		}
 	}
-	if (!st || !st.searchTerm) {
-		resultsSpan.textContent = '';
-		__kustoSetCellViewerNavEnabled(false);
-		return;
+
+	if (hasError || !hasSearch || total <= 0) {
+		__kustoSetCellViewerNavEnabled(false, 0);
+	} else {
+		__kustoSetCellViewerNavEnabled(true, total);
 	}
-	const total = (typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
-	if (total <= 0) {
-		resultsSpan.textContent = 'No matches';
-		__kustoSetCellViewerNavEnabled(false);
-		return;
-	}
-	const cur = (typeof st.currentMatchIndex === 'number' && isFinite(st.currentMatchIndex)) ? st.currentMatchIndex : 0;
-	const shown = Math.min(total, Math.max(1, cur + 1));
-	resultsSpan.textContent = shown + ' / ' + total;
-	__kustoSetCellViewerNavEnabled(total > 1);
 }
 
 function __kustoGetCellViewerMatchElement(matchIndex) {
@@ -47,7 +53,7 @@ function __kustoGetCellViewerMatchElement(matchIndex) {
 		if (!content) return null;
 		return content.querySelector('span.cell-viewer-highlight[data-kusto-match-index="' + String(matchIndex) + '"]');
 	} catch {
-		return null;
+		return null;;
 	}
 }
 
@@ -214,7 +220,15 @@ function __kustoEnsureCellViewerSearchControl() {
 			inputId: 'cellViewerSearch',
 			modeId: 'cellViewerSearchMode',
 			ariaLabel: 'Search',
-			onInput: function () { searchInCellViewer(); }
+			onInput: function () { searchInCellViewer(); },
+			onPrev: function () { cellViewerNavigateMatch(-1); },
+			onNext: function () { cellViewerNavigateMatch(1); },
+			onKeyDown: function (e) {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					cellViewerNavigateMatch(e.shiftKey ? -1 : 1);
+				}
+			}
 		});
 	} catch { /* ignore */ }
 }
@@ -368,6 +382,18 @@ function cellViewerPreviousMatch() {
 	if (total <= 0) return;
 	st.currentMatchIndex = ((st.currentMatchIndex || 0) - 1 + total) % total;
 	__kustoApplyCellViewerCurrentMatch(true);
+}
+
+/**
+ * Navigate to next (+1) or previous (-1) match.
+ * @param {number} delta - +1 for next, -1 for previous.
+ */
+function cellViewerNavigateMatch(delta) {
+	if (delta > 0) {
+		cellViewerNextMatch();
+	} else {
+		cellViewerPreviousMatch();
+	}
 }
 
 /**

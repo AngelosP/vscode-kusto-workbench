@@ -14,8 +14,14 @@
 		if (!btn) return;
 		const isRegex = (mode === SEARCH_MODE_REGEX);
 		btn.innerHTML = isRegex ? __kustoGetRegexIconSvg() : __kustoGetWildcardIconSvg();
-		btn.title = isRegex ? 'Regex mode (click to switch to Wildcard)' : 'Wildcard mode (click to switch to Regex)';
+		btn.title = isRegex
+			? 'Regex mode (click to switch to Wildcard)\n\nExamples:\n  ^hello - starts with "hello"\n  world$ - ends with "world"\n  \\d+ - one or more digits\n  foo|bar - "foo" or "bar"'
+			: 'Wildcard mode (click to switch to Regex)\n\nExamples:\n  hello - contains "hello"\n  hello*world - "hello" followed by "world"\n  *error* - contains "error"\n  log_* - starts with "log_"';
 		btn.setAttribute('aria-label', btn.title);
+	}
+
+	function __kustoGetSearchIconSvg() {
+		return '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>';
 	}
 
 	function __kustoGetWildcardIconSvg() {
@@ -24,6 +30,42 @@
 
 	function __kustoGetRegexIconSvg() {
 		return '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><text x="1" y="12" font-size="10" font-weight="bold" font-family="monospace">.*</text></svg>';
+	}
+
+	function __kustoGetChevronUpSvg() {
+		return '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 5.5L3.5 10l.707.707L8 6.914l3.793 3.793.707-.707L8 5.5z"/></svg>';
+	}
+
+	function __kustoGetChevronDownSvg() {
+		return '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 10.5l4.5-4.5-.707-.707L8 9.086 4.207 5.293 3.5 6 8 10.5z"/></svg>';
+	}
+
+	function __kustoUpdateSearchStatus(statusEl, matchCount, currentMatchIndex, hasError, errorMsg) {
+		if (!statusEl) return;
+		if (hasError) {
+			statusEl.textContent = '';
+			statusEl.title = errorMsg || 'Invalid search';
+			statusEl.classList.add('kusto-search-status-error');
+			return;
+		}
+		statusEl.classList.remove('kusto-search-status-error');
+		const count = (typeof matchCount === 'number' && isFinite(matchCount)) ? matchCount : 0;
+		if (count === 0) {
+			statusEl.textContent = '';
+			statusEl.title = '';
+			return;
+		}
+		const cur = (typeof currentMatchIndex === 'number' && isFinite(currentMatchIndex)) ? currentMatchIndex : 0;
+		const shown = Math.min(count, Math.max(1, cur + 1));
+		statusEl.textContent = '(' + shown + '/' + count + ')';
+		statusEl.title = 'Match ' + shown + ' of ' + count;
+	}
+
+	function __kustoSetSearchNavEnabled(prevBtn, nextBtn, enabled, matchCount) {
+		const count = (typeof matchCount === 'number' && matchCount > 1) ? matchCount : 0;
+		const canNav = enabled && count > 1;
+		if (prevBtn) prevBtn.disabled = !canNav;
+		if (nextBtn) nextBtn.disabled = !canNav;
 	}
 
 	function __kustoCreateSearchControl(hostEl, options) {
@@ -39,10 +81,16 @@
 		const wrapper = document.createElement('div');
 		wrapper.className = 'kusto-search-control';
 
+		// Search icon (magnifying glass watermark).
+		const searchIcon = document.createElement('span');
+		searchIcon.className = 'kusto-search-icon';
+		searchIcon.innerHTML = __kustoGetSearchIconSvg();
+		searchIcon.setAttribute('aria-hidden', 'true');
+
 		const input = document.createElement('input');
 		input.type = 'text';
 		input.id = inputId;
-		input.className = String(opts.inputClass || '').trim();
+		input.className = 'kusto-search-input ' + String(opts.inputClass || '').trim();
 		input.placeholder = 'Search...';
 		input.autocomplete = 'off';
 		try { input.spellcheck = false; } catch { /* ignore */ }
@@ -53,6 +101,16 @@
 			try { input.title = String(opts.title); } catch { /* ignore */ }
 		}
 
+		// Match status indicator (e.g. "3 / 12").
+		const statusEl = document.createElement('span');
+		statusEl.className = 'kusto-search-status';
+		statusEl.id = inputId + '_status';
+		// Keep the status text the same size as the search input text.
+		try {
+			const fs = window.getComputedStyle ? window.getComputedStyle(input).fontSize : '';
+			if (fs) statusEl.style.fontSize = fs;
+		} catch { /* ignore */ }
+
 		const toggleBtn = document.createElement('button');
 		toggleBtn.type = 'button';
 		toggleBtn.id = modeId;
@@ -61,8 +119,30 @@
 		toggleBtn.dataset.mode = initialMode;
 		__kustoUpdateSearchModeToggle(toggleBtn, initialMode);
 
+		// Previous match button.
+		const prevBtn = document.createElement('button');
+		prevBtn.type = 'button';
+		prevBtn.className = 'kusto-search-nav-btn kusto-search-prev';
+		prevBtn.id = inputId + '_prev';
+		prevBtn.innerHTML = __kustoGetChevronUpSvg();
+		prevBtn.title = 'Previous match (Shift+Enter)';
+		prevBtn.setAttribute('aria-label', 'Previous match');
+		prevBtn.disabled = true;
+
+		// Next match button.
+		const nextBtn = document.createElement('button');
+		nextBtn.type = 'button';
+		nextBtn.className = 'kusto-search-nav-btn kusto-search-next';
+		nextBtn.id = inputId + '_next';
+		nextBtn.innerHTML = __kustoGetChevronDownSvg();
+		nextBtn.title = 'Next match (Enter)';
+		nextBtn.setAttribute('aria-label', 'Next match');
+		nextBtn.disabled = true;
+
 		const onInput = (typeof opts.onInput === 'function') ? opts.onInput : null;
 		const onKeyDown = (typeof opts.onKeyDown === 'function') ? opts.onKeyDown : null;
+		const onPrev = (typeof opts.onPrev === 'function') ? opts.onPrev : null;
+		const onNext = (typeof opts.onNext === 'function') ? opts.onNext : null;
 
 		if (onInput) {
 			try { input.addEventListener('input', onInput); } catch { /* ignore */ }
@@ -81,11 +161,32 @@
 			}
 		});
 
+		if (onPrev) {
+			prevBtn.addEventListener('click', function () {
+				try { onPrev(); } catch { /* ignore */ }
+			});
+		}
+		if (onNext) {
+			nextBtn.addEventListener('click', function () {
+				try { onNext(); } catch { /* ignore */ }
+			});
+		}
+
+		// Visual divider before navigation buttons.
+		const navDivider = document.createElement('span');
+		navDivider.className = 'kusto-search-nav-divider';
+		navDivider.setAttribute('aria-hidden', 'true');
+
+		wrapper.appendChild(searchIcon);
 		wrapper.appendChild(input);
+		wrapper.appendChild(statusEl);
 		wrapper.appendChild(toggleBtn);
+		wrapper.appendChild(navDivider);
+		wrapper.appendChild(prevBtn);
+		wrapper.appendChild(nextBtn);
 		hostEl.appendChild(wrapper);
 
-		return { wrapper, input, toggleBtn };
+		return { wrapper, input, toggleBtn, statusEl, prevBtn, nextBtn };
 	}
 
 	function __kustoGetSearchControlState(inputId, modeId) {
@@ -260,4 +361,6 @@
 	window.__kustoHighlightPlainTextToHtml = __kustoHighlightPlainTextToHtml;
 	window.__kustoHighlightElementTextNodes = __kustoHighlightElementTextNodes;
 	window.__kustoUpdateSearchModeToggle = __kustoUpdateSearchModeToggle;
+	window.__kustoUpdateSearchStatus = __kustoUpdateSearchStatus;
+	window.__kustoSetSearchNavEnabled = __kustoSetSearchNavEnabled;
 })();
