@@ -7,7 +7,9 @@ function openObjectViewer(row, col, boxId) {
 	const columnName = __kustoGetObjectViewerColumnName(col);
 
 	const modal = document.getElementById('objectViewer');
+	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
 	const searchInput = document.getElementById('objectViewerSearch');
+	const searchMode = document.getElementById('objectViewerSearchMode');
 	const titleEl = document.getElementById('objectViewerTitle');
 
 	// Header title: Object viewer for <column> (column bold)
@@ -46,18 +48,48 @@ function openObjectViewer(row, col, boxId) {
 
 	// Check if there's an active data search and if this cell is a search match
 	const dataSearchInput = document.getElementById(boxId + '_data_search');
+	const dataSearchMode = document.getElementById(boxId + '_data_search_mode');
 	const dataSearchTerm = dataSearchInput ? dataSearchInput.value : '';
 
 	if (dataSearchTerm && window.currentResult.searchMatches &&
 		window.currentResult.searchMatches.some(m => m.row === row && m.col === col)) {
 		// Automatically search for the same term in the object viewer
-		searchInput.value = dataSearchTerm;
+		if (searchInput) searchInput.value = dataSearchTerm;
+		try {
+			const dataModeVal = dataSearchMode ? (dataSearchMode.dataset.mode || dataSearchMode.value) : null;
+			if (searchMode && dataModeVal) {
+				searchMode.dataset.mode = String(dataModeVal);
+				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, dataModeVal);
+			}
+		} catch { /* ignore */ }
 		searchInObjectViewer();
 	} else {
 		// Clear search
-		searchInput.value = '';
+		if (searchInput) searchInput.value = '';
+		try {
+			if (searchMode) {
+				searchMode.dataset.mode = 'wildcard';
+				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, 'wildcard');
+			}
+		} catch { /* ignore */ }
 		document.getElementById('objectViewerSearchResults').textContent = '';
 	}
+}
+
+function __kustoEnsureObjectViewerSearchControl() {
+	try {
+		if (document.getElementById('objectViewerSearch')) return;
+		const host = document.getElementById('objectViewerSearchHost');
+		if (!host) return;
+		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+
+		window.__kustoCreateSearchControl(host, {
+			inputId: 'objectViewerSearch',
+			modeId: 'objectViewerSearchMode',
+			ariaLabel: 'Search',
+			onInput: function () { searchInObjectViewer(); }
+		});
+	} catch { /* ignore */ }
 }
 
 function copyObjectViewerRawToClipboard() {
@@ -373,8 +405,8 @@ function __kustoRenderObjectViewer() {
 
 			const parsedNext = __kustoParseMaybeJson(nextValue);
 			try {
-				tr.dataset.kustoKeyLower = String(key).toLowerCase();
-				tr.dataset.kustoValueLower = __kustoStringifyForSearch(parsedNext).toLowerCase();
+				tr.dataset.kustoKeyText = String(key);
+				tr.dataset.kustoValueText = __kustoStringifyForSearch(parsedNext);
 			} catch { /* ignore */ }
 
 			// Copy value icon (hover on row). Copies the property's raw value.
@@ -426,14 +458,30 @@ function __kustoRenderObjectViewer() {
 function __kustoApplyObjectViewerTableSearchHighlight() {
 	const table = document.getElementById('objectViewerPropsTable');
 	if (!table) { return; }
-	const input = document.getElementById('objectViewerSearch');
-	const term = input ? String(input.value || '').trim().toLowerCase() : '';
+	let query = '';
+	let mode = 'wildcard';
+	let built = { regex: null, error: null };
+	try {
+		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
+			const st = window.__kustoGetSearchControlState('objectViewerSearch', 'objectViewerSearchMode');
+			query = String((st && st.query) ? st.query : '');
+			mode = st && st.mode ? st.mode : 'wildcard';
+			built = window.__kustoTryBuildSearchRegex(query, mode);
+		} else {
+			const input = document.getElementById('objectViewerSearch');
+			query = input ? String(input.value || '').trim() : '';
+			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
+		}
+	} catch { /* ignore */ }
+	const regex = built && built.regex ? built.regex : null;
 	const rows = table.querySelectorAll('tr');
 	rows.forEach((tr) => {
 		try {
-			const keyLower = tr.dataset ? String(tr.dataset.kustoKeyLower || '') : '';
-			const valueLower = tr.dataset ? String(tr.dataset.kustoValueLower || '') : '';
-			const hit = !!term && (keyLower.includes(term) || valueLower.includes(term));
+			const keyText = tr.dataset ? String(tr.dataset.kustoKeyText || '') : '';
+			const valueText = tr.dataset ? String(tr.dataset.kustoValueText || '') : '';
+			const hit = !!query && !built.error && regex && (typeof window.__kustoRegexTest === 'function'
+				? (window.__kustoRegexTest(regex, keyText) || window.__kustoRegexTest(regex, valueText))
+				: (keyText.toLowerCase().includes(query.toLowerCase()) || valueText.toLowerCase().includes(query.toLowerCase())));
 			tr.classList.toggle('search-match', hit);
 		} catch { /* ignore */ }
 	});
@@ -510,26 +558,53 @@ function syntaxHighlightJson(obj, indent = 0) {
 function searchInObjectViewer() {
 	if (!window.currentObjectViewerData) { return; }
 
-	const searchTerm = document.getElementById('objectViewerSearch').value.toLowerCase();
+	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
 	const content = document.getElementById('objectViewerContent');
 	const resultsSpan = document.getElementById('objectViewerSearchResults');
+	if (!content || !resultsSpan) return;
 
-	if (!searchTerm) {
+	let query = '';
+	let mode = 'wildcard';
+	let built = { regex: null, error: null };
+	try {
+		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
+			const st = window.__kustoGetSearchControlState('objectViewerSearch', 'objectViewerSearchMode');
+			query = String((st && st.query) ? st.query : '');
+			mode = st && st.mode ? st.mode : 'wildcard';
+			built = window.__kustoTryBuildSearchRegex(query, mode);
+		} else {
+			const input = document.getElementById('objectViewerSearch');
+			query = input ? String(input.value || '').trim() : '';
+			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
+		}
+	} catch { /* ignore */ }
+
+	if (!String(query || '').trim()) {
 		content.innerHTML = window.currentObjectViewerData.formatted;
 		resultsSpan.textContent = '';
 		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 		return;
 	}
 
-	// Count matches in the raw JSON
-	const rawJson = String(window.currentObjectViewerData.raw || '').toLowerCase();
-	const matches = (rawJson.match(new RegExp(escapeRegex(searchTerm), 'g')) || []).length;
+	if (built && built.error) {
+		content.innerHTML = window.currentObjectViewerData.formatted;
+		resultsSpan.textContent = String(built.error);
+		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+		return;
+	}
 
-	// Highlight matches in the formatted JSON
-	const highlightedHtml = highlightSearchTerm(window.currentObjectViewerData.formatted, searchTerm);
-	content.innerHTML = highlightedHtml;
+	const regex = built && built.regex ? built.regex : null;
+	const rawJson = String(window.currentObjectViewerData.raw || '');
+	const matches = (regex && typeof window.__kustoCountRegexMatches === 'function') ? window.__kustoCountRegexMatches(regex, rawJson, 5000) : 0;
 
-	resultsSpan.textContent = matches > 0 ? matches + ' match' + (matches !== 1 ? 'es' : '') : 'No matches';
+	content.innerHTML = window.currentObjectViewerData.formatted;
+	try {
+		if (regex && typeof window.__kustoHighlightElementTextNodes === 'function') {
+			window.__kustoHighlightElementTextNodes(content, regex, 'json-highlight');
+		}
+	} catch { /* ignore */ }
+
+	resultsSpan.textContent = matches > 0 ? (matches + ' match' + (matches !== 1 ? 'es' : '')) : 'No matches';
 	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 }
 

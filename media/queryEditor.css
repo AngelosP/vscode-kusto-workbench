@@ -3283,6 +3283,60 @@
 			outline-offset: 1px;
 		}
 
+		/* Reusable search control (input + embedded mode toggle). */
+		.kusto-search-control {
+			position: relative;
+			display: inline-flex;
+			align-items: center;
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.kusto-search-host {
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.kusto-search-control input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 1;
+		}
+
+		.kusto-search-control input {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-search-mode-toggle {
+			position: absolute;
+			right: 4px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+
+		.kusto-search-mode-toggle:hover {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-search-mode-toggle svg {
+			display: block;
+		}
+
 		.data-search {
 			display: flex;
 			gap: 4px;

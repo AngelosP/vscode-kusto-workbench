@@ -32,8 +32,7 @@
 			<div class="object-viewer-header">
 				<h3 id="objectViewerTitle"></h3>
 				<div class="object-viewer-search">
-					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..."
-						oninput="searchInObjectViewer()" />
+					<div id="objectViewerSearchHost"></div>
 					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
 				</div>
 				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn object-viewer-close" type="button" onclick="closeObjectViewer()" title="Close" aria-label="Close">
@@ -90,8 +89,7 @@
 			<div class="cell-viewer-header">
 				<h3 id="cellViewerTitle"></h3>
 				<div class="cell-viewer-search">
-					<input type="text" id="cellViewerSearch" placeholder="Search in value..."
-						oninput="searchInCellViewer()" />
+					<div id="cellViewerSearchHost"></div>
 					<span class="cell-viewer-search-results" id="cellViewerSearchResults"></span>
 				</div>
 				<div class="cell-viewer-actions">

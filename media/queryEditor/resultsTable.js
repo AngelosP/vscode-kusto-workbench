@@ -976,6 +976,32 @@ function openColumnFilter(event, colIndex, boxId) {
 	window.__kustoActiveFilterPopover = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
 	dialog.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 	document.body.appendChild(modal);
+	try { __kustoEnsureFilterPopoverSearchControl(boxId, colIdx); } catch { /* ignore */ }
+}
+
+function __kustoEnsureFilterPopoverSearchControl(boxId, colIdx) {
+	try {
+		const active = window.__kustoActiveFilterPopover;
+		if (!active || active.boxId !== boxId || active.colIndex !== colIdx) return;
+		if (String(active.mode || '') !== 'values') return;
+
+		const host = document.getElementById(boxId + '_filter_value_search_host');
+		if (!host) return;
+		if (document.getElementById(boxId + '_filter_value_search')) return;
+
+		if (typeof window.__kustoCreateSearchControl !== 'function') {
+			// Older webview / script load order issue; fall back silently.
+			return;
+		}
+
+		window.__kustoCreateSearchControl(host, {
+			inputId: boxId + '_filter_value_search',
+			modeId: boxId + '_filter_value_search_mode',
+			inputClass: 'kusto-filter-search kusto-filter-values-search kusto-filter-search-with-icon',
+			ariaLabel: 'Search values',
+			onInput: function () { __kustoFilterSearchValues(boxId, colIdx); }
+		});
+	} catch { /* ignore */ }
 }
 
 function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
@@ -1013,7 +1039,7 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 			'<div class="kusto-filter-section kusto-filter-values-toolbar">' +
 			'<div class="kusto-filter-searchbox kusto-filter-values-searchbox">' +
 			'<span class="kusto-filter-search-icon" aria-hidden="true">' + __kustoGetSearchIconSvg() + '</span>' +
-			'<input type="text" class="kusto-filter-search kusto-filter-values-search kusto-filter-search-with-icon" id="' + boxId + '_filter_value_search" placeholder="Search values..." oninput="__kustoFilterSearchValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ')" />' +
+			'<div id="' + boxId + '_filter_value_search_host"></div>' +
 			'</div>' +
 			'<div class="kusto-filter-values-actions-row">' +
 			'<button type="button" class="kusto-filter-mini-btn" onclick="__kustoFilterSetAllValues(\'' + __kustoEscapeJsStringLiteral(boxId) + '\', ' + String(colIdx) + ', true)" title="Select all" aria-label="Select all"><span class="kusto-filter-mini-btn-icon">' + __kustoGetSelectAllIconSvg(14) + '</span>Select all</button>' +
@@ -1094,13 +1120,34 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 
 function __kustoFilterSearchValues(boxId, colIdx) {
 	try {
-		const q = String(((document.getElementById(boxId + '_filter_value_search') || {}).value) || '').trim().toLowerCase();
+		if (typeof window.__kustoGetSearchControlState !== 'function' || typeof window.__kustoTryBuildSearchRegex !== 'function') {
+			// Backward compat: treat as simple contains.
+			const q = String(((document.getElementById(boxId + '_filter_value_search') || {}).value) || '').trim().toLowerCase();
+			const list = document.getElementById(boxId + '_filter_values_list');
+			if (!list) return;
+			const items = Array.from(list.querySelectorAll('label.kusto-filter-value'));
+			for (const it of items) {
+				const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '').toLowerCase();
+				it.style.display = (!q || t.includes(q)) ? '' : 'none';
+			}
+			return;
+		}
+
+		const st = window.__kustoGetSearchControlState(boxId + '_filter_value_search', boxId + '_filter_value_search_mode');
+		const q = String((st && st.query) ? st.query : '');
+		const mode = st && st.mode ? st.mode : 'wildcard';
+		const built = window.__kustoTryBuildSearchRegex(q, mode);
+		const input = document.getElementById(boxId + '_filter_value_search');
+		try { if (input) input.title = built && built.error ? String(built.error) : ''; } catch { /* ignore */ }
+		const regex = built && built.regex ? built.regex : null;
+
 		const list = document.getElementById(boxId + '_filter_values_list');
 		if (!list) return;
 		const items = Array.from(list.querySelectorAll('label.kusto-filter-value'));
 		for (const it of items) {
-			const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '').toLowerCase();
-			it.style.display = (!q || t.includes(q)) ? '' : 'none';
+			const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '');
+			const hit = (!q || !regex) ? true : !!window.__kustoRegexTest(regex, t);
+			it.style.display = hit ? '' : 'none';
 		}
 	} catch { /* ignore */ }
 }
@@ -2647,9 +2694,7 @@ function displayResultForBox(result, boxId, options) {
 		'</div>' +
 		'<div class="results-body" id="' + boxId + '_results_body" data-kusto-no-editor-focus="true">' +
 		'<div class="data-search" id="' + boxId + '_data_search_container" style="display: none;">' +
-		'<input type="text" placeholder="Search data..." id="' + boxId + '_data_search" ' +
-		'oninput="searchData(\'' + boxId + '\')" ' +
-		'onkeydown="handleDataSearchKeydown(event, \'' + boxId + '\')" />' +
+		'<div class="kusto-search-host" id="' + boxId + '_data_search_host"></div>' +
 		'<div class="data-search-nav">' +
 		'<button id="' + boxId + '_search_prev" onclick="previousSearchMatch(\'' + boxId + '\')" disabled title="Previous (Shift+Enter)">↑</button>' +
 		'<button id="' + boxId + '_search_next" onclick="nextSearchMatch(\'' + boxId + '\')" disabled title="Next (Enter)">↓</button>' +
@@ -2657,9 +2702,7 @@ function displayResultForBox(result, boxId, options) {
 		'<span class="data-search-info" id="' + boxId + '_search_info"></span>' +
 		'</div>' +
 		'<div class="column-search" id="' + boxId + '_column_search_container" style="display: none;">' +
-		'<input type="text" placeholder="Scroll to column..." id="' + boxId + '_column_search" ' +
-		'oninput="filterColumns(\'' + boxId + '\')" ' +
-		'onkeydown="handleColumnSearchKeydown(event, \'' + boxId + '\')" />' +
+		'<div class="kusto-search-host" id="' + boxId + '_column_search_host"></div>' +
 		'<div class="column-autocomplete" id="' + boxId + '_column_autocomplete"></div>' +
 		'</div>' +
 		'<div class="table-container" id="' + boxId + '_table_container" tabindex="0" data-kusto-no-editor-focus="true" onkeydown="handleTableKeydown(event, \'' + boxId + '\')" oncontextmenu="handleTableContextMenu(event, \'' + boxId + '\')">' +
@@ -2703,6 +2746,7 @@ function displayResultForBox(result, boxId, options) {
 		'</div>';
 
 	resultsDiv.innerHTML = html;
+	try { __kustoEnsureResultsSearchControls(boxId); } catch { /* ignore */ }
 	// Ensure the results UI establishes a consistent scroll surface everywhere it is embedded.
 	// Some hosts (e.g. URL/CSV) don't have the same wrapper DOM as query results, so we
 	// apply minimal inline flex/overflow styles to make virtualization + selection reliable.
@@ -2767,6 +2811,34 @@ function displayResultForBox(result, boxId, options) {
 		// ignore
 	}
 	resultsDiv.classList.add('visible');
+}
+
+function __kustoEnsureResultsSearchControls(boxId) {
+	try {
+		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+
+		const dataHost = document.getElementById(boxId + '_data_search_host');
+		if (dataHost && !document.getElementById(boxId + '_data_search')) {
+			window.__kustoCreateSearchControl(dataHost, {
+				inputId: boxId + '_data_search',
+				modeId: boxId + '_data_search_mode',
+				ariaLabel: 'Search data',
+				onInput: function () { searchData(boxId); },
+				onKeyDown: function (e) { handleDataSearchKeydown(e, boxId); }
+			});
+		}
+
+		const colHost = document.getElementById(boxId + '_column_search_host');
+		if (colHost && !document.getElementById(boxId + '_column_search')) {
+			window.__kustoCreateSearchControl(colHost, {
+				inputId: boxId + '_column_search',
+				modeId: boxId + '_column_search_mode',
+				ariaLabel: 'Scroll to column',
+				onInput: function () { filterColumns(boxId); },
+				onKeyDown: function (e) { handleColumnSearchKeydown(e, boxId); }
+			});
+		}
+	} catch { /* ignore */ }
 }
 
 function __kustoTryExtractJsonFromErrorText(raw) {
@@ -3479,8 +3551,23 @@ function searchData(boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	const searchInput = document.getElementById(boxId + '_data_search');
-	const searchTerm = searchInput.value.toLowerCase();
+	let query = '';
+	let mode = 'wildcard';
+	let built = { regex: null, error: null };
+	try {
+		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
+			const st = window.__kustoGetSearchControlState(boxId + '_data_search', boxId + '_data_search_mode');
+			query = String((st && st.query) ? st.query : '');
+			mode = st && st.mode ? st.mode : 'wildcard';
+			built = window.__kustoTryBuildSearchRegex(query, mode);
+		} else {
+			const searchInput = document.getElementById(boxId + '_data_search');
+			query = searchInput ? String(searchInput.value || '') : '';
+			mode = 'wildcard';
+			built = { regex: query ? new RegExp(escapeRegex(String(query).trim()), 'gi') : null, error: null };
+		}
+	} catch { /* ignore */ }
+	const regex = built && built.regex ? built.regex : null;
 	const infoSpan = document.getElementById(boxId + '_search_info');
 	const prevBtn = document.getElementById(boxId + '_search_prev');
 	const nextBtn = document.getElementById(boxId + '_search_next');
@@ -3495,8 +3582,15 @@ function searchData(boxId) {
 	state.currentSearchIndex = -1;
 	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 
-	if (!searchTerm) {
+	if (!String(query || '').trim()) {
 		infoSpan.textContent = '';
+		prevBtn.disabled = true;
+		nextBtn.disabled = true;
+		return;
+	}
+
+	if (built && built.error) {
+		infoSpan.textContent = String(built.error);
 		prevBtn.disabled = true;
 		nextBtn.disabled = true;
 		return;
@@ -3523,7 +3617,7 @@ function searchData(boxId) {
 			}
 
 			// Check if search term is in cell text
-			if (cellText.toLowerCase().includes(searchTerm)) {
+			if (regex && typeof window.__kustoRegexTest === 'function' ? window.__kustoRegexTest(regex, cellText) : cellText.toLowerCase().includes(String(query).toLowerCase())) {
 				state.searchMatches.push({ row: rowIdx, col: colIdx });
 			}
 		});
@@ -3702,16 +3796,34 @@ function filterColumns(boxId) {
 	const autocomplete = document.getElementById(boxId + '_column_autocomplete');
 	if (!input || !autocomplete) { return; }
 
-	const query = input.value.toLowerCase();
+	let query = '';
+	let mode = 'wildcard';
+	let built = { regex: null, error: null };
+	try {
+		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
+			const st = window.__kustoGetSearchControlState(boxId + '_column_search', boxId + '_column_search_mode');
+			query = String((st && st.query) ? st.query : '');
+			mode = st && st.mode ? st.mode : 'wildcard';
+			built = window.__kustoTryBuildSearchRegex(query, mode);
+		} else {
+			query = String(input.value || '');
+			built = { regex: query ? new RegExp(escapeRegex(String(query).trim()), 'gi') : null, error: null };
+		}
+	} catch { /* ignore */ }
+	const regex = built && built.regex ? built.regex : null;
 
-	if (!query) {
+	if (!String(query || '').trim()) {
+		autocomplete.classList.remove('visible');
+		return;
+	}
+	if (built && built.error) {
 		autocomplete.classList.remove('visible');
 		return;
 	}
 
 	const matches = state.columns
 		.map((col, idx) => ({ name: col, index: idx }))
-		.filter(col => col.name.toLowerCase().includes(query));
+		.filter(col => regex ? (typeof window.__kustoRegexTest === 'function' ? window.__kustoRegexTest(regex, col.name) : col.name.toLowerCase().includes(String(query).toLowerCase())) : false);
 
 	if (matches.length === 0) {
 		autocomplete.classList.remove('visible');

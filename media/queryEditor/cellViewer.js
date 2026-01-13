@@ -2,7 +2,7 @@
 
 /**
  * State for the cell viewer.
- * @type {{ boxId: string, row: number, col: number, columnName: string, rawValue: string, searchTerm: string, matchCount?: number, currentMatchIndex?: number } | null}
+ * @type {{ boxId: string, row: number, col: number, columnName: string, rawValue: string, searchTerm: string, searchMode?: string, searchError?: string, matchCount?: number, currentMatchIndex?: number } | null}
  */
 window.__kustoCellViewerState = null;
 
@@ -19,6 +19,11 @@ function __kustoUpdateCellViewerSearchStatus() {
 	const st = window.__kustoCellViewerState;
 	const resultsSpan = document.getElementById('cellViewerSearchResults');
 	if (!resultsSpan) return;
+	if (st && st.searchError) {
+		resultsSpan.textContent = String(st.searchError);
+		__kustoSetCellViewerNavEnabled(false);
+		return;
+	}
 	if (!st || !st.searchTerm) {
 		resultsSpan.textContent = '';
 		__kustoSetCellViewerNavEnabled(false);
@@ -116,7 +121,9 @@ function openCellViewer(row, col, boxId) {
 
 	const modal = document.getElementById('cellViewer');
 	const titleEl = document.getElementById('cellViewerTitle');
+	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
 	const searchInput = document.getElementById('cellViewerSearch');
+	const searchMode = document.getElementById('cellViewerSearchMode');
 	const content = document.getElementById('cellViewerContent');
 	const resultsSpan = document.getElementById('cellViewerSearchResults');
 
@@ -139,6 +146,8 @@ function openCellViewer(row, col, boxId) {
 		columnName: columnName,
 		rawValue: rawValue,
 		searchTerm: '',
+		searchMode: 'wildcard',
+		searchError: '',
 		matchCount: 0,
 		currentMatchIndex: 0
 	};
@@ -148,18 +157,36 @@ function openCellViewer(row, col, boxId) {
 
 	// Check if there's an active data search and if this cell is a search match.
 	const dataSearchInput = document.getElementById(boxId + '_data_search');
+	const dataSearchMode = document.getElementById(boxId + '_data_search_mode');
 	const dataSearchTerm = dataSearchInput ? dataSearchInput.value : '';
 	const isSearchMatch = dataSearchTerm && state.searchMatches &&
 		state.searchMatches.some(m => m.row === row && m.col === col);
 
 	if (isSearchMatch) {
 		// Pre-populate search with the current search term.
-		searchInput.value = dataSearchTerm;
+		if (searchInput) searchInput.value = dataSearchTerm;
+		try {
+			const dataModeVal = dataSearchMode ? (dataSearchMode.dataset.mode || dataSearchMode.value) : null;
+			if (searchMode && dataModeVal) {
+				searchMode.dataset.mode = String(dataModeVal);
+				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, dataModeVal);
+				window.__kustoCellViewerState.searchMode = String(dataModeVal);
+			}
+		} catch { /* ignore */ }
 		window.__kustoCellViewerState.searchTerm = dataSearchTerm;
 		window.__kustoCellViewerState.currentMatchIndex = 0;
+		window.__kustoCellViewerState.searchError = '';
 	} else {
-		searchInput.value = '';
+		if (searchInput) searchInput.value = '';
+		try {
+			if (searchMode) {
+				searchMode.dataset.mode = 'wildcard';
+				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, 'wildcard');
+			}
+		} catch { /* ignore */ }
 		window.__kustoCellViewerState.searchTerm = '';
+		window.__kustoCellViewerState.searchMode = 'wildcard';
+		window.__kustoCellViewerState.searchError = '';
 		window.__kustoCellViewerState.currentMatchIndex = 0;
 	}
 
@@ -172,8 +199,24 @@ function openCellViewer(row, col, boxId) {
 
 	// Focus the search input.
 	setTimeout(() => {
-		try { searchInput.focus(); } catch { /* ignore */ }
+		try { if (searchInput) searchInput.focus(); } catch { /* ignore */ }
 	}, 50);
+}
+
+function __kustoEnsureCellViewerSearchControl() {
+	try {
+		if (document.getElementById('cellViewerSearch')) return;
+		const host = document.getElementById('cellViewerSearchHost');
+		if (!host) return;
+		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+
+		window.__kustoCreateSearchControl(host, {
+			inputId: 'cellViewerSearch',
+			modeId: 'cellViewerSearchMode',
+			ariaLabel: 'Search',
+			onInput: function () { searchInCellViewer(); }
+		});
+	} catch { /* ignore */ }
 }
 
 /**
@@ -223,6 +266,8 @@ function __kustoRenderCellViewerContent() {
 
 	const rawValue = state.rawValue || '';
 	const searchTerm = state.searchTerm || '';
+	const searchMode = state.searchMode || 'wildcard';
+	state.searchError = '';
 
 	if (!searchTerm) {
 		// No search - just display the raw value with proper escaping.
@@ -234,58 +279,43 @@ function __kustoRenderCellViewerContent() {
 		return;
 	}
 
-	// Count matches.
-	const lowerRaw = rawValue.toLowerCase();
-	const lowerSearch = searchTerm.toLowerCase();
-	let matchCount = 0;
-	let idx = 0;
-	while ((idx = lowerRaw.indexOf(lowerSearch, idx)) !== -1) {
-		matchCount++;
-		idx += lowerSearch.length;
+	let built = { regex: null, error: null };
+	try {
+		if (typeof window.__kustoTryBuildSearchRegex === 'function') {
+			built = window.__kustoTryBuildSearchRegex(searchTerm, searchMode);
+		} else {
+			built = { regex: new RegExp(escapeRegex(String(searchTerm).trim()), 'gi'), error: null };
+		}
+	} catch {
+		built = { regex: null, error: 'Invalid regex. Please fix the pattern.' };
 	}
 
-	state.matchCount = matchCount;
-	if (!(typeof state.currentMatchIndex === 'number' && isFinite(state.currentMatchIndex))) {
-		state.currentMatchIndex = 0;
-	}
-	if (matchCount > 0) {
-		state.currentMatchIndex = Math.min(matchCount - 1, Math.max(0, state.currentMatchIndex));
-	} else {
-		state.currentMatchIndex = 0;
-	}
-
-	// Highlight matches in the content.
-	if (matchCount === 0) {
+	if (built && built.error) {
+		state.searchError = String(built.error);
 		content.innerHTML = '';
 		content.textContent = rawValue;
+		state.matchCount = 0;
+		state.currentMatchIndex = 0;
 		__kustoUpdateCellViewerSearchStatus();
 		return;
 	}
 
-	// Build highlighted HTML.
-	content.innerHTML = '';
-	let lastIndex = 0;
-	idx = 0;
-	let matchIndex = 0;
-	while ((idx = lowerRaw.indexOf(lowerSearch, lastIndex)) !== -1) {
-		// Text before match.
-		if (idx > lastIndex) {
-			content.appendChild(document.createTextNode(rawValue.substring(lastIndex, idx)));
-		}
-		// Highlighted match.
-		const span = document.createElement('span');
-		span.className = 'cell-viewer-highlight';
-		try { span.setAttribute('data-kusto-match-index', String(matchIndex)); } catch { /* ignore */ }
-		span.textContent = rawValue.substring(idx, idx + searchTerm.length);
-		content.appendChild(span);
-		lastIndex = idx + searchTerm.length;
-		matchIndex++;
+	const regex = built && built.regex ? built.regex : null;
+	const render = (regex && typeof window.__kustoHighlightPlainTextToHtml === 'function')
+		? window.__kustoHighlightPlainTextToHtml(rawValue, regex, { highlightClass: 'cell-viewer-highlight', includeMatchIndex: true, maxMatches: 5000 })
+		: { html: escapeHtml(String(rawValue || '')), count: 0 };
+
+	state.matchCount = render && typeof render.count === 'number' ? render.count : 0;
+	if (!(typeof state.currentMatchIndex === 'number' && isFinite(state.currentMatchIndex))) {
+		state.currentMatchIndex = 0;
 	}
-	// Remaining text.
-	if (lastIndex < rawValue.length) {
-		content.appendChild(document.createTextNode(rawValue.substring(lastIndex)));
+	if (state.matchCount > 0) {
+		state.currentMatchIndex = Math.min(state.matchCount - 1, Math.max(0, state.currentMatchIndex));
+	} else {
+		state.currentMatchIndex = 0;
 	}
 
+	content.innerHTML = render && typeof render.html === 'string' ? render.html : escapeHtml(String(rawValue || ''));
 	__kustoApplyCellViewerCurrentMatch(false);
 }
 
@@ -296,11 +326,26 @@ function searchInCellViewer() {
 	const state = window.__kustoCellViewerState;
 	if (!state) { return; }
 
-	const searchInput = document.getElementById('cellViewerSearch');
-	const nextTerm = searchInput ? searchInput.value : '';
+	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
+	let nextTerm = '';
+	let nextMode = 'wildcard';
+	try {
+		if (typeof window.__kustoGetSearchControlState === 'function') {
+			const st = window.__kustoGetSearchControlState('cellViewerSearch', 'cellViewerSearchMode');
+			nextTerm = st ? String(st.query || '') : '';
+			nextMode = st && st.mode ? String(st.mode) : 'wildcard';
+		} else {
+			const searchInput = document.getElementById('cellViewerSearch');
+			nextTerm = searchInput ? String(searchInput.value || '') : '';
+			nextMode = 'wildcard';
+		}
+	} catch { /* ignore */ }
 	const prevTerm = state.searchTerm;
+	const prevMode = state.searchMode;
 	state.searchTerm = nextTerm;
-	if (String(prevTerm || '') !== String(nextTerm || '')) {
+	state.searchMode = nextMode;
+	state.searchError = '';
+	if (String(prevTerm || '') !== String(nextTerm || '') || String(prevMode || '') !== String(nextMode || '')) {
 		state.currentMatchIndex = 0;
 	}
 	__kustoRenderCellViewerContent();

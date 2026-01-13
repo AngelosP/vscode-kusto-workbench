@@ -469,6 +469,32 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let saveTimer: NodeJS.Timeout | undefined;
 		let lastSavedText = document.getText();
 		let lastSavedEol = document.eol;
+		// Track the last text we wrote directly to disk for session files.
+		// This helps avoid redundant writes and keeps lastSavedText in sync.
+		let lastDirectDiskWrite = isSessionFile ? lastSavedText : '';
+
+		// For session files, write directly to disk without going through the document edit cycle.
+		// This avoids the dirty indicator flickering that happens with applyEdit→save.
+		const saveSessionFileToDisk = async (text: string): Promise<boolean> => {
+			if (!isSessionFile) {
+				return false;
+			}
+			try {
+				// Skip if the text is identical to what we last wrote.
+				if (text === lastDirectDiskWrite) {
+					return true;
+				}
+				const bytes = new TextEncoder().encode(text);
+				await vscode.workspace.fs.writeFile(document.uri, bytes);
+				lastDirectDiskWrite = text;
+				lastSavedText = text;
+				lastSavedEol = document.eol;
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
 			// For user-picked .kqlx files, saving should remain user-controlled (or governed by VS Code's autosave setting).
@@ -817,14 +843,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											// ignore
 										}
 									}
-									if (isSessionFile && (message as any).flush) {
-										try {
-											await document.save();
-										} catch {
-											// ignore
-										}
+									// For session files, ensure the current content is written to disk.
+									// This handles cases where the in-memory state matches what we want,
+									// but the disk content might be stale (e.g., results just added).
+									if (isSessionFile) {
+										await saveSessionFileToDisk(currentText);
 									}
-									scheduleSave();
 									return;
 								}
 							}
@@ -853,21 +877,25 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									// ignore
 								}
 							}
-							// For the session file, still attempt to save if explicitly flushing.
-							if (isSessionFile && (message as any).flush) {
-								try {
-									await document.save();
-								} catch {
-									// ignore
-								}
+							// For session files, ensure the current content is written to disk.
+							if (isSessionFile) {
+								await saveSessionFileToDisk(currentText);
 							}
-							scheduleSave();
 							return;
 						}
 					} catch {
 						// ignore
 					}
 
+					// For session files, write directly to disk without going through the document
+					// edit cycle. This avoids the dirty indicator flickering that happens with
+					// applyEdit→save and ensures results are always persisted.
+					if (isSessionFile) {
+						await saveSessionFileToDisk(nextText);
+						return;
+					}
+
+					// For non-session files, use the standard edit→save cycle.
 					const fullRange = new vscode.Range(
 						document.positionAt(0),
 						document.positionAt(currentText.length)
@@ -879,7 +907,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 					// If we just restored the file back to the exact on-disk content due to a reorder undo,
 					// force a save to ensure VS Code clears the dirty flag.
-					if (!isSessionFile && persistReason === 'reorder' && incomingMatchesDisk) {
+					if (persistReason === 'reorder' && incomingMatchesDisk) {
 						try {
 							if (diskTextForMatch && diskTextForMatch === nextText && document.isDirty) {
 								await document.save();
@@ -889,17 +917,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					}
 
-					if (isSessionFile) {
-						// For the persistent session file, always save promptly so VS Code never prompts on close.
-						try {
-							await document.save();
-						} catch {
-							// ignore
-						}
-					} else {
-						// For user-picked files, saving stays user-controlled (or governed by VS Code autosave settings).
-						scheduleSave();
-					}
+					// For user-picked files, saving stays user-controlled (or governed by VS Code autosave settings).
+					scheduleSave();
 					return;
 				}
 				default:

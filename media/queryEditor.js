@@ -77,6 +77,7 @@
 		'queryEditor/state.js',
 		'queryEditor/persistence.js',
 		'queryEditor/utils.js',
+		'queryEditor/searchControl.js',
 		'queryEditor/dropdown.js',
 		'queryEditor/vendor/marked.min.js',
 		'queryEditor/vendor/purify.min.js',
