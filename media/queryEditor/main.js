@@ -1315,8 +1315,25 @@ window.addEventListener('message', async event => {
 				if (shouldUpdate) {
 					const applySchema = async () => {
 						if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
+							// Schema/context state in monaco-kusto is tracked PER Monaco model URI.
+							// If we don't pass the model URI, monaco.js falls back to models[0], which can
+							// immediately put the wrong database in context for the active editor.
+							let modelUri = null;
+							try {
+								const editor = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[message.boxId] : null;
+								const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+								if (model && model.uri) {
+									modelUri = model.uri.toString();
+								}
+							} catch { /* ignore */ }
+
+							// If we can't resolve a model URI yet (editor not ready), retry later.
+							if (!modelUri) {
+								return false;
+							}
+
 							// Set as context if this is the active box
-							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox);
+							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri);
 							
 							// If this is the active box, trigger revalidation to reflect the new schema
 							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {

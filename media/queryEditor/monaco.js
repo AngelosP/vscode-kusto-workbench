@@ -4926,6 +4926,35 @@ function ensureMonaco() {
 						if (!models || models.length === 0) {
 							return;
 						}
+						// IMPORTANT: schema/context caches are keyed by model URI. Monaco can reuse in-memory
+						// URIs (e.g. inmemory://model/1) across file/session loads once models are disposed.
+						// If we don't clean up per-model caches on dispose, a newly-created model can inherit
+						// stale loadedSchemas/context and autocomplete will be wrong immediately.
+						try {
+							window.__kustoMonacoModelDisposeHookInstalled = window.__kustoMonacoModelDisposeHookInstalled || false;
+							if (!window.__kustoMonacoModelDisposeHookInstalled && monaco?.editor?.onWillDisposeModel) {
+								window.__kustoMonacoModelDisposeHookInstalled = true;
+								monaco.editor.onWillDisposeModel((model) => {
+									try {
+										const uriKey = model?.uri ? model.uri.toString() : null;
+										if (!uriKey) return;
+										if (window.__kustoMonacoLoadedSchemasByModel && window.__kustoMonacoLoadedSchemasByModel[uriKey]) {
+											try { delete window.__kustoMonacoLoadedSchemasByModel[uriKey]; } catch { /* ignore */ }
+										}
+										if (window.__kustoMonacoDatabaseInContextByModel && window.__kustoMonacoDatabaseInContextByModel[uriKey]) {
+											try { delete window.__kustoMonacoDatabaseInContextByModel[uriKey]; } catch { /* ignore */ }
+										}
+										if (window.__kustoMonacoInitializedByModel && window.__kustoMonacoInitializedByModel[uriKey]) {
+											try { delete window.__kustoMonacoInitializedByModel[uriKey]; } catch { /* ignore */ }
+										}
+										if (window.__kustoModelClusterMap && window.__kustoModelClusterMap[uriKey]) {
+											try { delete window.__kustoModelClusterMap[uriKey]; } catch { /* ignore */ }
+										}
+									} catch { /* ignore */ }
+								});
+							}
+						} catch { /* ignore */ }
+
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : models[0].uri.toString();
 						window.__kustoMonacoLoadedSchemasByModel[modelKey] = window.__kustoMonacoLoadedSchemasByModel[modelKey] || {};
 						window.__kustoMonacoDatabaseInContextByModel[modelKey] = window.__kustoMonacoDatabaseInContextByModel[modelKey] || null;
@@ -5062,7 +5091,7 @@ function ensureMonaco() {
 									} else {
 										// Subsequent schemas: decide whether to add or replace based on cluster
 										// Use the isSameCluster value computed at the top of the function
-										
+									
 										// If setAsContext is true and we're switching to a different cluster,
 										// we need to replace the schema entirely (not add to it)
 										// because __kustoSetDatabaseInContext looks for the database in the current cluster's schema
@@ -5194,11 +5223,40 @@ function ensureMonaco() {
 														// Cache the schema for re-adding after future cluster switches
 														window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 														
-														// If requested, also switch context to this database
-														if (setAsContext) {
-															console.log('[DEBUG:SetSchema] ADD: switching context to this database');
-																				await window.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
-														}
+																	// If requested, also switch context to this database.
+																	// NOTE: monaco-kusto's aggregated schema may not include newly-added databases
+																	// in currentSchema.cluster.databases. If we rely purely on __kustoSetDatabaseInContext,
+																	// context switching can fail and IntelliSense stays on the previous database.
+																	if (setAsContext) {
+																		console.log('[DEBUG:SetSchema] ADD: switching context to this database');
+																		let contextSet = false;
+																		try {
+																			if (typeof worker.getSchema === 'function' && typeof worker.setSchema === 'function') {
+																				const currentSchema = await worker.getSchema();
+																				const currentDatabases = currentSchema?.cluster?.databases || [];
+																				const existingDb = currentDatabases.find(db => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase());
+																				const nextDatabases = existingDb ? currentDatabases : [...currentDatabases, databaseSchema];
+																				const updatedSchema = {
+																					...currentSchema,
+																					cluster: {
+																						...(currentSchema?.cluster || {}),
+																						databases: nextDatabases
+																					},
+																					database: existingDb || databaseSchema
+																				};
+																				await worker.setSchema(updatedSchema);
+																				window.__kustoMonacoDatabaseInContextByModel = window.__kustoMonacoDatabaseInContextByModel || {};
+																				window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: (existingDb || databaseSchema).name };
+																				window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+																				contextSet = true;
+																			}
+																		} catch {
+																				contextSet = false;
+																		}
+																		if (!contextSet) {
+																			await window.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
+																		}
+																	}
 													} else {
 														console.log('[DEBUG:SetSchema] ADD: FAILED - no databaseSchema found in engineSchema');
 													}
@@ -5838,6 +5896,10 @@ try {
 				if (window.__kustoMonacoLoadedSchemas) {
 					window.__kustoMonacoLoadedSchemas = {};
 				}
+				// Clear per-model tracking too (Monaco model URIs can be reused)
+				try { window.__kustoMonacoLoadedSchemasByModel = {}; } catch { /* ignore */ }
+				try { window.__kustoMonacoDatabaseInContextByModel = {}; } catch { /* ignore */ }
+				try { window.__kustoMonacoInitializedByModel = {}; } catch { /* ignore */ }
 				window.__kustoMonacoDatabaseInContext = null;
 				
 				// Optionally: Clear the schema from the worker to free memory
