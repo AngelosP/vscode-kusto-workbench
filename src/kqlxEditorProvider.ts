@@ -253,8 +253,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		return 'kqlx';
 	}
 
-	private static getAllowedSectionKinds(kind: KqlxFileKind): Array<'query' | 'chart' | 'markdown' | 'python' | 'url'> {
-		return kind === 'mdx' ? ['markdown', 'url'] : ['query', 'chart', 'markdown', 'python', 'url'];
+	private static getAllowedSectionKinds(
+		kind: KqlxFileKind
+	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url'> {
+		// .mdx is intended to be "notebook-like markdown"; we still allow URL and Transformations
+		// so users can fetch CSV and reshape it.
+		return kind === 'mdx'
+			? ['markdown', 'url', 'transformation']
+			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 	}
 
 	private static sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
@@ -264,7 +270,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const sections = Array.isArray(state.sections) ? state.sections : [];
 		const filtered = sections.filter((s) => {
 			const t = (s as any)?.type;
-			return t === 'markdown' || t === 'url';
+			return t === 'markdown' || t === 'url' || t === 'transformation';
 		});
 		return {
 			caretDocsEnabled: state.caretDocsEnabled,

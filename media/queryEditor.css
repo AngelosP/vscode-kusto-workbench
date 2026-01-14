@@ -539,9 +539,30 @@
 			overflow: hidden;
 		}
 
+		/* Transformation section builder */
+		.transformation-box .query-editor {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			min-height: 0;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			overflow-x: hidden;
+			overflow-y: auto;
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+		}
+
 		.chart-box .query-editor-wrapper {
 			border: none;
 			overflow: hidden;
+		}
+
+		.transformation-box .query-editor-wrapper {
+			border: none;
+			overflow: hidden;
+			height: auto;
+			min-height: 0;
 		}
 
 		.kusto-chart-builder {
@@ -554,6 +575,21 @@
 			background: var(--vscode-editor-background);
 			color: var(--vscode-foreground);
 			overflow: hidden;
+		}
+
+		/* Transformations: let controls size to content; results fill remaining height */
+		.transformation-box .kusto-chart-builder {
+			height: auto;
+			flex: 0 0 auto;
+			overflow: visible;
+			padding-bottom: 0;
+		}
+
+		.transformation-box .results-wrapper {
+			flex: 1 1 auto;
+			min-height: 0;
+			margin-top: 10px;
+			border-top: none;
 		}
 
 		.kusto-chart-controls {
@@ -606,6 +642,202 @@
 		.kusto-chart-row select,
 		.kusto-chart-mapping-row select {
 			min-width: 140px;
+		}
+
+		.kusto-transform-input,
+		.kusto-transform-textarea,
+		.kusto-transform-select {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 4px 6px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+		}
+
+		.kusto-transform-textarea {
+			resize: vertical;
+			min-height: 28px;
+			line-height: 1.35;
+		}
+
+		/* Transformations: Data dropdown height */
+		.transformation-box button.kusto-dropdown-btn[id$="_tf_ds_btn"] {
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-bottom: 6px;
+		}
+
+		/* Transformation: Calculated columns (derive) */
+		.kusto-transform-derive-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 6px 8px;
+			border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border));
+			border-radius: 8px;
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-editor-foreground) 8%);
+		}
+
+		.kusto-transform-derive-title {
+			font-size: 12px;
+			font-weight: 600;
+			opacity: 0.95;
+		}
+
+		.kusto-transform-derive-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-top: 0;
+		}
+
+		.kusto-transform-derive-row {
+			display: grid;
+			grid-template-columns: auto 220px 1fr auto;
+			gap: 8px;
+			align-items: center;
+			border: 1px dashed color-mix(in srgb, var(--vscode-panel-border) 65%, transparent);
+			border-radius: 0;
+			padding: 8px;
+			background: var(--vscode-editor-background);
+			box-shadow: none;
+			transition: border-color 0.12s ease, transform 0.12s ease, background 0.12s ease;
+			position: relative;
+		}
+
+		.kusto-transform-derive-row .kusto-transform-input,
+		.kusto-transform-derive-row .kusto-transform-textarea {
+			border-radius: 0;
+		}
+
+		.kusto-transform-derive-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-derive-row-actions {
+			align-self: center;
+		}
+
+		.kusto-transform-derive-rows.is-dragging .kusto-transform-derive-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-derive-row.is-drop-target {
+			border-style: solid;
+			border-color: color-mix(in srgb, var(--vscode-focusBorder) 65%, var(--vscode-editorWidget-border, var(--vscode-input-border)) 35%);
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-derive-row.is-drop-before::before,
+		.kusto-transform-derive-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 10px;
+			right: 10px;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-derive-row.is-drop-before::before {
+			top: -2px;
+		}
+
+		.kusto-transform-derive-row.is-drop-after::after {
+			bottom: -2px;
+		}
+
+		.kusto-transform-derive-row:hover {
+			border-style: solid;
+			border-color: color-mix(in srgb, var(--vscode-focusBorder) 55%, var(--vscode-editorWidget-border, var(--vscode-input-border)) 45%);
+			background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-list-hoverBackground) 4%);
+		}
+
+		.kusto-transform-derive-row-actions {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
+
+		.kusto-transform-mini-btn {
+			min-width: 28px;
+			height: 28px;
+			padding: 2px 6px;
+			line-height: 1;
+			border-radius: 6px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-transform-mini-btn svg {
+			width: 16px;
+			height: 16px;
+		}
+
+		.kusto-transform-derive-name {
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-derive-expr {
+			min-height: 28px;
+			padding-top: 7px;
+			padding-bottom: 2px;
+		}
+
+		@media (max-width: 720px) {
+			.kusto-transform-derive-row {
+				grid-template-columns: auto 1fr auto;
+			}
+			.kusto-transform-derive-expr {
+				grid-column: 1 / -1;
+			}
+		}
+
+		.kusto-transform-field {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.kusto-transform-field label {
+			font-size: 12px;
+			opacity: 0.85;
+		}
+
+		.kusto-transform-help {
+			opacity: 0.78;
+			font-size: 12px;
+			margin-top: 4px;
+			line-height: 1.35;
+		}
+
+		.kusto-transform-help code {
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			background: var(--vscode-textCodeBlock-background);
+			padding: 1px 4px;
+			border-radius: 4px;
 		}
 
 		.kusto-chart-row .select-wrapper,
@@ -3343,6 +3575,9 @@
 			right: 71px;
 			top: 50%;
 			transform: translateY(-50%);
+			display: inline-flex;
+			align-items: center;
+			line-height: 1;
 			font-size: inherit;
 			color: var(--vscode-descriptionForeground);
 			pointer-events: none;

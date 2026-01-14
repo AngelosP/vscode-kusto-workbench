@@ -7384,13 +7384,10 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		// Use Monaco's supported configuration for suggest height when possible.
 		// Fall back to DOM clamp + internal relayout poke only when needed.
 		const DEFAULT_MAX_VISIBLE = 12;
-		const MIN_DROPDOWN_PX = 50;
 		let lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null };
 		let pendingAdjustTimer = null;
 		let rafScheduled = false;
 		let lastRelayoutAt = 0;
-		let lastAutoExpandAt = 0;
-		let lastAutoExpandNeedPx = null;
 		const clearInjectedSuggestStyles = (suggest) => {
 			try {
 				if (!suggest) return;
@@ -7412,44 +7409,6 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 					}
 				} catch { /* ignore */ }
 			} catch { /* ignore */ }
-		};
-
-		const ensureMinimumDropdownSpace = (availablePx) => {
-			try {
-				const avail = Math.floor(Number(availablePx) || 0);
-				if (!isFinite(avail)) return false;
-				if (avail >= MIN_DROPDOWN_PX) return false;
-
-				const need = Math.max(0, MIN_DROPDOWN_PX - avail);
-				if (!need) return false;
-
-				// Avoid tight loops if layout can't satisfy the requirement.
-				try {
-					const now = Date.now();
-					if (now - lastAutoExpandAt < 150 && lastAutoExpandNeedPx === need) {
-						return false;
-					}
-					lastAutoExpandAt = now;
-					lastAutoExpandNeedPx = need;
-				} catch { /* ignore */ }
-
-				const wrapper = getWrapperDom();
-				if (!wrapper || typeof wrapper.getBoundingClientRect !== 'function') return false;
-				const current = Math.max(0, Math.round(wrapper.getBoundingClientRect().height || 0));
-				if (!current) return false;
-
-				const MIN_WRAPPER = 120;
-				const MAX_WRAPPER = 900;
-				const next = Math.max(MIN_WRAPPER, Math.min(MAX_WRAPPER, current + need));
-				if (next <= current) return false;
-				wrapper.style.height = next + 'px';
-
-				// Help Monaco react immediately.
-				try { editor.layout(); } catch { /* ignore */ }
-				return true;
-			} catch {
-				return false;
-			}
 		};
 
 		const applyDomClampFallback = (suggest, availablePx) => {
@@ -7492,58 +7451,6 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				list.style.height = h + 'px';
 				list.style.maxHeight = h + 'px';
 				try { if (list.dataset) list.dataset.kustoSuggestClamp = '1'; } catch { /* ignore */ }
-			} catch {
-				// ignore
-			}
-		};
-
-		let lastForceBelowKey = '';
-		let lastForceBelowAt = 0;
-		const tryForceSuggestBelowCaret = () => {
-			// When Monaco decides to render the suggest widget above the caret (common when the
-			// editor viewport is short), it can overlap our internal toolbar. If we detect that,
-			// expand the wrapper if needed and re-open suggest so Monaco takes the below-caret path.
-			try {
-				const pos = (typeof editor.getPosition === 'function') ? editor.getPosition() : null;
-				const model = (typeof editor.getModel === 'function') ? editor.getModel() : null;
-				const versionId = model && typeof model.getVersionId === 'function' ? model.getVersionId() : null;
-				const key = String(versionId || '') + ':' + String(pos ? pos.lineNumber : '') + ':' + String(pos ? pos.column : '');
-				const now = Date.now();
-				if (key && key === lastForceBelowKey && (now - lastForceBelowAt) < 400) {
-					return;
-				}
-				lastForceBelowKey = key;
-				lastForceBelowAt = now;
-
-				// Ensure we have some room below; if not, grow the wrapper.
-				try {
-					const cursor = (pos && typeof editor.getScrolledVisiblePosition === 'function')
-						? editor.getScrolledVisiblePosition(pos)
-						: null;
-					const layout = (typeof editor.getLayoutInfo === 'function') ? editor.getLayoutInfo() : null;
-					if (cursor && layout && typeof layout.height === 'number') {
-						const pad = 8;
-						let availableBelowPx = Math.floor((layout.height || 0) - (cursor.top || 0) - (cursor.height || 0) - pad);
-						if (!isFinite(availableBelowPx)) availableBelowPx = 0;
-						// Reuse the same minimum threshold we use elsewhere.
-						if (availableBelowPx < MIN_DROPDOWN_PX) {
-							ensureMinimumDropdownSpace(availableBelowPx);
-						}
-						// Nudge maxVisibleSuggestions down so the below-caret option becomes viable.
-						const rowHeightPx = 22;
-						const overheadPx = 16;
-						const usable = Math.max(0, Math.max(availableBelowPx, MIN_DROPDOWN_PX) - overheadPx);
-						const maxVisible = Math.max(1, Math.floor(usable / Math.max(1, rowHeightPx)));
-						applyMaxVisibleSuggestions(maxVisible);
-					}
-				} catch { /* ignore */ }
-
-				try { editor.layout(); } catch { /* ignore */ }
-				// IMPORTANT: do NOT auto-trigger suggestions here.
-				// If Monaco placed the widget outside bounds (e.g. into the toolbar), close it.
-				// The next user-triggered suggest (Ctrl+Space / toolbar) will open with the updated layout.
-				__kustoSafeEditorTrigger(editor, 'hideSuggestWidget');
-				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
 			} catch {
 				// ignore
 			}
@@ -7874,18 +7781,6 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 							debugSuggest('listViewportCollapsed', { clientH, scrollH });
 							applyListViewportClampFallback(suggest, availablePx);
 							tryRelayoutSuggestWidget(availablePx);
-						}
-					}
-				} catch { /* ignore */ }
-
-				// If the dropdown would be too small, expand the whole editor section so we can
-				// always show a usable menu (minimum 50px). Only applicable to below-caret placement.
-				try {
-					if (!(isFinite(topOverflow) && topOverflow > 0)) {
-						if (ensureMinimumDropdownSpace(availablePx)) {
-							// Layout changed; recompute on next frame.
-							scheduleClamp();
-							return;
 						}
 					}
 				} catch { /* ignore */ }
@@ -9259,58 +9154,6 @@ function initQueryEditor(boxId) {
 					// Layout changes can be async in VS Code webviews; defer the trigger by a frame
 					// so Monaco computes widget placement from the updated dimensions.
 					shouldDeferTrigger = true;
-				} catch { /* ignore */ }
-				// Monaco decides whether to render the suggest widget above vs below the caret
-				// based on the *estimated* widget height and the available space below.
-				// In our auto-resizing editors, later instances can end up with very little
-				// slack below the last line, making Monaco flip the widget above the caret.
-				// Pre-compute space below the caret and temporarily lower maxVisibleSuggestions
-				// (and, if needed, expand the wrapper) so Monaco chooses the below-caret path.
-				try {
-					const pos = (typeof ed.getPosition === 'function') ? ed.getPosition() : null;
-					const cursor = (pos && typeof ed.getScrolledVisiblePosition === 'function')
-						? ed.getScrolledVisiblePosition(pos)
-						: null;
-					const layout = (typeof ed.getLayoutInfo === 'function') ? ed.getLayoutInfo() : null;
-					if (cursor && layout && typeof layout.height === 'number') {
-						const pad = 8;
-						let availableBelowPx = Math.floor((layout.height || 0) - (cursor.top || 0) - (cursor.height || 0) - pad);
-						if (!isFinite(availableBelowPx)) availableBelowPx = 0;
-						const MIN_BELOW_PX = 60;
-						if (availableBelowPx < MIN_BELOW_PX) {
-							const root = (typeof ed.getDomNode === 'function') ? ed.getDomNode() : null;
-							const wrapper = (root && root.closest) ? root.closest('.query-editor-wrapper') : null;
-							if (wrapper && typeof wrapper.getBoundingClientRect === 'function') {
-								const rect = wrapper.getBoundingClientRect();
-								const currentH = Math.max(0, Math.round(rect.height || 0));
-								const need = Math.max(0, MIN_BELOW_PX - availableBelowPx);
-								if (currentH > 0 && need > 0) {
-									wrapper.style.height = (currentH + need) + 'px';
-									try {
-										ed.layout();
-										shouldDeferTrigger = true;
-									} catch { /* ignore */ }
-									availableBelowPx += need;
-								}
-							}
-						}
-
-						// Estimate an appropriate max visible count from the available space.
-						let rowHeightPx = 22;
-						try {
-							if (monaco && monaco.editor && monaco.editor.EditorOption && typeof ed.getOption === 'function') {
-								const lh = ed.getOption(monaco.editor.EditorOption.lineHeight);
-								if (typeof lh === 'number' && lh > 0) rowHeightPx = Math.floor(lh);
-							}
-						} catch { /* ignore */ }
-						const overheadPx = 16;
-						const usable = Math.max(0, availableBelowPx - overheadPx);
-						const maxVisible = Math.max(1, Math.floor(usable / Math.max(1, rowHeightPx)));
-						try {
-							ed.updateOptions({ suggest: { maxVisibleSuggestions: maxVisible } });
-							shouldDeferTrigger = true;
-						} catch { /* ignore */ }
-					}
 				} catch { /* ignore */ }
 
 				let versionId = null;

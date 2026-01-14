@@ -2,11 +2,13 @@
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
 // - Python: Monaco editor + Run button; output viewer
 // - URL: URL input + expand/collapse content viewer; content fetched by extension host
+// - Transformation: Data manipulation section (derive, summarize, pivot, etc.)
 
 let markdownBoxes = [];
 let pythonBoxes = [];
 let urlBoxes = [];
 let chartBoxes = [];
+let transformationBoxes = [];
 
 let markdownEditors = {};
 let markdownViewers = {};
@@ -21,6 +23,9 @@ let pythonEditors = {};
 // - labelColumn/valueColumn: for pie
 // - showDataLabels: boolean (show labels on data points)
 let chartStateByBoxId = {};
+
+// Transformation UI state keyed by boxId.
+let transformationStateByBoxId = {};
 
 // SVG icons for chart types
 const __kustoChartTypeIcons = {
@@ -4800,4 +4805,1720 @@ function onUrlError(message) {
 	st.content = '';
 	st.error = String(message.error || 'Failed to load URL.');
 	updateUrlContent(boxId);
+}
+
+// ================================
+// Transformations section
+// ================================
+
+const __kustoTransformationTypeIcons = {
+	derive: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 24h20"/><path d="M10 24V8h12v16"/><path d="M12 12h8"/><path d="M12 16h8"/><path d="M12 20h8"/></svg>',
+	summarize: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h20"/><path d="M6 16h14"/><path d="M6 22h10"/><path d="M24 22v-8"/><path d="M21 17l3-3 3 3"/></svg>',
+	pivot: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="20" height="20" rx="2"/><path d="M6 14h20"/><path d="M14 6v20"/><path d="M18 10h6"/><path d="M18 18h6"/></svg>'
+};
+
+const __kustoTransformMiniPlusIconSvg =
+	'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+	'<path d="M8 3.2v9.6"/>' +
+	'<path d="M3.2 8h9.6"/>' +
+	'</svg>';
+
+const __kustoTransformMiniTrashIconSvg =
+	'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+	'<path d="M3 5h10"/>' +
+	'<path d="M6 5V3.8c0-.4.3-.8.8-.8h2.4c.4 0 .8.3.8.8V5"/>' +
+	'<path d="M5.2 5l.6 8.2c0 .5.4.8.8.8h3c.5 0 .8-.4.8-.8l.6-8.2"/>' +
+	'<path d="M7 7.4v4.6"/>' +
+	'<path d="M9 7.4v4.6"/>' +
+	'</svg>';
+
+const __kustoTransformationTypeLabels = {
+	derive: 'Calc. Column',
+	summarize: 'Summarize',
+	pivot: 'Pivot'
+};
+
+function __kustoGetTransformationState(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return { mode: 'edit', expanded: true };
+		if (!transformationStateByBoxId || typeof transformationStateByBoxId !== 'object') {
+			transformationStateByBoxId = {};
+		}
+		if (!transformationStateByBoxId[id] || typeof transformationStateByBoxId[id] !== 'object') {
+			transformationStateByBoxId[id] = {
+				mode: 'edit',
+				expanded: true,
+				dataSourceId: '',
+				transformationType: 'derive',
+				// Calculated columns (derive)
+				deriveColumns: [{ name: '', expression: '' }],
+				// Back-compat: older code paths may still set single-field derive.
+				deriveColumnName: '',
+				deriveExpression: '',
+				groupByColumns: [],
+				aggregations: [{ function: 'count', column: '' }],
+				pivotRowKeyColumn: '',
+				pivotColumnKeyColumn: '',
+				pivotValueColumn: '',
+				pivotAggregation: 'sum',
+				pivotMaxColumns: 50
+			};
+		}
+		// Back-compat migration: if we have a legacy single derive field but no deriveColumns.
+		try {
+			const st = transformationStateByBoxId[id];
+			if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length === 0) {
+				const n = (typeof st.deriveColumnName === 'string') ? st.deriveColumnName : '';
+				const e = (typeof st.deriveExpression === 'string') ? st.deriveExpression : '';
+				st.deriveColumns = [{ name: n || '', expression: e || '' }];
+			}
+		} catch { /* ignore */ }
+		return transformationStateByBoxId[id];
+	} catch {
+		return { mode: 'edit', expanded: true };
+	}
+}
+
+function __kustoUpdateTransformationModeButtons(boxId) {
+	try {
+		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
+		const mode = st && st.mode ? String(st.mode) : 'edit';
+		const editBtn = document.getElementById(boxId + '_tf_mode_edit');
+		const prevBtn = document.getElementById(boxId + '_tf_mode_preview');
+		if (editBtn) {
+			editBtn.classList.toggle('is-active', mode === 'edit');
+			editBtn.setAttribute('aria-selected', mode === 'edit' ? 'true' : 'false');
+		}
+		if (prevBtn) {
+			prevBtn.classList.toggle('is-active', mode === 'preview');
+			prevBtn.setAttribute('aria-selected', mode === 'preview' ? 'true' : 'false');
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoApplyTransformationMode(boxId) {
+	try {
+		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
+		const mode = st && st.mode ? String(st.mode) : 'edit';
+		const controlsHost = document.getElementById(boxId + '_tf_controls');
+		if (controlsHost) controlsHost.style.display = (mode === 'edit') ? '' : 'none';
+		__kustoUpdateTransformationModeButtons(boxId);
+		try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoSetTransformationMode(boxId, mode) {
+	const id = String(boxId || '');
+	const m = String(mode || '').toLowerCase();
+	if (!id) return;
+	if (m !== 'edit' && m !== 'preview') return;
+	const st = __kustoGetTransformationState(id);
+	st.mode = m;
+	try { __kustoApplyTransformationMode(id); } catch { /* ignore */ }
+	try {
+		if (m === 'preview') {
+			const w = document.getElementById(id + '_tf_wrapper');
+			if (w) {
+				w.dataset.kustoAutoFitActive = 'true';
+				w.dataset.kustoAutoFitAllowShrink = 'true';
+				// Force layout so measurements reflect the new mode.
+				try {
+					const resultsWrapper = document.getElementById(id + '_results_wrapper');
+					if (resultsWrapper) void resultsWrapper.offsetHeight;
+					const controlsHost = document.getElementById(id + '_tf_controls');
+					if (controlsHost) void controlsHost.offsetHeight;
+				} catch { /* ignore */ }
+				try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoUpdateTransformationVisibilityToggleButton(boxId) {
+	try {
+		const btn = document.getElementById(boxId + '_tf_toggle');
+		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
+		if (!btn) return;
+		const expanded = !!(st ? st.expanded : true);
+		btn.classList.toggle('is-active', expanded);
+		btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
+		btn.title = expanded ? 'Hide' : 'Show';
+		btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoApplyTransformationBoxVisibility(boxId) {
+	try {
+		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
+		const expanded = !!(st ? st.expanded : true);
+		const wrapper = document.getElementById(boxId + '_tf_wrapper');
+		if (wrapper) {
+			wrapper.style.display = expanded ? '' : 'none';
+		}
+		__kustoUpdateTransformationVisibilityToggleButton(boxId);
+		if (expanded) {
+			try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
+		}
+	} catch {
+		// ignore
+	}
+}
+
+function toggleTransformationBoxVisibility(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	st.expanded = !st.expanded;
+	try { __kustoApplyTransformationBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoMaximizeTransformationBox(boxId) {
+	try {
+		const wrapper = document.getElementById(boxId + '_tf_wrapper');
+		if (!wrapper) return;
+		const desired = __kustoComputeTransformationFitHeightPx(boxId);
+		if (!desired) return;
+		wrapper.style.height = desired + 'px';
+		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch {
+		// ignore
+	}
+}
+
+function __kustoComputeTransformationFitHeightPx(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return null;
+		const activeHost = document.getElementById(id + '_tf_editor');
+		if (!activeHost) return null;
+		let desired = 0;
+		try {
+			// The transformation editor is a flex layout; scrollHeight tends to match current height.
+			// Measure controls + results header + results body content (like query boxes).
+			const controls = document.getElementById(id + '_tf_controls');
+			const resultsWrapper = document.getElementById(id + '_results_wrapper');
+			const resultsHeader = resultsWrapper ? resultsWrapper.querySelector('.results-header') : null;
+			const controlsH = controls ? controls.scrollHeight : 0;
+			const headerH = resultsHeader ? resultsHeader.scrollHeight : 0;
+			let resultsWrapperMargins = 0;
+			try {
+				if (resultsWrapper && window.getComputedStyle) {
+					const rsw = window.getComputedStyle(resultsWrapper);
+					const mt = parseFloat(rsw.marginTop || '0') || 0;
+					const mb = parseFloat(rsw.marginBottom || '0') || 0;
+					resultsWrapperMargins = mt + mb;
+				}
+			} catch { /* ignore */ }
+
+			let resultsBodyH = 0;
+			let hasTable = false;
+			try {
+				const bodyEl = document.getElementById(id + '_results_body');
+				if (bodyEl) {
+					// Only include body content height if it's visible.
+					const bodyVisible = !(bodyEl.style && String(bodyEl.style.display || '') === 'none');
+					if (bodyVisible) {
+						const tableContainer = bodyEl.querySelector ? bodyEl.querySelector('.table-container') : null;
+						if (tableContainer) {
+							hasTable = true;
+							let tableH = 0;
+							try {
+								const tableEl = tableContainer.querySelector ? tableContainer.querySelector('table') : null;
+								if (tableEl) {
+									const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
+									if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
+									const rh = (tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0);
+									if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
+								}
+							} catch { /* ignore */ }
+							if (!tableH) {
+								try {
+									const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
+									if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
+								} catch { /* ignore */ }
+							}
+							resultsBodyH += Math.max(0, Math.ceil(tableH));
+						} else {
+							// Non-table results in body: sum children.
+							try {
+								for (const child of Array.from(bodyEl.children || [])) {
+									if (!child || !child.getBoundingClientRect) continue;
+									resultsBodyH += Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
+								}
+							} catch { /* ignore */ }
+						}
+					}
+				}
+			} catch { /* ignore */ }
+
+			const extraPad = hasTable ? 22 : 10;
+			// Builder padding + wrapper chrome + slack to avoid tiny scrollbars.
+			desired = Math.ceil(controlsH + resultsWrapperMargins + headerH + resultsBodyH + extraPad + 25);
+		} catch { /* ignore */ }
+		if (!desired || !Number.isFinite(desired)) {
+			desired = Math.ceil(activeHost.scrollHeight + 19);
+		}
+		desired = Math.max(180, Math.min(900, desired));
+		return desired;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoMaybeAutoFitTransformationBox(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		const wrapper = document.getElementById(id + '_tf_wrapper');
+		if (!wrapper) return;
+		const desired = __kustoComputeTransformationFitHeightPx(id);
+		if (!desired) return;
+		const current = wrapper.getBoundingClientRect().height;
+		const active = String(wrapper.dataset.kustoAutoFitActive || '') === 'true';
+		const allowShrink = String(wrapper.dataset.kustoAutoFitAllowShrink || '') === 'true';
+		// If the user has the section at least "fit" size, keep auto-fit active.
+		if (!active && current >= desired - 2) {
+			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
+		}
+		const nowActive = String(wrapper.dataset.kustoAutoFitActive || '') === 'true';
+		if (!nowActive) return;
+		// Default is grow-only to avoid jitter while editing; allowShrink is a one-shot override.
+		if (desired > current + 2 || (allowShrink && desired < current - 2)) {
+			wrapper.style.height = desired + 'px';
+			try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		}
+		if (allowShrink) {
+			try { delete wrapper.dataset.kustoAutoFitAllowShrink; } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+function removeTransformationBox(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	try {
+		const el = document.getElementById(id);
+		if (el && el.parentElement) {
+			el.parentElement.removeChild(el);
+		}
+	} catch { /* ignore */ }
+	try {
+		transformationBoxes = Array.isArray(transformationBoxes) ? transformationBoxes.filter(x => x !== id) : [];
+	} catch { /* ignore */ }
+	try {
+		if (transformationStateByBoxId && typeof transformationStateByBoxId === 'object') {
+			delete transformationStateByBoxId[id];
+		}
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoSetTransformationType(boxId, type) {
+	const id = String(boxId || '');
+	const t = String(type || '').toLowerCase();
+	if (!id) return;
+	if (!(t in __kustoTransformationTypeLabels)) return;
+	const st = __kustoGetTransformationState(id);
+	st.transformationType = t;
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnTransformationDataSourceChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	try {
+		const sel = document.getElementById(id + '_tf_ds');
+		const st = __kustoGetTransformationState(id);
+		st.dataSourceId = sel ? String(sel.value || '') : '';
+	} catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoSetCheckboxDropdownText(btnTextEl, selectedValues) {
+	try {
+		if (!btnTextEl) return;
+		const vals = Array.isArray(selectedValues) ? selectedValues.filter(v => v) : [];
+		btnTextEl.textContent = vals.length ? (vals.length + ' selected') : '(none)';
+	} catch { /* ignore */ }
+}
+
+function __kustoBuildCheckboxMenuHtml(boxId, options, selectedSet) {
+	let html = '';
+	for (const opt of options) {
+		const v = String(opt || '');
+		if (!v) continue;
+		const checked = selectedSet && selectedSet.has(v);
+		const esc = (typeof escapeHtml === 'function') ? escapeHtml(v) : v;
+		const js = String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+		html +=
+			'<div class="kusto-checkbox-item" role="option" aria-selected="' + (checked ? 'true' : 'false') + '" onclick="try{__kustoToggleGroupByColumn(\'' + String(boxId).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\',\'' + js + '\')}catch{}">' +
+			'<input type="checkbox" ' + (checked ? 'checked' : '') + ' tabindex="-1" />' +
+			'<span>' + esc + '</span>' +
+			'</div>';
+	}
+	if (!html) {
+		html = '<div class="kusto-checkbox-item" style="opacity:0.7">(no columns)</div>';
+	}
+	return html;
+}
+
+function __kustoToggleGroupByColumn(boxId, columnName) {
+	const id = String(boxId || '');
+	const col = String(columnName || '');
+	if (!id || !col) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.groupByColumns)) st.groupByColumns = [];
+	const set = new Set(st.groupByColumns.map(c => String(c)));
+	if (set.has(col)) set.delete(col); else set.add(col);
+	st.groupByColumns = Array.from(set);
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoUpdateTransformationBuilderUI(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+
+	// Type picker
+	try {
+		const picker = document.getElementById(id + '_tf_type_picker');
+		if (picker) {
+			const btns = picker.querySelectorAll('button[data-type]');
+			for (const b of btns) {
+				try {
+					const t = String(b.getAttribute('data-type') || '');
+					b.classList.toggle('is-active', t && t === String(st.transformationType || ''));
+				} catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Data source dropdown
+	const datasets = __kustoGetChartDatasetsInDomOrder();
+	const dsSelect = document.getElementById(id + '_tf_ds');
+	try {
+		if (dsSelect) {
+			const labelMap = {};
+			const values = datasets.map(d => {
+				labelMap[d.id] = d.label;
+				return d.id;
+			});
+			__kustoSetSelectOptions(dsSelect, values, String(st.dataSourceId || ''), labelMap);
+			try {
+				const txt = document.getElementById(id + '_tf_ds_text');
+				if (txt) {
+					const selected = String(dsSelect.value || '');
+					txt.textContent = (selected && labelMap[selected]) ? labelMap[selected] : (selected || '(select)');
+				}
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+
+	// Config sections
+	try {
+		const deriveHost = document.getElementById(id + '_tf_cfg_derive');
+		const sumHost = document.getElementById(id + '_tf_cfg_summarize');
+		const pivotHost = document.getElementById(id + '_tf_cfg_pivot');
+		if (deriveHost) deriveHost.style.display = (st.transformationType === 'derive') ? '' : 'none';
+		if (sumHost) sumHost.style.display = (st.transformationType === 'summarize') ? '' : 'none';
+		if (pivotHost) pivotHost.style.display = (st.transformationType === 'pivot') ? '' : 'none';
+	} catch { /* ignore */ }
+
+	// Column-dependent controls
+	const ds = datasets.find(d => String(d.id) === String(st.dataSourceId || ''));
+	const colNames = ds ? (ds.columns || []).map(__kustoNormalizeResultsColumnName).filter(c => c) : [];
+
+	// Derive
+	try {
+		const host = document.getElementById(id + '_tf_derive_rows');
+		if (host) {
+			// Ensure deriveColumns exists
+			if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length === 0) {
+				st.deriveColumns = [{ name: '', expression: '' }];
+			}
+			let html = '';
+			for (let i = 0; i < st.deriveColumns.length; i++) {
+				const row = st.deriveColumns[i] || {};
+				const name = String(row.name || '');
+				const expr = String(row.expression || '');
+				const escName = (typeof escapeHtml === 'function') ? escapeHtml(name) : name;
+				const escExpr = (typeof escapeHtml === 'function') ? escapeHtml(expr) : expr;
+				const nameInputId = id + '_tf_derive_name_' + i;
+				const exprInputId = id + '_tf_derive_expr_' + i;
+				html +=
+					'<div class="kusto-transform-derive-row" data-kusto-no-editor-focus="true" ondragover="try{__kustoOnDeriveDragOver(\'' + id + '\',' + i + ', event)}catch{}" ondrop="try{__kustoOnDeriveDrop(\'' + id + '\',' + i + ', event)}catch{}">' +
+						'<button type="button" class="section-drag-handle kusto-transform-derive-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder column" ondragstart="try{__kustoOnDeriveDragStart(\'' + id + '\',' + i + ', event)}catch{}" ondragend="try{__kustoOnDeriveDragEnd(\'' + id + '\', event)}catch{}"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+						'<input id="' + nameInputId + '" type="text" class="kusto-transform-input kusto-transform-derive-name" value="' + escName + '" placeholder="Name" aria-label="New column name" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'name\', this.value)}catch{}" />' +
+						'<textarea id="' + exprInputId + '" class="kusto-transform-textarea kusto-transform-derive-expr" rows="1" placeholder="Expression (e.g. [Amount] * 1.2)" aria-label="Expression" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'expression\', this.value)}catch{}">' + escExpr + '</textarea>' +
+						'<div class="kusto-transform-derive-row-actions" data-kusto-no-editor-focus="true">' +
+							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoAddCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" title="Add column" aria-label="Add column">' + __kustoTransformMiniPlusIconSvg + '</button>' +
+							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoRemoveCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" ' + (st.deriveColumns.length <= 1 ? 'disabled' : '') + ' title="Remove column" aria-label="Remove column">' + __kustoTransformMiniTrashIconSvg + '</button>' +
+						'</div>' +
+					'</div>';
+			}
+			host.innerHTML = html;
+		}
+	} catch { /* ignore */ }
+
+	// Summarize: group-by checkbox dropdown
+	try {
+		const menu = document.getElementById(id + '_tf_groupby_menu');
+		const txt = document.getElementById(id + '_tf_groupby_text');
+		const selected = new Set((Array.isArray(st.groupByColumns) ? st.groupByColumns : []).map(c => String(c)));
+		if (menu) {
+			menu.innerHTML = __kustoBuildCheckboxMenuHtml(id, colNames, selected);
+		}
+		__kustoSetCheckboxDropdownText(txt, Array.from(selected));
+	} catch { /* ignore */ }
+
+	// Summarize: aggregations list
+	try {
+		const host = document.getElementById(id + '_tf_aggs');
+		if (host) {
+			const aggs = Array.isArray(st.aggregations) ? st.aggregations : [];
+			let html = '';
+			for (let i = 0; i < aggs.length; i++) {
+				const a = aggs[i] || {};
+				const fn = String(a.function || 'count');
+				const col = String(a.column || '');
+				html +=
+					'<div class="kusto-transform-agg-row" data-kusto-no-editor-focus="true">' +
+					'<select class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', this.value, null)}catch{}">' +
+						'<option value="count" ' + (fn === 'count' ? 'selected' : '') + '>count</option>' +
+						'<option value="sum" ' + (fn === 'sum' ? 'selected' : '') + '>sum</option>' +
+						'<option value="avg" ' + (fn === 'avg' ? 'selected' : '') + '>avg</option>' +
+						'<option value="min" ' + (fn === 'min' ? 'selected' : '') + '>min</option>' +
+						'<option value="max" ' + (fn === 'max' ? 'selected' : '') + '>max</option>' +
+						'<option value="distinct" ' + (fn === 'distinct' ? 'selected' : '') + '>distinct</option>' +
+					'</select>' +
+					'<select class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', null, this.value)}catch{}" ' + (fn === 'count' ? 'disabled' : '') + '>';
+				html += '<option value=""' + (col ? '' : ' selected') + '>(select)</option>';
+				for (const c of colNames) {
+					const esc = (typeof escapeHtml === 'function') ? escapeHtml(c) : c;
+					html += '<option value="' + esc + '"' + (c === col ? ' selected' : '') + '>' + esc + '</option>';
+				}
+				html +=
+					'</select>' +
+					'<button type="button" class="unified-btn-secondary" onclick="try{__kustoRemoveTransformationAgg(\'' + id + '\',' + i + ')}catch{}" aria-label="Remove aggregation" title="Remove">×</button>' +
+					'</div>';
+			}
+			if (!html) {
+				html = '<div style="opacity:0.7">(no aggregations)</div>';
+			}
+			host.innerHTML = html;
+		}
+	} catch { /* ignore */ }
+
+	// Pivot selects
+	try {
+		const rowSel = document.getElementById(id + '_tf_pivot_row');
+		const colSel = document.getElementById(id + '_tf_pivot_col');
+		const valSel = document.getElementById(id + '_tf_pivot_val');
+		if (rowSel) __kustoSetSelectOptions(rowSel, colNames, String(st.pivotRowKeyColumn || ''), null);
+		if (colSel) __kustoSetSelectOptions(colSel, colNames, String(st.pivotColumnKeyColumn || ''), null);
+		if (valSel) __kustoSetSelectOptions(valSel, colNames, String(st.pivotValueColumn || ''), null);
+		const aggSel = document.getElementById(id + '_tf_pivot_agg');
+		if (aggSel && typeof st.pivotAggregation === 'string') aggSel.value = st.pivotAggregation;
+		const maxEl = document.getElementById(id + '_tf_pivot_max');
+		if (maxEl && typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) maxEl.value = String(Math.max(1, Math.floor(st.pivotMaxColumns)));
+	} catch { /* ignore */ }
+
+	// If the section is already fit-sized, keep content visible as UI grows.
+	try {
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+					w.dataset.kustoAutoFitActive = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+}
+
+function __kustoOnTransformationAggChanged(boxId, index, newFn, newCol) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.aggregations)) st.aggregations = [];
+	if (!st.aggregations[i]) st.aggregations[i] = { function: 'count', column: '' };
+	if (typeof newFn === 'string') st.aggregations[i].function = String(newFn);
+	if (typeof newCol === 'string') st.aggregations[i].column = String(newCol);
+	// If count: clear column
+	try {
+		if (String(st.aggregations[i].function || '') === 'count') {
+			st.aggregations[i].column = '';
+		}
+	} catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoAddTransformationAgg(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.aggregations)) st.aggregations = [];
+	st.aggregations.push({ function: 'count', column: '' });
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoRemoveTransformationAgg(boxId, index) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.aggregations)) st.aggregations = [];
+	st.aggregations.splice(i, 1);
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnCalculatedColumnChanged(boxId, index, field, value) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	const f = String(field || '');
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length === 0) {
+		st.deriveColumns = [{ name: '', expression: '' }];
+	}
+	if (!st.deriveColumns[i]) st.deriveColumns[i] = { name: '', expression: '' };
+	if (f === 'name') st.deriveColumns[i].name = String(value || '');
+	if (f === 'expression') st.deriveColumns[i].expression = String(value || '');
+	// Keep legacy single-field properties in sync for safety.
+	try {
+		if (i === 0) {
+			st.deriveColumnName = String(st.deriveColumns[0].name || '');
+			st.deriveExpression = String(st.deriveColumns[0].expression || '');
+		}
+	} catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+					w.dataset.kustoAutoFitActive = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoAddCalculatedColumn(boxId) {
+	const id = String(boxId || '');
+	const insertAfterIndex = arguments.length >= 2 ? Number(arguments[1]) : NaN;
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length === 0) {
+		st.deriveColumns = [{ name: '', expression: '' }];
+	}
+	let insertedIndex = st.deriveColumns.length;
+	if (Number.isFinite(insertAfterIndex) && insertAfterIndex >= 0 && insertAfterIndex < st.deriveColumns.length) {
+		insertedIndex = Math.floor(insertAfterIndex) + 1;
+		st.deriveColumns.splice(insertedIndex, 0, { name: '', expression: '' });
+	} else {
+		st.deriveColumns.push({ name: '', expression: '' });
+		insertedIndex = st.deriveColumns.length - 1;
+	}
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try {
+				const el = document.getElementById(id + '_tf_derive_name_' + insertedIndex);
+				if (el && typeof el.focus === 'function') el.focus();
+			} catch { /* ignore */ }
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+					w.dataset.kustoAutoFitActive = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoRemoveCalculatedColumn(boxId, index) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length <= 1) return;
+	st.deriveColumns.splice(i, 1);
+	try {
+		// Keep legacy single-field properties in sync.
+		const first = st.deriveColumns[0] || { name: '', expression: '' };
+		st.deriveColumnName = String(first.name || '');
+		st.deriveExpression = String(first.expression || '');
+	} catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		// When removing columns, shrink-to-fit (one-shot) if auto-fit is enabled.
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w) {
+					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w) {
+					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 80);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnDeriveDragStart(boxId, index, event) {
+	try {
+		const id = String(boxId || '');
+		const i = Number(index);
+		if (!id || !Number.isFinite(i)) return;
+		window.__kustoDeriveDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		try {
+			const e = event;
+			if (e && e.dataTransfer) {
+				e.dataTransfer.effectAllowed = 'move';
+				try { e.dataTransfer.setData('text/plain', 'kusto-derive'); } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		try {
+			const host = document.getElementById(id + '_tf_derive_rows');
+			if (host) host.classList.add('is-dragging');
+		} catch { /* ignore */ }
+		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoClearDeriveDropIndicators(boxId) {
+	try {
+		const id = String(boxId || '');
+		const host = document.getElementById(id + '_tf_derive_rows');
+		if (!host) return;
+		const rows = host.querySelectorAll('.kusto-transform-derive-row');
+		for (const r of rows) {
+			try {
+				r.classList.remove('is-drop-target');
+				r.classList.remove('is-drop-before');
+				r.classList.remove('is-drop-after');
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoOnDeriveDragOver(boxId, overIndex, event) {
+	try {
+		const id = String(boxId || '');
+		const idx = Number(overIndex);
+		const e = event;
+		if (!id || !Number.isFinite(idx) || !e) return;
+		try { e.preventDefault(); } catch { /* ignore */ }
+		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+		const drag = window.__kustoDeriveDragState;
+		if (!drag || String(drag.boxId || '') !== id) return;
+		let insertAfter = false;
+		try {
+			const rowEl = e.currentTarget;
+			if (rowEl && rowEl.getBoundingClientRect) {
+				const rect = rowEl.getBoundingClientRect();
+				const y = e.clientY;
+				insertAfter = y >= (rect.top + rect.height / 2);
+			}
+		} catch { /* ignore */ }
+		drag.overIndex = Math.floor(idx);
+		drag.insertAfter = !!insertAfter;
+		try {
+			__kustoClearDeriveDropIndicators(id);
+			const rowEl = e.currentTarget;
+			if (rowEl && rowEl.classList) {
+				rowEl.classList.add('is-drop-target');
+				rowEl.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
+			}
+		} catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnDeriveDrop(boxId, toIndex, event) {
+	try {
+		const id = String(boxId || '');
+		const to = Number(toIndex);
+		if (!id || !Number.isFinite(to)) return;
+		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+		const drag = window.__kustoDeriveDragState;
+		if (!drag || String(drag.boxId || '') !== id) return;
+		const from = Number(drag.fromIndex);
+		if (!Number.isFinite(from)) return;
+		const st = __kustoGetTransformationState(id);
+		if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length < 2) return;
+		const fromIdx = Math.max(0, Math.min(st.deriveColumns.length - 1, Math.floor(from)));
+		const overIdx = Number.isFinite(drag.overIndex) ? Math.floor(drag.overIndex) : Math.floor(to);
+		const insertAfter = !!drag.insertAfter;
+		let insertion = overIdx + (insertAfter ? 1 : 0);
+		insertion = Math.max(0, Math.min(st.deriveColumns.length, insertion));
+		if (insertion === fromIdx || insertion === fromIdx + 1) {
+			try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
+			return;
+		}
+		const moved = st.deriveColumns.splice(fromIdx, 1)[0];
+		const toInsert = fromIdx < insertion ? (insertion - 1) : insertion;
+		st.deriveColumns.splice(toInsert, 0, moved);
+		try {
+			const first = st.deriveColumns[0] || { name: '', expression: '' };
+			st.deriveColumnName = String(first.name || '');
+			st.deriveExpression = String(first.expression || '');
+		} catch { /* ignore */ }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnDeriveDragEnd(boxId, event) {
+	try {
+		const id = String(boxId || '');
+		window.__kustoDeriveDragState = null;
+		try {
+			const host = document.getElementById(id + '_tf_derive_rows');
+			if (host) host.classList.remove('is-dragging');
+		} catch { /* ignore */ }
+		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
+		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnTransformationPivotChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	try {
+		st.pivotRowKeyColumn = String(((document.getElementById(id + '_tf_pivot_row') || {}).value || ''));
+		st.pivotColumnKeyColumn = String(((document.getElementById(id + '_tf_pivot_col') || {}).value || ''));
+		st.pivotValueColumn = String(((document.getElementById(id + '_tf_pivot_val') || {}).value || ''));
+		st.pivotAggregation = String(((document.getElementById(id + '_tf_pivot_agg') || {}).value || 'sum'));
+		const maxEl = document.getElementById(id + '_tf_pivot_max');
+		const n = maxEl ? parseInt(String(maxEl.value || '50'), 10) : 50;
+		st.pivotMaxColumns = Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 50;
+	} catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoTryParseFiniteNumber(v) {
+	try {
+		if (typeof __kustoTryParseNumber === 'function') {
+			const n = __kustoTryParseNumber(v);
+			return (typeof n === 'number' && Number.isFinite(n)) ? n : null;
+		}
+		const n = (typeof v === 'number') ? v : Number(v);
+		return Number.isFinite(n) ? n : null;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoGetRawCellValueForTransform(cell) {
+	try { return __kustoGetRawCellValueForChart(cell); } catch { /* ignore */ }
+	try {
+		if (cell && typeof cell === 'object') {
+			if ('full' in cell) return cell.full;
+			if ('display' in cell) return cell.display;
+		}
+	} catch { /* ignore */ }
+	return cell;
+}
+
+// --- Expression engine (safe, minimal) for Derive ---
+
+function __kustoTokenizeExpr(text) {
+	const s = String(text || '');
+	const tokens = [];
+	let i = 0;
+	const isWs = ch => ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+	const isDigit = ch => ch >= '0' && ch <= '9';
+	const isIdentStart = ch => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch === '_' ;
+	const isIdent = ch => isIdentStart(ch) || isDigit(ch);
+	while (i < s.length) {
+		const ch = s[i];
+		if (isWs(ch)) { i++; continue; }
+		if (ch === '(' || ch === ')' || ch === ',' || ch === '+' || ch === '-' || ch === '*' || ch === '/') {
+			tokens.push({ t: 'op', v: ch });
+			i++;
+			continue;
+		}
+		if (ch === '[') {
+			let j = i + 1;
+			let name = '';
+			while (j < s.length && s[j] !== ']') {
+				name += s[j];
+				j++;
+			}
+			if (j >= s.length) throw new Error('Unclosed [column] reference');
+			tokens.push({ t: 'col', v: name.trim() });
+			i = j + 1;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			const quote = ch;
+			let j = i + 1;
+			let out = '';
+			while (j < s.length) {
+				const c = s[j];
+				if (c === '\\' && j + 1 < s.length) {
+					out += s[j + 1];
+					j += 2;
+					continue;
+				}
+				if (c === quote) break;
+				out += c;
+				j++;
+			}
+			if (j >= s.length) throw new Error('Unclosed string literal');
+			tokens.push({ t: 'str', v: out });
+			i = j + 1;
+			continue;
+		}
+		if (isDigit(ch) || (ch === '.' && i + 1 < s.length && isDigit(s[i + 1]))) {
+			let j = i;
+			let num = '';
+			while (j < s.length) {
+				const c = s[j];
+				if (isDigit(c) || c === '.') {
+					num += c;
+					j++;
+					continue;
+				}
+				break;
+			}
+			const n = Number(num);
+			if (!Number.isFinite(n)) throw new Error('Invalid number: ' + num);
+			tokens.push({ t: 'num', v: n });
+			i = j;
+			continue;
+		}
+		if (isIdentStart(ch)) {
+			let j = i;
+			let id = '';
+			while (j < s.length && isIdent(s[j])) {
+				id += s[j];
+				j++;
+			}
+			tokens.push({ t: 'id', v: id });
+			i = j;
+			continue;
+		}
+		throw new Error('Unexpected character: ' + ch);
+	}
+	return tokens;
+}
+
+function __kustoParseExprToRpn(tokens) {
+	const output = [];
+	const stack = [];
+	const prec = { 'u-': 4, '*': 3, '/': 3, '+': 2, '-': 2 };
+	const rightAssoc = { 'u-': true };
+	const isOp = (v) => v === '+' || v === '-' || v === '*' || v === '/' || v === 'u-';
+	let prev = null;
+	for (let i = 0; i < tokens.length; i++) {
+		const tok = tokens[i];
+		if (tok.t === 'num' || tok.t === 'str' || tok.t === 'col') {
+			output.push(tok);
+			prev = tok;
+			continue;
+		}
+		if (tok.t === 'id') {
+			// Function call if next token is '('
+			const next = tokens[i + 1];
+			if (next && next.t === 'op' && next.v === '(') {
+				stack.push({ t: 'fn', v: tok.v });
+				prev = tok;
+				continue;
+			}
+			// Otherwise treat as column reference (identifier)
+			output.push({ t: 'col', v: tok.v });
+			prev = tok;
+			continue;
+		}
+		if (tok.t === 'op') {
+			if (tok.v === ',') {
+				while (stack.length && !(stack[stack.length - 1].t === 'op' && stack[stack.length - 1].v === '(')) {
+					output.push(stack.pop());
+				}
+				continue;
+			}
+			if (tok.v === '(') {
+				stack.push(tok);
+				prev = tok;
+				continue;
+			}
+			if (tok.v === ')') {
+				while (stack.length && !(stack[stack.length - 1].t === 'op' && stack[stack.length - 1].v === '(')) {
+					output.push(stack.pop());
+				}
+				if (!stack.length) throw new Error('Mismatched )');
+				stack.pop(); // pop '('
+				// Pop function if present
+				if (stack.length && stack[stack.length - 1].t === 'fn') {
+					output.push(stack.pop());
+				}
+				prev = tok;
+				continue;
+			}
+			// operator
+			let op = tok.v;
+			if (op === '-') {
+				const prevIsValue = prev && (prev.t === 'num' || prev.t === 'str' || prev.t === 'col' || (prev.t === 'op' && prev.v === ')'));
+				if (!prevIsValue) op = 'u-';
+			}
+			if (!isOp(op)) throw new Error('Unsupported operator: ' + op);
+			while (stack.length) {
+				const top = stack[stack.length - 1];
+				if (top.t !== 'op' || !isOp(top.v)) break;
+				const p1 = prec[op] || 0;
+				const p2 = prec[top.v] || 0;
+				if ((rightAssoc[op] && p1 < p2) || (!rightAssoc[op] && p1 <= p2)) {
+					output.push(stack.pop());
+					continue;
+				}
+				break;
+			}
+			stack.push({ t: 'op', v: op });
+			prev = tok;
+			continue;
+		}
+		throw new Error('Unexpected token');
+	}
+	while (stack.length) {
+		const top = stack.pop();
+		if (top.t === 'op' && (top.v === '(' || top.v === ')')) throw new Error('Mismatched parentheses');
+		output.push(top);
+	}
+	return output;
+}
+
+function __kustoEvalRpn(rpn, env) {
+	const stack = [];
+	const getCol = (name) => {
+		const key = String(name || '');
+		if (!key) return null;
+		// prefer exact
+		if (env && Object.prototype.hasOwnProperty.call(env, key)) return env[key];
+		const lower = key.toLowerCase();
+		if (env && Object.prototype.hasOwnProperty.call(env, lower)) return env[lower];
+		return null;
+	};
+	const callFn = (fnName, args) => {
+		const f = String(fnName || '').toLowerCase();
+		if (f === 'coalesce') {
+			for (const a of args) {
+				if (a !== null && a !== undefined && String(a) !== '') return a;
+			}
+			return null;
+		}
+		if (f === 'tostring') {
+			return (args.length ? String(args[0] ?? '') : '');
+		}
+		if (f === 'tonumber') {
+			return __kustoTryParseFiniteNumber(args.length ? args[0] : null);
+		}
+		if (f === 'len') {
+			return String(args.length ? args[0] ?? '' : '').length;
+		}
+		throw new Error('Unknown function: ' + fnName);
+	};
+	for (const tok of rpn) {
+		if (tok.t === 'num' || tok.t === 'str') {
+			stack.push(tok.v);
+			continue;
+		}
+		if (tok.t === 'col') {
+			stack.push(getCol(tok.v));
+			continue;
+		}
+		if (tok.t === 'op') {
+			if (tok.v === 'u-') {
+				const a = stack.pop();
+				const n = __kustoTryParseFiniteNumber(a);
+				stack.push((n === null) ? null : (-n));
+				continue;
+			}
+			const b = stack.pop();
+			const a = stack.pop();
+			if (tok.v === '+') {
+				// number add if both numeric; else concat
+				const an = __kustoTryParseFiniteNumber(a);
+				const bn = __kustoTryParseFiniteNumber(b);
+				if (an !== null && bn !== null) stack.push(an + bn);
+				else stack.push(String(a ?? '') + String(b ?? ''));
+				continue;
+			}
+			if (tok.v === '-') {
+				const an = __kustoTryParseFiniteNumber(a);
+				const bn = __kustoTryParseFiniteNumber(b);
+				stack.push((an === null || bn === null) ? null : (an - bn));
+				continue;
+			}
+			if (tok.v === '*') {
+				const an = __kustoTryParseFiniteNumber(a);
+				const bn = __kustoTryParseFiniteNumber(b);
+				stack.push((an === null || bn === null) ? null : (an * bn));
+				continue;
+			}
+			if (tok.v === '/') {
+				const an = __kustoTryParseFiniteNumber(a);
+				const bn = __kustoTryParseFiniteNumber(b);
+				stack.push((an === null || bn === null || bn === 0) ? null : (an / bn));
+				continue;
+			}
+			throw new Error('Unsupported operator: ' + tok.v);
+		}
+		if (tok.t === 'fn') {
+			// Heuristic: pop up to 3 args if they were pushed since last '(' isn't tracked.
+			// To keep this safe/simple, only support 1-3 args by reading an arity hint from name.
+			const name = String(tok.v || '');
+			const lower = name.toLowerCase();
+			let argc = 1;
+			if (lower === 'coalesce') argc = 2;
+			if (lower === 'len' || lower === 'tostring' || lower === 'tonumber') argc = 1;
+			const args = [];
+			for (let k = 0; k < argc; k++) args.unshift(stack.pop());
+			stack.push(callFn(name, args));
+			continue;
+		}
+		throw new Error('Unexpected token in eval');
+	}
+	return stack.length ? stack[stack.length - 1] : null;
+}
+
+function __kustoRenderTransformationError(boxId, message) {
+	try {
+		const resultsDiv = document.getElementById(boxId + '_results');
+		const wrapper = document.getElementById(boxId + '_results_wrapper');
+		if (wrapper) wrapper.style.display = '';
+		if (resultsDiv) {
+			resultsDiv.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof escapeHtml === 'function') ? escapeHtml(String(message || '')) : String(message || '')) + '</div>';
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoRenderTransformation(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	if (st && st.expanded === false) return;
+
+	const datasets = __kustoGetChartDatasetsInDomOrder();
+	const ds = datasets.find(d => String(d.id) === String(st.dataSourceId || ''));
+	if (!ds) {
+		__kustoRenderTransformationError(id, 'Select a data source (a query or CSV URL section with results).');
+		return;
+	}
+
+	const cols = Array.isArray(ds.columns) ? ds.columns : [];
+	const colNames = cols.map(__kustoNormalizeResultsColumnName).filter(c => c);
+	const colIndex = {};
+	for (let i = 0; i < colNames.length; i++) {
+		colIndex[String(colNames[i]).toLowerCase()] = i;
+		colIndex[String(colNames[i])] = i;
+	}
+	const rows = Array.isArray(ds.rows) ? ds.rows : [];
+
+	try {
+		const type = String(st.transformationType || 'derive');
+		if (type === 'derive') {
+			let deriveColumns = Array.isArray(st.deriveColumns) ? st.deriveColumns : [];
+			// Back-compat: if deriveColumns missing, derive from legacy fields.
+			if (!deriveColumns.length) {
+				const legacyName = String(st.deriveColumnName || '').trim();
+				const legacyExpr = String(st.deriveExpression || '').trim();
+				if (legacyName || legacyExpr) {
+					deriveColumns = [{ name: legacyName || 'derived', expression: legacyExpr || '' }];
+				}
+			}
+
+			// Build valid calculated columns only (don't break preview while editing).
+			const parsed = [];
+			for (const d of deriveColumns) {
+				const n = String((d && d.name) || '').trim();
+				const e = String((d && d.expression) || '').trim();
+				if (!n && !e) continue;
+				if (!e) continue;
+				const name = n || 'derived';
+				try {
+					const rpn = __kustoParseExprToRpn(__kustoTokenizeExpr(e));
+					parsed.push({ name, rpn });
+				} catch {
+					// Skip invalid expression while user is editing.
+					continue;
+				}
+			}
+
+			// If nothing is valid yet, still show the base dataset.
+			if (!parsed.length) {
+				const outRowsBase = [];
+				for (const r of rows) {
+					const row = Array.isArray(r) ? r : [];
+					outRowsBase.push(row.map(__kustoGetRawCellValueForTransform));
+				}
+				displayResultForBox({ columns: colNames.slice(), rows: outRowsBase, metadata: { transformationType: 'derive' } }, id, { label: 'Transformations', showExecutionTime: false });
+				try {
+					const wrapper = document.getElementById(id + '_results_wrapper');
+					if (wrapper) wrapper.style.display = '';
+				} catch { /* ignore */ }
+				try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
+				try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+				return;
+			}
+
+			const outCols = colNames.concat(parsed.map(p => String(p.name || '').trim() || 'derived'));
+			const outRows = [];
+
+			for (const r of rows) {
+				const row = Array.isArray(r) ? r : [];
+				const baseRawRow = row.map(__kustoGetRawCellValueForTransform);
+				const env = {};
+				// Seed env with original columns
+				for (let i = 0; i < colNames.length; i++) {
+					const name = colNames[i];
+					const raw = baseRawRow[i];
+					env[name] = raw;
+					env[String(name).toLowerCase()] = raw;
+				}
+				const derivedValues = [];
+				for (const p of parsed) {
+					let v = null;
+					try {
+						v = __kustoEvalRpn(p.rpn, env);
+					} catch {
+						v = null;
+					}
+					derivedValues.push(v);
+					// Make derived columns available to subsequent expressions
+					const dn = String(p.name || '').trim();
+					if (dn) {
+						env[dn] = v;
+						env[dn.toLowerCase()] = v;
+					}
+				}
+				outRows.push(baseRawRow.concat(derivedValues));
+			}
+
+			displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'derive' } }, id, { label: 'Transformations', showExecutionTime: false });
+			try {
+				const wrapper = document.getElementById(id + '_results_wrapper');
+				if (wrapper) wrapper.style.display = '';
+			} catch { /* ignore */ }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			return;
+		}
+
+		if (type === 'summarize') {
+			const groupBy = Array.isArray(st.groupByColumns) ? st.groupByColumns.map(c => String(c)).filter(c => c) : [];
+			const aggs = Array.isArray(st.aggregations) ? st.aggregations : [];
+			if (!aggs.length) {
+				__kustoRenderTransformationError(id, 'Add one or more aggregations.');
+				return;
+			}
+			const groups = new Map();
+			for (const r of rows) {
+				const row = Array.isArray(r) ? r : [];
+				const gvals = groupBy.map(c => {
+					const idx = colIndex[String(c)] ?? colIndex[String(c).toLowerCase()];
+					return __kustoGetRawCellValueForTransform(row[idx]);
+				});
+				const key = JSON.stringify(gvals);
+				let g = groups.get(key);
+				if (!g) {
+					g = { gvals, acc: [] };
+					for (const a of aggs) {
+						g.acc.push({ fn: String((a && a.function) || 'count'), col: String((a && a.column) || ''), count: 0, sum: 0, numCount: 0, min: null, max: null, distinct: new Set() });
+					}
+					groups.set(key, g);
+				}
+				for (let i = 0; i < g.acc.length; i++) {
+					const a = g.acc[i];
+					const fn = String(a.fn || 'count');
+					if (fn === 'count') {
+						a.count++;
+						continue;
+					}
+					const idx = colIndex[String(a.col)] ?? colIndex[String(a.col).toLowerCase()];
+					const raw = __kustoGetRawCellValueForTransform(row[idx]);
+					if (fn === 'distinct') {
+						a.distinct.add(String(raw));
+						continue;
+					}
+					if (fn === 'sum' || fn === 'avg') {
+						const n = __kustoTryParseFiniteNumber(raw);
+						if (n !== null) {
+							a.sum += n;
+							a.numCount++;
+						}
+						continue;
+					}
+					if (fn === 'min' || fn === 'max') {
+						const n = __kustoTryParseFiniteNumber(raw);
+						const v = (n !== null) ? n : (raw === null || raw === undefined ? null : String(raw));
+						if (v === null) continue;
+						if (fn === 'min') {
+							if (a.min === null || v < a.min) a.min = v;
+						} else {
+							if (a.max === null || v > a.max) a.max = v;
+						}
+						continue;
+					}
+				}
+			}
+			const outCols = [];
+			for (const c of groupBy) outCols.push(String(c));
+			for (const a of aggs) {
+				const fn = String((a && a.function) || 'count');
+				const col = String((a && a.column) || '');
+				const name = (fn === 'count') ? 'count()' : (fn + '(' + col + ')');
+				outCols.push(String(name));
+			}
+			const outRows = [];
+			for (const g of groups.values()) {
+				const rowOut = [].concat(g.gvals);
+				for (const a of g.acc) {
+					const fn = String(a.fn || 'count');
+					if (fn === 'count') rowOut.push(a.count);
+					else if (fn === 'sum') rowOut.push(a.sum);
+					else if (fn === 'avg') rowOut.push(a.numCount ? (a.sum / a.numCount) : null);
+					else if (fn === 'min') rowOut.push(a.min);
+					else if (fn === 'max') rowOut.push(a.max);
+					else if (fn === 'distinct') rowOut.push(a.distinct.size);
+					else rowOut.push(null);
+				}
+				outRows.push(rowOut);
+			}
+			displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'summarize' } }, id, { label: 'Transformations', showExecutionTime: false });
+			try {
+				const wrapper = document.getElementById(id + '_results_wrapper');
+				if (wrapper) wrapper.style.display = '';
+			} catch { /* ignore */ }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			return;
+		}
+
+		if (type === 'pivot') {
+			const rowKey = String(st.pivotRowKeyColumn || '');
+			const colKey = String(st.pivotColumnKeyColumn || '');
+			const valKey = String(st.pivotValueColumn || '');
+			const agg = String(st.pivotAggregation || 'sum');
+			const maxCols = (typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) ? Math.max(1, Math.min(500, Math.floor(st.pivotMaxColumns))) : 50;
+			if (!rowKey || !colKey) {
+				__kustoRenderTransformationError(id, 'Pick Row key and Column key.');
+				return;
+			}
+			if (agg !== 'count' && !valKey) {
+				__kustoRenderTransformationError(id, 'Pick a Value column (or switch aggregation to count).');
+				return;
+			}
+			const rowIdx = colIndex[rowKey] ?? colIndex[rowKey.toLowerCase()];
+			const colIdx = colIndex[colKey] ?? colIndex[colKey.toLowerCase()];
+			const valIdx = colIndex[valKey] ?? colIndex[valKey.toLowerCase()];
+			const pivotCols = [];
+			const pivotColSet = new Set();
+			const table = new Map(); // rowKeyVal -> Map(colKeyVal -> acc)
+			const rowOrder = [];
+			const rowSeen = new Set();
+			for (const r of rows) {
+				const row = Array.isArray(r) ? r : [];
+				const rk = __kustoGetRawCellValueForTransform(row[rowIdx]);
+				const ck = __kustoGetRawCellValueForTransform(row[colIdx]);
+				const ckStr = String(ck ?? '');
+				if (!pivotColSet.has(ckStr)) {
+					pivotColSet.add(ckStr);
+					pivotCols.push(ckStr);
+					if (pivotCols.length > maxCols) {
+						__kustoRenderTransformationError(id, 'Pivot would create too many columns (' + pivotCols.length + '+). Increase Max columns or choose a different column key.');
+						return;
+					}
+				}
+				const rkStr = String(rk ?? '');
+				if (!rowSeen.has(rkStr)) {
+					rowSeen.add(rkStr);
+					rowOrder.push(rkStr);
+				}
+				let rowMap = table.get(rkStr);
+				if (!rowMap) {
+					rowMap = new Map();
+					table.set(rkStr, rowMap);
+				}
+				let acc = rowMap.get(ckStr);
+				if (!acc) {
+					acc = { count: 0, sum: 0, numCount: 0, first: null };
+					rowMap.set(ckStr, acc);
+				}
+				acc.count++;
+				if (agg === 'count') continue;
+				const raw = __kustoGetRawCellValueForTransform(row[valIdx]);
+				if (agg === 'first') {
+					if (acc.first === null) acc.first = raw;
+					continue;
+				}
+				const n = __kustoTryParseFiniteNumber(raw);
+				if (n !== null) {
+					acc.sum += n;
+					acc.numCount++;
+				}
+			}
+			const outCols = [String(rowKey)].concat(pivotCols.map(c => String(c)));
+			const outRows = [];
+			for (const rk of rowOrder) {
+				const rm = table.get(rk) || new Map();
+				const out = [rk];
+				for (const ck of pivotCols) {
+					const acc = rm.get(ck);
+					if (!acc) { out.push(null); continue; }
+					if (agg === 'count') out.push(acc.count);
+					else if (agg === 'first') out.push(acc.first);
+					else if (agg === 'avg') out.push(acc.numCount ? (acc.sum / acc.numCount) : null);
+					else out.push(acc.sum);
+				}
+				outRows.push(out);
+			}
+			displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'pivot' } }, id, { label: 'Transformations', showExecutionTime: false });
+			try {
+				const wrapper = document.getElementById(id + '_results_wrapper');
+				if (wrapper) wrapper.style.display = '';
+			} catch { /* ignore */ }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			return;
+		}
+
+		__kustoRenderTransformationError(id, 'Unknown transformation type.');
+	} catch (e) {
+		__kustoRenderTransformationError(id, (e && e.message) ? e.message : String(e || 'Failed to compute transformation.'));
+	}
+}
+
+function __kustoEnsureTransformationAutoExpandWhenResultsAppear(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		const wrapper = document.getElementById(id + '_tf_wrapper');
+		if (!wrapper) return;
+		// If the user hasn't manually resized this section, mirror query-box behavior:
+		// when results appear, expand to fit so they're visible.
+		const userResized = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
+		if (userResized) return;
+		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+// Hook into the shared results visibility toggle so Transformations shrink/grow like query boxes.
+try {
+	const prev = (typeof window.__kustoOnResultsVisibilityToggled === 'function') ? window.__kustoOnResultsVisibilityToggled : null;
+	window.__kustoOnResultsVisibilityToggled = (boxId) => {
+		try { if (prev) prev(boxId); } catch { /* ignore */ }
+		try {
+			const id = String(boxId || '');
+			if (!id) return;
+			// Only handle Transformations boxes.
+			if (!transformationStateByBoxId || !transformationStateByBoxId[id]) return;
+			const wrapper = document.getElementById(id + '_tf_wrapper');
+			if (!wrapper) return;
+			let visible = true;
+			try {
+				visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
+			} catch { /* ignore */ }
+			if (!visible) {
+				// Mirror query-box collapse: hug content when results hidden.
+				try { wrapper.dataset.kustoAutoFitActive = 'false'; } catch { /* ignore */ }
+				try {
+					if (wrapper.style && typeof wrapper.style.height === 'string' && wrapper.style.height && wrapper.style.height !== 'auto') {
+						wrapper.dataset.kustoPrevHeight = wrapper.style.height;
+					}
+				} catch { /* ignore */ }
+				try { wrapper.style.height = 'auto'; } catch { /* ignore */ }
+				return;
+			}
+			// Showing results again: restore previous height if any; otherwise auto-expand.
+			try {
+				const prevH = (wrapper.dataset && wrapper.dataset.kustoPrevHeight) ? String(wrapper.dataset.kustoPrevHeight) : '';
+				if (prevH && prevH !== 'auto') {
+					wrapper.style.height = prevH;
+				}
+			} catch { /* ignore */ }
+			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+		} catch { /* ignore */ }
+	};
+} catch { /* ignore */ }
+
+function addTransformationBox(options) {
+	const id = (options && options.id) ? String(options.id) : ('transformation_' + Date.now());
+	transformationBoxes.push(id);
+	const st = __kustoGetTransformationState(id);
+	st.mode = (options && typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
+	st.expanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
+	st.dataSourceId = (options && typeof options.dataSourceId === 'string') ? String(options.dataSourceId) : (st.dataSourceId || '');
+	st.transformationType = (options && typeof options.transformationType === 'string') ? String(options.transformationType) : (st.transformationType || 'derive');
+	st.deriveColumns = (options && Array.isArray(options.deriveColumns)) ? options.deriveColumns : (Array.isArray(st.deriveColumns) ? st.deriveColumns : [{ name: '', expression: '' }]);
+	// Back-compat: if options provides legacy single derive, merge it if deriveColumns not provided.
+	try {
+		if ((!options || !Array.isArray(options.deriveColumns)) && options && (typeof options.deriveColumnName === 'string' || typeof options.deriveExpression === 'string')) {
+			const n = (typeof options.deriveColumnName === 'string') ? String(options.deriveColumnName) : '';
+			const e = (typeof options.deriveExpression === 'string') ? String(options.deriveExpression) : '';
+			st.deriveColumns = [{ name: n, expression: e }];
+		}
+	} catch { /* ignore */ }
+	// Keep legacy fields in sync (used by older persistence/safety nets)
+	try {
+		const first = Array.isArray(st.deriveColumns) && st.deriveColumns.length ? st.deriveColumns[0] : { name: '', expression: '' };
+		st.deriveColumnName = String((first && first.name) || '');
+		st.deriveExpression = String((first && first.expression) || '');
+	} catch { /* ignore */ }
+	st.groupByColumns = (options && Array.isArray(options.groupByColumns)) ? options.groupByColumns.filter(c => c) : (Array.isArray(st.groupByColumns) ? st.groupByColumns : []);
+	st.aggregations = (options && Array.isArray(options.aggregations)) ? options.aggregations : (Array.isArray(st.aggregations) ? st.aggregations : [{ function: 'count', column: '' }]);
+	st.pivotRowKeyColumn = (options && typeof options.pivotRowKeyColumn === 'string') ? String(options.pivotRowKeyColumn) : (st.pivotRowKeyColumn || '');
+	st.pivotColumnKeyColumn = (options && typeof options.pivotColumnKeyColumn === 'string') ? String(options.pivotColumnKeyColumn) : (st.pivotColumnKeyColumn || '');
+	st.pivotValueColumn = (options && typeof options.pivotValueColumn === 'string') ? String(options.pivotValueColumn) : (st.pivotValueColumn || '');
+	st.pivotAggregation = (options && typeof options.pivotAggregation === 'string') ? String(options.pivotAggregation) : (st.pivotAggregation || 'sum');
+	st.pivotMaxColumns = (options && typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns)) ? options.pivotMaxColumns : (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 50);
+
+	const container = document.getElementById('queries-container');
+	if (!container) {
+		return;
+	}
+
+	const closeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M4 4l8 8"/>' +
+		'<path d="M12 4L4 12"/>' +
+		'</svg>';
+
+	const previewIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
+		'<circle cx="8" cy="8" r="2.1" />' +
+		'</svg>';
+
+	const maximizeIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 6V3h3" />' +
+		'<path d="M13 10v3h-3" />' +
+		'<path d="M3 3l4 4" />' +
+		'<path d="M13 13l-4-4" />' +
+		'</svg>';
+
+	const boxHtml =
+		'<div class="query-box transformation-box" id="' + id + '">' +
+		'<div class="query-header">' +
+		'<div class="query-header-row query-header-row-top">' +
+		'<div class="query-name-group">' +
+		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+		'<input type="text" class="query-name" placeholder="Transformation name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
+		'</div>' +
+		'<div class="section-actions">' +
+		'<div class="md-tabs" role="tablist" aria-label="Transformation tools">' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
+		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
+		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
+		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_tf_max" type="button" onclick="__kustoMaximizeTransformationBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
+		'<button class="unified-btn-secondary md-tab" id="' + id + '_tf_toggle" type="button" role="tab" aria-selected="false" onclick="toggleTransformationBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
+		'</div>' +
+		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeTransformationBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
+		'</div>' +
+		'</div>' +
+		'</div>' +
+		'<div class="query-editor-wrapper" id="' + id + '_tf_wrapper">' +
+			'<div class="query-editor" id="' + id + '_tf_editor" data-kusto-no-editor-focus="true">' +
+				'<div class="kusto-chart-builder" data-kusto-no-editor-focus="true">' +
+					'<div class="kusto-chart-controls" id="' + id + '_tf_controls" data-kusto-no-editor-focus="true">' +
+						'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
+							'<label>Type</label>' +
+							'<div class="kusto-chart-type-picker" id="' + id + '_tf_type_picker" data-kusto-no-editor-focus="true">' +
+								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="derive" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'derive\')}catch{}" title="Calc. Column" aria-label="Calc. Column">' + __kustoTransformationTypeIcons.derive + '<span>Calc. Column</span></button>' +
+								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="summarize" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'summarize\')}catch{}" title="Summarize" aria-label="Summarize">' + __kustoTransformationTypeIcons.summarize + '<span>Summarize</span></button>' +
+								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="pivot" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'pivot\')}catch{}" title="Pivot" aria-label="Pivot">' + __kustoTransformationTypeIcons.pivot + '<span>Pivot</span></button>' +
+							'</div>' +
+						'</div>' +
+						'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
+							'<label>Data</label>' +
+							'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_ds_wrapper">' +
+								'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_ds" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationDataSourceChanged(\'' + id + '\')}catch{}"></select>' +
+								'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_ds_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_ds\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+									'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_ds_text">(select)</span>' +
+									'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+								'</button>' +
+								'<div class="kusto-dropdown-menu" id="' + id + '_tf_ds_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+							'</div>' +
+						'</div>' +
+						'<div id="' + id + '_tf_cfg_derive" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
+							'<div id="' + id + '_tf_derive_rows" class="kusto-transform-derive-rows" data-kusto-no-editor-focus="true"></div>' +
+						'</div>' +
+						'<div id="' + id + '_tf_cfg_summarize" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
+							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Group by</label>' +
+									'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_tf_groupby_wrapper">' +
+										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_groupby_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_tf_groupby_btn\',\'' + id + '_tf_groupby_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+											'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_groupby_text">(none)</span>' +
+											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+										'</button>' +
+										'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_tf_groupby_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+									'</div>' +
+								'</span>' +
+								'<span class="kusto-chart-field-group" style="flex:1;">' +
+									'<label>Aggregations</label>' +
+									'<div id="' + id + '_tf_aggs" data-kusto-no-editor-focus="true"></div>' +
+									'<button type="button" class="unified-btn-secondary" onclick="try{__kustoAddTransformationAgg(\'' + id + '\')}catch{}" style="margin-top:6px;">Add aggregation</button>' +
+								'</span>' +
+							'</div>' +
+						'</div>' +
+						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
+							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Row key</label>' +
+									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_row" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+								'</span>' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Column key</label>' +
+									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_col" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+								'</span>' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Value</label>' +
+									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_val" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+								'</span>' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Aggregation</label>' +
+									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_agg" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}">' +
+										'<option value="sum">sum</option>' +
+										'<option value="avg">avg</option>' +
+										'<option value="count">count</option>' +
+										'<option value="first">first</option>' +
+									'</select>' +
+								'</span>' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Max columns</label>' +
+									'<input type="number" class="kusto-transform-input" id="' + id + '_tf_pivot_max" min="1" max="500" value="50" oninput="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}" />' +
+								'</span>' +
+							'</div>' +
+						'</div>' +
+					'</div>' +
+				'</div>' +
+				'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: ;" data-kusto-no-editor-focus="true">' +
+					'<div class="results" id="' + id + '_results"></div>' +
+				'</div>' +
+			'</div>' +
+			'<div class="query-editor-resizer" id="' + id + '_tf_resizer" title="Drag to resize"></div>' +
+		'</div>' +
+		'</div>';
+
+	container.insertAdjacentHTML('beforeend', boxHtml);
+
+	try {
+		const name = (options && typeof options.name === 'string') ? String(options.name) : '';
+		const nameEl = document.getElementById(id + '_name');
+		if (nameEl) nameEl.value = name;
+	} catch { /* ignore */ }
+
+	// Apply persisted height if present.
+	try {
+		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
+		if (typeof h === 'number' && Number.isFinite(h) && h > 0) {
+			const wrapper = document.getElementById(id + '_tf_wrapper');
+			if (wrapper) {
+				wrapper.style.height = Math.round(h) + 'px';
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Drag handle resize for transformation wrapper.
+	try {
+		const wrapper = document.getElementById(id + '_tf_wrapper');
+		const resizer = document.getElementById(id + '_tf_resizer');
+		if (wrapper && resizer) {
+			resizer.addEventListener('mousedown', (e) => {
+				try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				try { wrapper.dataset.kustoAutoFitActive = 'false'; } catch { /* ignore */ }
+				resizer.classList.add('is-dragging');
+				const previousCursor = document.body.style.cursor;
+				const previousUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startHeight = wrapper.getBoundingClientRect().height;
+				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
+				const minH = 180;
+				const maxH = 900;
+				const onMove = (moveEvent) => {
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
+					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
+					try { wrapper.style.height = Math.ceil(nextHeight) + 'px'; } catch { /* ignore */ }
+				};
+				const onUp = () => {
+					resizer.classList.remove('is-dragging');
+					document.body.style.cursor = previousCursor;
+					document.body.style.userSelect = previousUserSelect;
+					document.removeEventListener('mousemove', onMove);
+					document.removeEventListener('mouseup', onUp);
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				};
+				document.addEventListener('mousemove', onMove);
+				document.addEventListener('mouseup', onUp);
+			});
+		}
+	} catch { /* ignore */ }
+
+	// Initialize UI
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoApplyTransformationMode(id); } catch { /* ignore */ }
+	try { __kustoApplyTransformationBoxVisibility(id); } catch { /* ignore */ }
+
+	return id;
 }

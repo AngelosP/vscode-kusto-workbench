@@ -68,6 +68,124 @@
 		if (nextBtn) nextBtn.disabled = !canNav;
 	}
 
+	function __kustoTrySyncSearchAffordancesVerticalPositionToInput(input, elements) {
+		if (!input || !elements || !elements.length) return;
+		try {
+			const wrapper = input.parentElement;
+			if (!wrapper || typeof input.getBoundingClientRect !== 'function' || typeof wrapper.getBoundingClientRect !== 'function') return;
+			const rInput = input.getBoundingClientRect();
+			const rWrap = wrapper.getBoundingClientRect();
+			if (!rInput || !rWrap || !isFinite(rInput.top) || !isFinite(rInput.height) || !isFinite(rWrap.top)) return;
+
+			let bt = 0;
+			let bb = 0;
+			try {
+				if (window.getComputedStyle) {
+					const cs = window.getComputedStyle(input);
+					bt = parseFloat(cs.borderTopWidth) || 0;
+					bb = parseFloat(cs.borderBottomWidth) || 0;
+				}
+			} catch { /* ignore */ }
+
+			const yTopOuter = (rInput.top - rWrap.top);
+			const innerHeight = rInput.height - bt - bb;
+			if (!isFinite(innerHeight) || innerHeight <= 0) return;
+			const centerY = yTopOuter + bt + (innerHeight / 2);
+
+			for (const el of elements) {
+				if (!el) continue;
+				el.style.top = centerY + 'px';
+				el.style.transform = 'translateY(-50%)';
+			}
+		} catch { /* ignore */ }
+	}
+
+	function __kustoTrySyncStatusVerticalPositionToInput(input, statusEl) {
+		if (!input || !statusEl) return;
+		try {
+			// Prefer real layout geometry: align to the input box and mirror the input's text layout
+			// (padding + line-height). This matches where the typed text sits.
+			const wrapper = statusEl.parentElement;
+			if (wrapper && typeof input.getBoundingClientRect === 'function' && typeof wrapper.getBoundingClientRect === 'function') {
+				const rInput = input.getBoundingClientRect();
+				const rWrap = wrapper.getBoundingClientRect();
+				if (rInput && rWrap && isFinite(rInput.top) && isFinite(rInput.height) && isFinite(rWrap.top)) {
+					let bt = 0;
+					let bb = 0;
+					let pt = 0;
+					let pb = 0;
+					let cs;
+					try {
+						if (window.getComputedStyle) {
+							cs = window.getComputedStyle(input);
+							bt = parseFloat(cs.borderTopWidth) || 0;
+							bb = parseFloat(cs.borderBottomWidth) || 0;
+							pt = parseFloat(cs.paddingTop) || 0;
+							pb = parseFloat(cs.paddingBottom) || 0;
+						}
+					} catch { /* ignore */ }
+
+					const yTopOuter = (rInput.top - rWrap.top);
+					const innerHeight = rInput.height - bt - bb;
+					const yTop = yTopOuter + bt;
+					statusEl.style.top = yTop + 'px';
+					statusEl.style.height = innerHeight + 'px';
+					statusEl.style.transform = 'none';
+					statusEl.style.boxSizing = 'border-box';
+					statusEl.style.display = 'block';
+					// Mirror the input's vertical layout so the glyphs align with typed text.
+					try {
+						if (cs) {
+							// Keep the status text slightly smaller than the input text.
+							try {
+								const n = parseFloat(cs.fontSize);
+								if (isFinite(n) && n > 1) {
+									statusEl.style.fontSize = (n - 1) + 'px';
+								} else if (cs.fontSize) {
+									statusEl.style.fontSize = cs.fontSize;
+								}
+							} catch { /* ignore */ }
+							statusEl.style.paddingTop = cs.paddingTop;
+							statusEl.style.paddingBottom = cs.paddingBottom;
+							// Use a numeric line-height matching the input's inner content height.
+							// This stays visually centered even when cs.lineHeight is "normal".
+							try {
+								const inner = innerHeight - pt - pb;
+								if (isFinite(inner) && inner > 0) {
+									statusEl.style.lineHeight = inner + 'px';
+								} else {
+									statusEl.style.lineHeight = cs.lineHeight;
+								}
+							} catch {
+								statusEl.style.lineHeight = cs.lineHeight;
+							}
+							statusEl.style.fontFamily = cs.fontFamily;
+							statusEl.style.fontWeight = cs.fontWeight;
+							statusEl.style.letterSpacing = cs.letterSpacing;
+						}
+					} catch { /* ignore */ }
+					return;
+				}
+			}
+		} catch { /* ignore */ }
+
+		// Fallback: best-effort from computed styles.
+		try {
+			if (!window.getComputedStyle) return;
+			const cs = window.getComputedStyle(input);
+			const fontSize = parseFloat(cs.fontSize);
+			let lineHeight = parseFloat(cs.lineHeight);
+			if (!isFinite(lineHeight) || lineHeight <= 0) {
+				lineHeight = (isFinite(fontSize) && fontSize > 0) ? (fontSize * 1.2) : 14;
+			}
+			const paddingTop = parseFloat(cs.paddingTop) || 0;
+			const borderTop = parseFloat(cs.borderTopWidth) || 0;
+			const y = borderTop + paddingTop + (lineHeight / 2);
+			statusEl.style.top = y + 'px';
+			statusEl.style.transform = 'translateY(-50%)';
+		} catch { /* ignore */ }
+	}
+
 	function __kustoCreateSearchControl(hostEl, options) {
 		if (!hostEl) return null;
 		const opts = options && typeof options === 'object' ? options : {};
@@ -105,11 +223,7 @@
 		const statusEl = document.createElement('span');
 		statusEl.className = 'kusto-search-status';
 		statusEl.id = inputId + '_status';
-		// Keep the status text the same size as the search input text.
-		try {
-			const fs = window.getComputedStyle ? window.getComputedStyle(input).fontSize : '';
-			if (fs) statusEl.style.fontSize = fs;
-		} catch { /* ignore */ }
+		// Note: font-size is synced after insertion (getComputedStyle is reliable once in DOM).
 
 		const toggleBtn = document.createElement('button');
 		toggleBtn.type = 'button';
@@ -185,6 +299,36 @@
 		wrapper.appendChild(prevBtn);
 		wrapper.appendChild(nextBtn);
 		hostEl.appendChild(wrapper);
+
+		// After insertion, align status vertically with the input box center.
+		try {
+			requestAnimationFrame(function () {
+				__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
+				__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
+			});
+		} catch {
+			try {
+				__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
+				__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
+			} catch { /* ignore */ }
+		}
+
+		// Keep it aligned if fonts/layout change.
+		try {
+			if (typeof ResizeObserver !== 'undefined') {
+				const ro = new ResizeObserver(function () {
+					__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
+					__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
+				});
+				ro.observe(input);
+			}
+		} catch { /* ignore */ }
+		try {
+			window.addEventListener('resize', function () {
+				__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
+				__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
+			});
+		} catch { /* ignore */ }
 
 		return { wrapper, input, toggleBtn, statusEl, prevBtn, nextBtn };
 	}

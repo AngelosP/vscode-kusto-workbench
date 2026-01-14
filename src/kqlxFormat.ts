@@ -89,6 +89,31 @@ export type KqlxSectionV1 =
 			valueColumn?: string;
 		}
 	| {
+			id?: string;
+			type: 'transformation';
+			name?: string;
+			mode?: 'edit' | 'preview';
+			expanded?: boolean;
+			editorHeightPx?: number;
+			// Transformation configuration.
+			dataSourceId?: string;
+			transformationType?: 'derive' | 'summarize' | 'pivot';
+			// Summarize transformation: group by columns + aggregations
+			groupByColumns?: string[];
+			aggregations?: Array<{ column?: string; function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'distinct' }>;
+			// Calculated columns (derive): multiple columns, applied in order.
+			deriveColumns?: Array<{ name: string; expression: string }>;
+			// Back-compat for older files: single calculated column.
+			deriveColumnName?: string;
+			deriveExpression?: string;
+			// Pivot transformation: row key + column key + values
+			pivotRowKeyColumn?: string;
+			pivotColumnKeyColumn?: string;
+			pivotValueColumn?: string;
+			pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
+			pivotMaxColumns?: number;
+		}
+	| {
 			type: string;
 			[key: string]: unknown;
 		};

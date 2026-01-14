@@ -1759,6 +1759,11 @@ function toggleQueryResultsVisibility(boxId) {
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+	try {
+		if (typeof window.__kustoOnResultsVisibilityToggled === 'function') {
+			window.__kustoOnResultsVisibilityToggled(boxId);
+		}
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

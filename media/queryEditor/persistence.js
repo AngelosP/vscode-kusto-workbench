@@ -20,7 +20,7 @@ window.__kustoCompatibilityMode = false;
 // - allowedSectionKinds controls which add buttons are shown/enabled.
 // - defaultSectionKind controls which section we create for an empty document.
 // - upgradeRequestType controls which message we send when in compatibility mode.
-window.__kustoAllowedSectionKinds = window.__kustoAllowedSectionKinds || ['query', 'chart', 'markdown', 'python', 'url'];
+window.__kustoAllowedSectionKinds = window.__kustoAllowedSectionKinds || ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 window.__kustoDefaultSectionKind = window.__kustoDefaultSectionKind || 'query';
 window.__kustoCompatibilitySingleKind = window.__kustoCompatibilitySingleKind || 'query';
 window.__kustoUpgradeRequestType = window.__kustoUpgradeRequestType || 'requestUpgradeToKqlx';
@@ -89,7 +89,7 @@ function __kustoSetCompatibilityMode(enabled) {
 		if (enabled) {
 			try {
 				if (window.__kustoQueryEditorPendingAdds && typeof window.__kustoQueryEditorPendingAdds === 'object') {
-					window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, markdown: 0, python: 0, url: 0 };
+					window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 				}
 			} catch {
 				// ignore
@@ -134,6 +134,7 @@ function __kustoRequestAddSection(kind) {
 	// Normal .kqlx flow.
 	if (k === 'query') return addQueryBox();
 	if (k === 'chart') return addChartBox();
+	if (k === 'transformation') return addTransformationBox();
 	if (k === 'markdown') return addMarkdownBox();
 	if (k === 'python') return addPythonBox();
 	if (k === 'url') return addUrlBox();
@@ -638,6 +639,75 @@ function getKqlxState() {
 				...(valueColumn ? { valueColumn } : {}),
 				...(showDataLabels ? { showDataLabels } : {}),
 				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
+			});
+			continue;
+		}
+
+		if (id.startsWith('transformation_')) {
+			const name = (document.getElementById(id + '_name') || {}).value || '';
+			let mode = 'edit';
+			let expanded = true;
+			let dataSourceId = '';
+			let transformationType = '';
+			let deriveColumns = [];
+			let deriveColumnName = '';
+			let deriveExpression = '';
+			let groupByColumns = [];
+			let aggregations = [];
+			let pivotRowKeyColumn = '';
+			let pivotColumnKeyColumn = '';
+			let pivotValueColumn = '';
+			let pivotAggregation = '';
+			let pivotMaxColumns;
+			try {
+				const st = (typeof transformationStateByBoxId === 'object' && transformationStateByBoxId && transformationStateByBoxId[id]) ? transformationStateByBoxId[id] : null;
+				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
+				if (m === 'preview' || m === 'edit') {
+					mode = m;
+				}
+				expanded = (st && typeof st.expanded === 'boolean') ? !!st.expanded : true;
+				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
+				transformationType = (st && typeof st.transformationType === 'string') ? String(st.transformationType) : '';
+				deriveColumns = (st && Array.isArray(st.deriveColumns))
+					? st.deriveColumns.filter(c => c && typeof c === 'object')
+					: [];
+				// Back-compat: older in-memory state may still use single fields.
+				deriveColumnName = (st && typeof st.deriveColumnName === 'string') ? String(st.deriveColumnName) : '';
+				deriveExpression = (st && typeof st.deriveExpression === 'string') ? String(st.deriveExpression) : '';
+				groupByColumns = (st && Array.isArray(st.groupByColumns)) ? st.groupByColumns.filter(c => c) : [];
+				aggregations = (st && Array.isArray(st.aggregations)) ? st.aggregations.filter(a => a && typeof a === 'object') : [];
+				pivotRowKeyColumn = (st && typeof st.pivotRowKeyColumn === 'string') ? String(st.pivotRowKeyColumn) : '';
+				pivotColumnKeyColumn = (st && typeof st.pivotColumnKeyColumn === 'string') ? String(st.pivotColumnKeyColumn) : '';
+				pivotValueColumn = (st && typeof st.pivotValueColumn === 'string') ? String(st.pivotValueColumn) : '';
+				pivotAggregation = (st && typeof st.pivotAggregation === 'string') ? String(st.pivotAggregation) : '';
+				if (st && typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) {
+					pivotMaxColumns = st.pivotMaxColumns;
+				}
+			} catch { /* ignore */ }
+			// If deriveColumns is missing but legacy single-field derive data exists, serialize it.
+			try {
+				if ((!deriveColumns || !Array.isArray(deriveColumns) || deriveColumns.length === 0) && (deriveColumnName || deriveExpression)) {
+					deriveColumns = [{ name: deriveColumnName || 'derived', expression: deriveExpression || '' }];
+				}
+			} catch { /* ignore */ }
+
+			sections.push({
+				id,
+				type: 'transformation',
+				name,
+				mode,
+				expanded,
+				...(dataSourceId ? { dataSourceId } : {}),
+				...(transformationType ? { transformationType } : {}),
+				...(Array.isArray(deriveColumns) && deriveColumns.length ? { deriveColumns } : {}),
+				...(groupByColumns.length ? { groupByColumns } : {}),
+				...(aggregations.length ? { aggregations } : {}),
+				...(pivotRowKeyColumn ? { pivotRowKeyColumn } : {}),
+				...(pivotColumnKeyColumn ? { pivotColumnKeyColumn } : {}),
+				...(pivotValueColumn ? { pivotValueColumn } : {}),
+				...(pivotAggregation ? { pivotAggregation } : {}),
+				...(typeof pivotMaxColumns === 'number' ? { pivotMaxColumns } : {}),
+				editorHeightPx: __kustoGetWrapperHeightPx(id, '_tf_wrapper')
 			});
 			continue;
 		}
@@ -1166,6 +1236,48 @@ function applyKqlxState(state) {
 					}
 					if (typeof __kustoApplyChartBoxVisibility === 'function') {
 						__kustoApplyChartBoxVisibility(boxId);
+					}
+				} catch { /* ignore */ }
+				continue;
+			}
+
+			if (t === 'transformation') {
+				let deriveColumns = undefined;
+				try {
+					if (Array.isArray(section.deriveColumns)) {
+						deriveColumns = section.deriveColumns;
+					} else {
+						// Back-compat: migrate single-field derive into array.
+						const legacyName = (typeof section.deriveColumnName === 'string') ? section.deriveColumnName : '';
+						const legacyExpr = (typeof section.deriveExpression === 'string') ? section.deriveExpression : '';
+						if (legacyName || legacyExpr) {
+							deriveColumns = [{ name: legacyName || 'derived', expression: legacyExpr || '' }];
+						}
+					}
+				} catch { /* ignore */ }
+				const boxId = addTransformationBox({
+					id: (section.id ? String(section.id) : undefined),
+					name: String(section.name || ''),
+					mode: (typeof section.mode === 'string') ? String(section.mode) : 'edit',
+					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
+					editorHeightPx: (typeof section.editorHeightPx === 'number') ? section.editorHeightPx : undefined,
+					dataSourceId: (typeof section.dataSourceId === 'string') ? section.dataSourceId : undefined,
+					transformationType: (typeof section.transformationType === 'string') ? section.transformationType : undefined,
+					deriveColumns,
+					groupByColumns: (Array.isArray(section.groupByColumns) ? section.groupByColumns : undefined),
+					aggregations: (Array.isArray(section.aggregations) ? section.aggregations : undefined),
+					pivotRowKeyColumn: (typeof section.pivotRowKeyColumn === 'string') ? section.pivotRowKeyColumn : undefined,
+					pivotColumnKeyColumn: (typeof section.pivotColumnKeyColumn === 'string') ? section.pivotColumnKeyColumn : undefined,
+					pivotValueColumn: (typeof section.pivotValueColumn === 'string') ? section.pivotValueColumn : undefined,
+					pivotAggregation: (typeof section.pivotAggregation === 'string') ? section.pivotAggregation : undefined,
+					pivotMaxColumns: (typeof section.pivotMaxColumns === 'number') ? section.pivotMaxColumns : undefined
+				});
+				try {
+					if (typeof __kustoApplyTransformationMode === 'function') {
+						__kustoApplyTransformationMode(boxId);
+					}
+					if (typeof __kustoApplyTransformationBoxVisibility === 'function') {
+						__kustoApplyTransformationBoxVisibility(boxId);
 					}
 				} catch { /* ignore */ }
 				continue;
