@@ -100,7 +100,7 @@ export type KqlxSectionV1 =
 			transformationType?: 'derive' | 'summarize' | 'pivot';
 			// Summarize transformation: group by columns + aggregations
 			groupByColumns?: string[];
-			aggregations?: Array<{ column?: string; function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'distinct' }>;
+			aggregations?: Array<{ name?: string; column?: string; function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'distinct' }>;
 			// Calculated columns (derive): multiple columns, applied in order.
 			deriveColumns?: Array<{ name: string; expression: string }>;
 			// Back-compat for older files: single calculated column.

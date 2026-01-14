@@ -553,6 +553,17 @@
 			font-size: 13px;
 		}
 
+		/* Transformations: keep the left label column aligned across rows */
+		.transformation-box {
+			--kusto-transform-label-width: 48px;
+		}
+
+		.transformation-box .kusto-chart-row label,
+		.transformation-box .kusto-chart-mapping-row label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+		}
+
 		.chart-box .query-editor-wrapper {
 			border: none;
 			overflow: hidden;
@@ -589,7 +600,11 @@
 			flex: 1 1 auto;
 			min-height: 0;
 			margin-top: 10px;
-			border-top: none;
+			border-top: 1px solid var(--vscode-panel-border);
+		}
+
+		.transformation-box.is-preview .results-wrapper {
+			margin-top: 10px;
 		}
 
 		.kusto-chart-controls {
@@ -670,11 +685,147 @@
 			padding-bottom: 2px;
 		}
 
-		.kusto-transform-agg-row {
+		.kusto-transform-agg-rows {
 			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-top: 0;
+		}
+
+		.kusto-transform-summarize-stack {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			flex: 1 1 auto;
+			min-width: 260px;
+			width: 100%;
+		}
+
+		.kusto-transform-summarize-row {
+			display: flex;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-transform-summarize-row > label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.kusto-transform-summarize-row-summarize {
+			align-items: flex-start;
+		}
+
+		.kusto-transform-summarize-row-summarize > label {
+			padding-top: 0;
+			margin-top: 4px;
+		}
+
+		/* Summarize: make the By dropdown match native control height */
+		.kusto-transform-summarize-row-by .kusto-checkbox-dropdown .kusto-dropdown-btn {
+			height: 28px;
+			min-height: 28px;
+			padding-top: 0;
+			padding-bottom: 0;
+			align-items: center;
+		}
+
+		.kusto-transform-summarize-aggs {
+			flex: 1 1 auto;
+			min-width: 260px;
+		}
+
+		.kusto-transform-summarize-row-by {
+			align-items: center;
+		}
+
+		.kusto-transform-summarize-row-by .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 220px;
+		}
+
+		.kusto-transform-agg-row {
+			display: grid;
+			grid-template-columns: 200px auto 140px 1fr auto;
 			gap: 8px;
 			align-items: center;
-			margin-bottom: 6px;
+			border: none;
+			border-radius: 0;
+			padding: 0;
+			background: transparent;
+			box-shadow: none;
+			transition: background 0.12s ease;
+			position: relative;
+		}
+
+		.kusto-transform-agg-row .kusto-transform-select {
+			border-radius: 0;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-name {
+			border-radius: 0;
+			min-width: 140px;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-eq {
+			opacity: 0.75;
+			font-size: 12px;
+			padding: 0 2px;
+			user-select: none;
+		}
+
+		.kusto-transform-agg-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-agg-row-actions {
+			align-self: center;
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			justify-content: flex-end;
+		}
+
+		.kusto-transform-agg-rows.is-dragging .kusto-transform-agg-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-agg-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-agg-row.is-drop-before::before,
+		.kusto-transform-agg-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-agg-row.is-drop-before::before {
+			top: -1px;
+		}
+
+		.kusto-transform-agg-row.is-drop-after::after {
+			bottom: -1px;
 		}
 
 		/* Transformation: Calculated columns (derive) */
@@ -702,19 +853,46 @@
 			margin-top: 0;
 		}
 
+		.kusto-transform-derive-stack {
+			display: flex;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-transform-derive-stack > label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+			margin-top: 4px;
+		}
+
+		.kusto-transform-derive-body {
+			flex: 1 1 auto;
+			min-width: 260px;
+		}
+
 		.kusto-transform-derive-row {
 			display: grid;
-			grid-template-columns: auto 220px 1fr auto;
+			grid-template-columns: 220px auto 1fr auto;
 			gap: 8px;
 			align-items: center;
-			border: 1px dashed color-mix(in srgb, var(--vscode-panel-border) 65%, transparent);
+			border: none;
 			border-radius: 0;
-			padding: 8px;
-			background: var(--vscode-editor-background);
+			padding: 0;
+			background: transparent;
 			box-shadow: none;
-			transition: border-color 0.12s ease, transform 0.12s ease, background 0.12s ease;
+			transition: background 0.12s ease;
 			position: relative;
 		}
+
+		.kusto-transform-derive-eq {
+			opacity: 0.75;
+			font-size: 12px;
+			padding: 0 2px;
+			user-select: none;
+		}
+
 
 		.kusto-transform-derive-row .kusto-transform-input,
 		.kusto-transform-derive-row .kusto-transform-textarea {
@@ -739,8 +917,6 @@
 		}
 
 		.kusto-transform-derive-row.is-drop-target {
-			border-style: solid;
-			border-color: color-mix(in srgb, var(--vscode-focusBorder) 65%, var(--vscode-editorWidget-border, var(--vscode-input-border)) 35%);
 			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
 		}
 
@@ -748,8 +924,8 @@
 		.kusto-transform-derive-row.is-drop-after::after {
 			content: "";
 			position: absolute;
-			left: 10px;
-			right: 10px;
+			left: 0;
+			right: 0;
 			height: 2px;
 			background: var(--vscode-focusBorder);
 			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
@@ -764,8 +940,6 @@
 		}
 
 		.kusto-transform-derive-row:hover {
-			border-style: solid;
-			border-color: color-mix(in srgb, var(--vscode-focusBorder) 55%, var(--vscode-editorWidget-border, var(--vscode-input-border)) 45%);
 			background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-list-hoverBackground) 4%);
 		}
 
@@ -806,7 +980,10 @@
 
 		@media (max-width: 720px) {
 			.kusto-transform-derive-row {
-				grid-template-columns: auto 1fr auto;
+				grid-template-columns: 1fr auto;
+			}
+			.kusto-transform-derive-eq {
+				display: none;
 			}
 			.kusto-transform-derive-expr {
 				grid-column: 1 / -1;
@@ -914,8 +1091,8 @@
 		}
 
 		.kusto-chart-type-btn svg {
-			width: 22px;
-			height: 22px;
+			width: 32px;
+			height: 32px;
 			color: var(--vscode-foreground);
 			opacity: 0.7;
 		}

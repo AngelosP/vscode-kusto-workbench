@@ -1269,7 +1269,7 @@ function __kustoMaximizeChartBox(boxId) {
 		if (!activeEditor) return;
 		
 		// Minimum height for the chart canvas when it has actual content
-		const CHART_MIN_HEIGHT = 240;
+		const CHART_MIN_HEIGHT = 140;
 		// Height for empty/unconfigured state (just shows placeholder text)
 		const CHART_EMPTY_HEIGHT = 40;
 		const SLACK_PX = 10;
@@ -1339,8 +1339,8 @@ function __kustoAutoFitChartIfClipped(boxId) {
 		const canvas = document.getElementById(canvasId);
 		if (!canvas) return;
 		
-		// Get minimum height from inline style (default 240px)
-		let minHeight = 240;
+		// Get minimum height from inline style (default 140px)
+		let minHeight = 140;
 		try {
 			const inlineMinHeight = canvas.style.minHeight;
 			if (inlineMinHeight) {
@@ -1525,11 +1525,11 @@ function addChartBox(options) {
 						'</div>' +
 					'</div>' +
 				'</div>' +
-				'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_edit" data-kusto-no-editor-focus="true" style="min-height:240px;"></div>' +
+				'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_edit" data-kusto-no-editor-focus="true" style="min-height:140px;"></div>' +
 			'</div>' +
 		'</div>' +
 		'<div class="query-editor" id="' + id + '_chart_preview" data-kusto-no-editor-focus="true" style="display:none;">' +
-			'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_preview" data-kusto-no-editor-focus="true" style="min-height:240px;"></div>' +
+			'<div class="kusto-chart-canvas" id="' + id + '_chart_canvas_preview" data-kusto-no-editor-focus="true" style="min-height:140px;"></div>' +
 		'</div>' +
 		'<div class="query-editor-resizer" id="' + id + '_chart_resizer" title="Drag to resize"></div>' +
 		'</div>' +
@@ -1592,7 +1592,7 @@ function addChartBox(options) {
 				const startHeight = wrapper.getBoundingClientRect().height;
 				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
 
-				const minH = 180;
+				const minH = 80;
 				const maxH = 900;
 				const onMove = (moveEvent) => {
 					try {
@@ -4903,6 +4903,13 @@ function __kustoApplyTransformationMode(boxId) {
 	try {
 		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
 		const mode = st && st.mode ? String(st.mode) : 'edit';
+		try {
+			const boxEl = document.getElementById(boxId);
+			if (boxEl) {
+				boxEl.classList.toggle('is-preview', mode === 'preview');
+				boxEl.classList.toggle('is-edit', mode === 'edit');
+			}
+		} catch { /* ignore */ }
 		const controlsHost = document.getElementById(boxId + '_tf_controls');
 		if (controlsHost) controlsHost.style.display = (mode === 'edit') ? '' : 'none';
 		__kustoUpdateTransformationModeButtons(boxId);
@@ -5006,30 +5013,89 @@ function __kustoComputeTransformationFitHeightPx(boxId) {
 		let desired = 0;
 		try {
 			// The transformation editor is a flex layout; scrollHeight tends to match current height.
-			// Measure controls + results header + results body content (like query boxes).
-			const controls = document.getElementById(id + '_tf_controls');
+			// Measure controls + results content (like query boxes) so Fit-to-contents doesn't leave gaps.
 			const resultsWrapper = document.getElementById(id + '_results_wrapper');
-			const resultsHeader = resultsWrapper ? resultsWrapper.querySelector('.results-header') : null;
-			const controlsH = controls ? controls.scrollHeight : 0;
-			const headerH = resultsHeader ? resultsHeader.scrollHeight : 0;
+			const resultsEl = document.getElementById(id + '_results');
 			let resultsWrapperMargins = 0;
+			let resultsWrapperBoxExtra = 0;
 			try {
 				if (resultsWrapper && window.getComputedStyle) {
 					const rsw = window.getComputedStyle(resultsWrapper);
 					const mt = parseFloat(rsw.marginTop || '0') || 0;
 					const mb = parseFloat(rsw.marginBottom || '0') || 0;
 					resultsWrapperMargins = mt + mb;
+					resultsWrapperBoxExtra += (parseFloat(rsw.paddingTop || '0') || 0) + (parseFloat(rsw.paddingBottom || '0') || 0);
+					resultsWrapperBoxExtra += (parseFloat(rsw.borderTopWidth || '0') || 0) + (parseFloat(rsw.borderBottomWidth || '0') || 0);
 				}
 			} catch { /* ignore */ }
 
-			let resultsBodyH = 0;
+			const addVisibleRectHeight = (el) => {
+				try {
+					if (!el) return 0;
+					try {
+						const cs = getComputedStyle(el);
+						if (cs && cs.display === 'none') return 0;
+						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+						let margin = 0;
+						try {
+							margin += parseFloat(cs.marginTop || '0') || 0;
+							margin += parseFloat(cs.marginBottom || '0') || 0;
+						} catch { /* ignore */ }
+						return Math.max(0, Math.ceil(h + margin));
+					} catch { /* ignore */ }
+					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
+					return Math.max(0, Math.ceil(h));
+				} catch {
+					return 0;
+				}
+			};
+
+			const controlsH = (() => {
+				try {
+					let h = 0;
+					const stopEl = (resultsWrapper && resultsWrapper.parentElement === activeHost) ? resultsWrapper : null;
+					for (const child of Array.from(activeHost.children || [])) {
+						if (stopEl && child === stopEl) break;
+						h += addVisibleRectHeight(child);
+					}
+					try {
+						const cse = getComputedStyle(activeHost);
+						h += (parseFloat(cse.paddingTop || '0') || 0) + (parseFloat(cse.paddingBottom || '0') || 0);
+						h += (parseFloat(cse.borderTopWidth || '0') || 0) + (parseFloat(cse.borderBottomWidth || '0') || 0);
+					} catch { /* ignore */ }
+					return Math.max(0, Math.ceil(h));
+				} catch {
+					return 0;
+				}
+			})();
+
+			let resultsContentH = 0;
 			let hasTable = false;
+			let tableSlackPx = 0;
 			try {
-				const bodyEl = document.getElementById(id + '_results_body');
-				if (bodyEl) {
-					// Only include body content height if it's visible.
-					const bodyVisible = !(bodyEl.style && String(bodyEl.style.display || '') === 'none');
-					if (bodyVisible) {
+				if (resultsEl) {
+					try {
+						const csr = getComputedStyle(resultsEl);
+						resultsContentH += (parseFloat(csr.paddingTop || '0') || 0) + (parseFloat(csr.paddingBottom || '0') || 0);
+						resultsContentH += (parseFloat(csr.borderTopWidth || '0') || 0) + (parseFloat(csr.borderBottomWidth || '0') || 0);
+					} catch { /* ignore */ }
+
+					const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
+					resultsContentH += addVisibleRectHeight(headerEl);
+
+					const bodyEl = resultsEl.querySelector ? resultsEl.querySelector('.results-body') : null;
+					if (bodyEl) {
+						try {
+							const csb = getComputedStyle(bodyEl);
+							resultsContentH += (parseFloat(csb.paddingTop || '0') || 0) + (parseFloat(csb.paddingBottom || '0') || 0);
+							resultsContentH += (parseFloat(csb.borderTopWidth || '0') || 0) + (parseFloat(csb.borderBottomWidth || '0') || 0);
+						} catch { /* ignore */ }
+
+						const dataSearch = bodyEl.querySelector ? bodyEl.querySelector('.data-search') : null;
+						const colSearch = bodyEl.querySelector ? bodyEl.querySelector('.column-search') : null;
+						resultsContentH += addVisibleRectHeight(dataSearch);
+						resultsContentH += addVisibleRectHeight(colSearch);
+
 						const tableContainer = bodyEl.querySelector ? bodyEl.querySelector('.table-container') : null;
 						if (tableContainer) {
 							hasTable = true;
@@ -5037,6 +5103,22 @@ function __kustoComputeTransformationFitHeightPx(boxId) {
 							try {
 								const tableEl = tableContainer.querySelector ? tableContainer.querySelector('table') : null;
 								if (tableEl) {
+									// When the table only has a single data row, the rendered height can end up
+									// ~1-2px taller than our measured heights (borders/collapsed border rounding).
+									// Add a tiny slack to avoid clipping / a 1px scrollbar.
+									try {
+										let rowCount = 0;
+										const tbody = (tableEl.tBodies && tableEl.tBodies.length) ? tableEl.tBodies[0] : null;
+										if (tbody && tbody.rows) {
+											rowCount = tbody.rows.length;
+										} else if (tableEl.querySelectorAll) {
+											rowCount = tableEl.querySelectorAll('tbody tr').length;
+										}
+										if (rowCount <= 1) {
+											tableSlackPx = Math.max(tableSlackPx, 2);
+										}
+									} catch { /* ignore */ }
+
 									const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
 									if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
 									const rh = (tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0);
@@ -5049,28 +5131,34 @@ function __kustoComputeTransformationFitHeightPx(boxId) {
 									if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
 								} catch { /* ignore */ }
 							}
-							resultsBodyH += Math.max(0, Math.ceil(tableH));
+							if (!tableH) {
+								tableH = addVisibleRectHeight(tableContainer);
+							}
+							resultsContentH += Math.max(0, Math.ceil(tableH));
 						} else {
-							// Non-table results in body: sum children.
 							try {
 								for (const child of Array.from(bodyEl.children || [])) {
-									if (!child || !child.getBoundingClientRect) continue;
-									resultsBodyH += Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
+									resultsContentH += addVisibleRectHeight(child);
 								}
 							} catch { /* ignore */ }
 						}
+					} else {
+						try {
+							for (const child of Array.from(resultsEl.children || [])) {
+								resultsContentH += addVisibleRectHeight(child);
+							}
+						} catch { /* ignore */ }
 					}
 				}
 			} catch { /* ignore */ }
 
-			const extraPad = hasTable ? 22 : 10;
-			// Builder padding + wrapper chrome + slack to avoid tiny scrollbars.
-			desired = Math.ceil(controlsH + resultsWrapperMargins + headerH + resultsBodyH + extraPad + 25);
+			const extraPad = hasTable ? 28 : 18;
+			desired = Math.ceil(Math.max(0, controlsH) + resultsWrapperMargins + resultsWrapperBoxExtra + Math.max(0, resultsContentH) + extraPad + tableSlackPx);
 		} catch { /* ignore */ }
 		if (!desired || !Number.isFinite(desired)) {
 			desired = Math.ceil(activeHost.scrollHeight + 19);
 		}
-		desired = Math.max(180, Math.min(900, desired));
+		desired = Math.max(80, Math.min(900, desired));
 		return desired;
 	} catch {
 		return null;
@@ -5135,6 +5223,34 @@ function __kustoSetTransformationType(boxId, type) {
 	st.transformationType = t;
 	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
 	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	// Changing transformation types can significantly change the controls height.
+	// If the section is in auto-fit mode (Fit to contents), re-measure after the DOM updates.
+	try {
+		const runFit = () => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (!w) return;
+				const active = String(w.dataset.kustoAutoFitActive || '') === 'true';
+				const userResized = String(w.dataset.kustoUserResized || '') === 'true';
+				// If auto-fit is active, allow a one-shot shrink/grow. If the user hasn't resized,
+				// keep it fitting as the UI changes.
+				if (active || !userResized) {
+					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
+					// Force layout so measurements reflect the new type's control visibility.
+					try {
+						const resultsWrapper = document.getElementById(id + '_results_wrapper');
+						if (resultsWrapper) void resultsWrapper.offsetHeight;
+						const controlsHost = document.getElementById(id + '_tf_controls');
+						if (controlsHost) void controlsHost.offsetHeight;
+					} catch { /* ignore */ }
+					try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+		};
+		setTimeout(runFit, 0);
+		setTimeout(runFit, 80);
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
@@ -5155,7 +5271,47 @@ function __kustoSetCheckboxDropdownText(btnTextEl, selectedValues) {
 	try {
 		if (!btnTextEl) return;
 		const vals = Array.isArray(selectedValues) ? selectedValues.filter(v => v) : [];
-		btnTextEl.textContent = vals.length ? (vals.length + ' selected') : '(none)';
+		if (!vals.length) {
+			btnTextEl.textContent = '(none)';
+			try { btnTextEl.title = '(none)'; } catch { /* ignore */ }
+			return;
+		}
+
+		const all = vals.map(v => String(v)).filter(v => v).join(', ');
+		btnTextEl.textContent = all;
+		try { btnTextEl.title = all; } catch { /* ignore */ }
+
+		// If it doesn't fit, include as many values as will fit and add an ellipsis.
+		try {
+			const fits = () => {
+				try {
+					const cw = btnTextEl.clientWidth || 0;
+					const sw = btnTextEl.scrollWidth || 0;
+					return cw <= 0 || sw <= cw + 1;
+				} catch {
+					return true;
+				}
+			};
+
+			if (fits()) return;
+
+			let shown = '';
+			for (let i = 0; i < vals.length; i++) {
+				const next = String(vals[i] || '');
+				if (!next) continue;
+				const candidateBase = shown ? (shown + ', ' + next) : next;
+				const hasMore = i < vals.length - 1;
+				const candidate = hasMore ? (candidateBase + '…') : candidateBase;
+				btnTextEl.textContent = candidate;
+				if (fits()) {
+					shown = candidateBase;
+					continue;
+				}
+				// If adding this one doesn't fit, revert and keep current.
+				btnTextEl.textContent = shown ? (shown + '…') : (next + '…');
+				break;
+			}
+		} catch { /* ignore */ }
 	} catch { /* ignore */ }
 }
 
@@ -5266,12 +5422,13 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 				const exprInputId = id + '_tf_derive_expr_' + i;
 				html +=
 					'<div class="kusto-transform-derive-row" data-kusto-no-editor-focus="true" ondragover="try{__kustoOnDeriveDragOver(\'' + id + '\',' + i + ', event)}catch{}" ondrop="try{__kustoOnDeriveDrop(\'' + id + '\',' + i + ', event)}catch{}">' +
-						'<button type="button" class="section-drag-handle kusto-transform-derive-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder column" ondragstart="try{__kustoOnDeriveDragStart(\'' + id + '\',' + i + ', event)}catch{}" ondragend="try{__kustoOnDeriveDragEnd(\'' + id + '\', event)}catch{}"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-						'<input id="' + nameInputId + '" type="text" class="kusto-transform-input kusto-transform-derive-name" value="' + escName + '" placeholder="Name" aria-label="New column name" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'name\', this.value)}catch{}" />' +
+						'<input id="' + nameInputId + '" type="text" class="kusto-transform-input kusto-transform-derive-name" value="' + escName + '" placeholder="Column name" aria-label="New column name" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'name\', this.value)}catch{}" />' +
+						'<span class="kusto-transform-derive-eq" aria-hidden="true">=</span>' +
 						'<textarea id="' + exprInputId + '" class="kusto-transform-textarea kusto-transform-derive-expr" rows="1" placeholder="Expression (e.g. [Amount] * 1.2)" aria-label="Expression" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'expression\', this.value)}catch{}">' + escExpr + '</textarea>' +
 						'<div class="kusto-transform-derive-row-actions" data-kusto-no-editor-focus="true">' +
 							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoAddCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" title="Add column" aria-label="Add column">' + __kustoTransformMiniPlusIconSvg + '</button>' +
 							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoRemoveCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" ' + (st.deriveColumns.length <= 1 ? 'disabled' : '') + ' title="Remove column" aria-label="Remove column">' + __kustoTransformMiniTrashIconSvg + '</button>' +
+							'<button type="button" class="section-drag-handle kusto-transform-derive-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder column" ondragstart="try{__kustoOnDeriveDragStart(\'' + id + '\',' + i + ', event)}catch{}" ondragend="try{__kustoOnDeriveDragEnd(\'' + id + '\', event)}catch{}"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
 						'</div>' +
 					'</div>';
 			}
@@ -5294,15 +5451,25 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 	try {
 		const host = document.getElementById(id + '_tf_aggs');
 		if (host) {
+			if (!Array.isArray(st.aggregations) || st.aggregations.length === 0) {
+				st.aggregations = [{ name: '', function: 'count', column: '' }];
+			}
 			const aggs = Array.isArray(st.aggregations) ? st.aggregations : [];
 			let html = '';
 			for (let i = 0; i < aggs.length; i++) {
 				const a = aggs[i] || {};
+				const nm = String(a.name || '');
 				const fn = String(a.function || 'count');
 				const col = String(a.column || '');
+				const escName = (typeof escapeHtml === 'function') ? escapeHtml(nm) : nm;
+				const fnSelectId = id + '_tf_agg_fn_' + i;
+				const colSelectId = id + '_tf_agg_col_' + i;
+				const nameInputId = id + '_tf_agg_name_' + i;
 				html +=
-					'<div class="kusto-transform-agg-row" data-kusto-no-editor-focus="true">' +
-					'<select class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', this.value, null)}catch{}">' +
+					'<div class="kusto-transform-agg-row" data-kusto-no-editor-focus="true" ondragover="try{__kustoOnAggDragOver(\'' + id + '\',' + i + ', event)}catch{}" ondrop="try{__kustoOnAggDrop(\'' + id + '\',' + i + ', event)}catch{}">' +
+					'<input id="' + nameInputId + '" type="text" class="kusto-transform-input kusto-transform-agg-name" value="' + escName + '" placeholder="Column name" aria-label="Output column name" oninput="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', null, null, this.value)}catch{}" />' +
+					'<span class="kusto-transform-agg-eq" aria-hidden="true">=</span>' +
+					'<select id="' + fnSelectId + '" class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', this.value, null)}catch{}">' +
 						'<option value="count" ' + (fn === 'count' ? 'selected' : '') + '>count</option>' +
 						'<option value="sum" ' + (fn === 'sum' ? 'selected' : '') + '>sum</option>' +
 						'<option value="avg" ' + (fn === 'avg' ? 'selected' : '') + '>avg</option>' +
@@ -5310,7 +5477,7 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 						'<option value="max" ' + (fn === 'max' ? 'selected' : '') + '>max</option>' +
 						'<option value="distinct" ' + (fn === 'distinct' ? 'selected' : '') + '>distinct</option>' +
 					'</select>' +
-					'<select class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', null, this.value)}catch{}" ' + (fn === 'count' ? 'disabled' : '') + '>';
+					'<select id="' + colSelectId + '" class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', null, this.value, null)}catch{}" ' + (fn === 'count' ? 'disabled' : '') + '>';
 				html += '<option value=""' + (col ? '' : ' selected') + '>(select)</option>';
 				for (const c of colNames) {
 					const esc = (typeof escapeHtml === 'function') ? escapeHtml(c) : c;
@@ -5318,11 +5485,12 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 				}
 				html +=
 					'</select>' +
-					'<button type="button" class="unified-btn-secondary" onclick="try{__kustoRemoveTransformationAgg(\'' + id + '\',' + i + ')}catch{}" aria-label="Remove aggregation" title="Remove">×</button>' +
+					'<div class="kusto-transform-agg-row-actions" data-kusto-no-editor-focus="true">' +
+						'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoAddTransformationAgg(\'' + id + '\',' + i + ')}catch{}" title="Add aggregation" aria-label="Add aggregation">' + __kustoTransformMiniPlusIconSvg + '</button>' +
+						'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoRemoveTransformationAgg(\'' + id + '\',' + i + ')}catch{}" ' + (aggs.length <= 1 ? 'disabled' : '') + ' title="Remove aggregation" aria-label="Remove aggregation">' + __kustoTransformMiniTrashIconSvg + '</button>' +
+						'<button type="button" class="section-drag-handle kusto-transform-agg-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder aggregation" ondragstart="try{__kustoOnAggDragStart(\'' + id + '\',' + i + ', event)}catch{}" ondragend="try{__kustoOnAggDragEnd(\'' + id + '\', event)}catch{}"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+					'</div>' +
 					'</div>';
-			}
-			if (!html) {
-				html = '<div style="opacity:0.7">(no aggregations)</div>';
 			}
 			host.innerHTML = html;
 		}
@@ -5356,34 +5524,74 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 	} catch { /* ignore */ }
 }
 
-function __kustoOnTransformationAggChanged(boxId, index, newFn, newCol) {
+function __kustoOnTransformationAggChanged(boxId, index, newFn, newCol, newName) {
 	const id = String(boxId || '');
 	const i = Number(index);
 	if (!id || !Number.isFinite(i)) return;
 	const st = __kustoGetTransformationState(id);
 	if (!Array.isArray(st.aggregations)) st.aggregations = [];
-	if (!st.aggregations[i]) st.aggregations[i] = { function: 'count', column: '' };
+	if (!st.aggregations[i]) st.aggregations[i] = { name: '', function: 'count', column: '' };
+	const nameOnlyChange = (typeof newName === 'string') && (typeof newFn !== 'string') && (typeof newCol !== 'string');
 	if (typeof newFn === 'string') st.aggregations[i].function = String(newFn);
 	if (typeof newCol === 'string') st.aggregations[i].column = String(newCol);
+	if (typeof newName === 'string') st.aggregations[i].name = String(newName);
 	// If count: clear column
 	try {
 		if (String(st.aggregations[i].function || '') === 'count') {
 			st.aggregations[i].column = '';
 		}
 	} catch { /* ignore */ }
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	// IMPORTANT: Editing the aggregation name is a keystroke-heavy interaction.
+	// Avoid rebuilding the summarize UI on every keypress (it steals focus).
+	if (!nameOnlyChange) {
+		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try {
+			setTimeout(() => {
+				try {
+					const w = document.getElementById(id + '_tf_wrapper');
+					if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+						w.dataset.kustoAutoFitActive = 'true';
+					}
+				} catch { /* ignore */ }
+				try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			}, 0);
+		} catch { /* ignore */ }
+	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoAddTransformationAgg(boxId) {
 	const id = String(boxId || '');
+	const insertAfterIndex = arguments.length >= 2 ? Number(arguments[1]) : NaN;
 	if (!id) return;
 	const st = __kustoGetTransformationState(id);
-	if (!Array.isArray(st.aggregations)) st.aggregations = [];
-	st.aggregations.push({ function: 'count', column: '' });
+	if (!Array.isArray(st.aggregations) || st.aggregations.length === 0) st.aggregations = [{ name: '', function: 'count', column: '' }];
+	let insertedIndex = st.aggregations.length;
+	if (Number.isFinite(insertAfterIndex) && insertAfterIndex >= 0 && insertAfterIndex < st.aggregations.length) {
+		insertedIndex = Math.floor(insertAfterIndex) + 1;
+		st.aggregations.splice(insertedIndex, 0, { name: '', function: 'count', column: '' });
+	} else {
+		st.aggregations.push({ name: '', function: 'count', column: '' });
+		insertedIndex = st.aggregations.length - 1;
+	}
 	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
 	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try {
+				const el = document.getElementById(id + '_tf_agg_name_' + insertedIndex);
+				if (el && typeof el.focus === 'function') el.focus();
+			} catch { /* ignore */ }
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+					w.dataset.kustoAutoFitActive = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
@@ -5393,10 +5601,147 @@ function __kustoRemoveTransformationAgg(boxId, index) {
 	if (!id || !Number.isFinite(i)) return;
 	const st = __kustoGetTransformationState(id);
 	if (!Array.isArray(st.aggregations)) st.aggregations = [];
+	if (st.aggregations.length <= 1) return;
 	st.aggregations.splice(i, 1);
 	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
 	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		// When removing aggregations, shrink-to-fit (one-shot) if auto-fit is enabled.
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w) {
+					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w) {
+					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 80);
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoOnAggDragStart(boxId, index, event) {
+	try {
+		const id = String(boxId || '');
+		const i = Number(index);
+		if (!id || !Number.isFinite(i)) return;
+		window.__kustoAggDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		try {
+			const e = event;
+			if (e && e.dataTransfer) {
+				e.dataTransfer.effectAllowed = 'move';
+				try { e.dataTransfer.setData('text/plain', 'kusto-agg'); } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		try {
+			const host = document.getElementById(id + '_tf_aggs');
+			if (host) host.classList.add('is-dragging');
+		} catch { /* ignore */ }
+		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoClearAggDropIndicators(boxId) {
+	try {
+		const id = String(boxId || '');
+		const host = document.getElementById(id + '_tf_aggs');
+		if (!host) return;
+		const rows = host.querySelectorAll('.kusto-transform-agg-row');
+		for (const r of rows) {
+			try {
+				r.classList.remove('is-drop-target');
+				r.classList.remove('is-drop-before');
+				r.classList.remove('is-drop-after');
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoOnAggDragOver(boxId, overIndex, event) {
+	try {
+		const id = String(boxId || '');
+		const idx = Number(overIndex);
+		const e = event;
+		if (!id || !Number.isFinite(idx) || !e) return;
+		try { e.preventDefault(); } catch { /* ignore */ }
+		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+		const drag = window.__kustoAggDragState;
+		if (!drag || String(drag.boxId || '') !== id) return;
+		let insertAfter = false;
+		try {
+			const rowEl = e.currentTarget;
+			if (rowEl && rowEl.getBoundingClientRect) {
+				const rect = rowEl.getBoundingClientRect();
+				const y = e.clientY;
+				insertAfter = y >= (rect.top + rect.height / 2);
+			}
+		} catch { /* ignore */ }
+		drag.overIndex = Math.floor(idx);
+		drag.insertAfter = !!insertAfter;
+		try {
+			__kustoClearAggDropIndicators(id);
+			const rowEl = e.currentTarget;
+			if (rowEl && rowEl.classList) {
+				rowEl.classList.add('is-drop-target');
+				rowEl.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
+			}
+		} catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnAggDrop(boxId, toIndex, event) {
+	try {
+		const id = String(boxId || '');
+		const to = Number(toIndex);
+		if (!id || !Number.isFinite(to)) return;
+		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+		const drag = window.__kustoAggDragState;
+		if (!drag || String(drag.boxId || '') !== id) return;
+		const from = Number(drag.fromIndex);
+		if (!Number.isFinite(from)) return;
+		const st = __kustoGetTransformationState(id);
+		if (!Array.isArray(st.aggregations) || st.aggregations.length < 2) return;
+		const fromIdx = Math.max(0, Math.min(st.aggregations.length - 1, Math.floor(from)));
+		const overIdx = Number.isFinite(drag.overIndex) ? Math.floor(drag.overIndex) : Math.floor(to);
+		const insertAfter = !!drag.insertAfter;
+		let insertion = overIdx + (insertAfter ? 1 : 0);
+		insertion = Math.max(0, Math.min(st.aggregations.length, insertion));
+		if (insertion === fromIdx || insertion === fromIdx + 1) {
+			try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
+			return;
+		}
+		const moved = st.aggregations.splice(fromIdx, 1)[0];
+		const toInsert = fromIdx < insertion ? (insertion - 1) : insertion;
+		st.aggregations.splice(toInsert, 0, moved);
+		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoOnAggDragEnd(boxId, event) {
+	try {
+		const id = String(boxId || '');
+		window.__kustoAggDragState = null;
+		try {
+			const host = document.getElementById(id + '_tf_aggs');
+			if (host) host.classList.remove('is-dragging');
+		} catch { /* ignore */ }
+		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
+		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+	} catch { /* ignore */ }
 }
 
 function __kustoOnCalculatedColumnChanged(boxId, index, field, value) {
@@ -6115,8 +6460,9 @@ function __kustoRenderTransformation(boxId) {
 			for (const a of aggs) {
 				const fn = String((a && a.function) || 'count');
 				const col = String((a && a.column) || '');
-				const name = (fn === 'count') ? 'count()' : (fn + '(' + col + ')');
-				outCols.push(String(name));
+				const custom = String((a && a.name) || '').trim();
+				const fallback = (fn === 'count') ? 'count()' : (fn + '(' + col + ')');
+				outCols.push(String(custom || fallback));
 			}
 			const outRows = [];
 			for (const g of groups.values()) {
@@ -6390,29 +6736,37 @@ function addTransformationBox(options) {
 								'<div class="kusto-dropdown-menu" id="' + id + '_tf_ds_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 							'</div>' +
 						'</div>' +
-						'<div id="' + id + '_tf_cfg_derive" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
-							'<div id="' + id + '_tf_derive_rows" class="kusto-transform-derive-rows" data-kusto-no-editor-focus="true"></div>' +
-						'</div>' +
-						'<div id="' + id + '_tf_cfg_summarize" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
-							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Group by</label>' +
-									'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_tf_groupby_wrapper">' +
-										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_groupby_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_tf_groupby_btn\',\'' + id + '_tf_groupby_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-											'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_groupby_text">(none)</span>' +
-											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-										'</button>' +
-										'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_tf_groupby_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-									'</div>' +
-								'</span>' +
-								'<span class="kusto-chart-field-group" style="flex:1;">' +
-									'<label>Aggregations</label>' +
-									'<div id="' + id + '_tf_aggs" data-kusto-no-editor-focus="true"></div>' +
-									'<button type="button" class="unified-btn-secondary" onclick="try{__kustoAddTransformationAgg(\'' + id + '\')}catch{}" style="margin-top:6px;">Add aggregation</button>' +
-								'</span>' +
+						'<div id="' + id + '_tf_cfg_derive" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
+							'<div class="kusto-transform-derive-stack" data-kusto-no-editor-focus="true">' +
+								'<label>Calc.</label>' +
+								'<div class="kusto-transform-derive-body" data-kusto-no-editor-focus="true">' +
+									'<div id="' + id + '_tf_derive_rows" class="kusto-transform-derive-rows" data-kusto-no-editor-focus="true"></div>' +
+								'</div>' +
 							'</div>' +
 						'</div>' +
-						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none; padding-top:8px;">' +
+						'<div id="' + id + '_tf_cfg_summarize" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
+							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
+								'<div class="kusto-transform-summarize-stack" data-kusto-no-editor-focus="true">' +
+									'<div class="kusto-transform-summarize-row kusto-transform-summarize-row-summarize" data-kusto-no-editor-focus="true">' +
+										'<label>Calc.</label>' +
+										'<div class="kusto-transform-summarize-aggs" data-kusto-no-editor-focus="true">' +
+											'<div id="' + id + '_tf_aggs" class="kusto-transform-agg-rows" data-kusto-no-editor-focus="true"></div>' +
+										'</div>' +
+									'</div>' +
+									'<div class="kusto-transform-summarize-row kusto-transform-summarize-row-by" data-kusto-no-editor-focus="true">' +
+										'<label>By</label>' +
+										'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_tf_groupby_wrapper">' +
+											'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_groupby_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_tf_groupby_btn\',\'' + id + '_tf_groupby_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+												'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_groupby_text">(none)</span>' +
+												'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+											'</button>' +
+											'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_tf_groupby_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+										'</div>' +
+									'</div>' +
+								'</div>' +
+							'</div>' +
+						'</div>' +
+						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
 							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
 								'<span class="kusto-chart-field-group">' +
 									'<label>Row key</label>' +
@@ -6488,7 +6842,7 @@ function addTransformationBox(options) {
 				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 				const startHeight = wrapper.getBoundingClientRect().height;
 				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
-				const minH = 180;
+				const minH = 80;
 				const maxH = 900;
 				const onMove = (moveEvent) => {
 					try {

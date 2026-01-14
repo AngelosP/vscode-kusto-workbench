@@ -669,13 +669,26 @@ function getKqlxState() {
 				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
 				transformationType = (st && typeof st.transformationType === 'string') ? String(st.transformationType) : '';
 				deriveColumns = (st && Array.isArray(st.deriveColumns))
-					? st.deriveColumns.filter(c => c && typeof c === 'object')
+					? st.deriveColumns
+						.filter(c => c && typeof c === 'object')
+						.map(c => ({
+							name: (typeof c.name === 'string') ? c.name : String((c.name ?? '') || ''),
+							expression: (typeof c.expression === 'string') ? c.expression : String((c.expression ?? '') || '')
+						}))
 					: [];
 				// Back-compat: older in-memory state may still use single fields.
 				deriveColumnName = (st && typeof st.deriveColumnName === 'string') ? String(st.deriveColumnName) : '';
 				deriveExpression = (st && typeof st.deriveExpression === 'string') ? String(st.deriveExpression) : '';
 				groupByColumns = (st && Array.isArray(st.groupByColumns)) ? st.groupByColumns.filter(c => c) : [];
-				aggregations = (st && Array.isArray(st.aggregations)) ? st.aggregations.filter(a => a && typeof a === 'object') : [];
+				aggregations = (st && Array.isArray(st.aggregations))
+					? st.aggregations
+						.filter(a => a && typeof a === 'object')
+						.map(a => ({
+							name: (typeof a.name === 'string') ? a.name : String((a.name ?? '') || ''),
+							function: (typeof a.function === 'string') ? a.function : String((a.function ?? '') || ''),
+							column: (typeof a.column === 'string') ? a.column : String((a.column ?? '') || '')
+						}))
+					: [];
 				pivotRowKeyColumn = (st && typeof st.pivotRowKeyColumn === 'string') ? String(st.pivotRowKeyColumn) : '';
 				pivotColumnKeyColumn = (st && typeof st.pivotColumnKeyColumn === 'string') ? String(st.pivotColumnKeyColumn) : '';
 				pivotValueColumn = (st && typeof st.pivotValueColumn === 'string') ? String(st.pivotValueColumn) : '';
@@ -1245,7 +1258,12 @@ function applyKqlxState(state) {
 				let deriveColumns = undefined;
 				try {
 					if (Array.isArray(section.deriveColumns)) {
-						deriveColumns = section.deriveColumns;
+						deriveColumns = section.deriveColumns
+							.filter(c => c && typeof c === 'object')
+							.map(c => ({
+								name: (typeof c.name === 'string') ? c.name : String((c.name ?? '') || ''),
+								expression: (typeof c.expression === 'string') ? c.expression : String((c.expression ?? '') || '')
+							}));
 					} else {
 						// Back-compat: migrate single-field derive into array.
 						const legacyName = (typeof section.deriveColumnName === 'string') ? section.deriveColumnName : '';
@@ -1253,6 +1271,18 @@ function applyKqlxState(state) {
 						if (legacyName || legacyExpr) {
 							deriveColumns = [{ name: legacyName || 'derived', expression: legacyExpr || '' }];
 						}
+					}
+				} catch { /* ignore */ }
+				let aggregations;
+				try {
+					if (Array.isArray(section.aggregations)) {
+						aggregations = section.aggregations
+							.filter(a => a && typeof a === 'object')
+							.map(a => ({
+								name: (typeof a.name === 'string') ? a.name : String((a.name ?? '') || ''),
+								function: (typeof a.function === 'string') ? a.function : String((a.function ?? '') || ''),
+								column: (typeof a.column === 'string') ? a.column : String((a.column ?? '') || '')
+							}));
 					}
 				} catch { /* ignore */ }
 				const boxId = addTransformationBox({
@@ -1265,7 +1295,7 @@ function applyKqlxState(state) {
 					transformationType: (typeof section.transformationType === 'string') ? section.transformationType : undefined,
 					deriveColumns,
 					groupByColumns: (Array.isArray(section.groupByColumns) ? section.groupByColumns : undefined),
-					aggregations: (Array.isArray(section.aggregations) ? section.aggregations : undefined),
+					aggregations: aggregations,
 					pivotRowKeyColumn: (typeof section.pivotRowKeyColumn === 'string') ? section.pivotRowKeyColumn : undefined,
 					pivotColumnKeyColumn: (typeof section.pivotColumnKeyColumn === 'string') ? section.pivotColumnKeyColumn : undefined,
 					pivotValueColumn: (typeof section.pivotValueColumn === 'string') ? section.pivotValueColumn : undefined,
