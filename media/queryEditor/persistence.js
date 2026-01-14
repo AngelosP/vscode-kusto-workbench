@@ -649,6 +649,7 @@ function getKqlxState() {
 			let expanded = true;
 			let dataSourceId = '';
 			let transformationType = '';
+			let distinctColumn = '';
 			let deriveColumns = [];
 			let deriveColumnName = '';
 			let deriveExpression = '';
@@ -668,6 +669,7 @@ function getKqlxState() {
 				expanded = (st && typeof st.expanded === 'boolean') ? !!st.expanded : true;
 				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
 				transformationType = (st && typeof st.transformationType === 'string') ? String(st.transformationType) : '';
+				distinctColumn = (st && typeof st.distinctColumn === 'string') ? String(st.distinctColumn) : '';
 				deriveColumns = (st && Array.isArray(st.deriveColumns))
 					? st.deriveColumns
 						.filter(c => c && typeof c === 'object')
@@ -712,6 +714,7 @@ function getKqlxState() {
 				expanded,
 				...(dataSourceId ? { dataSourceId } : {}),
 				...(transformationType ? { transformationType } : {}),
+				...(distinctColumn ? { distinctColumn } : {}),
 				...(Array.isArray(deriveColumns) && deriveColumns.length ? { deriveColumns } : {}),
 				...(groupByColumns.length ? { groupByColumns } : {}),
 				...(aggregations.length ? { aggregations } : {}),
@@ -1293,6 +1296,7 @@ function applyKqlxState(state) {
 					editorHeightPx: (typeof section.editorHeightPx === 'number') ? section.editorHeightPx : undefined,
 					dataSourceId: (typeof section.dataSourceId === 'string') ? section.dataSourceId : undefined,
 					transformationType: (typeof section.transformationType === 'string') ? section.transformationType : undefined,
+					distinctColumn: (typeof section.distinctColumn === 'string') ? section.distinctColumn : undefined,
 					deriveColumns,
 					groupByColumns: (Array.isArray(section.groupByColumns) ? section.groupByColumns : undefined),
 					aggregations: aggregations,

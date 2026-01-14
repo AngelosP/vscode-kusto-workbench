@@ -4814,6 +4814,7 @@ function onUrlError(message) {
 const __kustoTransformationTypeIcons = {
 	derive: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 24h20"/><path d="M10 24V8h12v16"/><path d="M12 12h8"/><path d="M12 16h8"/><path d="M12 20h8"/></svg>',
 	summarize: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h20"/><path d="M6 16h14"/><path d="M6 22h10"/><path d="M24 22v-8"/><path d="M21 17l3-3 3 3"/></svg>',
+	distinct: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 10h12"/><path d="M10 16h12"/><path d="M10 22h12"/><circle cx="8" cy="10" r="1.8"/><circle cx="8" cy="16" r="1.8"/><circle cx="8" cy="22" r="1.8"/></svg>',
 	pivot: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="20" height="20" rx="2"/><path d="M6 14h20"/><path d="M14 6v20"/><path d="M18 10h6"/><path d="M18 18h6"/></svg>'
 };
 
@@ -4835,6 +4836,7 @@ const __kustoTransformMiniTrashIconSvg =
 const __kustoTransformationTypeLabels = {
 	derive: 'Calc. Column',
 	summarize: 'Summarize',
+	distinct: 'Distinct',
 	pivot: 'Pivot'
 };
 
@@ -4856,6 +4858,8 @@ function __kustoGetTransformationState(boxId) {
 				// Back-compat: older code paths may still set single-field derive.
 				deriveColumnName: '',
 				deriveExpression: '',
+				// Distinct
+				distinctColumn: '',
 				groupByColumns: [],
 				aggregations: [{ function: 'count', column: '' }],
 				pivotRowKeyColumn: '',
@@ -5393,9 +5397,11 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 	try {
 		const deriveHost = document.getElementById(id + '_tf_cfg_derive');
 		const sumHost = document.getElementById(id + '_tf_cfg_summarize');
+		const distinctHost = document.getElementById(id + '_tf_cfg_distinct');
 		const pivotHost = document.getElementById(id + '_tf_cfg_pivot');
 		if (deriveHost) deriveHost.style.display = (st.transformationType === 'derive') ? '' : 'none';
 		if (sumHost) sumHost.style.display = (st.transformationType === 'summarize') ? '' : 'none';
+		if (distinctHost) distinctHost.style.display = (st.transformationType === 'distinct') ? '' : 'none';
 		if (pivotHost) pivotHost.style.display = (st.transformationType === 'pivot') ? '' : 'none';
 	} catch { /* ignore */ }
 
@@ -5510,6 +5516,21 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 		if (maxEl && typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) maxEl.value = String(Math.max(1, Math.floor(st.pivotMaxColumns)));
 	} catch { /* ignore */ }
 
+	// Distinct select
+	try {
+		const sel = document.getElementById(id + '_tf_distinct_col');
+		if (sel) {
+			__kustoSetSelectOptions(sel, colNames, String(st.distinctColumn || ''), null);
+			try {
+				const txt = document.getElementById(id + '_tf_distinct_col_text');
+				if (txt) {
+					const selected = String(sel.value || '');
+					txt.textContent = selected || '(select)';
+				}
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+
 	// If the section is already fit-sized, keep content visible as UI grows.
 	try {
 		setTimeout(() => {
@@ -5522,6 +5543,28 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
 		}, 0);
 	} catch { /* ignore */ }
+}
+
+function __kustoOnTransformationDistinctChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	try {
+		st.distinctColumn = String(((document.getElementById(id + '_tf_distinct_col') || {}).value || ''));
+	} catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+					w.dataset.kustoAutoFitActive = 'true';
+				}
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoOnTransformationAggChanged(boxId, index, newFn, newCol, newName) {
@@ -6577,6 +6620,49 @@ function __kustoRenderTransformation(boxId) {
 			return;
 		}
 
+		if (type === 'distinct') {
+			const col = String(st.distinctColumn || '');
+			if (!col) {
+				__kustoRenderTransformationError(id, 'Pick a column.');
+				return;
+			}
+			const idx = colIndex[String(col)] ?? colIndex[String(col).toLowerCase()];
+			if (typeof idx !== 'number' || !Number.isFinite(idx)) {
+				__kustoRenderTransformationError(id, 'Pick a valid column.');
+				return;
+			}
+			const seen = new Set();
+			const outRows = [];
+			const makeKey = (v) => {
+				try {
+					if (v === null) return 'null';
+					if (typeof v === 'undefined') return 'undefined';
+					const t = typeof v;
+					if (t === 'number' || t === 'boolean' || t === 'bigint') return t[0] + ':' + String(v);
+					if (t === 'string') return 's:' + v;
+					return 'o:' + JSON.stringify(v);
+				} catch {
+					return 'o:' + String(v);
+				}
+			};
+			for (const r of rows) {
+				const row = Array.isArray(r) ? r : [];
+				const raw = __kustoGetRawCellValueForTransform(row[idx]);
+				const key = makeKey(raw);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				outRows.push([raw]);
+			}
+			displayResultForBox({ columns: [col], rows: outRows, metadata: { transformationType: 'distinct' } }, id, { label: 'Transformations', showExecutionTime: false });
+			try {
+				const wrapper = document.getElementById(id + '_results_wrapper');
+				if (wrapper) wrapper.style.display = '';
+			} catch { /* ignore */ }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			return;
+		}
+
 		__kustoRenderTransformationError(id, 'Unknown transformation type.');
 	} catch (e) {
 		__kustoRenderTransformationError(id, (e && e.message) ? e.message : String(e || 'Failed to compute transformation.'));
@@ -6645,6 +6731,7 @@ function addTransformationBox(options) {
 	st.expanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
 	st.dataSourceId = (options && typeof options.dataSourceId === 'string') ? String(options.dataSourceId) : (st.dataSourceId || '');
 	st.transformationType = (options && typeof options.transformationType === 'string') ? String(options.transformationType) : (st.transformationType || 'derive');
+	st.distinctColumn = (options && typeof options.distinctColumn === 'string') ? String(options.distinctColumn) : (st.distinctColumn || '');
 	st.deriveColumns = (options && Array.isArray(options.deriveColumns)) ? options.deriveColumns : (Array.isArray(st.deriveColumns) ? st.deriveColumns : [{ name: '', expression: '' }]);
 	// Back-compat: if options provides legacy single derive, merge it if deriveColumns not provided.
 	try {
@@ -6722,6 +6809,7 @@ function addTransformationBox(options) {
 							'<div class="kusto-chart-type-picker" id="' + id + '_tf_type_picker" data-kusto-no-editor-focus="true">' +
 								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="derive" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'derive\')}catch{}" title="Calc. Column" aria-label="Calc. Column">' + __kustoTransformationTypeIcons.derive + '<span>Calc. Column</span></button>' +
 								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="summarize" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'summarize\')}catch{}" title="Summarize" aria-label="Summarize">' + __kustoTransformationTypeIcons.summarize + '<span>Summarize</span></button>' +
+								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="distinct" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'distinct\')}catch{}" title="Distinct" aria-label="Distinct">' + __kustoTransformationTypeIcons.distinct + '<span>Distinct</span></button>' +
 								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="pivot" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'pivot\')}catch{}" title="Pivot" aria-label="Pivot">' + __kustoTransformationTypeIcons.pivot + '<span>Pivot</span></button>' +
 							'</div>' +
 						'</div>' +
@@ -6764,6 +6852,21 @@ function addTransformationBox(options) {
 										'</div>' +
 									'</div>' +
 								'</div>' +
+							'</div>' +
+						'</div>' +
+						'<div id="' + id + '_tf_cfg_distinct" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
+							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
+								'<span class="kusto-chart-field-group">' +
+									'<label>Column</label>' +
+									'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_distinct_col_wrapper">' +
+										'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_distinct_col" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationDistinctChanged(\'' + id + '\')}catch{}"></select>' +
+										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_distinct_col_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_distinct_col\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+											'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_distinct_col_text">(select)</span>' +
+											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+										'</button>' +
+										'<div class="kusto-dropdown-menu" id="' + id + '_tf_distinct_col_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+									'</div>' +
+								'</span>' +
 							'</div>' +
 						'</div>' +
 						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +

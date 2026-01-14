@@ -97,7 +97,9 @@ export type KqlxSectionV1 =
 			editorHeightPx?: number;
 			// Transformation configuration.
 			dataSourceId?: string;
-			transformationType?: 'derive' | 'summarize' | 'pivot';
+			transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot';
+			// Distinct transformation: select a single column and return unique values.
+			distinctColumn?: string;
 			// Summarize transformation: group by columns + aggregations
 			groupByColumns?: string[];
 			aggregations?: Array<{ name?: string; column?: string; function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'distinct' }>;
