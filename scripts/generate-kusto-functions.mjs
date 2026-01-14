@@ -120,15 +120,42 @@ const extractFromLearnHtml = (html) => {
 		// ignore
 	}
 
-	// Best-effort syntax: look for a "Syntax" section then the first code/pre block after it.
+	// Best-effort syntax: look for a "Syntax" section.
+	// Note: Many Learn pages render the syntax as inline `<code>` fragments inside a `<p>` (not a `<pre><code>` block).
+	// So we first try to extract from the first suitable paragraph within the Syntax section, then fall back to `<pre><code>`.
 	let signature = '';
 	try {
 		const syntaxIdx = h.search(/<h2\b[^>]*>\s*Syntax\s*<\/h2>/i);
 		if (syntaxIdx >= 0) {
 			const after = h.slice(syntaxIdx);
-			const codeMatch = after.match(/<pre\b[^>]*>\s*<code\b[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/i);
-			if (codeMatch && codeMatch[1]) {
-				signature = stripTags(codeMatch[1]);
+			const h2Close = after.search(/<\/h2>/i);
+			const body = h2Close >= 0 ? after.slice(h2Close + 5) : after;
+			const nextHeading = body.search(/<h2\b|<h3\b/i);
+			const section = nextHeading >= 0 ? body.slice(0, nextHeading) : body;
+
+			// 1) Try to find a paragraph that looks like a function signature.
+			try {
+				for (const m of section.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/ig)) {
+					const cand = stripTags(m && m[1] ? m[1] : '');
+					if (!cand) continue;
+					// Skip obvious non-signature text.
+					if (cand.includes('syntax conventions')) continue;
+					// Prefer something that starts with an identifier + '(' and does not look like an example query.
+					if (/^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(cand) && cand.includes(')') && !cand.includes('|')) {
+						signature = cand;
+						break;
+					}
+				}
+			} catch {
+				// ignore
+			}
+
+			// 2) Fallback: first <pre><code> block within the Syntax section.
+			if (!signature) {
+				const codeMatch = section.match(/<pre\b[^>]*>\s*<code\b[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/i);
+				if (codeMatch && codeMatch[1]) {
+					signature = stripTags(codeMatch[1]);
+				}
 			}
 		}
 	} catch {

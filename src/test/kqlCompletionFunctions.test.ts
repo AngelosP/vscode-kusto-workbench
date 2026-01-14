@@ -146,6 +146,142 @@ function extractConstObjectAssignment(source: string, constName: string): string
 	return source.slice(start, endSemi + 1);
 }
 
+function extractConstAssignmentStatement(source: string, constName: string): string {
+	const needle = `const ${constName} =`;
+	const start = source.indexOf(needle);
+	assert.ok(start >= 0, `Could not find '${needle}' in monaco.js`);
+
+	const eqIdx = source.indexOf('=', start);
+	assert.ok(eqIdx >= 0, `Could not find '=' for ${constName}`);
+
+	let i = eqIdx + 1;
+	let depthParen = 0;
+	let depthBrace = 0;
+	let depthBracket = 0;
+	let inLineComment = false;
+	let inBlockComment = false;
+	let inSingle = false;
+	let inDouble = false;
+	let inTemplate = false;
+	let inRegex = false;
+	let inRegexCharClass = false;
+
+	const isRegexStart = (pos: number): boolean => {
+		// Heuristic: a '/' can start a regex literal when it appears after an operator/delimiter.
+		for (let j = pos - 1; j >= 0; j--) {
+			const c = source[j];
+			if (c === ' ' || c === '\t' || c === '\r' || c === '\n') continue;
+			return /[=({\[,:;!?&|+\-~*%<>]/.test(c);
+		}
+		return true;
+	};
+
+	for (; i < source.length; i++) {
+		const ch = source[i];
+		const next = source[i + 1];
+
+		if (inLineComment) {
+			if (ch === '\n') inLineComment = false;
+			continue;
+		}
+		if (inBlockComment) {
+			if (ch === '*' && next === '/') {
+				inBlockComment = false;
+				i++;
+			}
+			continue;
+		}
+		if (inRegex) {
+			if (ch === '\\') {
+				i++;
+				continue;
+			}
+			if (inRegexCharClass) {
+				if (ch === ']') inRegexCharClass = false;
+				continue;
+			}
+			if (ch === '[') {
+				inRegexCharClass = true;
+				continue;
+			}
+			if (ch === '/') {
+				inRegex = false;
+				continue;
+			}
+			continue;
+		}
+		if (inSingle) {
+			if (ch === "'") {
+				if (next === "'") {
+					i++;
+					continue;
+				}
+				inSingle = false;
+			}
+			continue;
+		}
+		if (inDouble) {
+			if (ch === '\\') {
+				i++;
+				continue;
+			}
+			if (ch === '"') inDouble = false;
+			continue;
+		}
+		if (inTemplate) {
+			if (ch === '\\') {
+				i++;
+				continue;
+			}
+			if (ch === '`') inTemplate = false;
+			continue;
+		}
+
+		if (ch === '/' && next === '/') {
+			inLineComment = true;
+			i++;
+			continue;
+		}
+		if (ch === '/' && next === '*') {
+			inBlockComment = true;
+			i++;
+			continue;
+		}
+		if (ch === '/' && next !== '/' && next !== '*') {
+			if (isRegexStart(i)) {
+				inRegex = true;
+				inRegexCharClass = false;
+				continue;
+			}
+		}
+		if (ch === "'") {
+			inSingle = true;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			continue;
+		}
+		if (ch === '`') {
+			inTemplate = true;
+			continue;
+		}
+
+		if (ch === '(') { depthParen++; continue; }
+		if (ch === ')') { if (depthParen > 0) depthParen--; continue; }
+		if (ch === '{') { depthBrace++; continue; }
+		if (ch === '}') { if (depthBrace > 0) depthBrace--; continue; }
+		if (ch === '[') { depthBracket++; continue; }
+		if (ch === ']') { if (depthBracket > 0) depthBracket--; continue; }
+
+		if (ch === ';' && depthParen === 0 && depthBrace === 0 && depthBracket === 0) {
+			return source.slice(start, i + 1);
+		}
+	}
+
+	assert.fail(`Could not find terminating ';' for ${constName}`);
+}
+
 type MonacoPosition = { lineNumber: number; column: number };
 
 class FakeRange {
@@ -201,6 +337,20 @@ class FakeModel {
 		}
 		offset += col - 1;
 		return offset;
+	}
+
+	getPositionAt(offset: number): MonacoPosition {
+		const off = Math.max(0, Math.min(this.text.length, offset));
+		let running = 0;
+		for (let i = 0; i < this.lines.length; i++) {
+			const lineLen = this.lines[i]?.length ?? 0;
+			const nextRunning = running + lineLen;
+			if (off <= nextRunning) {
+				return { lineNumber: i + 1, column: (off - running) + 1 };
+			}
+			running = nextRunning + 1; // '\n'
+		}
+		return { lineNumber: this.lines.length, column: (this.lines[this.lines.length - 1]?.length ?? 0) + 1 };
 	}
 }
 
@@ -310,5 +460,92 @@ suite('KQL completions - functions list', () => {
 
 		// Regression: this is currently missing, but should be present.
 		assert.ok(labelsLower.includes('startofday'), 'Expected startofday to appear in function completions');
+	});
+
+	test('Smart Docs hover resolves generated built-in function docs (row_number) without autocomplete', async () => {
+		const repoRoot = path.resolve(__dirname, '..', '..');
+		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
+		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		const generatedFunctionsPath = path.join(repoRoot, 'media', 'queryEditor', 'functions.generated.js');
+		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
+
+		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');
+		const ensureMergeSrc = extractConstAssignmentStatement(monacoSource, '__kustoEnsureGeneratedFunctionsMerged');
+		const findCallSrc = extractConstAssignmentStatement(monacoSource, 'findEnclosingFunctionCall');
+		const computeArgIndexSrc = extractConstAssignmentStatement(monacoSource, 'computeArgIndex');
+		const buildSignatureSrc = extractConstAssignmentStatement(monacoSource, 'buildFunctionSignatureMarkdown');
+		const getHoverSrc = extractConstAssignmentStatement(monacoSource, 'getHoverInfoAt');
+		const isIdentCharSrc = extractConstAssignmentStatement(monacoSource, 'isIdentChar');
+		const isIdentStartSrc = extractConstAssignmentStatement(monacoSource, 'isIdentStart');
+
+		const sandbox: any = {
+			exports: {},
+			console,
+			window: {},
+			KUSTO_KEYWORD_DOCS: {},
+			__kustoGetControlCommandHoverAt: () => null,
+			getMultiWordOperatorAt: () => null,
+			getTokenAtPosition: () => null,
+			getWordRangeAt: () => null,
+			monaco: {
+				Range: FakeRange,
+				Position: class FakePosition {
+					constructor(public lineNumber: number, public column: number) {}
+				}
+			}
+		};
+
+		// Populate window.__kustoFunctionEntries + window.__kustoFunctionDocs from the generated file.
+		vm.runInNewContext(generatedFunctionsSource, sandbox, { filename: 'functions.generated.js' });
+
+		const exportedFnDocs = fnDocsSrc.replace(/const\s+KUSTO_FUNCTION_DOCS\s*=\s*/, 'exports.KUSTO_FUNCTION_DOCS = ');
+		vm.runInNewContext(exportedFnDocs, sandbox, { filename: 'monaco.fnDocs.extract.js' });
+		sandbox.KUSTO_FUNCTION_DOCS = sandbox.exports.KUSTO_FUNCTION_DOCS;
+
+		// Helpers required for hover path.
+		vm.runInNewContext(isIdentCharSrc, sandbox, { filename: 'monaco.isIdentChar.extract.js' });
+		vm.runInNewContext(isIdentStartSrc, sandbox, { filename: 'monaco.isIdentStart.extract.js' });
+		vm.runInNewContext(findCallSrc, sandbox, { filename: 'monaco.findEnclosingFunctionCall.extract.js' });
+		vm.runInNewContext(computeArgIndexSrc, sandbox, { filename: 'monaco.computeArgIndex.extract.js' });
+		vm.runInNewContext(buildSignatureSrc, sandbox, { filename: 'monaco.buildFunctionSignatureMarkdown.extract.js' });
+		vm.runInNewContext(ensureMergeSrc, sandbox, { filename: 'monaco.ensureMerge.extract.js' });
+
+		const exportedHover = getHoverSrc.replace(/const\s+getHoverInfoAt\s*=\s*/, 'exports.getHoverInfoAt = ');
+		vm.runInNewContext(exportedHover, sandbox, { filename: 'monaco.getHoverInfoAt.extract.js' });
+		assert.ok(typeof sandbox.exports.getHoverInfoAt === 'function', 'Expected getHoverInfoAt to be extracted');
+
+		{
+			const text = [
+				'range a from 1 to 3 step 1',
+				'| sort by a desc',
+				'| extend rn=row_number()'
+			].join('\n');
+			const model = new FakeModel(text);
+
+			// Place caret inside the function call parens to force the function-call hover path.
+			const line3 = model.getLineContent(3);
+			const col = line3.indexOf('row_number') + 'row_number('.length + 1;
+			const info = sandbox.exports.getHoverInfoAt(model as any, { lineNumber: 3, column: col });
+
+			assert.ok(info && typeof info.markdown === 'string' && info.markdown.length > 0, 'Expected hover markdown');
+			assert.ok(/row_number\s*\(/i.test(info.markdown), 'Expected hover to include row_number() docs');
+			assert.ok(/StartingIndex\??/i.test(info.markdown), 'Expected hover signature to include StartingIndex');
+			assert.ok(/Restart\??/i.test(info.markdown), 'Expected hover signature to include Restart');
+		}
+
+		{
+			const text = [
+				'range a from 1 to 3 step 1',
+				'| sort by a desc',
+				'| extend rn=row_number(7, true)'
+			].join('\n');
+			const model = new FakeModel(text);
+			const line3 = model.getLineContent(3);
+			const col = line3.indexOf(', true') + 3; // inside second arg
+			const info = sandbox.exports.getHoverInfoAt(model as any, { lineNumber: 3, column: col });
+
+			assert.ok(info && typeof info.markdown === 'string' && info.markdown.length > 0, 'Expected hover markdown');
+			assert.ok(/\*\*Restart\??\*\*/i.test(info.markdown), 'Expected active arg highlighting for Restart');
+		}
 	});
 });

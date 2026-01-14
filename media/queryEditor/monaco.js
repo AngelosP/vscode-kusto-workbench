@@ -876,6 +876,55 @@ function ensureMonaco() {
 					const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
 					const isIdentStart = (ch) => /[A-Za-z_]/.test(ch);
 
+					// Merge generated function docs (from `queryEditor/functions.generated.js`) into our in-memory
+					// `KUSTO_FUNCTION_DOCS` table. Smart Docs (hover/caret-docs panel) and autocomplete both rely on
+					// `KUSTO_FUNCTION_DOCS`, so this must run even if the user never triggers completion.
+					const __kustoEnsureGeneratedFunctionsMerged = () => {
+						try {
+							if (typeof window === 'undefined' || !window) return;
+							if (window.__kustoGeneratedFunctionsMerged) return;
+							window.__kustoGeneratedFunctionsMerged = true;
+
+							const raw = Array.isArray(window.__kustoFunctionEntries) ? window.__kustoFunctionEntries : [];
+							const docs = (window.__kustoFunctionDocs && typeof window.__kustoFunctionDocs === 'object') ? window.__kustoFunctionDocs : null;
+							for (const ent of raw) {
+								const name = Array.isArray(ent) ? ent[0] : (ent && ent.name);
+								if (!name) continue;
+								const fnRaw = String(name).trim();
+								if (!fnRaw) continue;
+								if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(fnRaw)) continue;
+								const fnKey = fnRaw.toLowerCase();
+								if (KUSTO_FUNCTION_DOCS[fnKey]) continue;
+
+								const g = (docs && typeof docs === 'object')
+									? ((docs[fnRaw] && typeof docs[fnRaw] === 'object') ? docs[fnRaw] : (docs[fnKey] && typeof docs[fnKey] === 'object') ? docs[fnKey] : null)
+									: null;
+								let args = [];
+								let description = 'Kusto function.';
+								let signature = undefined;
+								let docUrl = undefined;
+								try {
+									if (g) {
+										if (Array.isArray(g.args)) args = g.args;
+										if (g.description) description = String(g.description);
+										if (g.signature) signature = String(g.signature);
+										if (g.docUrl) docUrl = String(g.docUrl);
+									}
+								} catch { /* ignore */ }
+
+								KUSTO_FUNCTION_DOCS[fnKey] = {
+									args,
+									returnType: 'scalar',
+									description,
+									signature,
+									docUrl
+								};
+							}
+						} catch {
+							// ignore
+						}
+					};
+
 					// --- Kusto control/management commands (dot-prefixed) ---
 					// Data is provided by `media/queryEditor/controlCommands.generated.js`.
 					const KUSTO_CONTROL_COMMAND_DOCS_BASE_URL = 'https://learn.microsoft.com/en-us/kusto/';
@@ -1471,6 +1520,7 @@ function ensureMonaco() {
 					};
 
 					const getHoverInfoAt = (model, position) => {
+						try { __kustoEnsureGeneratedFunctionsMerged(); } catch { /* ignore */ }
 						let offset;
 						try {
 							offset = model.getOffsetAt(position);
