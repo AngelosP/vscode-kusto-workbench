@@ -101,6 +101,8 @@ export type KqlxSectionV1 =
 			labelColumn?: string;
 			valueColumn?: string;
 			showDataLabels?: boolean;
+			sortColumn?: string;
+			sortDirection?: 'asc' | 'desc' | '';
 		}
 	| {
 			id?: string;

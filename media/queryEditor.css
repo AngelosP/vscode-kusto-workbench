@@ -625,7 +625,7 @@
 		.kusto-chart-controls {
 			display: flex;
 			flex-direction: column;
-			gap: 10px;
+			gap: 14px;
 			overflow: visible;
 			flex-shrink: 0;
 		}
@@ -702,7 +702,7 @@
 		}
 
 		.kusto-chart-row-type {
-			margin-bottom: 4px;
+			margin-bottom: 0;
 		}
 
 		.kusto-chart-row-type > label {
@@ -1097,9 +1097,23 @@
 		.kusto-chart-mapping-grid {
 			display: grid;
 			grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
-			column-gap: 10px;
-			row-gap: 10px;
+			column-gap: 8px;
+			row-gap: 14px;
 			align-items: center;
+		}
+
+		/* Pie + Scatter feel visually tighter because of different control composition.
+		   Add +2px so their perceived row spacing matches Area/Bar/Line. */
+		.kusto-chart-mapping[data-chart-type="pie"] .kusto-chart-mapping-grid,
+		.kusto-chart-mapping[data-chart-type="scatter"] .kusto-chart-mapping-grid {
+			row-gap: 16px;
+		}
+
+		/* Also add a tiny bit more space between the "Data" row and the first mapping row
+		   (Data → Label for Pie, Data → X for Scatter). */
+		.kusto-chart-mapping[data-chart-type="pie"],
+		.kusto-chart-mapping[data-chart-type="scatter"] {
+			margin-top: 3px;
 		}
 
 		.kusto-chart-mapping-grid .kusto-chart-field-group {
@@ -1133,6 +1147,77 @@
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
+		}
+
+		.kusto-chart-sort-inline {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			width: 100%;
+		}
+
+		.kusto-chart-sort-inline .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-sort-dir-btn {
+			width: 30px;
+			height: 30px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-chart-labels-toggle {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			cursor: pointer;
+			user-select: none;
+		}
+
+		.kusto-chart-labels-toggle-track {
+			position: relative;
+			width: 36px;
+			height: 20px;
+			background: var(--vscode-input-background);
+			border: 1px solid var(--vscode-input-border, var(--vscode-contrastBorder, transparent));
+			border-radius: 10px;
+			transition: background 0.15s ease, border-color 0.15s ease;
+		}
+
+		.kusto-chart-labels-toggle-thumb {
+			position: absolute;
+			top: 2px;
+			left: 2px;
+			width: 14px;
+			height: 14px;
+			background: var(--vscode-foreground);
+			border-radius: 50%;
+			transition: transform 0.15s ease, background 0.15s ease;
+			opacity: 0.6;
+		}
+
+		.kusto-chart-labels-toggle.is-active .kusto-chart-labels-toggle-track {
+			background: var(--vscode-button-background);
+			border-color: var(--vscode-button-background);
+		}
+
+		.kusto-chart-labels-toggle.is-active .kusto-chart-labels-toggle-thumb {
+			transform: translateX(16px);
+			background: var(--vscode-button-foreground);
+			opacity: 1;
+		}
+
+		.kusto-chart-labels-toggle:hover .kusto-chart-labels-toggle-track {
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.kusto-chart-labels-toggle-text {
+			font-size: 12px;
+			color: var(--vscode-foreground);
 		}
 
 		.kusto-chart-grid-spacer {

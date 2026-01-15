@@ -675,6 +675,8 @@ function getKqlxState() {
 			let labelColumn = '';
 			let valueColumn = '';
 			let showDataLabels = false;
+			let sortColumn = '';
+			let sortDirection = '';
 			try {
 				const st = (typeof chartStateByBoxId === 'object' && chartStateByBoxId && chartStateByBoxId[id]) ? chartStateByBoxId[id] : null;
 				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
@@ -693,6 +695,8 @@ function getKqlxState() {
 				labelColumn = (st && typeof st.labelColumn === 'string') ? String(st.labelColumn) : '';
 				valueColumn = (st && typeof st.valueColumn === 'string') ? String(st.valueColumn) : '';
 				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
+				sortColumn = (st && typeof st.sortColumn === 'string') ? String(st.sortColumn) : '';
+				sortDirection = (st && typeof st.sortDirection === 'string') ? String(st.sortDirection) : '';
 			} catch { /* ignore */ }
 			sections.push({
 				id,
@@ -711,6 +715,8 @@ function getKqlxState() {
 				...(labelColumn ? { labelColumn } : {}),
 				...(valueColumn ? { valueColumn } : {}),
 				...(showDataLabels ? { showDataLabels } : {}),
+				...(sortColumn ? { sortColumn } : {}),
+				...(sortDirection ? { sortDirection } : {}),
 				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
 			});
 			continue;
@@ -1341,7 +1347,9 @@ function applyKqlxState(state) {
 					legendPosition: (typeof section.legendPosition === 'string') ? section.legendPosition : undefined,
 					labelColumn: (typeof section.labelColumn === 'string') ? section.labelColumn : undefined,
 					valueColumn: (typeof section.valueColumn === 'string') ? section.valueColumn : undefined,
-					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false
+					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false,
+					sortColumn: (typeof section.sortColumn === 'string') ? section.sortColumn : undefined,
+					sortDirection: (typeof section.sortDirection === 'string') ? section.sortDirection : undefined
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.

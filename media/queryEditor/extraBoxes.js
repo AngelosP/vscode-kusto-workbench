@@ -23,6 +23,8 @@ let pythonEditors = {};
 // - labelColumn/valueColumn: for pie
 // - tooltipColumns: string[] (columns to show in tooltip)
 // - showDataLabels: boolean (show labels on data points)
+// - sortColumn: string (column to sort by)
+// - sortDirection: 'asc' | 'desc' | '' (sort direction)
 let chartStateByBoxId = {};
 
 // Transformation UI state keyed by boxId.
@@ -454,12 +456,18 @@ function __kustoUpdateChartBuilderUI(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	// Update data labels toggle checkbox
+	// Update data labels toggle switch
 	try {
-		const labelsCheckbox = document.getElementById(id + '_chart_labels');
-		if (labelsCheckbox) labelsCheckbox.checked = !!st.showDataLabels;
-		const labelsCheckboxPie = document.getElementById(id + '_chart_labels_pie');
-		if (labelsCheckboxPie) labelsCheckboxPie.checked = !!st.showDataLabels;
+		const labelsToggle = document.getElementById(id + '_chart_labels_toggle');
+		if (labelsToggle) {
+			labelsToggle.classList.toggle('is-active', !!st.showDataLabels);
+			labelsToggle.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
+		}
+		const labelsTogglePie = document.getElementById(id + '_chart_labels_pie_toggle');
+		if (labelsTogglePie) {
+			labelsTogglePie.classList.toggle('is-active', !!st.showDataLabels);
+			labelsTogglePie.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
+		}
 	} catch { /* ignore */ }
 
 	let ds = null;
@@ -480,6 +488,11 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	const mappingLineHost = document.getElementById(id + '_chart_mapping_xy');
 	const mappingPieHost = document.getElementById(id + '_chart_mapping_pie');
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
+	// Tag mapping containers so CSS can apply chart-type-specific layout tweaks.
+	try {
+		if (mappingLineHost) mappingLineHost.setAttribute('data-chart-type', chartType);
+		if (mappingPieHost) mappingPieHost.setAttribute('data-chart-type', chartType);
+	} catch { /* ignore */ }
 	try {
 		if (mappingLineHost) mappingLineHost.style.display = (chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter') ? '' : 'none';
 		if (mappingPieHost) mappingPieHost.style.display = (chartType === 'pie') ? '' : 'none';
@@ -587,6 +600,15 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	// Sync the unified dropdown button text for Label and Value.
 	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
 	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
+
+	// Populate Sort dropdowns (for all chart types)
+	const sortOptions = ['', ...colNames];
+	const currentSort = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_sort'), sortOptions, currentSort, { '': '(none)' });
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_sort_pie'), sortOptions, currentSort, { '': '(none)' });
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_sort'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_sort_pie'); } catch { /* ignore */ }
+	try { __kustoUpdateSortDirectionButtonUI(id); } catch { /* ignore */ }
 
 	// Best-effort defaults once we have a dataset.
 	try {
@@ -787,13 +809,42 @@ function __kustoRenderChart(boxId) {
 		}
 	} catch { /* ignore */ }
 	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
-	const rows = dsState && Array.isArray(dsState.rows) ? dsState.rows : [];
+	const rawRows = dsState && Array.isArray(dsState.rows) ? dsState.rows : [];
 	const colNames = cols.map(__kustoNormalizeResultsColumnName);
 	const indexOf = (name) => {
 		const n = String(name || '');
 		if (!n) return -1;
 		return colNames.findIndex(cn => String(cn) === n);
 	};
+
+	// Apply sorting if configured
+	const sortColumn = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
+	const sortDirection = (typeof st.sortDirection === 'string') ? st.sortDirection : '';
+	const sortColIndex = sortColumn ? indexOf(sortColumn) : -1;
+	let rows = rawRows;
+	if (sortColIndex >= 0 && (sortDirection === 'asc' || sortDirection === 'desc')) {
+		try {
+			rows = [...rawRows].sort((a, b) => {
+				const aVal = (a && a.length > sortColIndex) ? __kustoGetRawCellValueForChart(a[sortColIndex]) : null;
+				const bVal = (b && b.length > sortColIndex) ? __kustoGetRawCellValueForChart(b[sortColIndex]) : null;
+				// Handle nulls: sort nulls to the end
+				if (aVal === null && bVal === null) return 0;
+				if (aVal === null) return 1;
+				if (bVal === null) return -1;
+				// Numeric comparison
+				const aNum = typeof aVal === 'number' ? aVal : (typeof aVal === 'string' ? parseFloat(aVal) : NaN);
+				const bNum = typeof bVal === 'number' ? bVal : (typeof bVal === 'string' ? parseFloat(bVal) : NaN);
+				if (!isNaN(aNum) && !isNaN(bNum)) {
+					return sortDirection === 'asc' ? (aNum - bNum) : (bNum - aNum);
+				}
+				// String comparison
+				const aStr = String(aVal ?? '');
+				const bStr = String(bVal ?? '');
+				const cmp = aStr.localeCompare(bStr);
+				return sortDirection === 'asc' ? cmp : -cmp;
+			});
+		} catch { /* ignore sorting errors */ }
+	}
 
 	// Helper to dispose ECharts instance before showing error text.
 	// Setting textContent destroys ECharts DOM, so we must dispose the instance first.
@@ -978,17 +1029,26 @@ function __kustoRenderChart(boxId) {
 						label: {
 							show: showLabels,
 							fontFamily: 'monospace',
+							fontSize: 11,
 							formatter: (params) => {
 								try {
-									// For pie charts, show labels only for larger slices (>5%) to reduce clutter
+									// For pie charts, show labels only for slices >= 3% to reduce clutter
 									const percent = params && typeof params.percent === 'number' ? params.percent : 0;
-									if (percent < 5) return '';
+									if (percent < 3) return '';
+									const name = params && params.name ? String(params.name) : '';
 									const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
-									return value;
+									const pctStr = percent.toFixed(1) + '%';
+									// Show: Category\nValue (Percent)
+									return name + '\n' + value + ' (' + pctStr + ')';
 								} catch {
 									return '';
 								}
 							}
+						},
+						labelLine: {
+							show: showLabels,
+							length: 10,
+							length2: 15
 						}
 					}]
 				};
@@ -1014,17 +1074,21 @@ function __kustoRenderChart(boxId) {
 						points.push({ value: [x, y], __kustoTooltip: __kustoGetTooltipPayloadForRow(r) });
 					}
 				}
-				// Ensure stable left-to-right plotting for numeric/time axes.
-				try {
-					points.sort((a, b) => {
-						const av = a && a.value ? a.value : null;
-						const bv = b && b.value ? b.value : null;
-						const ax = av && av.length ? av[0] : 0;
-						const bx = bv && bv.length ? bv[0] : 0;
-						if (ax === bx) return 0;
-						return ax < bx ? -1 : 1;
-					});
-				} catch { /* ignore */ }
+				// Only sort by X for stable left-to-right plotting if no user sort is specified.
+				// When user specifies a sort, the rows are already sorted and we preserve that order.
+				const userHasSort = sortColumn && (sortDirection === 'asc' || sortDirection === 'desc');
+				if (!userHasSort) {
+					try {
+						points.sort((a, b) => {
+							const av = a && a.value ? a.value : null;
+							const bv = b && b.value ? b.value : null;
+							const ax = av && av.length ? av[0] : 0;
+							const bx = bv && bv.length ? bv[0] : 0;
+							if (ax === bx) return 0;
+							return ax < bx ? -1 : 1;
+						});
+					} catch { /* ignore */ }
+				}
 				const showTime = useTime ? __kustoShouldShowTimeForUtcAxis(points.map(p => {
 					try {
 						const v = p && p.value ? p.value : null;
@@ -1735,6 +1799,8 @@ function addChartBox(options) {
 	st.valueColumn = (options && typeof options.valueColumn === 'string') ? String(options.valueColumn) : (st.valueColumn || '');
 	st.showDataLabels = (options && typeof options.showDataLabels === 'boolean') ? !!options.showDataLabels : (st.showDataLabels || false);
 	st.tooltipColumns = (options && Array.isArray(options.tooltipColumns)) ? options.tooltipColumns.filter(c => c) : (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
+	st.sortColumn = (options && typeof options.sortColumn === 'string') ? String(options.sortColumn) : (st.sortColumn || '');
+	st.sortDirection = (options && typeof options.sortDirection === 'string') ? String(options.sortDirection) : (st.sortDirection || '');
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -1853,11 +1919,24 @@ function addChartBox(options) {
 									'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_chart_tooltip_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
 							'</span>' +
-							'<label class="kusto-chart-toggle-label" data-kusto-no-editor-focus="true">' +
-								'<input type="checkbox" id="' + id + '_chart_labels" class="kusto-chart-toggle" onchange="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" />' +
-								'<span>Data labels</span>' +
-							'</label>' +
-							'<span class="kusto-chart-grid-spacer" aria-hidden="true"></span>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>Sort</label>' +
+								'<div class="kusto-chart-sort-inline" data-kusto-no-editor-focus="true">' +
+									'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_sort_wrapper">' +
+										'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_sort" onchange="try{__kustoOnChartSortChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
+										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_sort_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_sort\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+											'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_sort_text">(none)</span>' +
+											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+										'</button>' +
+										'<div class="kusto-dropdown-menu" id="' + id + '_chart_sort_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+									'</div>' +
+									'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-chart-sort-dir-btn" id="' + id + '_chart_sort_dir_btn" onclick="try{__kustoOnChartSortDirectionClicked(\'' + id + '\')}catch{}; event.stopPropagation();" title="Sort direction" aria-label="Sort direction"></button>' +
+								'</div>' +
+							'</span>' +
+							'<div class="kusto-chart-labels-toggle" id="' + id + '_chart_labels_toggle" onclick="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" data-kusto-no-editor-focus="true" role="switch" aria-checked="false" tabindex="0" title="Toggle data labels">' +
+								'<span class="kusto-chart-labels-toggle-text">Labels</span>' +
+								'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
+							'</div>' +
 						'</div>' +
 					'</div>' +
 					'<div id="' + id + '_chart_mapping_pie" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
@@ -1884,7 +1963,6 @@ function addChartBox(options) {
 									'<div class="kusto-dropdown-menu" id="' + id + '_chart_value_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
 							'</span>' +
-							'<span class="kusto-chart-grid-spacer" aria-hidden="true"></span>' +
 							'<span class="kusto-chart-field-group">' +
 								'<label>Tooltip</label>' +
 								'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_chart_tooltip_pie_wrapper">' +
@@ -1895,10 +1973,24 @@ function addChartBox(options) {
 									'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_chart_tooltip_pie_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
 							'</span>' +
-							'<label class="kusto-chart-toggle-label" data-kusto-no-editor-focus="true">' +
-								'<input type="checkbox" id="' + id + '_chart_labels_pie" class="kusto-chart-toggle" onchange="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" />' +
-								'<span>Data labels</span>' +
-							'</label>' +
+							'<span class="kusto-chart-field-group">' +
+								'<label>Sort</label>' +
+								'<div class="kusto-chart-sort-inline" data-kusto-no-editor-focus="true">' +
+									'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_sort_pie_wrapper">' +
+										'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_sort_pie" onchange="try{__kustoOnChartSortChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
+										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_sort_pie_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_sort_pie\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+											'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_sort_pie_text">(none)</span>' +
+											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+										'</button>' +
+										'<div class="kusto-dropdown-menu" id="' + id + '_chart_sort_pie_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+									'</div>' +
+									'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-chart-sort-dir-btn" id="' + id + '_chart_sort_pie_dir_btn" onclick="try{__kustoOnChartSortDirectionClicked(\'' + id + '\')}catch{}; event.stopPropagation();" title="Sort direction" aria-label="Sort direction"></button>' +
+								'</div>' +
+							'</span>' +
+							'<div class="kusto-chart-labels-toggle" id="' + id + '_chart_labels_pie_toggle" onclick="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" data-kusto-no-editor-focus="true" role="switch" aria-checked="false" tabindex="0" title="Toggle data labels">' +
+								'<span class="kusto-chart-labels-toggle-text">Labels</span>' +
+								'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
+							'</div>' +
 							'<span class="kusto-chart-grid-spacer" aria-hidden="true"></span>' +
 						'</div>' +
 					'</div>' +
@@ -2057,18 +2149,20 @@ function __kustoOnChartLabelsToggled(boxId) {
 	const id = String(boxId || '');
 	if (!id) return;
 	const st = __kustoGetChartState(id);
-	// Check both checkbox IDs (XY and Pie) - use the current checked state
+	// Toggle the showDataLabels state
+	st.showDataLabels = !st.showDataLabels;
+	// Update both toggle switches (XY and Pie) to reflect new state
 	try {
-		const cb = document.getElementById(id + '_chart_labels');
-		const cbPie = document.getElementById(id + '_chart_labels_pie');
-		// Determine which checkbox is visible/relevant and use its state
-		const chartType = st.chartType || '';
-		const isPie = chartType === 'pie';
-		const relevantCheckbox = isPie ? cbPie : cb;
-		st.showDataLabels = !!(relevantCheckbox && relevantCheckbox.checked);
-		// Sync both checkboxes
-		if (cb) cb.checked = st.showDataLabels;
-		if (cbPie) cbPie.checked = st.showDataLabels;
+		const labelsToggle = document.getElementById(id + '_chart_labels_toggle');
+		if (labelsToggle) {
+			labelsToggle.classList.toggle('is-active', st.showDataLabels);
+			labelsToggle.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
+		}
+		const labelsTogglePie = document.getElementById(id + '_chart_labels_pie_toggle');
+		if (labelsTogglePie) {
+			labelsTogglePie.classList.toggle('is-active', st.showDataLabels);
+			labelsTogglePie.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
+		}
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
@@ -2158,6 +2252,97 @@ function __kustoOnChartTooltipCheckboxChanged(dropdownId) {
 		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, 'None');
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// SVG icons for sort direction
+const __kustoSortDirectionIcons = {
+	asc:
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M8 3v10" />' +
+		'<path d="M4 7l4-4 4 4" />' +
+		'</svg>',
+	desc:
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M8 3v10" />' +
+		'<path d="M4 9l4 4 4-4" />' +
+		'</svg>',
+	none:
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M4 5l4-2 4 2" />' +
+		'<path d="M4 11l4 2 4-2" />' +
+		'</svg>'
+};
+
+function __kustoNormalizeSortDirection(dir) {
+	const d = String(dir || '').toLowerCase();
+	return (d === 'asc' || d === 'desc') ? d : '';
+}
+
+function __kustoUpdateSortDirectionButtonUI(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		const st = __kustoGetChartState(id);
+		const chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
+		const isPie = (chartType === 'pie');
+		const btn = document.getElementById(isPie ? (id + '_chart_sort_pie_dir_btn') : (id + '_chart_sort_dir_btn'));
+		if (!btn) return;
+
+		const dir = __kustoNormalizeSortDirection(st && st.sortDirection);
+		const sortCol = (st && typeof st.sortColumn === 'string') ? st.sortColumn : '';
+		const hasSort = !!sortCol;
+
+		// Only show direction button if a sort column is selected
+		btn.style.display = hasSort ? '' : 'none';
+		if (!hasSort) return;
+
+		const icon = dir === 'asc' ? __kustoSortDirectionIcons.asc : (dir === 'desc' ? __kustoSortDirectionIcons.desc : __kustoSortDirectionIcons.none);
+		btn.innerHTML = icon;
+		const title = dir === 'asc' ? 'Sort: Ascending' : (dir === 'desc' ? 'Sort: Descending' : 'Sort direction');
+		btn.title = title;
+		btn.setAttribute('aria-label', title);
+	} catch { /* ignore */ }
+}
+
+function __kustoOnChartSortDirectionClicked(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const current = __kustoNormalizeSortDirection(st && st.sortDirection);
+	// Cycle: '' -> 'asc' -> 'desc' -> 'asc' -> ...
+	let next = 'asc';
+	if (current === 'asc') next = 'desc';
+	else if (current === 'desc') next = 'asc';
+	try { st.sortDirection = next; } catch { /* ignore */ }
+	try { __kustoUpdateSortDirectionButtonUI(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Handler for Sort column dropdown changes.
+function __kustoOnChartSortChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
+	const isPie = (chartType === 'pie');
+	const selectId = isPie ? (id + '_chart_sort_pie') : (id + '_chart_sort');
+	try {
+		const sel = document.getElementById(selectId);
+		const newValue = sel ? String(sel.value || '') : '';
+		st.sortColumn = newValue;
+		// Default to ascending if a column is selected and no direction set
+		if (newValue && !st.sortDirection) {
+			st.sortDirection = 'asc';
+		}
+		// Clear direction if no column selected
+		if (!newValue) {
+			st.sortDirection = '';
+		}
+	} catch { /* ignore */ }
+	try { __kustoUpdateSortDirectionButtonUI(id); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
