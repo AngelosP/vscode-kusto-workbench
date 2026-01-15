@@ -903,6 +903,23 @@ window.addEventListener('message', async event => {
 				}
 			} catch { /* ignore */ }
 			break;
+		case 'enabledKqlxSidecar':
+			// The extension host has enabled a companion .kqlx metadata file for a .kql/.csl document.
+			// Exit compatibility mode and perform the originally-requested add.
+			try {
+				if (typeof __kustoSetCompatibilityMode === 'function') {
+					__kustoSetCompatibilityMode(false);
+				} else {
+					window.__kustoCompatibilityMode = false;
+				}
+			} catch { /* ignore */ }
+			try {
+				const k = message && message.addKind ? String(message.addKind) : '';
+				if (k && typeof __kustoRequestAddSection === 'function') {
+					__kustoRequestAddSection(k);
+				}
+			} catch { /* ignore */ }
+			break;
 		case 'connectionsData':
 			connections = message.connections;
 			lastConnectionId = message.lastConnectionId;

@@ -1,18 +1,87 @@
 import * as vscode from 'vscode';
 
+import * as path from 'path';
+
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
-import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
+import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: { sections?: Array<{ type?: string; query?: string }> } }
-	| { type: 'requestUpgradeToKqlx'; addKind?: string }
+	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string }
+	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: KqlxStateV1 }
 	| { type: string; [key: string]: unknown };
 
 export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlCompatEditor';
+
+	private static readonly allowedSectionKinds: Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url'> =
+		['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+
+	private static getSidecarKqlxUriForCompat(uri: vscode.Uri): vscode.Uri | undefined {
+		try {
+			const ext = String(uri.path || '').toLowerCase();
+			if (!ext.endsWith('.kql') && !ext.endsWith('.csl')) {
+				return undefined;
+			}
+			// Sidecar naming: <filename>.kql.json or <filename>.csl.json
+			return uri.with({ path: uri.path + '.json' });
+		} catch {
+			return undefined;
+		}
+	}
+
+	private static resolveLinkedQueryUri(kqlxUri: vscode.Uri, linkedQueryPath: string): vscode.Uri {
+		try {
+			const raw = String(linkedQueryPath || '').trim();
+			if (!raw) {
+				return kqlxUri;
+			}
+			// Support file URIs.
+			try {
+				if (/^file:\/\//i.test(raw)) {
+					return vscode.Uri.parse(raw);
+				}
+			} catch {
+				// ignore
+			}
+
+			// Support Windows absolute paths.
+			if (/^[a-zA-Z]:\\/.test(raw) || raw.startsWith('\\\\')) {
+				return vscode.Uri.file(raw);
+			}
+
+			// Treat as path relative to the .kqlx file.
+			const kqlxDir = path.posix.dirname(kqlxUri.path);
+			const joined = path.posix.normalize(path.posix.join(kqlxDir, raw));
+			return kqlxUri.with({ path: joined });
+		} catch {
+			return kqlxUri;
+		}
+	}
+
+	private static isLinkedSidecarForCompatFile(sidecarUri: vscode.Uri, sidecarFile: KqlxFileV1, compatDocumentUri: vscode.Uri): boolean {
+		try {
+			const sections = Array.isArray(sidecarFile?.state?.sections) ? sidecarFile.state.sections : [];
+			const first = sections.length > 0 ? sections[0] : undefined;
+			const t = (first as any)?.type;
+			if (t !== 'query' && t !== 'copilotQuery') {
+				return false;
+			}
+			const linked = String((first as any)?.linkedQueryPath ?? '').trim();
+			if (!linked) {
+				return false;
+			}
+			const resolved = KqlCompatEditorProvider.resolveLinkedQueryUri(sidecarUri, linked);
+			if (resolved.scheme === 'file' && compatDocumentUri.scheme === 'file') {
+				return resolved.fsPath.toLowerCase() === compatDocumentUri.fsPath.toLowerCase();
+			}
+			return resolved.toString() === compatDocumentUri.toString();
+		} catch {
+			return false;
+		}
+	}
 
 	public static register(
 		context: vscode.ExtensionContext,
@@ -157,39 +226,86 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			inferredSelection = undefined;
 		}
 
-		// Inform the webview it's operating in compatibility mode.
+		// Sidecar support: if there is a sibling .kqlx file that links back to this .kql/.csl,
+		// use it to store multi-section metadata while keeping the query text in the plain file.
+		let sidecarUri: vscode.Uri | undefined;
+		let sidecarFile: KqlxFileV1 | undefined;
 		try {
-			void webviewPanel.webview.postMessage({
-				type: 'persistenceMode',
-				isSessionFile: false,
-				compatibilityMode: true,
-				documentKind: 'kql',
-				compatibilitySingleKind: 'query',
-						allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
-				defaultSectionKind: 'query',
-				upgradeRequestType: 'requestUpgradeToKqlx',
-				compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.'
-			});
+			sidecarUri = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
+			if (sidecarUri && sidecarUri.scheme === 'file') {
+				try {
+					const bytes = await vscode.workspace.fs.readFile(sidecarUri);
+					const text = new TextDecoder().decode(bytes);
+					const parsed = parseKqlxText(text, { allowedKinds: ['kqlx', 'mdx'], defaultKind: 'kqlx' });
+					if (parsed.ok && KqlCompatEditorProvider.isLinkedSidecarForCompatFile(sidecarUri, parsed.file, document.uri)) {
+						sidecarFile = parsed.file;
+					}
+				} catch {
+					// ignore
+				}
+			}
 		} catch {
 			// ignore
 		}
 
+		let lastKnownSidecarState: KqlxStateV1 | undefined = sidecarFile?.state;
+
+		const getSidecarDisplayName = (): string => {
+			try {
+				const u = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
+				if (!u) return 'sidecar';
+				return path.posix.basename(u.path);
+			} catch {
+				return 'sidecar';
+			}
+		};
+
+		const postPersistenceMode = () => {
+			const sidecarEnabled = !!sidecarFile;
+			const compatibilityMode = !sidecarEnabled;
+			const sidecarName = getSidecarDisplayName();
+			const tooltip = compatibilityMode
+				? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
+				: '';
+			try {
+				void webviewPanel.webview.postMessage({
+					type: 'persistenceMode',
+					isSessionFile: false,
+					compatibilityMode,
+					documentKind: 'kql',
+					compatibilitySingleKind: 'query',
+					allowedSectionKinds: KqlCompatEditorProvider.allowedSectionKinds,
+					defaultSectionKind: 'query',
+					upgradeRequestType: 'requestUpgradeToKqlx',
+					compatibilityTooltip: tooltip
+				});
+			} catch {
+				// ignore
+			}
+		};
+
+		postPersistenceMode();
+
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
-			// For .kql/.csl: the file contents ARE the query text. No .kqlx JSON format.
 			const queryText = document.getText();
-			void webviewPanel.webview.postMessage({
-				type: 'documentData',
-				ok: true,
-				forceReload,
-				compatibilityMode: true,
-				documentKind: 'kql',
-				compatibilitySingleKind: 'query',
-				allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
-				defaultSectionKind: 'query',
-				upgradeRequestType: 'requestUpgradeToKqlx',
-				compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.',
-				state: {
+			const sidecarEnabled = !!sidecarFile;
+			const sidecarName = getSidecarDisplayName();
+			let state: KqlxStateV1;
+			if (sidecarEnabled && sidecarFile) {
+				const rawSections = Array.isArray(sidecarFile.state.sections) ? sidecarFile.state.sections : [];
+				const sections: any[] = rawSections.map((s) => ({ ...(s as any) }));
+				const firstType = String(sections[0]?.type ?? '');
+				if (sections.length === 0 || (firstType !== 'query' && firstType !== 'copilotQuery')) {
+					sections.unshift({ type: 'query' });
+				}
+				sections[0] = { ...(sections[0] as any), type: 'query', query: queryText };
+				state = {
+					caretDocsEnabled: sidecarFile.state.caretDocsEnabled,
+					sections
+				};
+			} else {
+				state = {
 					sections: [
 						{
 							type: 'query',
@@ -197,7 +313,22 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							...(inferredSelection ? { clusterUrl: inferredSelection.clusterUrl, database: inferredSelection.database } : {})
 						}
 					]
-				}
+				};
+			}
+			void webviewPanel.webview.postMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload,
+				compatibilityMode: !sidecarEnabled,
+				documentKind: 'kql',
+				compatibilitySingleKind: 'query',
+				allowedSectionKinds: KqlCompatEditorProvider.allowedSectionKinds,
+				defaultSectionKind: 'query',
+				upgradeRequestType: 'requestUpgradeToKqlx',
+				compatibilityTooltip: !sidecarEnabled
+					? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
+					: '',
+				state
 			});
 		};
 
@@ -232,6 +363,30 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			})
 		);
 
+		// When the user explicitly saves the .kql/.csl file, also save the companion .json metadata.
+		subscriptions.push(
+			vscode.workspace.onDidSaveTextDocument(async (saved) => {
+				try {
+					if (!sidecarUri || !sidecarFile) {
+						return;
+					}
+					if (saved.uri.toString() !== document.uri.toString()) {
+						return;
+					}
+					if (!lastKnownSidecarState) {
+						return;
+					}
+					const persisted = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, lastKnownSidecarState);
+					const text = stringifyKqlxFile(persisted);
+					await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(text));
+					// Keep in-memory sidecar updated to reflect what we just wrote.
+					sidecarFile = persisted;
+				} catch {
+					// ignore
+				}
+			})
+		);
+
 		webviewPanel.onDidDispose(() => {
 			for (const s of subscriptions) {
 				try { s.dispose(); } catch { /* ignore */ }
@@ -245,27 +400,43 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			switch (message.type) {
 				case 'requestDocument':
 					// Re-send mode in response to a request (the webview is guaranteed to be listening).
-					try {
-						void webviewPanel.webview.postMessage({
-							type: 'persistenceMode',
-							isSessionFile: false,
-							compatibilityMode: true,
-							documentKind: 'kql',
-							compatibilitySingleKind: 'query',
-								allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
-							defaultSectionKind: 'query',
-							upgradeRequestType: 'requestUpgradeToKqlx',
-							compatibilityTooltip: 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.'
-						});
-					} catch {
-						// ignore
-					}
+					postPersistenceMode();
 					postDocument();
 					webviewInitialized = true;
 					return;
 				case 'requestUpgradeToKqlx': {
 					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
-					await this.upgradeToKqlxAndReopen(document, webviewPanel, addKind);
+					const normalizedAddKind = KqlCompatEditorProvider.allowedSectionKinds.includes(addKind as any) ? String(addKind) : '';
+
+					// If the webview provided a fresh state snapshot (e.g., user clicked add-chart right
+					// after executing and the debounced persist hasn't fired), prefer it for seeding.
+					try {
+						const rawState = (message as any)?.state;
+						if (rawState && typeof rawState === 'object') {
+							lastKnownSidecarState = {
+								caretDocsEnabled:
+									rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+								sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
+							};
+						}
+					} catch {
+						// ignore
+					}
+
+					const enabled = await this.enableSidecarKqlxForCompat(document, inferredSelection, lastKnownSidecarState);
+					if (!enabled) {
+						return;
+					}
+					sidecarUri = enabled.uri;
+					sidecarFile = enabled.file;
+					lastKnownSidecarState = enabled.file.state;
+					postPersistenceMode();
+					postDocument({ forceReload: true });
+					try {
+						void webviewPanel.webview.postMessage({ type: 'enabledKqlxSidecar', addKind: normalizedAddKind });
+					} catch {
+						// ignore
+					}
 					return;
 				}
 				case 'persistDocument': {
@@ -273,21 +444,24 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// onDidChangeTextDocument event as an external change.
 					lastWebviewPersistAt = Date.now();
 
-					// Persist ONLY the first query section's text back into the plain-text document.
-					const sections = (message as any).state && Array.isArray((message as any).state.sections)
-						? ((message as any).state.sections as Array<{ type?: string; query?: string }>)
-						: [];
-					const firstQuery = sections.find((s) => (s && String(s.type || '') === 'query'));
-					const nextText = firstQuery && typeof firstQuery.query === 'string' ? firstQuery.query : '';
+					const rawState = (message as any)?.state;
+					const incomingState: KqlxStateV1 = {
+						caretDocsEnabled:
+							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
+					};
+					lastKnownSidecarState = incomingState;
 
-					// Avoid toggling dirty state when nothing changed.
-					try {
-						if (nextText === document.getText()) {
-							return;
+					// Persist the first query section's text back into the plain-text document.
+					const firstQuery = incomingState.sections.find((s) => (s && String((s as any).type || '') === 'query'));
+					const nextText = firstQuery && typeof (firstQuery as any).query === 'string' ? String((firstQuery as any).query) : '';
+					const currentText = (() => {
+						try {
+							return document.getText();
+						} catch {
+							return '';
 						}
-					} catch {
-						// ignore
-					}
+					})();
 
 					const fullRange = new vscode.Range(
 						0,
@@ -295,9 +469,23 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						document.lineCount ? document.lineCount - 1 : 0,
 						document.lineCount ? document.lineAt(document.lineCount - 1).text.length : 0
 					);
-					const edit = new vscode.WorkspaceEdit();
-					edit.replace(document.uri, fullRange, nextText);
-					await vscode.workspace.applyEdit(edit);
+					if (nextText !== currentText) {
+						const edit = new vscode.WorkspaceEdit();
+						edit.replace(document.uri, fullRange, nextText);
+						await vscode.workspace.applyEdit(edit);
+					}
+
+					// If a sidecar is enabled, persist the full multi-section state to the sidecar file.
+					try {
+						if (sidecarUri && sidecarFile) {
+							const persisted = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, incomingState);
+							const text = stringifyKqlxFile(persisted);
+							await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(text));
+							sidecarFile = persisted;
+						}
+					} catch {
+						// ignore
+					}
 					return;
 				}
 				default:
@@ -306,131 +494,128 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		});
 	}
 
-	private async upgradeToKqlxAndReopen(
-		document: vscode.TextDocument,
-		webviewPanel: vscode.WebviewPanel,
-		addKind: string
-	): Promise<void> {
-		// Only local disk files are upgradeable via rename.
-		if (document.uri.scheme !== 'file') {
-			void vscode.window.showWarningMessage('This file cannot be upgraded because it is not a local file.');
-			return;
+	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1): KqlxFileV1 {
+		const fileName = path.posix.basename(compatUri.path);
+		const sectionsRaw = Array.isArray(state.sections) ? state.sections : [];
+		const sections: any[] = sectionsRaw.map((s) => ({ ...(s as any) }));
+		const firstType = String(sections[0]?.type ?? '');
+		if (sections.length === 0 || (firstType !== 'query' && firstType !== 'copilotQuery')) {
+			sections.unshift({ type: 'query' });
 		}
+		sections[0] = { ...(sections[0] as any), type: 'query', linkedQueryPath: fileName };
+		try {
+			delete (sections[0] as any).query;
+		} catch {
+			// ignore
+		}
+		return {
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				caretDocsEnabled: state.caretDocsEnabled,
+				sections
+			}
+		};
+	}
 
-		const ext = (document.uri.path || '').toLowerCase();
-		const isCompat = ext.endsWith('.kql') || ext.endsWith('.csl');
-		if (!isCompat) {
-			return;
+	private async enableSidecarKqlxForCompat(
+		document: vscode.TextDocument,
+		inferredSelection: { clusterUrl: string; database: string } | undefined,
+		lastKnownWebviewState?: KqlxStateV1
+	): Promise<{ uri: vscode.Uri; file: KqlxFileV1 } | undefined> {
+		if (document.uri.scheme !== 'file') {
+			void vscode.window.showWarningMessage('This feature requires a local .kql/.csl file on disk.');
+			return undefined;
 		}
+		const sidecarUri = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
+		if (!sidecarUri) {
+			return undefined;
+		}
+		const sidecarName = (() => {
+			try {
+				return path.posix.basename(sidecarUri.path);
+			} catch {
+				return 'sidecar';
+			}
+		})();
 
 		const choice = await vscode.window.showInformationMessage(
-			'To add sections (Query/Chart/Markdown/Python/URL), this file needs to be upgraded to the .kqlx format. This is a non-destructive change and it’s easy to go back later.',
+			`To add notebook sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to this file to store metadata (charts, markdown, etc).`,
 			{ modal: true },
-			'Upgrade to .kqlx'
+			'Create companion file'
 		);
-		if (choice !== 'Upgrade to .kqlx') {
-			return;
+		if (choice !== 'Create companion file') {
+			return undefined;
 		}
 
+		// If a sidecar already exists, prefer using it if it's already linked.
 		try {
-			// Ensure latest text is used.
+			const bytes = await vscode.workspace.fs.readFile(sidecarUri);
+			const text = new TextDecoder().decode(bytes);
+			const parsed = parseKqlxText(text, { allowedKinds: ['kqlx', 'mdx'], defaultKind: 'kqlx' });
+			if (parsed.ok && KqlCompatEditorProvider.isLinkedSidecarForCompatFile(sidecarUri, parsed.file, document.uri)) {
+				return { uri: sidecarUri, file: parsed.file };
+			}
+			const overwrite = await vscode.window.showWarningMessage(
+				`A sidecar file (${sidecarName}) already exists next to this .kql/.csl file, but it does not appear to be linked as a companion metadata file. Overwrite it to enable sidecar metadata?`,
+				{ modal: true },
+				'Overwrite sidecar'
+			);
+			if (overwrite !== 'Overwrite sidecar') {
+				return undefined;
+			}
+		} catch {
+			// does not exist
+		}
+
+		// Ensure latest text is used.
+		try {
 			if (document.isDirty) {
 				await document.save();
 			}
 		} catch {
-			// If save fails, still attempt to proceed using current in-memory text.
+			// ignore
 		}
 
-		const oldUri = document.uri;
-		const newUri = oldUri.with({ path: oldUri.path.replace(/\.(kql|csl)$/i, '.kqlx') });
-		const normalizedAddKind = ['query', 'chart', 'markdown', 'python', 'url'].includes(String(addKind)) ? String(addKind) : '';
-
-		// Build .kqlx content with the current query as the first section.
-		const queryText = document.getText();
-		const file: KqlxFileV1 = {
-			kind: 'kqlx',
-			version: 1,
-			state: {
-				sections: [{ type: 'query', query: queryText }]
-			}
-		};
-		const newText = stringifyKqlxFile(file);
-
-		// Keep original .kql/.csl file on disk. Create a sibling .kqlx file.
-		try {
-			await vscode.workspace.fs.stat(newUri);
-			void vscode.window.showErrorMessage('A .kqlx file already exists for this document. Please open the existing .kqlx file or rename it before upgrading.');
-			return;
-		} catch {
-			// ok: does not exist
-		}
-		try {
-			await vscode.workspace.fs.writeFile(newUri, new TextEncoder().encode(newText));
-		} catch (e) {
-			void vscode.window.showErrorMessage(
-				'Failed to create the .kqlx file. ' + (e instanceof Error ? e.message : String(e))
-			);
-			return;
-		}
-
-		// Open the new .kqlx in the rich editor. Rename can dispose the current webview mid-flight,
-		// so avoid depending on the current panel and retry once on transient disposal errors.
-		const pendingKey = KqlCompatEditorProvider.pendingAddKindKeyForUri(newUri);
-		if (normalizedAddKind) {
+		// Seed the sidecar with the most recent UI state if we have it.
+		// This preserves per-box connection selection and persisted results across the transition.
+		const baseState: KqlxStateV1 = (() => {
 			try {
-				await this.context.workspaceState.update(pendingKey, normalizedAddKind);
+				if (lastKnownWebviewState && Array.isArray(lastKnownWebviewState.sections) && lastKnownWebviewState.sections.length > 0) {
+					return {
+						caretDocsEnabled: lastKnownWebviewState.caretDocsEnabled,
+						sections: lastKnownWebviewState.sections
+					};
+				}
 			} catch {
 				// ignore
 			}
-		}
-
-		const tryOpenWith = async (): Promise<void> => {
-			await vscode.commands.executeCommand('vscode.openWith', newUri, 'kusto.kqlxEditor', {
-				viewColumn: vscode.ViewColumn.Active
-			});
-		};
-
+			return {
+				sections: [
+					{
+						type: 'query',
+						...(inferredSelection ? { clusterUrl: inferredSelection.clusterUrl, database: inferredSelection.database } : {})
+					} as any
+				]
+			};
+		})();
+		const file = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, baseState);
+		const text = stringifyKqlxFile(file);
 		try {
-			await tryOpenWith();
-		} catch (e1) {
-			const msg1 = e1 instanceof Error ? e1.message : String(e1);
-			const looksTransient = /disposed/i.test(msg1);
-			if (looksTransient) {
-				try {
-					await new Promise((r) => setTimeout(r, 75));
-					await tryOpenWith();
-				} catch (e2) {
-					const msg2 = e2 instanceof Error ? e2.message : String(e2);
-					if (normalizedAddKind) {
-						try { await this.context.workspaceState.update(pendingKey, undefined); } catch { /* ignore */ }
-					}
-					void vscode.window.showErrorMessage(
-						'File was upgraded to .kqlx, but the editor could not be opened automatically. Please reopen the .kqlx file. Details: ' + msg2
-					);
-					return;
-				}
-			} else {
-				if (normalizedAddKind) {
-					try { await this.context.workspaceState.update(pendingKey, undefined); } catch { /* ignore */ }
-				}
-				void vscode.window.showErrorMessage(
-					'File was upgraded to .kqlx, but the editor could not be opened automatically. Please reopen the .kqlx file. Details: ' + msg1
-				);
-				return;
-			}
+			await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(text));
+		} catch (e) {
+			void vscode.window.showErrorMessage(
+				`Failed to create the companion sidecar file (${sidecarName}). ` + (e instanceof Error ? e.message : String(e))
+			);
+			return undefined;
 		}
 
 		try {
-			void vscode.window.showInformationMessage('File upgraded to .kqlx.');
+			void vscode.window.showInformationMessage(`Companion sidecar metadata file created: ${sidecarName}`);
 		} catch {
 			// ignore
 		}
 
-		// Close the old compatibility editor panel (the old file no longer exists).
-		try {
-			webviewPanel.dispose();
-		} catch {
-			// ignore
-		}
+		return { uri: sidecarUri, file };
 	}
 }

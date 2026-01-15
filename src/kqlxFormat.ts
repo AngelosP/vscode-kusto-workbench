@@ -7,9 +7,17 @@ export type KqlxSectionV1 =
 			name?: string;
 			expanded?: boolean;
 			resultsVisible?: boolean;
+			// UI state: when true, show the Favorites dropdown instead of cluster/database pickers.
+			favoritesMode?: boolean;
 			// Persist the actual cluster URL so sessions are portable across machines.
 			clusterUrl?: string;
 			database?: string;
+			/**
+			 * Optional link to an external plain-text query file (e.g. sibling .kql/.csl).
+			 * When present, the query text is stored in that file instead of inline in the .kqlx.
+			 * Typically used for the first query section to enable "sidecar" metadata.
+			 */
+			linkedQueryPath?: string;
 			query?: string;
 			// Optional persisted query result for this box.
 			// Stored as JSON text to keep comparisons stable and cap size.
@@ -31,8 +39,10 @@ export type KqlxSectionV1 =
 			name?: string;
 			expanded?: boolean;
 			resultsVisible?: boolean;
+			favoritesMode?: boolean;
 			clusterUrl?: string;
 			database?: string;
+			linkedQueryPath?: string;
 			query?: string;
 			resultJson?: string;
 			runMode?: string;

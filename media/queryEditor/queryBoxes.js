@@ -5363,6 +5363,27 @@ function toggleFavoritesMode(boxId) {
 	} catch { /* ignore */ }
 }
 
+// Used by persistence restore flows to force the UI state (instead of toggling).
+try {
+	window.__kustoSetFavoritesModeForBox = function (boxId, enabled) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+		if (!hasAny) return;
+		__kustoApplyFavoritesMode(id, !!enabled);
+		try {
+			if (typeof window.__kustoUpdateFavoritesUiForBox === 'function') {
+				window.__kustoUpdateFavoritesUiForBox(id);
+			}
+		} catch { /* ignore */ }
+		try {
+			if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+				window.__kustoUpdateRunEnabledForBox(id);
+			}
+		} catch { /* ignore */ }
+	};
+} catch { /* ignore */ }
+
 function closeFavoritesDropdown(boxId) {
 	const menu = document.getElementById(boxId + '_favorites_menu');
 	const btn = document.getElementById(boxId + '_favorites_btn');

@@ -120,8 +120,24 @@ function __kustoRequestAddSection(kind) {
 	try {
 		if (window.__kustoCompatibilityMode) {
 			try {
+				// IMPORTANT: results persistence is debounced; if the user clicks "add chart" right
+				// after executing, the current resultJson may not have been sent to the extension yet.
+				// So capture the current state and send it along with the upgrade request.
 				const upgradeType = String(window.__kustoUpgradeRequestType || 'requestUpgradeToKqlx');
-				vscode.postMessage({ type: upgradeType, addKind: k });
+				let state = null;
+				try {
+					if (typeof getKqlxState === 'function') {
+						state = getKqlxState();
+					}
+				} catch { /* ignore */ }
+				// Best-effort immediate persist so the extension has the latest state even if it
+				// doesn't look at the upgrade payload (or if ordering differs).
+				try {
+					if (state) {
+						vscode.postMessage({ type: 'persistDocument', state, reason: 'upgrade' });
+					}
+				} catch { /* ignore */ }
+				vscode.postMessage({ type: upgradeType, addKind: k, state });
 			} catch {
 				// ignore
 			}
@@ -511,10 +527,52 @@ function getKqlxState() {
 			const q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
 				? (queryEditors[firstQueryBoxId].getValue() || '')
 				: '';
+			let clusterUrl = '';
+			let database = '';
+			let resultJson = '';
+			let favoritesMode;
+			try {
+				if (firstQueryBoxId) {
+					// Selection (clusterUrl + database)
+					try {
+						const connSel = document.getElementById(firstQueryBoxId + '_connection');
+						const connectionId = connSel ? String(connSel.value || '') : '';
+						if (connectionId && Array.isArray(connections)) {
+							const conn = (connections || []).find(c => c && String(c.id || '') === String(connectionId));
+							clusterUrl = conn ? String(conn.clusterUrl || '') : '';
+						}
+					} catch { /* ignore */ }
+					try {
+						const dbSel = document.getElementById(firstQueryBoxId + '_database');
+						database = dbSel ? String(dbSel.value || '') : '';
+					} catch { /* ignore */ }
+					// Persisted results (in-memory)
+					try {
+						if (window.__kustoQueryResultJsonByBoxId && window.__kustoQueryResultJsonByBoxId[firstQueryBoxId]) {
+							resultJson = String(window.__kustoQueryResultJsonByBoxId[firstQueryBoxId]);
+						}
+					} catch { /* ignore */ }
+					// Favorites picker UI mode
+					try {
+						if (typeof favoritesModeByBoxId === 'object' && favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, firstQueryBoxId)) {
+							favoritesMode = !!favoritesModeByBoxId[firstQueryBoxId];
+						}
+					} catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
 			return {
 				caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
 				autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
-				sections: [{ type: 'query', query: q }]
+				sections: [
+					{
+						type: 'query',
+						query: q,
+						...(clusterUrl ? { clusterUrl } : {}),
+						...(database ? { database } : {}),
+						...(resultJson ? { resultJson } : {}),
+						...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {})
+					}
+				]
 			};
 		}
 	} catch {
@@ -532,6 +590,12 @@ function getKqlxState() {
 			const querySectionType = 'query';
 			const name = (document.getElementById(id + '_name') || {}).value || '';
 			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
+			let favoritesMode;
+			try {
+				if (typeof favoritesModeByBoxId === 'object' && favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+					favoritesMode = !!favoritesModeByBoxId[id];
+				}
+			} catch { /* ignore */ }
 			let expanded = true;
 			try {
 				expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[id] === false);
@@ -577,6 +641,7 @@ function getKqlxState() {
 				id,
 				type: querySectionType,
 				name,
+				...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {}),
 				clusterUrl,
 				database,
 				query,
@@ -1145,6 +1210,16 @@ function applyKqlxState(state) {
 							window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 						}
 					} catch { /* ignore */ }
+				} catch { /* ignore */ }
+				// Restore explicit favorites-mode UI state (if present). This is important for
+				// upgrade/reload flows where boxes are recreated and would otherwise default back
+				// to cluster/database pickers.
+				try {
+					if (typeof section.favoritesMode === 'boolean') {
+						if (typeof window.__kustoSetFavoritesModeForBox === 'function') {
+							window.__kustoSetFavoritesModeForBox(boxId, !!section.favoritesMode);
+						}
+					}
 				} catch { /* ignore */ }
 				// Monaco editor may not exist yet; store pending text for initQueryEditor.
 				try {

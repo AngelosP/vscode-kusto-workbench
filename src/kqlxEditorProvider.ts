@@ -69,6 +69,7 @@ type ComparableSection =
 			resultsVisible: boolean;
 			clusterUrl: string;
 			database: string;
+			linkedQueryPath: string;
 			query: string;
 			resultJson: string;
 			runMode: string;
@@ -130,6 +131,7 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 				resultsVisible: (typeof (section as any).resultsVisible === 'boolean') ? (section as any).resultsVisible : true,
 				clusterUrl: String((section as any).clusterUrl ?? ''),
 				database: String((section as any).database ?? ''),
+				linkedQueryPath: String((section as any).linkedQueryPath ?? ''),
 				query: String((section as any).query ?? ''),
 				resultJson: String((section as any).resultJson ?? ''),
 				runMode: String((section as any).runMode ?? 'take100'),
@@ -475,9 +477,132 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let saveTimer: NodeJS.Timeout | undefined;
 		let lastSavedText = document.getText();
 		let lastSavedEol = document.eol;
+		let linkedQueryUri: vscode.Uri | undefined;
+		let linkedQueryPathRaw = '';
+		let linkedQueryDocument: vscode.TextDocument | undefined;
+		let lastSavedLinkedQueryText = '';
 		// Track the last text we wrote directly to disk for session files.
 		// This helps avoid redundant writes and keeps lastSavedText in sync.
 		let lastDirectDiskWrite = isSessionFile ? lastSavedText : '';
+
+		const getLinkedQueryUriFromState = (state: KqlxStateV1): vscode.Uri | undefined => {
+			try {
+				const sections = Array.isArray(state.sections) ? state.sections : [];
+				if (sections.length === 0) {
+					return undefined;
+				}
+				const first = sections[0] as any;
+				const t = String(first?.type ?? '');
+				if (t !== 'query' && t !== 'copilotQuery') {
+					return undefined;
+				}
+				const linked = String(first?.linkedQueryPath ?? '').trim();
+				if (!linked) {
+					return undefined;
+				}
+				linkedQueryPathRaw = linked;
+				// Relative to the .kqlx file location by default.
+				if (/^file:\/\//i.test(linked)) {
+					return vscode.Uri.parse(linked);
+				}
+				if (/^[a-zA-Z]:\\/.test(linked) || linked.startsWith('\\\\')) {
+					return vscode.Uri.file(linked);
+				}
+				return document.uri.with({ path: path.posix.normalize(path.posix.join(path.posix.dirname(document.uri.path), linked)) });
+			} catch {
+				return undefined;
+			}
+		};
+
+		const tryReadTextFile = async (uri: vscode.Uri): Promise<string | undefined> => {
+			try {
+				const bytes = await vscode.workspace.fs.readFile(uri);
+				return new TextDecoder().decode(bytes);
+			} catch {
+				return undefined;
+			}
+		};
+
+		const getOrOpenLinkedQueryDocument = async (): Promise<vscode.TextDocument | undefined> => {
+			try {
+				if (!linkedQueryUri) {
+					return undefined;
+				}
+				if (linkedQueryUri.scheme !== 'file') {
+					return undefined;
+				}
+				if (linkedQueryDocument && linkedQueryDocument.uri.toString() === linkedQueryUri.toString()) {
+					return linkedQueryDocument;
+				}
+				const existing = vscode.workspace.textDocuments.find((d) => d.uri.toString() === linkedQueryUri!.toString());
+				if (existing) {
+					linkedQueryDocument = existing;
+					return existing;
+				}
+				linkedQueryDocument = await vscode.workspace.openTextDocument(linkedQueryUri);
+				return linkedQueryDocument;
+			} catch {
+				return undefined;
+			}
+		};
+
+		const applyLinkedQueryTextToDocument = async (text: string): Promise<boolean> => {
+			try {
+				const linkedDoc = await getOrOpenLinkedQueryDocument();
+				if (!linkedDoc) {
+					return false;
+				}
+				const current = linkedDoc.getText();
+				if (current === text) {
+					return true;
+				}
+				const fullRange = new vscode.Range(
+					linkedDoc.positionAt(0),
+					linkedDoc.positionAt(current.length)
+				);
+				const edit = new vscode.WorkspaceEdit();
+				edit.replace(linkedDoc.uri, fullRange, text);
+				await vscode.workspace.applyEdit(edit);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		const injectLinkedQueryText = async (state: KqlxStateV1): Promise<KqlxStateV1> => {
+			const link = getLinkedQueryUriFromState(state);
+			linkedQueryUri = link;
+			if (!link) {
+				return state;
+			}
+			const text = await tryReadTextFile(link);
+			if (typeof text !== 'string') {
+				try {
+					void vscode.window.showWarningMessage('This notebook links to a query file that could not be read. The query editor will start empty until the file is available.');
+				} catch {
+					// ignore
+				}
+				return state;
+			}
+			// Record last-saved linked query so dirty-state comparison can be stable.
+			lastSavedLinkedQueryText = text;
+			try {
+				// Keep an in-memory TextDocument so we can mark it dirty and save it alongside the .kqlx.
+				await getOrOpenLinkedQueryDocument();
+			} catch {
+				// ignore
+			}
+			try {
+				const sections = Array.isArray(state.sections) ? state.sections : [];
+				if (sections.length === 0) {
+					return state;
+				}
+				const first = { ...(sections[0] as any), query: text };
+				return { caretDocsEnabled: state.caretDocsEnabled, sections: [first, ...sections.slice(1)] as any };
+			} catch {
+				return state;
+			}
+		};
 
 		// For session files, write directly to disk without going through the document edit cycle.
 		// This avoids the dirty indicator flickering that happens with applyEdit→save.
@@ -592,10 +717,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			const sanitizedState = KqlxEditorProvider.sanitizeStateForKind(documentKind, parsed.file.state);
+			const hydratedState = await injectLinkedQueryText(sanitizedState);
 
 			let connectionsChanged = false;
 			try {
-				connectionsChanged = await ensureConnectionsForState(sanitizedState);
+				connectionsChanged = await ensureConnectionsForState(hydratedState);
 			} catch {
 				// ignore
 			}
@@ -612,7 +738,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				ok: true,
 				forceReload,
 				documentUri: document.uri.toString(),
-				state: sanitizedState
+				state: hydratedState
 			});
 		};
 
@@ -621,10 +747,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			vscode.workspace.onDidSaveTextDocument((saved) => {
 				try {
 					if (saved.uri.toString() !== document.uri.toString()) {
+						if (linkedQueryUri && saved.uri.toString() === linkedQueryUri.toString()) {
+							lastSavedLinkedQueryText = saved.getText();
+						}
 						return;
 					}
 					lastSavedText = saved.getText();
 					lastSavedEol = saved.eol;
+					// Best-effort: when the notebook metadata file is saved, also save the linked query file.
+					try {
+						if (linkedQueryDocument && linkedQueryDocument.isDirty) {
+							void linkedQueryDocument.save();
+						}
+					} catch {
+						// ignore
+					}
 				} catch {
 					// ignore
 				}
@@ -757,6 +894,24 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					};
 					const state = KqlxEditorProvider.sanitizeStateForKind(documentKind, incomingState);
 
+					// If this notebook links its first query to an external file, keep the link stable
+					// and persist query edits into that linked file (so Save can save both).
+					try {
+						if (linkedQueryUri && Array.isArray(state.sections) && state.sections.length > 0) {
+							const first = state.sections[0] as any;
+							const t = String(first?.type ?? '');
+							if (t === 'query' || t === 'copilotQuery') {
+								if (linkedQueryPathRaw) {
+									first.linkedQueryPath = linkedQueryPathRaw;
+								}
+								const q = typeof first.query === 'string' ? String(first.query) : '';
+								await applyLinkedQueryTextToDocument(q);
+							}
+						}
+					} catch {
+						// ignore
+					}
+
 					const incomingComparable = toComparableState(state);
 					const currentText = document.getText();
 
@@ -773,7 +928,20 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							defaultKind: documentKind
 						});
 						if (parsedSaved.ok) {
-							const savedComparable = toComparableState(parsedSaved.file.state);
+							const savedState = (() => {
+								try {
+									if (!linkedQueryUri) return parsedSaved.file.state;
+									const secs = Array.isArray(parsedSaved.file.state.sections) ? parsedSaved.file.state.sections : [];
+									if (secs.length === 0) return parsedSaved.file.state;
+									const first = secs[0] as any;
+									if (!first || !String(first.linkedQueryPath || '')) return parsedSaved.file.state;
+									const injected = { ...first, query: lastSavedLinkedQueryText };
+									return { caretDocsEnabled: parsedSaved.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+								} catch {
+									return parsedSaved.file.state;
+								}
+							})();
+							const savedComparable = toComparableState(savedState);
 							if (deepEqual(savedComparable, incomingComparable)) {
 								nextText = normalizeTextToEol(lastSavedText, lastSavedEol);
 							}
@@ -793,7 +961,26 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								defaultKind: documentKind
 							});
 							if (parsedDisk.ok) {
-								const diskComparable = toComparableState(parsedDisk.file.state);
+								const diskState = (() => {
+									try {
+										if (!linkedQueryUri) return parsedDisk.file.state;
+										const secs = Array.isArray(parsedDisk.file.state.sections) ? parsedDisk.file.state.sections : [];
+										if (secs.length === 0) return parsedDisk.file.state;
+										const first = secs[0] as any;
+										if (!first || !String(first.linkedQueryPath || '')) return parsedDisk.file.state;
+										let linkedText = '';
+										try {
+											linkedText = linkedQueryDocument ? linkedQueryDocument.getText() : lastSavedLinkedQueryText;
+										} catch {
+											linkedText = lastSavedLinkedQueryText;
+										}
+										const injected = { ...first, query: linkedText };
+										return { caretDocsEnabled: parsedDisk.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+									} catch {
+										return parsedDisk.file.state;
+									}
+								})();
+								const diskComparable = toComparableState(diskState);
 								if (deepEqual(diskComparable, incomingComparable)) {
 									incomingMatchesDisk = true;
 									diskTextForMatch = diskText;
@@ -839,7 +1026,26 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								defaultKind: documentKind
 							});
 							if (parsedCurrent.ok) {
-								const currentComparable = toComparableState(parsedCurrent.file.state);
+								const currentState = (() => {
+									try {
+										if (!linkedQueryUri) return parsedCurrent.file.state;
+										const secs = Array.isArray(parsedCurrent.file.state.sections) ? parsedCurrent.file.state.sections : [];
+										if (secs.length === 0) return parsedCurrent.file.state;
+										const first = secs[0] as any;
+										if (!first || !String(first.linkedQueryPath || '')) return parsedCurrent.file.state;
+										let linkedText = '';
+										try {
+											linkedText = linkedQueryDocument ? linkedQueryDocument.getText() : lastSavedLinkedQueryText;
+										} catch {
+											linkedText = lastSavedLinkedQueryText;
+										}
+										const injected = { ...first, query: linkedText };
+										return { caretDocsEnabled: parsedCurrent.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+									} catch {
+										return parsedCurrent.file.state;
+									}
+								})();
+								const currentComparable = toComparableState(currentState);
 								if (deepEqual(currentComparable, incomingComparable)) {
 									// If this persist is from a reorder and the state matches disk, force a save to clear
 									// the dirty flag (VS Code sometimes keeps custom editors dirty even after reverting).
@@ -867,10 +1073,32 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 
 					if (!nextText) {
+						const stateForSave: KqlxStateV1 = (() => {
+							try {
+								if (!linkedQueryUri) {
+									return state;
+								}
+								const sections = Array.isArray(state.sections) ? state.sections.map((s) => ({ ...(s as any) })) : [];
+								if (sections.length === 0) {
+									return state;
+								}
+								const first = sections[0] as any;
+								const t = String(first?.type ?? '');
+								if (t === 'query' || t === 'copilotQuery') {
+									if (linkedQueryPathRaw) {
+										first.linkedQueryPath = linkedQueryPathRaw;
+									}
+									delete first.query;
+								}
+								return { caretDocsEnabled: state.caretDocsEnabled, sections: sections as any };
+							} catch {
+								return state;
+							}
+						})();
 						const file: KqlxFileV1 = {
 							kind: documentKind,
 							version: 1,
-							state
+							state: stateForSave
 						};
 						nextText = normalizeTextToEol(stringifyKqlxFile(file), document.eol);
 					}
