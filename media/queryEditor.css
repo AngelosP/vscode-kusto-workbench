@@ -534,9 +534,15 @@
 			flex-direction: column;
 			height: 100%;
 			min-height: 0;
-			background: var(--vscode-editor-background);
+			background: transparent;
 			color: var(--vscode-foreground);
-			overflow: hidden;
+			/* Allow edit-mode control background to bleed into the section padding. */
+			overflow: visible;
+		}
+
+		/* Charts: keep the left label column aligned across rows/fields */
+		.chart-box {
+			--kusto-chart-label-width: 54px;
 		}
 
 		/* Transformation section builder */
@@ -566,7 +572,7 @@
 
 		.chart-box .query-editor-wrapper {
 			border: none;
-			overflow: hidden;
+			overflow: visible;
 		}
 
 		.transformation-box .query-editor-wrapper {
@@ -586,6 +592,15 @@
 			background: var(--vscode-editor-background);
 			color: var(--vscode-foreground);
 			overflow: hidden;
+		}
+
+		/* Charts: allow edit controls background to bleed to the section edge */
+		.chart-box .kusto-chart-edit-mode .kusto-chart-builder {
+			overflow: visible;
+			gap: 0;
+			/* Remove padding and background so the controls can bleed edge-to-edge. */
+			padding: 0;
+			background: transparent;
 		}
 
 		/* Transformations: let controls size to content; results fill remaining height */
@@ -610,9 +625,44 @@
 		.kusto-chart-controls {
 			display: flex;
 			flex-direction: column;
-			gap: 8px;
+			gap: 10px;
 			overflow: visible;
 			flex-shrink: 0;
+		}
+
+		/* Charts: Edit controls get a subtle full-width background (solid, no border).
+		   This targets only the controls region (which is hidden in Preview mode). */
+		.chart-box .kusto-chart-controls {
+			/* Solid surface (no gradients, no borders). */
+			background: var(--vscode-editor-background);
+			/* True full-bleed:
+			   Background does NOT paint into margins, so we must expand the element's own box.
+			   Bleed to section border: query-box padding (12px) */
+			position: relative;
+			left: -12px;
+			width: calc(100% + 24px);
+			/* 18px top/bottom = 8px base + 10px extra breathing room */
+			padding: 16px 16px;
+			/* 20px gap between background and chart preview (margin is outside the background,
+			   and disappears in Preview mode since the controls are hidden). */
+			margin-bottom: 20px;
+		}
+
+		/* Theme-aware tint so the surface is visible even when VS Code theme tokens
+		   are very close to the editor background (common in dark themes). */
+		.chart-box .kusto-chart-controls::before {
+			content: '';
+			position: absolute;
+			inset: 0;
+			pointer-events: none;
+			/* default (light-ish): subtle dark tint */
+			background: rgba(0, 0, 0, 0.035);
+		}
+
+		body.vscode-dark .chart-box .kusto-chart-controls::before,
+		body.vscode-high-contrast .chart-box .kusto-chart-controls::before {
+			/* dark-ish: subtle light tint */
+			background: rgba(255, 255, 255, 0.04);
 		}
 
 		.kusto-chart-row {
@@ -620,6 +670,16 @@
 			align-items: center;
 			gap: 10px;
 			flex-wrap: wrap;
+		}
+
+		.chart-box .kusto-chart-row > label {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
+		}
+
+		.chart-box .kusto-chart-field-group > label {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
 		}
 
 		.kusto-chart-row label,
@@ -1023,7 +1083,7 @@
 		}
 
 		.kusto-chart-mapping {
-			margin-top: 2px;
+			margin-top: 0;
 		}
 
 		.kusto-chart-mapping-row {
@@ -1031,6 +1091,52 @@
 			align-items: center;
 			gap: 10px;
 			flex-wrap: wrap;
+		}
+
+		/* Chart mapping layout: two-row grid (X/Y/Legend on row 1; Tooltip/Labels on row 2) */
+		.kusto-chart-mapping-grid {
+			display: grid;
+			grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
+			column-gap: 10px;
+			row-gap: 10px;
+			align-items: center;
+		}
+
+		.kusto-chart-mapping-grid .kusto-chart-field-group {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-chart-mapping-grid .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-legend-inline {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			width: 100%;
+		}
+
+		.kusto-chart-legend-inline .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-legend-pos-btn {
+			width: 30px;
+			height: 30px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-chart-grid-spacer {
+			display: block;
 		}
 
 		/* Keep label + dropdown together as a unit when wrapping */

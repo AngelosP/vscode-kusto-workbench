@@ -2623,6 +2623,12 @@ function __kustoSetResultsState(boxId, state) {
 	map[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
 	try { window.currentResult = state; } catch { /* ignore */ }
+	// Notify any dependent sections (charts/transformations) that this data source changed.
+	try {
+		if (typeof window.__kustoNotifyResultsUpdated === 'function') {
+			window.__kustoNotifyResultsUpdated(boxId);
+		}
+	} catch { /* ignore */ }
 }
 
 function displayResultForBox(result, boxId, options) {

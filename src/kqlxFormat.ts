@@ -95,8 +95,12 @@ export type KqlxSectionV1 =
 			xColumn?: string;
 			yColumns?: string[];
 			yColumn?: string;
+			tooltipColumns?: string[];
+			legendColumn?: string;
+			legendPosition?: 'left' | 'right' | 'top' | 'bottom';
 			labelColumn?: string;
 			valueColumn?: string;
+			showDataLabels?: boolean;
 		}
 	| {
 			id?: string;

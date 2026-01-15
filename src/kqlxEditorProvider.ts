@@ -103,6 +103,42 @@ type ComparableSection =
 			url: string;
 			expanded: boolean;
 			outputHeightPx?: number;
+		}
+	| {
+			type: 'chart';
+			name: string;
+			mode: 'edit' | 'preview';
+			expanded: boolean;
+			dataSourceId: string;
+			chartType: string;
+			xColumn: string;
+			yColumn: string;
+			yColumns: string[];
+			legendColumn: string;
+			legendPosition: string;
+			labelColumn: string;
+			valueColumn: string;
+			tooltipColumns: string[];
+			showDataLabels: boolean;
+			editorHeightPx?: number;
+		}
+	| {
+			type: 'transformation';
+			name: string;
+			mode: 'edit' | 'preview';
+			expanded: boolean;
+			dataSourceId: string;
+			transformationType: string;
+			distinctColumn: string;
+			groupByColumns: string[];
+			aggregations: Array<{ name: string; column: string; function: string }>;
+			deriveColumns: Array<{ name: string; expression: string }>;
+			pivotRowKeyColumn: string;
+			pivotColumnKeyColumn: string;
+			pivotValueColumn: string;
+			pivotAggregation: string;
+			pivotMaxColumns: number;
+			editorHeightPx?: number;
 		};
 
 type ComparableState = {
@@ -179,6 +215,67 @@ const toComparableState = (s: KqlxStateV1): ComparableState => {
 				url: String((section as any).url ?? ''),
 				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : false,
 				outputHeightPx: normalizeHeight((section as any).outputHeightPx)
+			});
+			continue;
+		}
+		if (t === 'chart') {
+			const rawMode = String((section as any).mode ?? 'edit').toLowerCase();
+			const mode: 'edit' | 'preview' = (rawMode === 'preview') ? 'preview' : 'edit';
+			sections.push({
+				type: 'chart',
+				name: String((section as any).name ?? ''),
+				mode,
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
+				dataSourceId: String((section as any).dataSourceId ?? ''),
+				chartType: String((section as any).chartType ?? ''),
+				xColumn: String((section as any).xColumn ?? ''),
+				yColumn: String((section as any).yColumn ?? ''),
+				yColumns: Array.isArray((section as any).yColumns) ? (section as any).yColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
+				legendColumn: String((section as any).legendColumn ?? ''),
+				legendPosition: String((section as any).legendPosition ?? ''),
+				labelColumn: String((section as any).labelColumn ?? ''),
+				valueColumn: String((section as any).valueColumn ?? ''),
+				tooltipColumns: Array.isArray((section as any).tooltipColumns) ? (section as any).tooltipColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
+				showDataLabels: (typeof (section as any).showDataLabels === 'boolean') ? (section as any).showDataLabels : false,
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
+			});
+			continue;
+		}
+		if (t === 'transformation') {
+			const rawMode = String((section as any).mode ?? 'edit').toLowerCase();
+			const mode: 'edit' | 'preview' = (rawMode === 'preview') ? 'preview' : 'edit';
+			sections.push({
+				type: 'transformation',
+				name: String((section as any).name ?? ''),
+				mode,
+				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
+				dataSourceId: String((section as any).dataSourceId ?? ''),
+				transformationType: String((section as any).transformationType ?? ''),
+				distinctColumn: String((section as any).distinctColumn ?? ''),
+				groupByColumns: Array.isArray((section as any).groupByColumns) ? (section as any).groupByColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
+				aggregations: Array.isArray((section as any).aggregations)
+					? (section as any).aggregations
+						.filter((a: any) => a && typeof a === 'object')
+						.map((a: any) => ({
+							name: String(a.name ?? ''),
+							column: String(a.column ?? ''),
+							function: String(a.function ?? '')
+						}))
+					: [],
+				deriveColumns: Array.isArray((section as any).deriveColumns)
+					? (section as any).deriveColumns
+						.filter((d: any) => d && typeof d === 'object')
+						.map((d: any) => ({
+							name: String(d.name ?? ''),
+							expression: String(d.expression ?? '')
+						}))
+					: [],
+				pivotRowKeyColumn: String((section as any).pivotRowKeyColumn ?? ''),
+				pivotColumnKeyColumn: String((section as any).pivotColumnKeyColumn ?? ''),
+				pivotValueColumn: String((section as any).pivotValueColumn ?? ''),
+				pivotAggregation: String((section as any).pivotAggregation ?? ''),
+				pivotMaxColumns: Number.isFinite((section as any).pivotMaxColumns) ? Math.max(1, Math.trunc((section as any).pivotMaxColumns)) : 0,
+				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
 			});
 			continue;
 		}

@@ -669,7 +669,9 @@ function getKqlxState() {
 			let xColumn = '';
 			let yColumn = '';
 			let yColumns = [];
+			let tooltipColumns = [];
 			let legendColumn = '';
+			let legendPosition = '';
 			let labelColumn = '';
 			let valueColumn = '';
 			let showDataLabels = false;
@@ -685,7 +687,9 @@ function getKqlxState() {
 				xColumn = (st && typeof st.xColumn === 'string') ? String(st.xColumn) : '';
 				yColumn = (st && typeof st.yColumn === 'string') ? String(st.yColumn) : '';
 				yColumns = (st && Array.isArray(st.yColumns)) ? st.yColumns.filter(c => c) : [];
+				tooltipColumns = (st && Array.isArray(st.tooltipColumns)) ? st.tooltipColumns.filter(c => c) : [];
 				legendColumn = (st && typeof st.legendColumn === 'string') ? String(st.legendColumn) : '';
+				legendPosition = (st && typeof st.legendPosition === 'string') ? String(st.legendPosition) : '';
 				labelColumn = (st && typeof st.labelColumn === 'string') ? String(st.labelColumn) : '';
 				valueColumn = (st && typeof st.valueColumn === 'string') ? String(st.valueColumn) : '';
 				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
@@ -701,7 +705,9 @@ function getKqlxState() {
 				...(xColumn ? { xColumn } : {}),
 				...(yColumn ? { yColumn } : {}),
 				...(yColumns.length ? { yColumns } : {}),
+				...(tooltipColumns.length ? { tooltipColumns } : {}),
 				...(legendColumn ? { legendColumn } : {}),
+				...(legendPosition && legendPosition !== 'top' ? { legendPosition } : {}),
 				...(labelColumn ? { labelColumn } : {}),
 				...(valueColumn ? { valueColumn } : {}),
 				...(showDataLabels ? { showDataLabels } : {}),
@@ -1329,8 +1335,10 @@ function applyKqlxState(state) {
 					chartType: (typeof section.chartType === 'string') ? section.chartType : undefined,
 					xColumn: (typeof section.xColumn === 'string') ? section.xColumn : undefined,
 					yColumns: (Array.isArray(section.yColumns) ? section.yColumns : undefined),
+					tooltipColumns: (Array.isArray(section.tooltipColumns) ? section.tooltipColumns : undefined),
 					yColumn: (typeof section.yColumn === 'string') ? section.yColumn : undefined,
 					legendColumn: (typeof section.legendColumn === 'string') ? section.legendColumn : undefined,
+					legendPosition: (typeof section.legendPosition === 'string') ? section.legendPosition : undefined,
 					labelColumn: (typeof section.labelColumn === 'string') ? section.labelColumn : undefined,
 					valueColumn: (typeof section.valueColumn === 'string') ? section.valueColumn : undefined,
 					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false
