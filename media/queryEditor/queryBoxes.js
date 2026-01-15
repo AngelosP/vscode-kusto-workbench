@@ -275,7 +275,7 @@ function addQueryBox(options) {
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_autocomplete_btn" data-qe-action="autocomplete" data-qe-overflow-action="autocomplete" data-qe-overflow-label="Trigger autocomplete" class="unified-btn-secondary query-editor-toolbar-btn" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'autocomplete\')" title="Trigger autocomplete\nShortcut: Ctrl+Space" aria-label="Trigger autocomplete (Ctrl+Space)">' +
+		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Automatically trigger auto-complete" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger auto-complete\nShortcut for auto-complete: CTRL + SPACE" aria-pressed="' + (autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger auto-complete">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
 		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
@@ -1928,6 +1928,39 @@ function updateCaretDocsToggleButtons() {
 	}
 }
 
+function updateAutoTriggerAutocompleteToggleButtons() {
+	for (const boxId of queryBoxes) {
+		const btn = document.getElementById(boxId + '_auto_autocomplete_toggle');
+		if (!btn) {
+			continue;
+		}
+		btn.setAttribute('aria-pressed', autoTriggerAutocompleteEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!autoTriggerAutocompleteEnabled);
+	}
+}
+
+function toggleAutoTriggerAutocompleteEnabled() {
+	autoTriggerAutocompleteEnabled = !autoTriggerAutocompleteEnabled;
+	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch { /* ignore */ }
+	updateAutoTriggerAutocompleteToggleButtons();
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		vscode.postMessage({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!autoTriggerAutocompleteEnabled });
+	} catch {
+		// ignore
+	}
+
+	// When enabling, kick once for the currently focused editor (matches ADX feel).
+	if (autoTriggerAutocompleteEnabled) {
+		try {
+			const boxId = (typeof activeQueryEditorBoxId === 'string') ? activeQueryEditorBoxId : null;
+			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
+			}
+		} catch { /* ignore */ }
+	}
+}
+
 function toggleCaretDocsEnabled() {
 	caretDocsEnabled = !caretDocsEnabled;
 	updateCaretDocsToggleButtons();
@@ -2586,6 +2619,8 @@ function renderToolbarOverflowMenu(boxId) {
 			if (!isDisabled) {
 				if (action === 'caretDocs') {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleCaretDocsEnabled();';
+				} else if (action === 'autoAutocomplete') {
+					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleAutoTriggerAutocompleteEnabled();';
 				} else if (action === 'copilotChat') {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); __kustoToggleCopilotChatForBox(\'' + id + '\');';
 				} else {

@@ -493,6 +493,7 @@ function getKqlxState() {
 				}
 				return {
 					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
 					sections: [{ type: 'markdown', text }]
 				};
 			}
@@ -512,6 +513,7 @@ function getKqlxState() {
 				: '';
 			return {
 				caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+				autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
 				sections: [{ type: 'query', query: q }]
 			};
 		}
@@ -819,6 +821,7 @@ function getKqlxState() {
 
 	return {
 		caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+		autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
 		sections
 	};
 }
@@ -939,6 +942,18 @@ function applyKqlxState(state) {
 		if (!userSet && typeof s.caretDocsEnabled === 'boolean') {
 			caretDocsEnabled = !!s.caretDocsEnabled;
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+		}
+
+		const autoUserSet = (() => {
+			try {
+				return !!window.__kustoAutoTriggerAutocompleteEnabledUserSet;
+			} catch {
+				return false;
+			}
+		})();
+		if (!autoUserSet && typeof s.autoTriggerAutocompleteEnabled === 'boolean') {
+			autoTriggerAutocompleteEnabled = !!s.autoTriggerAutocompleteEnabled;
+			try { updateAutoTriggerAutocompleteToggleButtons(); } catch { /* ignore */ }
 		}
 
 		// Compatibility mode (single-section plain text files): force exactly one editor and ignore all other sections.

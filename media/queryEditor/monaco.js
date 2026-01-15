@@ -9309,6 +9309,88 @@ function initQueryEditor(boxId) {
 			}
 		};
 
+		const __kustoMaybeAutoTriggerAutocomplete = (ed, boxId, changeEvent) => {
+			try {
+				if (!ed) return;
+				if (typeof autoTriggerAutocompleteEnabled !== 'boolean' || !autoTriggerAutocompleteEnabled) return;
+				// Only auto-trigger for the currently focused query editor.
+				try {
+					if (typeof activeQueryEditorBoxId === 'string' && activeQueryEditorBoxId !== boxId) {
+						return;
+					}
+				} catch { /* ignore */ }
+				try {
+					if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) {
+						return;
+					}
+				} catch { /* ignore */ }
+
+				// Heuristic: trigger for typical typing / completion contexts.
+				let shouldTrigger = true;
+				try {
+					shouldTrigger = false;
+					const ev = changeEvent && typeof changeEvent === 'object' ? changeEvent : null;
+					const changes = ev && Array.isArray(ev.changes) ? ev.changes : null;
+					if (!changes || !changes.length) {
+						shouldTrigger = true;
+					} else {
+						for (const ch of changes) {
+							const txt = ch && typeof ch.text === 'string' ? ch.text : '';
+							if (!txt) {
+								continue; // deletion
+							}
+							if (txt.indexOf('\n') >= 0 || txt.indexOf('\r') >= 0) {
+								continue;
+							}
+							// Typical identifiers / member access / pipe.
+							if (/[A-Za-z0-9_.$|\[\(]/.test(txt)) {
+								shouldTrigger = true;
+								break;
+							}
+							// Space after a pipe is a common moment to suggest operators.
+							if (txt === ' ') {
+								try {
+									const model = ed.getModel && ed.getModel();
+									const pos = ed.getPosition && ed.getPosition();
+									if (model && pos && typeof model.getLineContent === 'function') {
+										const line = model.getLineContent(pos.lineNumber) || '';
+										const before = line.slice(0, Math.max(0, pos.column - 1));
+										const trimmed = before.replace(/\s+$/, '');
+										if (trimmed.endsWith('|')) {
+											shouldTrigger = true;
+											break;
+										}
+									}
+								} catch { /* ignore */ }
+							}
+						}
+					}
+				} catch {
+					shouldTrigger = true;
+				}
+				if (!shouldTrigger) return;
+
+				// Debounce + rate-limit (typing can fire rapidly).
+				try {
+					if (ed.__kustoAutoSuggestTimer) {
+						clearTimeout(ed.__kustoAutoSuggestTimer);
+					}
+				} catch { /* ignore */ }
+
+				ed.__kustoAutoSuggestTimer = setTimeout(() => {
+					try {
+						const now = Date.now();
+						const last = (typeof ed.__kustoAutoSuggestLastTriggeredAt === 'number') ? ed.__kustoAutoSuggestLastTriggeredAt : 0;
+						if (now - last < 180) return;
+						ed.__kustoAutoSuggestLastTriggeredAt = now;
+						__kustoTriggerAutocomplete(ed);
+					} catch { /* ignore */ }
+				}, 140);
+			} catch {
+				// ignore
+			}
+		};
+
 		// Expose the preselect helper so the suggest widget sizing/visibility observer can call it.
 		try {
 			editor.__kustoPreselectExactWordInSuggestIfPresent = (forcedWord) => {
@@ -9992,7 +10074,7 @@ function initQueryEditor(boxId) {
 			placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';
 		};
 		syncPlaceholder();
-		editor.onDidChangeModelContent(() => {
+		editor.onDidChangeModelContent((e) => {
 			syncPlaceholder();
 			scheduleDocUpdate();
 			try {
@@ -10021,6 +10103,7 @@ function initQueryEditor(boxId) {
 					}, 500);
 				}
 			} catch { /* ignore */ }
+			try { __kustoMaybeAutoTriggerAutocomplete(editor, boxId, e); } catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;

@@ -22,6 +22,7 @@ const STORAGE_KEYS = {
 	cachedDatabases: 'kusto.cachedDatabases',
 	cachedSchemas: 'kusto.cachedSchemas',
 	caretDocsEnabled: 'kusto.caretDocsEnabled',
+	autoTriggerAutocompleteEnabled: 'kusto.autoTriggerAutocompleteEnabled',
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
 	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
 	favorites: 'kusto.favorites'
@@ -114,6 +115,7 @@ type IncomingWebviewMessage =
 	| { type: 'showInfo'; message: string }
 	| SaveResultsCsvMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
+	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
@@ -571,6 +573,9 @@ export class QueryEditorProvider {
 				return;
 			case 'setCaretDocsEnabled':
 				await this.context.globalState.update(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
+				return;
+			case 'setAutoTriggerAutocompleteEnabled':
+				await this.context.globalState.update(STORAGE_KEYS.autoTriggerAutocompleteEnabled, !!message.enabled);
 				return;
 			case 'getDatabases':
 				await this.sendDatabases(message.connectionId, message.boxId, false);
@@ -2949,6 +2954,9 @@ ${query}
 		const caretDocsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled);
 		const caretDocsEnabled = typeof caretDocsEnabledStored === 'boolean' ? caretDocsEnabledStored : true;
 		const caretDocsEnabledUserSet = typeof caretDocsEnabledStored === 'boolean';
+		const autoTriggerAutocompleteEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.autoTriggerAutocompleteEnabled);
+		const autoTriggerAutocompleteEnabled = typeof autoTriggerAutocompleteEnabledStored === 'boolean' ? autoTriggerAutocompleteEnabledStored : true;
+		const autoTriggerAutocompleteEnabledUserSet = typeof autoTriggerAutocompleteEnabledStored === 'boolean';
 		const favorites = this.getFavorites();
 
 		this.postMessage({
@@ -2959,7 +2967,9 @@ ${query}
 			cachedDatabases,
 			favorites,
 			caretDocsEnabled,
-			caretDocsEnabledUserSet
+			caretDocsEnabledUserSet,
+			autoTriggerAutocompleteEnabled,
+			autoTriggerAutocompleteEnabledUserSet
 		});
 	}
 

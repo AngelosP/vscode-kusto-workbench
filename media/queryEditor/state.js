@@ -51,6 +51,10 @@ let runModesByBoxId = {};
 let caretDocsEnabled = true;
 let caretDocOverlaysByBoxId = {};
 
+// Autocomplete behavior toggle
+// When enabled, the editor will attempt to trigger Monaco suggestions as you type.
+let autoTriggerAutocompleteEnabled = true;
+
 // Track the currently loaded monaco-kusto schema key to avoid redundant updates
 // Format: `${clusterUrl}|${database}` - NO DATA is stored here, just the key
 let currentMonacoKustoSchemaKey = null;

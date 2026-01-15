@@ -910,10 +910,14 @@ window.addEventListener('message', async event => {
 			cachedDatabases = message.cachedDatabases || {};
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
+			autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			try {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
 				// When true, document-level restore should not override this global preference.
 				window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
+			} catch { /* ignore */ }
+			try {
+				window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
 			} catch { /* ignore */ }
 			updateConnectionSelects();
 			try {
@@ -937,6 +941,7 @@ window.addEventListener('message', async event => {
 				}
 			} catch { /* ignore */ }
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+			try { updateAutoTriggerAutocompleteToggleButtons(); } catch { /* ignore */ }
 			break;
 		case 'favoritesData':
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
