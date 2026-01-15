@@ -230,6 +230,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		// use it to store multi-section metadata while keeping the query text in the plain file.
 		let sidecarUri: vscode.Uri | undefined;
 		let sidecarFile: KqlxFileV1 | undefined;
+		let lastWrittenSidecarText: string | undefined;
+		let sidecarDirty = false;
 		try {
 			sidecarUri = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
 			if (sidecarUri && sidecarUri.scheme === 'file') {
@@ -239,6 +241,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					const parsed = parseKqlxText(text, { allowedKinds: ['kqlx', 'mdx'], defaultKind: 'kqlx' });
 					if (parsed.ok && KqlCompatEditorProvider.isLinkedSidecarForCompatFile(sidecarUri, parsed.file, document.uri)) {
 						sidecarFile = parsed.file;
+						lastWrittenSidecarText = text;
 					}
 				} catch {
 					// ignore
@@ -376,11 +379,22 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					if (!lastKnownSidecarState) {
 						return;
 					}
+
+					// Treat the .kql and its .kql.json sidecar as a single logical document:
+					// only write sidecar changes when the user saves the .kql file.
+					if (!sidecarDirty) {
+						return;
+					}
+					if (!lastKnownSidecarState) {
+						return;
+					}
 					const persisted = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, lastKnownSidecarState);
 					const text = stringifyKqlxFile(persisted);
 					await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(text));
 					// Keep in-memory sidecar updated to reflect what we just wrote.
 					sidecarFile = persisted;
+					lastWrittenSidecarText = text;
+					sidecarDirty = false;
 				} catch {
 					// ignore
 				}
@@ -388,6 +402,40 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		);
 
 		webviewPanel.onDidDispose(() => {
+			// If the user edited the sidecar metadata but didn't save the .kql file,
+			// offer to save the sidecar now so changes aren't lost silently.
+			try {
+				if (sidecarUri && sidecarFile && lastKnownSidecarState && sidecarDirty) {
+					const sidecarUriToSave = sidecarUri;
+					const stateToSave = lastKnownSidecarState;
+					const sidecarName = getSidecarDisplayName();
+					void vscode.window
+						.showWarningMessage(
+							`You have unsaved notebook metadata changes in ${sidecarName}. Save them now?`,
+							{ modal: true },
+							'Save',
+							'Discard'
+						)
+						.then(async (choice) => {
+							try {
+								if (choice !== 'Save') {
+									return;
+								}
+								const persisted = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, stateToSave);
+								const text = stringifyKqlxFile(persisted);
+								await vscode.workspace.fs.writeFile(sidecarUriToSave, new TextEncoder().encode(text));
+								sidecarFile = persisted;
+								lastWrittenSidecarText = text;
+								sidecarDirty = false;
+							} catch {
+								// ignore
+							}
+						});
+				}
+			} catch {
+				// ignore
+			}
+
 			for (const s of subscriptions) {
 				try { s.dispose(); } catch { /* ignore */ }
 			}
@@ -478,10 +526,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// If a sidecar is enabled, persist the full multi-section state to the sidecar file.
 					try {
 						if (sidecarUri && sidecarFile) {
+							// Update in-memory model, but don't write to disk yet.
+							// Disk writes happen when the user saves the .kql file.
 							const persisted = KqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, incomingState);
 							const text = stringifyKqlxFile(persisted);
-							await vscode.workspace.fs.writeFile(sidecarUri, new TextEncoder().encode(text));
 							sidecarFile = persisted;
+							sidecarDirty = (typeof lastWrittenSidecarText === 'string') ? (text !== lastWrittenSidecarText) : true;
 						}
 					} catch {
 						// ignore

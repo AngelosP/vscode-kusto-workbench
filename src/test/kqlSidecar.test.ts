@@ -117,13 +117,21 @@ suite('Sidecar .kql.json strategy', () => {
 	test('persistDocument updates sidecar .kql.json without duplicating query', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
+		let onDidSaveHandler: ((doc: vscode.TextDocument) => unknown) | undefined;
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-'));
 		const kqlPath = path.join(tmpDir, 'test.kql');
 		const kqlxPath = path.join(tmpDir, 'test.kql.json');
 
 
+		const originalOnDidSave = (vscode.workspace as any).onDidSaveTextDocument;
 		try {
+			// Capture the save handler registered by the provider so we can simulate a save.
+			(vscode.workspace as any).onDidSaveTextDocument = (handler: any) => {
+				onDidSaveHandler = handler;
+				return { dispose() {} } as DisposableLike;
+			};
+
 			fs.writeFileSync(kqlPath, 'StormEvents | take 1', 'utf8');
 			// Pre-create a linked sidecar so the compat editor enters sidecar mode without prompting.
 			fs.writeFileSync(
@@ -189,11 +197,19 @@ suite('Sidecar .kql.json strategy', () => {
 				})
 			);
 
+			// Sidecar changes are deferred until the user saves the .kql document.
+			const beforeSaveSidecarText = fs.readFileSync(kqlxPath, 'utf8');
+			assert.ok(!beforeSaveSidecarText.includes('"markdown"'), 'expected sidecar not to be updated until save');
+
+			assert.ok(onDidSaveHandler, 'expected onDidSaveTextDocument handler to be registered');
+			await Promise.resolve(onDidSaveHandler!(document));
+
 			const newSidecarText = fs.readFileSync(kqlxPath, 'utf8');
 			assert.ok(newSidecarText.includes('"linkedQueryPath"'));
 			assert.ok(!newSidecarText.includes('"query":'), 'expected no inline query text in sidecar');
 			assert.ok(newSidecarText.includes('"markdown"'));
 		} finally {
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
 			// best-effort cleanup
 			try {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
