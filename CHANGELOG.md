@@ -3,16 +3,23 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.3.0] - Unreleased
+## [0.4.0] - Unreleased
+
+* 
+
+## [0.3.0] - 2026-15-01
 
 * Data Transformations. New type of section that allows you to manipulate data that comes from a kusto query, a .csv file, or another data transformation.
 * Cell Value Viewer. Improved the tabular control with the ability to double click any cell and open its contents up into a 'cell viewer' with search capabilities. This should help with scenarios where the value is just a string, not JSON, but still a very long string that makes it uncomfortable to deal with.
 * Search UX and functionality improvements. Now able to search using either simple wildcards or using full blown regex.
+* Auto-complete can now be toggled to auto-show via the toolbar
+* The files .kql and .csl now have feature parity with .kqlx files via a sidecar json file
 * Bug fixes
     * Fixed bug that affected CTRL+C in the tabular control.
     * Fixed bug that stopped query results from being saved to file.
     * Fixed bug that made VS Code flicker the 'file has changes' indicator for the session.kqlx file.
     * Fixed bug when editing Kusto code at the end of the file without enough space to show a drop-down auto-complete menu
+    * Fixed bug that stopped the file from remembering the size of charts
 
 ## [0.2.1] - 2026-01-12
 

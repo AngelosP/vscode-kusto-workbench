@@ -672,6 +672,12 @@
 			flex-wrap: wrap;
 		}
 
+		/* Keep the Data dropdown from spanning the full control width.
+		   Visually matches the 3-column mapping grid rows (X/Y/Legend etc). */
+		.chart-box .kusto-chart-row:not(.kusto-chart-row-type) .select-wrapper {
+			max-width: calc((100% - 16px) / 3);
+		}
+
 		.chart-box .kusto-chart-row > label {
 			flex: 0 0 var(--kusto-chart-label-width);
 			min-width: var(--kusto-chart-label-width);
@@ -1173,9 +1179,10 @@
 		.kusto-chart-labels-toggle {
 			display: inline-flex;
 			align-items: center;
-			gap: 8px;
+			gap: 10px;
 			cursor: pointer;
 			user-select: none;
+			width: 100%;
 		}
 
 		.kusto-chart-labels-toggle-track {
@@ -1215,8 +1222,13 @@
 			border-color: var(--vscode-focusBorder);
 		}
 
-		.kusto-chart-labels-toggle-text {
+		/* Match dropdown label alignment (so the toggle track lines up with dropdowns above). */
+		.chart-box .kusto-chart-labels-toggle-text {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
 			font-size: 12px;
+			white-space: nowrap;
+			opacity: 0.85;
 			color: var(--vscode-foreground);
 		}
 
