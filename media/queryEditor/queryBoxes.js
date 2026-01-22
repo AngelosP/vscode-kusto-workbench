@@ -6797,8 +6797,10 @@ function executeQuery(boxId, mode) {
 	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
 	// If the editor has multiple statements (blank-line separated), run only the statement at cursor.
-	// We always try extraction for the target editor, not just when it has focus, because clicking
-	// the Run button causes the editor to lose focus before this code runs.
+	// IMPORTANT: Do NOT add checks for hasTextFocus or activeQueryEditorBoxId here!
+	// When clicking the Run button, the editor loses focus before this code executes, which would
+	// cause the full editor content to be sent instead of just the active statement. This was a
+	// regression bug - always check for multiple statements and extract at cursor unconditionally.
 	try {
 		if (editor) {
 			const model = editor.getModel && editor.getModel();
