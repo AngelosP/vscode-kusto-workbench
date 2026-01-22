@@ -1874,16 +1874,21 @@ window.addEventListener('message', async event => {
 			} catch { /* ignore */ }
 			break;
 		case 'copilotInlineCompletionResult':
+			console.log('[Kusto] Received copilotInlineCompletionResult', message);
 			try {
 				const requestId = String(message.requestId || '');
+				console.log('[Kusto] Looking for pending request', requestId, 'in', Object.keys(copilotInlineCompletionRequests));
 				if (requestId && copilotInlineCompletionRequests[requestId]) {
 					const pending = copilotInlineCompletionRequests[requestId];
 					delete copilotInlineCompletionRequests[requestId];
 					if (typeof pending.resolve === 'function') {
+						console.log('[Kusto] Resolving with completions:', message.completions);
 						pending.resolve(message.completions || []);
 					}
+				} else {
+					console.log('[Kusto] No pending request found for', requestId);
 				}
-			} catch { /* ignore */ }
+			} catch (err) { console.error('[Kusto] Error handling completion result', err); }
 			break;
 	}
 });

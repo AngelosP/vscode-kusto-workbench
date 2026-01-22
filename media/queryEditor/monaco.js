@@ -5877,9 +5877,11 @@ function ensureMonaco() {
 					let __kustoInlineCompletionRequestId = 0;
 					monaco.languages.registerInlineCompletionsProvider('kusto', {
 						provideInlineCompletions: async function (model, position, context, token) {
+							console.log('[Kusto] provideInlineCompletions called', { position, context, triggerKind: context?.triggerKind });
 							try {
 								// Check if inline completions are enabled
 								if (typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
+									console.log('[Kusto] Inline completions disabled, returning empty');
 									return { items: [] };
 								}
 
@@ -5939,22 +5941,25 @@ function ensureMonaco() {
 								});
 
 								// Request completion from extension
-								try {
-									vscode.postMessage({
-										type: 'requestCopilotInlineCompletion',
-										requestId: requestId,
-										boxId: boxId,
-										textBefore: textBefore,
-										textAfter: textAfter
-									});
-								} catch {
-									return { items: [] };
-								}
+										console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length });
+										try {
+											vscode.postMessage({
+												type: 'requestCopilotInlineCompletion',
+												requestId: requestId,
+												boxId: boxId,
+												textBefore: textBefore,
+												textAfter: textAfter
+											});
+										} catch (err) {
+											console.error('[Kusto] Failed to send inline completion request', err);
+											return { items: [] };
+										}
 
-								// Wait for response
-								const completions = await completionPromise;
-								if (!completions || !Array.isArray(completions) || completions.length === 0) {
-									return { items: [] };
+										// Wait for response
+										const completions = await completionPromise;
+										console.log('[Kusto] Received completions', completions);
+										if (!completions || !Array.isArray(completions) || completions.length === 0) {
+											console.log('[Kusto] No completions returned');
 								}
 
 								// Convert to Monaco inline completion items
@@ -9667,6 +9672,16 @@ function initQueryEditor(boxId) {
 		try {
 			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
 				__kustoTriggerAutocomplete(editor);
+			});
+		} catch {
+			// ignore
+		}
+
+		// Shift+Space triggers Copilot inline suggestions (ghost text) on demand.
+		try {
+			editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Space, () => {
+				console.log('[Kusto] SHIFT+SPACE triggered - requesting inline suggestions');
+				editor.trigger('keyboard', 'editor.action.inlineSuggest.trigger', {});
 			});
 		} catch {
 			// ignore
