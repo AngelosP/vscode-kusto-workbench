@@ -928,6 +928,7 @@ window.addEventListener('message', async event => {
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
+			copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
 			try {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
 				// When true, document-level restore should not override this global preference.
@@ -935,6 +936,9 @@ window.addEventListener('message', async event => {
 			} catch { /* ignore */ }
 			try {
 				window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
+			} catch { /* ignore */ }
+			try {
+				window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
 			} catch { /* ignore */ }
 			updateConnectionSelects();
 			try {
@@ -959,6 +963,7 @@ window.addEventListener('message', async event => {
 			} catch { /* ignore */ }
 			try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 			try { updateAutoTriggerAutocompleteToggleButtons(); } catch { /* ignore */ }
+			try { updateCopilotInlineCompletionsToggleButtons(); } catch { /* ignore */ }
 			break;
 		case 'favoritesData':
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
@@ -1865,6 +1870,18 @@ window.addEventListener('message', async event => {
 				const boxId = String(message.boxId || '');
 				if (boxId && typeof window.__kustoCopilotWriteQueryDone === 'function') {
 					window.__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotInlineCompletionResult':
+			try {
+				const requestId = String(message.requestId || '');
+				if (requestId && copilotInlineCompletionRequests[requestId]) {
+					const pending = copilotInlineCompletionRequests[requestId];
+					delete copilotInlineCompletionRequests[requestId];
+					if (typeof pending.resolve === 'function') {
+						pending.resolve(message.completions || []);
+					}
 				}
 			} catch { /* ignore */ }
 			break;

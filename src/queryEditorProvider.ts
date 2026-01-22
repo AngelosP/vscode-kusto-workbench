@@ -23,6 +23,7 @@ const STORAGE_KEYS = {
 	cachedSchemas: 'kusto.cachedSchemas',
 	caretDocsEnabled: 'kusto.caretDocsEnabled',
 	autoTriggerAutocompleteEnabled: 'kusto.autoTriggerAutocompleteEnabled',
+	copilotInlineCompletionsEnabled: 'kusto.copilotInlineCompletionsEnabled',
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
 	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
 	favorites: 'kusto.favorites'
@@ -116,6 +117,8 @@ type IncomingWebviewMessage =
 	| SaveResultsCsvMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
+	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
+	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
@@ -577,6 +580,12 @@ export class QueryEditorProvider {
 			case 'setAutoTriggerAutocompleteEnabled':
 				await this.context.globalState.update(STORAGE_KEYS.autoTriggerAutocompleteEnabled, !!message.enabled);
 				return;
+			case 'setCopilotInlineCompletionsEnabled':
+				await this.context.globalState.update(STORAGE_KEYS.copilotInlineCompletionsEnabled, !!message.enabled);
+				return;
+			case 'requestCopilotInlineCompletion':
+				await this.handleCopilotInlineCompletionRequest(message);
+				return;
 			case 'getDatabases':
 				await this.sendDatabases(message.connectionId, message.boxId, false);
 				return;
@@ -1007,6 +1016,118 @@ export class QueryEditorProvider {
 			running.cts.cancel();
 		} catch {
 			// ignore
+		}
+	}
+
+	/**
+	 * Handle inline completion requests from the webview Monaco editor.
+	 * Uses VS Code's Language Model API to get Copilot suggestions for KQL.
+	 */
+	private async handleCopilotInlineCompletionRequest(
+		message: Extract<IncomingWebviewMessage, { type: 'requestCopilotInlineCompletion' }>
+	): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const boxId = String(message.boxId || '').trim();
+		const textBefore = String(message.textBefore || '');
+		const textAfter = String(message.textAfter || '');
+
+		if (!requestId) {
+			return;
+		}
+
+		try {
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				this.postMessage({
+					type: 'copilotInlineCompletionResult',
+					requestId,
+					boxId,
+					completions: [],
+					error: 'Copilot not available'
+				} as any);
+				return;
+			}
+
+			// Use the first available model (usually the fastest for inline completions)
+			const model = models[0];
+
+			// Build a completion prompt tailored for KQL
+			const prompt = `You are an expert Kusto Query Language (KQL) assistant providing inline code completions.
+Complete the following KQL code. Only return the completion text that should be inserted at the cursor position.
+Do NOT include any explanation, markdown formatting, or code fences.
+Return ONLY the raw KQL code to complete the line or statement.
+If you cannot provide a meaningful completion, return an empty string.
+
+KQL code before cursor:
+${textBefore}
+
+KQL code after cursor:
+${textAfter}
+
+Completion:`;
+
+			const cts = new vscode.CancellationTokenSource();
+			// Set a short timeout for inline completions (they should be fast)
+			const timeoutId = setTimeout(() => cts.cancel(), 3000);
+
+			try {
+				const response = await model.sendRequest(
+					[vscode.LanguageModelChatMessage.User(prompt)],
+					{},
+					cts.token
+				);
+
+				let completionText = '';
+				for await (const chunk of response.text) {
+					completionText += chunk;
+					// Stop early if we get too much text (inline completions should be short)
+					if (completionText.length > 500) {
+						break;
+					}
+				}
+
+				clearTimeout(timeoutId);
+
+				// Clean up the completion text
+				completionText = completionText.trim();
+				// Remove any accidental code fence markers
+				completionText = completionText.replace(/^```(?:kusto|kql)?\s*\n?/i, '').replace(/\n?```$/i, '');
+
+				const completions = completionText ? [{ insertText: completionText }] : [];
+
+				this.postMessage({
+					type: 'copilotInlineCompletionResult',
+					requestId,
+					boxId,
+					completions
+				} as any);
+			} catch (err) {
+				clearTimeout(timeoutId);
+				if (err instanceof vscode.CancellationError) {
+					// Request was cancelled (timeout or user action), return empty
+					this.postMessage({
+						type: 'copilotInlineCompletionResult',
+						requestId,
+						boxId,
+						completions: []
+					} as any);
+				} else {
+					throw err;
+				}
+			} finally {
+				cts.dispose();
+			}
+		} catch (err) {
+			const errorMsg = err instanceof vscode.LanguageModelError
+				? `Copilot error: ${err.message}`
+				: this.getErrorMessage(err);
+			this.postMessage({
+				type: 'copilotInlineCompletionResult',
+				requestId,
+				boxId,
+				completions: [],
+				error: errorMsg
+			} as any);
 		}
 	}
 
@@ -2957,6 +3078,17 @@ ${query}
 		const autoTriggerAutocompleteEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.autoTriggerAutocompleteEnabled);
 		const autoTriggerAutocompleteEnabled = typeof autoTriggerAutocompleteEnabledStored === 'boolean' ? autoTriggerAutocompleteEnabledStored : true;
 		const autoTriggerAutocompleteEnabledUserSet = typeof autoTriggerAutocompleteEnabledStored === 'boolean';
+
+		// Copilot inline completions: check both our extension setting and VS Code's global inline suggest setting
+		const copilotInlineCompletionsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.copilotInlineCompletionsEnabled);
+		// Default to following VS Code's editor.inlineSuggest.enabled setting
+		const vscodeInlineSuggestEnabled = vscode.workspace.getConfiguration('editor').get<boolean>('inlineSuggest.enabled', true);
+		// Our setting defaults to matching VS Code's setting (if user hasn't explicitly set it)
+		const copilotInlineCompletionsEnabled = typeof copilotInlineCompletionsEnabledStored === 'boolean'
+			? copilotInlineCompletionsEnabledStored
+			: vscodeInlineSuggestEnabled;
+		const copilotInlineCompletionsEnabledUserSet = typeof copilotInlineCompletionsEnabledStored === 'boolean';
+
 		const favorites = this.getFavorites();
 
 		this.postMessage({
@@ -2969,7 +3101,9 @@ ${query}
 			caretDocsEnabled,
 			caretDocsEnabledUserSet,
 			autoTriggerAutocompleteEnabled,
-			autoTriggerAutocompleteEnabledUserSet
+			autoTriggerAutocompleteEnabledUserSet,
+			copilotInlineCompletionsEnabled,
+			copilotInlineCompletionsEnabledUserSet
 		});
 	}
 

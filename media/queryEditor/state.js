@@ -55,6 +55,13 @@ let caretDocOverlaysByBoxId = {};
 // When enabled, the editor will attempt to trigger Monaco suggestions as you type.
 let autoTriggerAutocompleteEnabled = true;
 
+// Copilot inline completions toggle
+// When enabled, the editor will request inline completions from GitHub Copilot.
+let copilotInlineCompletionsEnabled = true;
+
+// Pending Copilot inline completion requests
+let copilotInlineCompletionRequests = {};
+
 // Track the currently loaded monaco-kusto schema key to avoid redundant updates
 // Format: `${clusterUrl}|${database}` - NO DATA is stored here, just the key
 let currentMonacoKustoSchemaKey = null;

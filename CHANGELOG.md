@@ -5,7 +5,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.4.0] - Unreleased
 
-* Added settings for controlling whether the extension handles .kql and .cls files
+* Added extension settings for controlling whether the extension opens .kql and .cls files
+* Added a new toolbar button to the Kusto editor for controlling Copilot inline auto-complete (ghost text)
 
 ## [0.3.0] - 2026-15-01
 

@@ -153,6 +153,12 @@ function addQueryBox(options) {
 		'<path d="M12.5 9.2v2.3h-2.3"/>' +
 		'</svg>';
 
+	// Ghost icon for inline/ghost text completions
+	const ghostIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M8 1C5.2 1 3 3.2 3 6v6c0 .3.1.6.4.8.2.2.5.2.8.1l1.3-.7 1.3.7c.3.2.7.2 1 0L8 12.2l.2.7c.3.2.7.2 1 0l1.3-.7 1.3.7c.3.1.6.1.8-.1.3-.2.4-.5.4-.8V6c0-2.8-2.2-5-5-5zm-2 6.5c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1zm4 0c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"/>' +
+		'</svg>';
+
 	const singleLineIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
 		'<path d="M2 8h12"/>' +
@@ -277,6 +283,9 @@ function addQueryBox(options) {
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Automatically trigger auto-complete" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger auto-complete\nShortcut for auto-complete: CTRL + SPACE" aria-pressed="' + (autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger auto-complete">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
+		'</button>' +
+		'<button type="button" id="' + id + '_copilot_inline_toggle" data-qe-overflow-action="copilotInline" data-qe-overflow-label="Copilot inline suggestions" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-copilot-inline-toggle' + (copilotInlineCompletionsEnabled ? ' is-active' : '') + '" onclick="toggleCopilotInlineCompletionsEnabled()" title="Copilot inline suggestions\nShow AI-powered ghost text completions as you type" aria-pressed="' + (copilotInlineCompletionsEnabled ? 'true' : 'false') + '" aria-label="Copilot inline suggestions">' +
+		'<span class="qe-icon" aria-hidden="true">' + ghostIconSvg + '</span>' +
 		'</button>' +
 		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation as you move the cursor" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
@@ -1961,6 +1970,29 @@ function toggleAutoTriggerAutocompleteEnabled() {
 	}
 }
 
+function updateCopilotInlineCompletionsToggleButtons() {
+	for (const boxId of queryBoxes) {
+		const btn = document.getElementById(boxId + '_copilot_inline_toggle');
+		if (!btn) {
+			continue;
+		}
+		btn.setAttribute('aria-pressed', copilotInlineCompletionsEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!copilotInlineCompletionsEnabled);
+	}
+}
+
+function toggleCopilotInlineCompletionsEnabled() {
+	copilotInlineCompletionsEnabled = !copilotInlineCompletionsEnabled;
+	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch { /* ignore */ }
+	updateCopilotInlineCompletionsToggleButtons();
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		vscode.postMessage({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!copilotInlineCompletionsEnabled });
+	} catch {
+		// ignore
+	}
+}
+
 function toggleCaretDocsEnabled() {
 	caretDocsEnabled = !caretDocsEnabled;
 	updateCaretDocsToggleButtons();
@@ -2621,6 +2653,8 @@ function renderToolbarOverflowMenu(boxId) {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleCaretDocsEnabled();';
 				} else if (action === 'autoAutocomplete') {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleAutoTriggerAutocompleteEnabled();';
+				} else if (action === 'copilotInline') {
+					onclick = 'closeToolbarOverflow(\'' + id + '\'); toggleCopilotInlineCompletionsEnabled();';
 				} else if (action === 'copilotChat') {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); __kustoToggleCopilotChatForBox(\'' + id + '\');';
 				} else {

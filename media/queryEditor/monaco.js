@@ -5871,6 +5871,112 @@ function ensureMonaco() {
 							window.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
 						}
 					};
+
+					// --- Copilot Inline Completions Provider ---
+					// Provides ghost-text completions using GitHub Copilot via the VS Code extension host
+					let __kustoInlineCompletionRequestId = 0;
+					monaco.languages.registerInlineCompletionsProvider('kusto', {
+						provideInlineCompletions: async function (model, position, context, token) {
+							try {
+								// Check if inline completions are enabled
+								if (typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
+									return { items: [] };
+								}
+
+								// Don't provide completions if we're in a comment
+								const lineContent = model.getLineContent(position.lineNumber);
+								const textBeforeOnLine = lineContent.substring(0, position.column - 1);
+								if (textBeforeOnLine.includes('//')) {
+									return { items: [] };
+								}
+
+								// Get text before and after cursor
+								const fullText = model.getValue();
+								const offset = model.getOffsetAt(position);
+								const textBefore = fullText.substring(0, offset);
+								const textAfter = fullText.substring(offset);
+
+								// Don't trigger if line is empty and we're at the start
+								if (!textBefore.trim() && !textAfter.trim()) {
+									return { items: [] };
+								}
+
+								// Generate a unique request ID
+								const requestId = 'inline_' + (++__kustoInlineCompletionRequestId) + '_' + Date.now();
+
+								// Find the boxId for this model
+								let boxId = '';
+								try {
+									const modelUri = model.uri ? model.uri.toString() : '';
+									if (typeof queryEditorBoxByModelUri !== 'undefined' && modelUri) {
+										boxId = queryEditorBoxByModelUri[modelUri] || '';
+									}
+								} catch { /* ignore */ }
+
+								// Create a promise that will be resolved when we get the response
+								const completionPromise = new Promise((resolve) => {
+									// Set a timeout to avoid hanging
+									const timeoutId = setTimeout(() => {
+										delete copilotInlineCompletionRequests[requestId];
+										resolve([]);
+									}, 5000);
+
+									copilotInlineCompletionRequests[requestId] = {
+										resolve: (completions) => {
+											clearTimeout(timeoutId);
+											resolve(completions);
+										}
+									};
+
+									// Handle cancellation
+									if (token && typeof token.onCancellationRequested === 'function') {
+										token.onCancellationRequested(() => {
+											clearTimeout(timeoutId);
+											delete copilotInlineCompletionRequests[requestId];
+											resolve([]);
+										});
+									}
+								});
+
+								// Request completion from extension
+								try {
+									vscode.postMessage({
+										type: 'requestCopilotInlineCompletion',
+										requestId: requestId,
+										boxId: boxId,
+										textBefore: textBefore,
+										textAfter: textAfter
+									});
+								} catch {
+									return { items: [] };
+								}
+
+								// Wait for response
+								const completions = await completionPromise;
+								if (!completions || !Array.isArray(completions) || completions.length === 0) {
+									return { items: [] };
+								}
+
+								// Convert to Monaco inline completion items
+								const items = completions.map(c => ({
+									insertText: c.insertText || '',
+									range: new monaco.Range(
+										position.lineNumber,
+										position.column,
+										position.lineNumber,
+										position.column
+									)
+								})).filter(item => item.insertText);
+
+								return { items };
+							} catch {
+								return { items: [] };
+							}
+						},
+						freeInlineCompletions: function (completions) {
+							// No cleanup needed
+						}
+					});
 					
 					window.__kustoWorkerInitialized = true;
 					
@@ -8171,7 +8277,9 @@ function initQueryEditor(boxId) {
 			fontFamily: getComputedStyle(document.body).getPropertyValue('--vscode-editor-font-family'),
 			fontSize: 13,
 			lineNumbers: 'on',
-			renderLineHighlight: 'none'
+			renderLineHighlight: 'none',
+			// Enable inline suggestions (ghost text completions from Copilot)
+			inlineSuggest: { enabled: true }
 		});
 
 		// Keep Monaco's suggest widget usable inside the editor bounds.
