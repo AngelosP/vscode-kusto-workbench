@@ -5,7 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.4.0] - Unreleased
 
-* 
+* Added settings for controlling whether the extension handles .kql and .cls files
 
 ## [0.3.0] - 2026-15-01
 

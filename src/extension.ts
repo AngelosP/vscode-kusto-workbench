@@ -21,6 +21,53 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	};
 
+	// Configure editor associations for .kql and .csl files based on settings
+	const updateEditorAssociations = async (): Promise<void> => {
+		try {
+			const config = vscode.workspace.getConfiguration('kustoWorkbench');
+			const openKqlFiles = config.get<boolean>('openKqlFiles', true);
+			const openCslFiles = config.get<boolean>('openCslFiles', true);
+
+			const workbenchConfig = vscode.workspace.getConfiguration('workbench');
+			const currentAssociations = workbenchConfig.get<Record<string, string>>('editorAssociations') || {};
+
+			// Create a copy to modify
+			const newAssociations = { ...currentAssociations };
+			let changed = false;
+
+			// Handle .kql files
+			const kqlAssociation = openKqlFiles ? KqlCompatEditorProvider.viewType : 'default';
+			if (newAssociations['*.kql'] !== kqlAssociation) {
+				newAssociations['*.kql'] = kqlAssociation;
+				changed = true;
+			}
+
+			// Handle .csl files
+			const cslAssociation = openCslFiles ? KqlCompatEditorProvider.viewType : 'default';
+			if (newAssociations['*.csl'] !== cslAssociation) {
+				newAssociations['*.csl'] = cslAssociation;
+				changed = true;
+			}
+
+			if (changed) {
+				await workbenchConfig.update('editorAssociations', newAssociations, vscode.ConfigurationTarget.Global);
+			}
+		} catch (err) {
+			// Non-fatal: avoid breaking activation if we can't update associations
+			console.error('[Kusto Workbench] Failed to update editor associations:', err);
+		}
+	};
+
+	// Update associations on activation and when settings change
+	void updateEditorAssociations();
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles')) {
+				void updateEditorAssociations();
+			}
+		})
+	);
+
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
