@@ -5879,9 +5879,13 @@ function ensureMonaco() {
 						provideInlineCompletions: async function (model, position, context, token) {
 							console.log('[Kusto] provideInlineCompletions called', { position, context, triggerKind: context?.triggerKind });
 							try {
-								// Check if inline completions are enabled
-								if (typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
-									console.log('[Kusto] Inline completions disabled, returning empty');
+								// triggerKind: 0 = automatic, 1 = manual (explicit)
+								const isManualTrigger = context && context.triggerKind === 1;
+
+								// Check if automatic inline completions are enabled
+								// The toggle only controls automatic triggers - manual triggers (SHIFT+SPACE) always work
+								if (!isManualTrigger && typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
+									console.log('[Kusto] Automatic inline completions disabled, returning empty');
 									return { items: [] };
 								}
 
@@ -5941,7 +5945,6 @@ function ensureMonaco() {
 								});
 
 								// Request completion from extension
-								const isManualTrigger = context && context.triggerKind === 1;
 								console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length, isManualTrigger });
 								try {
 									vscode.postMessage({
