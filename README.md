@@ -28,7 +28,7 @@ It has advanced markdown capabilities (thanks to the amazing folks at [toastui](
 
 ## Key features
 
-* Just a better all around Kusto query editor with smart auto-complete (not AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
+* Just a better all around Kusto query editor with smart auto-complete (not AI based), Copilot inline suggestions (AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
 * Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > .kqlx and you are good to go just the same.
 * Support for multiple authentication accounts, seamless switching between them just by running your queries. You won't even know it's happening.
 * No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).

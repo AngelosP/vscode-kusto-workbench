@@ -5872,7 +5872,7 @@ function ensureMonaco() {
 						}
 					};
 
-					// --- Copilot Inline Completions Provider ---
+					// --- Automatically trigger Copilot inline completions Provider ---
 					// Provides ghost-text completions using GitHub Copilot via the VS Code extension host
 					let __kustoInlineCompletionRequestId = 0;
 					monaco.languages.registerInlineCompletionsProvider('kusto', {
@@ -5941,25 +5941,36 @@ function ensureMonaco() {
 								});
 
 								// Request completion from extension
-										console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length });
+								const isManualTrigger = context && context.triggerKind === 1;
+								console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length, isManualTrigger });
+								try {
+									vscode.postMessage({
+										type: 'requestCopilotInlineCompletion',
+										requestId: requestId,
+										boxId: boxId,
+										textBefore: textBefore,
+										textAfter: textAfter
+									});
+								} catch (err) {
+									console.error('[Kusto] Failed to send inline completion request', err);
+									return { items: [] };
+								}
+
+								// Wait for response
+								const completions = await completionPromise;
+								console.log('[Kusto] Received completions', completions);
+								if (!completions || !Array.isArray(completions) || completions.length === 0) {
+									console.log('[Kusto] No completions returned');
+									// Show notification only for manual triggers (SHIFT+SPACE)
+									if (isManualTrigger) {
 										try {
 											vscode.postMessage({
-												type: 'requestCopilotInlineCompletion',
-												requestId: requestId,
-												boxId: boxId,
-												textBefore: textBefore,
-												textAfter: textAfter
+												type: 'showInfo',
+												message: 'Copilot returned no inline suggestions. Often, trying again helps, especially after changing the position of the cursor.'
 											});
-										} catch (err) {
-											console.error('[Kusto] Failed to send inline completion request', err);
-											return { items: [] };
-										}
-
-										// Wait for response
-										const completions = await completionPromise;
-										console.log('[Kusto] Received completions', completions);
-										if (!completions || !Array.isArray(completions) || completions.length === 0) {
-											console.log('[Kusto] No completions returned');
+										} catch { /* ignore */ }
+									}
+									return { items: [] };
 								}
 
 								// Convert to Monaco inline completion items

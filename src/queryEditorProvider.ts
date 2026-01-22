@@ -3079,7 +3079,7 @@ ${query}
 		const autoTriggerAutocompleteEnabled = typeof autoTriggerAutocompleteEnabledStored === 'boolean' ? autoTriggerAutocompleteEnabledStored : true;
 		const autoTriggerAutocompleteEnabledUserSet = typeof autoTriggerAutocompleteEnabledStored === 'boolean';
 
-		// Copilot inline completions: check both our extension setting and VS Code's global inline suggest setting
+		// Automatically trigger Copilot inline completions: check both our extension setting and VS Code's global inline suggest setting
 		const copilotInlineCompletionsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.copilotInlineCompletionsEnabled);
 		// Default to following VS Code's editor.inlineSuggest.enabled setting
 		const vscodeInlineSuggestEnabled = vscode.workspace.getConfiguration('editor').get<boolean>('inlineSuggest.enabled', true);

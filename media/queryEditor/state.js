@@ -55,7 +55,7 @@ let caretDocOverlaysByBoxId = {};
 // When enabled, the editor will attempt to trigger Monaco suggestions as you type.
 let autoTriggerAutocompleteEnabled = true;
 
-// Copilot inline completions toggle
+// Automatically trigger Copilot inline completions toggle
 // When enabled, the editor will request inline completions from GitHub Copilot.
 let copilotInlineCompletionsEnabled = true;
 
