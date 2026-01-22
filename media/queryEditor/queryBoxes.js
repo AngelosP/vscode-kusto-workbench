@@ -2217,27 +2217,32 @@ function copyQueryAsAdeLink(boxId) {
 
 	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
-	// If the cursor is inside the active Monaco editor, use only the statement under the cursor.
+	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
-		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
-		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
-		if (editor && (hasTextFocus || isActiveEditor)) {
-			const statement = __kustoExtractStatementAtCursor(editor);
-			if (statement) {
-				query = statement;
-			} else {
-				try {
-					vscode.postMessage({
-						type: 'showInfo',
-						message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
-					});
-				} catch { /* ignore */ }
-				return;
+		if (editor) {
+			const model = editor.getModel && editor.getModel();
+			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+				? window.__kustoGetStatementBlocksFromModel(model)
+				: [];
+			const hasMultipleStatements = blocks && blocks.length > 1;
+			if (hasMultipleStatements) {
+				const statement = __kustoExtractStatementAtCursor(editor);
+				if (statement) {
+					query = statement;
+				} else {
+					try {
+						vscode.postMessage({
+							type: 'showInfo',
+							message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
+						});
+					} catch { /* ignore */ }
+					return;
+				}
 			}
 		}
 	} catch { /* ignore */ }
 
-	let connectionId = '';
+	let connectionId = ''
 	let database = '';
 	try {
 		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
@@ -2839,11 +2844,13 @@ async function exportQueryToPowerBI(boxId) {
 		return;
 	}
 	let query = model.getValue() || '';
-	// Match the same "active statement" logic used by Run Query.
+	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
-		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
-		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
-		if (editor && (hasTextFocus || isActiveEditor)) {
+		const blocks = (typeof window.__kustoGetStatementBlocksFromModel === 'function')
+			? window.__kustoGetStatementBlocksFromModel(model)
+			: [];
+		const hasMultipleStatements = blocks && blocks.length > 1;
+		if (hasMultipleStatements) {
 			const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
 				? window.__kustoExtractStatementTextAtCursor(editor)
 				: null;
@@ -6789,22 +6796,30 @@ function executeQuery(boxId, mode) {
 
 	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
-	// If the cursor is inside the active Monaco editor, run only the statement under the cursor.
+	// If the editor has multiple statements (blank-line separated), run only the statement at cursor.
+	// We always try extraction for the target editor, not just when it has focus, because clicking
+	// the Run button causes the editor to lose focus before this code runs.
 	try {
-		const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === boxId);
-		const hasTextFocus = !!(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus());
-		if (editor && (hasTextFocus || isActiveEditor)) {
-			const statement = __kustoExtractStatementAtCursor(editor);
-			if (statement) {
-				query = statement;
-			} else {
-				try {
-					vscode.postMessage({
-						type: 'showInfo',
-						message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
-					});
-				} catch { /* ignore */ }
-				return;
+		if (editor) {
+			const model = editor.getModel && editor.getModel();
+			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+				? window.__kustoGetStatementBlocksFromModel(model)
+				: [];
+			const hasMultipleStatements = blocks && blocks.length > 1;
+			if (hasMultipleStatements) {
+				const statement = __kustoExtractStatementAtCursor(editor);
+				if (statement) {
+					query = statement;
+				} else {
+					// Cursor is on a separator line between statements.
+					try {
+						vscode.postMessage({
+							type: 'showInfo',
+							message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
+						});
+					} catch { /* ignore */ }
+					return;
+				}
 			}
 		}
 	} catch { /* ignore */ }

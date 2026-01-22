@@ -6,7 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.4.0] - Unreleased
 
 * Added extension settings for controlling whether the extension opens .kql and .cls files
-* Added a new toolbar button to the Kusto editor for controlling Copilot inline auto-complete (ghost text)
+* Copilot inline auto-complete (ghost text) support + new toolbar button turning it on / off
+* Bug fixes
+    * When a single editor contained multiple queries, it would complain about the non-active statements when they should be getting completely ignored. 
 
 ## [0.3.0] - 2026-15-01
 

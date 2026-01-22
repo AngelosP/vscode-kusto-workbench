@@ -9608,11 +9608,14 @@ function initQueryEditor(boxId) {
 						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
 						let v = ed.getValue ? ed.getValue() : '';
-						// Match Run Query / Export behavior: when the editor is active/focused, operate on the statement under the cursor.
+						// When the editor has multiple statements, operate on the statement under the cursor.
 						try {
-							const isActiveEditor = (typeof activeQueryEditorBoxId !== 'undefined') && (activeQueryEditorBoxId === id);
-							const hasTextFocus = !!(ed && typeof ed.hasTextFocus === 'function' && ed.hasTextFocus());
-							if ((hasTextFocus || isActiveEditor) && typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+							const model = ed.getModel && ed.getModel();
+							const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+								? window.__kustoGetStatementBlocksFromModel(model)
+								: [];
+							const hasMultipleStatements = blocks && blocks.length > 1;
+							if (hasMultipleStatements && typeof window.__kustoExtractStatementTextAtCursor === 'function') {
 								const stmt = window.__kustoExtractStatementTextAtCursor(ed);
 								if (stmt) {
 									v = stmt;
