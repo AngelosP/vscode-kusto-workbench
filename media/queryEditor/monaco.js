@@ -10357,6 +10357,10 @@ function initQueryEditor(boxId) {
 						if (e.target.closest('.query-editor-resizer')) {
 							return;
 						}
+						// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
+						if (e.target.closest('.find-widget') || e.target.closest('.suggest-widget') || e.target.closest('.parameter-hints-widget') || e.target.closest('.monaco-hover') || e.target.closest('.overflowingContentWidgets')) {
+							return;
+						}
 					}
 				} catch {
 					// ignore
@@ -10367,7 +10371,17 @@ function initQueryEditor(boxId) {
 		}
 
 		// Keep a direct hook on the editor container too.
-		container.addEventListener('mousedown', () => {
+		container.addEventListener('mousedown', (e) => {
+			try {
+				if (e && e.target && e.target.closest) {
+					// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
+					if (e.target.closest('.find-widget') || e.target.closest('.suggest-widget') || e.target.closest('.parameter-hints-widget') || e.target.closest('.monaco-hover') || e.target.closest('.overflowingContentWidgets')) {
+						return;
+					}
+				}
+			} catch {
+				// ignore
+			}
 			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			focusSoon();
 		}, true);

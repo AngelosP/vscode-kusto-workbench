@@ -4,13 +4,25 @@ document.addEventListener('keydown', async (event) => {
 		return;
 	}
 
+	// Don't intercept paste when focus is inside a Monaco widget (find widget, etc.)
+	// Let the browser handle paste for those input fields.
+	try {
+		const target = event.target;
+		if (target && target.closest && (target.closest('.find-widget') || target.closest('.suggest-widget') || target.closest('.parameter-hints-widget'))) {
+			return;
+		}
+	} catch {
+		// ignore
+	}
+
 	// Prefer whichever Monaco editor actually has focus.
+	// Only intercept paste when the editor TEXT area has focus, not widget focus.
+	// Widget focus (like find widget) should handle its own paste.
 	let editor = null;
 	try {
 		if (activeMonacoEditor && typeof activeMonacoEditor.hasTextFocus === 'function') {
-			const hasFocus = activeMonacoEditor.hasTextFocus() ||
-				(typeof activeMonacoEditor.hasWidgetFocus === 'function' && activeMonacoEditor.hasWidgetFocus());
-			if (hasFocus) {
+			const hasTextFocus = activeMonacoEditor.hasTextFocus();
+			if (hasTextFocus) {
 				editor = activeMonacoEditor;
 			}
 		}
@@ -23,8 +35,8 @@ document.addEventListener('keydown', async (event) => {
 		const qe = queryEditors[activeQueryEditorBoxId];
 		try {
 			if (qe && typeof qe.hasTextFocus === 'function') {
-				const hasFocus = qe.hasTextFocus() || (typeof qe.hasWidgetFocus === 'function' && qe.hasWidgetFocus());
-				if (hasFocus) {
+				const hasTextFocus = qe.hasTextFocus();
+				if (hasTextFocus) {
 					editor = qe;
 				}
 			}
