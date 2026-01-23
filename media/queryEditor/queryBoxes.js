@@ -5878,17 +5878,39 @@ function updateDatabaseField(boxId) {
 					window.__kustoUpdateSchemaForFocusedBox(boxId);
 				}
 			} catch { /* ignore */ }
+			
+			// Still trigger a background refresh to get the latest database list.
+			// Show spinner in the refresh button while refreshing.
 			if (refreshBtn) {
+				try {
+					if (!(refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1'))) {
+						if (refreshBtn.dataset) {
+							refreshBtn.dataset.kustoAutoDbInFlight = '1';
+							refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
+						}
+						refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
+						refreshBtn.setAttribute('aria-busy', 'true');
+					}
+				} catch { /* ignore */ }
+				// Keep refresh button enabled so user can click it if the background refresh is slow
 				refreshBtn.disabled = false;
 			}
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
+			
+			// Request a background refresh of databases from the extension
+			vscode.postMessage({
+				type: 'getDatabases',
+				connectionId: connectionId,
+				boxId: boxId
+			});
 		} else {
 			// No cache, need to load from server
 			// Keep the dropdown in a loading state and do not replace its contents with a synthetic
 			// single-option list. If `dataset.desired` is set, updateDatabaseSelect will apply it
 			// once the real database list arrives.
+			// Note: Don't disable the dropdown - the "Loading databases..." text is sufficient feedback.
 			databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
-			databaseSelect.disabled = true;
+			databaseSelect.disabled = false;
 			if (refreshBtn) {
 				// While auto-loading databases after a cluster change, show a spinner in the refresh button.
 				try {
@@ -6127,32 +6149,70 @@ function refreshDatabases(boxId) {
 	});
 }
 
-function onDatabasesError(boxId, error) {
+function onDatabasesError(boxId, error, responseConnectionId) {
 	const errText = String(error || '');
 	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
+
+	// If the response includes a connectionId, verify it matches the currently selected connection.
+	// This prevents stale error responses (from a slow request for a previous cluster) from affecting
+	// the dropdown when the user has already switched to a different cluster.
+	if (responseConnectionId) {
+		const connectionSelect = document.getElementById(boxId + '_connection');
+		const currentConnectionId = connectionSelect ? String(connectionSelect.value || '').trim() : '';
+		const responseConnId = String(responseConnectionId || '').trim();
+		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+			// Response is for a different connection than currently selected - ignore it.
+			// Still stop any spinner that might be running.
+			const refreshBtn = document.getElementById(boxId + '_refresh');
+			if (refreshBtn) {
+				try {
+					if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
+						const prev = refreshBtn.dataset.kustoPrevHtml;
+						if (typeof prev === 'string' && prev) {
+							refreshBtn.innerHTML = prev;
+						}
+						try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
+					}
+					refreshBtn.removeAttribute('aria-busy');
+					refreshBtn.disabled = false;
+				} catch { /* ignore */ }
+			}
+			return;
+		}
+	}
 
 	try {
 		const databaseSelect = document.getElementById(boxId + '_database');
 		const refreshBtn = document.getElementById(boxId + '_refresh');
 		if (databaseSelect) {
+			// Check if we have previous content to restore (from a manual refresh)
+			const hadPreviousContent = databaseSelect.dataset && 
+				databaseSelect.dataset.kustoRefreshInFlight === 'true' &&
+				typeof databaseSelect.dataset.kustoPrevHtml === 'string' && 
+				databaseSelect.dataset.kustoPrevHtml;
+			
 			if (isEnotfound) {
-				// Cluster is unreachable/invalid: don't keep stale DBs around.
-				databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>';
+				// Cluster is unreachable/invalid: show failure message
+				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
 				try { databaseSelect.value = ''; } catch { /* ignore */ }
-			} else {
-				// Restore previous dropdown contents/value if we snapshotted them.
+			} else if (hadPreviousContent) {
+				// Restore previous dropdown contents/value if we snapshotted them (manual refresh case).
 				try {
-					if (databaseSelect.dataset && databaseSelect.dataset.kustoRefreshInFlight === 'true') {
-						const prevHtml = databaseSelect.dataset.kustoPrevHtml;
-						const prevValue = databaseSelect.dataset.kustoPrevValue;
-						if (typeof prevHtml === 'string' && prevHtml) {
-							databaseSelect.innerHTML = prevHtml;
-						}
-						if (typeof prevValue === 'string') {
-							databaseSelect.value = prevValue;
-						}
+					const prevHtml = databaseSelect.dataset.kustoPrevHtml;
+					const prevValue = databaseSelect.dataset.kustoPrevValue;
+					if (typeof prevHtml === 'string' && prevHtml) {
+						databaseSelect.innerHTML = prevHtml;
+					}
+					if (typeof prevValue === 'string') {
+						databaseSelect.value = prevValue;
 					}
 				} catch { /* ignore */ }
+			} else {
+				// No previous content (initial load failed): show failure message
+				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
+				try { databaseSelect.value = ''; } catch { /* ignore */ }
 			}
 			databaseSelect.disabled = false;
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
@@ -6187,38 +6247,42 @@ function onDatabasesError(boxId, error) {
 			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
-	try {
-		if (typeof window.__kustoDisplayBoxError === 'function') {
-			// Snapshot current results so we can restore them when the user changes clusters.
-			try {
-				const bid = String(boxId || '').trim();
-				const resultsDiv = bid ? document.getElementById(bid + '_results') : null;
-				if (resultsDiv && resultsDiv.dataset) {
-					if (resultsDiv.dataset.kustoDbLoadErrorActive !== '1') {
-						resultsDiv.dataset.kustoDbLoadErrorPrevHtml = String(resultsDiv.innerHTML || '');
-						let visible = '';
-						try {
-							if (window.__kustoResultsVisibleByBoxId && typeof window.__kustoResultsVisibleByBoxId[bid] === 'boolean') {
-								visible = window.__kustoResultsVisibleByBoxId[bid] ? '1' : '0';
-							}
-						} catch { /* ignore */ }
-						if (visible) {
-							resultsDiv.dataset.kustoDbLoadErrorPrevVisible = visible;
-						}
-						resultsDiv.dataset.kustoDbLoadErrorActive = '1';
-					}
-				}
-			} catch { /* ignore */ }
-			window.__kustoDisplayBoxError(boxId, error);
-		}
-	} catch {
-		// ignore
-	}
+	// Note: We no longer show inline errors in the results section for database load failures.
+	// The extension now uses VS Code notifications instead for a consistent experience.
 }
 
-function updateDatabaseSelect(boxId, databases) {
+function updateDatabaseSelect(boxId, databases, responseConnectionId) {
 	const databaseSelect = document.getElementById(boxId + '_database');
 	const refreshBtn = document.getElementById(boxId + '_refresh');
+
+	// If the response includes a connectionId, verify it matches the currently selected connection.
+	// This prevents stale responses (from a slow request for a previous cluster) from overwriting
+	// the dropdown when the user has already switched to a different cluster.
+	if (responseConnectionId) {
+		const connectionSelect = document.getElementById(boxId + '_connection');
+		const currentConnectionId = connectionSelect ? String(connectionSelect.value || '').trim() : '';
+		const responseConnId = String(responseConnectionId || '').trim();
+		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+			// Response is for a different connection than currently selected - ignore it.
+			// Still stop any spinner that might be running.
+			if (refreshBtn) {
+				try {
+					if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
+						const prev = refreshBtn.dataset.kustoPrevHtml;
+						if (typeof prev === 'string' && prev) {
+							refreshBtn.innerHTML = prev;
+						}
+						try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
+						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
+						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
+					}
+					refreshBtn.removeAttribute('aria-busy');
+					refreshBtn.disabled = false;
+				} catch { /* ignore */ }
+			}
+			return;
+		}
+	}
 
 	if (databaseSelect) {
 		const prevValue = String(databaseSelect.value || '');

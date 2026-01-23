@@ -4168,21 +4168,77 @@ function initMarkdownEditor(boxId) {
 		return;
 	}
 
-	// Intercept Ctrl+S and Ctrl+Shift+S at the DOM level (capture phase) BEFORE ToastUI's keymap handles it.
-	// ToastUI/ProseMirror binds Ctrl+S to strikethrough, which blocks VS Code's save shortcut.
-	// We completely stop the event from reaching ToastUI, then re-dispatch it at the document level
-	// so VS Code's webview keyboard handling can process it for save functionality.
+	// ─────────────────────────────────────────────────────────────────────────────
+	// Keyboard shortcut conflict resolution for VS Code webview.
+	//
+	// VS Code intercepts certain keyboard shortcuts globally (e.g., Ctrl+B toggles sidebar).
+	// When editing markdown, we want shortcuts like Ctrl+B (bold), Ctrl+I (italic), etc.
+	// to be handled by the markdown editor, not VS Code.
+	//
+	// IMPORTANT: We only intercept shortcuts when the markdown editor is FOCUSED.
+	// When focus is elsewhere (Monaco editor, results table, etc.), VS Code shortcuts
+	// continue to work normally.
+	//
+	// Strategy:
+	// - For markdown formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+U, etc.): prevent VS Code
+	//   from seeing them by stopping propagation and letting ToastUI handle them.
+	// - For Ctrl+S (save): intercept it from ToastUI (which uses it for strikethrough)
+	//   and re-dispatch to VS Code for file save functionality.
+	// ─────────────────────────────────────────────────────────────────────────────
 	try {
+		// Shortcuts that the markdown editor should handle (not VS Code).
+		// Ctrl+B = bold (VS Code: toggle sidebar)
+		// Ctrl+I = italic
+		// Ctrl+U = underline (VS Code: view source in some contexts)
+		// Ctrl+E = code (VS Code: quick open recent)
+		// Ctrl+K = link (VS Code: chord starter for many commands)
+		// Ctrl+L = ordered list (VS Code: select line)
+		// Ctrl+Shift+L = unordered list
+		// Ctrl+D = strikethrough in some editors (VS Code: add selection to next find match)
+		const markdownShortcutKeys = new Set(['b', 'i', 'u', 'e', 'k', 'l', 'd']);
+
+		// Helper to check if focus is inside the markdown editor.
+		// ToastUI uses ProseMirror which creates contenteditable elements.
+		const isMarkdownEditorFocused = () => {
+			try {
+				const active = document.activeElement;
+				if (!active) return false;
+				// Check if focus is inside this ToastUI container.
+				// ToastUI's editable area has class 'ProseMirror' or is inside '.toastui-editor'.
+				return container.contains(active) && (
+					active.classList.contains('ProseMirror') ||
+					active.closest('.ProseMirror') ||
+					active.closest('.toastui-editor-contents') ||
+					active.isContentEditable
+				);
+			} catch { return false; }
+		};
+
 		container.addEventListener('keydown', (ev) => {
 			try {
-				if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
+				const key = ev.key.toLowerCase();
+				const hasCtrlOrMeta = ev.ctrlKey || ev.metaKey;
+
+				if (!hasCtrlOrMeta) {
+					return; // Not a shortcut we care about
+				}
+
+				// Only intercept shortcuts when the markdown editor is focused.
+				// This ensures VS Code shortcuts work normally when focus is elsewhere
+				// (e.g., Monaco editor, results table, schema panel, etc.).
+				if (!isMarkdownEditorFocused()) {
+					return;
+				}
+
+				// Special case: Ctrl+S - redirect to VS Code for file save.
+				// ToastUI/ProseMirror uses Ctrl+S for strikethrough, which conflicts.
+				if (key === 's') {
 					// Stop ToastUI from receiving this event entirely.
 					ev.stopPropagation();
 					ev.stopImmediatePropagation();
-					ev.preventDefault(); // Prevent ToastUI's default strikethrough action.
+					ev.preventDefault();
 					
-					// Re-dispatch a new keyboard event at the document level so VS Code can handle save.
-					// VS Code's webview keyboard handling listens at the document level.
+					// Re-dispatch to document level so VS Code can handle save.
 					try {
 						const newEvent = new KeyboardEvent('keydown', {
 							key: ev.key,
@@ -4198,9 +4254,23 @@ function initMarkdownEditor(boxId) {
 						});
 						document.dispatchEvent(newEvent);
 					} catch { /* ignore */ }
+					return;
+				}
+
+				// Markdown formatting shortcuts - let ToastUI handle them, block VS Code.
+				// These are shortcuts where the user intends to format text, not trigger
+				// VS Code commands like toggling the sidebar.
+				if (markdownShortcutKeys.has(key)) {
+					// Stop the event from bubbling to VS Code's webview keyboard handler.
+					// This prevents VS Code from seeing Ctrl+B, Ctrl+I, etc.
+					// ToastUI will still handle the event because we're in capture phase
+					// and only stopping propagation to parent elements.
+					ev.stopPropagation();
+					// Note: We do NOT call preventDefault() here - ToastUI needs to handle the key.
+					// We also do NOT call stopImmediatePropagation() - ToastUI's handlers should run.
 				}
 			} catch { /* ignore */ }
-		}, true); // capture phase - fires before the editor's handlers
+		}, true); // capture phase - fires before propagation to parent (VS Code)
 	} catch { /* ignore */ }
 
 	// Initial pass (in case the preview has already rendered by the time the hook is attached).

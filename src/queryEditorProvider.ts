@@ -3365,17 +3365,22 @@ ${query}
 			// Don't wipe a previously-good cached list with an empty refresh result.
 			if (!forceRefresh || databases.length > 0 || cachedBefore.length === 0) {
 				await this.saveCachedDatabases(connectionId, databases);
-				this.postMessage({ type: 'databasesData', databases, boxId });
+				this.postMessage({ type: 'databasesData', databases, boxId, connectionId });
 				return;
 			}
 
-			this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId });
-			this.postMessage({
-				type: 'databasesError',
-				boxId,
-				error:
-					`Couldn't refresh the database list (received 0 databases). Continuing to use the previous list.\n` +
-					`If you expected databases here, try refreshing again and sign in with a different account.`
+			// Empty refresh result but we have cached data - send cached data and notify user
+			this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+			void vscode.window.showWarningMessage(
+				`Couldn't refresh the database list (received 0 databases). Using cached list.`,
+				'More Info'
+			).then(selection => {
+				if (selection === 'More Info') {
+					void vscode.window.showInformationMessage(
+						`If you expected databases here, try refreshing again and sign in with a different account.`,
+						{ modal: true }
+					);
+				}
 			});
 		} catch (error) {
 			// Auth recovery:
@@ -3383,14 +3388,18 @@ ${query}
 			// - On initial load (not refresh): if there is no cached list, still prompt once so the user can recover.
 			const isAuthErr = this.kustoClient.isAuthenticationError(error);
 			if (isAuthErr && !forceRefresh && cachedBefore.length > 0) {
-				// Keep the editor usable by showing the last known list, but guide the user to re-auth.
-				this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId });
-				this.postMessage({
-					type: 'databasesError',
-					boxId,
-					error:
-						`Couldn't refresh the database list due to an authentication error. Showing the previously cached list.\n` +
-						`Use the refresh button and sign in with the correct account for this cluster.`
+				// Keep the editor usable by showing the last known list, but guide the user to re-auth via notification.
+				this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+				void vscode.window.showWarningMessage(
+					`Couldn't refresh the database list due to an authentication error. Using cached list.`,
+					'More Info'
+				).then(selection => {
+					if (selection === 'More Info') {
+						void vscode.window.showInformationMessage(
+							`Use the refresh button and sign in with the correct account for this cluster.`,
+							{ modal: true }
+						);
+					}
 				});
 				return;
 			}
@@ -3401,7 +3410,7 @@ ${query}
 					await this.kustoClient.reauthenticate(connection, 'clearPreference');
 					const databases = await fetchAndNormalize();
 					await this.saveCachedDatabases(connectionId, databases);
-					this.postMessage({ type: 'databasesData', databases, boxId });
+					this.postMessage({ type: 'databasesData', databases, boxId, connectionId });
 					return;
 				} catch {
 					// Don't immediately prompt a second time. Give the user control.
@@ -3416,14 +3425,14 @@ ${query}
 							await this.kustoClient.reauthenticate(connection, 'clearPreference');
 							const databases = await fetchAndNormalize();
 							await this.saveCachedDatabases(connectionId, databases);
-							this.postMessage({ type: 'databasesData', databases, boxId });
+							this.postMessage({ type: 'databasesData', databases, boxId, connectionId });
 							return;
 						}
 						if (choice === 'Add account') {
 							await this.kustoClient.reauthenticate(connection, 'forceNewSession');
 							const databases = await fetchAndNormalize();
 							await this.saveCachedDatabases(connectionId, databases);
-							this.postMessage({ type: 'databasesData', databases, boxId });
+							this.postMessage({ type: 'databasesData', databases, boxId, connectionId });
 							return;
 						}
 					} catch {
@@ -3434,9 +3443,31 @@ ${query}
 
 			const userMessage = this.formatQueryExecutionErrorForUser(error, connection);
 			const action = forceRefresh ? 'refresh' : 'load';
+
+			// If we have cached data, use it and show a notification instead of inline error
+			if (cachedBefore.length > 0) {
+				this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+				void vscode.window.showWarningMessage(
+					`Failed to ${action} database list. Using cached list.`,
+					'More Info'
+				).then(selection => {
+					if (selection === 'More Info') {
+						void vscode.window.showInformationMessage(userMessage, { modal: true });
+					}
+				});
+				return;
+			}
+
+			// No cached data - show VS Code error notification and send error to webview for UI state
+			void vscode.window.showErrorMessage(`Failed to ${action} database list.`, 'More Info').then(selection => {
+				if (selection === 'More Info') {
+					void vscode.window.showInformationMessage(userMessage, { modal: true });
+				}
+			});
 			this.postMessage({
 				type: 'databasesError',
 				boxId,
+				connectionId,
 				error: `Failed to ${action} database list.\n${userMessage}`
 			});
 		}
@@ -3733,17 +3764,8 @@ ${query}
 						}
 					});
 
-					// Also post an in-UI error so the tooltip shows the issue.
-					this.postMessage({
-						type: 'schemaError',
-						boxId,
-						connectionId,
-						database,
-						requestToken,
-						error: hasRawSchemaJson
-							? `Failed to refresh schema. Using cached schema for autocomplete.\n${userMessage}`
-							: `Failed to refresh schema. Cached schema is outdated - autocomplete may not work.\n${userMessage}`
-					});
+					// Note: We don't send a schemaError message here since we successfully fell back to cached schema.
+					// The VS Code notification is sufficient, and the schema summary already shows the appropriate status.
 					return;
 				}
 			} catch {

@@ -1110,7 +1110,7 @@ window.addEventListener('message', async event => {
 				}
 			} catch { /* ignore */ }
 
-			updateDatabaseSelect(message.boxId, message.databases);
+			updateDatabaseSelect(message.boxId, message.databases, message.connectionId);
 			break;
 		case 'databasesError':
 			// Reject pending database list request if this was a synthetic request id.
@@ -1124,7 +1124,7 @@ window.addEventListener('message', async event => {
 			} catch { /* ignore */ }
 			try {
 				if (typeof onDatabasesError === 'function') {
-					onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
+					onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
 				} else if (typeof window.__kustoDisplayBoxError === 'function') {
 					window.__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
 				}
