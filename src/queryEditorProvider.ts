@@ -3691,15 +3691,17 @@ ${query}
 
 			// If we have any cached schema (even stale), keep using it for autocomplete.
 			// For a user-initiated refresh we still show an error message, but we don't wipe the cache.
+			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 			try {
 				const cached = await this.getCachedSchemaFromDisk(cacheKey);
 				if (cached && cached.schema) {
 					const schema = cached.schema;
 					const tablesCount = schema.tables?.length ?? 0;
 					const columnsCount = countColumns(schema);
+					const hasRawSchemaJson = !!schema.rawSchemaJson;
 
 					this.output.appendLine(
-						`[schema] using cached schema after failure db=${database} tables=${tablesCount} columns=${columnsCount}`
+						`[schema] using cached schema after failure db=${database} tables=${tablesCount} columns=${columnsCount} hasRawSchemaJson=${hasRawSchemaJson}`
 					);
 					this.postMessage({
 						type: 'schemaData',
@@ -3713,30 +3715,48 @@ ${query}
 							fromCache: true,
 							cacheAgeMs: Date.now() - cached.timestamp,
 							tablesCount,
-							columnsCount
+							columnsCount,
+							// Indicate this is a fallback after a failed refresh
+							isFailoverToCache: true,
+							hasRawSchemaJson
 						}
 					});
 
-					// Only show an in-UI error when the user explicitly requested a refresh.
-					if (forceRefresh) {
-						const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
-						this.postMessage({
-							type: 'schemaError',
-							boxId,
-							connectionId,
-							database,
-							requestToken,
-							error: `Failed to refresh schema. Using cached schema for autocomplete.\n${userMessage}`
-						});
-					}
+					// Always show a VS Code notification when we fail to refresh schema (even for automatic refreshes).
+					// This helps users understand why autocomplete might not be working optimally.
+					const notificationMessage = hasRawSchemaJson
+						? `Failed to refresh schema for ${database}. Using cached schema for autocomplete.`
+						: `Failed to refresh schema for ${database}. Cached schema is outdated and autocomplete may not work.`;
+					void vscode.window.showWarningMessage(notificationMessage, 'More Info').then(selection => {
+						if (selection === 'More Info') {
+							void vscode.window.showInformationMessage(userMessage, { modal: true });
+						}
+					});
+
+					// Also post an in-UI error so the tooltip shows the issue.
+					this.postMessage({
+						type: 'schemaError',
+						boxId,
+						connectionId,
+						database,
+						requestToken,
+						error: hasRawSchemaJson
+							? `Failed to refresh schema. Using cached schema for autocomplete.\n${userMessage}`
+							: `Failed to refresh schema. Cached schema is outdated - autocomplete may not work.\n${userMessage}`
+					});
 					return;
 				}
 			} catch {
 				// ignore and fall through to posting schemaError
 			}
 
-			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 			const action = forceRefresh ? 'refresh' : 'load';
+			// Show VS Code notification for total failure (no cache available)
+			void vscode.window.showErrorMessage(`Failed to ${action} schema for ${database}.`, 'More Info').then(selection => {
+				if (selection === 'More Info') {
+					void vscode.window.showInformationMessage(userMessage, { modal: true });
+				}
+			});
 			this.postMessage({
 				type: 'schemaError',
 				boxId,

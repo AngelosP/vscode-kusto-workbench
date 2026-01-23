@@ -1405,12 +1405,38 @@ window.addEventListener('message', async event => {
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
 				const columnsCount = meta.columnsCount ?? 0;
+				const hasRawSchemaJson = !!(message.schema && message.schema.rawSchemaJson);
+				const isFailoverToCache = !!meta.isFailoverToCache;
+				
+				// Determine display text and error state based on schema completeness
+				let displayText = tablesCount + ' tables, ' + columnsCount + ' cols';
+				let tooltipText = 'Schema loaded for autocomplete';
+				let isError = false;
+				
+				if (meta.fromCache) {
+					if (isFailoverToCache && !hasRawSchemaJson) {
+						// Cached schema from failover but missing rawSchemaJson - autocomplete won't work
+						displayText = 'Schema outdated';
+						tooltipText = 'Cached schema is outdated. Autocomplete may not work. Try refreshing schema when connected.';
+						isError = true;
+					} else if (isFailoverToCache) {
+						// Cached schema from failover with rawSchemaJson - works but stale
+						displayText += ' (cached)';
+						tooltipText = 'Using cached schema after connection failure. Schema may be outdated.';
+						// Not an error since autocomplete still works
+					} else {
+						// Normal cache hit
+						displayText += ' (cached)';
+						tooltipText += ' (cached)';
+					}
+				}
+				
 				setSchemaLoadedSummary(
 					message.boxId,
-					tablesCount + ' tables, ' + columnsCount + ' cols',
-					'Schema loaded for autocomplete' + (meta.fromCache ? ' (cached)' : ''),
-					false,
-					{ fromCache: !!meta.fromCache, tablesCount, columnsCount }
+					displayText,
+					tooltipText,
+					isError,
+					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, hasRawSchemaJson, isFailoverToCache }
 				);
 			}
 			break;
