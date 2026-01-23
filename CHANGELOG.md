@@ -5,7 +5,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.5.0] - Unreleased
 
-* 
+* Improved UX and error messages when a Kusto connection cannot be established, yet the user is changing the cluster / database selection (better use of cached schema & better error messages)
+* Bug fixes
+    * Various CTRL+ shortcuts that are used by VS Code were being interfering with editing markdown sections or files. This is an old bug that returned, so fixed it again.
 
 ## [0.4.0] - 2026-22-01
 

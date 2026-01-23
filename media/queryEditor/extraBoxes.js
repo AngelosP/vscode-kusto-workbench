@@ -1644,6 +1644,13 @@ function __kustoApplyChartBoxVisibility(boxId) {
 		if (wrapper) {
 			wrapper.style.display = expanded ? '' : 'none';
 		}
+		// Hide/show Edit and Preview buttons and the divider when minimized
+		const editBtn = document.getElementById(boxId + '_chart_mode_edit');
+		const previewBtn = document.getElementById(boxId + '_chart_mode_preview');
+		const divider = document.getElementById(boxId + '_chart_mode_divider');
+		if (editBtn) editBtn.style.display = expanded ? '' : 'none';
+		if (previewBtn) previewBtn.style.display = expanded ? '' : 'none';
+		if (divider) divider.style.display = expanded ? '' : 'none';
 		__kustoUpdateChartVisibilityToggleButton(boxId);
 		if (expanded) {
 			try { __kustoRenderChart(boxId); } catch { /* ignore */ }
@@ -1839,7 +1846,7 @@ function addChartBox(options) {
 		'<div class="md-tabs" role="tablist" aria-label="Chart tools">' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
-		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
+		'<span class="md-tabs-divider" id="' + id + '_chart_mode_divider" aria-hidden="true"></span>' +
 		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_chart_max" type="button" onclick="__kustoMaximizeChartBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="unified-btn-secondary md-tab" id="' + id + '_chart_toggle" type="button" role="tab" aria-selected="false" onclick="toggleChartBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
