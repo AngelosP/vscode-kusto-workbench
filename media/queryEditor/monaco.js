@@ -5450,13 +5450,6 @@ function ensureMonaco() {
 							// Mark worker as initialized once a query box gets focus
 							window.__kustoWorkerInitialized = true;
 							
-							// Enable markers for this editor's model FIRST (lazy diagnostics)
-							// This allows red squiggles to show after focus
-							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
-							if (enableMarkers) {
-								window.__kustoEnableMarkersForBox(boxId);
-							}
-							
 							// If we need to reload schemas after tab became visible, do it now
 							if (window.__kustoWorkerNeedsSchemaReload) {
 								window.__kustoWorkerNeedsSchemaReload = false;
@@ -5478,8 +5471,17 @@ function ensureMonaco() {
 							const connectionId = connectionSelect ? connectionSelect.value : '';
 							const database = databaseSelect ? databaseSelect.value : '';
 							
+							// Only enable markers (red squiggles) if both cluster and database are selected.
+							// Without a full connection context, diagnostics would show false positives.
 							if (!connectionId || !database) {
 								return;
+							}
+							
+							// Enable markers for this editor's model AFTER confirming connection context (lazy diagnostics)
+							// This allows red squiggles to show after focus, but only when we have schema context
+							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
+							if (enableMarkers) {
+								window.__kustoEnableMarkersForBox(boxId);
 							}
 							
 							// Get the cluster URL for this connection
