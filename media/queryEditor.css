@@ -15,8 +15,10 @@
 		.comparison-diff-link:focus {
 			opacity: 0.95;
 		}
+		/* Don't reserve a phantom scrollbar gutter on the root element.
+		   In VS Code webviews this can look like unexplained right-side padding. */
 		html {
-			scrollbar-gutter: stable;
+			scrollbar-gutter: auto;
 		}
 		
 		body {
@@ -112,8 +114,9 @@
 
 		/* Mode buttons: add a little top margin in .md mode. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-mode-btn {
-			margin-top: 10px;
-			margin-bottom: 10px;
+			/* Use container padding instead of button margins to avoid clipping in tight layouts. */
+			margin-top: 0;
+			margin-bottom: 0;
 		}
 
 		/* Remove the leftover divider line next to the mode buttons in .md mode. */
@@ -124,6 +127,8 @@
 		/* Align the mode buttons to the left and match the toolbar left margin. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs {
 			margin-left: 10px;
+			padding-top: 10px;
+			padding-bottom: 10px;
 		}
 		/* Undo any prior per-button alignment tweaks now that the group is left-aligned. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_md_mode_wysiwyg"] {
@@ -145,14 +150,17 @@
 			outline: none !important;
 			box-shadow: none !important;
 			background: transparent;
+			padding-top: 0px !important;
 		}
 
 		/* Toast UI toolbar: keep a border just around the toolbar in .md mode. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
 			box-shadow: none !important;
+			/* Inset the toolbar 10px from both edges. */
 			margin-left: 10px;
 			margin-right: 10px;
+			box-sizing: border-box;
 			margin-bottom: 0 !important;
 		}
 
@@ -162,13 +170,12 @@
 		}
 
 		/* Remove the extra vertical gap between the toolbar and the editor surface in .md mode.
-		   Also match the left/right margin of the toolbar to align the scrollbar with its edge. */
+		   Also add left/right margins to align the scrollbar with the toolbar edges. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
-			margin-top: 0 !important;
-			margin-left: 10px;
-			margin-right: 10px;
+			margin-top: 5px !important;
+			margin-right: 5px;
 			padding-top: 0 !important;
 		}
 
@@ -180,10 +187,13 @@
 
 		/* .md Preview mode: add extra left/right gutter around the viewer. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer {
+			/* Inset the viewer (and its scrollbar) to align with the toolbar. */
 			margin-left: 10px;
-			/* Nudge the scroll container ~15px wider so the vertical scrollbar sits further right. */
-			margin-right: -5px;
-			margin-top: -30px;
+			margin-right: 5px;
+			padding-left: 0;
+			padding-right: 0;
+			/* Avoid negative margins here; they can overlap/clamp the header controls in Preview mode. */
+			margin-top: 0;
 		}
 
 		.add-controls {
@@ -2084,6 +2094,57 @@
 			padding: 10px;
 		}
 
+		/* Toast UI Markdown headings: remove the default underlines/borders.
+		   Toast UI ships with an H1 double underline and an H2 underline.
+		   We prefer a cleaner VS Code-like look. */
+		.kusto-markdown-editor .toastui-editor-contents h1,
+		.kusto-markdown-editor .toastui-editor-contents h2,
+		.kusto-markdown-editor .toastui-editor-contents h3,
+		.markdown-viewer .toastui-editor-contents h1,
+		.markdown-viewer .toastui-editor-contents h2,
+		.markdown-viewer .toastui-editor-contents h3 {
+			border-bottom: none !important;
+			padding-bottom: 0 !important;
+		}
+
+		/* Toast UI heading size ladder (content): keep H6 as-is, increase each step above it.
+		   Baseline (Toast UI): H6=14, H5=16, H4=18, H3=20, H2=22, H1=24.
+		   Requested deltas: +1/+2/+3/+4/+5 => H5=17, H4=20, H3=23, H2=26, H1=29. */
+		.kusto-markdown-editor .toastui-editor-contents h1,
+		.markdown-viewer .toastui-editor-contents h1 {
+			font-size: 29px !important;
+			line-height: 1.25 !important;
+		}
+		.kusto-markdown-editor .toastui-editor-contents h2,
+		.markdown-viewer .toastui-editor-contents h2 {
+			font-size: 26px !important;
+			line-height: 1.25 !important;
+		}
+		.kusto-markdown-editor .toastui-editor-contents h3,
+		.markdown-viewer .toastui-editor-contents h3 {
+			font-size: 23px !important;
+			line-height: 1.25 !important;
+		}
+		.kusto-markdown-editor .toastui-editor-contents h4,
+		.markdown-viewer .toastui-editor-contents h4 {
+			font-size: 20px !important;
+			line-height: 1.25 !important;
+		}
+		.kusto-markdown-editor .toastui-editor-contents h5,
+		.markdown-viewer .toastui-editor-contents h5 {
+			font-size: 17px !important;
+			line-height: 1.25 !important;
+		}
+
+		/* Toast UI sets a slightly negative bottom margin for H5/H6.
+		   Add +3px spacing below those headings. */
+		.kusto-markdown-editor .toastui-editor-contents h5,
+		.kusto-markdown-editor .toastui-editor-contents h6,
+		.markdown-viewer .toastui-editor-contents h5,
+		.markdown-viewer .toastui-editor-contents h6 {
+			margin-bottom: -1px !important;
+		}
+
 		.markdown-viewer code {
 			background: var(--vscode-textBlockQuote-background);
 			padding: 1px 3px;
@@ -2109,13 +2170,19 @@
 			color: var(--vscode-foreground);
 			height: 35px;
 			min-height: 35px;
-			padding: 0 10px;
+			padding: 0;
+			/* Use margin to inset the toolbar 10px from both edges. */
+			margin-left: 10px;
+			margin-right: 10px;
+			box-sizing: border-box;
 			align-items: center;
 			border-radius: 0;
 		}
 
 		.kusto-markdown-editor .toastui-editor-toolbar {
 			height: 35px;
+			/* Prevent any default negative/odd offsets from eating the left padding. */
+			margin-left: 0 !important;
 		}
 
 		/* Toast UI renders each toolbar control inside a wrapper div. Normalizing that wrapper
