@@ -1763,6 +1763,10 @@ function __kustoApplyChartBoxVisibility(boxId) {
 	try {
 		const st = chartStateByBoxId && chartStateByBoxId[boxId] ? chartStateByBoxId[boxId] : null;
 		const expanded = !!(st ? st.expanded : true);
+		const box = document.getElementById(boxId);
+		if (box) {
+			box.classList.toggle('is-collapsed', !expanded);
+		}
 		const wrapper = document.getElementById(boxId + '_chart_wrapper');
 		if (wrapper) {
 			wrapper.style.display = expanded ? '' : 'none';
@@ -5772,8 +5776,14 @@ function __kustoApplyTransformationBoxVisibility(boxId) {
 		if (wrapper) {
 			wrapper.style.display = expanded ? '' : 'none';
 		}
-		// Hide/show max button when minimized
+		// Hide/show Edit and Preview buttons, the divider, and max button when minimized
+		const editBtn = document.getElementById(boxId + '_tf_mode_edit');
+		const previewBtn = document.getElementById(boxId + '_tf_mode_preview');
+		const divider = document.getElementById(boxId + '_tf_mode_divider');
 		const maxBtn = document.getElementById(boxId + '_tf_max');
+		if (editBtn) editBtn.style.display = expanded ? '' : 'none';
+		if (previewBtn) previewBtn.style.display = expanded ? '' : 'none';
+		if (divider) divider.style.display = expanded ? '' : 'none';
 		if (maxBtn) maxBtn.style.display = expanded ? '' : 'none';
 		__kustoUpdateTransformationVisibilityToggleButton(boxId);
 		if (expanded) {
@@ -7593,7 +7603,7 @@ function addTransformationBox(options) {
 		'<div class="md-tabs" role="tablist" aria-label="Transformation tools">' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
-		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
+		'<span class="md-tabs-divider" id="' + id + '_tf_mode_divider" aria-hidden="true"></span>' +
 		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_tf_max" type="button" onclick="__kustoMaximizeTransformationBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="unified-btn-secondary md-tab" id="' + id + '_tf_toggle" type="button" role="tab" aria-selected="false" onclick="toggleTransformationBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +

@@ -199,11 +199,35 @@
 		.add-controls {
 			width: 100%;
 			display: flex;
-			gap: 8px;
+			gap: 10px;
 			flex-wrap: wrap;
 			justify-content: center;
 			align-items: center;
-			margin: 8px 0 16px;
+			margin: 40px 0 16px;
+		}
+
+		.add-controls-label {
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+			opacity: 0.8;
+			user-select: none;
+		}
+
+		.add-controls-options {
+			display: inline-flex;
+			border-radius: 4px;
+			overflow: hidden;
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+		}
+
+		.add-controls-options .add-control-btn {
+			border: none;
+			border-radius: 0;
+			border-right: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+		}
+
+		.add-controls-options .add-control-btn:last-child {
+			border-right: none;
 		}
 
 		.repo-issues-link {
@@ -2071,6 +2095,11 @@
 		/* Collapsed sections need a bit more breathing room at the bottom. */
 		.query-box.is-collapsed {
 			padding-bottom: 2px;
+		}
+
+		/* Collapsed chart sections need a bit more breathing room at the bottom. */
+		.chart-box.is-collapsed {
+			padding-bottom: 3px;
 		}
 
 		/* Collapsed URL sections: hide the fit-to-contents button. */

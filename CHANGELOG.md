@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * The markdown mode buttons are hidden when the section is minimized.
 * New extension setting for controlling whether it opens .md files by default or not.
 * Much better naming strategy for sections: `<Name> | 'Unamed' [section #<number]`
+* Updated 'Add X / Y / Z' buttons at the bottom of the file to not repeat 'Add'.
 * Bug fixes
     * Various CTRL+ shortcuts that are used by VS Code were being interfering with editing markdown sections or files. This is an old bug that returned, so fixed it again.
     * Search box within a single kusto editor box (e.g., .cls, or .kql file) was losing focus automatically making it impossible to actually search.

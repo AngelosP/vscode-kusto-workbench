@@ -386,6 +386,53 @@ function __kustoFormatNumberForDisplay(val) {
 	}
 }
 
+function __kustoFormatDateForDisplay(dateStr) {
+	// Convert date strings to a clean format like "2025-01-24 15:30:45".
+	// This matches the formatting applied by the Kusto client backend.
+	// Handles:
+	// - ISO 8601 (e.g., "2025-01-24T15:30:45.123Z")
+	// - Verbose Date.toString() format (e.g., "Fri Jan 24 2025 08:30:45 GMT-0800")
+	// - Other parseable date strings
+	try {
+		if (!dateStr || typeof dateStr !== 'string') return null;
+		const s = dateStr.trim();
+		if (!s) return null;
+
+		// Skip pure numeric strings - don't treat them as dates
+		if (/^[+-]?\d+(\.\d+)?$/.test(s)) return null;
+
+		// Quick check: if it's already in our target format "YYYY-MM-DD HH:MM:SS", leave it alone
+		if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return s;
+
+		// Match ISO 8601 date-time patterns - format directly without parsing
+		const isoPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+		if (isoPattern.test(s)) {
+			const parsed = Date.parse(s);
+			if (!isFinite(parsed)) return null;
+			// Format: replace T with space, remove milliseconds and Z
+			return s.replace('T', ' ').replace(/\.\d+Z?$/, '').replace(/Z$/, '');
+		}
+
+		// Try to parse other date formats (e.g., verbose "Fri Jan 24 2025 08:30:45 GMT...")
+		// Only attempt this for strings that look like they might be dates
+		// (contain month names, or patterns like "Day Mon DD YYYY")
+		const verboseDatePattern = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i;
+		if (verboseDatePattern.test(s)) {
+			const parsed = Date.parse(s);
+			if (isFinite(parsed)) {
+				const d = new Date(parsed);
+				// Format as YYYY-MM-DD HH:MM:SS in UTC to match Kusto results
+				const formatted = d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+				return formatted;
+			}
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
+}
+
 function __kustoFormatCellDisplayValueForTable(cell) {
 	try {
 		if (cell === null || cell === undefined) return '';
@@ -400,6 +447,11 @@ function __kustoFormatCellDisplayValueForTable(cell) {
 				if (isFinite(num)) {
 					return __kustoFormatNumberForDisplay(num);
 				}
+			}
+			// Format ISO date strings in a friendly way (e.g., "2025-01-24 15:30:45")
+			const dateFormatted = __kustoFormatDateForDisplay(s);
+			if (dateFormatted !== null) {
+				return dateFormatted;
 			}
 			return cell;
 		}

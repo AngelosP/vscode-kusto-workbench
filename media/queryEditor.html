@@ -16,12 +16,15 @@
 <body>
 	<div id="queries-container"></div>
 	<div class="add-controls" role="group" aria-label="Add sections">
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Add Query</button></span>
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="chart" onclick="__kustoRequestAddSection('chart')">Add Chart</button></span>
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="transformation" onclick="__kustoRequestAddSection('transformation')">Add Transformations</button></span>
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Add Markdown</button></span>
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Add Python</button></span>
-		<span class="add-control-wrapper"><button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">Add URL</button></span>
+		<span class="add-controls-label">Add</span>
+		<span class="add-controls-options">
+			<button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Query</button>
+			<button class="add-control-btn" data-add-kind="chart" onclick="__kustoRequestAddSection('chart')">Chart</button>
+			<button class="add-control-btn" data-add-kind="transformation" onclick="__kustoRequestAddSection('transformation')">Transformation</button>
+			<button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Markdown</button>
+			<button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Python</button>
+			<button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">URL</button>
+		</span>
 	</div>
 	<div class="repo-issues-link" role="note" aria-label="Feedback">
 		<a class="repo-issues-anchor" href="https://github.com/AngelosP/vscode-kusto-workbench/issues" target="_blank" rel="noopener noreferrer">Ask for a fix or feature</a>
