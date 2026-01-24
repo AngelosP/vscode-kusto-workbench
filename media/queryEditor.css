@@ -672,10 +672,9 @@
 			flex-wrap: wrap;
 		}
 
-		/* Keep the Data dropdown from spanning the full control width.
-		   Visually matches the 3-column mapping grid rows (X/Y/Legend etc). */
+		/* Let the Data dropdown span the full row width for all chart types. */
 		.chart-box .kusto-chart-row:not(.kusto-chart-row-type) .select-wrapper {
-			max-width: calc((100% - 16px) / 3);
+			flex: 1 1 auto;
 		}
 
 		.chart-box .kusto-chart-row > label {
@@ -1108,16 +1107,18 @@
 			align-items: center;
 		}
 
-		/* Pie + Scatter feel visually tighter because of different control composition.
+		/* Pie + Funnel + Scatter feel visually tighter because of different control composition.
 		   Add +2px so their perceived row spacing matches Area/Bar/Line. */
 		.kusto-chart-mapping[data-chart-type="pie"] .kusto-chart-mapping-grid,
+		.kusto-chart-mapping[data-chart-type="funnel"] .kusto-chart-mapping-grid,
 		.kusto-chart-mapping[data-chart-type="scatter"] .kusto-chart-mapping-grid {
 			row-gap: 16px;
 		}
 
 		/* Also add a tiny bit more space between the "Data" row and the first mapping row
-		   (Data → Label for Pie, Data → X for Scatter). */
+		   (Data → Label for Pie/Funnel, Data → X for Scatter). */
 		.kusto-chart-mapping[data-chart-type="pie"],
+		.kusto-chart-mapping[data-chart-type="funnel"],
 		.kusto-chart-mapping[data-chart-type="scatter"] {
 			margin-top: 3px;
 		}
@@ -1144,6 +1145,12 @@
 		.kusto-chart-legend-inline .select-wrapper {
 			flex: 1 1 auto;
 			min-width: 0;
+		}
+
+		/* Extend the Legend field group so its dropdown right edge aligns with the Data dropdown.
+		   The legend position button (30px) + gap (6px) = 36px needs to extend past the grid column. */
+		.kusto-chart-mapping-grid > [id$="_chart_legend_group"] {
+			width: calc(100% + 36px);
 		}
 
 		.kusto-chart-legend-pos-btn {

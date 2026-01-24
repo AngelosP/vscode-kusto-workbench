@@ -91,7 +91,7 @@ export type KqlxSectionV1 =
 			editorHeightPx?: number;
 			// Chart builder configuration (optional; webview-specific).
 			dataSourceId?: string;
-			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie';
+			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel';
 			xColumn?: string;
 			yColumns?: string[];
 			yColumn?: string;

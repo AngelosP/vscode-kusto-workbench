@@ -18,9 +18,9 @@ let pythonEditors = {};
 // - mode: 'edit' | 'preview'
 // - expanded: boolean (show/hide)
 // - dataSourceId: boxId of the data source section
-// - chartType: 'line' | 'area' | 'bar' | 'scatter' | 'pie'
+// - chartType: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel'
 // - xColumn/yColumn: for line/area/bar/scatter
-// - labelColumn/valueColumn: for pie
+// - labelColumn/valueColumn: for pie/funnel
 // - tooltipColumns: string[] (columns to show in tooltip)
 // - showDataLabels: boolean (show labels on data points)
 // - sortColumn: string (column to sort by)
@@ -112,7 +112,8 @@ const __kustoChartTypeIcons = {
 	area: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4,24 L10,16 L16,20 L22,8 L28,12 L28,28 L4,28 Z"/></svg>',
 	bar: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><rect x="4" y="16" width="5" height="12" rx="1"/><rect x="11" y="10" width="5" height="18" rx="1"/><rect x="18" y="14" width="5" height="14" rx="1"/><rect x="25" y="6" width="5" height="22" rx="1"/></svg>',
 	scatter: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor"><circle cx="8" cy="20" r="2.5"/><circle cx="14" cy="12" r="2.5"/><circle cx="20" cy="18" r="2.5"/><circle cx="26" cy="8" r="2.5"/><circle cx="11" cy="24" r="2.5"/><circle cx="23" cy="22" r="2.5"/></svg>',
-	pie: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="16" cy="16" r="12" fill="currentColor" fill-opacity="0.2"/><path d="M16,16 L16,4 A12,12 0 0,1 27.2,20.8 Z" fill="currentColor" fill-opacity="0.5"/><path d="M16,16 L27.2,20.8 A12,12 0 0,1 8,25.6 Z" fill="currentColor" fill-opacity="0.7"/></svg>'
+	pie: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="16" cy="16" r="12" fill="currentColor" fill-opacity="0.2"/><path d="M16,16 L16,4 A12,12 0 0,1 27.2,20.8 Z" fill="currentColor" fill-opacity="0.5"/><path d="M16,16 L27.2,20.8 A12,12 0 0,1 8,25.6 Z" fill="currentColor" fill-opacity="0.7"/></svg>',
+	funnel: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><path d="M4,4 L28,4 L28,7 L4,7 Z"/><path d="M6,9 L26,9 L26,12 L6,12 Z" fill-opacity="0.6"/><path d="M8,14 L24,14 L24,17 L8,17 Z" fill-opacity="0.5"/><path d="M10,19 L22,19 L22,22 L10,22 Z" fill-opacity="0.4"/><path d="M12,24 L20,24 L20,27 L12,27 Z" fill-opacity="0.3"/></svg>'
 };
 
 const __kustoChartTypeLabels = {
@@ -120,7 +121,8 @@ const __kustoChartTypeLabels = {
 	area: 'Area',
 	bar: 'Bar',
 	scatter: 'Scatter',
-	pie: 'Pie'
+	pie: 'Pie',
+	funnel: 'Funnel'
 };
 
 const __kustoLegendPositionCycle = ['top', 'right', 'bottom', 'left'];
@@ -495,7 +497,7 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	} catch { /* ignore */ }
 	try {
 		if (mappingLineHost) mappingLineHost.style.display = (chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter') ? '' : 'none';
-		if (mappingPieHost) mappingPieHost.style.display = (chartType === 'pie') ? '' : 'none';
+		if (mappingPieHost) mappingPieHost.style.display = (chartType === 'pie' || chartType === 'funnel') ? '' : 'none';
 	} catch { /* ignore */ }
 
 	// Legend column selection only applies to line/area/bar.
@@ -546,8 +548,9 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	}
 
 	// Populate Tooltip checkbox dropdown (for all chart types).
-	const tooltipMenuId = (chartType === 'pie') ? (id + '_chart_tooltip_pie_menu') : (id + '_chart_tooltip_menu');
-	const tooltipTextId = (chartType === 'pie') ? (id + '_chart_tooltip_pie_text') : (id + '_chart_tooltip_text');
+	const isPieOrFunnel = (chartType === 'pie' || chartType === 'funnel');
+	const tooltipMenuId = isPieOrFunnel ? (id + '_chart_tooltip_pie_menu') : (id + '_chart_tooltip_menu');
+	const tooltipTextId = isPieOrFunnel ? (id + '_chart_tooltip_pie_text') : (id + '_chart_tooltip_text');
 	const tooltipMenu = document.getElementById(tooltipMenuId);
 	if (tooltipMenu) {
 		const tooltipOptions = colNames.filter(c => c);
@@ -562,7 +565,7 @@ function __kustoUpdateChartBuilderUI(boxId) {
 		}));
 		try {
 			tooltipMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
-				dropdownId: (chartType === 'pie') ? (id + '_chart_tooltip_pie') : (id + '_chart_tooltip'),
+				dropdownId: isPieOrFunnel ? (id + '_chart_tooltip_pie') : (id + '_chart_tooltip'),
 				onChangeJs: '__kustoOnChartTooltipCheckboxChanged'
 			});
 		} catch {
@@ -621,7 +624,7 @@ function __kustoUpdateChartBuilderUI(boxId) {
 					st.yColumns = st.yColumn ? [st.yColumn] : [];
 				}
 			}
-			if (chartType === 'pie') {
+			if (chartType === 'pie' || chartType === 'funnel') {
 				if (!st.labelColumn) st.labelColumn = colNames[0] || '';
 				if (!st.valueColumn) st.valueColumn = __kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
 			}
@@ -1049,6 +1052,90 @@ function __kustoRenderChart(boxId) {
 							show: showLabels,
 							length: 10,
 							length2: 15
+						}
+					}]
+				};
+			}
+		} else if (chartType === 'funnel') {
+			const li = indexOf(st.labelColumn);
+			const vi = indexOf(st.valueColumn);
+			const valueColName = st.valueColumn || 'Value';
+			if (li < 0 || vi < 0) {
+				showErrorAndReturn('Select columns.');
+				return;
+			} else {
+				const data = (rows || []).map(r => {
+					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
+					const value = (r && r.length > vi) ? __kustoCellToChartNumber(r[vi]) : null;
+					const tooltipPayload = __kustoGetTooltipPayloadForRow(r);
+					return { name: label, value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0, __kustoTooltip: tooltipPayload };
+				});
+				// Calculate max value for percentage (first step in funnel, which should be the largest)
+				const maxValue = data.length > 0 ? Math.max(...data.map(d => d.value)) : 1;
+				const showLabels = !!st.showDataLabels;
+				option = {
+					backgroundColor: 'transparent',
+					tooltip: {
+						...__kustoTooltipCommon,
+						trigger: 'item',
+						formatter: (params) => {
+							try {
+								const name = params && params.name ? params.name : '';
+								const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
+								const percent = maxValue > 0 && params && typeof params.value === 'number' ? ((params.value / maxValue) * 100).toFixed(1) : '0.0';
+								const lines = [`${__kustoEscapeHtml(name)}`, `<strong>${__kustoEscapeHtml(valueColName)}</strong>: ${__kustoEscapeHtml(value)} (${__kustoEscapeHtml(percent)}%)`];
+								const payload = params && params.data && params.data.__kustoTooltip ? params.data.__kustoTooltip : null;
+								__kustoAppendTooltipColumnsHtmlLines(lines, payload, 0);
+								return lines.join('<br/>');
+							} catch {
+								return '';
+							}
+						}
+					},
+					legend: __kustoBuildLegendOption(legendPosition),
+					series: [{
+						type: 'funnel',
+						left: '10%',
+						top: 30,
+						bottom: 30,
+						width: '80%',
+						minSize: '0%',
+						maxSize: '100%',
+						sort: 'descending',
+						gap: 2,
+						data,
+						label: {
+							show: showLabels,
+							position: 'inside',
+							fontFamily: 'monospace',
+							fontSize: 11,
+							color: '#fff',
+							textBorderColor: 'rgba(0, 0, 0, 0.7)',
+							textBorderWidth: 3,
+							textShadowColor: 'rgba(0, 0, 0, 0.5)',
+							textShadowBlur: 4,
+							formatter: (params) => {
+								try {
+									const name = params && params.name ? String(params.name) : '';
+									const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
+									const percent = maxValue > 0 && params && typeof params.value === 'number' ? ((params.value / maxValue) * 100).toFixed(1) : '0.0';
+									return name + ': ' + value + ' (' + percent + '%)';
+								} catch {
+									return '';
+								}
+							}
+						},
+						labelLine: {
+							show: false
+						},
+						itemStyle: {
+							borderColor: 'transparent',
+							borderWidth: 1
+						},
+						emphasis: {
+							label: {
+								fontSize: 12
+							}
 						}
 					}]
 				};
@@ -1863,6 +1950,7 @@ function addChartBox(options) {
 						'<div class="kusto-chart-type-picker" id="' + id + '_chart_type_picker" data-kusto-no-editor-focus="true">' +
 							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="area" onclick="try{__kustoSelectChartType(\'' + id + '\',\'area\')}catch{}" title="Area Chart" aria-label="Area Chart">' + __kustoChartTypeIcons.area + '<span>Area</span></button>' +
 							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="bar" onclick="try{__kustoSelectChartType(\'' + id + '\',\'bar\')}catch{}" title="Bar Chart" aria-label="Bar Chart">' + __kustoChartTypeIcons.bar + '<span>Bar</span></button>' +
+							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="funnel" onclick="try{__kustoSelectChartType(\'' + id + '\',\'funnel\')}catch{}" title="Funnel Chart" aria-label="Funnel Chart">' + __kustoChartTypeIcons.funnel + '<span>Funnel</span></button>' +
 							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="line" onclick="try{__kustoSelectChartType(\'' + id + '\',\'line\')}catch{}" title="Line Chart" aria-label="Line Chart">' + __kustoChartTypeIcons.line + '<span>Line</span></button>' +
 							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="pie" onclick="try{__kustoSelectChartType(\'' + id + '\',\'pie\')}catch{}" title="Pie Chart" aria-label="Pie Chart">' + __kustoChartTypeIcons.pie + '<span>Pie</span></button>' +
 							'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="scatter" onclick="try{__kustoSelectChartType(\'' + id + '\',\'scatter\')}catch{}" title="Scatter Chart" aria-label="Scatter Chart">' + __kustoChartTypeIcons.scatter + '<span>Scatter</span></button>' +
@@ -2292,8 +2380,8 @@ function __kustoUpdateSortDirectionButtonUI(boxId) {
 		if (!id) return;
 		const st = __kustoGetChartState(id);
 		const chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
-		const isPie = (chartType === 'pie');
-		const btn = document.getElementById(isPie ? (id + '_chart_sort_pie_dir_btn') : (id + '_chart_sort_dir_btn'));
+		const isPieOrFunnel = (chartType === 'pie' || chartType === 'funnel');
+		const btn = document.getElementById(isPieOrFunnel ? (id + '_chart_sort_pie_dir_btn') : (id + '_chart_sort_dir_btn'));
 		if (!btn) return;
 
 		const dir = __kustoNormalizeSortDirection(st && st.sortDirection);
@@ -2333,8 +2421,8 @@ function __kustoOnChartSortChanged(boxId) {
 	if (!id) return;
 	const st = __kustoGetChartState(id);
 	const chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
-	const isPie = (chartType === 'pie');
-	const selectId = isPie ? (id + '_chart_sort_pie') : (id + '_chart_sort');
+	const isPieOrFunnel = (chartType === 'pie' || chartType === 'funnel');
+	const selectId = isPieOrFunnel ? (id + '_chart_sort_pie') : (id + '_chart_sort');
 	try {
 		const sel = document.getElementById(selectId);
 		const newValue = sel ? String(sel.value || '') : '';
