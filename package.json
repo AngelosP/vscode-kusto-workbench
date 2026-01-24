@@ -32,6 +32,11 @@
           "default": true,
           "description": "Use Kusto Workbench to open .csl files by default. When disabled, .csl files will open with VS Code's default text editor."
         },
+        "kustoWorkbench.openMdFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use Kusto Workbench to open .md files by default. When disabled, .md files will open with VS Code's default text editor."
+        },
         "kustoWorkbench.debug.mdSearchReveal": {
           "type": "boolean",
           "default": false,

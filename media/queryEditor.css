@@ -1831,9 +1831,9 @@
 			outline: none !important;
 			box-shadow: none !important;
 			/* Preview (read-only) spacing tweaks:
-			   - add +20px top space vs default viewer padding (10px -> 30px)
+			   - no top padding for clean appearance
 			   - add a right gutter so content isn't flush to the scrollbar */
-			padding: 30px 25px 10px 10px;
+			padding: 0 25px 10px 10px;
 		}
 		.query-box.is-md-preview-auto .query-editor-wrapper {
 			height: auto;
@@ -2044,6 +2044,13 @@
 		.query-box.is-collapsed .optimize-config,
 		.query-box.is-collapsed .results-wrapper,
 		.query-box.is-collapsed .comparison-summary-banner {
+			display: none !important;
+		}
+
+		/* Collapsed markdown sections: hide the view mode buttons (WYSIWYG/Markdown/Preview) and divider. */
+		.query-box.is-collapsed .md-mode-btn,
+		.query-box.is-collapsed .md-tabs-divider,
+		.query-box.is-collapsed .md-max-btn {
 			display: none !important;
 		}
 

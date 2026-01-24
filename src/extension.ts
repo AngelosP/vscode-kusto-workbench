@@ -27,6 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const config = vscode.workspace.getConfiguration('kustoWorkbench');
 			const openKqlFiles = config.get<boolean>('openKqlFiles', true);
 			const openCslFiles = config.get<boolean>('openCslFiles', true);
+			const openMdFiles = config.get<boolean>('openMdFiles', false);
 
 			const workbenchConfig = vscode.workspace.getConfiguration('workbench');
 			const currentAssociations = workbenchConfig.get<Record<string, string>>('editorAssociations') || {};
@@ -49,6 +50,13 @@ export function activate(context: vscode.ExtensionContext) {
 				changed = true;
 			}
 
+			// Handle .md files
+			const mdAssociation = openMdFiles ? MdCompatEditorProvider.viewType : 'default';
+			if (newAssociations['*.md'] !== mdAssociation) {
+				newAssociations['*.md'] = mdAssociation;
+				changed = true;
+			}
+
 			if (changed) {
 				await workbenchConfig.update('editorAssociations', newAssociations, vscode.ConfigurationTarget.Global);
 			}
@@ -62,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
 	void updateEditorAssociations();
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles')) {
+			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles') || e.affectsConfiguration('kustoWorkbench.openMdFiles')) {
 				void updateEditorAssociations();
 			}
 		})

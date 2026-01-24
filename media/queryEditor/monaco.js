@@ -9456,6 +9456,7 @@ function initQueryEditor(boxId) {
 
 				// Heuristic: trigger for typical typing / completion contexts.
 				let shouldTrigger = true;
+				let maxChangeLen = 0; // Track longest change to detect autocomplete acceptance vs normal typing
 				try {
 					shouldTrigger = false;
 					const ev = changeEvent && typeof changeEvent === 'object' ? changeEvent : null;
@@ -9468,8 +9469,11 @@ function initQueryEditor(boxId) {
 							if (!txt) {
 								continue; // deletion
 							}
+							maxChangeLen = Math.max(maxChangeLen, txt.length);
+							// Newline insertion is a good time to suggest operators/keywords.
 							if (txt.indexOf('\n') >= 0 || txt.indexOf('\r') >= 0) {
-								continue;
+								shouldTrigger = true;
+								break;
 							}
 							// Typical identifiers / member access / pipe.
 							if (/[A-Za-z0-9_.$|\[\(]/.test(txt)) {
@@ -9506,11 +9510,39 @@ function initQueryEditor(boxId) {
 					}
 				} catch { /* ignore */ }
 
+				const changeLen = maxChangeLen; // Capture for closure
 				ed.__kustoAutoSuggestTimer = setTimeout(() => {
 					try {
 						const now = Date.now();
 						const last = (typeof ed.__kustoAutoSuggestLastTriggeredAt === 'number') ? ed.__kustoAutoSuggestLastTriggeredAt : 0;
 						if (now - last < 180) return;
+
+						// Avoid triggering when cursor is at the very end of a completed word
+						// after accepting a suggestion. Only apply this check when the change
+						// was longer than typical typing (3+ chars), suggesting an autocomplete
+						// acceptance rather than normal character-by-character typing.
+						if (changeLen >= 3) {
+							try {
+								const model = ed.getModel && ed.getModel();
+								const pos = ed.getPosition && ed.getPosition();
+								if (model && pos && typeof model.getLineContent === 'function') {
+									const line = model.getLineContent(pos.lineNumber) || '';
+									const col = pos.column; // 1-based
+									const charBeforeCursor = col > 1 ? line[col - 2] : ''; // col-2 because col is 1-based
+									const charAtCursor = col <= line.length ? line[col - 1] : ''; // char at cursor position (or empty if at EOL)
+
+									const isWordChar = (c) => /[A-Za-z0-9_]/.test(c || '');
+									const isWhitespaceOrEmpty = (c) => !c || /\s/.test(c);
+
+									// If cursor is right after a word character and followed by whitespace/EOL,
+									// we're at the end of a completed term - skip triggering.
+									if (isWordChar(charBeforeCursor) && isWhitespaceOrEmpty(charAtCursor)) {
+										return;
+									}
+								}
+							} catch { /* ignore */ }
+						}
+
 						ed.__kustoAutoSuggestLastTriggeredAt = now;
 						__kustoTriggerAutocomplete(ed);
 					} catch { /* ignore */ }

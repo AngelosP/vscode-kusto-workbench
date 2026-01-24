@@ -3032,7 +3032,8 @@ function __kustoMaximizeMarkdownBox(boxId) {
 			if (!contentH) return undefined;
 
 			const resizerH = 12;
-			const padding = 18;
+			// Reduced by 30px to account for removed top padding in preview mode CSS, plus mode-specific adjustments
+			const padding = (m === 'wysiwyg') ? -1 : 13; // WYSIWYG: -7+6, Markdown: -7+20
 			const minH = 120;
 			return Math.max(minH, Math.ceil(toolbarH + contentH + resizerH + padding + FIT_SLACK_PX));
 		} catch {
