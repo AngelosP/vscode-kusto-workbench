@@ -161,11 +161,14 @@
 			border-radius: 0 !important;
 		}
 
-		/* Remove the extra vertical gap between the toolbar and the editor surface in .md mode. */
+		/* Remove the extra vertical gap between the toolbar and the editor surface in .md mode.
+		   Also match the left/right margin of the toolbar to align the scrollbar with its edge. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
 			margin-top: 0 !important;
+			margin-left: 10px;
+			margin-right: 10px;
 			padding-top: 0 !important;
 		}
 

@@ -14,6 +14,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Search box within a single kusto editor box (e.g., .cls, or .kql file) was losing focus automatically making it impossible to actually search.
     * Chart types Bar, Chart, and Line had UI alignment issues.
     * It used to trigger the auto-complete dropdown when the cursor was at the very end of a term or string, right after the last character and before white space which just ruins the flow of typing with the auto-trigger completions feature enabled.
+    * It used to always copy the table header into the clipboard and it was annoying when we were only trying to copy a single cell or two. So now it only includes the headers when you are copying entire rows.
 
 ## [0.4.0] - 2026-22-01
 

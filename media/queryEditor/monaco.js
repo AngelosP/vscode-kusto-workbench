@@ -10336,6 +10336,7 @@ function initQueryEditor(boxId) {
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
 			try { activeMonacoEditor = editor; } catch { /* ignore */ }
+			try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
@@ -10367,6 +10368,7 @@ function initQueryEditor(boxId) {
 			editor.onDidFocusEditorWidget(() => {
 				activeQueryEditorBoxId = boxId;
 				try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 				syncPlaceholder();
 				scheduleDocUpdate();

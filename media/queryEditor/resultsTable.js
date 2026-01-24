@@ -78,6 +78,70 @@ function __kustoEnsureResultsShownForTool(boxId) {
 	}
 }
 
+// Helper function to focus the table container.
+// Note: DOM focus can be flaky in VS Code webviews when coming from external apps.
+// Instead of fighting focus with timers, we track the last interaction and handle Ctrl+C
+// globally (see __kustoEnsureResultsCopyKeyHandlerInstalled).
+function __kustoFocusTableContainer(container, boxId) {
+	if (!container) return;
+	try {
+		window.__kustoLastActiveResultsBoxId = boxId;
+		window.__kustoLastActiveResultsInteractionAt = Date.now();
+	} catch { /* ignore */ }
+	try { container.focus(); } catch { /* ignore */ }
+}
+
+function __kustoEnsureResultsCopyKeyHandlerInstalled() {
+	try {
+		if (window.__kustoResultsCopyKeyHandlerInstalled) return;
+		window.__kustoResultsCopyKeyHandlerInstalled = true;
+	} catch { /* ignore */ }
+
+	document.addEventListener('keydown', (event) => {
+		try {
+			if (!event || event.defaultPrevented) return;
+			if (!(event.ctrlKey || event.metaKey)) return;
+			const k = String(event.key || '');
+			if (k !== 'c' && k !== 'C') return;
+
+			// If the user is focused in a real text-editing surface, let native copy win.
+			// (Unless it's inside the results table container.)
+			try {
+				const t = event.target;
+				if (t && t.closest) {
+					const inResultsTable = !!t.closest('.table-container');
+					const inTextSurface = !!t.closest('input, textarea, [contenteditable="true"]');
+					if (inTextSurface && !inResultsTable) {
+						return;
+					}
+				}
+			} catch { /* ignore */ }
+
+			const boxId = (typeof window.__kustoLastActiveResultsBoxId === 'string') ? window.__kustoLastActiveResultsBoxId : '';
+			if (!boxId) return;
+
+			// Only override Ctrl+C if the last interaction was with results more recently than Monaco.
+			const lastResultsAt = Number(window.__kustoLastActiveResultsInteractionAt || 0);
+			const lastMonacoAt = Number(window.__kustoLastMonacoInteractionAt || 0);
+			if (lastResultsAt <= lastMonacoAt) return;
+
+			const state = typeof __kustoGetResultsState === 'function' ? __kustoGetResultsState(boxId) : null;
+			if (!state) return;
+
+			const hasCellSelection = !!state.selectedCell || !!state.cellSelectionRange;
+			const hasRowSelection = !!(state.selectedRows && state.selectedRows.size > 0);
+			if (!hasCellSelection && !hasRowSelection) return;
+
+			try { event.preventDefault(); } catch { /* ignore */ }
+			try { event.stopPropagation(); } catch { /* ignore */ }
+			try { if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation(); } catch { /* ignore */ }
+			try { copySelectionToClipboard(boxId); } catch { /* ignore */ }
+		} catch { /* ignore */ }
+	}, true);
+}
+
+try { __kustoEnsureResultsCopyKeyHandlerInstalled(); } catch { /* ignore */ }
+
 function __kustoSetResultsToolsVisible(boxId, visible) {
 	const searchBtn = document.getElementById(boxId + '_results_search_btn');
 	const columnBtn = document.getElementById(boxId + '_results_column_btn');
@@ -3356,6 +3420,12 @@ function selectCell(a, b, c, d) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
+	// Record that results were interacted with (used by global Ctrl+C handler).
+	try {
+		window.__kustoLastActiveResultsBoxId = boxId;
+		window.__kustoLastActiveResultsInteractionAt = Date.now();
+	} catch { /* ignore */ }
+
 	// NOTE: Native `dblclick` doesn't reliably fire because a single click triggers a full
 	// re-render of the results table, replacing the clicked <td>. Detect a rapid second click
 	// on the same cell and treat it as a "double click".
@@ -3433,7 +3503,7 @@ function selectCell(a, b, c, d) {
 	try {
 		const container = document.getElementById(boxId + '_table_container');
 		if (container) {
-			container.focus();
+			__kustoFocusTableContainer(container, boxId);
 		}
 	} catch { /* ignore */ }
 }
@@ -3441,6 +3511,12 @@ function selectCell(a, b, c, d) {
 function toggleRowSelection(row, boxId) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
+
+	// Record that results were interacted with (used by global Ctrl+C handler).
+	try {
+		window.__kustoLastActiveResultsBoxId = boxId;
+		window.__kustoLastActiveResultsInteractionAt = Date.now();
+	} catch { /* ignore */ }
 
 	// Try to get the event for shift-key detection.
 	const ev = __kustoTryGetDomEventFromInlineHandler(null);
@@ -3481,7 +3557,7 @@ function toggleRowSelection(row, boxId) {
 	try {
 		const container = document.getElementById(boxId + '_table_container');
 		if (container) {
-			container.focus();
+			__kustoFocusTableContainer(container, boxId);
 		}
 	} catch { /* ignore */ }
 }
@@ -4314,7 +4390,7 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 				// Always focus the container on mousedown, even if not clicking a cell.
 				// This ensures the table container receives focus for keyboard navigation and copy.
 				ev.preventDefault();
-				container.focus();
+				__kustoFocusTableContainer(container, boxId);
 				if (!cell) return;
 
 				const state = __kustoGetResultsState(boxId);
@@ -4517,12 +4593,8 @@ function copySelectionToClipboard(boxId) {
 	if (state.cellSelectionRange && typeof state.cellSelectionRange === 'object') {
 		const r = state.cellSelectionRange;
 		if (isFinite(r.displayRowMin) && isFinite(r.displayRowMax) && isFinite(r.colMin) && isFinite(r.colMax)) {
-			// Build header row for the selected columns.
-			const headerCells = [];
-			for (let col = r.colMin; col <= r.colMax; col++) {
-				headerCells.push(__kustoCellToClipboardString(columns[col] || ''));
-			}
-			const headerLine = headerCells.join('\t');
+			// Only include headers if entire rows are selected (all columns).
+			const isEntireRowSelection = r.colMin === 0 && r.colMax === columns.length - 1;
 
 			const rowIndices = __kustoGetDisplayRowsInRange(state, r.displayRowMin, r.displayRowMax);
 			const dataLines = rowIndices.map(rowIdx => {
@@ -4533,7 +4605,19 @@ function copySelectionToClipboard(boxId) {
 				}
 				return cells.join('\t');
 			});
-			__kustoCopyTextToClipboard([headerLine, ...dataLines].join('\n'));
+
+			if (isEntireRowSelection) {
+				// Build header row for the selected columns.
+				const headerCells = [];
+				for (let col = r.colMin; col <= r.colMax; col++) {
+					headerCells.push(__kustoCellToClipboardString(columns[col] || ''));
+				}
+				const headerLine = headerCells.join('\t');
+				__kustoCopyTextToClipboard([headerLine, ...dataLines].join('\n'));
+			} else {
+				// Partial column selection (specific cells): no headers.
+				__kustoCopyTextToClipboard(dataLines.join('\n'));
+			}
 			return;
 		}
 	}
