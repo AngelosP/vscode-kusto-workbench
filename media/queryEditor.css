@@ -3797,7 +3797,7 @@
 			border-radius: 2px;
 			color: var(--vscode-foreground);
 			cursor: pointer;
-			padding: 4px 8px;
+			padding: 4px 3px;
 			font-size: 14px;
 		}
 

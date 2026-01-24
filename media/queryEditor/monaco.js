@@ -7535,12 +7535,6 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 						const text = (messageEl.textContent || '').toLowerCase();
 						if (text.includes('no suggestion')) return true;
 					}
-					// Also check if the list is empty (no rows visible)
-					const rows = widget.querySelectorAll('.monaco-list-row');
-					if (!rows || rows.length === 0) {
-						// Widget visible but no rows - likely "No suggestions"
-						return true;
-					}
 					return false;
 				} catch {
 					return false;
@@ -9535,8 +9529,8 @@ function initQueryEditor(boxId) {
 								shouldTrigger = true;
 								break;
 							}
-							// Typical identifiers / member access / pipe.
-							if (/[A-Za-z0-9_.$|\[\(]/.test(txt)) {
+							// Typical identifiers / member access / pipe / assignment.
+							if (/[A-Za-z0-9_.$|\[\(=]/.test(txt)) {
 								shouldTrigger = true;
 								break;
 							}
