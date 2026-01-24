@@ -1101,7 +1101,7 @@ function __kustoRenderChart(boxId) {
 						width: '80%',
 						minSize: '0%',
 						maxSize: '100%',
-						sort: 'descending',
+						sort: 'none',
 						gap: 2,
 						data,
 						label: {
