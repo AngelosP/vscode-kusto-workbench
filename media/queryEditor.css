@@ -23,6 +23,7 @@
 			font-family: var(--vscode-font-family);
 			color: var(--vscode-foreground);
 			padding: 16px;
+			overflow-x: hidden;
 		}
 
 		/* Plain .md files: maximize usable width and simplify section chrome. */

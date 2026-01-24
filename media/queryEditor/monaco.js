@@ -7524,6 +7524,65 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
 			try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
 
+			// Helper to check if the suggest widget is showing "No suggestions" message
+			const isSuggestWidgetShowingNoSuggestions = () => {
+				try {
+					const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: true, maxDistancePx: 320 });
+					if (!widget) return false;
+					// Monaco shows "No suggestions." in a message element when there are no completions
+					const messageEl = widget.querySelector('.message');
+					if (messageEl && __kustoIsElementVisibleForSuggest(messageEl)) {
+						const text = (messageEl.textContent || '').toLowerCase();
+						if (text.includes('no suggestion')) return true;
+					}
+					// Also check if the list is empty (no rows visible)
+					const rows = widget.querySelectorAll('.monaco-list-row');
+					if (!rows || rows.length === 0) {
+						// Widget visible but no rows - likely "No suggestions"
+						return true;
+					}
+					return false;
+				} catch {
+					return false;
+				}
+			};
+
+			// Hide "No suggestions" widget immediately on any user interaction
+			const hideNoSuggestionsOnInteraction = () => {
+				try {
+					if (isSuggestWidgetShowingNoSuggestions()) {
+						safeTrigger(editor, 'hideSuggestWidget');
+					}
+				} catch { /* ignore */ }
+			};
+
+			// Attach interaction listeners to dismiss "No suggestions" quickly
+			let interactionListenersAttached = false;
+			const attachInteractionListeners = () => {
+				if (interactionListenersAttached) return;
+				interactionListenersAttached = true;
+				try {
+					const root = getEditorDomMinimal();
+					if (root) {
+						root.addEventListener('keydown', hideNoSuggestionsOnInteraction, true);
+						root.addEventListener('mousedown', hideNoSuggestionsOnInteraction, true);
+					}
+				} catch { /* ignore */ }
+			};
+			const detachInteractionListeners = () => {
+				if (!interactionListenersAttached) return;
+				interactionListenersAttached = false;
+				try {
+					const root = getEditorDomMinimal();
+					if (root) {
+						root.removeEventListener('keydown', hideNoSuggestionsOnInteraction, true);
+						root.removeEventListener('mousedown', hideNoSuggestionsOnInteraction, true);
+					}
+				} catch { /* ignore */ }
+			};
+			// Attach once on setup
+			try { attachInteractionListeners(); } catch { /* ignore */ }
+
 			let mo = null;
 			let unregister = null;
 			try {
@@ -7542,6 +7601,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				try { mo = null; } catch { /* ignore */ }
 				try { if (typeof unregister === 'function') unregister(); } catch { /* ignore */ }
 				try { unregister = null; } catch { /* ignore */ }
+				try { detachInteractionListeners(); } catch { /* ignore */ }
 				try {
 					for (const d of disposables) {
 						try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
