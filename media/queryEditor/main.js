@@ -2173,6 +2173,8 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 			resyncArraysFromDom();
 			bestEffortRelayoutMovedEditors(draggingId);
 			try { schedulePersist && schedulePersist('reorder'); } catch { /* ignore */ }
+			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
+			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 		});
@@ -2193,6 +2195,8 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 						// the container 'drop' handler may not fire. Persist the reverted DOM order so
 						// users can drag back to the original ordering and clear the dirty state.
 						try { schedulePersist && schedulePersist('reorder'); } catch { /* ignore */ }
+						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
+						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
 					}
 				}
 			} catch {

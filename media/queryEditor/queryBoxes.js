@@ -380,7 +380,7 @@ function addQueryBox(options) {
 		'<div class="query-header-row query-header-row-top">' +
 		'<div class="query-name-group">' +
 		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
+		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{};try{window.__kustoRefreshAllDataSourceDropdowns&&window.__kustoRefreshAllDataSourceDropdowns()}catch{}" />' +
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +

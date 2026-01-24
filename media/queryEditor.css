@@ -2073,6 +2073,11 @@
 			padding-bottom: 2px;
 		}
 
+		/* Collapsed URL sections: hide the fit-to-contents button. */
+		.query-box.is-url-collapsed .md-max-btn {
+			display: none !important;
+		}
+
 		.markdown-viewer {
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 4px;

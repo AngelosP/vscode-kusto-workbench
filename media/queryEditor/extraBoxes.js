@@ -255,10 +255,17 @@ function __kustoGetChartDatasetsInDomOrder() {
 	try {
 		const container = document.getElementById('queries-container');
 		const children = container ? Array.from(container.children || []) : [];
+		// Calculate position among all sections (1-based)
+		let sectionIndex = 0;
 		for (const child of children) {
 			try {
 				const id = child && child.id ? String(child.id) : '';
 				if (!id) continue;
+				// Count all section types for consistent numbering
+				if (id.startsWith('query_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('copilotQuery_')) {
+					sectionIndex++;
+				}
+				// Only include sections that can be data sources
 				if (!(id.startsWith('query_') || id.startsWith('url_'))) continue;
 				if (typeof __kustoGetResultsState !== 'function') continue;
 				const st = __kustoGetResultsState(id);
@@ -269,7 +276,10 @@ function __kustoGetChartDatasetsInDomOrder() {
 				try {
 					name = String(((document.getElementById(id + '_name') || {}).value || '')).trim();
 				} catch { /* ignore */ }
-				const label = name ? name : id;
+				// Format: "<Name> [section #N]" if named, "Unnamed [section #N]" if not
+				const label = name
+					? name + ' [section #' + sectionIndex + ']'
+					: 'Unnamed [section #' + sectionIndex + ']';
 				out.push({
 					id,
 					label,
@@ -283,6 +293,32 @@ function __kustoGetChartDatasetsInDomOrder() {
 	}
 	return out;
 }
+
+/**
+ * Refresh all Chart and Transformation section Data dropdowns.
+ * Call this after sections are reordered, added, or removed to update position labels.
+ */
+function __kustoRefreshAllDataSourceDropdowns() {
+	try {
+		const container = document.getElementById('queries-container');
+		if (!container) return;
+		const children = Array.from(container.children || []);
+		for (const child of children) {
+			try {
+				const id = child && child.id ? String(child.id) : '';
+				if (!id) continue;
+				if (id.startsWith('chart_')) {
+					__kustoUpdateChartBuilderUI(id);
+				} else if (id.startsWith('transformation_')) {
+					__kustoUpdateTransformationBuilderUI(id);
+				}
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+// Expose globally for use by main.js reorder logic
+try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch { /* ignore */ }
 
 function __kustoGetRawCellValueForChart(cell) {
 	try {
@@ -1731,13 +1767,15 @@ function __kustoApplyChartBoxVisibility(boxId) {
 		if (wrapper) {
 			wrapper.style.display = expanded ? '' : 'none';
 		}
-		// Hide/show Edit and Preview buttons and the divider when minimized
+		// Hide/show Edit and Preview buttons, the divider, and max button when minimized
 		const editBtn = document.getElementById(boxId + '_chart_mode_edit');
 		const previewBtn = document.getElementById(boxId + '_chart_mode_preview');
 		const divider = document.getElementById(boxId + '_chart_mode_divider');
+		const maxBtn = document.getElementById(boxId + '_chart_max');
 		if (editBtn) editBtn.style.display = expanded ? '' : 'none';
 		if (previewBtn) previewBtn.style.display = expanded ? '' : 'none';
 		if (divider) divider.style.display = expanded ? '' : 'none';
+		if (maxBtn) maxBtn.style.display = expanded ? '' : 'none';
 		__kustoUpdateChartVisibilityToggleButton(boxId);
 		if (expanded) {
 			try { __kustoRenderChart(boxId); } catch { /* ignore */ }
@@ -3708,6 +3746,8 @@ function onUrlNameInput(boxId) {
 	}
 	autoSizeInputToValue(input, minPx, 250);
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	// Refresh Data dropdowns in Chart/Transformation sections to update labels
+	try { __kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
 }
 
 function __kustoUpdateUrlToggleButton(boxId) {
@@ -5732,6 +5772,9 @@ function __kustoApplyTransformationBoxVisibility(boxId) {
 		if (wrapper) {
 			wrapper.style.display = expanded ? '' : 'none';
 		}
+		// Hide/show max button when minimized
+		const maxBtn = document.getElementById(boxId + '_tf_max');
+		if (maxBtn) maxBtn.style.display = expanded ? '' : 'none';
 		__kustoUpdateTransformationVisibilityToggleButton(boxId);
 		if (expanded) {
 			try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
