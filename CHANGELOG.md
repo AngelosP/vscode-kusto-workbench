@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-25-01
 
 * Improved the Copilot integration.
     * The LLM gets general instructions ala copilot-instructions.md in each new conversation.
