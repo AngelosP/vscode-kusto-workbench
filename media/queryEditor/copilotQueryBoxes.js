@@ -216,7 +216,6 @@
 				'<div class="kusto-copilot-chat-header">' +
 					'<div class="kusto-copilot-chat-title" title="Copilot Chat">' + icon + '<span>Copilot Chat</span></div>' +
 					'<div class="kusto-copilot-chat-model">' +
-						'<label for="' + boxId + '_copilot_model">Model</label>' +
 						modelDropdown +
 						'<div class="kusto-copilot-tools-container">' +
 							'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
