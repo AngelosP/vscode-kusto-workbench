@@ -5,6 +5,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.5.0] - Unreleased
 
+* Improved the Copilot integration.
+    * The LLM gets general instructions ala copilot-instructions.md in each new conversation.
+    * The LLM gets the full conversation history by default.
+    * The user gets the ability to manage the conversation history by being able to delete parts (tool calls, returned queries, etc.) on demand through the chat UI.
+    * The user gets the ability to inspect the tool calls made.
+    * More efficient syntax for Kusto schemas to handle larger databases and be more efficient with the context window. 
 * Added the **Funnel** chart type.
 * Improved UX and error messages when a Kusto connection cannot be established, yet the user is changing the cluster / database selection. Better use of cached schema & better error messages.
 * The chart mode buttons are hidden when the section is minimized.

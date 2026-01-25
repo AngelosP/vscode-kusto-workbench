@@ -19,6 +19,18 @@ export interface DatabaseSchemaIndex {
 	 */
 	columnTypesByTable: Record<string, Record<string, string>>;
 	/**
+	 * Optional docstrings for tables, keyed by table name.
+	 */
+	tableDocStrings?: Record<string, string>;
+	/**
+	 * Optional folder paths for tables, keyed by table name.
+	 */
+	tableFolders?: Record<string, string>;
+	/**
+	 * Optional docstrings for columns, keyed by "TableName.ColumnName".
+	 */
+	columnDocStrings?: Record<string, string>;
+	/**
 	 * Optional list of database-scoped (user-defined) functions.
 	 * Populated best-effort; schema loading should still succeed even if this fails.
 	 */
@@ -41,6 +53,8 @@ export type KustoFunctionInfo = {
 	name: string;
 	parametersText?: string;
 	parameters?: KustoFunctionParameter[];
+	docString?: string;
+	folder?: string;
 };
 
 export interface DatabaseSchemaResult {
@@ -1036,16 +1050,6 @@ export class KustoQueryClient {
 				const debug = this.buildSchemaDebug(result, command);
 				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
 
-				// Best-effort: also cache database-scoped functions (name + parameters).
-				try {
-					const funcs = await this.tryGetDatabaseFunctions(connection, database);
-					if (funcs && funcs.length > 0) {
-						schema.functions = funcs;
-					}
-				} catch {
-					// Ignore function schema errors; table/column schema is still useful.
-				}
-
 				// Store the raw schema JSON for monaco-kusto integration
 				if (rawSchemaJson) {
 					schema.rawSchemaJson = rawSchemaJson;
@@ -1063,126 +1067,16 @@ export class KustoQueryClient {
 		);
 	}
 
-	private async tryGetDatabaseFunctions(connection: KustoConnection, database: string): Promise<KustoFunctionInfo[] | undefined> {
-		// Keep this intentionally light-weight: name + signature only.
-		// Some environments may restrict metadata commands; treat as optional.
-		const command = '.show functions | project Name, Parameters';
-		const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
-		const primary = result?.primaryResults?.[0];
-		if (!primary || !primary.rows) {
-			return undefined;
-		}
-
-		const colNames: string[] = (primary.columns ?? [])
-			.map((c: any) => String(c?.name ?? c?.type ?? ''))
-			.filter(Boolean);
-		const lowered = colNames.map((c) => c.toLowerCase());
-		const nameColIdx = lowered.indexOf('name');
-		const paramsColIdx = lowered.indexOf('parameters');
-		const findVal = (row: any, idx: number, colName: string): any => {
-			if (!row) {
-				return undefined;
-			}
-			// Object-shaped row (driver dependent)
-			if (typeof row === 'object' && !Array.isArray(row)) {
-				if ((row as any)[colName] !== undefined) {
-					return (row as any)[colName];
-				}
-				// sometimes uses lowercase
-				const alt = Object.keys(row).find((k) => String(k).toLowerCase() === String(colName).toLowerCase());
-				if (alt) {
-					return (row as any)[alt];
-				}
-				// fall back to ordinal if present
-				if (typeof idx === 'number' && idx >= 0 && (row as any)[idx] !== undefined) {
-					return (row as any)[idx];
-				}
-				return undefined;
-			}
-			// Array-shaped row
-			if (Array.isArray(row) && typeof idx === 'number' && idx >= 0) {
-				return row[idx];
-			}
-			return undefined;
-		};
-
-		const funcs: KustoFunctionInfo[] = [];
-		for (const row of primary.rows()) {
-			const nameRaw = findVal(row, nameColIdx, 'Name');
-			const paramsRaw = findVal(row, paramsColIdx, 'Parameters');
-			const name = String(nameRaw ?? '').trim();
-			if (!name) {
-				continue;
-			}
-			const parametersText = String(paramsRaw ?? '').trim();
-			const parameters = this.parseKustoFunctionParameters(parametersText);
-			funcs.push({
-				name,
-				parametersText: parametersText || undefined,
-				parameters: parameters.length ? parameters : undefined
-			});
-		}
-
-		// Dedup by name (case-insensitive) and sort for stable caching.
-		const seen = new Set<string>();
-		const deduped: KustoFunctionInfo[] = [];
-		for (const f of funcs) {
-			const key = f.name.toLowerCase();
-			if (seen.has(key)) {
-				continue;
-			}
-			seen.add(key);
-			deduped.push(f);
-		}
-		deduped.sort((a, b) => a.name.localeCompare(b.name));
-		return deduped;
-	}
-
-	private parseKustoFunctionParameters(parametersText: string): KustoFunctionParameter[] {
-		let text = String(parametersText || '').trim();
-		if (!text) {
-			return [];
-		}
-		// `.show functions` typically returns "(p1:type, p2:type)".
-		if (text.startsWith('(') && text.endsWith(')')) {
-			text = text.slice(1, -1).trim();
-		}
-		if (!text) {
-			return [];
-		}
-
-		// Split on commas. Kusto parameter lists are usually simple; keep parsing robust but not over-engineered.
-		const parts = text
-			.split(',')
-			.map((p) => String(p || '').trim())
-			.filter(Boolean);
-
-		const parsed: KustoFunctionParameter[] = [];
-		for (const part of parts) {
-			const raw = part;
-			// Support defaults like: param:type = value
-			const eqIdx = part.indexOf('=');
-			const left = (eqIdx >= 0 ? part.slice(0, eqIdx) : part).trim();
-			const defaultValue = eqIdx >= 0 ? part.slice(eqIdx + 1).trim() : undefined;
-
-			const colonIdx = left.indexOf(':');
-			if (colonIdx < 0) {
-				parsed.push({ name: left || raw, defaultValue, raw });
-				continue;
-			}
-			const name = left.slice(0, colonIdx).trim();
-			const type = left.slice(colonIdx + 1).trim();
-			parsed.push({ name: name || raw, type: type || undefined, defaultValue, raw });
-		}
-		return parsed;
-	}
-
 	/**
 	 * Parses schema result and also returns the raw JSON if available from `.show database schema as json`.
 	 * The raw JSON is used by monaco-kusto's setSchemaFromShowSchema API for full language support.
 	 */
 	private parseDatabaseSchemaResultWithRaw(result: any, commandUsed: string): { schema: DatabaseSchemaIndex; rawSchemaJson?: unknown } {
 		const columnTypesByTable: Record<string, Record<string, string>> = {};
+		const tableDocStrings: Record<string, string> = {};
+		const columnDocStrings: Record<string, string> = {};
+		const tableFolders: Record<string, string> = {};
+		const functions: KustoFunctionInfo[] = [];
 		const primary = result?.primaryResults?.[0];
 		if (!primary) {
 			return { schema: { tables: [], columnTypesByTable: {} } };
@@ -1226,8 +1120,8 @@ export class KustoQueryClient {
 				}
 
 				// If the row itself is already an object/array with schema shape, try it.
-				this.extractSchemaFromJson(rowCandidate, columnTypesByTable);
-				const direct = this.finalizeSchema(columnTypesByTable);
+				this.extractSchemaFromJson(rowCandidate, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+				const direct = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 				if (direct.tables.length > 0) {
 					return { schema: direct, rawSchemaJson };
 				}
@@ -1235,8 +1129,8 @@ export class KustoQueryClient {
 				for (const key of Object.keys(rowCandidate)) {
 					const val = (rowCandidate as any)[key];
 					if (val && typeof val === 'object') {
-						this.extractSchemaFromJson(val, columnTypesByTable);
-						const finalized = this.finalizeSchema(columnTypesByTable);
+						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 						if (finalized.tables.length > 0) {
 							return { schema: finalized, rawSchemaJson };
 						}
@@ -1247,8 +1141,8 @@ export class KustoQueryClient {
 						const trimmed = val.trim();
 						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
 							const parsed = JSON.parse(val);
-							this.extractSchemaFromJson(parsed, columnTypesByTable);
-							const finalized = this.finalizeSchema(columnTypesByTable);
+							this.extractSchemaFromJson(parsed, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+							const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 							if (finalized.tables.length > 0) {
 								return { schema: finalized, rawSchemaJson };
 							}
@@ -1291,11 +1185,15 @@ export class KustoQueryClient {
 			}
 		}
 
-		return { schema: this.finalizeSchema(columnTypesByTable), rawSchemaJson };
+		return { schema: this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions), rawSchemaJson };
 	}
 
 	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {
 		const columnTypesByTable: Record<string, Record<string, string>> = {};
+		const tableDocStrings: Record<string, string> = {};
+		const columnDocStrings: Record<string, string> = {};
+		const tableFolders: Record<string, string> = {};
+		const functions: KustoFunctionInfo[] = [];
 		const primary = result?.primaryResults?.[0];
 		if (!primary) {
 			return { tables: [], columnTypesByTable: {} };
@@ -1307,8 +1205,8 @@ export class KustoQueryClient {
 			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
 			if (rowCandidate && typeof rowCandidate === 'object') {
 				// If the row itself is already an object/array with schema shape, try it.
-				this.extractSchemaFromJson(rowCandidate, columnTypesByTable);
-				const direct = this.finalizeSchema(columnTypesByTable);
+				this.extractSchemaFromJson(rowCandidate, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+				const direct = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 				if (direct.tables.length > 0) {
 					return direct;
 				}
@@ -1316,8 +1214,8 @@ export class KustoQueryClient {
 				for (const key of Object.keys(rowCandidate)) {
 					const val = (rowCandidate as any)[key];
 					if (val && typeof val === 'object') {
-						this.extractSchemaFromJson(val, columnTypesByTable);
-						const finalized = this.finalizeSchema(columnTypesByTable);
+						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 						if (finalized.tables.length > 0) {
 							return finalized;
 						}
@@ -1328,8 +1226,8 @@ export class KustoQueryClient {
 						const trimmed = val.trim();
 						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
 							const parsed = JSON.parse(val);
-							this.extractSchemaFromJson(parsed, columnTypesByTable);
-							const finalized = this.finalizeSchema(columnTypesByTable);
+							this.extractSchemaFromJson(parsed, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+							const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 							if (finalized.tables.length > 0) {
 								return finalized;
 							}
@@ -1372,7 +1270,7 @@ export class KustoQueryClient {
 			}
 		}
 
-		return this.finalizeSchema(columnTypesByTable);
+		return this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 	}
 
 	private buildSchemaDebug(result: any, commandUsed: string): DatabaseSchemaResult['debug'] {
@@ -1397,16 +1295,98 @@ export class KustoQueryClient {
 		}
 	}
 
-	private extractSchemaFromJson(parsed: any, columnTypesByTable: Record<string, Record<string, string>>) {
+	private extractSchemaFromJson(
+		parsed: any,
+		columnTypesByTable: Record<string, Record<string, string>>,
+		tableDocStrings?: Record<string, string>,
+		columnDocStrings?: Record<string, string>,
+		tableFolders?: Record<string, string>,
+		functions?: KustoFunctionInfo[]
+	) {
 		if (!parsed) {
 			return;
 		}
 
-		const addColumn = (tableName: string, colName: string, colType: any) => {
+		const addColumn = (tableName: string, colName: string, colType: any, colDocString?: string) => {
 			const t = String(tableName);
 			const c = String(colName);
 			columnTypesByTable[t] ??= {};
 			columnTypesByTable[t][c] = colType !== undefined && colType !== null ? String(colType) : '';
+			if (colDocString && columnDocStrings) {
+				columnDocStrings[`${t}.${c}`] = colDocString;
+			}
+		};
+
+		const addTableDocString = (tableName: string, docString?: string) => {
+			if (docString && tableDocStrings) {
+				tableDocStrings[String(tableName)] = docString;
+			}
+		};
+
+		const addTableFolder = (tableName: string, folder?: string) => {
+			if (folder && tableFolders) {
+				tableFolders[String(tableName)] = folder;
+			}
+		};
+
+		// Helper to extract function info from JSON schema function object
+		const addFunction = (fnObj: any) => {
+			if (!functions || !fnObj) {
+				return;
+			}
+			const name = fnObj?.Name ?? fnObj?.name;
+			if (!name) {
+				return;
+			}
+			const docString = fnObj?.DocString ?? fnObj?.docString ?? fnObj?.Description ?? fnObj?.description;
+			const folder = fnObj?.Folder ?? fnObj?.folder;
+			// Extract parameters from InputParameters array
+			const inputParams = fnObj?.InputParameters ?? fnObj?.inputParameters ?? [];
+			const parameters: KustoFunctionParameter[] = [];
+			let parametersText = '';
+			if (Array.isArray(inputParams)) {
+				const paramParts: string[] = [];
+				for (const p of inputParams) {
+					const pName = p?.Name ?? p?.name;
+					if (!pName) {
+						continue;
+					}
+					// Check if this is a tabular parameter (has Columns array)
+					const cols = p?.Columns ?? p?.columns;
+					if (Array.isArray(cols) && cols.length > 0) {
+						// Tabular parameter: T:(*) or T:(col1:type, col2:type)
+						const colDefs = cols.map((c: any) => {
+							const cName = c?.Name ?? c?.name;
+							const cType = c?.CslType ?? c?.cslType ?? c?.Type ?? c?.type ?? '';
+							return cType ? `${cName}:${cType}` : cName;
+						}).join(', ');
+						parameters.push({ name: String(pName), type: `(${colDefs})` });
+						paramParts.push(`${pName}:(${colDefs})`);
+					} else {
+						// Scalar parameter
+						const pType = p?.CslType ?? p?.cslType ?? p?.Type ?? p?.type ?? '';
+						const pDefault = p?.CslDefaultValue ?? p?.cslDefaultValue ?? p?.DefaultValue ?? p?.defaultValue ?? '';
+						parameters.push({
+							name: String(pName),
+							type: pType ? String(pType) : undefined,
+							defaultValue: pDefault ? String(pDefault) : undefined
+						});
+						let paramStr = pType ? `${pName}:${pType}` : String(pName);
+						if (pDefault) {
+							paramStr += `=${pDefault}`;
+						}
+						paramParts.push(paramStr);
+					}
+				}
+				parametersText = `(${paramParts.join(', ')})`;
+			}
+			functions.push({
+				name: String(name),
+				parametersText: parametersText || undefined,
+				parameters: parameters.length > 0 ? parameters : undefined,
+				docString: docString ? String(docString).trim() : undefined,
+				folder: folder ? String(folder).trim() : undefined
+			});
 		};
 
 		// Shape observed from `.show database schema as json`:
@@ -1415,7 +1395,7 @@ export class KustoQueryClient {
 		//     <DbName>: {
 		//       Name: <DbName>,
 		//       Tables: {
-		//         <TableName>: { Name: <TableName>, OrderedColumns: [ { Name: ... } ] }
+		//         <TableName>: { Name: <TableName>, Folder: "...", DocString: "...", OrderedColumns: [ { Name: ..., DocString: "..." } ] }
 		//       }
 		//     }
 		//   }
@@ -1432,22 +1412,39 @@ export class KustoQueryClient {
 						if (!tableName) {
 							continue;
 						}
+						const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
+						if (tableDocString) {
+							addTableDocString(String(tableName), String(tableDocString));
+						}
+						const tableFolder = table?.Folder ?? table?.folder;
+						if (tableFolder) {
+							addTableFolder(String(tableName), String(tableFolder));
+						}
 						const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 						if (Array.isArray(cols)) {
 							for (const col of cols) {
 								const colName = (col as any)?.Name ?? (col as any)?.name;
 								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
+								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
 								if (colName) {
-									addColumn(String(tableName), String(colName), colType);
+									addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
 								}
 							}
 						}
 					}
 				}
 
+				// Extract functions from the database object
+				const functionsObj = dbObj?.Functions ?? dbObj?.functions;
+				if (functionsObj && typeof functionsObj === 'object' && !Array.isArray(functionsObj)) {
+					for (const fnValue of Object.values(functionsObj)) {
+						addFunction(fnValue);
+					}
+				}
+
 				// Also recurse into each database object for any alternative shapes.
 				if (dbObj && typeof dbObj === 'object') {
-					this.extractSchemaFromJson(dbObj, columnTypesByTable);
+					this.extractSchemaFromJson(dbObj, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 				}
 			}
 			return;
@@ -1463,13 +1460,22 @@ export class KustoQueryClient {
 				if (!tableName) {
 					continue;
 				}
+				const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
+				if (tableDocString) {
+					addTableDocString(String(tableName), String(tableDocString));
+				}
+				const tableFolder = table?.Folder ?? table?.folder;
+				if (tableFolder) {
+					addTableFolder(String(tableName), String(tableFolder));
+				}
 				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 				if (Array.isArray(cols)) {
 					for (const col of cols) {
 						const colName = col?.Name ?? col?.name;
 						const colType = col?.Type ?? col?.type ?? col?.CslType ?? col?.cslType ?? col?.DataType ?? col?.dataType;
+						const colDocString = col?.DocString ?? col?.docString ?? col?.Description ?? col?.description;
 						if (colName) {
-							addColumn(String(tableName), String(colName), colType);
+							addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
 						}
 					}
 				}
@@ -1485,13 +1491,22 @@ export class KustoQueryClient {
 				if (!tableName) {
 					continue;
 				}
+				const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
+				if (tableDocString) {
+					addTableDocString(String(tableName), String(tableDocString));
+				}
+				const tableFolder = table?.Folder ?? table?.folder;
+				if (tableFolder) {
+					addTableFolder(String(tableName), String(tableFolder));
+				}
 				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
 				if (Array.isArray(cols)) {
 					for (const col of cols) {
 						const colName = (col as any)?.Name ?? (col as any)?.name;
 						const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
+						const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
 						if (colName) {
-							addColumn(String(tableName), String(colName), colType);
+							addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
 						}
 					}
 				}
@@ -1503,15 +1518,46 @@ export class KustoQueryClient {
 		if (typeof parsed === 'object') {
 			for (const value of Object.values(parsed)) {
 				if (Array.isArray(value) || (value && typeof value === 'object')) {
-					this.extractSchemaFromJson(value, columnTypesByTable);
+					this.extractSchemaFromJson(value, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 				}
 			}
 		}
 	}
 
-	private finalizeSchema(columnTypesByTable: Record<string, Record<string, string>>): DatabaseSchemaIndex {
+	private finalizeSchema(
+		columnTypesByTable: Record<string, Record<string, string>>,
+		tableDocStrings?: Record<string, string>,
+		columnDocStrings?: Record<string, string>,
+		tableFolders?: Record<string, string>,
+		functions?: KustoFunctionInfo[]
+	): DatabaseSchemaIndex {
 		const tables = Object.keys(columnTypesByTable).sort((a, b) => a.localeCompare(b));
-		return { tables, columnTypesByTable };
+		const result: DatabaseSchemaIndex = { tables, columnTypesByTable };
+		if (tableDocStrings && Object.keys(tableDocStrings).length > 0) {
+			result.tableDocStrings = tableDocStrings;
+		}
+		if (columnDocStrings && Object.keys(columnDocStrings).length > 0) {
+			result.columnDocStrings = columnDocStrings;
+		}
+		if (tableFolders && Object.keys(tableFolders).length > 0) {
+			result.tableFolders = tableFolders;
+		}
+		// Include functions extracted from JSON schema (deduped and sorted)
+		if (functions && functions.length > 0) {
+			const seen = new Set<string>();
+			const deduped: KustoFunctionInfo[] = [];
+			for (const f of functions) {
+				const key = f.name.toLowerCase();
+				if (seen.has(key)) {
+					continue;
+				}
+				seen.add(key);
+				deduped.push(f);
+			}
+			deduped.sort((a, b) => a.name.localeCompare(b.name));
+			result.functions = deduped;
+		}
+		return result;
 	}
 
 	dispose() {

@@ -2,13 +2,19 @@
 
 A modern, notebook-like workflow for Kusto Query Language (KQL) in VS Code.
 
-Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly; without forcing you to abandon existing `.kql` / `.csl` files.
+Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly; without forcing you to abandon existing `.kql` / `.csl` files. It uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
 
-It uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
+It has many power features that accelerate the experts, and empower the newbies. You can search and view results, including complex JSON columns. You can transform data without changing queries. You can create chart and graphs with just a few clicks. You can compare two queries in terms of performance and results to make performance improvements with confidence. All this is just scratching the surface as there is so much more for you to be pleasantly surprised by.
+
+Copilot integration gives your favorite LLM the right context and tools to actually write smart Kusto queries, the type of Kusto queries an expert would write. It can execute its own queries and perform its own checks before giving you a response, drastically improving the quality of the response.
 
 It has advanced markdown capabilities (thanks to the amazing folks at [toastui](https://ui.toast.com/)), so you could even just use it as a better markdown editor (with WYSIWYG support) for VS Code. Open existing .md files (open with, or change association), or make new empty .mdx file and give it a go.
 
-## Screenshots
+## Key Features
+
+It is not really possible to cover every single feature here with a screenshot and an explanation. Hopefully most of the functionality is intuitive, and easy to discover organically. If you are lacking any functionality or you think something isn't working correctly, just please don't hesitate to reach out.
+
+ 
 
 ### Modern editor with a bunch of features
 

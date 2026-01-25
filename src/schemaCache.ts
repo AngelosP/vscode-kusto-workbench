@@ -5,7 +5,8 @@ import { DatabaseSchemaIndex } from './kustoClient';
 
 // Increment when the persisted schema JSON shape or semantics change.
 // Used to automatically refresh stale cache entries created by older extension versions.
-export const SCHEMA_CACHE_VERSION = 3;
+// Version 4: Extract function docString and folder from JSON schema (2025-01-24)
+export const SCHEMA_CACHE_VERSION = 4;
 
 export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number };
 

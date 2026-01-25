@@ -1898,7 +1898,48 @@ window.addEventListener('message', async event => {
 						boxId,
 						message.tool || '',
 						message.label || '',
-						message.json || ''
+						message.json || '',
+						message.entryId || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotExecutedQuery':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendExecutedQuery === 'function') {
+					window.__kustoCopilotAppendExecutedQuery(
+						boxId,
+						message.query || '',
+						message.resultSummary || '',
+						message.errorMessage || '',
+						message.entryId || '',
+						message.result || null // Pass result for insert-with-results
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotGeneralQueryRulesLoaded':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendGeneralRulesLink === 'function') {
+					window.__kustoCopilotAppendGeneralRulesLink(
+						boxId,
+						message.filePath || '',
+						message.preview || '',
+						message.entryId || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotUserQuerySnapshot':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendQuerySnapshot === 'function') {
+					window.__kustoCopilotAppendQuerySnapshot(
+						boxId,
+						message.queryText || '',
+						message.entryId || ''
 					);
 				}
 			} catch { /* ignore */ }

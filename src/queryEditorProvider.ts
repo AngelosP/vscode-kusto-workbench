@@ -11,7 +11,7 @@ import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
-import { countColumns } from './schemaIndexUtils';
+import { countColumns, formatSchemaAsCompactText } from './schemaIndexUtils';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
@@ -101,6 +101,12 @@ type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; req
 
 type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
 
+// Conversation history entry types for Copilot Chat
+type ConversationHistoryEntry =
+	| { type: 'user-message'; id: string; text: string; querySnapshot?: string; timestamp: number }
+	| { type: 'tool-call'; id: string; tool: string; args?: unknown; result: string; removed?: boolean; timestamp: number }
+	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number };
+
 type IncomingWebviewMessage =
 	| { type: 'getConnections' }
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
@@ -126,6 +132,8 @@ type IncomingWebviewMessage =
 	| { type: 'prepareCopilotWriteQuery'; boxId: string }
 	| StartCopilotWriteQueryMessage
 	| { type: 'cancelCopilotWriteQuery'; boxId: string }
+	| { type: 'clearCopilotConversation'; boxId: string }
+	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
 	| { type: 'cancelOptimizeQuery'; boxId: string }
 	| OptimizeQueryMessage
@@ -137,6 +145,8 @@ type IncomingWebviewMessage =
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
 	| FetchControlCommandSyntaxMessage
+	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
+	| { type: 'openMarkdownPreview'; filePath: string }
 	| { type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string }
 	| {
 			type: 'comparisonSummary';
@@ -180,11 +190,16 @@ export class QueryEditorProvider {
 	>();
 	private copilotWriteSeq = 0;
 	private queryRunSeq = 0;
+	private copilotHistoryEntrySeq = 0;
 	private readonly kqlLanguageHost: KqlLanguageServiceHost;
 	private readonly resolvedResourceUriCache = new Map<string, string>();
-	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; value: string }>();
+	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; result: string; label: string }>();
 	private readonly controlCommandSyntaxCache = new Map<string, { timestamp: number; syntax: string; withArgs: string[]; error?: string }>();
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+	// Track which boxes have already received general-query-rules.md (first message only)
+	private readonly copilotGeneralRulesSentPerBox = new Set<string>();
+	// Conversation history per box for Copilot Chat
+	private readonly copilotConversationHistoryByBoxId = new Map<string, ConversationHistoryEntry[]>();
 
 	private getCopilotLocalTools(): CopilotLocalTool[] {
 		return [
@@ -198,6 +213,12 @@ export class QueryEditorProvider {
 				name: 'get_query_optimization_best_practices',
 				label: 'Get query optimization best practices',
 				description: 'Returns the extension\'s query optimization best practices document (optimize-query-rules.md).',
+				enabledByDefault: true
+			},
+			{
+				name: 'execute_kusto_query',
+				label: 'Execute Kusto query and read results',
+				description: 'Executes a KQL query against the connected cluster and returns the results for analysis.',
 				enabledByDefault: true
 			},
 			{
@@ -225,6 +246,21 @@ export class QueryEditorProvider {
 		} catch (e) {
 			const msg = this.getErrorMessage(e);
 			return `Failed to read optimize-query-rules.md: ${msg}`;
+		}
+	}
+
+	private async readGeneralQueryRules(): Promise<{ content: string; filePath: string } | undefined> {
+		// Read from extension's bundled copilot-instructions/general-query-rules.md
+		try {
+			const uri = vscode.Uri.joinPath(this.context.extensionUri, 'copilot-instructions', 'general-query-rules.md');
+			const bytes = await vscode.workspace.fs.readFile(uri);
+			return {
+				content: new TextDecoder('utf-8').decode(bytes),
+				filePath: uri.fsPath
+			};
+		} catch {
+			// File doesn't exist or couldn't be read
+			return undefined;
 		}
 	}
 
@@ -625,6 +661,18 @@ export class QueryEditorProvider {
 			case 'cancelCopilotWriteQuery':
 				this.cancelCopilotWriteQuery(message.boxId);
 				return;
+			case 'clearCopilotConversation':
+				this.clearCopilotConversation(message.boxId);
+				return;
+			case 'removeFromCopilotHistory':
+				this.removeFromCopilotHistory(message.boxId, message.entryId);
+				return;
+			case 'openToolResultInEditor':
+				await this.openToolResultInEditor(message);
+				return;
+			case 'openMarkdownPreview':
+				await this.openMarkdownPreview(message.filePath);
+				return;
 			case 'prepareOptimizeQuery':
 				await this.prepareOptimizeQuery(message);
 				return;
@@ -1020,6 +1068,104 @@ export class QueryEditorProvider {
 	}
 
 	/**
+	 * Clears the Copilot conversation state for a box, so the next message is treated as the first.
+	 */
+	private clearCopilotConversation(boxId: string): void {
+		const id = String(boxId || '').trim();
+		if (!id) {
+			return;
+		}
+		// Reset the general rules sent flag so it will be sent again on the next message
+		try {
+			this.copilotGeneralRulesSentPerBox.delete(id);
+		} catch {
+			// ignore
+		}
+		// Clear conversation history
+		try {
+			this.copilotConversationHistoryByBoxId.delete(id);
+		} catch {
+			// ignore
+		}
+	}
+
+	/**
+	 * Marks a conversation history entry as removed (truncated).
+	 * The entry stays in history but its result is replaced with a placeholder.
+	 */
+	private removeFromCopilotHistory(boxId: string, entryId: string): void {
+		const id = String(boxId || '').trim();
+		const eid = String(entryId || '').trim();
+		if (!id || !eid) {
+			return;
+		}
+		const history = this.copilotConversationHistoryByBoxId.get(id);
+		if (!history) {
+			return;
+		}
+		const entry = history.find((e) => e.id === eid);
+		if (entry && (entry.type === 'tool-call' || entry.type === 'general-rules')) {
+			entry.removed = true;
+		}
+	}
+
+	/**
+	 * Helper to generate unique history entry IDs
+	 */
+	private nextHistoryEntryId(boxId: string): string {
+		return `${boxId}_hist_${++this.copilotHistoryEntrySeq}`;
+	}
+
+	/**
+	 * Gets or creates conversation history for a box
+	 */
+	private getOrCreateConversationHistory(boxId: string): ConversationHistoryEntry[] {
+		let history = this.copilotConversationHistoryByBoxId.get(boxId);
+		if (!history) {
+			history = [];
+			this.copilotConversationHistoryByBoxId.set(boxId, history);
+		}
+		return history;
+	}
+
+	/**
+	 * Opens tool result content in a new VS Code editor tab.
+	 */
+	private async openToolResultInEditor(
+		message: Extract<IncomingWebviewMessage, { type: 'openToolResultInEditor' }>
+	): Promise<void> {
+		try {
+			const tool = String(message.tool || 'tool_result').trim();
+			const content = String(message.content || '');
+
+			// Create an untitled document with the content
+			const doc = await vscode.workspace.openTextDocument({
+				content,
+				language: 'plaintext'
+			});
+
+			await vscode.window.showTextDocument(doc, {
+				preview: true,
+				viewColumn: vscode.ViewColumn.Beside
+			});
+		} catch (error) {
+			vscode.window.showErrorMessage(`Failed to open tool result: ${this.getErrorMessage(error)}`);
+		}
+	}
+
+	/**
+	 * Opens a markdown file in VS Code's built-in markdown preview.
+	 */
+	private async openMarkdownPreview(filePath: string): Promise<void> {
+		try {
+			const uri = vscode.Uri.file(filePath);
+			await vscode.commands.executeCommand('markdown.showPreview', uri);
+		} catch (error) {
+			vscode.window.showErrorMessage(`Failed to open markdown preview: ${this.getErrorMessage(error)}`);
+		}
+	}
+
+	/**
 	 * Handle inline completion requests from the webview Monaco editor.
 	 * Uses VS Code's Language Model API to get Copilot suggestions for KQL.
 	 */
@@ -1196,24 +1342,107 @@ Completion:`;
 	}
 
 	private tryParseCopilotToolCall(text: string): { tool: string; args: any } | undefined {
+		const calls = this.parseAllCopilotToolCalls(text);
+		return calls.length > 0 ? calls[0] : undefined;
+	}
+
+	/**
+	 * Parses ALL tool calls from the LLM response.
+	 * The LLM may batch multiple tool calls in a single response like:
+	 * @tool execute_kusto_query {"query":"..."} @tool execute_kusto_query {"query":"..."}
+	 */
+	private parseAllCopilotToolCalls(text: string): Array<{ tool: string; args: any }> {
 		const raw = String(text || '').trim();
-		const m = raw.match(/^@tool\s+([a-zA-Z0-9_\-]+)\s*([\s\S]*)$/);
-		if (!m) {
-			return undefined;
+		if (!raw.startsWith('@tool')) {
+			return [];
 		}
-		const tool = this.normalizeToolName(m[1]);
-		const jsonPart = String(m[2] || '').trim();
-		if (!tool) {
-			return undefined;
+
+		const results: Array<{ tool: string; args: any }> = [];
+		
+		// Split on @tool boundaries while keeping the delimiter
+		// We match: @tool <name> <json until next @tool or end>
+		const toolCallRegex = /@tool\s+([a-zA-Z0-9_\-]+)\s*/g;
+		const matches: Array<{ index: number; tool: string; endOfToolName: number }> = [];
+		
+		let match;
+		while ((match = toolCallRegex.exec(raw)) !== null) {
+			const tool = this.normalizeToolName(match[1]);
+			if (tool) {
+				matches.push({
+					index: match.index,
+					tool,
+					endOfToolName: match.index + match[0].length
+				});
+			}
 		}
-		if (!jsonPart) {
-			return { tool, args: {} };
+
+		for (let i = 0; i < matches.length; i++) {
+			const current = matches[i];
+			const nextIndex = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+			const jsonPart = raw.substring(current.endOfToolName, nextIndex).trim();
+			
+			if (!jsonPart) {
+				results.push({ tool: current.tool, args: {} });
+			} else {
+				try {
+					// Try to parse just the JSON object (may have trailing content)
+					const parsed = this.parseJsonPrefix(jsonPart);
+					results.push({ tool: current.tool, args: parsed ?? { raw: jsonPart } });
+				} catch {
+					results.push({ tool: current.tool, args: { raw: jsonPart } });
+				}
+			}
 		}
-		try {
-			return { tool, args: JSON.parse(jsonPart) };
-		} catch {
-			return { tool, args: { raw: jsonPart } };
+
+		return results;
+	}
+
+	/**
+	 * Attempts to parse a JSON object from the beginning of a string,
+	 * handling cases where there may be trailing content after the JSON.
+	 */
+	private parseJsonPrefix(text: string): any {
+		const trimmed = text.trim();
+		if (!trimmed.startsWith('{')) {
+			return JSON.parse(trimmed); // Let it throw if invalid
 		}
+		
+		// Find matching closing brace
+		let depth = 0;
+		let inString = false;
+		let escape = false;
+		
+		for (let i = 0; i < trimmed.length; i++) {
+			const c = trimmed[i];
+			
+			if (escape) {
+				escape = false;
+				continue;
+			}
+			
+			if (c === '\\' && inString) {
+				escape = true;
+				continue;
+			}
+			
+			if (c === '"') {
+				inString = !inString;
+				continue;
+			}
+			
+			if (!inString) {
+				if (c === '{') depth++;
+				else if (c === '}') {
+					depth--;
+					if (depth === 0) {
+						return JSON.parse(trimmed.substring(0, i + 1));
+					}
+				}
+			}
+		}
+		
+		// Fallback to parsing the whole thing
+		return JSON.parse(trimmed);
 	}
 
 	private async getExtendedSchemaToolResult(
@@ -1221,7 +1450,7 @@ Completion:`;
 		database: string,
 		boxId: string,
 		token: vscode.CancellationToken
-	): Promise<string> {
+	): Promise<{ result: string; label: string }> {
 		const db = String(database || '').trim();
 		const clusterKey = this.normalizeClusterUrlKey(connection.clusterUrl || '');
 		const memCacheKey = `${clusterKey}|${db}`;
@@ -1235,7 +1464,7 @@ Completion:`;
 		try {
 			const cached = this.copilotExtendedSchemaCache.get(memCacheKey);
 			if (cached && now - cached.timestamp < this.SCHEMA_CACHE_TTL_MS) {
-				return cached.value;
+				return { result: cached.result, label: cached.label };
 			}
 		} catch {
 			// ignore
@@ -1284,21 +1513,13 @@ Completion:`;
 				const functionsCount = schema.functions?.length ?? 0;
 				const cacheAgeMs = Math.max(0, now - cached.timestamp);
 				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns, ${functionsCount} functions`;
-				jsonText = JSON.stringify(
-					{
-						database: db,
-						schema,
-						meta: {
-							cacheAgeMs,
-							tablesCount,
-							columnsCount,
-							functionsCount,
-							schemaVersion: cached.version ?? 0
-						}
-					},
-					null,
-					2
-				);
+				// Use compact text format instead of JSON to reduce token usage
+				jsonText = formatSchemaAsCompactText(db, schema, {
+					cacheAgeMs,
+					tablesCount,
+					columnsCount,
+					functionsCount
+				});
 			}
 		} catch (error) {
 			const raw = this.getErrorMessage(error);
@@ -1307,24 +1528,159 @@ Completion:`;
 		}
 
 		try {
-			this.copilotExtendedSchemaCache.set(memCacheKey, { timestamp: now, value: jsonText });
+			this.copilotExtendedSchemaCache.set(memCacheKey, { timestamp: now, result: jsonText, label });
 		} catch {
 			// ignore
 		}
 
-		try {
-			this.postMessage({
-				type: 'copilotWriteQueryToolResult',
-				boxId,
-				tool: 'get_extended_schema',
-				label,
-				json: jsonText
-			} as any);
-		} catch {
-			// ignore
+		// Return both result and label; caller is responsible for posting message with entryId
+		return { result: jsonText, label };
+	}
+
+	/**
+	 * Builds the tools description text for the prompt.
+	 */
+	private buildLocalToolsText(enabledTools?: string[]): string {
+		const enabledToolSet = new Set((enabledTools || []).map((t) => this.normalizeToolName(t)).filter(Boolean));
+		const localTools = this.getCopilotLocalTools();
+		const isToolEnabled = (name: string) => {
+			const n = this.normalizeToolName(name);
+			if (!n) return false;
+			// If the client didn't send enabledTools, default to tool defaults.
+			if ((enabledTools || []).length === 0) {
+				const def = localTools.find((t) => this.normalizeToolName(t.name) === n);
+				return def ? def.enabledByDefault !== false : false;
+			}
+			return enabledToolSet.has(n);
+		};
+
+		const enabledLocalTools = localTools.filter((t) => isToolEnabled(t.name));
+		if (enabledLocalTools.length === 0) {
+			return '';
+		}
+		const lines: string[] = [];
+		lines.push('Local tools (REQUIRED response format):');
+		for (const t of enabledLocalTools) {
+			const n = this.normalizeToolName(t.name);
+			if (n === 'get_extended_schema') {
+				lines.push('- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:');
+				lines.push('  @tool get_extended_schema {"database":"<database>"}');
+				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
+				continue;
+			}
+			if (n === 'get_query_optimization_best_practices') {
+				lines.push('- If you want to consult the repository\'s optimization best practices, respond with EXACTLY this and nothing else:');
+				lines.push('  @tool get_query_optimization_best_practices');
+				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
+				continue;
+			}
+			if (n === 'execute_kusto_query') {
+				lines.push('- If you need to run a query to analyze results or understand the data, respond with EXACTLY this and nothing else:');
+				lines.push('  @tool execute_kusto_query {"query":"<full kusto query>"}');
+				lines.push('- The query will be executed and you\'ll receive the results to analyze.');
+				lines.push('- Use this tool when the user asks about existing data, wants to explore data, or needs you to verify something.');
+				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
+				continue;
+			}
+			if (n === 'respond_to_query_performance_optimization_request') {
+				lines.push('- If the user asks you to improve/optimize query performance, your FINAL response MUST be EXACTLY this and nothing else:');
+				lines.push('  @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}');
+				lines.push('- Do not include explanations or code blocks when using this tool.');
+				continue;
+			}
+			if (n === 'respond_to_all_other_queries') {
+				lines.push('- For ALL other requests, your FINAL response MUST be EXACTLY this and nothing else:');
+				lines.push('  @tool respond_to_all_other_queries {"query":"<full kusto query>"}');
+				lines.push('- Do not include explanations or code blocks when using this tool.');
+				continue;
+			}
+			lines.push(`- ${t.name}: ${t.description}`);
+		}
+		return lines.join('\n') + '\n';
+	}
+
+	/**
+	 * Builds a prompt from the conversation history.
+	 * This creates a continuous conversation where each message builds on the previous.
+	 */
+	private buildPromptFromHistory(args: {
+		boxId: string;
+		clusterUrl: string;
+		database: string;
+		enabledTools?: string[];
+		priorAttempts?: Array<{ attempt: number; query?: string; error?: string }>;
+	}): string {
+		const history = this.copilotConversationHistoryByBoxId.get(args.boxId) || [];
+		const parts: string[] = [];
+
+		// System preamble
+		parts.push('Role: You are a senior Kusto Query Language (KQL) engineer.\n');
+		parts.push('Task: Write a complete, runnable KQL query for the user request.\n');
+
+		// Context
+		parts.push('Context:');
+		parts.push(`- Cluster: ${args.clusterUrl || '(unknown)'}`);
+		parts.push(`- Database: ${args.database || '(unknown)'}\n`);
+
+		// Build conversation from history
+		for (const entry of history) {
+			if (entry.type === 'general-rules') {
+				if (entry.removed) {
+					parts.push('[Workspace-specific query rules: truncated from conversation history, refer to your knowledge if needed]\n');
+				} else {
+					parts.push('Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):');
+					parts.push(entry.content + '\n');
+				}
+			} else if (entry.type === 'user-message') {
+				parts.push('User message:');
+				parts.push(entry.text);
+				if (entry.querySnapshot) {
+					parts.push('\nCurrent query in editor:');
+					parts.push('```kusto');
+					parts.push(entry.querySnapshot);
+					parts.push('```');
+				}
+				parts.push('');
+			} else if (entry.type === 'tool-call') {
+				parts.push(`Tool call: @tool ${entry.tool}${entry.args ? ' ' + JSON.stringify(entry.args) : ''}`);
+				if (entry.removed) {
+					parts.push('Tool result: [truncated from conversation history, call tool again if needed]\n');
+				} else {
+					parts.push('Tool result:');
+					parts.push(entry.result + '\n');
+				}
+			}
 		}
 
-		return jsonText;
+		// Prior attempts (within current message execution only)
+		const attemptsText = (args.priorAttempts || [])
+			.map((a) => {
+				const header = `Attempt ${a.attempt}:`;
+				const q = a.query ? `Generated query:\n${a.query}` : '';
+				const e = a.error ? `Error:\n${a.error}` : '';
+				return [header, q, e].filter(Boolean).join('\n');
+			})
+			.filter(Boolean)
+			.join('\n\n');
+		if (attemptsText) {
+			parts.push('Prior attempts and errors (fix these):');
+			parts.push(attemptsText + '\n');
+		}
+
+		// Hard constraints
+		parts.push('Hard constraints:');
+		parts.push('- You MUST respond with ONLY a single @tool call and nothing else.');
+		parts.push('- Do NOT output plain text, explanations, bullets, or code blocks (including ```kusto```).');
+		parts.push('- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.');
+		parts.push('- Always provide the FULL query (not a diff) as the tool argument.\n');
+
+		// Tools
+		const localToolsText = this.buildLocalToolsText(args.enabledTools);
+		if (localToolsText) {
+			parts.push(localToolsText);
+		}
+
+		return parts.join('\n');
 	}
 
 	private buildCopilotWriteQueryPrompt(args: {
@@ -1335,6 +1691,8 @@ Completion:`;
 		priorAttempts: Array<{ attempt: number; query?: string; error?: string }>;
 		toolResult?: string;
 		bestPracticesText?: string;
+		executeQueryResults?: Array<{ query: string; result: string }>;
+		generalQueryRulesText?: string;
 		enabledTools?: string[];
 	}): string {
 		const request = String(args.request || '').trim();
@@ -1343,56 +1701,10 @@ Completion:`;
 		const currentQuery = String(args.currentQuery || '').trim();
 		const toolResult = typeof args.toolResult === 'string' ? args.toolResult : '';
 		const bestPracticesText = typeof args.bestPracticesText === 'string' ? args.bestPracticesText : '';
-		const enabledToolSet = new Set((args.enabledTools || []).map((t) => this.normalizeToolName(t)).filter(Boolean));
-		const localTools = this.getCopilotLocalTools();
-		const isToolEnabled = (name: string) => {
-			const n = this.normalizeToolName(name);
-			if (!n) return false;
-			// If the client didn't send enabledTools, default to tool defaults.
-			if ((args.enabledTools || []).length === 0) {
-				const def = localTools.find((t) => this.normalizeToolName(t.name) === n);
-				return def ? def.enabledByDefault !== false : false;
-			}
-			return enabledToolSet.has(n);
-		};
+		const generalQueryRulesText = typeof args.generalQueryRulesText === 'string' ? args.generalQueryRulesText : '';
+		const executeQueryResults = Array.isArray(args.executeQueryResults) ? args.executeQueryResults : [];
 
-		const enabledLocalTools = localTools.filter((t) => isToolEnabled(t.name));
-		const localToolsText = (() => {
-			if (enabledLocalTools.length === 0) {
-				return '';
-			}
-			const lines: string[] = [];
-			lines.push('Local tools (REQUIRED response format):');
-			for (const t of enabledLocalTools) {
-				const n = this.normalizeToolName(t.name);
-				if (n === 'get_extended_schema') {
-					lines.push('- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:');
-					lines.push('  @tool get_extended_schema {"database":"<database>"}');
-					lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
-					continue;
-				}
-				if (n === 'get_query_optimization_best_practices') {
-					lines.push('- If you want to consult the repository\'s optimization best practices, respond with EXACTLY this and nothing else:');
-					lines.push('  @tool get_query_optimization_best_practices');
-					lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
-					continue;
-				}
-				if (n === 'respond_to_query_performance_optimization_request') {
-					lines.push('- If the user asks you to improve/optimize query performance, your FINAL response MUST be EXACTLY this and nothing else:');
-					lines.push('  @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}');
-					lines.push('- Do not include explanations or code blocks when using this tool.');
-					continue;
-				}
-				if (n === 'respond_to_all_other_queries') {
-					lines.push('- For ALL other requests, your FINAL response MUST be EXACTLY this and nothing else:');
-					lines.push('  @tool respond_to_all_other_queries {"query":"<full kusto query>"}');
-					lines.push('- Do not include explanations or code blocks when using this tool.');
-					continue;
-				}
-				lines.push(`- ${t.name}: ${t.description}`);
-			}
-			return lines.join('\n') + '\n';
-		})();
+		const localToolsText = this.buildLocalToolsText(args.enabledTools);
 
 		const attemptsText = (args.priorAttempts || [])
 			.map((a) => {
@@ -1404,9 +1716,20 @@ Completion:`;
 			.filter(Boolean)
 			.join('\n\n');
 
+		const executeQueryResultsText = executeQueryResults.length > 0
+			? 'Query execution results:\n' + executeQueryResults.map((r, i) =>
+				`Query ${i + 1}:\n\`\`\`kusto\n${r.query}\n\`\`\`\nResult:\n${r.result}`
+			).join('\n\n') + '\n\n'
+			: '';
+
+		const generalQueryRulesSection = generalQueryRulesText
+			? 'Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):\n' + generalQueryRulesText + '\n\n'
+			: '';
+
 		return (
 			'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
 			'Task: Write a complete, runnable KQL query for the user request.\n\n' +
+			(generalQueryRulesSection) +
 			'Context:\n' +
 			`- Cluster: ${clusterUrl || '(unknown)'}\n` +
 			`- Database: ${database || '(unknown)'}\n\n` +
@@ -1416,13 +1739,14 @@ Completion:`;
 			(attemptsText ? 'Prior attempts and errors (fix these):\n' + attemptsText + '\n\n' : '') +
 			(toolResult ? 'Tool result (extended schema):\n' + toolResult + '\n\n' : '') +
 			(bestPracticesText ? 'Tool result (optimization best practices):\n' + bestPracticesText + '\n\n' : '') +
+			executeQueryResultsText +
 			'User request:\n' +
 			request +
 			'\n\n' +
 			'Hard constraints:\n' +
 			'- You MUST respond with ONLY a single @tool call and nothing else.\n' +
 			'- Do NOT output plain text, explanations, bullets, or code blocks (including ```kusto```).\n' +
-			'- Use as many tool calls as needed across turns (one per message): get schema, get best practices, then finish with exactly one of the two final tools.\n' +
+			'- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.\n' +
 			'- Always provide the FULL query (not a diff) as the tool argument.\n\n' +
 			(localToolsText ? localToolsText : '')
 		);
@@ -1525,7 +1849,64 @@ Completion:`;
 				return;
 			}
 
+			// Get or create conversation history for this box
+			const history = this.getOrCreateConversationHistory(boxId);
+
+			// On first message for this conversation, add general rules to history
+			if (!this.copilotGeneralRulesSentPerBox.has(boxId)) {
+				const generalRules = await this.readGeneralQueryRules();
+				if (generalRules && generalRules.content) {
+					const rulesEntryId = this.nextHistoryEntryId(boxId);
+					history.push({
+						type: 'general-rules',
+						id: rulesEntryId,
+						content: generalRules.content,
+						filePath: generalRules.filePath,
+						timestamp: Date.now()
+					});
+					this.copilotGeneralRulesSentPerBox.add(boxId);
+
+					// Notify webview about general rules
+					try {
+						this.postMessage({
+							type: 'copilotGeneralQueryRulesLoaded',
+							boxId,
+							entryId: rulesEntryId,
+							filePath: generalRules.filePath,
+							preview: generalRules.content
+						} as any);
+					} catch {
+						// ignore
+					}
+				}
+			}
+
+			// Add user message to history (with query snapshot if present)
+			const userMessageEntryId = this.nextHistoryEntryId(boxId);
+			history.push({
+				type: 'user-message',
+				id: userMessageEntryId,
+				text: request,
+				querySnapshot: currentQuery || undefined,
+				timestamp: Date.now()
+			});
+
+			// Notify webview about the user message (with query snapshot if present)
+			if (currentQuery) {
+				try {
+					this.postMessage({
+						type: 'copilotUserQuerySnapshot',
+						boxId,
+						entryId: userMessageEntryId,
+						queryText: currentQuery
+					} as any);
+				} catch {
+					// ignore
+				}
+			}
+
 			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
+
 			const maxAttempts = 6;
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				if (!isActive() || cts.token.isCancellationRequested) {
@@ -1533,23 +1914,19 @@ Completion:`;
 				}
 				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
 
-				let toolResult: string | undefined;
-				let bestPracticesText: string | undefined;
 				let generatedText = '';
-				const maxToolTurns = 3;
+				const maxToolTurns = 5;
 				for (let toolTurn = 1; toolTurn <= maxToolTurns; toolTurn++) {
 					if (!isActive() || cts.token.isCancellationRequested) {
 						throw new Error('Copilot write-query canceled');
 					}
-					const prompt = this.buildCopilotWriteQueryPrompt({
-						request,
+					// Build prompt from conversation history
+					const prompt = this.buildPromptFromHistory({
+						boxId,
 						clusterUrl: String(connection.clusterUrl || ''),
 						database,
-						currentQuery,
-						priorAttempts,
-						toolResult,
-						bestPracticesText,
-						enabledTools
+						enabledTools,
+						priorAttempts
 					});
 
 					const response = await model.sendRequest(
@@ -1566,8 +1943,27 @@ Completion:`;
 						generatedText += fragment;
 					}
 
-					const toolCall = this.tryParseCopilotToolCall(generatedText);
-					if (toolCall?.tool === 'get_extended_schema') {
+					// Parse ALL tool calls from the response (LLM may batch multiple)
+					const toolCalls = this.parseAllCopilotToolCalls(generatedText);
+					
+					// If no tool calls, treat as non-compliant
+					if (toolCalls.length === 0) {
+						priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
+						postStatus('Copilot returned a non-tool response. Retrying…');
+						generatedText = '';
+						break;
+					}
+
+					// Process each tool call sequentially
+					let shouldBreakAttempt = false;
+					let shouldContinueToolTurn = false;
+
+					for (const toolCall of toolCalls) {
+						if (!isActive() || cts.token.isCancellationRequested) {
+							throw new Error('Copilot write-query canceled');
+						}
+
+						if (toolCall?.tool === 'get_extended_schema') {
 						if (!this.isCopilotToolEnabled('get_extended_schema', enabledTools)) {
 							// Treat as a non-answer; the next attempt will (usually) comply with the prompt.
 							priorAttempts.push({
@@ -1576,13 +1972,39 @@ Completion:`;
 							});
 							postStatus('Copilot requested a disabled tool. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 						const requestedDbRaw = (toolCall.args && typeof toolCall.args === 'object') ? (toolCall.args as any).database : undefined;
 						const requestedDb = String(requestedDbRaw || database || '').trim() || database;
-						postStatus(`Fetching extended schema…${requestedDb ? ` (${requestedDb})` : ''}`);
-						toolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
-						continue;
+						const schemaToolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
+						
+						// Add to conversation history
+						const schemaEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call',
+							id: schemaEntryId,
+							tool: 'get_extended_schema',
+							args: { database: requestedDb },
+							result: schemaToolResult.result,
+							timestamp: Date.now()
+						});
+						
+						// Post message to webview with entryId
+						try {
+							this.postMessage({
+								type: 'copilotWriteQueryToolResult',
+								boxId,
+								entryId: schemaEntryId,
+								tool: 'get_extended_schema',
+								label: schemaToolResult.label,
+								json: schemaToolResult.result
+							} as any);
+						} catch {
+							// ignore
+						}
+						shouldContinueToolTurn = true;
+						continue; // Process next tool in batch
 					}
 
 					if (toolCall?.tool === 'get_query_optimization_best_practices') {
@@ -1593,22 +2015,142 @@ Completion:`;
 							});
 							postStatus('Copilot requested a disabled tool. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
-						postStatus('Fetching optimization best practices…');
-						bestPracticesText = await this.readOptimizeQueryRules();
+						const bestPracticesResult = await this.readOptimizeQueryRules();
+						
+						// Add to conversation history
+						const bpEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call',
+							id: bpEntryId,
+							tool: 'get_query_optimization_best_practices',
+							result: bestPracticesResult,
+							timestamp: Date.now()
+						});
+						
 						try {
 							this.postMessage({
 								type: 'copilotWriteQueryToolResult',
 								boxId,
+								entryId: bpEntryId,
 								tool: 'get_query_optimization_best_practices',
 								label: 'optimize-query-rules.md',
-								json: bestPracticesText
+								json: bestPracticesResult
 							} as any);
 						} catch {
 							// ignore
 						}
-						continue;
+						shouldContinueToolTurn = true;
+						continue; // Process next tool in batch
+					}
+
+					if (toolCall?.tool === 'execute_kusto_query') {
+						if (!this.isCopilotToolEnabled('execute_kusto_query', enabledTools)) {
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							shouldBreakAttempt = true;
+							break;
+						}
+						const rawQuery = this.extractQueryArgument(toolCall.args);
+						const query = this.extractKustoCodeBlock(rawQuery).trim();
+						if (!query) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
+							postStatus('Tool call missing query argument. Retrying…');
+							generatedText = '';
+							shouldBreakAttempt = true;
+							break;
+						}
+						try {
+							const isControl = this.isControlCommand(query);
+							const queryWithLimit = this.appendQueryMode(query, 'take100');
+							// Control commands should not have cache directives prepended
+							const cacheDirective = isControl ? '' : this.buildCacheDirective(true, 1, 'days');
+							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
+							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
+							const result = await this.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey).promise;
+
+							// Format query results for the LLM
+							let queryResultText = '';
+							const columns = result.columns || [];
+							const rows = result.rows || [];
+							if (rows.length > 0) {
+								const maxRows = Math.min(rows.length, 50);
+								const displayRows = rows.slice(0, maxRows);
+								queryResultText = `Query results (${rows.length} rows${rows.length > maxRows ? `, showing first ${maxRows}` : ''}):\n`;
+								queryResultText += columns.join('\t') + '\n';
+								for (const row of displayRows) {
+									queryResultText += row.map((v: any) => {
+										if (v === null || v === undefined) return '';
+										if (typeof v === 'object') return JSON.stringify(v);
+										return String(v);
+									}).join('\t') + '\n';
+								}
+							} else {
+								queryResultText = 'Query returned no results.';
+							}
+
+							// Add to conversation history
+							const execEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: execEntryId,
+								tool: 'execute_kusto_query',
+								args: { query },
+								result: queryResultText,
+								timestamp: Date.now()
+							});
+
+							// Show the executed query in chat as a clickable link
+							try {
+								this.postMessage({
+									type: 'copilotExecutedQuery',
+									boxId,
+									entryId: execEntryId,
+									query,
+									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
+									result // Include full result for insert-with-results
+								} as any);
+							} catch {
+								// ignore
+							}
+							shouldContinueToolTurn = true;
+							continue; // Process next tool in batch
+						} catch (e) {
+							const errMsg = this.getErrorMessage(e);
+							
+							// Add error to conversation history
+							const execErrEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: execErrEntryId,
+								tool: 'execute_kusto_query',
+								args: { query },
+								result: `Query execution error: ${errMsg}`,
+								timestamp: Date.now()
+							});
+							
+							// Show error in chat
+							try {
+								this.postMessage({
+									type: 'copilotExecutedQuery',
+									boxId,
+									entryId: execErrEntryId,
+									query,
+									resultSummary: 'Error',
+									errorMessage: errMsg
+								} as any);
+							} catch {
+								// ignore
+							}
+							shouldContinueToolTurn = true;
+							continue; // Process next tool in batch, let LLM see the error
+						}
 					}
 
 					if (toolCall?.tool === 'respond_to_query_performance_optimization_request') {
@@ -1619,6 +2161,7 @@ Completion:`;
 							});
 							postStatus('Copilot requested a disabled tool. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 						const rawQuery = this.extractQueryArgument(toolCall.args);
@@ -1627,6 +2170,7 @@ Completion:`;
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 
@@ -1806,7 +2350,6 @@ Completion:`;
 								'Optimized query has been provided, please check the results to make sure the same data is being returned. Keep in mind that count() and dcount() can return slightly different values by design, so we cannot expect a 100% match the entire time.'
 						} as any);
 						return;
-						return;
 					}
 
 					if (toolCall?.tool === 'respond_to_all_other_queries') {
@@ -1817,6 +2360,7 @@ Completion:`;
 							});
 							postStatus('Copilot requested a disabled tool. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 
@@ -1826,6 +2370,7 @@ Completion:`;
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 
@@ -1897,11 +2442,22 @@ Completion:`;
 							priorAttempts.push({ attempt, query, error: userMessage });
 							postStatus('Query failed to execute. Retrying…');
 							generatedText = '';
+							shouldBreakAttempt = true;
 							break;
 						}
 					}
+					} // End of for (const toolCall of toolCalls)
 
-					// Non-tool response or unknown tool: treat as non-compliant and retry.
+					// Check control flow flags after processing all tool calls in the batch
+					if (shouldBreakAttempt) {
+						break;
+					}
+					if (shouldContinueToolTurn) {
+						// All intermediate tools processed successfully, continue to next LLM request
+						continue;
+					}
+
+					// If we get here without processing any valid tool, treat as non-compliant
 					priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
 					postStatus('Copilot returned a non-tool response. Retrying…');
 					generatedText = '';
@@ -3496,7 +4052,9 @@ ${query}
 		}
 
 		const queryWithMode = this.appendQueryMode(message.query, message.queryMode);
-		const cacheDirective = this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
+		// Control commands (starting with '.') should not have cache directives prepended
+		const isControl = this.isControlCommand(message.query);
+		const cacheDirective = isControl ? '' : this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
@@ -3569,7 +4127,45 @@ ${query}
 		return `set query_results_cache_max_age = ${timespan};`;
 	}
 
+	/**
+	 * Checks if a query is a Kusto control command (starts with '.').
+	 * Control commands like `.show function`, `.show databases`, etc. cannot
+	 * have operators like `| take 100` appended to them.
+	 */
+	private isControlCommand(query: string): boolean {
+		const trimmed = (query ?? '').replace(/^\s+/, '');
+		// Skip leading comments
+		let i = 0;
+		while (i < trimmed.length) {
+			// Skip whitespace
+			while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
+			if (i >= trimmed.length) return false;
+			// Skip line comments
+			if (trimmed[i] === '/' && trimmed[i + 1] === '/') {
+				const nl = trimmed.indexOf('\n', i + 2);
+				if (nl < 0) return false;
+				i = nl + 1;
+				continue;
+			}
+			// Skip block comments
+			if (trimmed[i] === '/' && trimmed[i + 1] === '*') {
+				const end = trimmed.indexOf('*/', i + 2);
+				if (end < 0) return false;
+				i = end + 2;
+				continue;
+			}
+			// Check if first non-comment character is a dot
+			return trimmed[i] === '.';
+		}
+		return false;
+	}
+
 	private appendQueryMode(query: string, queryMode?: string): string {
+		// Control commands (starting with '.') cannot have operators appended
+		if (this.isControlCommand(query)) {
+			return query;
+		}
+
 		const mode = (queryMode ?? '').toLowerCase();
 		let fragment = '';
 		switch (mode) {

@@ -753,16 +753,117 @@ export class CachedValuesViewer {
 		}
 		.object-viewer-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
 		.object-viewer-search { display: flex; gap: 8px; align-items: center; flex: 1; margin: 0 16px; }
-		.object-viewer-search input {
-			flex: 1;
-			max-width: 300px;
+		.object-viewer-search-results { font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+		/* Reusable search control (input + embedded mode toggle + nav buttons). */
+		.kusto-search-control {
+			position: relative;
+			display: inline-flex;
+			align-items: center;
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+			max-width: 350px;
+		}
+		.kusto-search-control input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 1;
+		}
+		.kusto-search-control input {
+			flex: 1 1 auto;
+			min-width: 0;
 			padding: 4px 8px;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 2px;
 		}
-		.object-viewer-search-results { font-size: 11px; color: var(--vscode-descriptionForeground); }
+		.kusto-search-control .kusto-search-input {
+			padding-left: 26px !important;
+			padding-right: 98px !important;
+		}
+		.kusto-search-icon {
+			position: absolute;
+			left: 6px;
+			top: 50%;
+			transform: translateY(-50%);
+			pointer-events: none;
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 0.7;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			z-index: 1;
+		}
+		.kusto-search-icon svg { display: block; }
+		.kusto-search-status {
+			position: absolute;
+			right: 71px;
+			top: 50%;
+			transform: translateY(-50%);
+			display: inline-flex;
+			align-items: center;
+			line-height: 1;
+			font-size: inherit;
+			color: var(--vscode-descriptionForeground);
+			pointer-events: none;
+			white-space: nowrap;
+			user-select: none;
+		}
+		.kusto-search-status-error { color: var(--vscode-errorForeground); }
+		.kusto-search-mode-toggle {
+			position: absolute;
+			right: 49px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+		.kusto-search-mode-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+		.kusto-search-mode-toggle svg { display: block; }
+		.kusto-search-nav-divider {
+			position: absolute;
+			right: 48px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 1px;
+			height: 14px;
+			background: var(--vscode-input-foreground);
+			opacity: 0.25;
+			pointer-events: none;
+		}
+		.kusto-search-nav-btn {
+			position: absolute;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+		.kusto-search-nav-btn:hover:not(:disabled) { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+		.kusto-search-nav-btn:disabled { opacity: 0.35; cursor: default; }
+		.kusto-search-nav-btn svg { display: block; }
+		.kusto-search-prev { right: 26px; }
+		.kusto-search-next { right: 4px; }
 		.object-viewer-body { flex: 1; overflow: auto; padding: 16px; }
 		.object-viewer-section {
 			border: 1px solid var(--vscode-panel-border);
@@ -846,6 +947,7 @@ export class CachedValuesViewer {
 		.json-boolean { color: var(--vscode-symbolIcon-booleanForeground); }
 		.json-null { color: var(--vscode-symbolIcon-nullForeground); }
 		.json-highlight { background: var(--vscode-editor-findMatchHighlightBackground); border-radius: 2px; }
+		.json-highlight-active { background: var(--vscode-editor-findMatchBackground); outline: 1px solid var(--vscode-editor-findMatchBorder); }
 	</style>
 </head>
 <body>
@@ -899,7 +1001,7 @@ export class CachedValuesViewer {
 			<div class="object-viewer-header">
 				<h3 id="objectViewerTitle"></h3>
 				<div class="object-viewer-search">
-					<input type="text" id="objectViewerSearch" placeholder="Search in JSON..." />
+					<div id="objectViewerSearchHost"></div>
 					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
 				</div>
 				<button class="refresh-btn close-btn object-viewer-close" type="button" title="Close" aria-label="Close">
@@ -943,13 +1045,339 @@ export class CachedValuesViewer {
 		var schemaRequestInFlight = false;
 		var requestPending = false;
 		var objectViewerHandlersInit = false;
+
+		// Helper for escaping regex special characters (needed by searchInObjectViewer fallback path).
+		function escapeRegex(str) {
+			return String(str || '').replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&');
+		}
+
+		// Count regex matches in text (needed by searchInObjectViewer for match count display).
+		window.__kustoCountRegexMatches = function(regex, text, maxMatches) {
+			if (!regex) return 0;
+			var s = String(text || '');
+			var limit = (typeof maxMatches === 'number' && isFinite(maxMatches) && maxMatches > 0) ? Math.floor(maxMatches) : 5000;
+			var count = 0;
+			try {
+				regex.lastIndex = 0;
+				var m;
+				while ((m = regex.exec(s)) !== null) {
+					count++;
+					if (count >= limit) break;
+					if (!m[0]) {
+						regex.lastIndex = regex.lastIndex + 1;
+					}
+				}
+			} catch { /* ignore */ }
+			return count;
+		};
+
+		// Highlight text nodes matching regex (needed by searchInObjectViewer for raw JSON highlighting).
+		window.__kustoHighlightElementTextNodes = function(rootEl, regex, highlightClass) {
+			if (!rootEl) return 0;
+			if (!regex) return 0;
+			var cls = String(highlightClass || 'kusto-search-highlight');
+
+			var total = 0;
+			var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null);
+			var nodes = [];
+			try {
+				var node;
+				while ((node = walker.nextNode())) nodes.push(node);
+			} catch { /* ignore */ }
+
+			for (var i = 0; i < nodes.length; i++) {
+				var n = nodes[i];
+				try {
+					var text = String(n.textContent || '');
+					if (!text) continue;
+					regex.lastIndex = 0;
+					if (!regex.test(text)) continue;
+
+					regex.lastIndex = 0;
+					var frag = document.createDocumentFragment();
+					var lastIndex = 0;
+					var m;
+					while ((m = regex.exec(text)) !== null) {
+						var start = m.index;
+						var matchText = m[0];
+						if (!matchText) break;
+						if (start > lastIndex) {
+							frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+						}
+						var span = document.createElement('span');
+						span.className = cls;
+						span.textContent = matchText;
+						frag.appendChild(span);
+						total++;
+						lastIndex = start + matchText.length;
+					}
+					if (lastIndex < text.length) {
+						frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+					}
+					if (n.parentNode) {
+						n.parentNode.insertBefore(frag, n);
+						n.parentNode.removeChild(n);
+					}
+				} catch { /* ignore */ }
+			}
+			return total;
+		};
+
+		// Search control creation and helpers.
+		var SEARCH_MODE_WILDCARD = 'wildcard';
+		var SEARCH_MODE_REGEX = 'regex';
+		var searchControlCreated = false;
+		var currentSearchMatchIndex = 0;
+		var currentSearchMatches = [];
+
+		function __kustoGetSearchIconSvg() {
+			return '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>';
+		}
+		function __kustoGetWildcardIconSvg() {
+			return '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><text x="3" y="12" font-size="11" font-weight="bold" font-family="monospace">*</text></svg>';
+		}
+		function __kustoGetRegexIconSvg() {
+			return '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><text x="1" y="12" font-size="10" font-weight="bold" font-family="monospace">.*</text></svg>';
+		}
+		function __kustoGetChevronUpSvg() {
+			return '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 5.5L3.5 10l.707.707L8 6.914l3.793 3.793.707-.707L8 5.5z"/></svg>';
+		}
+		function __kustoGetChevronDownSvg() {
+			return '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 10.5l4.5-4.5-.707-.707L8 9.086 4.207 5.293 3.5 6 8 10.5z"/></svg>';
+		}
+
+		function __kustoUpdateSearchModeToggle(btn, mode) {
+			if (!btn) return;
+			var isRegex = (mode === SEARCH_MODE_REGEX);
+			btn.innerHTML = isRegex ? __kustoGetRegexIconSvg() : __kustoGetWildcardIconSvg();
+			btn.title = isRegex
+				? 'Regex mode (click to switch to Wildcard)'
+				: 'Wildcard mode (click to switch to Regex)';
+			try { btn.setAttribute('aria-label', btn.title); } catch { /* ignore */ }
+		}
+
+		function __kustoSetSearchNavEnabled(prevBtn, nextBtn, enabled, matchCount) {
+			var count = (typeof matchCount === 'number' && matchCount > 1) ? matchCount : 0;
+			var canNav = enabled && count > 1;
+			if (prevBtn) prevBtn.disabled = !canNav;
+			if (nextBtn) nextBtn.disabled = !canNav;
+		}
+
+		window.__kustoGetSearchControlState = function(inputId, modeId) {
+			try {
+				var input = document.getElementById(inputId);
+				var modeEl = document.getElementById(modeId);
+				var modeVal = modeEl ? (modeEl.dataset.mode || modeEl.value || SEARCH_MODE_WILDCARD) : SEARCH_MODE_WILDCARD;
+				return {
+					query: String((input && input.value) ? input.value : '').trim(),
+					mode: (modeVal === SEARCH_MODE_REGEX) ? SEARCH_MODE_REGEX : SEARCH_MODE_WILDCARD
+				};
+			} catch {
+				return { query: '', mode: SEARCH_MODE_WILDCARD };
+			}
+		};
+
+		window.__kustoTryBuildSearchRegex = function(query, mode) {
+			var q = String(query || '').trim();
+			var m = (mode === SEARCH_MODE_REGEX) ? SEARCH_MODE_REGEX : SEARCH_MODE_WILDCARD;
+			if (!q) return { regex: null, error: null, mode: m };
+
+			var pattern = '';
+			if (m === SEARCH_MODE_REGEX) {
+				pattern = q;
+			} else {
+				pattern = q.split('*').map(escapeRegex).join('.*?');
+			}
+
+			try {
+				var regex = new RegExp(pattern, 'gi');
+				try {
+					var nonGlobal = new RegExp(regex.source, regex.flags.replace(/g/g, ''));
+					if (nonGlobal.test('')) {
+						return { regex: null, error: 'Pattern matches empty text', mode: m };
+					}
+				} catch { /* ignore */ }
+				return { regex: regex, error: null, mode: m };
+			} catch {
+				return { regex: null, error: 'Invalid regex', mode: m };
+			}
+		};
+
+		function createSearchControl() {
+			if (searchControlCreated) return;
+			var host = document.getElementById('objectViewerSearchHost');
+			if (!host) return;
+
+			searchControlCreated = true;
+			host.textContent = '';
+
+			var wrapper = document.createElement('div');
+			wrapper.className = 'kusto-search-control';
+
+			var searchIcon = document.createElement('span');
+			searchIcon.className = 'kusto-search-icon';
+			searchIcon.innerHTML = __kustoGetSearchIconSvg();
+			searchIcon.setAttribute('aria-hidden', 'true');
+
+			var input = document.createElement('input');
+			input.type = 'text';
+			input.id = 'objectViewerSearch';
+			input.className = 'kusto-search-input';
+			input.placeholder = 'Search...';
+			input.autocomplete = 'off';
+			try { input.spellcheck = false; } catch { /* ignore */ }
+
+			var statusEl = document.createElement('span');
+			statusEl.className = 'kusto-search-status';
+			statusEl.id = 'objectViewerSearch_status';
+
+			var toggleBtn = document.createElement('button');
+			toggleBtn.type = 'button';
+			toggleBtn.id = 'objectViewerSearchMode';
+			toggleBtn.className = 'kusto-search-mode-toggle';
+			toggleBtn.dataset.mode = SEARCH_MODE_WILDCARD;
+			__kustoUpdateSearchModeToggle(toggleBtn, SEARCH_MODE_WILDCARD);
+
+			var prevBtn = document.createElement('button');
+			prevBtn.type = 'button';
+			prevBtn.className = 'kusto-search-nav-btn kusto-search-prev';
+			prevBtn.id = 'objectViewerSearch_prev';
+			prevBtn.innerHTML = __kustoGetChevronUpSvg();
+			prevBtn.title = 'Previous match (Shift+Enter)';
+			prevBtn.setAttribute('aria-label', 'Previous match');
+			prevBtn.disabled = true;
+
+			var nextBtn = document.createElement('button');
+			nextBtn.type = 'button';
+			nextBtn.className = 'kusto-search-nav-btn kusto-search-next';
+			nextBtn.id = 'objectViewerSearch_next';
+			nextBtn.innerHTML = __kustoGetChevronDownSvg();
+			nextBtn.title = 'Next match (Enter)';
+			nextBtn.setAttribute('aria-label', 'Next match');
+			nextBtn.disabled = true;
+
+			var navDivider = document.createElement('span');
+			navDivider.className = 'kusto-search-nav-divider';
+			navDivider.setAttribute('aria-hidden', 'true');
+
+			input.addEventListener('input', function() {
+				currentSearchMatchIndex = 0;
+				try { searchInObjectViewer(); } catch { /* ignore */ }
+				collectSearchMatches();
+				updateSearchNavState();
+			});
+
+			input.addEventListener('keydown', function(e) {
+				if (e.key === 'Enter') {
+					if (e.shiftKey) {
+						navigateToPrevMatch();
+					} else {
+						navigateToNextMatch();
+					}
+					e.preventDefault();
+				}
+			});
+
+			toggleBtn.addEventListener('click', function() {
+				var current = String(toggleBtn.dataset.mode || SEARCH_MODE_WILDCARD);
+				var next = (current === SEARCH_MODE_REGEX) ? SEARCH_MODE_WILDCARD : SEARCH_MODE_REGEX;
+				toggleBtn.dataset.mode = next;
+				__kustoUpdateSearchModeToggle(toggleBtn, next);
+				currentSearchMatchIndex = 0;
+				try { searchInObjectViewer(); } catch { /* ignore */ }
+				collectSearchMatches();
+				updateSearchNavState();
+			});
+
+			prevBtn.addEventListener('click', function() { navigateToPrevMatch(); });
+			nextBtn.addEventListener('click', function() { navigateToNextMatch(); });
+
+			wrapper.appendChild(searchIcon);
+			wrapper.appendChild(input);
+			wrapper.appendChild(statusEl);
+			wrapper.appendChild(toggleBtn);
+			wrapper.appendChild(navDivider);
+			wrapper.appendChild(prevBtn);
+			wrapper.appendChild(nextBtn);
+			host.appendChild(wrapper);
+		}
+
+		function updateSearchNavState() {
+			var prevBtn = document.getElementById('objectViewerSearch_prev');
+			var nextBtn = document.getElementById('objectViewerSearch_next');
+			var statusEl = document.getElementById('objectViewerSearch_status');
+			var count = currentSearchMatches.length;
+
+			__kustoSetSearchNavEnabled(prevBtn, nextBtn, true, count);
+
+			if (statusEl) {
+				if (count > 0) {
+					statusEl.textContent = '(' + (currentSearchMatchIndex + 1) + '/' + count + ')';
+				} else {
+					statusEl.textContent = '';
+				}
+			}
+		}
+
+		function collectSearchMatches() {
+			currentSearchMatches = [];
+			var content = document.getElementById('objectViewerContent');
+			if (!content) return;
+			var highlights = content.querySelectorAll('.json-highlight');
+			for (var i = 0; i < highlights.length; i++) {
+				currentSearchMatches.push(highlights[i]);
+			}
+		}
+
+		function scrollToMatch(index) {
+			if (index < 0 || index >= currentSearchMatches.length) return;
+			var el = currentSearchMatches[index];
+			if (!el) return;
+
+			// Remove active class from all
+			for (var i = 0; i < currentSearchMatches.length; i++) {
+				currentSearchMatches[i].classList.remove('json-highlight-active');
+			}
+			el.classList.add('json-highlight-active');
+
+			try {
+				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			} catch {
+				try { el.scrollIntoView(true); } catch { /* ignore */ }
+			}
+		}
+
+		function navigateToNextMatch() {
+			collectSearchMatches();
+			if (currentSearchMatches.length === 0) return;
+			currentSearchMatchIndex = (currentSearchMatchIndex + 1) % currentSearchMatches.length;
+			scrollToMatch(currentSearchMatchIndex);
+			updateSearchNavState();
+		}
+
+		function navigateToPrevMatch() {
+			collectSearchMatches();
+			if (currentSearchMatches.length === 0) return;
+			currentSearchMatchIndex = (currentSearchMatchIndex - 1 + currentSearchMatches.length) % currentSearchMatches.length;
+			scrollToMatch(currentSearchMatchIndex);
+			updateSearchNavState();
+		}
+
 				function openSchemaJsonViewer(title, jsonText) {
 					var modal = document.getElementById('objectViewer');
 					var titleEl = document.getElementById('objectViewerTitle');
-					var searchInput = document.getElementById('objectViewerSearch');
 					if (!modal) {
 						return;
 					}
+
+					// Create the search control if not already created.
+					createSearchControl();
+
+					// Reset search state.
+					currentSearchMatchIndex = 0;
+					currentSearchMatches = [];
+
+					var searchInput = document.getElementById('objectViewerSearch');
 					try {
 						if (titleEl) {
 							titleEl.textContent = '';

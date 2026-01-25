@@ -1444,6 +1444,12 @@
 			vertical-align: middle;
 		}
 
+		/* Invert Copilot logo color for dark themes inside chat header */
+		body.vscode-dark .kusto-copilot-chat-title img.copilot-logo,
+		body.vscode-high-contrast .kusto-copilot-chat-title img.copilot-logo {
+			filter: invert(1);
+		}
+
 		.kusto-copilot-chat-model {
 			display: inline-flex;
 			align-items: center;
@@ -1531,13 +1537,27 @@
 		}
 		.kusto-copilot-chat-msg-user {
 			align-self: flex-end;
-			background: var(--vscode-editorWidget-background);
+			background: color-mix(in srgb, var(--vscode-button-background, #0e639c) 15%, var(--vscode-editor-background, #1e1e1e) 85%);
+			border: 1px solid color-mix(in srgb, var(--vscode-button-background, #0e639c) 30%, transparent 70%);
+			margin-left: 50px;
+			margin-top: 5px;
+			margin-bottom: 10px;
 		}
 		.kusto-copilot-chat-msg-assistant {
 			align-self: flex-start;
 			background: var(--vscode-editorWidget-background);
 			color: var(--vscode-foreground);
 			border: none;
+		}
+		/* Notification messages - informational text not part of conversation history */
+		.kusto-copilot-chat-msg-notification {
+			align-self: flex-start;
+			background: transparent;
+			color: var(--vscode-editorGhostText-foreground, var(--vscode-disabledForeground, rgba(204, 204, 204, 0.5)));
+			border: none;
+			font-style: italic;
+			text-align: left;
+			padding: 4px 8px;
 		}
 
 		.kusto-copilot-chat-input {
@@ -1667,14 +1687,51 @@
 			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 		}
 
-		.kusto-copilot-tools-panel {
-			margin: 8px 8px 0;
-			padding: 8px;
+		/* Copilot clear conversation button */
+		.kusto-copilot-chat-clear {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 0;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			flex: 0 0 auto;
+			margin-left: 4px;
+		}
+		.kusto-copilot-chat-clear .codicon {
+			font-size: 16px;
+			line-height: 1;
+		}
+		.kusto-copilot-chat-clear:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		/* Tools container (position relative anchor) */
+		.kusto-copilot-tools-container {
+			position: relative;
+			display: inline-flex;
+		}
+
+		.kusto-copilot-tools-panel {
+			position: absolute;
+			top: 100%;
+			right: 0;
+			z-index: 1000;
+			min-width: 300px;
+			max-width: 380px;
+			margin-top: 4px;
+			padding: 10px;
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
 			background: var(--vscode-editorWidget-background);
 			color: var(--vscode-foreground);
 			font-size: 12px;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 		}
 		.kusto-copilot-tools-panel-title {
 			font-weight: 600;
@@ -1737,7 +1794,47 @@
 			gap: 8px;
 			align-items: center;
 			justify-content: space-between;
-			margin-bottom: 6px;
+		}
+		.kusto-copilot-tool-header-left {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+		}
+		.kusto-copilot-tool-header-right {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+		}
+		.kusto-copilot-tool-result {
+			margin-top: 4px;
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			padding-left: 20px;
+		}
+		/* Icon button styling for tool actions */
+		.kusto-copilot-icon-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 22px;
+			height: 22px;
+			padding: 0;
+			border: none;
+			border-radius: 4px;
+			background: transparent;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+		}
+		.kusto-copilot-icon-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31));
+			opacity: 1;
+		}
+		.kusto-copilot-icon-btn .codicon {
+			font-size: 14px;
+		}
+		.kusto-copilot-remove-btn:hover {
+			color: var(--vscode-inputValidation-errorBorder, #f48771);
 		}
 		.kusto-copilot-tool-link {
 			color: var(--vscode-textLink-foreground);
@@ -1747,6 +1844,25 @@
 		}
 		.kusto-copilot-tool-link:hover {
 			text-decoration: underline;
+		}
+		/* Remove link styling */
+		.kusto-copilot-remove-link {
+			margin-left: 8px;
+			opacity: 0.7;
+		}
+		.kusto-copilot-remove-link:hover {
+			opacity: 1;
+		}
+		/* Removed state for history items */
+		.kusto-copilot-chat-msg.is-removed {
+			opacity: 0.5;
+		}
+		.kusto-copilot-chat-msg.is-removed .kusto-copilot-tool-result {
+			text-decoration: line-through;
+		}
+		/* Error state for result row */
+		.kusto-copilot-tool-result.is-error {
+			color: var(--vscode-inputValidation-errorBorder, #f48771);
 		}
 		.kusto-copilot-tool-json {
 			margin: 0;
@@ -1761,6 +1877,124 @@
 			max-height: 220px;
 			overflow: auto;
 			white-space: pre;
+		}
+
+		/* Executed query display in Copilot chat */
+		.kusto-copilot-executed-query-header {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+		.kusto-copilot-executed-query-header .codicon {
+			color: var(--vscode-charts-green, #89d185);
+		}
+		.kusto-copilot-executed-query-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 12px;
+			white-space: nowrap;
+			margin-left: auto;
+		}
+		.kusto-copilot-executed-query-link:hover {
+			text-decoration: underline;
+		}
+
+		/* General query rules display in Copilot chat */
+		.kusto-copilot-chat-msg-system {
+			background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+			border-left: 3px solid var(--vscode-textLink-foreground);
+			max-width: 350px;
+			margin-right: 25px;
+		}
+		/* Tool call messages - special formatting */
+		.kusto-copilot-chat-msg-tool {
+			background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+			border-left: 3px solid var(--vscode-charts-green, #89d185);
+			max-width: 350px;
+			margin-right: 25px;
+		}
+		.kusto-copilot-chat-msg-tool.is-error {
+			border-left-color: var(--vscode-inputValidation-errorBorder, #f48771);
+		}
+		/* Tool call tooltip - shows on hover */
+		.kusto-copilot-tool-tooltip {
+			position: fixed;
+			background: var(--vscode-editorHoverWidget-background, #252526);
+			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+			padding: 8px 10px;
+			border-radius: 4px;
+			font-size: 11px;
+			width: 350px;
+			max-height: 300px;
+			overflow: auto;
+			z-index: 10000;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+			white-space: pre-wrap;
+			word-break: break-word;
+			display: none;
+			pointer-events: none;
+		}
+		.kusto-copilot-tool-tooltip.is-visible {
+			display: block;
+			pointer-events: auto;
+		}
+		.kusto-copilot-tool-tooltip-label {
+			font-weight: 600;
+			color: var(--vscode-charts-blue, #4fc1ff);
+			margin-bottom: 4px;
+		}
+		.kusto-copilot-tool-tooltip-content {
+			color: var(--vscode-foreground);
+			font-family: var(--vscode-editor-font-family, monospace);
+		}
+		/* Query snapshot display in Copilot chat */
+		.kusto-copilot-chat-msg-query-snapshot {
+			background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+			border-left: 3px solid var(--vscode-charts-blue, #4fc1ff);
+			max-width: 350px;
+			margin-right: 25px;
+		}
+		.kusto-copilot-query-snapshot-header {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+		.kusto-copilot-query-snapshot-header .codicon {
+			color: var(--vscode-charts-blue, #4fc1ff);
+		}
+		.kusto-copilot-query-snapshot-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 12px;
+			white-space: nowrap;
+			margin-left: auto;
+		}
+		.kusto-copilot-query-snapshot-link:hover {
+			text-decoration: underline;
+		}
+		.kusto-copilot-general-rules-header {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+		.kusto-copilot-general-rules-header .codicon {
+			color: var(--vscode-textLink-foreground);
+		}
+		.kusto-copilot-general-rules-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 12px;
+			white-space: nowrap;
+			margin-left: auto;
+		}
+		.kusto-copilot-general-rules-link:hover {
+			text-decoration: underline;
 		}
 
 		/* Generic section header row used by non-KQL boxes */

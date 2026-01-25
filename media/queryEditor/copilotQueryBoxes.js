@@ -78,6 +78,74 @@
 		return window.__kustoCopilotChatVisibleByBoxId;
 	}
 
+	// Global tracker for currently visible tooltip to prevent overlaps
+	let __kustoCurrentVisibleTooltip = null;
+	let __kustoCurrentHideTimeout = null;
+
+	// Helper to set up hover tooltip behavior with fixed positioning
+	function __kustoSetupToolTooltip(wrapper, tooltip) {
+		const TOOLTIP_WIDTH = 350; // matches CSS width
+		const TOOLTIP_GAP = 8;
+		const HIDE_DELAY = 300; // enough time to move mouse to tooltip
+		const showTooltip = (e) => {
+			try {
+				// Hide any previously visible tooltip immediately
+				if (__kustoCurrentVisibleTooltip && __kustoCurrentVisibleTooltip !== tooltip) {
+					__kustoCurrentVisibleTooltip.classList.remove('is-visible');
+				}
+				if (__kustoCurrentHideTimeout) {
+					clearTimeout(__kustoCurrentHideTimeout);
+					__kustoCurrentHideTimeout = null;
+				}
+				const rect = wrapper.getBoundingClientRect();
+				const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+				// Check if tooltip would go off right edge
+				const rightPosition = rect.right + TOOLTIP_GAP + TOOLTIP_WIDTH;
+				if (rightPosition > viewportWidth) {
+					// Position to the left of the wrapper
+					tooltip.style.left = Math.max(0, rect.left - TOOLTIP_GAP - TOOLTIP_WIDTH) + 'px';
+				} else {
+					// Position to the right of the wrapper
+					tooltip.style.left = (rect.right + TOOLTIP_GAP) + 'px';
+				}
+				// Also check vertical positioning
+				const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+				const tooltipHeight = 300; // max-height from CSS
+				if (rect.top + tooltipHeight > viewportHeight) {
+					tooltip.style.top = Math.max(0, viewportHeight - tooltipHeight - 8) + 'px';
+				} else {
+					tooltip.style.top = rect.top + 'px';
+				}
+				tooltip.classList.add('is-visible');
+				__kustoCurrentVisibleTooltip = tooltip;
+			} catch { /* ignore */ }
+		};
+		const cancelHide = () => {
+			try {
+				if (__kustoCurrentHideTimeout) {
+					clearTimeout(__kustoCurrentHideTimeout);
+					__kustoCurrentHideTimeout = null;
+				}
+			} catch { /* ignore */ }
+		};
+		const hideTooltip = () => {
+			try {
+				__kustoCurrentHideTimeout = setTimeout(() => {
+					tooltip.classList.remove('is-visible');
+					if (__kustoCurrentVisibleTooltip === tooltip) {
+						__kustoCurrentVisibleTooltip = null;
+					}
+				}, HIDE_DELAY);
+			} catch { /* ignore */ }
+		};
+		wrapper.addEventListener('mouseenter', showTooltip);
+		wrapper.addEventListener('mousemove', showTooltip);
+		wrapper.addEventListener('mouseleave', hideTooltip);
+		// Allow hovering over the tooltip itself to keep it visible and scroll
+		tooltip.addEventListener('mouseenter', cancelHide);
+		tooltip.addEventListener('mouseleave', hideTooltip);
+	}
+
 	function __kustoSetCopilotToggleButtonState(boxId, visible) {
 		try {
 			const btn = document.getElementById(String(boxId || '') + '_copilot_chat_toggle');
@@ -150,14 +218,19 @@
 					'<div class="kusto-copilot-chat-model">' +
 						'<label for="' + boxId + '_copilot_model">Model</label>' +
 						modelDropdown +
-						'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
-							'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
+						'<div class="kusto-copilot-tools-container">' +
+							'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
+								'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
+							'</button>' +
+							'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
+								'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
+								'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
+							'</div>' +
+						'</div>' +
+						'<button type="button" id="' + boxId + '_copilot_clear_btn" class="unified-btn-secondary kusto-copilot-chat-clear" onclick="__kustoCopilotClearConversation(\'' + boxId + '\')" title="Clear conversation history">' +
+							'<span class="codicon codicon-clear-all" aria-hidden="true"></span>' +
 						'</button>' +
 					'</div>' +
-				'</div>' +
-				'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
-					'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
-					'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
 				'</div>' +
 				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
 				'<div class="kusto-copilot-chat-input">' +
@@ -415,7 +488,9 @@
 		try {
 			const host = document.getElementById(boxId + '_copilot_messages');
 			if (!host) return;
-			const safeRole = role === 'user' ? 'user' : 'assistant';
+			// Support 'user', 'assistant', and 'notification' roles
+			const roleMap = { user: 'user', assistant: 'assistant', notification: 'notification' };
+			const safeRole = roleMap[role] || 'assistant';
 			const el = document.createElement('div');
 			el.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-' + safeRole;
 			el.textContent = String(text || '');
@@ -426,13 +501,14 @@
 		}
 	}
 
-	function __kustoAppendToolResponse(boxId, toolName, label, jsonText) {
+	function __kustoAppendToolResponse(boxId, toolName, label, jsonText, entryId) {
 		try {
 			const host = document.getElementById(boxId + '_copilot_messages');
 			if (!host) return;
 			const safeTool = String(toolName || '').trim() || 'tool';
 			const safeLabel = String(label || '').trim() || safeTool;
 			const json = String(jsonText || '');
+			const safeEntryId = String(entryId || '').trim();
 
 			const state = __kustoEnsureCopilotToolResponseState();
 			state[boxId] = state[boxId] || { seq: 0 };
@@ -442,39 +518,107 @@
 			const linkId = boxId + '_copilot_tool_link_' + seq;
 
 			const wrapper = document.createElement('div');
-			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-assistant';
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-tool';
 			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
 
+			// Header row: icon + tool name + action icons
 			const header = document.createElement('div');
 			header.className = 'kusto-copilot-tool-header';
-			header.textContent = `${safeTool}: ${safeLabel} `;
 
-			const link = document.createElement('a');
-			link.href = '#';
-			link.id = linkId;
-			link.className = 'kusto-copilot-tool-link';
-			link.textContent = 'View JSON';
-			link.onclick = (e) => {
+			// Left side: icon + tool name
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-tools';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const toolNameEl = document.createElement('strong');
+			toolNameEl.textContent = ' ' + safeTool;
+			leftSide.appendChild(toolNameEl);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// View icon button
+			const viewBtn = document.createElement('button');
+			viewBtn.type = 'button';
+			viewBtn.className = 'kusto-copilot-icon-btn';
+			viewBtn.title = 'View what the tool returned';
+			viewBtn.id = linkId;
+			const viewIcon = document.createElement('span');
+			viewIcon.className = 'codicon codicon-eye';
+			viewBtn.appendChild(viewIcon);
+			viewBtn.onclick = (e) => {
 				try { e.preventDefault(); } catch { /* ignore */ }
 				try {
-					const pre = document.getElementById(preId);
-					if (!pre) return;
-					const isHidden = (pre.style.display === 'none' || !pre.style.display);
-					pre.style.display = isHidden ? 'block' : 'none';
-					link.textContent = isHidden ? 'Hide JSON' : 'View JSON';
+					vscode.postMessage({
+						type: 'openToolResultInEditor',
+						boxId: boxId,
+						tool: safeTool,
+						label: safeLabel,
+						content: json
+					});
 				} catch { /* ignore */ }
-				return false;
 			};
-			header.appendChild(link);
+			rightSide.appendChild(viewBtn);
 
-			const pre = document.createElement('pre');
-			pre.id = preId;
-			pre.className = 'kusto-copilot-tool-json';
-			pre.style.display = 'none';
-			pre.textContent = json;
+			// Remove icon button (if we have an entryId)
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: boxId,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
 
+			header.appendChild(rightSide);
 			wrapper.appendChild(header);
-			wrapper.appendChild(pre);
+
+			// Result row (underneath header)
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			resultRow.textContent = safeLabel;
+			wrapper.appendChild(resultRow);
+
+			// Tooltip (shown on hover) with tool call details
+			const tooltip = document.createElement('div');
+			tooltip.className = 'kusto-copilot-tool-tooltip';
+			const tooltipRequestLabel = document.createElement('div');
+			tooltipRequestLabel.className = 'kusto-copilot-tool-tooltip-label';
+			tooltipRequestLabel.textContent = 'Tool: ' + safeTool;
+			tooltip.appendChild(tooltipRequestLabel);
+			const tooltipContent = document.createElement('div');
+			tooltipContent.className = 'kusto-copilot-tool-tooltip-content';
+			tooltipContent.textContent = json;
+			tooltip.appendChild(tooltipContent);
+			document.body.appendChild(tooltip);
+
+			// Set up tooltip show/hide behavior
+			__kustoSetupToolTooltip(wrapper, tooltip);
+
 			host.appendChild(wrapper);
 			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
 		} catch {
@@ -510,7 +654,7 @@
 		} catch { /* ignore */ }
 
 		if (statusText) {
-			__kustoAppendChatMessage(boxId, 'assistant', String(statusText));
+			__kustoAppendChatMessage(boxId, 'notification', String(statusText));
 		}
 	}
 
@@ -737,7 +881,7 @@
 			}
 
 			__kustoSetCopilotChatRunning(boxId, false);
-			__kustoAppendChatMessage(boxId, 'assistant', 'Describe what you want, and I will generate a full Kusto query and run it.');
+			__kustoAppendChatMessage(boxId, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it.');
 
 			// Ask extension for model list + default selection.
 			try {
@@ -834,7 +978,7 @@
 		const inputEl = document.getElementById(id + '_copilot_input');
 		const prompt = inputEl ? String(inputEl.value || '').trim() : '';
 		if (!prompt) {
-			__kustoAppendChatMessage(id, 'assistant', 'Type what you want the query to do, then press Send.');
+			__kustoAppendChatMessage(id, 'notification', 'Type what you want the query to do, then press Send.');
 			return;
 		}
 
@@ -842,11 +986,11 @@
 		const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
 		const database = (document.getElementById(id + '_database') || {}).value || '';
 		if (!connectionId) {
-			__kustoAppendChatMessage(id, 'assistant', 'Select a cluster connection first.');
+			__kustoAppendChatMessage(id, 'notification', 'Select a cluster connection first.');
 			return;
 		}
 		if (!database) {
-			__kustoAppendChatMessage(id, 'assistant', 'Select a database first.');
+			__kustoAppendChatMessage(id, 'notification', 'Select a database first.');
 			return;
 		}
 
@@ -932,6 +1076,56 @@
 		try { __kustoSetCopilotToolsOptions(String(boxId || ''), tools || []); } catch { /* ignore */ }
 	};
 
+	// Track active panel for click-outside-to-close
+	let __kustoActiveCopilotToolsPanel = null;
+
+	function __kustoCopilotCloseToolsPanel(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		const panel = document.getElementById(id + '_copilot_tools_panel');
+		const btn = document.getElementById(id + '_copilot_tools_btn');
+		if (panel) panel.style.display = 'none';
+		if (btn) {
+			btn.classList.remove('is-active');
+			btn.setAttribute('aria-pressed', 'false');
+		}
+		if (__kustoActiveCopilotToolsPanel === id) {
+			__kustoActiveCopilotToolsPanel = null;
+		}
+	}
+
+	window.__kustoCopilotClearConversation = function __kustoCopilotClearConversation(boxId) {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		try {
+			// Clear all messages from the chat UI
+			const messagesHost = document.getElementById(id + '_copilot_messages');
+			if (messagesHost) {
+				messagesHost.innerHTML = '';
+			}
+		} catch { /* ignore */ }
+		try {
+			// Reset tool response sequence counter
+			const state = __kustoEnsureCopilotToolResponseState();
+			if (state[id]) {
+				state[id].seq = 0;
+			}
+		} catch { /* ignore */ }
+		try {
+			// Notify extension to reset conversation state (so next message is treated as first)
+			vscode.postMessage({ type: 'clearCopilotConversation', boxId: id });
+		} catch { /* ignore */ }
+
+		// Re-run the same initialization logic that runs when the chat first opens
+		__kustoSetCopilotChatRunning(id, false);
+		__kustoAppendChatMessage(id, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it.');
+
+		// Re-request model list + default selection (same as initial setup)
+		try {
+			vscode.postMessage({ type: 'prepareCopilotWriteQuery', boxId: id });
+		} catch { /* ignore */ }
+	};
+
 	window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(boxId) {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -942,7 +1136,14 @@
 			try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
 			const isHidden = (panel.style.display === 'none');
 			const nextVisible = !!isHidden;
+
+			// Close any previously open panel
+			if (__kustoActiveCopilotToolsPanel && __kustoActiveCopilotToolsPanel !== id) {
+				__kustoCopilotCloseToolsPanel(__kustoActiveCopilotToolsPanel);
+			}
+
 			panel.style.display = nextVisible ? 'block' : 'none';
+			__kustoActiveCopilotToolsPanel = nextVisible ? id : null;
 			try {
 				if (btn) {
 					btn.classList.toggle('is-active', nextVisible);
@@ -951,8 +1152,21 @@
 			} catch { /* ignore */ }
 		} catch { /* ignore */ }
 	};
+
+	// Click-outside-to-close handler
+	document.addEventListener('click', function (e) {
+		if (!__kustoActiveCopilotToolsPanel) return;
+		const id = __kustoActiveCopilotToolsPanel;
+		const panel = document.getElementById(id + '_copilot_tools_panel');
+		const btn = document.getElementById(id + '_copilot_tools_btn');
+		if (!panel) return;
+		// If click is inside panel or on the toggle button, ignore
+		if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+		__kustoCopilotCloseToolsPanel(id);
+	}, true);
+
 	window.__kustoCopilotWriteQueryStatus = function (boxId, text) {
-		__kustoAppendChatMessage(String(boxId || ''), 'assistant', String(text || ''));
+		__kustoAppendChatMessage(String(boxId || ''), 'notification', String(text || ''));
 	};
 	window.__kustoCopilotWriteQuerySetQuery = function (boxId, queryText) {
 		__kustoSetQueryText(String(boxId || ''), queryText);
@@ -961,12 +1175,433 @@
 		const id = String(boxId || '').trim();
 		__kustoSetCopilotChatRunning(id, false);
 		if (message) {
-			__kustoAppendChatMessage(id, 'assistant', String(message || ''));
+			__kustoAppendChatMessage(id, 'notification', String(message || ''));
 		}
 	};
 
 	// Called by main.js when the host returns a local tool payload.
-	window.__kustoCopilotWriteQueryToolResult = function (boxId, toolName, label, jsonText) {
-		__kustoAppendToolResponse(String(boxId || ''), String(toolName || ''), String(label || ''), String(jsonText || ''));
+	window.__kustoCopilotWriteQueryToolResult = function (boxId, toolName, label, jsonText, entryId) {
+		__kustoAppendToolResponse(String(boxId || ''), String(toolName || ''), String(label || ''), String(jsonText || ''), String(entryId || ''));
+	};
+
+	// Called by main.js when Copilot executes a query and receives results.
+	// Shows a link with hover tooltip (query text), clicking inserts a new section with the query and results.
+	window.__kustoCopilotAppendExecutedQuery = function (boxId, query, resultSummary, errorMessage, entryId, result) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safeQuery = String(query || '').trim();
+			const safeSummary = String(resultSummary || '').trim();
+			const safeError = String(errorMessage || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+			const isError = safeSummary === 'Error' || !!safeError;
+			// Store result for use when inserting
+			const storedResult = result || null;
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-tool' + (isError ? ' is-error' : '');
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row: icon + tool name + action icons
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			// Left side: icon + tool name
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-tools';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const toolName = document.createElement('strong');
+			toolName.textContent = ' execute_kusto_query';
+			leftSide.appendChild(toolName);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// Insert icon button
+			const insertBtn = document.createElement('button');
+			insertBtn.type = 'button';
+			insertBtn.className = 'kusto-copilot-icon-btn';
+			insertBtn.title = 'Insert as new query section so you can inspect the query and results';
+			const insertIcon = document.createElement('span');
+			insertIcon.className = 'codicon codicon-insert';
+			insertBtn.appendChild(insertIcon);
+			insertBtn.onclick = (e) => {
+				try { e.preventDefault(); } catch { /* ignore */ }
+				try {
+					if (typeof window.addQueryBox === 'function') {
+						// Create new box with results visible by default
+						const newBoxId = window.addQueryBox({ initialQuery: safeQuery, defaultResultsVisible: true });
+						if (newBoxId) {
+							setTimeout(() => {
+								// Set the query text
+								if (typeof __kustoSetQueryText === 'function') {
+									__kustoSetQueryText(newBoxId, safeQuery);
+								}
+								// Display the stored results if available (no re-execution needed)
+								if (storedResult && typeof displayResultForBox === 'function') {
+									displayResultForBox(storedResult, newBoxId, { label: 'Results', showExecutionTime: true });
+								}
+								// Scroll to the new box
+								const newBox = document.getElementById(newBoxId);
+								if (newBox) {
+									newBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
+								}
+							}, 100);
+						}
+					}
+				} catch { /* ignore */ }
+			};
+			rightSide.appendChild(insertBtn);
+
+			// Remove icon button (if we have an entryId)
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Result row (underneath header)
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			if (isError) {
+				resultRow.textContent = 'Query failed to execute';
+				resultRow.classList.add('is-error');
+			} else if (safeSummary) {
+				resultRow.textContent = safeSummary;
+			}
+			wrapper.appendChild(resultRow);
+
+			// Tooltip (shown on hover) with tool call details
+			const tooltip = document.createElement('div');
+			tooltip.className = 'kusto-copilot-tool-tooltip';
+			const tooltipRequestLabel = document.createElement('div');
+			tooltipRequestLabel.className = 'kusto-copilot-tool-tooltip-label';
+			tooltipRequestLabel.textContent = 'Query:';
+			tooltip.appendChild(tooltipRequestLabel);
+			const tooltipQuery = document.createElement('div');
+			tooltipQuery.className = 'kusto-copilot-tool-tooltip-content';
+			tooltipQuery.textContent = safeQuery;
+			tooltip.appendChild(tooltipQuery);
+			if (isError && safeError) {
+				const tooltipErrorLabel = document.createElement('div');
+				tooltipErrorLabel.className = 'kusto-copilot-tool-tooltip-label';
+				tooltipErrorLabel.style.marginTop = '8px';
+				tooltipErrorLabel.textContent = 'Error:';
+				tooltip.appendChild(tooltipErrorLabel);
+				const tooltipError = document.createElement('div');
+				tooltipError.className = 'kusto-copilot-tool-tooltip-content';
+				tooltipError.style.color = 'var(--vscode-inputValidation-errorForeground, #f48771)';
+				tooltipError.textContent = safeError;
+				tooltip.appendChild(tooltipError);
+			} else if (safeSummary) {
+				const tooltipResultLabel = document.createElement('div');
+				tooltipResultLabel.className = 'kusto-copilot-tool-tooltip-label';
+				tooltipResultLabel.style.marginTop = '8px';
+				tooltipResultLabel.textContent = 'Result:';
+				tooltip.appendChild(tooltipResultLabel);
+				const tooltipResult = document.createElement('div');
+				tooltipResult.className = 'kusto-copilot-tool-tooltip-content';
+				tooltipResult.textContent = safeSummary;
+				tooltip.appendChild(tooltipResult);
+			}
+			document.body.appendChild(tooltip);
+
+			// Set up tooltip show/hide behavior
+			__kustoSetupToolTooltip(wrapper, tooltip);
+
+			host.appendChild(wrapper);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
+	};
+
+	// Called by main.js when general-query-rules.md is loaded for the first message.
+	// Shows a link with hover tooltip (preview of content), clicking opens markdown preview.
+	window.__kustoCopilotAppendGeneralRulesLink = function (boxId, filePath, preview, entryId) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safeFilePath = String(filePath || '').trim();
+			const safePreview = String(preview || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-system';
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row: icon + label + action icons
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			// Left side: icon + label
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-book';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const text = document.createElement('strong');
+			text.textContent = ' general-query-rules.md';
+			leftSide.appendChild(text);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// Preview icon button
+			const previewBtn = document.createElement('button');
+			previewBtn.type = 'button';
+			previewBtn.className = 'kusto-copilot-icon-btn';
+			previewBtn.title = 'View what the guidelines are';
+			const previewIcon = document.createElement('span');
+			previewIcon.className = 'codicon codicon-eye';
+			previewBtn.appendChild(previewIcon);
+			previewBtn.onclick = (e) => {
+				try { e.preventDefault(); } catch { /* ignore */ }
+				try {
+					if (safeFilePath) {
+						vscode.postMessage({
+							type: 'openMarkdownPreview',
+							filePath: safeFilePath
+						});
+					}
+				} catch { /* ignore */ }
+			};
+			rightSide.appendChild(previewBtn);
+
+			// Remove icon button (if we have an entryId)
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Result row (underneath header)
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			resultRow.textContent = 'Loaded query writing guidelines';
+			wrapper.appendChild(resultRow);
+
+			// Tooltip (shown on hover) with preview of file content
+			const tooltip = document.createElement('div');
+			tooltip.className = 'kusto-copilot-tool-tooltip';
+			const tooltipLabel = document.createElement('div');
+			tooltipLabel.className = 'kusto-copilot-tool-tooltip-label';
+			tooltipLabel.textContent = 'Preview:';
+			tooltip.appendChild(tooltipLabel);
+			const tooltipContent = document.createElement('div');
+			tooltipContent.className = 'kusto-copilot-tool-tooltip-content';
+			tooltipContent.textContent = safePreview || 'Query writing guidelines for the LLM';
+			tooltip.appendChild(tooltipContent);
+			document.body.appendChild(tooltip);
+
+			// Set up tooltip show/hide behavior
+			__kustoSetupToolTooltip(wrapper, tooltip);
+
+			// Find the first user message and insert after it
+			const firstUserMsg = host.querySelector('.kusto-copilot-chat-msg-user');
+			if (firstUserMsg && firstUserMsg.nextSibling) {
+				host.insertBefore(wrapper, firstUserMsg.nextSibling);
+			} else if (firstUserMsg) {
+				host.appendChild(wrapper);
+			} else {
+				// No user message yet, append at end (will be before any assistant response)
+				host.appendChild(wrapper);
+			}
+		} catch {
+			// ignore
+		}
+	};
+
+	// Called by main.js when user sends a message and has a query in the editor.
+	// Shows the query snapshot with ability to remove it from conversation history.
+	window.__kustoCopilotAppendQuerySnapshot = function (boxId, queryText, entryId) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safeQuery = String(queryText || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+			if (!safeQuery) return; // Don't show empty query snapshots
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-query-snapshot';
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row: icon + label + action icons
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			// Left side: icon + label
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-code';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const text = document.createElement('strong');
+			text.textContent = ' Query context';
+			leftSide.appendChild(text);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// View icon button
+			const viewBtn = document.createElement('button');
+			viewBtn.type = 'button';
+			viewBtn.className = 'kusto-copilot-icon-btn';
+			viewBtn.title = safeQuery; // Full query on hover
+			const viewIcon = document.createElement('span');
+			viewIcon.className = 'codicon codicon-eye';
+			viewBtn.appendChild(viewIcon);
+			viewBtn.onclick = (e) => {
+				try { e.preventDefault(); } catch { /* ignore */ }
+				try {
+					vscode.postMessage({
+						type: 'openToolResultInEditor',
+						boxId: id,
+						tool: 'Query context',
+						label: 'Query snapshot',
+						content: safeQuery
+					});
+				} catch { /* ignore */ }
+			};
+			rightSide.appendChild(viewBtn);
+
+			// Remove icon button (if we have an entryId)
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Result row (underneath header) - truncated preview of query
+			const previewLen = 80;
+			const preview = safeQuery.length > previewLen
+				? safeQuery.substring(0, previewLen).replace(/\s+/g, ' ') + '…'
+				: safeQuery.replace(/\s+/g, ' ');
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			resultRow.textContent = preview;
+			wrapper.appendChild(resultRow);
+
+			// Create tooltip element for showing full query on hover
+			const tooltip = document.createElement('div');
+			tooltip.className = 'kusto-copilot-tool-tooltip';
+			const tooltipContent = document.createElement('pre');
+			tooltipContent.className = 'kusto-copilot-tool-tooltip-content';
+			tooltipContent.style.margin = '0';
+			tooltipContent.style.whiteSpace = 'pre-wrap';
+			tooltipContent.style.wordBreak = 'break-word';
+			tooltipContent.textContent = safeQuery;
+			tooltip.appendChild(tooltipContent);
+			document.body.appendChild(tooltip);
+
+			// Setup hover tooltip using existing helper
+			__kustoSetupToolTooltip(wrapper, tooltip);
+
+			host.appendChild(wrapper);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
 	};
 })();
