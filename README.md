@@ -12,36 +12,74 @@ It has advanced markdown capabilities (thanks to the amazing folks at [toastui](
 
 ## Key Features
 
-It is not really possible to cover every single feature here with a screenshot and an explanation. Hopefully most of the functionality is intuitive, and easy to discover organically. If you are lacking any functionality or you think something isn't working correctly, just please don't hesitate to reach out.
+It is not really possible to cover every single feature here with a screenshot and an explanation. Hopefully most of the functionality is intuitive, and easy to discover organically. If you are lacking any functionality or you think something isn't working correctly, just please don't hesitate to reach out, **I will get it done for you!**
 
- 
+### Import connections
 
-### Modern editor with a bunch of features
+Don't manually add every single Kusto cluster and database you work with. If you have been using Kusto either on the desktop or browser already, just import your existing connections.
 
-![Kusto query editor](./marketplace-media/kusto-query-editor.png)
+1. In Kusto Explorer, export your saved connections as an XML file (commonly named `connections.xml`).
+2. In VS Code, open the query editor and choose `Import from .xml file…` in the connection picker.
 
-### Support for Kusto, CSV, Images, Markdown, Python
+![Import connections for Kusto for desktop or web](marketplace-media/import-connections.png)
 
-![Support for additional data in .kqlx files](marketplace-media/kusto-kqlx-files.png)
+### Save connections to favorites
 
-### WYSIWYG for markdown
-
-![WYSIWYG for markdown in .md and .mdx files](marketplace-media/markdown.png)
-
-### Favorites
-
+Save frequently used connections to favorites, with a friendly name so you can remind yourself what the connection is used for.
 ![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
 
-## Key features
+### Modern Kusto editor using the official bits from Microsoft
 
-* Just a better all around Kusto query editor with smart auto-complete (not AI based), Copilot inline suggestions (AI based), Kusto documentation integration as you type, smart prettify query functionality, and a bunch of other features for you to discover. And of course 'red squiggle' support for instant feedback about the validity of your query.
-* Start running your queries without even creating a file. Bring up the command pallete (CTRL + SHIFT + P) and use Kusto Workbench: Open Query Editor to start executing your queries. Everything stays there after you close and re-open VS Code. Only save to a file when you are ready. Or forget all that, File > New File > .kqlx and you are good to go just the same.
-* Support for multiple authentication accounts, seamless switching between them just by running your queries. You won't even know it's happening.
-* No need to scrolling through endless database names any more, we now have favorites (with friendly names so you remember what each favorite is for).
-* Kusto query result exploration: search across results, JSON/object viewer, per-column analysis (unique values, distinct counts), table sorting (including multi-column sorting), and table filtering (value-based and rule-based). It's pretty much all you'll need for quick explorations in one place and new features are being added all the time.
-* Notebook-style sections when saving using the file extension `.kqlx`: Query + Markdown + Python + URL preview for now, but more to come. [Make a request](https://github.com/AngelosP/vscode-kusto-workbench/issues) for what you'd like to see next. With .kqlx files you also get the ability to save the query results in the file itself, creating a snapshot in time and something you can easily share with others.
-* Built-in Kusto query caching support to reduce repeated round-trips while iterating. Not only does it make your inner loop faster, but your admin will also love you.
-* Automatically improve query performance using GitHub Copilot, with side-by-side comparison tools to make sure the before and the after produce the same results and actually save query execution time.
+Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
+![Kusto query editor](./marketplace-media/kusto-query-editor.png)
+
+### Load .csv data directly from the internet
+
+If you have a URL, then you can load it
+![Load .csv data directly from the internet](./marketplace-media/csv.png)
+
+### Transform data
+
+You can transform Kusto search results without changing the query itself. You can also transform .csv files loaded into the file by adding a 'URL' section.
+![Using data transformation to add a calculated column](marketplace-media/transformation.png)
+
+### Chart data
+
+You can create charts from Kusto search results or .csv files loaded intot he file by adding a 'URL' section.
+![Creating a bar chart from a Kusto query](marketplace-media/chart.png)
+
+### Prettify query
+
+Use the query toolbar “Prettify” action to apply Kusto-aware formatting rules (for example, improving layout around common operators such as `where` and `summarize`).
+![Prettify a Kusto query](marketplace-media/prettify.png)
+
+### Diagnostics and debugging
+
+When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics:
+
+* Go-to-line behavior to take you straight to the relevant part of the query
+* Highlighting of important terms to focus your attention with red squiggles
+* Hints in the scrollbar
+
+![Debugging a Kusto query with syntax errors](marketplace-media/diagnostics.png)
+
+### Query comparison and performance optimization
+
+If you have an existing query that you want to improve without changing its behavior and the results it returns, you can use the built in functionality to compare its performance and to guarantee that the data returned is identical, even if the rows and columns might be out of order.
+
+![Performance optmization of an existing query](marketplace-media/perf-optimization.png)
+
+### Create Azure Data Explorer links to share
+
+It's always nice to be able to share a query using a hyperlink, and with this extension it's just a single click.
+
+![Share your queries are Azure Data Explorer links](marketplace-media/share.png)
+
+### Multi-account support
+
+Some times we need to authenticate to different Kusto clusters with different identities, and this extension not only supports this scenario, but allows it even within a single file.
+
+![Multi-account support](marketplace-media/multi-account.png)
 
 ## Quick start
 
@@ -55,62 +93,19 @@ To open a file:
 * `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
 * `.mdx`: create an empty file and open it normally
 
-## Drag & drop section reordering
-
-In `.kqlx` and in `.mdx` files, each section has a drag handle. Drag sections to reorder the contents of your files and optionally give them friendly names to remind yourself what they are.
-
-## Prettify query
-
-Use the query toolbar “Prettify” action to apply Kusto-aware formatting rules (for example, improving layout around common operators such as `where` and `summarize`).
-
-## Diagnostics and debugging
-
-When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics.
-
-Where possible, diagnostics include:
-
-* Go-to-line behavior to take you straight to the relevant part of the query
-* Highlighting of important terms to focus your attention
-
 ## File formats (and “no file” mode)
 
-### Open existing `.kql` and `.csl` files (compatibility mode)
+### Open existing `.kql` and `.csl` files
 
-You can open existing `.kql` and `.csl` files with no conversion. The file stays plain text, and saving writes back plain text.
+You can open existing `.kql` and `.csl` files with no conversion. The file stays plain text, and saving writes back plain text. If you add more stuff to these type of files, you are asked to save a `.json` file with the same filename side-by-side.
 
-Compatibility mode is intentionally limited to a single query section (it does not persist notebook-only content like Markdown/Python into a `.kql`/`.csl` file), but you still get the modern editor experience and result tooling.
+### Create `.kqlx` files convinience
 
-### Use the new `.kqlx` format for full features
+Use `.kqlx` and `.mdx` files to keep everything in a single file (.kql and .csl files require a sidecar .json file for some of the functionality)
 
-For the full notebook-style experience, use `.kqlx` files. `.kqlx` supports multiple sections:
+### "No file" mode (persistent global session)
 
-* Query sections (KQL)
-* Markdown sections
-* Python sections (run locally)
-* URL preview sections
-
-### Start without a file (persistent global session)
-
-You don’t need to create a file.
-
-Run `Kusto Workbench: Open Query Editor` and the extension opens a global, persistent session that auto-saves to a `.kqlx` file stored in VS Code’s global storage. This session is designed to survive VS Code restarts.
-
-If you want to turn that session into a real file in your workspace later, use `Kusto Workbench: Save Session As... (.kqlx)`.
-
-## Query optimization (Copilot)
-
-Use the query toolbar to optimize the current query with GitHub Copilot.
-
-The optimization workflow is designed to be safe and practical:
-
-* Copilot proposes a performance-improved query while preserving results
-* A comparison section can be created to run both queries and compare outputs
-* When results match, you can accept the optimizations back into the original query
-
-Notes:
-
-* Copilot optimization requires GitHub Copilot to be available in VS Code
-* The prompt is intentionally strict about preserving semantics
+You don’t need to create a file to use the extension. Run `Kusto Workbench: Open Query Editor` and the extension opens a global, persistent session that auto-saves to a `.kqlx` file stored in VS Code’s global storage. This session is designed to survive VS Code restarts. If you want to turn that session into a real file in your workspace later, use `Kusto Workbench: Save Session As... (.kqlx)`.
 
 ## Commands
 
@@ -121,13 +116,6 @@ Notes:
 * `Kusto Workbench: Manage Connections`
 * `Kusto Workbench: Delete All Connections`
 * `Kusto Workbench: Show Cached Values`
-
-## Importing connections from Kusto Explorer (connections.xml)
-
-This extension can import connections that you already have set up in the Windows Kusto Explorer desktop app.
-
-1. In Kusto Explorer, export your saved connections as an XML file (commonly named `connections.xml`).
-2. In VS Code, open the query editor and choose `Import from .xml file…` in the connection picker.
 
 ## Requirements
 

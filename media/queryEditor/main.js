@@ -650,7 +650,7 @@ document.addEventListener('copy', (event) => {
 }, true);
 
 // Ctrl+Enter / Ctrl+Shift+Enter (Cmd+Enter / Cmd+Shift+Enter on macOS) runs the active query box,
-// same as clicking the main run button.
+// same as clicking the main run button. Also submits Copilot Chat if focused.
 document.addEventListener('keydown', (event) => {
 	// Some environments report Enter via `code` more reliably than `key`.
 	const isEnter = (event.key === 'Enter') || (event.code === 'Enter');
@@ -660,6 +660,25 @@ document.addEventListener('keydown', (event) => {
 	if (!activeQueryEditorBoxId) {
 		return;
 	}
+
+	// Check if focus is on the Copilot Chat input textarea
+	const activeEl = document.activeElement;
+	if (activeEl && activeEl.id === activeQueryEditorBoxId + '_copilot_input') {
+		event.preventDefault();
+		event.stopPropagation();
+		if (typeof event.stopImmediatePropagation === 'function') {
+			event.stopImmediatePropagation();
+		}
+		try {
+			if (typeof __kustoCopilotWriteQuerySend === 'function') {
+				__kustoCopilotWriteQuerySend(activeQueryEditorBoxId);
+			}
+		} catch {
+			// ignore
+		}
+		return;
+	}
+
 	// Prevent Monaco's default Ctrl/Cmd+Enter behavior (typically "insert line below")
 	// from running in addition to executing the query.
 	event.preventDefault();
