@@ -2521,6 +2521,31 @@
 			transform-origin: center;
 		}
 
+		/* Custom undo/redo toolbar buttons */
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.undo,
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.redo {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: none;
+			cursor: pointer;
+			padding: 0;
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.undo svg,
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.redo svg {
+			width: 16px;
+			height: 16px;
+			stroke: var(--vscode-foreground);
+		}
+
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.undo:hover,
+		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.redo:hover {
+			background-color: var(--vscode-list-hoverBackground);
+		}
+
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar button:hover {
 			background-color: var(--vscode-list-hoverBackground);
 		}

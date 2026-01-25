@@ -10,7 +10,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * The LLM gets the full conversation history by default.
     * The user gets the ability to manage the conversation history by being able to delete parts (tool calls, returned queries, etc.) on demand through the chat UI.
     * The user gets the ability to inspect the tool calls made.
-    * More efficient syntax for Kusto schemas to handle larger databases and be more efficient with the context window. 
+    * More efficient syntax for Kusto schemas to handle larger databases and be more efficient with the context window.
 * Added the **Funnel** chart type.
 * Improved UX and error messages when a Kusto connection cannot be established, yet the user is changing the cluster / database selection. Better use of cached schema & better error messages.
 * The chart mode buttons are hidden when the section is minimized.
@@ -18,6 +18,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * New extension setting for controlling whether it opens .md files by default or not.
 * Much better naming strategy for sections: `<Name> | 'Unamed' [section #<number]`
 * Updated 'Add X / Y / Z' buttons at the bottom of the file to not repeat 'Add'.
+* Updated README.
 * Bug fixes
     * Various CTRL+ shortcuts that are used by VS Code were being interfering with editing markdown sections or files. This is an old bug that returned, so fixed it again.
     * Search box within a single kusto editor box (e.g., .cls, or .kql file) was losing focus automatically making it impossible to actually search.
@@ -25,6 +26,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * It used to trigger the auto-complete dropdown when the cursor was at the very end of a term or string, right after the last character and before white space which just ruins the flow of typing with the auto-trigger completions feature enabled.
     * It used to always copy the table header into the clipboard and it was annoying when we were only trying to copy a single cell or two. So now it only includes the headers when you are copying entire rows.
     * Focus was not being assigned to the correct controls at the correct time, which lead to table cells being selected and then CTRL+C would not copy their contents into the clipboard, which of course was wrong.
+    * Undo inside a .md file would reset the view and move the cursor to the very top of the file, position 0,0.
+    * Paste into a .md file would reset the view and move the cursor to the very top of the file, position 0,0.
 
 ## [0.4.0] - 2026-22-01
 

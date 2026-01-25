@@ -4275,8 +4275,73 @@ function initMarkdownEditor(boxId) {
 		// ignore
 	}
 
+	// Create undo/redo toolbar button elements.
+	// These are custom toolbar items that trigger ProseMirror's undo/redo commands.
+	let undoButton = null;
+	let redoButton = null;
+	let toastEditorRef = null; // Will be set after editor creation
+	try {
+		// Undo button
+		undoButton = document.createElement('button');
+		undoButton.type = 'button';
+		undoButton.className = 'toastui-editor-toolbar-icons undo';
+		undoButton.setAttribute('aria-label', 'Undo');
+		undoButton.title = 'Undo (Ctrl+Z)';
+		undoButton.style.backgroundImage = 'none';
+		undoButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>';
+		undoButton.addEventListener('click', () => {
+			try {
+				if (toastEditorRef) {
+					const modeEditor = toastEditorRef.getCurrentModeEditor ? toastEditorRef.getCurrentModeEditor() : null;
+					if (modeEditor && modeEditor.commands && typeof modeEditor.commands.undo === 'function') {
+						modeEditor.commands.undo();
+					}
+				}
+			} catch { /* ignore */ }
+		});
+
+		// Redo button
+		redoButton = document.createElement('button');
+		redoButton.type = 'button';
+		redoButton.className = 'toastui-editor-toolbar-icons redo';
+		redoButton.setAttribute('aria-label', 'Redo');
+		redoButton.title = 'Redo (Ctrl+Y)';
+		redoButton.style.backgroundImage = 'none';
+		redoButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>';
+		redoButton.addEventListener('click', () => {
+			try {
+				if (toastEditorRef) {
+					const modeEditor = toastEditorRef.getCurrentModeEditor ? toastEditorRef.getCurrentModeEditor() : null;
+					if (modeEditor && modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
+						modeEditor.commands.redo();
+					}
+				}
+			} catch { /* ignore */ }
+		});
+	} catch { /* ignore */ }
+
 	let toastEditor = null;
 	try {
+		// Build the toolbarItems array with undo/redo as the first group
+		const toolbarItemsConfig = [];
+		
+		// First group: undo/redo buttons (custom elements)
+		if (undoButton && redoButton) {
+			toolbarItemsConfig.push([
+				{ name: 'undo', el: undoButton, tooltip: 'Undo (Ctrl+Z)' },
+				{ name: 'redo', el: redoButton, tooltip: 'Redo (Ctrl+Y)' }
+			]);
+		}
+		
+		// Default toolbar groups
+		toolbarItemsConfig.push(
+			['heading', 'bold', 'italic', 'strike'],
+			['hr', 'quote'],
+			['ul', 'ol', 'task', 'indent', 'outdent'],
+			['table', 'image', 'link'],
+			['code', 'codeblock']
+		);
+
 		const editorOptions = {
 			el: container,
 			height: '100%',
@@ -4285,6 +4350,7 @@ function initMarkdownEditor(boxId) {
 			hideModeSwitch: true,
 			usageStatistics: false,
 			initialValue,
+			toolbarItems: toolbarItemsConfig,
 			plugins: getToastUiPlugins(ToastEditor),
 			events: {
 				change: () => {
@@ -4303,6 +4369,9 @@ function initMarkdownEditor(boxId) {
 		toastEditor = new ToastEditor({
 			...editorOptions
 		});
+		
+		// Set the reference so toolbar buttons can access the editor
+		toastEditorRef = toastEditor;
 	} catch (e) {
 		try { console.error('Failed to initialize TOAST UI Editor (markdown editor).', e); } catch { /* ignore */ }
 		return;
@@ -4324,6 +4393,8 @@ function initMarkdownEditor(boxId) {
 	//   from seeing them by stopping propagation and letting ToastUI handle them.
 	// - For Ctrl+S (save): intercept it from ToastUI (which uses it for strikethrough)
 	//   and re-dispatch to VS Code for file save functionality.
+	// - For Ctrl+Z/Y (undo/redo) and Ctrl+V (paste): prevent VS Code from performing
+	//   document-level undo/redo/paste which would cause a full editor reload.
 	// ─────────────────────────────────────────────────────────────────────────────
 	try {
 		// Shortcuts that the markdown editor should handle (not VS Code).
@@ -4335,7 +4406,7 @@ function initMarkdownEditor(boxId) {
 		// Ctrl+L = ordered list (VS Code: select line)
 		// Ctrl+Shift+L = unordered list
 		// Ctrl+D = strikethrough in some editors (VS Code: add selection to next find match)
-		const markdownShortcutKeys = new Set(['b', 'i', 'u', 'e', 'k', 'l', 'd']);
+		const markdownFormattingKeys = new Set(['b', 'i', 'u', 'e', 'k', 'l', 'd']);
 
 		// Helper to check if focus is inside the markdown editor.
 		// ToastUI uses ProseMirror which creates contenteditable elements.
@@ -4354,6 +4425,8 @@ function initMarkdownEditor(boxId) {
 			} catch { return false; }
 		};
 
+		// Capture phase handler - intercepts keyboard shortcuts before they reach VS Code.
+		// For undo/redo, we intercept and then let the event continue to ToastUI's ProseMirror.
 		container.addEventListener('keydown', (ev) => {
 			try {
 				const key = ev.key.toLowerCase();
@@ -4397,17 +4470,66 @@ function initMarkdownEditor(boxId) {
 					return;
 				}
 
+				// Handle Ctrl+Z (undo) - execute via ToastUI commands API, block VS Code
+				if (key === 'z' && !ev.shiftKey) {
+					ev.stopPropagation();
+					ev.stopImmediatePropagation();
+					ev.preventDefault();
+					// Execute undo directly via ToastUI's commands API
+					try {
+						const modeEditor = toastEditor && toastEditor.getCurrentModeEditor ? toastEditor.getCurrentModeEditor() : null;
+						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.undo === 'function') {
+							modeEditor.commands.undo();
+						}
+					} catch { /* ignore */ }
+					return;
+				}
+
+				// Handle Ctrl+Shift+Z (redo) - execute via ToastUI commands API, block VS Code
+				if (key === 'z' && ev.shiftKey) {
+					ev.stopPropagation();
+					ev.stopImmediatePropagation();
+					ev.preventDefault();
+					// Execute redo directly via ToastUI's commands API
+					try {
+						const modeEditor = toastEditor && toastEditor.getCurrentModeEditor ? toastEditor.getCurrentModeEditor() : null;
+						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
+							modeEditor.commands.redo();
+						}
+					} catch { /* ignore */ }
+					return;
+				}
+
+				// Handle Ctrl+Y (redo) - execute via ToastUI commands API, block VS Code
+				// Note: ProseMirror uses Ctrl+Shift+Z for redo, but users expect Ctrl+Y to work too
+				if (key === 'y' && !ev.shiftKey) {
+					ev.stopPropagation();
+					ev.stopImmediatePropagation();
+					ev.preventDefault();
+					// Execute redo directly via ToastUI's commands API
+					try {
+						const modeEditor = toastEditor && toastEditor.getCurrentModeEditor ? toastEditor.getCurrentModeEditor() : null;
+						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
+							modeEditor.commands.redo();
+						}
+					} catch { /* ignore */ }
+					return;
+				}
+
 				// Markdown formatting shortcuts - let ToastUI handle them, block VS Code.
 				// These are shortcuts where the user intends to format text, not trigger
 				// VS Code commands like toggling the sidebar.
-				if (markdownShortcutKeys.has(key)) {
+				if (markdownFormattingKeys.has(key)) {
 					// Stop the event from bubbling to VS Code's webview keyboard handler.
 					// This prevents VS Code from seeing Ctrl+B, Ctrl+I, etc.
-					// ToastUI will still handle the event because we're in capture phase
-					// and only stopping propagation to parent elements.
 					ev.stopPropagation();
 					// Note: We do NOT call preventDefault() here - ToastUI needs to handle the key.
 					// We also do NOT call stopImmediatePropagation() - ToastUI's handlers should run.
+				}
+
+				// Block cut/paste from reaching VS Code (let ToastUI handle via default behavior)
+				if (key === 'v' || key === 'x') {
+					ev.stopPropagation();
 				}
 			} catch { /* ignore */ }
 		}, true); // capture phase - fires before propagation to parent (VS Code)
@@ -4426,6 +4548,36 @@ function initMarkdownEditor(boxId) {
 					toastEditor.setMarkdown(String(value || ''));
 				}
 			} catch { /* ignore */ }
+		},
+		// Undo the last edit in the ToastUI editor.
+		// Calls the ProseMirror undo command directly via ToastUI's commands API.
+		undo: () => {
+			try {
+				if (!toastEditor) return false;
+				const modeEditor = toastEditor.getCurrentModeEditor ? toastEditor.getCurrentModeEditor() : null;
+				if (!modeEditor) return false;
+				// ToastUI exposes ProseMirror commands via the commands property
+				if (modeEditor.commands && typeof modeEditor.commands.undo === 'function') {
+					modeEditor.commands.undo();
+					return true;
+				}
+				return false;
+			} catch { return false; }
+		},
+		// Redo the last undone edit in the ToastUI editor.
+		// Calls the ProseMirror redo command directly via ToastUI's commands API.
+		redo: () => {
+			try {
+				if (!toastEditor) return false;
+				const modeEditor = toastEditor.getCurrentModeEditor ? toastEditor.getCurrentModeEditor() : null;
+				if (!modeEditor) return false;
+				// ToastUI exposes ProseMirror commands via the commands property
+				if (modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
+					modeEditor.commands.redo();
+					return true;
+				}
+				return false;
+			} catch { return false; }
 		},
 		layout: () => {
 			try {
