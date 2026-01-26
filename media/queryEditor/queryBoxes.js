@@ -263,6 +263,17 @@ function addQueryBox(options) {
 	const toolbarHtml =
 		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools" id="' + id + '_toolbar">' +
 		'<div class="qe-toolbar-items">' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-undo-btn" data-qe-overflow-action="undo" data-qe-overflow-label="Undo" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'undo\')" title="Undo (Ctrl+Z)" aria-label="Undo">' +
+		'<span class="qe-icon" aria-hidden="true">' +
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>' +
+		'</span>' +
+		'</button>' +
+		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-redo-btn" data-qe-overflow-action="redo" data-qe-overflow-label="Redo" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'redo\')" title="Redo (Ctrl+Y)" aria-label="Redo">' +
+		'<span class="qe-icon" aria-hidden="true">' +
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>' +
+		'</span>' +
+		'</button>' +
+		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
 		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="prettify" data-qe-overflow-label="Prettify query" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
 		'<span class="qe-icon" aria-hidden="true">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
@@ -2070,6 +2081,24 @@ function onQueryEditorToolbarAction(boxId, action) {
 		// ignore
 	}
 
+	if (action === 'undo') {
+		try {
+			const editor = queryEditors[boxId];
+			if (editor) {
+				editor.trigger('toolbar', 'undo', null);
+			}
+		} catch { /* ignore */ }
+		return;
+	}
+	if (action === 'redo') {
+		try {
+			const editor = queryEditors[boxId];
+			if (editor) {
+				editor.trigger('toolbar', 'redo', null);
+			}
+		} catch { /* ignore */ }
+		return;
+	}
 	if (action === 'search') {
 		return runMonacoAction(boxId, 'actions.find');
 	}

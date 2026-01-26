@@ -3712,6 +3712,13 @@
 			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 		}
 
+		/* Undo/Redo toolbar buttons - use stroke-based SVG icons */
+		.query-editor-toolbar-btn.qe-undo-btn .qe-icon svg,
+		.query-editor-toolbar-btn.qe-redo-btn .qe-icon svg {
+			fill: none;
+			stroke: var(--vscode-foreground);
+		}
+
 		.query-editor-toolbar-btn.is-active {
 			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 			border-color: transparent;
