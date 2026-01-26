@@ -8303,6 +8303,13 @@ function initQueryEditor(boxId) {
 				if (w) {
 					w.style.height = Math.round(pending) + 'px';
 					try { w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+					// Also update the manual height map so __kustoGetWrapperHeightPx returns consistent values.
+					try {
+						if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+							window.__kustoManualQueryEditorHeightPxByBoxId = {};
+						}
+						window.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(pending);
+					} catch { /* ignore */ }
 				}
 				try { delete window.__kustoPendingWrapperHeightPxByBoxId[boxId]; } catch { /* ignore */ }
 			}
@@ -10660,6 +10667,83 @@ function initQueryEditor(boxId) {
 
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
+			});
+
+			// Double-click to fit editor to contents
+			resizer.addEventListener('dblclick', (e) => {
+				try {
+					e.preventDefault();
+					e.stopPropagation();
+
+					const w = resolveWrapperForResize();
+					if (!w) return;
+
+					const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[boxId] : null;
+					if (!ed) return;
+
+					// Get Monaco editor's content height
+					let contentHeight = 0;
+					try {
+						const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
+						if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
+					} catch { /* ignore */ }
+					if (!contentHeight || contentHeight <= 0) return;
+
+					// Calculate chrome (toolbar, padding, borders, etc.)
+					let chrome = 0;
+					try {
+						const toolbarEl = w.querySelector ? w.querySelector('.query-editor-toolbar') : null;
+						if (toolbarEl) {
+							const cs = getComputedStyle(toolbarEl);
+							if (cs && cs.display !== 'none') {
+								chrome += toolbarEl.getBoundingClientRect().height || 0;
+								chrome += (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
+							}
+						}
+					} catch { /* ignore */ }
+					try {
+						const csw = getComputedStyle(w);
+						chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+						chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+					} catch { /* ignore */ }
+
+					// Extra elements inside the clip area (banners, resizer, etc.)
+					let clipExtras = 0;
+					try {
+						const editorEl = document.getElementById(boxId + '_query_editor');
+						const clip = (editorEl && editorEl.closest) ? editorEl.closest('.qe-editor-clip') : null;
+						if (clip && clip.children) {
+							for (const child of Array.from(clip.children)) {
+								if (!child || child === editorEl) continue;
+								try {
+									const cs = getComputedStyle(child);
+									if (cs && cs.display === 'none') continue;
+									clipExtras += child.getBoundingClientRect().height || 0;
+									clipExtras += (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
+								} catch { /* ignore */ }
+							}
+						}
+						if (clip) {
+							const csc = getComputedStyle(clip);
+							clipExtras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
+							clipExtras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
+						}
+					} catch { /* ignore */ }
+
+					const FIT_SLACK_PX = 5;
+					const desired = Math.max(120, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX));
+					w.style.height = desired + 'px';
+					w.style.minHeight = '0';
+					try { w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+					try {
+						if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+							window.__kustoManualQueryEditorHeightPxByBoxId = {};
+						}
+						window.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(desired);
+					} catch { /* ignore */ }
+					try { ed.layout(); } catch { /* ignore */ }
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				} catch { /* ignore */ }
 			});
 		}
 	}).catch((e) => {
