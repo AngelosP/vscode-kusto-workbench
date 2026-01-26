@@ -2173,14 +2173,32 @@
 		.section-header-row.url-section-header .url-name {
 			/* Keep the URL name tight to the drag handle (remove the flex gap just for this pair). */
 			margin-left: -8px;
-			flex: 0 0 auto;
-			max-width: 250px;
-			width: 25px;
+			flex: 1 1 auto;
+			max-width: 150px;
+			min-width: 0; /* Allow complete collapse when space is tight */
 		}
 
 		.section-header-row.url-section-header .url-input {
 			flex: 1 1 auto;
-			min-width: 220px;
+			min-width: 0; /* Allow complete collapse when space is tight */
+		}
+
+		/* Ensure buttons have priority over textboxes and don't shrink */
+		.section-header-row.url-section-header .section-actions {
+			flex-shrink: 0;
+		}
+
+		/* URL sections: enable container queries for responsive hiding */
+		.query-box.url-box {
+			container-type: inline-size;
+			container-name: url-section;
+		}
+
+		/* Hide the URL textbox when the section is 150px or narrower */
+		@container url-section (max-width: 150px) {
+			.section-header-row.url-section-header .url-input {
+				display: none;
+			}
 		}
 
 		.section-title-edit {
