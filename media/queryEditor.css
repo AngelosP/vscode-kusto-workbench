@@ -6375,6 +6375,74 @@
 			margin-top: 8px;
 			margin-bottom: 8px;
 			font-size: 12px;
+			position: relative;
+		}
+
+		.cache-checkbox {
+			cursor: pointer;
+			width: 14px;
+			height: 14px;
+			margin: 0;
+			flex-shrink: 0;
+		}
+
+		/* Cache label */
+		.cache-label {
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+			user-select: none;
+			transition: color 0.15s ease;
+		}
+
+		.cache-label:hover {
+			text-decoration: underline;
+			color: var(--vscode-textLink-foreground);
+		}
+
+		.cache-label.disabled {
+			color: var(--vscode-disabledForeground);
+		}
+
+		.cache-label.disabled:hover {
+			text-decoration: underline;
+		}
+
+		/* Cache popup */
+		.cache-popup {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			margin-top: 4px;
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-radius: 4px;
+			box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+			z-index: 100;
+			display: none;
+			min-width: 200px;
+		}
+
+		.cache-popup.open {
+			display: block;
+		}
+
+		.cache-popup-content {
+			padding: 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.cache-popup-label {
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+
+		.cache-popup-inputs {
+			display: flex;
+			gap: 6px;
+			align-items: center;
 		}
 
 		.query-actions {
@@ -6724,19 +6792,9 @@
 			align-items: center;
 		}
 
-		.cache-checkbox {
-			display: flex;
-			align-items: center;
-			gap: 4px;
-			cursor: pointer;
-		}
 
-		.cache-checkbox input[type="checkbox"] {
-			cursor: pointer;
-		}
 
-		.cache-controls select,
-		.cache-controls input[type="number"] {
+		.cache-controls select {
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border);
@@ -6746,9 +6804,19 @@
 			width: 70px;
 		}
 
+		.cache-controls input[type="number"] {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 5px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 70px;
+		}
+
 		.cache-controls select:disabled,
 		.cache-controls input[type="number"]:disabled {
-			opacity: 0.5;
+			opacity: 0.6;
 			cursor: not-allowed;
 		}
 

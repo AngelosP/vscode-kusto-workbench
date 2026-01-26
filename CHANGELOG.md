@@ -7,7 +7,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Double click the resize handle to autofit to the contents of the section. Available on all types of sections and editors.
 * Export to Power BI has better formatting now, using fewer " characters.
+* More responsive UX and better experience at tiny widths.
 * Better toolbar overflow UX.
+* Better UX controlling whether results are cached.
 * Bug fixes
     * Kusto schema based completion dropdown annoyingly showed up when at the end of a term / word, even after successfully accepting a completion for the exact same term / word. I thought I had arleady fixed this, but apparently not. The joys of vibe coding :)
 

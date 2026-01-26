@@ -511,16 +511,21 @@ function addQueryBox(options) {
 		'</button>' +
 		'</div>' +
 		'<div class="cache-controls">' +
-		'<label class="cache-checkbox">' +
-		'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCacheControls(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}" />' +
-		'Cache results for' +
-		'</label>' +
+		'<span class="cache-label" id="' + id + '_cache_label" onclick="toggleCachePopup(\'' + id + '\')" title="Click to configure cache duration">Cache results</span>' +
+		'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCachePill(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}" class="cache-checkbox" title="Toggle result caching" />' +
+		'<div class="cache-popup" id="' + id + '_cache_popup">' +
+		'<div class="cache-popup-content">' +
+		'<span class="cache-popup-label">Cache results for</span>' +
+		'<div class="cache-popup-inputs">' +
 		'<input type="number" id="' + id + '_cache_value" value="1" min="1" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
 		'<select id="' + id + '_cache_unit" onchange="try{schedulePersist&&schedulePersist()}catch{}">' +
 		'<option value="minutes">Minutes</option>' +
 		'<option value="hours">Hours</option>' +
 		'<option value="days" selected>Days</option>' +
 		'</select>' +
+		'</div>' +
+		'</div>' +
+		'</div>' +
 		'</div>' +
 		'</div>' +
 		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">' +
@@ -4516,18 +4521,45 @@ function removeQueryBox(boxId) {
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
-function toggleCacheControls(boxId) {
-	const enabled = document.getElementById(boxId + '_cache_enabled').checked;
-	const valueInput = document.getElementById(boxId + '_cache_value');
-	const unitSelect = document.getElementById(boxId + '_cache_unit');
-
-	if (valueInput) {
-		valueInput.disabled = !enabled;
-	}
-	if (unitSelect) {
-		unitSelect.disabled = !enabled;
+function toggleCachePill(boxId) {
+	const checkbox = document.getElementById(boxId + '_cache_enabled');
+	const label = document.getElementById(boxId + '_cache_label');
+	if (label) {
+		label.classList.toggle('disabled', !checkbox.checked);
 	}
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function toggleCachePopup(boxId) {
+	const popup = document.getElementById(boxId + '_cache_popup');
+	if (!popup) return;
+	
+	const isOpen = popup.classList.contains('open');
+	
+	// Close all other popups first
+	document.querySelectorAll('.cache-popup.open').forEach(p => {
+		if (p !== popup) p.classList.remove('open');
+	});
+	
+	popup.classList.toggle('open', !isOpen);
+	
+	if (!isOpen) {
+		// Add click-outside listener
+		setTimeout(() => {
+			const closeHandler = (e) => {
+				if (!popup.contains(e.target) && !e.target.closest('#' + boxId + '_cache_label')) {
+					popup.classList.remove('open');
+					document.removeEventListener('click', closeHandler);
+				}
+			};
+			document.addEventListener('click', closeHandler);
+		}, 0);
+	}
+}
+
+// Keep for backward compatibility
+function toggleCacheControls(boxId) {
+	toggleCachePill(boxId);
 }
 
 function formatClusterDisplayName(connection) {
