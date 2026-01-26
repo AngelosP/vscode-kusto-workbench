@@ -6376,6 +6376,15 @@
 			margin-bottom: 8px;
 			font-size: 12px;
 			position: relative;
+			flex-wrap: nowrap;
+			flex-shrink: 0;
+		}
+
+		/* Hide cache controls when container is too narrow */
+		@container (max-width: 215px) {
+			.cache-controls {
+				display: none;
+			}
 		}
 
 		.cache-checkbox {
@@ -6452,6 +6461,7 @@
 			margin-top: 8px;
 			margin-bottom: 10px;
 			width: 100%;
+			container-type: inline-size;
 		}
 
 		.query-run {
