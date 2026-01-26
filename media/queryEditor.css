@@ -2876,12 +2876,25 @@
 		.select-wrapper.kusto-favorites-combo {
 			/*
 				Prefer the full-size layout (~448px), but allow this control to shrink smoothly
-				as the available header width decreases.
+				as the available header width decreases. No min-width here - we use JS to
+				switch to minimal mode before it gets too narrow.
 			*/
 			flex: 1 1 448px;
 			width: auto;
 			max-width: 448px;
-			min-width: 108px;
+			min-width: 40px;
+		}
+
+		/* Hide icon in favorites dropdown in normal (non-minimal) mode */
+		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon,
+		.select-wrapper.kusto-favorites-combo .kusto-favorites-btn .select-icon {
+			display: none;
+		}
+
+		/* In normal mode, remove left padding since icon is hidden */
+		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn,
+		.select-wrapper.kusto-favorites-combo .kusto-favorites-btn {
+			padding-left: 8px;
 		}
 
 		/*
@@ -3363,19 +3376,13 @@
 			color: var(--vscode-dropdown-foreground);
 		}
 
-		@media (max-width: 800px) {
-			.query-header .select-wrapper {
+		/* Responsive mode for cluster/database dropdowns at narrower widths */
+		@media (max-width: 600px) {
+			.query-header .select-wrapper.half-width {
 				flex: 0 0 40px;
 				width: 40px;
 				min-width: 40px;
-			}
-
-			.query-header .select-wrapper.kusto-favorites-combo {
-				/* Override the icon-only sizing so favorites can shrink smoothly instead of snapping. */
-				flex: 1 1 448px;
-				width: auto;
-				min-width: 108px;
-				max-width: 448px;
+				max-width: 40px;
 			}
 
 			/* Extra spacing so the DB refresh icon doesn't crowd/overlap the dropdown on the left. */
@@ -3389,35 +3396,75 @@
 				width: max-content;
 				min-width: 100%;
 			}
-
-			.query-header .select-wrapper.half-width {
-				flex: 0 0 40px;
-				width: 40px;
-				max-width: 40px;
-			}
 			
-			.query-header .select-wrapper select {
+			.query-header .select-wrapper.half-width select {
 				padding-left: 8px;
 				padding-right: 8px;
 				text-indent: -9999px;
 				color: transparent;
 			}
 
-			.query-header .select-wrapper.has-icon select {
+			.query-header .select-wrapper.half-width.has-icon select {
 				padding-left: 8px;
 			}
-
-			/* (favorites button no longer uses a left icon) */
 			
-			.query-header .select-wrapper select option {
+			.query-header .select-wrapper.half-width select option {
 				text-indent: 0;
 				color: var(--vscode-dropdown-foreground);
 			}
 
-			.query-header .select-wrapper.has-icon .select-icon {
+			.query-header .select-wrapper.half-width.has-icon .select-icon {
 				left: 50%;
 				transform: translate(-50%, -50%);
 			}
+
+			/* Hide text in cluster/database dropdown buttons in responsive mode, show only icon */
+			.query-header .select-wrapper.half-width .kusto-dropdown-btn-text {
+				display: none;
+			}
+
+			.query-header .select-wrapper.half-width .kusto-dropdown-btn-caret {
+				display: none;
+			}
+
+			.query-header .select-wrapper.half-width .kusto-dropdown-btn {
+				padding: 6px 8px;
+				justify-content: center;
+			}
+
+			.query-header .select-wrapper.half-width.has-icon .kusto-dropdown-btn {
+				padding-left: 8px;
+			}
+		}
+
+		/* Favorites dropdown collapses to icon-only at a different (wider) breakpoint */
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal {
+			flex: 0 0 40px;
+			width: 40px;
+			min-width: 40px;
+			max-width: 40px;
+		}
+
+		/* Show icon inside button in minimal mode */
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn .select-icon,
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn .select-icon {
+			display: inline-flex;
+		}
+
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn-text,
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn-text {
+			display: none;
+		}
+
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn-caret,
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn-caret {
+			display: none;
+		}
+
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn,
+		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn {
+			padding: 6px 8px;
+			justify-content: center;
 		}
 
 		.query-editor-wrapper {
@@ -6708,5 +6755,163 @@
 		.cache-info {
 			color: var(--vscode-descriptionForeground);
 			font-size: 11px;
+		}
+
+		/* ========================================
+		   Schema Info Icon and Popover
+		   ======================================== */
+		.schema-info-wrapper {
+			position: relative;
+			flex: 0 0 auto;
+			margin-left: auto;
+		}
+
+		.schema-info-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			color: var(--vscode-descriptionForeground);
+			cursor: pointer;
+			padding: 4px;
+			width: 28px;
+			height: 28px;
+			position: relative;
+		}
+
+		.schema-info-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			color: var(--vscode-foreground);
+		}
+
+		.schema-info-btn:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.schema-info-btn svg {
+			width: 18px;
+			height: 18px;
+			height: 16px;
+		}
+
+		/* Loading state for schema info button */
+		.schema-info-btn.is-loading svg {
+			opacity: 0.3;
+		}
+
+		.schema-info-spinner {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			width: 12px;
+			height: 12px;
+			box-sizing: border-box;
+			border-radius: 50%;
+			border: 2px solid var(--vscode-editorWidget-border);
+			border-top-color: var(--vscode-progressBar-background);
+			animation: query-spinner-spin 0.9s linear infinite;
+		}
+
+		/* Visual feedback when schema is loaded */
+		.schema-info-btn.has-schema {
+			color: var(--vscode-charts-green, #89d185);
+		}
+
+		.schema-info-btn.is-error {
+			color: var(--vscode-errorForeground, #f48771);
+		}
+
+		.schema-info-btn.is-cached {
+			color: var(--vscode-charts-blue, #4fc1ff);
+		}
+
+		/* Schema info popover */
+		.schema-info-popover {
+			position: fixed;
+			z-index: 10000;
+			min-width: 180px;
+			max-width: 250px;
+			background: var(--vscode-editorHoverWidget-background, #252526);
+			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+			border-radius: 4px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+			padding: 0;
+		}
+
+		.schema-info-popover-content {
+			padding: 10px 12px;
+		}
+
+		.schema-info-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			font-size: 12px;
+			padding: 3px 0;
+		}
+
+		.schema-info-label {
+			color: var(--vscode-descriptionForeground);
+			flex: 0 0 auto;
+		}
+
+		.schema-info-value,
+		.schema-info-status {
+			color: var(--vscode-foreground);
+			font-weight: 500;
+		}
+
+		.schema-info-status.is-error {
+			color: var(--vscode-errorForeground, #f48771);
+		}
+
+		.schema-info-cached-link {
+			color: var(--vscode-charts-blue, #4fc1ff);
+			text-decoration: underline;
+			cursor: pointer;
+		}
+
+		.schema-info-cached-link:hover {
+			color: var(--vscode-textLink-activeForeground, #3794ff);
+		}
+
+		.schema-info-actions {
+			border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+			margin-top: 8px;
+			padding-top: 8px;
+		}
+
+		.schema-info-refresh-btn {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			background: transparent;
+			border: 1px solid var(--vscode-button-border, transparent);
+			border-radius: 4px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 8px;
+			font-size: 12px;
+			width: 100%;
+			justify-content: center;
+		}
+
+		.schema-info-refresh-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.schema-info-refresh-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.schema-info-refresh-btn svg {
+			width: 14px;
+			height: 14px;
 		}
 	

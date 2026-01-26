@@ -1,7 +1,27 @@
 function setSchemaLoading(boxId, loading) {
 	schemaFetchInFlightByBoxId[boxId] = !!loading;
+	
+	// Update the schema info icon spinner
+	const infoSpinner = document.getElementById(boxId + '_schema_info_spinner');
+	const infoBtn = document.getElementById(boxId + '_schema_info_btn');
+	const infoStatus = document.getElementById(boxId + '_schema_info_status');
+	const refreshBtn = document.getElementById(boxId + '_schema_info_refresh_btn');
+
+	if (loading) {
+		// Show spinner on the info icon
+		if (infoSpinner) infoSpinner.style.display = 'inline-block';
+		if (infoBtn) infoBtn.classList.add('is-loading');
+		if (infoStatus) infoStatus.textContent = 'Loading…';
+		if (refreshBtn) refreshBtn.disabled = true;
+	} else {
+		// Hide spinner
+		if (infoSpinner) infoSpinner.style.display = 'none';
+		if (infoBtn) infoBtn.classList.remove('is-loading');
+		if (refreshBtn) refreshBtn.disabled = false;
+	}
+
+	// Legacy: Keep old element handling for backward compatibility during transition
 	const el = document.getElementById(boxId + '_schema_status');
-	// We no longer show the separate inline "Schema…" spinner/label.
 	if (el) {
 		el.style.display = 'none';
 	}
@@ -75,6 +95,80 @@ function setSchemaLoading(boxId, loading) {
 }
 
 function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
+	// Update the new schema info popover
+	const infoStatus = document.getElementById(boxId + '_schema_info_status');
+	const tablesRow = document.getElementById(boxId + '_schema_info_tables_row');
+	const tablesValue = document.getElementById(boxId + '_schema_info_tables');
+	const colsRow = document.getElementById(boxId + '_schema_info_cols_row');
+	const colsValue = document.getElementById(boxId + '_schema_info_cols');
+	const cachedRow = document.getElementById(boxId + '_schema_info_cached_row');
+	const infoBtn = document.getElementById(boxId + '_schema_info_btn');
+
+	const hasText = !!text;
+	
+	if (hasText && meta) {
+		const tablesCount = Number(meta.tablesCount);
+		const columnsCount = Number(meta.columnsCount);
+		const fromCache = !!meta.fromCache;
+
+		// Update status
+		if (infoStatus) {
+			infoStatus.textContent = isError ? 'Error' : 'Loaded';
+			infoStatus.classList.toggle('is-error', !!isError);
+		}
+
+		// Update tables count
+		if (tablesRow && tablesValue) {
+			tablesRow.style.display = 'flex';
+			tablesValue.textContent = String(tablesCount >= 0 ? tablesCount : 0);
+		}
+
+		// Update columns count
+		if (colsRow && colsValue) {
+			colsRow.style.display = 'flex';
+			colsValue.textContent = String(columnsCount >= 0 ? columnsCount : 0);
+		}
+
+		// Update cached indicator
+		if (cachedRow) {
+			cachedRow.style.display = fromCache ? 'flex' : 'none';
+		}
+
+		// Update button state for visual feedback
+		if (infoBtn) {
+			infoBtn.classList.toggle('has-schema', true);
+			infoBtn.classList.toggle('is-error', !!isError);
+			infoBtn.classList.toggle('is-cached', fromCache);
+		}
+	} else if (hasText) {
+		// Error or simple text status
+		if (infoStatus) {
+			infoStatus.textContent = isError ? 'Error' : text;
+			infoStatus.classList.toggle('is-error', !!isError);
+		}
+		if (tablesRow) tablesRow.style.display = 'none';
+		if (colsRow) colsRow.style.display = 'none';
+		if (cachedRow) cachedRow.style.display = 'none';
+		if (infoBtn) {
+			infoBtn.classList.toggle('has-schema', false);
+			infoBtn.classList.toggle('is-error', !!isError);
+			infoBtn.classList.toggle('is-cached', false);
+		}
+	} else {
+		// No schema loaded
+		if (infoStatus) {
+			infoStatus.textContent = 'Not loaded';
+			infoStatus.classList.remove('is-error');
+		}
+		if (tablesRow) tablesRow.style.display = 'none';
+		if (colsRow) colsRow.style.display = 'none';
+		if (cachedRow) cachedRow.style.display = 'none';
+		if (infoBtn) {
+			infoBtn.classList.remove('has-schema', 'is-error', 'is-cached');
+		}
+	}
+
+	// Legacy: Keep old element handling for backward compatibility
 	const el = document.getElementById(boxId + '_schema_loaded');
 	if (!el) {
 		return;
@@ -88,7 +182,6 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 		// ignore
 	}
 
-	const hasText = !!text;
 	if (hasText && meta && meta.fromCache) {
 		try {
 			const tablesCount = Number(meta.tablesCount);
@@ -295,6 +388,28 @@ function refreshSchema(boxId) {
 	if (!boxId) {
 		return;
 	}
+
+	// Update new schema info UI
+	try {
+		const infoRefreshBtn = document.getElementById(boxId + '_schema_info_refresh_btn');
+		if (infoRefreshBtn) {
+			infoRefreshBtn.disabled = true;
+		}
+		const infoSpinner = document.getElementById(boxId + '_schema_info_spinner');
+		if (infoSpinner) {
+			infoSpinner.style.display = 'inline-block';
+		}
+		const infoBtn = document.getElementById(boxId + '_schema_info_btn');
+		if (infoBtn) {
+			infoBtn.classList.add('is-loading');
+		}
+		const infoStatus = document.getElementById(boxId + '_schema_info_status');
+		if (infoStatus) {
+			infoStatus.textContent = 'Refreshing…';
+		}
+	} catch { /* ignore */ }
+
+	// Legacy: Update old schema refresh button if present
 	try {
 		const btn = document.getElementById(boxId + '_schema_refresh');
 		if (btn) {

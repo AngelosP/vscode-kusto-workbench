@@ -114,9 +114,9 @@
 
 		return (
 			'<div class="' + wrapperClasses + '"' + wrapperIdAttr + titleAttr + wrapperStyleAttr + '>' +
-				(hasIcon ? ('<span class="select-icon" aria-hidden="true">' + iconSvg + '</span>') : '') +
 				hiddenSelectHtml +
 				'<button type="button" class="kusto-dropdown-btn"' + buttonIdAttr + clickAttr + ' aria-haspopup="listbox" aria-expanded="false">' +
+					(hasIcon ? ('<span class="select-icon" aria-hidden="true">' + iconSvg + '</span>') : '') +
 					'<span class="kusto-dropdown-btn-text"' + textIdAttr + '>' + escAttr(placeholder || 'Select...') + '</span>' +
 					'<span class="kusto-dropdown-btn-caret" aria-hidden="true">' + chevronDownSvg + '</span>' +
 				'</button>' +

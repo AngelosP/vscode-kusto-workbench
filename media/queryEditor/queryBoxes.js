@@ -215,6 +215,12 @@ function addQueryBox(options) {
 		'<path d="M9 6l-1.5 1.5L9 9" />' +
 		'</svg>';
 
+	// Info icon (i) for schema info tooltip
+	const schemaInfoIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 12.5c-3.04 0-5.5-2.46-5.5-5.5S4.96 2.5 8 2.5s5.5 2.46 5.5 5.5-2.46 5.5-5.5 5.5zM7.25 5h1.5v1.5h-1.5V5zm0 2.5h1.5v4h-1.5v-4z"/>' +
+		'</svg>';
+
 	const copilotLogoUri = (() => {
 		try {
 			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
@@ -347,6 +353,7 @@ function addQueryBox(options) {
 		wrapperId: id + '_favorites_wrapper',
 		wrapperStyle: 'display:none;',
 		title: 'Favorites',
+		iconSvg: favoriteStarIconSvg,
 		buttonId: id + '_favorites_btn',
 		buttonTextId: id + '_favorites_btn_text',
 		menuId: id + '_favorites_menu',
@@ -427,13 +434,37 @@ function addQueryBox(options) {
 		'<button class="unified-btn-secondary unified-btn-icon-only unified-btn-bordered refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
 		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
 		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
-		'<div class="schema-area" aria-label="Schema status">' +
-		'<span class="schema-status" id="' + id + '_schema_status" style="display: none;" title="Loading schema for autocomplete...">' +
-		'<span class="schema-spinner" aria-hidden="true"></span>' +
-		'<span>Schema…</span>' +
-		'</span>' +
-		'<span class="schema-loaded" id="' + id + '_schema_loaded" style="display: none;"></span>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only unified-btn-bordered refresh-btn" onclick="refreshSchema(\'' + id + '\')" id="' + id + '_schema_refresh" title="Refresh schema" aria-label="Refresh schema">' + refreshIconSvg + '</button>' +
+		'<div class="schema-info-wrapper" id="' + id + '_schema_info_wrapper">' +
+		'<button class="schema-info-btn" id="' + id + '_schema_info_btn" onclick="toggleSchemaInfoPopover(\'' + id + '\'); event.stopPropagation();" title="Schema info" aria-label="Schema info" aria-haspopup="true" aria-expanded="false">' +
+		schemaInfoIconSvg +
+		'<span class="schema-info-spinner" id="' + id + '_schema_info_spinner" aria-hidden="true" style="display:none;"></span>' +
+		'</button>' +
+		'<div class="schema-info-popover" id="' + id + '_schema_info_popover" role="tooltip" style="display:none;">' +
+		'<div class="schema-info-popover-content">' +
+		'<div class="schema-info-row schema-info-status-row">' +
+		'<span class="schema-info-label">Status:</span>' +
+		'<span class="schema-info-status" id="' + id + '_schema_info_status">Not loaded</span>' +
+		'</div>' +
+		'<div class="schema-info-row" id="' + id + '_schema_info_tables_row" style="display:none;">' +
+		'<span class="schema-info-label">Tables:</span>' +
+		'<span class="schema-info-value" id="' + id + '_schema_info_tables">-</span>' +
+		'</div>' +
+		'<div class="schema-info-row" id="' + id + '_schema_info_cols_row" style="display:none;">' +
+		'<span class="schema-info-label">Columns:</span>' +
+		'<span class="schema-info-value" id="' + id + '_schema_info_cols">-</span>' +
+		'</div>' +
+		'<div class="schema-info-row schema-info-cached-row" id="' + id + '_schema_info_cached_row" style="display:none;">' +
+		'<span class="schema-info-label">Source:</span>' +
+		'<a href="#" class="schema-info-cached-link" id="' + id + '_schema_info_cached_link" onclick="event.preventDefault(); event.stopPropagation(); try{vscode.postMessage({type:\'seeCachedValues\'})}catch{}">Cached</a>' +
+		'</div>' +
+		'<div class="schema-info-actions">' +
+		'<button class="schema-info-refresh-btn" id="' + id + '_schema_info_refresh_btn" onclick="refreshSchema(\'' + id + '\'); event.stopPropagation();">' +
+		refreshIconSvg +
+		'<span>Refresh Schema</span>' +
+		'</button>' +
+		'</div>' +
+		'</div>' +
+		'</div>' +
 		'</div>' +
 		'</div>' +
 		'</div>' +
@@ -5423,6 +5454,7 @@ function __kustoUpdateFavoritesUiForBox(boxId) {
 	const showBtn = document.getElementById(boxId + '_favorites_show');
 	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
 	const btnText = document.getElementById(boxId + '_favorites_btn_text');
+	const favDropdownBtn = document.getElementById(boxId + '_favorites_btn');
 
 	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 	__kustoSetElementDisplay(showBtn, hasAny ? 'flex' : 'none');
@@ -5446,13 +5478,26 @@ function __kustoUpdateFavoritesUiForBox(boxId) {
 		favBtn.setAttribute('aria-label', favBtn.title);
 	}
 
-	// Favorites dropdown current label.
+	// Favorites dropdown current label and tooltip.
+	let selectedTooltip = 'Select favorite...';
 	if (btnText) {
 		if (fav) {
 			btnText.innerHTML = __kustoFormatFavoriteDisplayHtml(fav);
+			// Build tooltip text from the favorite selection
+			try {
+				const label = fav.label ? String(fav.label).trim() : '';
+				const clusterDisplay = __kustoExtractClusterShortName(fav.clusterUrl);
+				const dbDisplay = String(fav.database || '').trim();
+				selectedTooltip = label || (clusterDisplay + ' / ' + dbDisplay);
+			} catch { selectedTooltip = 'Selected favorite'; }
 		} else {
 			btnText.textContent = 'Select favorite...';
 		}
+	}
+	// Update button tooltip to show selected value (useful in minimal/icon-only mode)
+	if (favDropdownBtn) {
+		favDropdownBtn.title = selectedTooltip;
+		favDropdownBtn.setAttribute('aria-label', selectedTooltip);
 	}
 
 	// Keep wrapper hidden unless favorites mode is enabled.
@@ -5557,6 +5602,80 @@ function closeAllFavoritesDropdowns() {
 		for (const id of (queryBoxes || [])) {
 			closeFavoritesDropdown(id);
 		}
+	} catch { /* ignore */ }
+}
+
+// Close all schema info popovers
+function closeAllSchemaInfoPopovers() {
+	try {
+		for (const id of (queryBoxes || [])) {
+			closeSchemaInfoPopover(id);
+		}
+	} catch { /* ignore */ }
+}
+
+function closeSchemaInfoPopover(boxId) {
+	const popover = document.getElementById(boxId + '_schema_info_popover');
+	const btn = document.getElementById(boxId + '_schema_info_btn');
+	if (popover) popover.style.display = 'none';
+	if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleSchemaInfoPopover(boxId) {
+	const id = String(boxId || '').trim();
+	const popover = document.getElementById(id + '_schema_info_popover');
+	const btn = document.getElementById(id + '_schema_info_btn');
+	if (!popover || !btn) return;
+
+	const wasOpen = popover.style.display === 'block';
+
+	// Close all other dropdowns/popovers first
+	try { closeAllRunMenus(); } catch { /* ignore */ }
+	try { closeAllFavoritesDropdowns(); } catch { /* ignore */ }
+	try { closeAllSchemaInfoPopovers(); } catch { /* ignore */ }
+	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+
+	if (wasOpen) {
+		return;
+	}
+
+	// Position the popover below the button
+	try {
+		const rect = btn.getBoundingClientRect();
+		popover.style.position = 'fixed';
+		popover.style.left = Math.max(0, rect.right - 200) + 'px';
+		popover.style.top = (rect.bottom + 4) + 'px';
+		
+		// Adjust if it would go off the right edge
+		popover.style.display = 'block';
+		const popoverRect = popover.getBoundingClientRect();
+		const vw = window.innerWidth || 0;
+		const vh = window.innerHeight || 0;
+		if (vw > 0 && popoverRect.right > vw) {
+			popover.style.left = Math.max(0, vw - popoverRect.width - 8) + 'px';
+		}
+		// Adjust if it would go off the bottom edge
+		if (vh > 0 && popoverRect.bottom > vh) {
+			popover.style.top = Math.max(0, rect.top - popoverRect.height - 4) + 'px';
+		}
+	} catch { /* ignore */ }
+
+	popover.style.display = 'block';
+	btn.setAttribute('aria-expanded', 'true');
+
+	// Wire close on click outside
+	try {
+		const closeOnClickOutside = (e) => {
+			try {
+				const wrapper = document.getElementById(id + '_schema_info_wrapper');
+				if (wrapper && wrapper.contains(e.target)) return;
+				closeSchemaInfoPopover(id);
+				document.removeEventListener('click', closeOnClickOutside, true);
+			} catch { /* ignore */ }
+		};
+		setTimeout(() => {
+			document.addEventListener('click', closeOnClickOutside, true);
+		}, 0);
 	} catch { /* ignore */ }
 }
 

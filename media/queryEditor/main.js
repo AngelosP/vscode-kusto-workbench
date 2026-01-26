@@ -2270,3 +2270,41 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 
 	tryInstall();
 })();
+
+// Responsive favorites dropdown: switch to minimal/icon-only mode when width drops below threshold
+(function __kustoInstallFavoritesResponsiveMode() {
+	const FAVORITES_MIN_WIDTH = 250; // Switch to icon-only below this width
+
+	const updateFavoritesMinimalMode = () => {
+		try {
+			const wrappers = document.querySelectorAll('.select-wrapper.kusto-favorites-combo');
+			for (const wrapper of wrappers) {
+				if (!wrapper) continue;
+				// Temporarily remove is-minimal to measure natural width
+				const wasMinimal = wrapper.classList.contains('is-minimal');
+				if (wasMinimal) {
+					wrapper.classList.remove('is-minimal');
+				}
+				// Check computed width of the wrapper in normal mode
+				const rect = wrapper.getBoundingClientRect();
+				const shouldBeMinimal = rect.width > 0 && rect.width < FAVORITES_MIN_WIDTH;
+				wrapper.classList.toggle('is-minimal', shouldBeMinimal);
+			}
+		} catch { /* ignore */ }
+	};
+
+	// Run on window resize
+	let resizeTimeout = null;
+	window.addEventListener('resize', () => {
+		try {
+			if (resizeTimeout) clearTimeout(resizeTimeout);
+			resizeTimeout = setTimeout(updateFavoritesMinimalMode, 50);
+		} catch { /* ignore */ }
+	});
+
+	// Also run periodically to catch dynamic layout changes
+	setInterval(updateFavoritesMinimalMode, 500);
+
+	// Initial check
+	setTimeout(updateFavoritesMinimalMode, 100);
+})();
