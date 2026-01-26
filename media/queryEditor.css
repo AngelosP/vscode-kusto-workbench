@@ -2532,12 +2532,14 @@
 			cursor: pointer;
 			padding: 0;
 			color: var(--vscode-foreground);
+			/* Reset the scale transform so undo/redo icons match other toolbar items */
+			transform: none;
 		}
 
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.undo svg,
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar .toastui-editor-toolbar-icons.redo svg {
-			width: 16px;
-			height: 16px;
+			width: 18px;
+			height: 18px;
 			stroke: var(--vscode-foreground);
 		}
 
