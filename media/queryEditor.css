@@ -2499,6 +2499,8 @@
 			border-radius: 4px;
 			font-size: 12px;
 			line-height: 1;
+			width: auto;
+			flex: 0 0 auto;
 		}
 
 		.section-mode-dropdown-btn:hover {
