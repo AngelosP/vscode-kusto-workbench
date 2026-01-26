@@ -762,6 +762,23 @@
 			/* 20px gap between background and chart preview (margin is outside the background,
 			   and disappears in Preview mode since the controls are hidden). */
 			margin-bottom: 20px;
+			/* Gap is handled by inner scroll wrapper, not this container. */
+			gap: 0;
+		}
+
+		/* Inner scroll wrapper for chart controls - enables horizontal scrolling at narrow widths
+		   while keeping the background bleed effect on the outer container. */
+		.chart-box .kusto-chart-controls-scroll {
+			overflow-x: auto;
+			overflow-y: visible;
+		}
+
+		/* Minimum width for the scrollable content area to ensure controls remain functional. */
+		.chart-box .kusto-chart-controls-scroll-content {
+			min-width: 480px;
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
 		}
 
 		/* Theme-aware tint so the surface is visible even when VS Code theme tokens
@@ -786,6 +803,11 @@
 			align-items: center;
 			gap: 10px;
 			flex-wrap: wrap;
+		}
+
+		/* Chart controls rows should not wrap - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-row {
+			flex-wrap: nowrap;
 		}
 
 		/* Let the Data dropdown span the full row width for all chart types. */
@@ -1388,6 +1410,11 @@
 			flex-wrap: wrap;
 			gap: 4px;
 			align-items: center;
+		}
+
+		/* In chart controls, prevent type picker from wrapping - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-type-picker {
+			flex-wrap: nowrap;
 		}
 
 		.kusto-chart-type-btn {

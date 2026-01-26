@@ -2006,6 +2006,8 @@ function addChartBox(options) {
 		'<div class="query-editor kusto-chart-edit-mode" id="' + id + '_chart_edit" data-kusto-no-editor-focus="true">' +
 			'<div class="kusto-chart-builder" data-kusto-no-editor-focus="true">' +
 				'<div class="kusto-chart-controls" data-kusto-no-editor-focus="true">' +
+					'<div class="kusto-chart-controls-scroll" data-kusto-no-editor-focus="true">' +
+						'<div class="kusto-chart-controls-scroll-content" data-kusto-no-editor-focus="true">' +
 					'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
 						'<label>Type</label>' +
 						'<div class="kusto-chart-type-picker" id="' + id + '_chart_type_picker" data-kusto-no-editor-focus="true">' +
@@ -2148,6 +2150,8 @@ function addChartBox(options) {
 								'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
 							'</div>' +
 							'<span class="kusto-chart-grid-spacer" aria-hidden="true"></span>' +
+						'</div>' +
+					'</div>' +
 						'</div>' +
 					'</div>' +
 				'</div>' +
