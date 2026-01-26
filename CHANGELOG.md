@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.6.0] - Unreleased
+
+* Bug fixes
+    * Kusto schema based completion dropdown annoyingly showed up when at the end of a term / word, even after successfully accepting a completion for the exact same term / word. I thought I had arleady fixed this, but apparently not. The joys of vibe coding :)
+
 ## [0.5.0] - 2026-25-01
 
 * Improved the Copilot integration.

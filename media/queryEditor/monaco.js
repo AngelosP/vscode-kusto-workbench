@@ -9571,31 +9571,28 @@ function initQueryEditor(boxId) {
 						const last = (typeof ed.__kustoAutoSuggestLastTriggeredAt === 'number') ? ed.__kustoAutoSuggestLastTriggeredAt : 0;
 						if (now - last < 180) return;
 
-						// Avoid triggering when cursor is at the very end of a completed word
-						// after accepting a suggestion. Only apply this check when the change
-						// was longer than typical typing (3+ chars), suggesting an autocomplete
-						// acceptance rather than normal character-by-character typing.
-						if (changeLen >= 3) {
-							try {
-								const model = ed.getModel && ed.getModel();
-								const pos = ed.getPosition && ed.getPosition();
-								if (model && pos && typeof model.getLineContent === 'function') {
-									const line = model.getLineContent(pos.lineNumber) || '';
-									const col = pos.column; // 1-based
-									const charBeforeCursor = col > 1 ? line[col - 2] : ''; // col-2 because col is 1-based
-									const charAtCursor = col <= line.length ? line[col - 1] : ''; // char at cursor position (or empty if at EOL)
+						// Never auto-trigger when cursor is at the end of a completed term.
+						// E.g.: `| where ColumnName > ColumnName2<cursor>` or `dcount(ClientName<cursor>)`
+						// - there's nothing useful to suggest here. The user needs to type more first.
+						try {
+							const model = ed.getModel && ed.getModel();
+							const pos = ed.getPosition && ed.getPosition();
+							if (model && pos && typeof model.getLineContent === 'function') {
+								const line = model.getLineContent(pos.lineNumber) || '';
+								const col = pos.column; // 1-based
+								const charBeforeCursor = col > 1 ? line[col - 2] : ''; // col-2 because col is 1-based
+								const charAtCursor = col <= line.length ? line[col - 1] : ''; // char at cursor position (or empty if at EOL)
 
-									const isWordChar = (c) => /[A-Za-z0-9_]/.test(c || '');
-									const isWhitespaceOrEmpty = (c) => !c || /\s/.test(c);
+								const isWordChar = (c) => /[A-Za-z0-9_]/.test(c || '');
 
-									// If cursor is right after a word character and followed by whitespace/EOL,
-									// we're at the end of a completed term - skip triggering.
-									if (isWordChar(charBeforeCursor) && isWhitespaceOrEmpty(charAtCursor)) {
-										return;
-									}
+								// If cursor is right after a word character and NOT followed by another word character,
+								// we're at the end of a completed term - skip triggering.
+								// This covers: EOL, whitespace, ), ], }, comma, operators, etc.
+								if (isWordChar(charBeforeCursor) && !isWordChar(charAtCursor)) {
+									return;
 								}
-							} catch { /* ignore */ }
-						}
+							}
+						} catch { /* ignore */ }
 
 						ed.__kustoAutoSuggestLastTriggeredAt = now;
 						__kustoTriggerAutocomplete(ed);
