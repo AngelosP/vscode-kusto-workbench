@@ -3424,6 +3424,19 @@
 			padding: 4px;
 		}
 
+		/* Ultra-compact mode: hide extra elements when space is extremely tight */
+		.query-header-row-bottom.is-ultra-compact > button.refresh-btn[id$="_refresh"] {
+			display: none !important;
+		}
+
+		.query-header-row-bottom.is-ultra-compact > button.favorite-btn {
+			display: none !important;
+		}
+
+		.query-header-row-bottom.is-ultra-compact > .schema-info-wrapper {
+			display: none !important;
+		}
+
 		/* Favorites dropdown collapses to icon-only at a different (wider) breakpoint */
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal {
 			flex: 0 0 32px;
