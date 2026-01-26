@@ -3579,6 +3579,58 @@
 			margin: 4px 8px;
 		}
 
+		/* Toggle item checkmark indicator */
+		.qe-overflow-checkmark {
+			flex-shrink: 0;
+			color: var(--vscode-foreground);
+			margin-right: 4px;
+		}
+
+		.qe-overflow-checkmark-placeholder {
+			flex-shrink: 0;
+			margin-right: 4px;
+		}
+
+		/* Active toggle state styling */
+		.qe-toolbar-overflow-item.qe-overflow-item-active {
+			font-weight: 500;
+		}
+
+		/* Submenu styling for Tools - accordion style */
+		.qe-toolbar-overflow-item.qe-overflow-has-submenu {
+			position: relative;
+		}
+
+		.qe-toolbar-overflow-item.qe-overflow-has-submenu .qe-overflow-submenu-arrow {
+			flex-shrink: 0;
+			margin-left: auto;
+			opacity: 0.7;
+			transition: transform 0.15s ease;
+		}
+
+		.qe-toolbar-overflow-item.qe-overflow-has-submenu[aria-expanded="true"] .qe-overflow-submenu-arrow {
+			transform: rotate(90deg);
+		}
+
+		/* Accordion submenu items container */
+		.qe-toolbar-overflow-submenu-items {
+			display: none;
+			padding-left: 12px;
+			background: var(--vscode-menu-background, var(--vscode-dropdown-background));
+		}
+
+		.qe-toolbar-overflow-submenu-items.is-expanded {
+			display: block;
+		}
+
+		.qe-toolbar-overflow-submenu-items .qe-overflow-submenu-item {
+			padding: 6px 12px;
+		}
+
+		.qe-toolbar-overflow-submenu-items .qe-overflow-submenu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
 		/* Mark toolbar items as hidden when in overflow */
 		.query-editor-toolbar-btn.qe-in-overflow,
 		.query-editor-toolbar-sep.qe-in-overflow,

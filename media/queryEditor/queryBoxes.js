@@ -292,7 +292,7 @@ function addQueryBox(options) {
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Automatically trigger schema-based completions dropdown as you type" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger schema-based completions dropdown as you type\nShortcut for manual trigger: CTRL + SPACE" aria-pressed="' + (autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger schema-based completions dropdown as you type">' +
+		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Auto-completions as you type" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger schema-based completions dropdown as you type\nShortcut for manual trigger: CTRL + SPACE" aria-pressed="' + (autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger schema-based completions dropdown as you type">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
 		'<button type="button" id="' + id + '_copilot_inline_toggle" data-qe-overflow-action="copilotInline" data-qe-overflow-label="Copilot inline suggestions" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-copilot-inline-toggle' + (copilotInlineCompletionsEnabled ? ' is-active' : '') + '" onclick="toggleCopilotInlineCompletionsEnabled()" title="Automatically trigger Copilot inline completions (ghost text) as you type\nShortcut for manual trigger: SHIFT + SPACE" aria-pressed="' + (copilotInlineCompletionsEnabled ? 'true' : 'false') + '" aria-label="Copilot inline suggestions">' +
@@ -2603,6 +2603,29 @@ function toggleToolbarOverflow(boxId) {
 }
 
 /**
+ * Toggle overflow submenu (accordion style)
+ */
+function toggleOverflowSubmenu(element, event) {
+	if (event) {
+		event.stopPropagation();
+	}
+	if (!element) return;
+	
+	const isExpanded = element.getAttribute('aria-expanded') === 'true';
+	const submenuItems = element.nextElementSibling;
+	
+	if (submenuItems && submenuItems.classList.contains('qe-toolbar-overflow-submenu-items')) {
+		if (isExpanded) {
+			element.setAttribute('aria-expanded', 'false');
+			submenuItems.classList.remove('is-expanded');
+		} else {
+			element.setAttribute('aria-expanded', 'true');
+			submenuItems.classList.add('is-expanded');
+		}
+	}
+}
+
+/**
  * Close the toolbar overflow menu
  */
 function closeToolbarOverflow(boxId) {
@@ -2650,8 +2673,41 @@ function renderToolbarOverflowMenu(boxId) {
 		return;
 	}
 
+	// Checkmark SVG for active toggle items
+	const checkmarkSvg = '<svg class="qe-overflow-checkmark" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 1 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>';
+	const emptyCheckmarkPlaceholder = '<span class="qe-overflow-checkmark-placeholder" style="width:14px;height:14px;display:inline-block;"></span>';
+
+	// Tools submenu icons (same as in renderToolsMenuForBox)
+	const __toolsDoubleToSingleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
+		'</svg>';
+	const __toolsSingleToDoubleIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/>' +
+		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
+		'</svg>';
+	const __toolsQualifyTablesIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/>' +
+		'</svg>';
+	const __toolsSingleLineIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M2 8h12"/>' +
+		'</svg>';
+	const submenuArrowSvg = '<svg class="qe-overflow-submenu-arrow" viewBox="0 0 8 8" width="8" height="8" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 	let menuHtml = '';
 	let prevWasSep = false;
+	let hasAnyToggleItem = false;
+
+	// First pass: check if there are any toggle items so we know if we need the checkmark column
+	hiddenItems.forEach(item => {
+		if (item.classList.contains('query-editor-toolbar-toggle')) {
+			hasAnyToggleItem = true;
+		}
+	});
 
 	hiddenItems.forEach(item => {
 		if (item.classList.contains('query-editor-toolbar-sep')) {
@@ -2664,12 +2720,34 @@ function renderToolbarOverflowMenu(boxId) {
 		}
 		prevWasSep = false;
 
-		// Handle the tools dropdown specially
+		// Handle the tools dropdown specially - render as expandable accordion
 		if (item.classList.contains('qe-toolbar-menu-wrapper')) {
-			menuHtml += '<div class="qe-toolbar-overflow-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); toggleToolsDropdown(\'' + id + '\');">' +
+			const toolsSubmenuHtml =
+				'<div class="qe-toolbar-overflow-submenu-items">' +
+					'<div class="qe-toolbar-overflow-item qe-overflow-submenu-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'doubleToSingle\');">' +
+						'<span class="qe-icon" aria-hidden="true">' + __toolsDoubleToSingleIconSvg + '</span>' +
+						'<span class="qe-toolbar-overflow-label">Replace &quot; with &#39;</span>' +
+					'</div>' +
+					'<div class="qe-toolbar-overflow-item qe-overflow-submenu-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'singleToDouble\');">' +
+						'<span class="qe-icon" aria-hidden="true">' + __toolsSingleToDoubleIconSvg + '</span>' +
+						'<span class="qe-toolbar-overflow-label">Replace &#39; with &quot;</span>' +
+					'</div>' +
+					'<div class="qe-toolbar-overflow-item qe-overflow-submenu-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'qualifyTables\');">' +
+						'<span class="qe-icon" aria-hidden="true">' + __toolsQualifyTablesIconSvg + '</span>' +
+						'<span class="qe-toolbar-overflow-label">Fully qualify tables</span>' +
+					'</div>' +
+					'<div class="qe-toolbar-overflow-item qe-overflow-submenu-item" role="menuitem" tabindex="-1" onclick="closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'singleLine\');">' +
+						'<span class="qe-icon" aria-hidden="true">' + __toolsSingleLineIconSvg + '</span>' +
+						'<span class="qe-toolbar-overflow-label">Copy query as single line</span>' +
+					'</div>' +
+				'</div>';
+			menuHtml += '<div class="qe-toolbar-overflow-item qe-overflow-has-submenu" role="menuitem" tabindex="-1" aria-expanded="false" onclick="toggleOverflowSubmenu(this, event);">' +
+				(hasAnyToggleItem ? emptyCheckmarkPlaceholder : '') +
 				'<span class="qe-icon" aria-hidden="true"><span class="codicon codicon-tools"></span></span>' +
 				'<span class="qe-toolbar-overflow-label">Tools</span>' +
-				'</div>';
+				submenuArrowSvg +
+				'</div>' +
+				toolsSubmenuHtml;
 			return;
 		}
 
@@ -2678,9 +2756,12 @@ function renderToolbarOverflowMenu(boxId) {
 		const label = item.getAttribute('data-qe-overflow-label') || item.getAttribute('title') || action;
 		const iconHtml = item.querySelector('.qe-icon') ? item.querySelector('.qe-icon').innerHTML : '';
 		const isDisabled = item.disabled || item.getAttribute('aria-disabled') === 'true';
+		const isToggle = item.classList.contains('query-editor-toolbar-toggle');
+		const isActive = item.classList.contains('is-active');
 
 		if (action && label) {
 			const disabledAttr = isDisabled ? ' style="opacity:0.5;cursor:default;" aria-disabled="true"' : '';
+			const activeClass = isActive ? ' qe-overflow-item-active' : '';
 			let onclick = '';
 			if (!isDisabled) {
 				if (action === 'caretDocs') {
@@ -2695,7 +2776,10 @@ function renderToolbarOverflowMenu(boxId) {
 					onclick = 'closeToolbarOverflow(\'' + id + '\'); onQueryEditorToolbarAction(\'' + id + '\', \'' + action + '\');';
 				}
 			}
-			menuHtml += '<div class="qe-toolbar-overflow-item" role="menuitem" tabindex="-1"' + disabledAttr + ' onclick="' + onclick + '">' +
+			// Add checkmark indicator for toggle items
+			const checkmarkHtml = hasAnyToggleItem ? (isToggle && isActive ? checkmarkSvg : emptyCheckmarkPlaceholder) : '';
+			menuHtml += '<div class="qe-toolbar-overflow-item' + activeClass + '" role="menuitem" tabindex="-1"' + disabledAttr + ' onclick="' + onclick + '">' +
+				checkmarkHtml +
 				'<span class="qe-icon" aria-hidden="true">' + iconHtml + '</span>' +
 				'<span class="qe-toolbar-overflow-label">' + label + '</span>' +
 				'</div>';
