@@ -895,6 +895,8 @@ function __kustoRenderChart(boxId) {
 			}
 		} catch { /* ignore */ }
 		try { canvas.textContent = msg; } catch { /* ignore */ }
+		// Reduce canvas min-height when showing placeholder text to avoid overflow.
+		try { canvas.style.minHeight = '40px'; } catch { /* ignore */ }
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
@@ -912,6 +914,8 @@ function __kustoRenderChart(boxId) {
 	}
 
 	// Ensure we have an instance bound to the active element.
+	// Restore canvas min-height for actual chart rendering (may have been reduced for placeholder text).
+	try { canvas.style.minHeight = '140px'; } catch { /* ignore */ }
 	try {
 		const isDark = __kustoGetIsDarkThemeForEcharts();
 		const themeName = isDark ? 'dark' : undefined;
@@ -1713,6 +1717,11 @@ function __kustoUpdateChartModeButtons(boxId) {
 			prevBtn.classList.toggle('is-active', mode === 'preview');
 			prevBtn.setAttribute('aria-selected', mode === 'preview' ? 'true' : 'false');
 		}
+		// Update dropdown text
+		const dropdownText = document.getElementById(boxId + '_chart_mode_dropdown_text');
+		if (dropdownText) {
+			dropdownText.textContent = mode === 'preview' ? 'Preview' : 'Edit';
+		}
 	} catch {
 		// ignore
 	}
@@ -1973,6 +1982,16 @@ function addChartBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Chart tools">' +
+		'<div class="section-mode-dropdown" id="' + id + '_chart_mode_dropdown">' +
+		'<button class="unified-btn-secondary md-tab section-mode-dropdown-btn" id="' + id + '_chart_mode_dropdown_btn" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="__kustoToggleSectionModeDropdown(\'' + id + '\', \'chart\', event)" title="View mode" aria-label="View mode">' +
+		'<span class="section-mode-dropdown-text" id="' + id + '_chart_mode_dropdown_text">Edit</span>' +
+		'<svg class="section-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>' +
+		'</button>' +
+		'<div class="section-mode-dropdown-menu" id="' + id + '_chart_mode_dropdown_menu" role="listbox" style="display:none;">' +
+		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'chart\');">Edit</div>' +
+		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'chart\');">Preview</div>' +
+		'</div>' +
+		'</div>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_chart_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetChartMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
 		'<span class="md-tabs-divider" id="' + id + '_chart_mode_divider" aria-hidden="true"></span>' +
@@ -2234,6 +2253,7 @@ function addChartBox(options) {
 
 	try { __kustoApplyChartMode(id); } catch { /* ignore */ }
 	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoSetupSectionModeResizeObserver(id); } catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
@@ -2486,6 +2506,7 @@ function __kustoOnChartSortChanged(boxId) {
 function removeChartBox(boxId) {
 	try { __kustoDisposeChartEcharts(boxId); } catch { /* ignore */ }
 	try { delete chartStateByBoxId[boxId]; } catch { /* ignore */ }
+	try { __kustoCleanupSectionModeResizeObserver(boxId); } catch { /* ignore */ }
 	chartBoxes = (chartBoxes || []).filter(id => id !== boxId);
 	const box = document.getElementById(boxId);
 	if (box && box.parentNode) {
@@ -3506,7 +3527,220 @@ function __kustoUpdateMarkdownModeButtons(boxId) {
 		try { btn.classList.toggle('is-active', active); } catch { /* ignore */ }
 		try { btn.setAttribute('aria-selected', active ? 'true' : 'false'); } catch { /* ignore */ }
 	}
+	// Update the dropdown text for narrow widths
+	try {
+		const dropdownText = document.getElementById(boxId + '_md_mode_dropdown_text');
+		if (dropdownText) {
+			const labels = { wysiwyg: 'WYSIWYG', markdown: 'Markdown', preview: 'Preview' };
+			dropdownText.textContent = labels[mode] || 'Mode';
+		}
+	} catch { /* ignore */ }
 }
+
+// Toggle the markdown mode dropdown menu visibility
+function __kustoToggleMdModeDropdown(boxId, ev) {
+	try {
+		// Stop propagation to prevent the document click handler from closing the menu
+		if (ev && typeof ev.stopPropagation === 'function') {
+			ev.stopPropagation();
+		}
+		const menu = document.getElementById(boxId + '_md_mode_dropdown_menu');
+		const btn = document.getElementById(boxId + '_md_mode_dropdown_btn');
+		if (!menu || !btn) return;
+		const isOpen = menu.style.display !== 'none';
+		// Close all other dropdowns first
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		if (isOpen) {
+			menu.style.display = 'none';
+			btn.setAttribute('aria-expanded', 'false');
+		} else {
+			menu.style.display = 'block';
+			btn.setAttribute('aria-expanded', 'true');
+		}
+	} catch { /* ignore */ }
+}
+
+// Close the markdown mode dropdown menu
+function __kustoCloseMdModeDropdown(boxId) {
+	try {
+		const menu = document.getElementById(boxId + '_md_mode_dropdown_menu');
+		const btn = document.getElementById(boxId + '_md_mode_dropdown_btn');
+		if (menu) menu.style.display = 'none';
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+	} catch { /* ignore */ }
+}
+
+// Close all md-mode dropdowns when clicking outside
+try {
+	document.addEventListener('click', (ev) => {
+		try {
+			const target = ev.target;
+			if (!target) return;
+			// Check if the click was inside any md-mode dropdown
+			const inDropdown = target.closest && target.closest('.md-mode-dropdown');
+			if (!inDropdown) {
+				// Close all md-mode dropdown menus
+				const menus = document.querySelectorAll('.md-mode-dropdown-menu');
+				const btns = document.querySelectorAll('.md-mode-dropdown-btn');
+				for (const m of menus) {
+					try { m.style.display = 'none'; } catch { /* ignore */ }
+				}
+				for (const b of btns) {
+					try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
+	});
+} catch { /* ignore */ }
+
+// Width thresholds for responsive mode buttons
+const __kustoMdModeNarrowThreshold = 450;
+const __kustoMdModeVeryNarrowThreshold = 250;
+
+// Track ResizeObservers for markdown sections
+const __kustoMdModeResizeObservers = {};
+
+// Check if a markdown section should show the dropdown vs buttons
+function __kustoUpdateMdModeResponsive(boxId) {
+	try {
+		const box = document.getElementById(boxId);
+		if (!box) return;
+		const width = box.offsetWidth || 0;
+		const isNarrow = width > 0 && width < __kustoMdModeNarrowThreshold;
+		const isVeryNarrow = width > 0 && width < __kustoMdModeVeryNarrowThreshold;
+		box.classList.toggle('is-md-narrow', isNarrow);
+		box.classList.toggle('is-md-very-narrow', isVeryNarrow);
+	} catch { /* ignore */ }
+}
+
+// Set up ResizeObserver for a markdown section to handle responsive mode buttons
+function __kustoSetupMdModeResizeObserver(boxId) {
+	try {
+		if (__kustoMdModeResizeObservers[boxId]) return; // Already set up
+		const box = document.getElementById(boxId);
+		if (!box) return;
+		if (typeof ResizeObserver === 'undefined') return;
+		const observer = new ResizeObserver(() => {
+			try { __kustoUpdateMdModeResponsive(boxId); } catch { /* ignore */ }
+		});
+		observer.observe(box);
+		__kustoMdModeResizeObservers[boxId] = observer;
+		// Initial check
+		__kustoUpdateMdModeResponsive(boxId);
+	} catch { /* ignore */ }
+}
+
+// Clean up ResizeObserver when a markdown section is removed
+function __kustoCleanupMdModeResizeObserver(boxId) {
+	try {
+		const observer = __kustoMdModeResizeObservers[boxId];
+		if (observer && typeof observer.disconnect === 'function') {
+			observer.disconnect();
+		}
+		delete __kustoMdModeResizeObservers[boxId];
+	} catch { /* ignore */ }
+}
+
+// ============================================================================
+// Generic section mode dropdown (for Chart and Transformation sections)
+// ============================================================================
+
+// Toggle the section mode dropdown menu visibility
+function __kustoToggleSectionModeDropdown(boxId, prefix, ev) {
+	try {
+		if (ev && typeof ev.stopPropagation === 'function') {
+			ev.stopPropagation();
+		}
+		const menu = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_menu');
+		const btn = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_btn');
+		if (!menu || !btn) return;
+		const isOpen = menu.style.display !== 'none';
+		// Close all other dropdowns first
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		if (isOpen) {
+			menu.style.display = 'none';
+			btn.setAttribute('aria-expanded', 'false');
+		} else {
+			menu.style.display = 'block';
+			btn.setAttribute('aria-expanded', 'true');
+		}
+	} catch { /* ignore */ }
+}
+
+// Close the section mode dropdown menu
+function __kustoCloseSectionModeDropdown(boxId, prefix) {
+	try {
+		const menu = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_menu');
+		const btn = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_btn');
+		if (menu) menu.style.display = 'none';
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+	} catch { /* ignore */ }
+}
+
+// Track ResizeObservers for chart/transformation sections
+const __kustoSectionModeResizeObservers = {};
+
+// Check if a section should show the dropdown vs buttons
+function __kustoUpdateSectionModeResponsive(boxId) {
+	try {
+		const box = document.getElementById(boxId);
+		if (!box) return;
+		const width = box.offsetWidth || 0;
+		const isNarrow = width > 0 && width < __kustoMdModeNarrowThreshold;
+		const isVeryNarrow = width > 0 && width < __kustoMdModeVeryNarrowThreshold;
+		box.classList.toggle('is-section-narrow', isNarrow);
+		box.classList.toggle('is-section-very-narrow', isVeryNarrow);
+	} catch { /* ignore */ }
+}
+
+// Set up ResizeObserver for a chart/transformation section
+function __kustoSetupSectionModeResizeObserver(boxId) {
+	try {
+		if (__kustoSectionModeResizeObservers[boxId]) return;
+		const box = document.getElementById(boxId);
+		if (!box) return;
+		if (typeof ResizeObserver === 'undefined') return;
+		const observer = new ResizeObserver(() => {
+			try { __kustoUpdateSectionModeResponsive(boxId); } catch { /* ignore */ }
+		});
+		observer.observe(box);
+		__kustoSectionModeResizeObservers[boxId] = observer;
+		// Initial check
+		__kustoUpdateSectionModeResponsive(boxId);
+	} catch { /* ignore */ }
+}
+
+// Clean up ResizeObserver when a chart/transformation section is removed
+function __kustoCleanupSectionModeResizeObserver(boxId) {
+	try {
+		const observer = __kustoSectionModeResizeObservers[boxId];
+		if (observer && typeof observer.disconnect === 'function') {
+			observer.disconnect();
+		}
+		delete __kustoSectionModeResizeObservers[boxId];
+	} catch { /* ignore */ }
+}
+
+// Close all section-mode dropdowns when clicking outside
+try {
+	document.addEventListener('click', (ev) => {
+		try {
+			const target = ev.target;
+			if (!target) return;
+			const inDropdown = target.closest && target.closest('.section-mode-dropdown');
+			if (!inDropdown) {
+				const menus = document.querySelectorAll('.section-mode-dropdown-menu');
+				const btns = document.querySelectorAll('.section-mode-dropdown-btn');
+				for (const m of menus) {
+					try { m.style.display = 'none'; } catch { /* ignore */ }
+				}
+				for (const b of btns) {
+					try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
+	});
+} catch { /* ignore */ }
 
 function __kustoUpdateMarkdownPreviewSizing(boxId) {
 	const box = document.getElementById(boxId);
@@ -3828,6 +4062,17 @@ function addMarkdownBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Markdown visibility">' +
+		'<div class="md-mode-dropdown" id="' + id + '_md_mode_dropdown">' +
+		'<button class="unified-btn-secondary md-tab md-mode-dropdown-btn" id="' + id + '_md_mode_dropdown_btn" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="__kustoToggleMdModeDropdown(\'' + id + '\', event)" title="Editor mode" aria-label="Editor mode">' +
+		'<span class="md-mode-dropdown-text" id="' + id + '_md_mode_dropdown_text">WYSIWYG</span>' +
+		'<svg class="md-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>' +
+		'</button>' +
+		'<div class="md-mode-dropdown-menu" id="' + id + '_md_mode_dropdown_menu" role="listbox" style="display:none;">' +
+		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\'); __kustoCloseMdModeDropdown(\'' + id + '\');">WYSIWYG</div>' +
+		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\'); __kustoCloseMdModeDropdown(\'' + id + '\');">Markdown</div>' +
+		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\'); __kustoCloseMdModeDropdown(\'' + id + '\');">Preview</div>' +
+		'</div>' +
+		'</div>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_wysiwyg" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\')" title="WYSIWYG" aria-label="WYSIWYG">WYSIWYG</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
@@ -3871,6 +4116,7 @@ function addMarkdownBox(options) {
 	try { __kustoApplyMarkdownEditorMode(id); } catch { /* ignore */ }
 	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoSetupMdModeResizeObserver(id); } catch { /* ignore */ }
 	// Plain .md files: do not auto-expand the box to content; keep the toolbar visible and
 	// scroll inside the editor surface instead.
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
@@ -3980,6 +4226,7 @@ function removeMarkdownBox(boxId) {
 		try { markdownViewers[boxId].dispose(); } catch { /* ignore */ }
 		delete markdownViewers[boxId];
 	}
+	try { __kustoCleanupMdModeResizeObserver(boxId); } catch { /* ignore */ }
 	markdownBoxes = markdownBoxes.filter(id => id !== boxId);
 	const box = document.getElementById(boxId);
 	if (box && box.parentNode) {
@@ -6007,6 +6254,11 @@ function __kustoUpdateTransformationModeButtons(boxId) {
 			prevBtn.classList.toggle('is-active', mode === 'preview');
 			prevBtn.setAttribute('aria-selected', mode === 'preview' ? 'true' : 'false');
 		}
+		// Update dropdown text
+		const dropdownText = document.getElementById(boxId + '_tf_mode_dropdown_text');
+		if (dropdownText) {
+			dropdownText.textContent = mode === 'preview' ? 'Preview' : 'Edit';
+		}
 	} catch {
 		// ignore
 	}
@@ -6319,6 +6571,7 @@ function __kustoMaybeAutoFitTransformationBox(boxId) {
 function removeTransformationBox(boxId) {
 	const id = String(boxId || '');
 	if (!id) return;
+	try { __kustoCleanupSectionModeResizeObserver(id); } catch { /* ignore */ }
 	try {
 		const el = document.getElementById(id);
 		if (el && el.parentElement) {
@@ -7908,6 +8161,16 @@ function addTransformationBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Transformation tools">' +
+		'<div class="section-mode-dropdown" id="' + id + '_tf_mode_dropdown">' +
+		'<button class="unified-btn-secondary md-tab section-mode-dropdown-btn" id="' + id + '_tf_mode_dropdown_btn" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="__kustoToggleSectionModeDropdown(\'' + id + '\', \'tf\', event)" title="View mode" aria-label="View mode">' +
+		'<span class="section-mode-dropdown-text" id="' + id + '_tf_mode_dropdown_text">Edit</span>' +
+		'<svg class="section-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>' +
+		'</button>' +
+		'<div class="section-mode-dropdown-menu" id="' + id + '_tf_mode_dropdown_menu" role="listbox" style="display:none;">' +
+		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'tf\');">Edit</div>' +
+		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'tf\');">Preview</div>' +
+		'</div>' +
+		'</div>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
 		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
 		'<span class="md-tabs-divider" id="' + id + '_tf_mode_divider" aria-hidden="true"></span>' +
@@ -8094,6 +8357,7 @@ function addTransformationBox(options) {
 	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
 	try { __kustoApplyTransformationMode(id); } catch { /* ignore */ }
 	try { __kustoApplyTransformationBoxVisibility(id); } catch { /* ignore */ }
+	try { __kustoSetupSectionModeResizeObserver(id); } catch { /* ignore */ }
 
 	return id;
 }

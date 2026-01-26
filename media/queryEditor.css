@@ -124,6 +124,11 @@
 			display: none !important;
 		}
 
+		/* Hide the dropdown in .md mode as well since we don't do responsive layout there. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-mode-dropdown {
+			display: none !important;
+		}
+
 		/* Align the mode buttons to the left and match the toolbar left margin. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs {
 			margin-left: 10px;
@@ -612,6 +617,10 @@
 		.chart-box .query-editor-wrapper {
 			border: none;
 			overflow: visible;
+			/* Let the wrapper size to its content (controls + canvas) instead of the
+			   base fixed height. This prevents overflow when no data source is selected. */
+			height: auto;
+			min-height: 0;
 		}
 
 		.transformation-box .query-editor-wrapper {
@@ -2165,7 +2174,6 @@
 			/* Keep the URL name tight to the drag handle (remove the flex gap just for this pair). */
 			margin-left: -8px;
 			flex: 0 0 auto;
-			min-width: 25px;
 			max-width: 250px;
 			width: 25px;
 		}
@@ -2289,6 +2297,189 @@
 			height: 28px;
 			min-width: 68px;
 			justify-content: center;
+		}
+
+		/* Markdown mode dropdown (shown on narrow widths) */
+		.md-mode-dropdown {
+			display: none;
+			position: relative;
+			flex: 0 0 auto;
+			width: auto;
+		}
+
+		.md-mode-dropdown-btn {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 0 8px;
+			height: 28px;
+			border-radius: 4px;
+			font-size: 12px;
+			line-height: 1;
+			width: auto;
+			flex: 0 0 auto;
+		}
+
+		.md-mode-dropdown-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.md-mode-dropdown-text {
+			white-space: nowrap;
+		}
+
+		.md-mode-dropdown-caret {
+			display: block;
+			opacity: 0.8;
+			flex-shrink: 0;
+		}
+
+		.md-mode-dropdown-menu {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			z-index: 1000;
+			min-width: 100px;
+			background: var(--vscode-dropdown-background, var(--vscode-menu-background));
+			border: 1px solid var(--vscode-dropdown-border, var(--vscode-menu-border, var(--vscode-widget-border)));
+			border-radius: 4px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+			margin-top: 2px;
+		}
+
+		.md-mode-dropdown-item {
+			padding: 6px 12px;
+			cursor: pointer;
+			font-size: 12px;
+			color: var(--vscode-dropdown-foreground, var(--vscode-menu-foreground));
+		}
+
+		.md-mode-dropdown-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.md-mode-dropdown-item:first-child {
+			border-radius: 3px 3px 0 0;
+		}
+
+		.md-mode-dropdown-item:last-child {
+			border-radius: 0 0 3px 3px;
+		}
+
+		/* Responsive: narrow sections show dropdown instead of individual buttons */
+		.query-box.is-md-narrow .md-mode-btn {
+			display: none !important;
+		}
+
+		.query-box.is-md-narrow .md-mode-dropdown {
+			display: inline-flex;
+		}
+
+		/* Very narrow sections: hide the dropdown entirely */
+		.query-box.is-md-very-narrow .md-mode-dropdown,
+		.query-box.is-md-very-narrow .md-tabs-divider {
+			display: none !important;
+		}
+
+		/* Collapsed markdown sections: also hide the dropdown */
+		.query-box.is-collapsed .md-mode-dropdown {
+			display: none !important;
+		}
+
+		/* ============================================
+		   Section mode dropdown (Chart/Transformation)
+		   ============================================ */
+		.section-mode-dropdown {
+			display: none;
+			position: relative;
+			flex: 0 0 auto;
+			width: auto;
+		}
+
+		.section-mode-dropdown-btn {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 0 8px;
+			height: 28px;
+			border-radius: 4px;
+			font-size: 12px;
+			line-height: 1;
+		}
+
+		.section-mode-dropdown-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.section-mode-dropdown-text {
+			white-space: nowrap;
+		}
+
+		.section-mode-dropdown-caret {
+			display: block;
+			opacity: 0.8;
+			flex-shrink: 0;
+		}
+
+		.section-mode-dropdown-menu {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			z-index: 1000;
+			min-width: 80px;
+			background: var(--vscode-dropdown-background, var(--vscode-menu-background));
+			border: 1px solid var(--vscode-dropdown-border, var(--vscode-menu-border, var(--vscode-widget-border)));
+			border-radius: 4px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+			margin-top: 2px;
+		}
+
+		.section-mode-dropdown-item {
+			padding: 6px 12px;
+			cursor: pointer;
+			font-size: 12px;
+			color: var(--vscode-dropdown-foreground, var(--vscode-menu-foreground));
+		}
+
+		.section-mode-dropdown-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.section-mode-dropdown-item:first-child {
+			border-radius: 3px 3px 0 0;
+		}
+
+		.section-mode-dropdown-item:last-child {
+			border-radius: 0 0 3px 3px;
+		}
+
+		/* Responsive: narrow chart/transformation sections show dropdown instead of buttons */
+		.query-box.is-section-narrow .md-mode-btn {
+			display: none !important;
+		}
+
+		.query-box.is-section-narrow .section-mode-dropdown {
+			display: inline-flex;
+		}
+
+		/* Very narrow sections: hide the dropdown entirely */
+		.query-box.is-section-very-narrow .section-mode-dropdown,
+		.query-box.is-section-very-narrow .md-tabs-divider {
+			display: none !important;
+		}
+
+		/* Collapsed chart/transformation sections: hide the dropdown */
+		.chart-box.is-collapsed .section-mode-dropdown,
+		.transformation-box.is-collapsed .section-mode-dropdown {
+			display: none !important;
 		}
 
 		.md-tab svg {
@@ -2441,10 +2632,9 @@
 			color: var(--vscode-foreground);
 			height: 35px;
 			min-height: 35px;
-			padding: 0;
-			/* Use margin to inset the toolbar 10px from both edges. */
-			margin-left: 10px;
-			margin-right: 10px;
+			/* Use padding (not margin) to inset toolbar content while keeping the border edge-to-edge. */
+			padding-left: 10px;
+			padding-right: 10px;
 			box-sizing: border-box;
 			align-items: center;
 			border-radius: 0;
@@ -4221,7 +4411,7 @@
 			width: 0;
 			height: 18px;
 			border-left: 1px solid var(--vscode-panel-border);
-			margin: 0 4px;
+			margin: 0;
 			opacity: 0.9;
 		}
 
@@ -4271,7 +4461,9 @@
 			border-radius: 2px;
 			color: var(--vscode-foreground);
 			cursor: pointer;
-			padding: 4px 3px;
+			padding: 0;
+			width: 28px;
+			height: 28px;
 			font-size: 14px;
 		}
 
@@ -7122,7 +7314,7 @@
 		.results-tools-individual {
 			display: inline-flex;
 			align-items: center;
-			gap: 4px;
+			gap: 0;
 		}
 
 		/* Collapsible row/column info in results header */
