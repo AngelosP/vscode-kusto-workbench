@@ -2884,14 +2884,15 @@ async function exportQueryToPowerBI(boxId) {
 		return;
 	}
 
-	const lines = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+	const normalizedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	const escapeMString = (s) => String(s).replace(/"/g, '""');
-	const quotedLines = lines.map(l => '        "' + escapeMString(l) + '"');
+	// Escape and indent each line of the query for readability inside the M string
+	const indentedQuery = normalizedQuery.split('\n').map(l => '        ' + escapeMString(l)).join('\n');
 	const m =
 		'let\n' +
-		'    Query = Text.Combine({\n' +
-		quotedLines.join(',\n') +
-		'\n    }, "#(lf)"),\n' +
+		'    Query = Text.Combine({"\n' +
+		indentedQuery + '\n' +
+		'    "}, ""),\n' +
 		'    Source = AzureDataExplorer.Contents("' + escapeMString(clusterUrl) + '", "' + escapeMString(database) + '", Query)\n' +
 		'in\n' +
 		'    Source';
