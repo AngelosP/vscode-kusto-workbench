@@ -32,6 +32,8 @@ function __kustoApplyDocumentCapabilities() {
 		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
 			? window.__kustoAllowedSectionKinds.map(k => String(k))
 			: ['query', 'markdown', 'python', 'url'];
+
+		// Update inline buttons visibility
 		const btns = document.querySelectorAll('.add-controls .add-control-btn');
 		for (const btn of btns) {
 			try {
@@ -43,6 +45,18 @@ function __kustoApplyDocumentCapabilities() {
 				} else {
 					btn.style.display = visible ? '' : 'none';
 				}
+			} catch {
+				// ignore
+			}
+		}
+
+		// Update dropdown items visibility (for narrow viewport dropdown)
+		const dropdownItems = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
+		for (const item of dropdownItems) {
+			try {
+				const kind = item.getAttribute ? String(item.getAttribute('data-add-kind') || '') : '';
+				const visible = !kind || allowed.includes(kind);
+				item.style.display = visible ? '' : 'none';
 			} catch {
 				// ignore
 			}

@@ -25,6 +25,21 @@
 			<button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Python</button>
 			<button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">URL</button>
 		</span>
+		<!-- Mobile dropdown for narrow widths -->
+		<div class="add-controls-dropdown">
+			<button type="button" class="add-control-btn add-controls-dropdown-btn" id="addSectionDropdownBtn" onclick="__kustoToggleAddSectionDropdown(event)" aria-haspopup="listbox" aria-expanded="false">
+				Section
+				<svg class="add-controls-dropdown-caret" width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>
+			</button>
+			<div class="add-controls-dropdown-menu" id="addSectionDropdownMenu" role="listbox" style="display:none;">
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="query" onclick="__kustoAddSectionFromDropdown('query')">Query</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="chart" onclick="__kustoAddSectionFromDropdown('chart')">Chart</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="transformation" onclick="__kustoAddSectionFromDropdown('transformation')">Transformation</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="markdown" onclick="__kustoAddSectionFromDropdown('markdown')">Markdown</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="python" onclick="__kustoAddSectionFromDropdown('python')">Python</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="url" onclick="__kustoAddSectionFromDropdown('url')">URL</div>
+			</div>
+		</div>
 	</div>
 	<div class="repo-issues-link" role="note" aria-label="Feedback">
 		<a class="repo-issues-anchor" href="https://github.com/AngelosP/vscode-kusto-workbench/issues" target="_blank" rel="noopener noreferrer">Ask for a fix or feature</a>

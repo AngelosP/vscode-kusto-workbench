@@ -194,11 +194,11 @@
 
 	window.__kustoDropdown.closeAllMenus = function () {
 		try {
-			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu, .md-mode-dropdown-menu, .section-mode-dropdown-menu'));
+			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu, .md-mode-dropdown-menu, .section-mode-dropdown-menu, .add-controls-dropdown-menu'));
 			for (const m of menus) {
 				try { m.style.display = 'none'; } catch { /* ignore */ }
 			}
-			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn, .qe-toolbar-overflow-btn, .md-mode-dropdown-btn, .section-mode-dropdown-btn'));
+			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn, .qe-toolbar-overflow-btn, .md-mode-dropdown-btn, .section-mode-dropdown-btn, .add-controls-dropdown-btn'));
 			for (const b of buttons) {
 				try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
 				try { b.classList && b.classList.remove('is-active'); } catch { /* ignore */ }

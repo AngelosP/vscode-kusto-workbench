@@ -2360,3 +2360,107 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 	// Initial check
 	setTimeout(updateResponsiveModes, 100);
 })();
+
+// ==========================================================================
+// ADD SECTION DROPDOWN (for narrow viewports)
+// ==========================================================================
+// Toggle the "Add Section" dropdown menu (shown at narrow widths < 465px).
+function __kustoToggleAddSectionDropdown(event) {
+	try {
+		if (event) {
+			event.stopPropagation();
+		}
+		const btn = document.getElementById('addSectionDropdownBtn');
+		const menu = document.getElementById('addSectionDropdownMenu');
+		if (!btn || !menu) return;
+
+		const wasOpen = menu.style.display === 'block';
+
+		// Close all other dropdowns first.
+		try {
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.closeAllMenus === 'function') {
+				window.__kustoDropdown.closeAllMenus();
+			}
+		} catch { /* ignore */ }
+
+		if (wasOpen) {
+			menu.style.display = 'none';
+			btn.setAttribute('aria-expanded', 'false');
+			return;
+		}
+
+		menu.style.display = 'block';
+		btn.setAttribute('aria-expanded', 'true');
+
+		// Apply visibility based on allowed section kinds.
+		__kustoUpdateAddSectionDropdownVisibility();
+
+	} catch { /* ignore */ }
+}
+
+// Called when a dropdown item is selected.
+function __kustoAddSectionFromDropdown(kind) {
+	try {
+		// Close the dropdown.
+		const btn = document.getElementById('addSectionDropdownBtn');
+		const menu = document.getElementById('addSectionDropdownMenu');
+		if (menu) menu.style.display = 'none';
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+
+		// Add the section.
+		if (typeof __kustoRequestAddSection === 'function') {
+			__kustoRequestAddSection(kind);
+		}
+	} catch { /* ignore */ }
+}
+
+// Update dropdown item visibility based on allowed section kinds (mirrors __kustoApplyDocumentCapabilities logic).
+function __kustoUpdateAddSectionDropdownVisibility() {
+	try {
+		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
+			? window.__kustoAllowedSectionKinds.map(v => String(v))
+			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+
+		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
+		for (const item of items) {
+			const kind = item.getAttribute('data-add-kind');
+			if (allowed.length === 0 || allowed.includes(kind)) {
+				item.style.display = '';
+			} else {
+				item.style.display = 'none';
+			}
+		}
+	} catch { /* ignore */ }
+}
+
+// Close dropdown when clicking outside.
+document.addEventListener('click', (event) => {
+	try {
+		const menu = document.getElementById('addSectionDropdownMenu');
+		const btn = document.getElementById('addSectionDropdownBtn');
+		if (!menu || menu.style.display !== 'block') return;
+
+		const target = event.target;
+		if (target && typeof target.closest === 'function') {
+			if (target.closest('.add-controls-dropdown')) {
+				return; // Click inside dropdown, don't close.
+			}
+		}
+
+		menu.style.display = 'none';
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+	} catch { /* ignore */ }
+});
+
+// Close dropdown on Escape key.
+document.addEventListener('keydown', (event) => {
+	try {
+		if (event.key !== 'Escape') return;
+		const menu = document.getElementById('addSectionDropdownMenu');
+		const btn = document.getElementById('addSectionDropdownBtn');
+		if (!menu || menu.style.display !== 'block') return;
+
+		menu.style.display = 'none';
+		if (btn) btn.setAttribute('aria-expanded', 'false');
+	} catch { /* ignore */ }
+});
