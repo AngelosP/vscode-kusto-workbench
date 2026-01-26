@@ -1,21 +1,18 @@
 function setSchemaLoading(boxId, loading) {
 	schemaFetchInFlightByBoxId[boxId] = !!loading;
 	
-	// Update the schema info icon spinner
-	const infoSpinner = document.getElementById(boxId + '_schema_info_spinner');
+	// Update the schema info icon - spinner is now handled via CSS ::after pseudo-element
 	const infoBtn = document.getElementById(boxId + '_schema_info_btn');
 	const infoStatus = document.getElementById(boxId + '_schema_info_status');
 	const refreshBtn = document.getElementById(boxId + '_schema_info_refresh_btn');
 
 	if (loading) {
-		// Show spinner on the info icon
-		if (infoSpinner) infoSpinner.style.display = 'inline-block';
+		// Show spinner state on the info icon (CSS handles the actual spinner via ::after)
 		if (infoBtn) infoBtn.classList.add('is-loading');
 		if (infoStatus) infoStatus.textContent = 'Loading…';
 		if (refreshBtn) refreshBtn.disabled = true;
 	} else {
-		// Hide spinner
-		if (infoSpinner) infoSpinner.style.display = 'none';
+		// Remove spinner state
 		if (infoBtn) infoBtn.classList.remove('is-loading');
 		if (refreshBtn) refreshBtn.disabled = false;
 	}
@@ -395,10 +392,7 @@ function refreshSchema(boxId) {
 		if (infoRefreshBtn) {
 			infoRefreshBtn.disabled = true;
 		}
-		const infoSpinner = document.getElementById(boxId + '_schema_info_spinner');
-		if (infoSpinner) {
-			infoSpinner.style.display = 'inline-block';
-		}
+		// The spinner is now handled via CSS ::after pseudo-element on the button when .is-loading is added
 		const infoBtn = document.getElementById(boxId + '_schema_info_btn');
 		if (infoBtn) {
 			infoBtn.classList.add('is-loading');

@@ -437,7 +437,6 @@ function addQueryBox(options) {
 		'<div class="schema-info-wrapper" id="' + id + '_schema_info_wrapper">' +
 		'<button class="schema-info-btn" id="' + id + '_schema_info_btn" onclick="toggleSchemaInfoPopover(\'' + id + '\'); event.stopPropagation();" title="Schema info" aria-label="Schema info" aria-haspopup="true" aria-expanded="false">' +
 		schemaInfoIconSvg +
-		'<span class="schema-info-spinner" id="' + id + '_schema_info_spinner" aria-hidden="true" style="display:none;"></span>' +
 		'</button>' +
 		'<div class="schema-info-popover" id="' + id + '_schema_info_popover" role="tooltip" style="display:none;">' +
 		'<div class="schema-info-popover-content">' +
@@ -5665,7 +5664,10 @@ function closeSchemaInfoPopover(boxId) {
 	const popover = document.getElementById(boxId + '_schema_info_popover');
 	const btn = document.getElementById(boxId + '_schema_info_btn');
 	if (popover) popover.style.display = 'none';
-	if (btn) btn.setAttribute('aria-expanded', 'false');
+	if (btn) {
+		btn.setAttribute('aria-expanded', 'false');
+		btn.classList.remove('is-open');
+	}
 }
 
 function toggleSchemaInfoPopover(boxId) {
@@ -5690,15 +5692,21 @@ function toggleSchemaInfoPopover(boxId) {
 	try {
 		const rect = btn.getBoundingClientRect();
 		popover.style.position = 'fixed';
-		popover.style.left = Math.max(0, rect.right - 200) + 'px';
 		popover.style.top = (rect.bottom + 4) + 'px';
 		
-		// Adjust if it would go off the right edge
+		// Reset left position and show temporarily to measure width accurately
+		popover.style.left = '0px';
+		popover.style.visibility = 'hidden';
 		popover.style.display = 'block';
 		const popoverRect = popover.getBoundingClientRect();
+		// Position so right edge aligns with button's right edge
+		popover.style.left = Math.max(0, rect.right - popoverRect.width) + 'px';
+		popover.style.visibility = '';
+		
+		// Adjust if it would go off the right edge
 		const vw = window.innerWidth || 0;
 		const vh = window.innerHeight || 0;
-		if (vw > 0 && popoverRect.right > vw) {
+		if (vw > 0 && rect.right > vw) {
 			popover.style.left = Math.max(0, vw - popoverRect.width - 8) + 'px';
 		}
 		// Adjust if it would go off the bottom edge
@@ -5709,6 +5717,7 @@ function toggleSchemaInfoPopover(boxId) {
 
 	popover.style.display = 'block';
 	btn.setAttribute('aria-expanded', 'true');
+	btn.classList.add('is-open');
 
 	// Wire close on click outside
 	try {

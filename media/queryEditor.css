@@ -6421,7 +6421,7 @@
 		.cache-popup {
 			position: absolute;
 			top: 100%;
-			left: 0;
+			right: 0;
 			margin-top: 4px;
 			background: var(--vscode-editorWidget-background);
 			border: 1px solid var(--vscode-editorWidget-border);
@@ -6866,7 +6866,24 @@
 
 		.schema-info-btn:focus {
 			outline: none;
+		}
+
+		.schema-info-btn:focus-visible {
 			border-color: var(--vscode-focusBorder);
+		}
+
+		.schema-info-btn:focus:not(:focus-visible) {
+			border-color: transparent;
+		}
+
+		/* Active/open state when popover is visible */
+		.schema-info-btn.is-open {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+		}
+
+		.schema-info-btn.is-open:hover {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 		}
 
 		.schema-info-btn svg {
@@ -6875,23 +6892,26 @@
 			height: 16px;
 		}
 
-		/* Loading state for schema info button */
+		/* Loading state for schema info button - hide the icon and show spinner styling on the button itself */
 		.schema-info-btn.is-loading svg {
-			opacity: 0.3;
+			display: none;
 		}
 
-		.schema-info-spinner {
-			position: absolute;
-			top: 50%;
-			left: 50%;
-			transform: translate(-50%, -50%);
-			width: 12px;
-			height: 12px;
+		.schema-info-btn.is-loading::after {
+			content: '';
+			display: block;
+			width: 14px;
+			height: 14px;
 			box-sizing: border-box;
 			border-radius: 50%;
 			border: 2px solid var(--vscode-editorWidget-border);
 			border-top-color: var(--vscode-progressBar-background);
 			animation: query-spinner-spin 0.9s linear infinite;
+		}
+
+		/* Hidden - no longer used, kept for backwards compatibility */
+		.schema-info-spinner {
+			display: none !important;
 		}
 
 		/* Visual feedback when schema is loaded */
