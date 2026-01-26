@@ -2867,9 +2867,10 @@
 		}
 
 		.select-wrapper.half-width {
-			flex: 0 0 210px;
-			width: 210px;
+			flex: 1 1 210px;
+			width: auto;
 			max-width: 210px;
+			min-width: 150px;
 		}
 
 		/* Favorites dropdown replaces: cluster (210) + database (210) + refresh (28) = 448px */
@@ -3376,73 +3377,59 @@
 			color: var(--vscode-dropdown-foreground);
 		}
 
-		/* Responsive mode for cluster/database dropdowns at narrower widths */
-		@media (max-width: 600px) {
-			.query-header .select-wrapper.half-width {
-				flex: 0 0 40px;
-				width: 40px;
-				min-width: 40px;
-				max-width: 40px;
-			}
+		/* Cluster/database dropdowns collapse to icon-only when below min-width (JS-driven via is-minimal class) */
+		.query-header .select-wrapper.half-width.is-minimal {
+			flex: 0 0 32px;
+			width: 32px;
+			min-width: 32px;
+			max-width: 32px;
+		}
 
-			/* Extra spacing so the DB refresh icon doesn't crowd/overlap the dropdown on the left. */
-			.query-header-row-bottom > button.refresh-btn[id$="_refresh"] {
-				margin-left: 15px;
-			}
+		.query-header .select-wrapper.half-width.is-minimal select {
+			padding-left: 8px;
+			padding-right: 8px;
+			text-indent: -9999px;
+			color: transparent;
+		}
 
-			/* In responsive mode, allow the expanded menu to grow to fit content */
-			.kusto-dropdown-menu,
-			.kusto-favorites-menu {
-				width: max-content;
-				min-width: 100%;
-			}
-			
-			.query-header .select-wrapper.half-width select {
-				padding-left: 8px;
-				padding-right: 8px;
-				text-indent: -9999px;
-				color: transparent;
-			}
+		.query-header .select-wrapper.half-width.is-minimal.has-icon select {
+			padding-left: 8px;
+		}
 
-			.query-header .select-wrapper.half-width.has-icon select {
-				padding-left: 8px;
-			}
-			
-			.query-header .select-wrapper.half-width select option {
-				text-indent: 0;
-				color: var(--vscode-dropdown-foreground);
-			}
+		.query-header .select-wrapper.half-width.is-minimal select option {
+			text-indent: 0;
+			color: var(--vscode-dropdown-foreground);
+		}
 
-			.query-header .select-wrapper.half-width.has-icon .select-icon {
-				left: 50%;
-				transform: translate(-50%, -50%);
-			}
+		.query-header .select-wrapper.half-width.is-minimal.has-icon .select-icon {
+			left: 50%;
+			transform: translate(-50%, -50%);
+		}
 
-			/* Hide text in cluster/database dropdown buttons in responsive mode, show only icon */
-			.query-header .select-wrapper.half-width .kusto-dropdown-btn-text {
-				display: none;
-			}
+		/* Hide text in cluster/database dropdown buttons in minimal mode, show only icon */
+		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn-text {
+			display: none;
+		}
 
-			.query-header .select-wrapper.half-width .kusto-dropdown-btn-caret {
-				display: none;
-			}
+		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn-caret {
+			display: none;
+		}
 
-			.query-header .select-wrapper.half-width .kusto-dropdown-btn {
-				padding: 6px 8px;
-				justify-content: center;
-			}
+		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn {
+			padding: 4px;
+			justify-content: center;
+		}
 
-			.query-header .select-wrapper.half-width.has-icon .kusto-dropdown-btn {
-				padding-left: 8px;
-			}
+		.query-header .select-wrapper.half-width.is-minimal.has-icon .kusto-dropdown-btn {
+			padding: 4px;
 		}
 
 		/* Favorites dropdown collapses to icon-only at a different (wider) breakpoint */
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal {
-			flex: 0 0 40px;
-			width: 40px;
-			min-width: 40px;
-			max-width: 40px;
+			flex: 0 0 32px;
+			width: 32px;
+			min-width: 32px;
+			max-width: 32px;
 		}
 
 		/* Show icon inside button in minimal mode */
@@ -3463,7 +3450,7 @@
 
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn,
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn {
-			padding: 6px 8px;
+			padding: 4px;
 			justify-content: center;
 		}
 
@@ -6818,7 +6805,7 @@
 
 		/* Visual feedback when schema is loaded */
 		.schema-info-btn.has-schema {
-			color: var(--vscode-charts-green, #89d185);
+			color: var(--vscode-descriptionForeground);
 		}
 
 		.schema-info-btn.is-error {
@@ -6826,7 +6813,7 @@
 		}
 
 		.schema-info-btn.is-cached {
-			color: var(--vscode-charts-blue, #4fc1ff);
+			color: var(--vscode-descriptionForeground);
 		}
 
 		/* Schema info popover */

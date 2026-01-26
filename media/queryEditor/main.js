@@ -2272,13 +2272,15 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 })();
 
 // Responsive favorites dropdown: switch to minimal/icon-only mode when width drops below threshold
-(function __kustoInstallFavoritesResponsiveMode() {
-	const FAVORITES_MIN_WIDTH = 250; // Switch to icon-only below this width
+(function __kustoInstallDropdownResponsiveMode() {
+	const FAVORITES_MIN_WIDTH = 150; // Switch favorites to icon-only below this width
+	const HALF_WIDTH_MIN = 150; // Switch cluster/database to icon-only below this width
 
-	const updateFavoritesMinimalMode = () => {
+	const updateDropdownMinimalModes = () => {
 		try {
-			const wrappers = document.querySelectorAll('.select-wrapper.kusto-favorites-combo');
-			for (const wrapper of wrappers) {
+			// Favorites dropdowns
+			const favWrappers = document.querySelectorAll('.select-wrapper.kusto-favorites-combo');
+			for (const wrapper of favWrappers) {
 				if (!wrapper) continue;
 				// Temporarily remove is-minimal to measure natural width
 				const wasMinimal = wrapper.classList.contains('is-minimal');
@@ -2290,6 +2292,22 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 				const shouldBeMinimal = rect.width > 0 && rect.width < FAVORITES_MIN_WIDTH;
 				wrapper.classList.toggle('is-minimal', shouldBeMinimal);
 			}
+
+			// Cluster/database dropdowns (half-width)
+			const halfWidthWrappers = document.querySelectorAll('.select-wrapper.half-width');
+			for (const wrapper of halfWidthWrappers) {
+				if (!wrapper) continue;
+				// Temporarily remove is-minimal to measure natural width
+				const wasMinimal = wrapper.classList.contains('is-minimal');
+				if (wasMinimal) {
+					wrapper.classList.remove('is-minimal');
+				}
+				// Check computed width of the wrapper in normal mode
+				// Use <= so it triggers as soon as it hits the min-width (can't shrink further)
+				const rect = wrapper.getBoundingClientRect();
+				const shouldBeMinimal = rect.width > 0 && rect.width <= HALF_WIDTH_MIN;
+				wrapper.classList.toggle('is-minimal', shouldBeMinimal);
+			}
 		} catch { /* ignore */ }
 	};
 
@@ -2298,13 +2316,13 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 	window.addEventListener('resize', () => {
 		try {
 			if (resizeTimeout) clearTimeout(resizeTimeout);
-			resizeTimeout = setTimeout(updateFavoritesMinimalMode, 50);
+			resizeTimeout = setTimeout(updateDropdownMinimalModes, 50);
 		} catch { /* ignore */ }
 	});
 
 	// Also run periodically to catch dynamic layout changes
-	setInterval(updateFavoritesMinimalMode, 500);
+	setInterval(updateDropdownMinimalModes, 500);
 
 	// Initial check
-	setTimeout(updateFavoritesMinimalMode, 100);
+	setTimeout(updateDropdownMinimalModes, 100);
 })();

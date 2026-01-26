@@ -353,7 +353,7 @@ function addQueryBox(options) {
 		wrapperId: id + '_favorites_wrapper',
 		wrapperStyle: 'display:none;',
 		title: 'Favorites',
-		iconSvg: favoriteStarIconSvg,
+		iconSvg: favoritesListIconSvg,
 		buttonId: id + '_favorites_btn',
 		buttonTextId: id + '_favorites_btn_text',
 		menuId: id + '_favorites_menu',
@@ -5480,16 +5480,27 @@ function __kustoUpdateFavoritesUiForBox(boxId) {
 
 	// Favorites dropdown current label and tooltip.
 	let selectedTooltip = 'Select favorite...';
+	if (fav) {
+		// Build tooltip text from the favorite selection: <Name> (<cluster>.<database>)
+		try {
+			const name = fav.name ? String(fav.name).trim() : '';
+			const clusterDisplay = formatClusterShortName(fav.clusterUrl) || '';
+			const dbDisplay = String(fav.database || '').trim();
+			const connPart = (clusterDisplay && dbDisplay) ? (clusterDisplay + '.' + dbDisplay) : (clusterDisplay || dbDisplay);
+			if (name && connPart) {
+				selectedTooltip = name + ' (' + connPart + ')';
+			} else if (name) {
+				selectedTooltip = name;
+			} else if (connPart) {
+				selectedTooltip = connPart;
+			} else {
+				selectedTooltip = 'Selected favorite';
+			}
+		} catch { selectedTooltip = 'Selected favorite'; }
+	}
 	if (btnText) {
 		if (fav) {
 			btnText.innerHTML = __kustoFormatFavoriteDisplayHtml(fav);
-			// Build tooltip text from the favorite selection
-			try {
-				const label = fav.label ? String(fav.label).trim() : '';
-				const clusterDisplay = __kustoExtractClusterShortName(fav.clusterUrl);
-				const dbDisplay = String(fav.database || '').trim();
-				selectedTooltip = label || (clusterDisplay + ' / ' + dbDisplay);
-			} catch { selectedTooltip = 'Selected favorite'; }
 		} else {
 			btnText.textContent = 'Select favorite...';
 		}
@@ -5498,6 +5509,10 @@ function __kustoUpdateFavoritesUiForBox(boxId) {
 	if (favDropdownBtn) {
 		favDropdownBtn.title = selectedTooltip;
 		favDropdownBtn.setAttribute('aria-label', selectedTooltip);
+	}
+	// Also update the wrapper's title so tooltip shows when hovering anywhere on the control
+	if (favWrap) {
+		favWrap.title = selectedTooltip;
 	}
 
 	// Keep wrapper hidden unless favorites mode is enabled.
