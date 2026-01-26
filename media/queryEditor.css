@@ -7012,4 +7012,166 @@
 			width: 14px;
 			height: 14px;
 		}
+
+		/* ============================================
+		   Responsive Results Header
+		   Uses container queries to progressively collapse UI elements
+		   ============================================ */
+
+		/* Make the results-header a container for size queries */
+		.results-header {
+			container-type: inline-size;
+			container-name: results-header;
+		}
+
+		/* Wrap the collapsible execution info in a span for targeting */
+		.results-exec-info {
+			display: inline;
+		}
+
+		/* Collapsed Tools dropdown - hidden by default, shown when width is too narrow */
+		.results-tools-dropdown {
+			display: none;
+			position: relative;
+		}
+
+		.results-tools-dropdown-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 6px;
+			font-size: 12px;
+		}
+
+		.results-tools-dropdown-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.results-tools-dropdown-btn .codicon {
+			font-size: 14px;
+		}
+
+		.results-tools-dropdown-btn .results-tools-dropdown-caret {
+			opacity: 0.8;
+		}
+
+		.results-tools-dropdown-menu {
+			position: fixed;
+			left: 0;
+			top: 0;
+			min-width: 150px;
+			max-width: 250px;
+			max-height: 300px;
+			overflow: auto;
+			z-index: 100000;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+			box-sizing: border-box;
+			display: none;
+		}
+
+		.results-tools-dropdown-menu.is-open {
+			display: block;
+		}
+
+		.results-tools-dropdown-item {
+			padding: 6px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			line-height: 1.4;
+			user-select: none;
+			white-space: nowrap;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			color: var(--vscode-dropdown-foreground);
+		}
+
+		.results-tools-dropdown-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.results-tools-dropdown-item.is-active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+		}
+
+		.results-tools-dropdown-item.is-active:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.results-tools-dropdown-item svg {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+		}
+
+		.results-tools-dropdown-sep {
+			height: 1px;
+			background: var(--vscode-panel-border);
+			margin: 4px 8px;
+		}
+
+		/* Individual tool buttons wrapper - visible by default */
+		.results-tools-individual {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+		}
+
+		/* Collapsible row/column info in results header */
+		.results-row-col-info {
+			display: inline;
+		}
+
+		/* First breakpoint: Hide execution info when container is narrow (< 480px) */
+		@container results-header (max-width: 480px) {
+			.results-exec-info {
+				display: none;
+			}
+		}
+
+		/* Second breakpoint: Also hide row/column counts (< 360px) */
+		@container results-header (max-width: 360px) {
+			.results-row-col-info {
+				display: none;
+			}
+		}
+
+		/* Third breakpoint: Collapse tools into dropdown when very narrow (< 220px) */
+		@container results-header (max-width: 240px) {
+			.results-tools-individual {
+				display: none;
+			}
+
+			.results-tools-dropdown {
+				display: inline-flex;
+			}
+		}
+
+		/* Fourth breakpoint: Hide visibility toggle button when ultra-narrow (< 150px) */
+		@container results-header (max-width: 150px) {
+			.results-visibility-toggle {
+				display: none;
+			}
+		}
+
+		/* Visibility toggle item in dropdown - hidden by default, shown via JS class when ultra-narrow */
+		.results-tools-dropdown-item.results-visibility-item {
+			display: none;
+		}
+
+		.results-tools-dropdown-menu.show-visibility-item .results-tools-dropdown-item.results-visibility-item {
+			display: flex;
+		}
+
+		.results-tools-dropdown-menu.show-visibility-item .results-tools-dropdown-sep.results-visibility-item {
+			display: block;
+		}
 	

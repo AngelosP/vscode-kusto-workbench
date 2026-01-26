@@ -2783,7 +2783,7 @@ function displayResultForBox(result, boxId, options) {
 	const label = (options && typeof options.label === 'string' && options.label) ? options.label : 'Results';
 	const showExecutionTime = !(options && options.showExecutionTime === false);
 	const execTime = metadata && typeof metadata.executionTime === 'string' ? metadata.executionTime : '';
-	const execPart = (showExecutionTime && execTime) ? (' (Execution time: ' + execTime + ')') : '';
+	const execPart = (showExecutionTime && execTime) ? ('<span class="results-exec-info"> (Execution time: ' + execTime + ')</span>') : '';
 
 	const searchIconSvg = __kustoGetSearchIconSvg();
 	const scrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg();
@@ -2791,18 +2791,42 @@ function displayResultForBox(result, boxId, options) {
 	const sortIconSvg = __kustoGetSortIconSvg();
 	const copyIconSvg = __kustoGetCopyIconSvg();
 	const saveIconSvg = __kustoGetSaveIconSvg();
+	const toolsIconSvg = '<span class="codicon codicon-tools" aria-hidden="true"></span>';
+	const chevronDownSvg = '<svg class="results-tools-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
 	const stateForRender = __kustoGetResultsState(boxId);
 	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_, i) => i);
 
+	// Build the collapsed Tools dropdown menu (shown when width is narrow)
+	const toolsDropdownHtml =
+		'<div class="results-tools-dropdown" id="' + boxId + '_results_tools_dropdown">' +
+		'<button class="results-tools-dropdown-btn" id="' + boxId + '_results_tools_dropdown_btn" type="button" onclick="__kustoToggleResultsToolsDropdown(\'' + boxId + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
+		toolsIconSvg + chevronDownSvg +
+		'</button>' +
+		'<div class="results-tools-dropdown-menu" id="' + boxId + '_results_tools_dropdown_menu" role="listbox" tabindex="-1">' +
+		'<div class="results-tools-dropdown-item results-visibility-item" id="' + boxId + '_tools_dd_visibility" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'visibility\');" title="Show/Hide results">' + resultsVisibilityIconSvg + '<span id="' + boxId + '_tools_dd_visibility_label">Hide results</span></div>' +
+		'<div class="results-tools-dropdown-sep results-visibility-item"></div>' +
+		'<div class="results-tools-dropdown-item" id="' + boxId + '_tools_dd_search" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'search\');" title="Search data">' + searchIconSvg + '<span>Search</span></div>' +
+		'<div class="results-tools-dropdown-item" id="' + boxId + '_tools_dd_column" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'column\');" title="Scroll to column">' + scrollToColumnIconSvg + '<span>Go to column</span></div>' +
+		'<div class="results-tools-dropdown-item" id="' + boxId + '_tools_dd_sort" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'sort\');" title="Sort">' + sortIconSvg + '<span>Sort</span></div>' +
+		'<div class="results-tools-dropdown-sep"></div>' +
+		'<div class="results-tools-dropdown-item" id="' + boxId + '_tools_dd_save" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'save\');" title="Save results to file">' + saveIconSvg + '<span>Save</span></div>' +
+		'<div class="results-tools-dropdown-item" id="' + boxId + '_tools_dd_copy" onclick="__kustoResultsToolsDropdownAction(\'' + boxId + '\', \'copy\');" title="Copy results to clipboard">' + copyIconSvg + '<span>Copy</span></div>' +
+		'</div>' +
+		'</div>';
+
 	let html =
 		'<div class="results-header">' +
 		'<div class="results-title-row">' +
-		'<strong>' + label + ':</strong> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns' +
+		'<strong>' + label + ':</strong><span class="results-row-col-info"> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns</span>' +
 		execPart +
 		'<button class="unified-btn-secondary tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
 		'</div>' +
 		'<div class="results-tools-row">' +
+		// Collapsed Tools dropdown (visible when narrow)
+		toolsDropdownHtml +
+		// Individual tool buttons (visible when wide enough)
+		'<div class="results-tools-individual">' +
 		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_search_btn" onclick="toggleSearchTool(\'' + boxId + '\')" title="Search data" aria-label="Search data">' + searchIconSvg + '</button>' +
 		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_column_btn" onclick="toggleColumnTool(\'' + boxId + '\')" title="Scroll to column" aria-label="Scroll to column">' + scrollToColumnIconSvg + '</button>' +
 		'<button class="unified-btn-secondary tool-toggle-btn" id="' + boxId + '_results_sort_btn" onclick="toggleSortDialog(\'' + boxId + '\')" title="Sort" aria-label="Sort">' + sortIconSvg + '</button>' +
@@ -2815,6 +2839,7 @@ function displayResultForBox(result, boxId, options) {
 		'<button class="unified-btn-secondary tool-toggle-btn tool-copy-results-btn" id="' + boxId + '_results_copy_btn" onclick="__kustoOnCopyPrimary(\'' + boxId + '\')" title="Copy results to clipboard" aria-label="Copy results to clipboard">' + copyIconSvg + '</button>' +
 		'<button class="unified-btn-secondary tool-toggle-btn kusto-split-caret" id="' + boxId + '_results_copy_menu_btn" style="display: none;" onclick="__kustoOnCopyMenu(\'' + boxId + '\', this)" title="More copy options" aria-label="More copy options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
 		'</span>' +
+		'</div>' +
 		'</div>' +
 		'</div>' +
 		'<div class="results-body" id="' + boxId + '_results_body" data-kusto-no-editor-focus="true">' +
@@ -3613,6 +3638,158 @@ function toggleRowSelection(row, boxId) {
 		}
 	} catch { /* ignore */ }
 }
+
+// ============================================
+// Responsive Results Tools Dropdown
+// ============================================
+
+/**
+ * Update the active/toggle state of dropdown items based on current tool state.
+ */
+function __kustoUpdateResultsToolsDropdownState(boxId) {
+	try {
+		const searchContainer = document.getElementById(boxId + '_data_search_container');
+		const columnContainer = document.getElementById(boxId + '_column_search_container');
+		const sortModal = document.getElementById(boxId + '_sort_modal');
+		const resultsBody = document.getElementById(boxId + '_results_body');
+
+		const searchActive = searchContainer && searchContainer.style.display !== 'none';
+		const columnActive = columnContainer && columnContainer.style.display !== 'none';
+		const sortActive = sortModal && sortModal.style.display === 'flex';
+		const resultsHidden = resultsBody && resultsBody.style.display === 'none';
+
+		const searchItem = document.getElementById(boxId + '_tools_dd_search');
+		const columnItem = document.getElementById(boxId + '_tools_dd_column');
+		const sortItem = document.getElementById(boxId + '_tools_dd_sort');
+		const visibilityLabel = document.getElementById(boxId + '_tools_dd_visibility_label');
+
+		if (searchItem) searchItem.classList.toggle('is-active', !!searchActive);
+		if (columnItem) columnItem.classList.toggle('is-active', !!columnActive);
+		if (sortItem) sortItem.classList.toggle('is-active', !!sortActive);
+		if (visibilityLabel) visibilityLabel.textContent = resultsHidden ? 'Show results' : 'Hide results';
+	} catch { /* ignore */ }
+}
+
+/**
+ * Handle action from the Tools dropdown menu.
+ * Closes the dropdown and executes the action.
+ */
+function __kustoResultsToolsDropdownAction(boxId, action) {
+	// Close the dropdown immediately
+	__kustoCloseResultsToolsDropdown(boxId);
+
+	// Execute the action
+	switch (action) {
+		case 'visibility':
+			toggleQueryResultsVisibility(boxId);
+			break;
+		case 'search':
+			toggleSearchTool(boxId);
+			break;
+		case 'column':
+			toggleColumnTool(boxId);
+			break;
+		case 'sort':
+			toggleSortDialog(boxId);
+			break;
+		case 'save':
+			__kustoOnSavePrimary(boxId, 'Results');
+			break;
+		case 'copy':
+			__kustoOnCopyPrimary(boxId);
+			break;
+	}
+}
+
+/**
+ * Toggle the collapsed Tools dropdown menu for the results header.
+ * This menu is shown when the container is too narrow to display individual tool buttons.
+ */
+function __kustoToggleResultsToolsDropdown(boxId) {
+	const btn = document.getElementById(boxId + '_results_tools_dropdown_btn');
+	const menu = document.getElementById(boxId + '_results_tools_dropdown_menu');
+	if (!btn || !menu) return;
+
+	const isOpen = menu.classList.contains('is-open');
+
+	// Close all other results tools dropdowns first
+	try {
+		document.querySelectorAll('.results-tools-dropdown-menu.is-open').forEach(m => {
+			if (m !== menu) {
+				m.classList.remove('is-open');
+				const otherId = m.id.replace('_results_tools_dropdown_menu', '');
+				const otherBtn = document.getElementById(otherId + '_results_tools_dropdown_btn');
+				if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
+			}
+		});
+	} catch { /* ignore */ }
+
+	if (isOpen) {
+		// Close the menu
+		menu.classList.remove('is-open');
+		btn.setAttribute('aria-expanded', 'false');
+	} else {
+		// Open the menu and position it below the button
+		menu.classList.add('is-open');
+		btn.setAttribute('aria-expanded', 'true');
+
+		// Update active states before showing
+		__kustoUpdateResultsToolsDropdownState(boxId);
+
+		// Check if container is ultra-narrow (< 150px) to show visibility toggle in menu
+		try {
+			const header = btn.closest('.results-header');
+			if (header) {
+				const headerWidth = header.getBoundingClientRect().width;
+				menu.classList.toggle('show-visibility-item', headerWidth < 150);
+			}
+		} catch { /* ignore */ }
+
+		// Position the menu using fixed positioning
+		try {
+			const rect = btn.getBoundingClientRect();
+			menu.style.top = (rect.bottom + 2) + 'px';
+			// Align to the right edge of the button
+			const menuWidth = menu.offsetWidth || 150;
+			menu.style.left = Math.max(0, rect.right - menuWidth) + 'px';
+		} catch { /* ignore */ }
+	}
+}
+
+/**
+ * Close the collapsed Tools dropdown menu.
+ */
+function __kustoCloseResultsToolsDropdown(boxId) {
+	const btn = document.getElementById(boxId + '_results_tools_dropdown_btn');
+	const menu = document.getElementById(boxId + '_results_tools_dropdown_menu');
+	if (menu) menu.classList.remove('is-open');
+	if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * Close all results tools dropdowns (global).
+ */
+function __kustoCloseAllResultsToolsDropdowns() {
+	try {
+		document.querySelectorAll('.results-tools-dropdown-menu.is-open').forEach(m => {
+			m.classList.remove('is-open');
+		});
+		document.querySelectorAll('.results-tools-dropdown-btn[aria-expanded="true"]').forEach(btn => {
+			btn.setAttribute('aria-expanded', 'false');
+		});
+	} catch { /* ignore */ }
+}
+
+// Close results tools dropdown when clicking outside
+document.addEventListener('click', function(e) {
+	try {
+		if (!e.target.closest('.results-tools-dropdown')) {
+			__kustoCloseAllResultsToolsDropdowns();
+		}
+	} catch { /* ignore */ }
+});
+
+// ============================================
 
 function toggleSearchTool(boxId) {
 	__kustoEnsureResultsShownForTool(boxId);
