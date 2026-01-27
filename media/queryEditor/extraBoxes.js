@@ -1248,7 +1248,7 @@ function __kustoUpdateChartBuilderUI(boxId) {
 			tooltipMenu.innerHTML = '<div class="kusto-dropdown-empty">No columns available.</div>';
 		}
 		try {
-			window.__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, 'None');
+			window.__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
 		} catch { /* ignore */ }
 	}
 
@@ -3415,7 +3415,7 @@ function __kustoOnChartTooltipCheckboxChanged(dropdownId) {
 	try {
 		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
 		st.tooltipColumns = selected;
-		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, 'None');
+		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, '(none)');
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
