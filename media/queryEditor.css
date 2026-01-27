@@ -1330,27 +1330,6 @@
 			justify-content: center;
 		}
 
-		.kusto-chart-sort-inline {
-			display: flex;
-			align-items: center;
-			gap: 6px;
-			width: 100%;
-		}
-
-		.kusto-chart-sort-inline .select-wrapper {
-			flex: 1 1 auto;
-			min-width: 0;
-		}
-
-		.kusto-chart-sort-dir-btn {
-			width: 30px;
-			height: 30px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-		}
-
 		.kusto-chart-labels-toggle {
 			display: inline-flex;
 			align-items: center;
