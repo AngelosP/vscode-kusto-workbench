@@ -576,7 +576,9 @@
 		let selectedLabel = '';
 		try {
 			const opt = select.selectedOptions && select.selectedOptions.length ? select.selectedOptions[0] : null;
-			if (opt && String(opt.value || '').trim()) {
+			if (opt) {
+				// Always use the selected option's text, even if value is empty
+				// This handles cases like "Auto (default)" with value=""
 				selectedLabel = String(opt.textContent || '').trim();
 			}
 		} catch { /* ignore */ }

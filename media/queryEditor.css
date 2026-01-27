@@ -1396,6 +1396,281 @@
 			align-items: center;
 			gap: 10px;
 			flex-wrap: nowrap;
+			position: relative;
+		}
+
+		/* Clickable axis labels - hover shows underline like a link */
+		.kusto-chart-field-group > label.kusto-axis-label-clickable {
+			cursor: pointer;
+			text-decoration: none;
+			transition: text-decoration 0.1s ease;
+		}
+
+		.kusto-chart-field-group > label.kusto-axis-label-clickable:hover {
+			text-decoration: underline;
+			color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+		}
+
+		/* Indicator dot when axis has custom settings */
+		.kusto-chart-field-group > label.kusto-axis-label-clickable.has-settings::after {
+			content: '';
+			display: inline-block;
+			width: 5px;
+			height: 5px;
+			background: var(--vscode-focusBorder, #007fd4);
+			border-radius: 50%;
+			margin-left: 4px;
+			vertical-align: middle;
+		}
+
+		/* Axis settings popup */
+		.kusto-axis-settings-popup {
+			position: fixed;
+			z-index: 10000;
+			min-width: 280px;
+			max-width: 360px;
+			background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+			border: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-radius: 6px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+			padding: 0;
+			display: none;
+			flex-direction: column;
+		}
+
+		.kusto-axis-settings-popup.is-open {
+			display: flex;
+		}
+
+		/* Arrow pointer indicating the popup belongs to the label */
+		.kusto-axis-settings-popup::before {
+			content: '';
+			position: absolute;
+			top: -6px;
+			left: 12px;
+			width: 10px;
+			height: 10px;
+			background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+			border-left: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			transform: rotate(45deg);
+		}
+
+		/* Arrow pointer when popup is positioned above the label */
+		.kusto-axis-settings-popup.is-above::before {
+			top: auto;
+			bottom: -6px;
+			border-left: none;
+			border-top: none;
+			border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+		}
+
+		.kusto-axis-settings-popup-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+			font-weight: 600;
+			font-size: 12px;
+		}
+
+		.kusto-axis-settings-popup-close {
+			background: transparent;
+			border: none;
+			padding: 2px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 4px;
+		}
+
+		.kusto-axis-settings-popup-close:hover {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-axis-settings-popup-content {
+			padding: 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
+		}
+
+		.kusto-axis-settings-row {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.kusto-axis-settings-row > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-row > input[type="text"] {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 0;
+			padding: 3px 8px;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+			width: 100%;
+			box-sizing: border-box;
+		}
+
+		.kusto-axis-settings-row > input[type="text"]:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.kusto-axis-settings-row > input[type="text"]::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+
+		/* Unified dropdown styling inside axis settings popup */
+		.kusto-axis-settings-dropdown {
+			width: 100%;
+		}
+
+		.kusto-axis-settings-dropdown .kusto-dropdown-btn {
+			width: 100%;
+			justify-content: space-between;
+		}
+
+		.kusto-axis-settings-dropdown .kusto-dropdown-menu {
+			min-width: 100%;
+		}
+
+		/* Checkbox row for show/hide label */
+		.kusto-axis-settings-checkbox-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-checkbox-row > input[type="checkbox"] {
+			width: 16px;
+			height: 16px;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+			margin: 0;
+		}
+
+		.kusto-axis-settings-checkbox-row > label {
+			font-size: 12px;
+			cursor: pointer;
+		}
+
+		/* Slider row for label density */
+		.kusto-axis-settings-slider-row {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-slider-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+
+		.kusto-axis-settings-slider-header > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-slider-value {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			min-width: 32px;
+			text-align: right;
+		}
+
+		.kusto-axis-settings-slider-container {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-slider-label-left,
+		.kusto-axis-settings-slider-label-right {
+			font-size: 10px;
+			color: var(--vscode-descriptionForeground);
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-slider {
+			flex: 1;
+			height: 4px;
+			-webkit-appearance: none;
+			appearance: none;
+			background: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.4));
+			border-radius: 2px;
+			cursor: pointer;
+		}
+
+		.kusto-axis-settings-slider::-webkit-slider-thumb {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			background: var(--vscode-focusBorder);
+			cursor: pointer;
+			border: none;
+		}
+
+		.kusto-axis-settings-slider::-moz-range-thumb {
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			background: var(--vscode-focusBorder);
+			cursor: pointer;
+			border: none;
+		}
+
+		.kusto-axis-settings-slider:focus {
+			outline: none;
+		}
+
+		.kusto-axis-settings-slider:focus::-webkit-slider-thumb {
+			box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+		}
+
+		.kusto-axis-settings-popup-footer {
+			display: flex;
+			justify-content: flex-end;
+			gap: 8px;
+			padding: 10px 12px;
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+		}
+
+		.kusto-axis-settings-popup-footer button {
+			padding: 4px 12px;
+			border-radius: 4px;
+			font-size: 12px;
+			cursor: pointer;
+			border: 1px solid transparent;
+		}
+
+		.kusto-axis-settings-reset-btn {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border-color: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.3)) !important;
+		}
+
+		.kusto-axis-settings-reset-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.2));
 		}
 
 		/* Chart dropdown menus need position:fixed to escape the overflow:hidden container */

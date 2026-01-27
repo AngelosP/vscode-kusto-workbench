@@ -103,6 +103,14 @@ export type KqlxSectionV1 =
 			showDataLabels?: boolean;
 			sortColumn?: string;
 			sortDirection?: 'asc' | 'desc' | '';
+			// X-axis customization settings
+			xAxisSettings?: {
+				sortDirection?: 'asc' | 'desc' | '';
+				scaleType?: 'category' | 'continuous' | '';
+				labelDensity?: number;
+				showAxisLabel?: boolean;
+				customLabel?: string;
+			};
 		}
 	| {
 			id?: string;

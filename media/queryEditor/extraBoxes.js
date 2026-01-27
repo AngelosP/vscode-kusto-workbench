@@ -25,6 +25,7 @@ let pythonEditors = {};
 // - showDataLabels: boolean (show labels on data points)
 // - sortColumn: string (column to sort by)
 // - sortDirection: 'asc' | 'desc' | '' (sort direction)
+// - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel } (X-axis customizations)
 let chartStateByBoxId = {};
 
 // Transformation UI state keyed by boxId.
@@ -252,10 +253,353 @@ function __kustoGetChartState(boxId) {
 				chartStateByBoxId[id].legendPosition = 'top';
 			}
 		} catch { /* ignore */ }
+		// Ensure xAxisSettings exists with defaults
+		try {
+			if (!chartStateByBoxId[id].xAxisSettings || typeof chartStateByBoxId[id].xAxisSettings !== 'object') {
+				chartStateByBoxId[id].xAxisSettings = __kustoGetDefaultAxisSettings();
+			}
+		} catch { /* ignore */ }
 		return chartStateByBoxId[id];
 	} catch {
 		return { mode: 'edit', expanded: true };
 	}
+}
+
+/**
+ * Returns default axis settings.
+ */
+function __kustoGetDefaultAxisSettings() {
+	return {
+		sortDirection: '',      // '' = auto, 'asc', 'desc'
+		scaleType: '',          // '' = auto, 'category', 'continuous'
+		labelDensity: 100,      // 100 = show all, 0 = hide all (slider value)
+		showAxisLabel: true,    // Show the axis title
+		customLabel: ''         // Custom axis title (empty = use column name)
+	};
+}
+
+/**
+ * Check if axis settings differ from defaults.
+ */
+function __kustoHasCustomAxisSettings(settings) {
+	if (!settings || typeof settings !== 'object') return false;
+	const defaults = __kustoGetDefaultAxisSettings();
+	return (
+		(settings.sortDirection && settings.sortDirection !== defaults.sortDirection) ||
+		(settings.scaleType && settings.scaleType !== defaults.scaleType) ||
+		(typeof settings.labelDensity === 'number' && settings.labelDensity !== 100) ||
+		(settings.showAxisLabel === false) ||
+		(settings.customLabel && settings.customLabel !== defaults.customLabel)
+	);
+}
+
+/**
+ * Toggle the axis settings popup visibility.
+ */
+function __kustoToggleAxisSettingsPopup(boxId, axis) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	if (!id || !ax) return;
+	
+	try {
+		const popup = document.getElementById(id + '_chart_' + ax + '_settings_popup');
+		if (!popup) return;
+		
+		const isOpen = popup.classList.contains('is-open');
+		
+		// Close all other popups first
+		try { __kustoCloseAllAxisSettingsPopups(); } catch { /* ignore */ }
+		
+		if (isOpen) {
+			// Was open, now closed (by closeAll above)
+			return;
+		}
+		
+		// Position the popup using fixed positioning relative to the label
+		const label = document.getElementById(id + '_chart_' + ax + '_label');
+		if (label) {
+			const labelRect = label.getBoundingClientRect();
+			// Position below the label with a small gap
+			popup.style.top = (labelRect.bottom + 8) + 'px';
+			popup.style.left = labelRect.left + 'px';
+		}
+		
+		// Open this popup
+		popup.classList.add('is-open');
+		
+		// Adjust if popup goes off-screen
+		setTimeout(() => {
+			try {
+				const popupRect = popup.getBoundingClientRect();
+				const viewportWidth = window.innerWidth;
+				const viewportHeight = window.innerHeight;
+				
+				// Adjust horizontal position if off-screen to the right
+				if (popupRect.right > viewportWidth - 8) {
+					popup.style.left = Math.max(8, viewportWidth - popupRect.width - 8) + 'px';
+				}
+				
+				// Adjust vertical position if off-screen at the bottom
+				if (popupRect.bottom > viewportHeight - 8) {
+					// Try positioning above the label instead
+					const label = document.getElementById(id + '_chart_' + ax + '_label');
+					if (label) {
+						const labelRect = label.getBoundingClientRect();
+						const newTop = labelRect.top - popupRect.height - 8;
+						if (newTop > 8) {
+							popup.style.top = newTop + 'px';
+							popup.classList.add('is-above');
+						}
+					}
+				}
+			} catch { /* ignore */ }
+		}, 0);
+		
+		// Sync UI with current state
+		__kustoSyncAxisSettingsUI(id, ax);
+		
+		// Add scroll listener to reposition popup when document scrolls
+		const repositionOnScroll = () => {
+			try {
+				if (!popup.classList.contains('is-open')) {
+					window.removeEventListener('scroll', repositionOnScroll, true);
+					return;
+				}
+				const label = document.getElementById(id + '_chart_' + ax + '_label');
+				if (label) {
+					const labelRect = label.getBoundingClientRect();
+					const popupRect = popup.getBoundingClientRect();
+					const isAbove = popup.classList.contains('is-above');
+					if (isAbove) {
+						popup.style.top = (labelRect.top - popupRect.height - 8) + 'px';
+					} else {
+						popup.style.top = (labelRect.bottom + 8) + 'px';
+					}
+					popup.style.left = labelRect.left + 'px';
+				}
+			} catch { /* ignore */ }
+		};
+		window.addEventListener('scroll', repositionOnScroll, true);
+		
+		// Add click-outside listener
+		setTimeout(() => {
+			const closeOnClickOutside = (e) => {
+				try {
+					// Check if click is inside the popup
+					if (popup.contains(e.target)) return;
+					// Check if click is on the label that toggles the popup
+					const label = document.getElementById(id + '_chart_' + ax + '_label');
+					if (label && label.contains(e.target)) return;
+					// Check if click is inside a dropdown menu or on a dropdown item (they use position:fixed and are outside popup DOM)
+					if (e.target.closest && (e.target.closest('.kusto-dropdown-menu') || e.target.closest('.kusto-dropdown-item'))) return;
+					popup.classList.remove('is-open');
+					popup.classList.remove('is-above');
+					document.removeEventListener('click', closeOnClickOutside);
+					window.removeEventListener('scroll', repositionOnScroll, true);
+				} catch { /* ignore */ }
+			};
+			document.addEventListener('click', closeOnClickOutside);
+		}, 0);
+	} catch { /* ignore */ }
+}
+
+/**
+ * Close a specific axis settings popup.
+ */
+function __kustoCloseAxisSettingsPopup(boxId, axis) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	if (!id || !ax) return;
+	
+	try {
+		const popup = document.getElementById(id + '_chart_' + ax + '_settings_popup');
+		if (popup) {
+			popup.classList.remove('is-open');
+			popup.classList.remove('is-above');
+		}
+	} catch { /* ignore */ }
+}
+
+/**
+ * Close all axis settings popups.
+ */
+function __kustoCloseAllAxisSettingsPopups() {
+	try {
+		const popups = document.querySelectorAll('.kusto-axis-settings-popup.is-open');
+		for (const popup of popups) {
+			try {
+				popup.classList.remove('is-open');
+				popup.classList.remove('is-above');
+			} catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+}
+
+/**
+ * Sync the axis settings popup UI with current state.
+ */
+function __kustoSyncAxisSettingsUI(boxId, axis) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	if (!id || !ax) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		const settings = (ax === 'x' ? st.xAxisSettings : null) || __kustoGetDefaultAxisSettings();
+		
+		// Sort direction
+		const sortEl = document.getElementById(id + '_chart_' + ax + '_sort');
+		if (sortEl) {
+			sortEl.value = settings.sortDirection || '';
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
+		}
+		
+		// Scale type
+		const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale');
+		if (scaleEl) {
+			scaleEl.value = settings.scaleType || '';
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
+		}
+		
+		// Label density slider (100 = All/show all, 1 = minimum density)
+		const densitySlider = document.getElementById(id + '_chart_' + ax + '_density');
+		if (densitySlider) {
+			const densityValue = typeof settings.labelDensity === 'number' ? settings.labelDensity : 100;
+			densitySlider.value = Math.max(1, densityValue); // Clamp to minimum of 1
+			// Update the displayed value
+			const densityValueEl = document.getElementById(id + '_chart_' + ax + '_density_value');
+			if (densityValueEl) {
+				if (densityValue >= 100) {
+					densityValueEl.textContent = 'All';
+				} else {
+					densityValueEl.textContent = Math.max(1, densityValue) + '%';
+				}
+			}
+		}
+		
+		// Show axis label checkbox
+		const showLabelEl = document.getElementById(id + '_chart_' + ax + '_show_axis_label');
+		if (showLabelEl) showLabelEl.checked = settings.showAxisLabel !== false;
+		
+		// Custom label input - update placeholder with actual column name
+		const customLabelEl = document.getElementById(id + '_chart_' + ax + '_custom_label');
+		if (customLabelEl) {
+			customLabelEl.value = settings.customLabel || '';
+			// Get the current X column name for the placeholder
+			try {
+				const xSelectEl = document.getElementById(id + '_chart_x');
+				if (xSelectEl && xSelectEl.value) {
+					customLabelEl.placeholder = xSelectEl.value;
+				} else {
+					customLabelEl.placeholder = 'Column name';
+				}
+			} catch {
+				customLabelEl.placeholder = 'Column name';
+			}
+		}
+		
+		// Show/hide custom label row based on checkbox
+		const customLabelRow = document.getElementById(id + '_chart_' + ax + '_custom_label_row');
+		if (customLabelRow) {
+			customLabelRow.style.display = (settings.showAxisLabel !== false) ? '' : 'none';
+		}
+		
+		// Update label indicator
+		__kustoUpdateAxisLabelIndicator(id, ax);
+	} catch { /* ignore */ }
+}
+
+/**
+ * Update the visual indicator on the axis label showing if it has custom settings.
+ */
+function __kustoUpdateAxisLabelIndicator(boxId, axis) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	if (!id || !ax) return;
+	
+	try {
+		const label = document.getElementById(id + '_chart_' + ax + '_label');
+		if (!label) return;
+		
+		const st = __kustoGetChartState(id);
+		const settings = (ax === 'x' ? st.xAxisSettings : null) || __kustoGetDefaultAxisSettings();
+		const hasCustom = __kustoHasCustomAxisSettings(settings);
+		
+		if (hasCustom) {
+			label.classList.add('has-settings');
+		} else {
+			label.classList.remove('has-settings');
+		}
+	} catch { /* ignore */ }
+}
+
+/**
+ * Handle axis setting change from the popup UI.
+ */
+function __kustoOnAxisSettingChanged(boxId, axis, setting, value) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	const key = String(setting || '');
+	if (!id || !ax || !key) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		if (ax === 'x') {
+			if (!st.xAxisSettings || typeof st.xAxisSettings !== 'object') {
+				st.xAxisSettings = __kustoGetDefaultAxisSettings();
+			}
+			
+			// Handle different setting types
+			if (key === 'showAxisLabel') {
+				st.xAxisSettings.showAxisLabel = !!value;
+				// Show/hide custom label row
+				const customLabelRow = document.getElementById(id + '_chart_x_custom_label_row');
+				if (customLabelRow) {
+					customLabelRow.style.display = value ? '' : 'none';
+				}
+			} else if (key === 'labelDensity') {
+				// Update slider value display (100 = All/show all, 1 = minimum density)
+				const densityValue = typeof value === 'number' ? Math.max(1, value) : 100;
+				st.xAxisSettings.labelDensity = densityValue;
+				const densityValueEl = document.getElementById(id + '_chart_x_density_value');
+				if (densityValueEl) {
+					if (densityValue >= 100) {
+						densityValueEl.textContent = 'All';
+					} else {
+						densityValueEl.textContent = densityValue + '%';
+					}
+				}
+			} else {
+				st.xAxisSettings[key] = value;
+			}
+		}
+		
+		// Update indicator and re-render chart
+		__kustoUpdateAxisLabelIndicator(id, ax);
+		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+/**
+ * Reset axis settings to defaults.
+ */
+function __kustoResetAxisSettings(boxId, axis) {
+	const id = String(boxId || '');
+	const ax = String(axis || '').toLowerCase();
+	if (!id || !ax) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		if (ax === 'x') {
+			st.xAxisSettings = __kustoGetDefaultAxisSettings();
+		}
+		
+		// Sync UI and re-render
+		__kustoSyncAxisSettingsUI(id, ax);
+		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch { /* ignore */ }
 }
 
 /**
@@ -743,6 +1087,96 @@ function __kustoFormatUtcDateTime(ms, showTime) {
 	return (ss === '00') ? `${date} ${hh}:${mm}` : `${date} ${hh}:${mm}:${ss}`;
 }
 
+/**
+ * Determines the best time period granularity for continuous axis labels based on the date range.
+ * Returns: 'day', 'week', 'month', 'quarter', or 'year'
+ */
+function __kustoComputeTimePeriodGranularity(timeMsValues) {
+	try {
+		const times = (timeMsValues || []).filter(t => typeof t === 'number' && Number.isFinite(t));
+		if (times.length < 2) return 'day';
+		
+		const minT = Math.min(...times);
+		const maxT = Math.max(...times);
+		const rangeDays = (maxT - minT) / (1000 * 60 * 60 * 24);
+		
+		// Choose granularity based on date range
+		if (rangeDays > 365 * 2) return 'year';      // > 2 years: show years
+		if (rangeDays > 365) return 'quarter';       // > 1 year: show quarters
+		if (rangeDays > 90) return 'month';          // > 3 months: show months
+		if (rangeDays > 14) return 'week';           // > 2 weeks: show weeks
+		return 'day';                                 // Otherwise: show days
+	} catch {
+		return 'day';
+	}
+}
+
+/**
+ * Formats a timestamp to a period boundary label based on granularity.
+ */
+function __kustoFormatTimePeriodLabel(ms, granularity) {
+	const v = (typeof ms === 'number') ? ms : Number(ms);
+	if (!Number.isFinite(v)) return '';
+	const d = new Date(v);
+	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+	const yyyy = String(d.getUTCFullYear());
+	const mon = months[d.getUTCMonth()] || 'Jan';
+	
+	switch (granularity) {
+		case 'year':
+			return yyyy;
+		case 'quarter': {
+			const q = Math.floor(d.getUTCMonth() / 3) + 1;
+			return `Q${q} ${yyyy}`;
+		}
+		case 'month':
+			return `${mon} ${yyyy}`;
+		case 'week': {
+			// Show the week start date (Monday)
+			const dayOfWeek = d.getUTCDay();
+			const diff = d.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+			const weekStart = new Date(d);
+			weekStart.setUTCDate(diff);
+			const dd = String(weekStart.getUTCDate()).padStart(2, '0');
+			const mm = months[weekStart.getUTCMonth()] || 'Jan';
+			return `${dd}-${mm}`;
+		}
+		default: {
+			// day granularity
+			const dd = String(d.getUTCDate()).padStart(2, '0');
+			return `${dd}-${mon}`;
+		}
+	}
+}
+
+/**
+ * Generates axis labels for continuous time scale, showing only period boundaries.
+ * Returns an array of labels with the same length as timeKeys, with empty strings for non-boundary points.
+ */
+function __kustoGenerateContinuousTimeLabels(timeKeys, granularity) {
+	try {
+		if (!timeKeys || !timeKeys.length) return [];
+		
+		const labels = [];
+		let lastPeriodLabel = null;
+		
+		for (const t of timeKeys) {
+			const periodLabel = __kustoFormatTimePeriodLabel(t, granularity);
+			// Only show label if it's different from the previous period
+			if (periodLabel !== lastPeriodLabel) {
+				labels.push(periodLabel);
+				lastPeriodLabel = periodLabel;
+			} else {
+				labels.push(''); // Empty label for points within the same period
+			}
+		}
+		
+		return labels;
+	} catch {
+		return timeKeys.map(() => '');
+	}
+}
+
 function __kustoShouldShowTimeForUtcAxis(timeMsValues) {
 	try {
 		for (const t of (timeMsValues || [])) {
@@ -921,6 +1355,44 @@ function __kustoRenderChart(boxId) {
 			});
 		} catch { /* ignore sorting errors */ }
 	}
+
+	// Apply X-axis sorting if configured (and no other sort is active)
+	const xAxisSettings = st.xAxisSettings || __kustoGetDefaultAxisSettings();
+	const xAxisSortDir = xAxisSettings.sortDirection || '';
+	
+	// Helper to sort rows by a specific column
+	const sortRowsByColumn = (rowsToSort, colIndex, direction) => {
+		if (colIndex < 0 || !direction) return rowsToSort;
+		try {
+			return [...rowsToSort].sort((a, b) => {
+				const aVal = (a && a.length > colIndex) ? __kustoGetRawCellValueForChart(a[colIndex]) : null;
+				const bVal = (b && b.length > colIndex) ? __kustoGetRawCellValueForChart(b[colIndex]) : null;
+				// Handle nulls: sort nulls to the end
+				if (aVal === null && bVal === null) return 0;
+				if (aVal === null) return 1;
+				if (bVal === null) return -1;
+				// Try date/time comparison first
+				const aTime = __kustoCellToChartTimeMs(aVal);
+				const bTime = __kustoCellToChartTimeMs(bVal);
+				if (typeof aTime === 'number' && typeof bTime === 'number' && Number.isFinite(aTime) && Number.isFinite(bTime)) {
+					return direction === 'asc' ? (aTime - bTime) : (bTime - aTime);
+				}
+				// Numeric comparison
+				const aNum = typeof aVal === 'number' ? aVal : (typeof aVal === 'string' ? parseFloat(aVal) : NaN);
+				const bNum = typeof bVal === 'number' ? bVal : (typeof bVal === 'string' ? parseFloat(bVal) : NaN);
+				if (!isNaN(aNum) && !isNaN(bNum)) {
+					return direction === 'asc' ? (aNum - bNum) : (bNum - aNum);
+				}
+				// String comparison
+				const aStr = String(aVal ?? '');
+				const bStr = String(bVal ?? '');
+				const cmp = aStr.localeCompare(bStr);
+				return direction === 'asc' ? cmp : -cmp;
+			});
+		} catch {
+			return rowsToSort;
+		}
+	};
 
 	// Helper to dispose ECharts instance before showing error text.
 	// Setting innerHTML destroys ECharts DOM, so we must dispose the instance first.
@@ -1385,17 +1857,41 @@ function __kustoRenderChart(boxId) {
 			} else {
 				const isArea = chartType === 'area';
 				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
+				
+				// X-axis settings for sort, scale, label density, etc.
+				const xAxisSortDirection = xAxisSettings.sortDirection || '';
+				const xAxisScaleType = xAxisSettings.scaleType || '';
+				const xAxisLabelDensity = xAxisSettings.labelDensity || '';
+				const xAxisShowLabel = xAxisSettings.showAxisLabel !== false;
+				const xAxisCustomLabel = xAxisSettings.customLabel || '';
+				const xAxisName = xAxisShowLabel ? (xAxisCustomLabel || xColName) : '';
+				
+				// Scale type settings:
+				// - Auto/Categorical: show all individual values (auto-detect time handling)
+				// - Continuous: for time data, show period-based labels (week/month/quarter/year)
+				const useContinuousLabels = useTime && xAxisScaleType === 'continuous';
+				
+				// treatAsTime controls data grouping behavior (based on auto-detection)
+				const treatAsTime = useTime;
+				
 					let timeKeys = [];
 					let timeLabels = [];
 					let timeShowTime = false;
-					if (useTime) {
+					let timePeriodGranularity = 'day';
+					if (treatAsTime) {
 						try {
 							const all = [];
 							for (const r of (rows || [])) {
 								const t = (r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null;
 								if (typeof t === 'number' && Number.isFinite(t)) all.push(t);
 							}
-							all.sort((a, b) => a - b);
+							// Sort based on X-axis sort direction setting
+							if (xAxisSortDirection === 'desc') {
+								all.sort((a, b) => b - a);
+							} else {
+								// Default: ascending (oldest to newest)
+								all.sort((a, b) => a - b);
+							}
 							const seen = new Set();
 							const uniq = [];
 							for (const t of all) {
@@ -1406,7 +1902,16 @@ function __kustoRenderChart(boxId) {
 							}
 							timeKeys = uniq;
 							timeShowTime = __kustoShouldShowTimeForUtcAxis(timeKeys);
-							timeLabels = timeKeys.map(t => __kustoFormatUtcDateTime(t, timeShowTime));
+							
+							// Generate labels based on scale type
+							if (useContinuousLabels) {
+								// Continuous: show aggregated period labels (week/month/quarter/year)
+								timePeriodGranularity = __kustoComputeTimePeriodGranularity(timeKeys);
+								timeLabels = __kustoGenerateContinuousTimeLabels(timeKeys, timePeriodGranularity);
+							} else {
+								// Categorical or Auto: show all individual timestamps
+								timeLabels = timeKeys.map(t => __kustoFormatUtcDateTime(t, timeShowTime));
+							}
 						} catch { /* ignore */ }
 					}
 				
@@ -1421,14 +1926,14 @@ function __kustoRenderChart(boxId) {
 					const groups = {};
 					for (const r of (rows || [])) {
 						const legendValue = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '(empty)';
-						const xVal = useTime
+						const xVal = treatAsTime
 							? ((r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null)
 							: ((r && r.length > xi) ? __kustoCellToChartString(r[xi]) : '');
 						const yVal = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
 						const tt = __kustoGetTooltipPayloadForRow(r);
 						if (!groups[legendValue]) groups[legendValue] = [];
 						groups[legendValue].push({ x: xVal, y: yVal, tt });
-						if (useTime) {
+						if (treatAsTime) {
 							// For time axis, collect all x values.
 						} else {
 							xLabelsSet.add(xVal);
@@ -1436,7 +1941,7 @@ function __kustoRenderChart(boxId) {
 					}
 					const legendNames = Object.keys(groups).sort();
 					
-					if (useTime) {
+					if (treatAsTime) {
 							// Time-based X axis with legend grouping (render as category labels so all values show).
 						for (const legendName of legendNames) {
 							const pts = groups[legendName] || [];
@@ -1529,7 +2034,7 @@ function __kustoRenderChart(boxId) {
 						const yi = indexOf(yCol);
 						if (yi < 0) continue;
 						
-						if (useTime) {
+						if (treatAsTime) {
 								const map = {};
 								const tmap = {};
 								for (const r of (rows || [])) {
@@ -1609,10 +2114,65 @@ function __kustoRenderChart(boxId) {
 					}
 				}
 				
-					const xLabels = useTime ? timeLabels : Array.from(xLabelsSet);
-					const showTime = useTime ? timeShowTime : false;
-					const rotate = useTime ? __kustoComputeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime) : 0;
-					const axisFontSize = __kustoComputeAxisFontSize(xLabels.length, canvasWidthPx, false);
+				// Build final xLabels with sorting applied
+				let xLabels = treatAsTime ? timeLabels : Array.from(xLabelsSet);
+				
+				// Apply X-axis sort direction to category labels if not time-based
+				if (!treatAsTime && xAxisSortDirection) {
+					try {
+						// Try to detect if labels are numeric for better sorting
+						const numericLabels = xLabels.filter(l => {
+							const n = parseFloat(l);
+							return !isNaN(n) && isFinite(n);
+						});
+						const isNumeric = numericLabels.length === xLabels.length && xLabels.length > 0;
+						
+						if (isNumeric) {
+							xLabels.sort((a, b) => {
+								const diff = parseFloat(a) - parseFloat(b);
+								return xAxisSortDirection === 'desc' ? -diff : diff;
+							});
+						} else {
+							xLabels.sort((a, b) => {
+								const cmp = String(a).localeCompare(String(b));
+								return xAxisSortDirection === 'desc' ? -cmp : cmp;
+							});
+						}
+						
+						// Re-order series data to match new label order if needed
+						// This is complex and depends on how series data was built
+						// For now, we'll rebuild series data maps with the new order
+					} catch { /* ignore sorting errors */ }
+				}
+				
+				const showTime = treatAsTime ? timeShowTime : false;
+				// For continuous labels, use shorter label estimation since period labels are more compact
+				const rotate = treatAsTime 
+					? (useContinuousLabels 
+						? 0  // Continuous period labels are short, usually no rotation needed
+						: __kustoComputeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime))
+					: 0;
+				const axisFontSize = __kustoComputeAxisFontSize(xLabels.length, canvasWidthPx, false);
+				
+				// Calculate label interval based on density slider (100 = show all, 1 = minimum density with first & last always shown)
+				let axisLabelInterval = 0; // Default: show all
+				const densityValue = typeof xAxisLabelDensity === 'number' ? Math.max(1, xAxisLabelDensity) : 100;
+				const totalLabels = xLabels.length;
+				if (densityValue < 100) {
+					// Map 1-99 to skip intervals: lower density value = more labels skipped
+					// But always show first and last labels
+					const skipFactor = (100 - densityValue) / 100;
+					const maxInterval = Math.max(2, totalLabels - 1);
+					const interval = Math.max(1, Math.floor(maxInterval * skipFactor));
+					axisLabelInterval = (index) => {
+						// Always show first and last
+						if (index === 0 || index === totalLabels - 1) return true;
+						// Show based on interval
+						return index % (interval + 1) === 0;
+					};
+				}
+				// else densityValue >= 100, show all labels (interval = 0)
+				
 				// Calculate bottom margin for rotated labels.
 				const bottomMargin = rotate > 30 ? 70 : 40;
 				
@@ -1674,13 +2234,16 @@ function __kustoRenderChart(boxId) {
 					},
 						xAxis: {
 							type: 'category',
+							name: xAxisName,
+							nameLocation: 'middle',
+							nameGap: rotate > 30 ? 55 : 30,
 							data: xLabels,
 							boundaryGap: (chartType === 'bar'),
 							axisTick: { alignWithLabel: true },
 							axisLabel: {
 								fontSize: axisFontSize,
 								fontFamily: 'monospace',
-								interval: 0,
+								interval: axisLabelInterval,
 								rotate
 							}
 						},
@@ -1695,7 +2258,7 @@ function __kustoRenderChart(boxId) {
 					series: seriesData
 				};
 				
-				if (useTime) {
+				if (treatAsTime) {
 						st.__lastTimeAxis = { showTime, labelCount: xLabels.length, rotate };
 				} else {
 					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
@@ -1988,6 +2551,14 @@ function addChartBox(options) {
 	st.tooltipColumns = (options && Array.isArray(options.tooltipColumns)) ? options.tooltipColumns.filter(c => c) : (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
 	st.sortColumn = (options && typeof options.sortColumn === 'string') ? String(options.sortColumn) : (st.sortColumn || '');
 	st.sortDirection = (options && typeof options.sortDirection === 'string') ? String(options.sortDirection) : (st.sortDirection || '');
+	// X-axis settings - merge with defaults
+	if (options && options.xAxisSettings && typeof options.xAxisSettings === 'object') {
+		st.xAxisSettings = {
+			...__kustoGetDefaultAxisSettings(),
+			...st.xAxisSettings,
+			...options.xAxisSettings
+		};
+	}
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -2074,8 +2645,67 @@ function addChartBox(options) {
 					'</div>' +
 					'<div id="' + id + '_chart_mapping_xy" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
 						'<div class="kusto-chart-mapping-grid" data-kusto-no-editor-focus="true">' +
-							'<span class="kusto-chart-field-group">' +
-								'<label>X</label>' +
+							'<span class="kusto-chart-field-group" id="' + id + '_chart_x_field_group">' +
+								'<label class="kusto-axis-label-clickable" id="' + id + '_chart_x_label" onclick="try{__kustoToggleAxisSettingsPopup(\'' + id + '\', \'x\')}catch{}" title="Click to configure X-axis settings">X</label>' +
+								'<div class="kusto-axis-settings-popup" id="' + id + '_chart_x_settings_popup" data-kusto-no-editor-focus="true">' +
+									'<div class="kusto-axis-settings-popup-header">' +
+										'<span>X-Axis Settings</span>' +
+										'<button type="button" class="kusto-axis-settings-popup-close" onclick="try{__kustoCloseAxisSettingsPopup(\'' + id + '\', \'x\')}catch{}" title="Close" aria-label="Close">' +
+											'<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z" fill="currentColor"/></svg>' +
+										'</button>' +
+									'</div>' +
+									'<div class="kusto-axis-settings-popup-content">' +
+										'<div class="kusto-axis-settings-checkbox-row">' +
+											'<input type="checkbox" id="' + id + '_chart_x_show_axis_label" checked onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'showAxisLabel\', this.checked)}catch{}">' +
+											'<label for="' + id + '_chart_x_show_axis_label">Show axis title</label>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row" id="' + id + '_chart_x_custom_label_row">' +
+											'<input type="text" id="' + id + '_chart_x_custom_label" placeholder="Column name" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'customLabel\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'customLabel\', this.value)}catch{}">' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row">' +
+											'<label for="' + id + '_chart_x_sort">Sort Direction</label>' +
+											'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_sort_wrapper">' +
+												'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x_sort" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'sortDirection\', this.value)}catch{}">' +
+													'<option value="">Auto (default)</option>' +
+													'<option value="asc">Ascending (A→Z, oldest→newest)</option>' +
+													'<option value="desc">Descending (Z→A, newest→oldest)</option>' +
+												'</select>' +
+												'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_sort_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x_sort\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+													'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_x_sort_text">Auto (default)</span>' +
+													'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+												'</button>' +
+												'<div class="kusto-dropdown-menu" id="' + id + '_chart_x_sort_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+											'</div>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row">' +
+											'<label for="' + id + '_chart_x_scale">Scale Type</label>' +
+											'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_scale_wrapper">' +
+												'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x_scale" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'scaleType\', this.value)}catch{}">' +
+													'<option value="">Auto (default)</option>' +
+													'<option value="category">Categorical (show all values)</option>' +
+													'<option value="continuous">Continuous (aggregate by period)</option>' +
+												'</select>' +
+												'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_scale_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x_scale\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+													'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_x_scale_text">Auto (default)</span>' +
+													'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+												'</button>' +
+												'<div class="kusto-dropdown-menu" id="' + id + '_chart_x_scale_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+											'</div>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row kusto-axis-settings-slider-row">' +
+											'<div class="kusto-axis-settings-slider-header">' +
+												'<label for="' + id + '_chart_x_density">Label Density</label>' +
+												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_x_density_value">All</span>' +
+											'</div>' +
+											'<div class="kusto-axis-settings-slider-container">' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_x_density" min="1" max="100" value="100" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'labelDensity\', parseInt(this.value, 10))}catch{}">' +
+											'</div>' +
+										'</div>' +
+									'</div>' +
+									'<div class="kusto-axis-settings-popup-footer">' +
+										'<button type="button" class="kusto-axis-settings-reset-btn" onclick="try{__kustoResetAxisSettings(\'' + id + '\', \'x\')}catch{}">Reset to defaults</button>' +
+									'</div>' +
+								'</div>' +
 								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_wrapper">' +
 									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
@@ -2281,6 +2911,7 @@ function addChartBox(options) {
 	try { __kustoApplyChartMode(id); } catch { /* ignore */ }
 	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
 	try { __kustoSetupSectionModeResizeObserver(id); } catch { /* ignore */ }
+	try { __kustoUpdateAxisLabelIndicator(id, 'x'); } catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {

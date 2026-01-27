@@ -691,6 +691,7 @@ function getKqlxState() {
 			let showDataLabels = false;
 			let sortColumn = '';
 			let sortDirection = '';
+			let xAxisSettings = null;
 			try {
 				const st = (typeof chartStateByBoxId === 'object' && chartStateByBoxId && chartStateByBoxId[id]) ? chartStateByBoxId[id] : null;
 				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
@@ -711,6 +712,26 @@ function getKqlxState() {
 				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
 				sortColumn = (st && typeof st.sortColumn === 'string') ? String(st.sortColumn) : '';
 				sortDirection = (st && typeof st.sortDirection === 'string') ? String(st.sortDirection) : '';
+				// X-axis settings - only save if non-default
+				if (st && st.xAxisSettings && typeof st.xAxisSettings === 'object') {
+					const xs = st.xAxisSettings;
+					const hasNonDefault = (
+						(xs.sortDirection && xs.sortDirection !== '') ||
+						(xs.scaleType && xs.scaleType !== '') ||
+						(typeof xs.labelDensity === 'number' && xs.labelDensity !== 100) ||
+						(xs.showAxisLabel === false) ||
+						(xs.customLabel && xs.customLabel !== '')
+					);
+					if (hasNonDefault) {
+						xAxisSettings = {
+							...(xs.sortDirection ? { sortDirection: xs.sortDirection } : {}),
+							...(xs.scaleType ? { scaleType: xs.scaleType } : {}),
+							...(typeof xs.labelDensity === 'number' && xs.labelDensity !== 100 ? { labelDensity: xs.labelDensity } : {}),
+							...(xs.showAxisLabel === false ? { showAxisLabel: false } : {}),
+							...(xs.customLabel ? { customLabel: xs.customLabel } : {})
+						};
+					}
+				}
 			} catch { /* ignore */ }
 			sections.push({
 				id,
@@ -731,6 +752,7 @@ function getKqlxState() {
 				...(showDataLabels ? { showDataLabels } : {}),
 				...(sortColumn ? { sortColumn } : {}),
 				...(sortDirection ? { sortDirection } : {}),
+				...(xAxisSettings ? { xAxisSettings } : {}),
 				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
 			});
 			continue;
@@ -1363,7 +1385,8 @@ function applyKqlxState(state) {
 					valueColumn: (typeof section.valueColumn === 'string') ? section.valueColumn : undefined,
 					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false,
 					sortColumn: (typeof section.sortColumn === 'string') ? section.sortColumn : undefined,
-					sortDirection: (typeof section.sortDirection === 'string') ? section.sortDirection : undefined
+					sortDirection: (typeof section.sortDirection === 'string') ? section.sortDirection : undefined,
+					xAxisSettings: (section.xAxisSettings && typeof section.xAxisSettings === 'object') ? section.xAxisSettings : undefined
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.
