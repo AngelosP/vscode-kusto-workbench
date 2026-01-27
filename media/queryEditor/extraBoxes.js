@@ -2075,7 +2075,7 @@ function __kustoRenderChart(boxId) {
 				const rotate = useTime ? __kustoComputeTimeAxisLabelRotation(canvasWidthPx, points.length, showTime) : 0;
 				const axisFontSize = __kustoComputeAxisFontSize(points.length, canvasWidthPx, false);
 				// Calculate bottom margin for rotated labels and X-axis title gap.
-				const bottomMargin = (rotate > 30 ? 40 : 20) + xAxisTitleGap;
+				const bottomMargin = (rotate > 30 ? 45 : 25) + xAxisTitleGap;
 				// Calculate left margin for Y-axis title gap.
 				const leftMargin = 15 + yAxisTitleGap;
 				option = {
@@ -2541,7 +2541,7 @@ function __kustoRenderChart(boxId) {
 				// else densityValue >= 100, show all labels (interval = 0)
 				
 				// Calculate bottom margin for rotated labels and X-axis title gap.
-				const bottomMargin = (rotate > 30 ? 40 : 10) + xAxisTitleGap;
+				const bottomMargin = (rotate > 30 ? 45 : 15) + xAxisTitleGap;
 				
 				const legendEnabled = seriesData.length > 1;
 				const legendOpt = legendEnabled ? __kustoBuildLegendOption(legendPosition) : undefined;
@@ -3056,7 +3056,7 @@ function addChartBox(options) {
 												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_x_title_gap_value">30</span>' +
 											'</div>' +
 											'<div class="kusto-axis-settings-slider-container">' +
-												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_x_title_gap" min="10" max="100" value="30" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_x_title_gap" min="10" max="200" value="30" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
 											'</div>' +
 										'</div>' +
 										'<div class="kusto-axis-settings-row">' +
@@ -3135,7 +3135,7 @@ function addChartBox(options) {
 												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_y_title_gap_value">45</span>' +
 											'</div>' +
 											'<div class="kusto-axis-settings-slider-container">' +
-												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_y_title_gap" min="10" max="100" value="45" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_y_title_gap" min="10" max="200" value="45" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
 											'</div>' +
 										'</div>' +
 										'<div class="kusto-axis-settings-row kusto-axis-settings-minmax-row">' +
