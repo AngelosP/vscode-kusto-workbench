@@ -111,6 +111,14 @@ export type KqlxSectionV1 =
 				showAxisLabel?: boolean;
 				customLabel?: string;
 			};
+			// Y-axis customization settings
+			yAxisSettings?: {
+				showAxisLabel?: boolean;
+				customLabel?: string;
+				min?: string;
+				max?: string;
+				seriesColors?: Record<string, string>;
+			};
 		}
 	| {
 			id?: string;

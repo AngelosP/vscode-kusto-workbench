@@ -1647,6 +1647,45 @@
 			box-shadow: 0 0 0 2px var(--vscode-focusBorder);
 		}
 
+		.kusto-axis-settings-minmax-row {
+			display: flex;
+			gap: 12px;
+		}
+
+		.kusto-axis-settings-minmax-field {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			flex: 1;
+		}
+
+		.kusto-axis-settings-minmax-field > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-minmax-field > input {
+			width: 100%;
+			padding: 4px 8px;
+			font-size: 12px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 0;
+			box-sizing: border-box;
+		}
+
+		.kusto-axis-settings-minmax-field > input:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+
+		.kusto-axis-settings-minmax-field > input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+
 		.kusto-axis-settings-popup-footer {
 			display: flex;
 			justify-content: flex-end;
@@ -1671,6 +1710,79 @@
 
 		.kusto-axis-settings-reset-btn:hover {
 			background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.2));
+		}
+
+		/* Series colors section in Y-axis settings */
+		.kusto-axis-settings-colors-section {
+			margin-top: 8px;
+			padding-top: 8px;
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+		}
+
+		.kusto-axis-settings-colors-header {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+			margin-bottom: 8px;
+		}
+
+		.kusto-axis-settings-colors-list {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.kusto-axis-settings-color-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-color-input {
+			width: 28px;
+			height: 22px;
+			padding: 0;
+			border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+			border-radius: 3px;
+			cursor: pointer;
+			background: transparent;
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-color-input::-webkit-color-swatch-wrapper {
+			padding: 2px;
+		}
+
+		.kusto-axis-settings-color-input::-webkit-color-swatch {
+			border: none;
+			border-radius: 2px;
+		}
+
+		.kusto-axis-settings-color-label {
+			font-size: 11px;
+			color: var(--vscode-foreground);
+			flex: 1;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-axis-settings-color-reset {
+			background: transparent;
+			border: none;
+			padding: 2px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			opacity: 0.5;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-color-reset:hover {
+			opacity: 1;
 		}
 
 		/* Chart dropdown menus need position:fixed to escape the overflow:hidden container */

@@ -26,10 +26,15 @@ let pythonEditors = {};
 // - sortColumn: string (column to sort by)
 // - sortDirection: 'asc' | 'desc' | '' (sort direction)
 // - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel } (X-axis customizations)
-let chartStateByBoxId = {};
+// - yAxisSettings: { showAxisLabel, customLabel, min, max } (Y-axis customizations)
+// Explicitly on window so persistence.js can access it
+window.chartStateByBoxId = window.chartStateByBoxId || {};
+var chartStateByBoxId = window.chartStateByBoxId;
 
 // Transformation UI state keyed by boxId.
-let transformationStateByBoxId = {};
+// Explicitly on window so persistence.js can access it
+window.transformationStateByBoxId = window.transformationStateByBoxId || {};
+var transformationStateByBoxId = window.transformationStateByBoxId;
 
 // When query/transform results update, refresh dependent charts/transformations.
 let __kustoIsRefreshingDependents = false;
@@ -259,6 +264,12 @@ function __kustoGetChartState(boxId) {
 				chartStateByBoxId[id].xAxisSettings = __kustoGetDefaultAxisSettings();
 			}
 		} catch { /* ignore */ }
+		// Ensure yAxisSettings exists with defaults
+		try {
+			if (!chartStateByBoxId[id].yAxisSettings || typeof chartStateByBoxId[id].yAxisSettings !== 'object') {
+				chartStateByBoxId[id].yAxisSettings = __kustoGetDefaultYAxisSettings();
+			}
+		} catch { /* ignore */ }
 		return chartStateByBoxId[id];
 	} catch {
 		return { mode: 'edit', expanded: true };
@@ -294,6 +305,162 @@ function __kustoHasCustomAxisSettings(settings) {
 }
 
 /**
+ * Returns default Y-axis settings.
+ */
+function __kustoGetDefaultYAxisSettings() {
+	return {
+		showAxisLabel: true,    // Show the axis title
+		customLabel: '',        // Custom axis title (empty = use column name)
+		min: '',                // Min value (empty = auto)
+		max: '',                // Max value (empty = auto)
+		seriesColors: {}        // Custom colors by column name, e.g. { 'Revenue': '#ff0000' }
+	};
+}
+
+/**
+ * Check if Y-axis settings differ from defaults.
+ */
+function __kustoHasCustomYAxisSettings(settings) {
+	if (!settings || typeof settings !== 'object') return false;
+	const hasCustomColors = settings.seriesColors && typeof settings.seriesColors === 'object' && Object.keys(settings.seriesColors).length > 0;
+	return (
+		(settings.showAxisLabel === false) ||
+		(settings.customLabel && settings.customLabel !== '') ||
+		(settings.min !== '' && settings.min !== undefined && settings.min !== null) ||
+		(settings.max !== '' && settings.max !== undefined && settings.max !== null) ||
+		hasCustomColors
+	);
+}
+
+/**
+ * Default color palette for chart series (ECharts default-ish colors).
+ */
+const __kustoDefaultSeriesColors = [
+	'#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
+	'#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#48b8d0'
+];
+
+/**
+ * Update the series colors UI in the Y-axis settings popup.
+ */
+function __kustoUpdateSeriesColorsUI(boxId, settings) {
+	const id = String(boxId || '');
+	if (!id) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		const yColumns = Array.isArray(st.yColumns) ? st.yColumns.filter(c => c) : (st.yColumn ? [st.yColumn] : []);
+		const colorsSection = document.getElementById(id + '_chart_y_colors_section');
+		const colorsList = document.getElementById(id + '_chart_y_colors_list');
+		
+		if (!colorsSection || !colorsList) return;
+		
+		// Only show colors section if there are Y columns selected
+		if (yColumns.length === 0) {
+			colorsSection.style.display = 'none';
+			return;
+		}
+		
+		colorsSection.style.display = '';
+		
+		// Build the color picker rows
+		const seriesColors = (settings && settings.seriesColors) || {};
+		let html = '';
+		
+		for (let i = 0; i < yColumns.length; i++) {
+			const colName = yColumns[i];
+			const customColor = seriesColors[colName] || '';
+			const defaultColor = __kustoDefaultSeriesColors[i % __kustoDefaultSeriesColors.length];
+			const displayColor = customColor || defaultColor;
+			
+			html += '<div class="kusto-axis-settings-color-row">' +
+				'<input type="color" class="kusto-axis-settings-color-input" ' +
+				'id="' + id + '_chart_y_color_' + i + '" ' +
+				'value="' + displayColor + '" ' +
+				'data-column="' + __kustoEscapeHtml(colName) + '" ' +
+				'data-default="' + defaultColor + '" ' +
+				'onchange="try{__kustoOnSeriesColorChanged(\'' + id + '\', this)}catch{}">' +
+				'<span class="kusto-axis-settings-color-label" title="' + __kustoEscapeHtml(colName) + '">' + __kustoEscapeHtml(colName) + '</span>' +
+				(customColor ? '<button type="button" class="kusto-axis-settings-color-reset" title="Reset to default" ' +
+				'onclick="try{__kustoResetSeriesColor(\'' + id + '\', \'' + __kustoEscapeHtml(colName).replace(/'/g, "\\'") + '\', ' + i + ')}catch{}">' +
+				'<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z" fill="currentColor"/></svg>' +
+				'</button>' : '') +
+				'</div>';
+		}
+		
+		colorsList.innerHTML = html;
+	} catch { /* ignore */ }
+}
+
+/**
+ * Handle series color change from color picker.
+ */
+function __kustoOnSeriesColorChanged(boxId, inputEl) {
+	const id = String(boxId || '');
+	if (!id || !inputEl) return;
+	
+	try {
+		const colName = inputEl.dataset.column;
+		const defaultColor = inputEl.dataset.default;
+		const newColor = inputEl.value;
+		
+		if (!colName) return;
+		
+		const st = __kustoGetChartState(id);
+		if (!st.yAxisSettings) st.yAxisSettings = __kustoGetDefaultYAxisSettings();
+		if (!st.yAxisSettings.seriesColors) st.yAxisSettings.seriesColors = {};
+		
+		// If color matches default, remove from custom colors
+		if (newColor.toLowerCase() === defaultColor.toLowerCase()) {
+			delete st.yAxisSettings.seriesColors[colName];
+		} else {
+			st.yAxisSettings.seriesColors[colName] = newColor;
+		}
+		
+		// Re-render chart with new colors
+		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		
+		// Update indicator
+		__kustoUpdateAxisLabelIndicator(id, 'y');
+		
+		// Re-sync UI to show/hide reset button
+		__kustoUpdateSeriesColorsUI(id, st.yAxisSettings);
+	} catch { /* ignore */ }
+}
+
+/**
+ * Reset a series color to its default.
+ */
+function __kustoResetSeriesColor(boxId, colName, index) {
+	const id = String(boxId || '');
+	if (!id || !colName) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		if (st.yAxisSettings && st.yAxisSettings.seriesColors) {
+			delete st.yAxisSettings.seriesColors[colName];
+		}
+		
+		// Update the color input to show default
+		const colorInput = document.getElementById(id + '_chart_y_color_' + index);
+		if (colorInput) {
+			colorInput.value = colorInput.dataset.default || __kustoDefaultSeriesColors[index % __kustoDefaultSeriesColors.length];
+		}
+		
+		// Re-render chart
+		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		
+		// Update indicator
+		__kustoUpdateAxisLabelIndicator(id, 'y');
+		
+		// Re-sync UI
+		__kustoUpdateSeriesColorsUI(id, st.yAxisSettings);
+	} catch { /* ignore */ }
+}
+
+/**
  * Toggle the axis settings popup visibility.
  */
 function __kustoToggleAxisSettingsPopup(boxId, axis) {
@@ -319,9 +486,19 @@ function __kustoToggleAxisSettingsPopup(boxId, axis) {
 		const label = document.getElementById(id + '_chart_' + ax + '_label');
 		if (label) {
 			const labelRect = label.getBoundingClientRect();
+			// Measure actual text width to center arrow on text, not padded label area
+			const labelText = label.textContent || '';
+			const computedStyle = window.getComputedStyle(label);
+			const canvas = document.createElement('canvas');
+			const ctx = canvas.getContext('2d');
+			ctx.font = computedStyle.fontSize + ' ' + computedStyle.fontFamily;
+			const textWidth = ctx.measureText(labelText).width;
 			// Position below the label with a small gap
+			// Arrow is at left: 12px in CSS, arrow tip is ~5px from that point
+			const arrowTipOffset = 17; // 12px + 5px for arrow center
+			const textCenter = labelRect.left + (textWidth / 2);
 			popup.style.top = (labelRect.bottom + 8) + 'px';
-			popup.style.left = labelRect.left + 'px';
+			popup.style.left = (textCenter - arrowTipOffset) + 'px';
 		}
 		
 		// Open this popup
@@ -370,12 +547,21 @@ function __kustoToggleAxisSettingsPopup(boxId, axis) {
 					const labelRect = label.getBoundingClientRect();
 					const popupRect = popup.getBoundingClientRect();
 					const isAbove = popup.classList.contains('is-above');
+					// Measure actual text width to center arrow on text
+					const labelText = label.textContent || '';
+					const computedStyle = window.getComputedStyle(label);
+					const canvas = document.createElement('canvas');
+					const ctx = canvas.getContext('2d');
+					ctx.font = computedStyle.fontSize + ' ' + computedStyle.fontFamily;
+					const textWidth = ctx.measureText(labelText).width;
+					const arrowTipOffset = 17;
+					const textCenter = labelRect.left + (textWidth / 2);
 					if (isAbove) {
 						popup.style.top = (labelRect.top - popupRect.height - 8) + 'px';
 					} else {
 						popup.style.top = (labelRect.bottom + 8) + 'px';
 					}
-					popup.style.left = labelRect.left + 'px';
+					popup.style.left = (textCenter - arrowTipOffset) + 'px';
 				}
 			} catch { /* ignore */ }
 		};
@@ -445,60 +631,91 @@ function __kustoSyncAxisSettingsUI(boxId, axis) {
 	
 	try {
 		const st = __kustoGetChartState(id);
-		const settings = (ax === 'x' ? st.xAxisSettings : null) || __kustoGetDefaultAxisSettings();
+		const settings = ax === 'x' 
+			? (st.xAxisSettings || __kustoGetDefaultAxisSettings())
+			: (st.yAxisSettings || __kustoGetDefaultYAxisSettings());
 		
-		// Sort direction
-		const sortEl = document.getElementById(id + '_chart_' + ax + '_sort');
-		if (sortEl) {
-			sortEl.value = settings.sortDirection || '';
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
-		}
-		
-		// Scale type
-		const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale');
-		if (scaleEl) {
-			scaleEl.value = settings.scaleType || '';
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
-		}
-		
-		// Label density slider (100 = All/show all, 1 = minimum density)
-		const densitySlider = document.getElementById(id + '_chart_' + ax + '_density');
-		if (densitySlider) {
-			const densityValue = typeof settings.labelDensity === 'number' ? settings.labelDensity : 100;
-			densitySlider.value = Math.max(1, densityValue); // Clamp to minimum of 1
-			// Update the displayed value
-			const densityValueEl = document.getElementById(id + '_chart_' + ax + '_density_value');
-			if (densityValueEl) {
-				if (densityValue >= 100) {
-					densityValueEl.textContent = 'All';
-				} else {
-					densityValueEl.textContent = Math.max(1, densityValue) + '%';
+		if (ax === 'x') {
+			// X-axis specific: Sort direction
+			const sortEl = document.getElementById(id + '_chart_' + ax + '_sort');
+			if (sortEl) {
+				sortEl.value = settings.sortDirection || '';
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
+			}
+			
+			// X-axis specific: Scale type
+			const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale');
+			if (scaleEl) {
+				scaleEl.value = settings.scaleType || '';
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
+			}
+			
+			// X-axis specific: Label density slider (100 = All/show all, 1 = minimum density)
+			const densitySlider = document.getElementById(id + '_chart_' + ax + '_density');
+			if (densitySlider) {
+				const densityValue = typeof settings.labelDensity === 'number' ? settings.labelDensity : 100;
+				densitySlider.value = Math.max(1, densityValue); // Clamp to minimum of 1
+				// Update the displayed value
+				const densityValueEl = document.getElementById(id + '_chart_' + ax + '_density_value');
+				if (densityValueEl) {
+					if (densityValue >= 100) {
+						densityValueEl.textContent = 'All';
+					} else {
+						densityValueEl.textContent = Math.max(1, densityValue) + '%';
+					}
 				}
 			}
+		} else if (ax === 'y') {
+			// Y-axis specific: Min value
+			const minEl = document.getElementById(id + '_chart_' + ax + '_min');
+			if (minEl) {
+				minEl.value = settings.min !== undefined && settings.min !== null ? String(settings.min) : '';
+			}
+			
+			// Y-axis specific: Max value
+			const maxEl = document.getElementById(id + '_chart_' + ax + '_max');
+			if (maxEl) {
+				maxEl.value = settings.max !== undefined && settings.max !== null ? String(settings.max) : '';
+			}
+			
+			// Y-axis specific: Series colors
+			__kustoUpdateSeriesColorsUI(id, settings);
 		}
 		
-		// Show axis label checkbox
+		// Common: Show axis label checkbox
 		const showLabelEl = document.getElementById(id + '_chart_' + ax + '_show_axis_label');
 		if (showLabelEl) showLabelEl.checked = settings.showAxisLabel !== false;
 		
-		// Custom label input - update placeholder with actual column name
+		// Common: Custom label input - update placeholder with actual column name
 		const customLabelEl = document.getElementById(id + '_chart_' + ax + '_custom_label');
 		if (customLabelEl) {
 			customLabelEl.value = settings.customLabel || '';
-			// Get the current X column name for the placeholder
+			// Get the current column name for the placeholder
 			try {
-				const xSelectEl = document.getElementById(id + '_chart_x');
-				if (xSelectEl && xSelectEl.value) {
-					customLabelEl.placeholder = xSelectEl.value;
+				if (ax === 'x') {
+					const xSelectEl = document.getElementById(id + '_chart_x');
+					if (xSelectEl && xSelectEl.value) {
+						customLabelEl.placeholder = xSelectEl.value;
+					} else {
+						customLabelEl.placeholder = 'Column name';
+					}
 				} else {
-					customLabelEl.placeholder = 'Column name';
+					// For Y-axis, try to get a meaningful name from selected Y columns
+					const st = __kustoGetChartState(id);
+					if (st.yColumns && st.yColumns.length === 1) {
+						customLabelEl.placeholder = st.yColumns[0];
+					} else if (st.yColumns && st.yColumns.length > 1) {
+						customLabelEl.placeholder = 'Value';
+					} else {
+						customLabelEl.placeholder = 'Column name';
+					}
 				}
 			} catch {
 				customLabelEl.placeholder = 'Column name';
 			}
 		}
 		
-		// Show/hide custom label row based on checkbox
+		// Common: Show/hide custom label row based on checkbox
 		const customLabelRow = document.getElementById(id + '_chart_' + ax + '_custom_label_row');
 		if (customLabelRow) {
 			customLabelRow.style.display = (settings.showAxisLabel !== false) ? '' : 'none';
@@ -522,8 +739,14 @@ function __kustoUpdateAxisLabelIndicator(boxId, axis) {
 		if (!label) return;
 		
 		const st = __kustoGetChartState(id);
-		const settings = (ax === 'x' ? st.xAxisSettings : null) || __kustoGetDefaultAxisSettings();
-		const hasCustom = __kustoHasCustomAxisSettings(settings);
+		let hasCustom = false;
+		if (ax === 'x') {
+			const settings = st.xAxisSettings || __kustoGetDefaultAxisSettings();
+			hasCustom = __kustoHasCustomAxisSettings(settings);
+		} else if (ax === 'y') {
+			const settings = st.yAxisSettings || __kustoGetDefaultYAxisSettings();
+			hasCustom = __kustoHasCustomYAxisSettings(settings);
+		}
 		
 		if (hasCustom) {
 			label.classList.add('has-settings');
@@ -572,12 +795,32 @@ function __kustoOnAxisSettingChanged(boxId, axis, setting, value) {
 			} else {
 				st.xAxisSettings[key] = value;
 			}
+		} else if (ax === 'y') {
+			if (!st.yAxisSettings || typeof st.yAxisSettings !== 'object') {
+				st.yAxisSettings = __kustoGetDefaultYAxisSettings();
+			}
+			
+			// Handle different setting types
+			if (key === 'showAxisLabel') {
+				st.yAxisSettings.showAxisLabel = !!value;
+				// Show/hide custom label row
+				const customLabelRow = document.getElementById(id + '_chart_y_custom_label_row');
+				if (customLabelRow) {
+					customLabelRow.style.display = value ? '' : 'none';
+				}
+			} else if (key === 'min' || key === 'max') {
+				// Store min/max as string (can be empty for auto)
+				st.yAxisSettings[key] = value !== undefined && value !== null ? String(value).trim() : '';
+			} else {
+				st.yAxisSettings[key] = value;
+			}
 		}
 		
 		// Update indicator and re-render chart
 		__kustoUpdateAxisLabelIndicator(id, ax);
 		try { __kustoRenderChart(id); } catch { /* ignore */ }
-		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		// Use immediate persist for axis settings to avoid losing changes on quick close
+		try { schedulePersist && schedulePersist('axisSettingChanged', true); } catch { /* ignore */ }
 	} catch { /* ignore */ }
 }
 
@@ -593,12 +836,15 @@ function __kustoResetAxisSettings(boxId, axis) {
 		const st = __kustoGetChartState(id);
 		if (ax === 'x') {
 			st.xAxisSettings = __kustoGetDefaultAxisSettings();
+		} else if (ax === 'y') {
+			st.yAxisSettings = __kustoGetDefaultYAxisSettings();
 		}
 		
 		// Sync UI and re-render
 		__kustoSyncAxisSettingsUI(id, ax);
 		try { __kustoRenderChart(id); } catch { /* ignore */ }
-		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		// Use immediate persist for axis settings to avoid losing changes on quick close
+		try { schedulePersist && schedulePersist('axisSettingReset', true); } catch { /* ignore */ }
 	} catch { /* ignore */ }
 }
 
@@ -1358,6 +1604,7 @@ function __kustoRenderChart(boxId) {
 
 	// Apply X-axis sorting if configured (and no other sort is active)
 	const xAxisSettings = st.xAxisSettings || __kustoGetDefaultAxisSettings();
+	const yAxisSettings = st.yAxisSettings || __kustoGetDefaultYAxisSettings();
 	const xAxisSortDir = xAxisSettings.sortDirection || '';
 	
 	// Helper to sort rows by a specific column
@@ -1704,6 +1951,17 @@ function __kustoRenderChart(boxId) {
 			const xColName = st.xColumn || 'X';
 			const yColName = st.yColumn || 'Y';
 			const showLabels = !!st.showDataLabels;
+			
+			// Y-axis settings for scatter chart
+			const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
+			const yAxisCustomLabel = yAxisSettings.customLabel || '';
+			const yAxisName = yAxisShowLabel ? (yAxisCustomLabel || yColName) : '';
+			const yAxisMin = yAxisSettings.min;
+			const yAxisMax = yAxisSettings.max;
+			// Parse min/max: empty string means auto (undefined)
+			const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
+			const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
+			
 			if (xi < 0 || yi < 0) {
 				showErrorAndReturn('Select columns.');
 				return;
@@ -1797,9 +2055,11 @@ function __kustoRenderChart(boxId) {
 					},
 					yAxis: {
 						type: 'value',
-						name: yColName,
+						name: yAxisName,
 						nameLocation: 'middle',
 						nameGap: 45,
+						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
+						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
@@ -1866,6 +2126,17 @@ function __kustoRenderChart(boxId) {
 				const xAxisCustomLabel = xAxisSettings.customLabel || '';
 				const xAxisName = xAxisShowLabel ? (xAxisCustomLabel || xColName) : '';
 				
+				// Y-axis settings for axis title, min, max
+				const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
+				const yAxisCustomLabel = yAxisSettings.customLabel || '';
+				const yAxisMin = yAxisSettings.min;
+				const yAxisMax = yAxisSettings.max;
+				// Parse min/max: empty string means auto (undefined)
+				const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
+				const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
+				// Series colors
+				const seriesColors = (yAxisSettings.seriesColors && typeof yAxisSettings.seriesColors === 'object') ? yAxisSettings.seriesColors : {};
+				
 				// Scale type settings:
 				// - Auto/Categorical: show all individual values (auto-detect time handling)
 				// - Continuous: for time data, show period-based labels (week/month/quarter/year)
@@ -1876,6 +2147,7 @@ function __kustoRenderChart(boxId) {
 				
 					let timeKeys = [];
 					let timeLabels = [];
+					let timeTooltipLabels = []; // Always contains full date/time for tooltips
 					let timeShowTime = false;
 					let timePeriodGranularity = 'day';
 					if (treatAsTime) {
@@ -1903,6 +2175,9 @@ function __kustoRenderChart(boxId) {
 							timeKeys = uniq;
 							timeShowTime = __kustoShouldShowTimeForUtcAxis(timeKeys);
 							
+							// Always generate full labels for tooltips
+							timeTooltipLabels = timeKeys.map(t => __kustoFormatUtcDateTime(t, timeShowTime));
+							
 							// Generate labels based on scale type
 							if (useContinuousLabels) {
 								// Continuous: show aggregated period labels (week/month/quarter/year)
@@ -1910,7 +2185,7 @@ function __kustoRenderChart(boxId) {
 								timeLabels = __kustoGenerateContinuousTimeLabels(timeKeys, timePeriodGranularity);
 							} else {
 								// Categorical or Auto: show all individual timestamps
-								timeLabels = timeKeys.map(t => __kustoFormatUtcDateTime(t, timeShowTime));
+								timeLabels = timeTooltipLabels;
 							}
 						} catch { /* ignore */ }
 					}
@@ -1918,6 +2193,12 @@ function __kustoRenderChart(boxId) {
 				// Build series based on legend grouping or multiple Y columns.
 				let seriesData = [];
 				let xLabelsSet = new Set();
+				
+				// Helper to get color for a series (by column name or series index)
+				const getSeriesColor = (name, index) => {
+					if (seriesColors[name]) return seriesColors[name];
+					return undefined; // Let ECharts use default
+				};
 				
 				if (li >= 0 && yCols.length === 1) {
 					// Legend grouping: group data by legend column values.
@@ -1960,11 +2241,14 @@ function __kustoRenderChart(boxId) {
 								name: legendName,
 								type: (chartType === 'bar') ? 'bar' : 'line',
 								...(isArea ? { areaStyle: {} } : {}),
-								data: timeKeys.map(t => {
+								...(getSeriesColor(legendName, seriesData.length) ? { itemStyle: { color: getSeriesColor(legendName, seriesData.length) }, lineStyle: { color: getSeriesColor(legendName, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(legendName, seriesData.length) } : undefined } : {}),
+								data: timeKeys.map((t, idx) => {
 									const key = String(t);
 									if (!(key in map)) return null;
 									const v = map[key];
-									return { value: v, __kustoTooltip: (key in tmap) ? tmap[key] : null };
+									// Use timeTooltipLabels for full date, not timeLabels which may be empty in continuous mode
+									const xLabel = timeTooltipLabels[idx] || timeLabels[idx];
+									return { value: v, name: xLabel, __kustoTooltip: (key in tmap) ? tmap[key] : null };
 								}),
 								label: {
 									show: showLabels,
@@ -2002,10 +2286,11 @@ function __kustoRenderChart(boxId) {
 								name: legendName,
 								type: (chartType === 'bar') ? 'bar' : 'line',
 								...(isArea ? { areaStyle: {} } : {}),
+								...(getSeriesColor(legendName, seriesData.length) ? { itemStyle: { color: getSeriesColor(legendName, seriesData.length) }, lineStyle: { color: getSeriesColor(legendName, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(legendName, seriesData.length) } : undefined } : {}),
 								data: xLabels.map(xl => {
 									const v = (xl in dataMap) ? dataMap[xl] : null;
 									if (v === null || v === undefined) return null;
-									return { value: v, __kustoTooltip: (xl in ttMap) ? ttMap[xl] : null };
+									return { value: v, name: xl, __kustoTooltip: (xl in ttMap) ? ttMap[xl] : null };
 								}),
 								label: {
 									show: showLabels,
@@ -2050,11 +2335,14 @@ function __kustoRenderChart(boxId) {
 								name: yCol,
 								type: (chartType === 'bar') ? 'bar' : 'line',
 								...(isArea ? { areaStyle: {} } : {}),
-								data: timeKeys.map(t => {
+								...(getSeriesColor(yCol, seriesData.length) ? { itemStyle: { color: getSeriesColor(yCol, seriesData.length) }, lineStyle: { color: getSeriesColor(yCol, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(yCol, seriesData.length) } : undefined } : {}),
+								data: timeKeys.map((t, idx) => {
 									const key = String(t);
 									if (!(key in map)) return null;
 									const v = map[key];
-									return { value: v, __kustoTooltip: (key in tmap) ? tmap[key] : null };
+									// Use timeTooltipLabels for full date, not timeLabels which may be empty in continuous mode
+									const xLabel = timeTooltipLabels[idx] || timeLabels[idx];
+									return { value: v, name: xLabel, __kustoTooltip: (key in tmap) ? tmap[key] : null };
 								}),
 								label: {
 									show: showLabels,
@@ -2087,6 +2375,7 @@ function __kustoRenderChart(boxId) {
 								name: yCol,
 								type: (chartType === 'bar') ? 'bar' : 'line',
 								...(isArea ? { areaStyle: {} } : {}),
+								...(getSeriesColor(yCol, seriesData.length) ? { itemStyle: { color: getSeriesColor(yCol, seriesData.length) }, lineStyle: { color: getSeriesColor(yCol, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(yCol, seriesData.length) } : undefined } : {}),
 								data: yData.map((v, idx) => {
 									if (v === null || v === undefined) return null;
 									return { value: v, __kustoTooltip: (idx < ttData.length) ? ttData[idx] : null };
@@ -2196,11 +2485,17 @@ function __kustoRenderChart(boxId) {
 					tooltip: {
 						...__kustoTooltipCommon,
 						trigger: 'axis',
+						axisPointer: {
+							type: 'shadow',
+							snap: true
+						},
 						formatter: (params) => {
 							try {
 								const arr = Array.isArray(params) ? params : (params ? [params] : []);
 								const first = arr.length ? arr[0] : null;
-								const axisValue = first ? first.axisValue : null;
+								// Use multiple fallbacks: axisValue, axisValueLabel, data.name (embedded in data point)
+								// Note: first.name is the SERIES name, not the x-axis value, so use data.name instead
+								let axisValue = first ? (first.axisValue ?? first.axisValueLabel ?? (first.data && first.data.name)) : null;
 									const title = String(axisValue || '');
 								let lines = [`<strong>${__kustoEscapeHtml(xColName)}</strong>: ${__kustoEscapeHtml(title)}`];
 
@@ -2239,6 +2534,7 @@ function __kustoRenderChart(boxId) {
 							nameGap: rotate > 30 ? 55 : 30,
 							data: xLabels,
 							boundaryGap: (chartType === 'bar'),
+							triggerEvent: true,
 							axisTick: { alignWithLabel: true },
 							axisLabel: {
 								fontSize: axisFontSize,
@@ -2249,6 +2545,11 @@ function __kustoRenderChart(boxId) {
 						},
 					yAxis: {
 						type: 'value',
+						name: yAxisShowLabel ? (yAxisCustomLabel || (yCols.length === 1 ? yCols[0] : '')) : '',
+						nameLocation: 'middle',
+						nameGap: 45,
+						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
+						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
@@ -2559,6 +2860,14 @@ function addChartBox(options) {
 			...options.xAxisSettings
 		};
 	}
+	// Y-axis settings - merge with defaults
+	if (options && options.yAxisSettings && typeof options.yAxisSettings === 'object') {
+		st.yAxisSettings = {
+			...__kustoGetDefaultYAxisSettings(),
+			...st.yAxisSettings,
+			...options.yAxisSettings
+		};
+	}
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -2716,7 +3025,41 @@ function addChartBox(options) {
 								'</div>' +
 							'</span>' +
 							'<span class="kusto-chart-field-group">' +
-								'<label>Y</label>' +
+								'<label class="kusto-axis-label-clickable" id="' + id + '_chart_y_label" onclick="try{__kustoToggleAxisSettingsPopup(\'' + id + '\', \'y\')}catch{}" title="Click to configure Y-axis settings">Y</label>' +
+								'<div class="kusto-axis-settings-popup" id="' + id + '_chart_y_settings_popup" data-kusto-no-editor-focus="true">' +
+									'<div class="kusto-axis-settings-popup-header">' +
+										'<span>Y-Axis Settings</span>' +
+										'<button type="button" class="kusto-axis-settings-popup-close" onclick="try{__kustoCloseAxisSettingsPopup(\'' + id + '\', \'y\')}catch{}" title="Close" aria-label="Close">' +
+											'<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z" fill="currentColor"/></svg>' +
+										'</button>' +
+									'</div>' +
+									'<div class="kusto-axis-settings-popup-content">' +
+										'<div class="kusto-axis-settings-checkbox-row">' +
+											'<input type="checkbox" id="' + id + '_chart_y_show_axis_label" checked onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'showAxisLabel\', this.checked)}catch{}">' +
+											'<label for="' + id + '_chart_y_show_axis_label">Show axis title</label>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row" id="' + id + '_chart_y_custom_label_row">' +
+											'<input type="text" id="' + id + '_chart_y_custom_label" placeholder="Column name" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'customLabel\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'customLabel\', this.value)}catch{}">' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row kusto-axis-settings-minmax-row">' +
+											'<div class="kusto-axis-settings-minmax-field">' +
+												'<label for="' + id + '_chart_y_min">Min</label>' +
+												'<input type="text" inputmode="decimal" id="' + id + '_chart_y_min" placeholder="Auto" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'min\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'min\', this.value)}catch{}">' +
+											'</div>' +
+											'<div class="kusto-axis-settings-minmax-field">' +
+												'<label for="' + id + '_chart_y_max">Max</label>' +
+												'<input type="text" inputmode="decimal" id="' + id + '_chart_y_max" placeholder="Auto" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'max\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'max\', this.value)}catch{}">' +
+											'</div>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-colors-section" id="' + id + '_chart_y_colors_section" style="display:none;">' +
+											'<div class="kusto-axis-settings-colors-header">Series Colors</div>' +
+											'<div class="kusto-axis-settings-colors-list" id="' + id + '_chart_y_colors_list"></div>' +
+										'</div>' +
+									'</div>' +
+									'<div class="kusto-axis-settings-popup-footer">' +
+										'<button type="button" class="kusto-axis-settings-reset-btn" onclick="try{__kustoResetAxisSettings(\'' + id + '\', \'y\')}catch{}">Reset to defaults</button>' +
+									'</div>' +
+								'</div>' +
 								'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_chart_y_wrapper">' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_y_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_chart_y_btn\',\'' + id + '_chart_y_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_y_text">Select...</span>' +
@@ -2912,6 +3255,7 @@ function addChartBox(options) {
 	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
 	try { __kustoSetupSectionModeResizeObserver(id); } catch { /* ignore */ }
 	try { __kustoUpdateAxisLabelIndicator(id, 'x'); } catch { /* ignore */ }
+	try { __kustoUpdateAxisLabelIndicator(id, 'y'); } catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {

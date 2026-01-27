@@ -692,8 +692,9 @@ function getKqlxState() {
 			let sortColumn = '';
 			let sortDirection = '';
 			let xAxisSettings = null;
+			let yAxisSettings = null;
 			try {
-				const st = (typeof chartStateByBoxId === 'object' && chartStateByBoxId && chartStateByBoxId[id]) ? chartStateByBoxId[id] : null;
+				const st = (typeof window.chartStateByBoxId === 'object' && window.chartStateByBoxId && window.chartStateByBoxId[id]) ? window.chartStateByBoxId[id] : null;
 				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
 				if (m === 'preview' || m === 'edit') {
 					mode = m;
@@ -712,28 +713,16 @@ function getKqlxState() {
 				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
 				sortColumn = (st && typeof st.sortColumn === 'string') ? String(st.sortColumn) : '';
 				sortDirection = (st && typeof st.sortDirection === 'string') ? String(st.sortDirection) : '';
-				// X-axis settings - only save if non-default
+				// X-axis settings - copy directly from state like other chart properties
 				if (st && st.xAxisSettings && typeof st.xAxisSettings === 'object') {
-					const xs = st.xAxisSettings;
-					const hasNonDefault = (
-						(xs.sortDirection && xs.sortDirection !== '') ||
-						(xs.scaleType && xs.scaleType !== '') ||
-						(typeof xs.labelDensity === 'number' && xs.labelDensity !== 100) ||
-						(xs.showAxisLabel === false) ||
-						(xs.customLabel && xs.customLabel !== '')
-					);
-					if (hasNonDefault) {
-						xAxisSettings = {
-							...(xs.sortDirection ? { sortDirection: xs.sortDirection } : {}),
-							...(xs.scaleType ? { scaleType: xs.scaleType } : {}),
-							...(typeof xs.labelDensity === 'number' && xs.labelDensity !== 100 ? { labelDensity: xs.labelDensity } : {}),
-							...(xs.showAxisLabel === false ? { showAxisLabel: false } : {}),
-							...(xs.customLabel ? { customLabel: xs.customLabel } : {})
-						};
-					}
+					xAxisSettings = { ...st.xAxisSettings };
+				}
+				// Y-axis settings - copy directly from state like other chart properties
+				if (st && st.yAxisSettings && typeof st.yAxisSettings === 'object') {
+					yAxisSettings = { ...st.yAxisSettings };
 				}
 			} catch { /* ignore */ }
-			sections.push({
+			const chartSection = {
 				id,
 				type: 'chart',
 				name,
@@ -752,9 +741,11 @@ function getKqlxState() {
 				...(showDataLabels ? { showDataLabels } : {}),
 				...(sortColumn ? { sortColumn } : {}),
 				...(sortDirection ? { sortDirection } : {}),
-				...(xAxisSettings ? { xAxisSettings } : {}),
+				...(xAxisSettings && Object.keys(xAxisSettings).length ? { xAxisSettings } : {}),
+				...(yAxisSettings && Object.keys(yAxisSettings).length ? { yAxisSettings } : {}),
 				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
-			});
+			};
+			sections.push(chartSection);
 			continue;
 		}
 
@@ -941,7 +932,7 @@ function getKqlxState() {
 
 var __kustoLastPersistSignature = '';
 
-function schedulePersist(reason) {
+function schedulePersist(reason, immediate) {
 	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
 		return;
 	}
@@ -950,7 +941,7 @@ function schedulePersist(reason) {
 			clearTimeout(__kustoPersistTimer);
 		}
 		const r = (typeof reason === 'string' && reason) ? reason : '';
-		__kustoPersistTimer = setTimeout(() => {
+		const doPersist = () => {
 			try {
 				const state = getKqlxState();
 				let sig = '';
@@ -965,7 +956,13 @@ function schedulePersist(reason) {
 			} catch {
 				// ignore
 			}
-		}, 400);
+		};
+		if (immediate) {
+			// Immediate persist - no debounce
+			doPersist();
+		} else {
+			__kustoPersistTimer = setTimeout(doPersist, 400);
+		}
 	} catch {
 		// ignore
 	}
@@ -1386,7 +1383,8 @@ function applyKqlxState(state) {
 					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false,
 					sortColumn: (typeof section.sortColumn === 'string') ? section.sortColumn : undefined,
 					sortDirection: (typeof section.sortDirection === 'string') ? section.sortDirection : undefined,
-					xAxisSettings: (section.xAxisSettings && typeof section.xAxisSettings === 'object') ? section.xAxisSettings : undefined
+					xAxisSettings: (section.xAxisSettings && typeof section.xAxisSettings === 'object') ? section.xAxisSettings : undefined,
+					yAxisSettings: (section.yAxisSettings && typeof section.yAxisSettings === 'object') ? section.yAxisSettings : undefined
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.

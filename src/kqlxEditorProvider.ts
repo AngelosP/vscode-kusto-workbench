@@ -61,89 +61,121 @@ const getClusterShortNameKey = (clusterUrl: string): string => {
 	return String(getClusterShortName(clusterUrl) || '').trim().toLowerCase();
 };
 
-type ComparableSection =
-	| {
-			type: 'query';
-			name: string;
-			expanded: boolean;
-			resultsVisible: boolean;
-			clusterUrl: string;
-			database: string;
-			linkedQueryPath: string;
-			query: string;
-			resultJson: string;
-			runMode: string;
-			cacheEnabled: boolean;
-			cacheValue: number;
-			cacheUnit: string;
-			editorHeightPx?: number;
-			resultsHeightPx?: number;
-			copilotChatVisible: boolean;
-			copilotChatWidthPx?: number;
-		}
-	| {
-			type: 'markdown';
-			title: string;
-			text: string;
-			expanded: boolean;
-			// Back-compat: older files use `tab`.
-			tab: 'edit' | 'preview';
-			// Newer files store an explicit mode.
-			mode: 'preview' | 'markdown' | 'wysiwyg';
-			editorHeightPx?: number;
-		}
-	| {
-			type: 'python';
-			code: string;
-			output: string;
-			editorHeightPx?: number;
-		}
-	| {
-			type: 'url';
-			url: string;
-			expanded: boolean;
-			outputHeightPx?: number;
-		}
-	| {
-			type: 'chart';
-			name: string;
-			mode: 'edit' | 'preview';
-			expanded: boolean;
-			dataSourceId: string;
-			chartType: string;
-			xColumn: string;
-			yColumn: string;
-			yColumns: string[];
-			legendColumn: string;
-			legendPosition: string;
-			labelColumn: string;
-			valueColumn: string;
-			tooltipColumns: string[];
-			showDataLabels: boolean;
-			editorHeightPx?: number;
-		}
-	| {
-			type: 'transformation';
-			name: string;
-			mode: 'edit' | 'preview';
-			expanded: boolean;
-			dataSourceId: string;
-			transformationType: string;
-			distinctColumn: string;
-			groupByColumns: string[];
-			aggregations: Array<{ name: string; column: string; function: string }>;
-			deriveColumns: Array<{ name: string; expression: string }>;
-			pivotRowKeyColumn: string;
-			pivotColumnKeyColumn: string;
-			pivotValueColumn: string;
-			pivotAggregation: string;
-			pivotMaxColumns: number;
-			editorHeightPx?: number;
-		};
+/**
+ * Normalize a value for comparison purposes.
+ * This handles type coercion and default values so that semantically equivalent
+ * states compare as equal regardless of how they were serialized.
+ */
+const normalizeValue = (value: unknown, key?: string): unknown => {
+	// Handle null/undefined
+	if (value === null || value === undefined) {
+		return undefined;
+	}
 
-type ComparableState = {
-	caretDocsEnabled: boolean;
-	sections: ComparableSection[];
+	// Handle arrays
+	if (Array.isArray(value)) {
+		const normalized = value.map((item) => normalizeValue(item));
+		// Empty arrays are treated as undefined for comparison
+		return normalized.length > 0 ? normalized : undefined;
+	}
+
+	// Handle objects (recursively normalize)
+	if (typeof value === 'object') {
+		const result: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value)) {
+			const normalized = normalizeValue(v, k);
+			// Only include non-undefined values
+			if (normalized !== undefined) {
+				result[k] = normalized;
+			}
+		}
+		// Empty objects are treated as undefined for comparison
+		return Object.keys(result).length > 0 ? result : undefined;
+	}
+
+	// Handle strings - empty strings are treated as undefined
+	if (typeof value === 'string') {
+		const trimmed = value;
+		return trimmed !== '' ? trimmed : undefined;
+	}
+
+	// Handle numbers - normalize heights and special numeric fields
+	if (typeof value === 'number') {
+		if (!Number.isFinite(value)) {
+			return undefined;
+		}
+		// Height fields should be rounded positive integers
+		if (key && (key.endsWith('HeightPx') || key.endsWith('WidthPx'))) {
+			const rounded = Math.round(value);
+			return rounded > 0 ? rounded : undefined;
+		}
+		return value;
+	}
+
+	// Booleans and other primitives pass through
+	return value;
+};
+
+/**
+ * Normalize a section for comparison. This handles all section types generically
+ * without needing to enumerate every property - any new properties added to sections
+ * will automatically be included in comparisons.
+ */
+const normalizeSection = (section: unknown): Record<string, unknown> | undefined => {
+	if (!section || typeof section !== 'object') {
+		return undefined;
+	}
+
+	const s = section as Record<string, unknown>;
+	const type = String(s.type ?? '');
+	
+	// Skip unknown section types
+	const knownTypes = ['query', 'copilotQuery', 'markdown', 'python', 'url', 'chart', 'transformation'];
+	if (!knownTypes.includes(type)) {
+		return undefined;
+	}
+
+	// Normalize the type (copilotQuery -> query for comparison)
+	const normalizedType = (type === 'copilotQuery') ? 'query' : type;
+	
+	// Recursively normalize all properties
+	const result: Record<string, unknown> = { type: normalizedType };
+	
+	for (const [key, value] of Object.entries(s)) {
+		if (key === 'type') continue; // Already handled
+		
+		const normalized = normalizeValue(value, key);
+		if (normalized !== undefined) {
+			result[key] = normalized;
+		}
+	}
+
+	return result;
+};
+
+/**
+ * Normalize an entire state for comparison. This is used to determine if the
+ * incoming state from the webview matches the current document state, to avoid
+ * unnecessary writes that would dirty the document.
+ * 
+ * IMPORTANT: This function is intentionally generic and does NOT enumerate
+ * specific properties. When you add new properties to any section type, they
+ * will automatically be included in comparisons without any code changes here.
+ */
+const normalizeStateForComparison = (s: KqlxStateV1): Record<string, unknown> => {
+	const sections: Array<Record<string, unknown>> = [];
+	
+	for (const section of Array.isArray(s.sections) ? s.sections : []) {
+		const normalized = normalizeSection(section);
+		if (normalized) {
+			sections.push(normalized);
+		}
+	}
+
+	return {
+		caretDocsEnabled: typeof s.caretDocsEnabled === 'boolean' ? s.caretDocsEnabled : true,
+		sections
+	};
 };
 
 const normalizeHeight = (v: unknown): number | undefined => {
@@ -152,136 +184,6 @@ const normalizeHeight = (v: unknown): number | undefined => {
 		return undefined;
 	}
 	return Math.round(n);
-};
-
-const toComparableState = (s: KqlxStateV1): ComparableState => {
-	const caretDocsEnabled = typeof s.caretDocsEnabled === 'boolean' ? s.caretDocsEnabled : true;
-	const sections: ComparableSection[] = [];
-	for (const section of Array.isArray(s.sections) ? s.sections : []) {
-		const t = (section as any)?.type;
-		if (t === 'query' || t === 'copilotQuery') {
-			sections.push({
-				type: 'query',
-				name: String((section as any).name ?? ''),
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
-				resultsVisible: (typeof (section as any).resultsVisible === 'boolean') ? (section as any).resultsVisible : true,
-				clusterUrl: String((section as any).clusterUrl ?? ''),
-				database: String((section as any).database ?? ''),
-				linkedQueryPath: String((section as any).linkedQueryPath ?? ''),
-				query: String((section as any).query ?? ''),
-				resultJson: String((section as any).resultJson ?? ''),
-				runMode: String((section as any).runMode ?? 'take100'),
-				cacheEnabled: (typeof (section as any).cacheEnabled === 'boolean') ? (section as any).cacheEnabled : true,
-				cacheValue: Number.isFinite((section as any).cacheValue) ? Math.max(1, Math.trunc((section as any).cacheValue)) : 1,
-				cacheUnit: String((section as any).cacheUnit ?? 'days'),
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx),
-				resultsHeightPx: normalizeHeight((section as any).resultsHeightPx),
-				copilotChatVisible: (typeof (section as any).copilotChatVisible === 'boolean') ? (section as any).copilotChatVisible : (t === 'copilotQuery'),
-				copilotChatWidthPx: normalizeHeight((section as any).copilotChatWidthPx)
-			});
-			continue;
-		}
-		if (t === 'markdown') {
-			const rawMode = String((section as any).mode ?? '').toLowerCase();
-			const rawTab = String((section as any).tab ?? '').toLowerCase();
-			const mode: 'preview' | 'markdown' | 'wysiwyg' =
-				rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg'
-					? (rawMode as any)
-					: (rawTab === 'preview' ? 'preview' : 'wysiwyg');
-			const tab: 'edit' | 'preview' = (rawTab === 'preview' || mode === 'preview') ? 'preview' : 'edit';
-			sections.push({
-				type: 'markdown',
-				title: String((section as any).title ?? 'Markdown'),
-				text: String((section as any).text ?? ''),
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
-				tab,
-				mode,
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
-			});
-			continue;
-		}
-		if (t === 'python') {
-			sections.push({
-				type: 'python',
-				code: String((section as any).code ?? ''),
-				output: String((section as any).output ?? ''),
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
-			});
-			continue;
-		}
-		if (t === 'url') {
-			sections.push({
-				type: 'url',
-				url: String((section as any).url ?? ''),
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : false,
-				outputHeightPx: normalizeHeight((section as any).outputHeightPx)
-			});
-			continue;
-		}
-		if (t === 'chart') {
-			const rawMode = String((section as any).mode ?? 'edit').toLowerCase();
-			const mode: 'edit' | 'preview' = (rawMode === 'preview') ? 'preview' : 'edit';
-			sections.push({
-				type: 'chart',
-				name: String((section as any).name ?? ''),
-				mode,
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
-				dataSourceId: String((section as any).dataSourceId ?? ''),
-				chartType: String((section as any).chartType ?? ''),
-				xColumn: String((section as any).xColumn ?? ''),
-				yColumn: String((section as any).yColumn ?? ''),
-				yColumns: Array.isArray((section as any).yColumns) ? (section as any).yColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
-				legendColumn: String((section as any).legendColumn ?? ''),
-				legendPosition: String((section as any).legendPosition ?? ''),
-				labelColumn: String((section as any).labelColumn ?? ''),
-				valueColumn: String((section as any).valueColumn ?? ''),
-				tooltipColumns: Array.isArray((section as any).tooltipColumns) ? (section as any).tooltipColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
-				showDataLabels: (typeof (section as any).showDataLabels === 'boolean') ? (section as any).showDataLabels : false,
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
-			});
-			continue;
-		}
-		if (t === 'transformation') {
-			const rawMode = String((section as any).mode ?? 'edit').toLowerCase();
-			const mode: 'edit' | 'preview' = (rawMode === 'preview') ? 'preview' : 'edit';
-			sections.push({
-				type: 'transformation',
-				name: String((section as any).name ?? ''),
-				mode,
-				expanded: (typeof (section as any).expanded === 'boolean') ? (section as any).expanded : true,
-				dataSourceId: String((section as any).dataSourceId ?? ''),
-				transformationType: String((section as any).transformationType ?? ''),
-				distinctColumn: String((section as any).distinctColumn ?? ''),
-				groupByColumns: Array.isArray((section as any).groupByColumns) ? (section as any).groupByColumns.map((c: any) => String(c ?? '')).filter(Boolean) : [],
-				aggregations: Array.isArray((section as any).aggregations)
-					? (section as any).aggregations
-						.filter((a: any) => a && typeof a === 'object')
-						.map((a: any) => ({
-							name: String(a.name ?? ''),
-							column: String(a.column ?? ''),
-							function: String(a.function ?? '')
-						}))
-					: [],
-				deriveColumns: Array.isArray((section as any).deriveColumns)
-					? (section as any).deriveColumns
-						.filter((d: any) => d && typeof d === 'object')
-						.map((d: any) => ({
-							name: String(d.name ?? ''),
-							expression: String(d.expression ?? '')
-						}))
-					: [],
-				pivotRowKeyColumn: String((section as any).pivotRowKeyColumn ?? ''),
-				pivotColumnKeyColumn: String((section as any).pivotColumnKeyColumn ?? ''),
-				pivotValueColumn: String((section as any).pivotValueColumn ?? ''),
-				pivotAggregation: String((section as any).pivotAggregation ?? ''),
-				pivotMaxColumns: Number.isFinite((section as any).pivotMaxColumns) ? Math.max(1, Math.trunc((section as any).pivotMaxColumns)) : 0,
-				editorHeightPx: normalizeHeight((section as any).editorHeightPx)
-			});
-			continue;
-		}
-		// Ignore unknown section types for comparison.
-	}
-	return { caretDocsEnabled, sections };
 };
 
 const deepEqual = (a: unknown, b: unknown): boolean => {
@@ -1009,7 +911,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						// ignore
 					}
 
-					const incomingComparable = toComparableState(state);
+					const incomingComparable = normalizeStateForComparison(state);
 					const currentText = document.getText();
 
 					let incomingMatchesDisk = false;
@@ -1038,7 +940,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									return parsedSaved.file.state;
 								}
 							})();
-							const savedComparable = toComparableState(savedState);
+							const savedComparable = normalizeStateForComparison(savedState);
 							if (deepEqual(savedComparable, incomingComparable)) {
 								nextText = normalizeTextToEol(lastSavedText, lastSavedEol);
 							}
@@ -1077,7 +979,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 										return parsedDisk.file.state;
 									}
 								})();
-								const diskComparable = toComparableState(diskState);
+								const diskComparable = normalizeStateForComparison(diskState);
 								if (deepEqual(diskComparable, incomingComparable)) {
 									incomingMatchesDisk = true;
 									diskTextForMatch = diskText;
@@ -1101,7 +1003,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									defaultKind: documentKind
 								});
 								if (parsedDisk.ok) {
-									const diskComparable = toComparableState(parsedDisk.file.state);
+									const diskComparable = normalizeStateForComparison(parsedDisk.file.state);
 									if (deepEqual(diskComparable, incomingComparable)) {
 										incomingMatchesDisk = true;
 										diskTextForMatch = diskText;
@@ -1142,7 +1044,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 										return parsedCurrent.file.state;
 									}
 								})();
-								const currentComparable = toComparableState(currentState);
+								const currentComparable = normalizeStateForComparison(currentState);
 								if (deepEqual(currentComparable, incomingComparable)) {
 									// If this persist is from a reorder and the state matches disk, force a save to clear
 									// the dirty flag (VS Code sometimes keeps custom editors dirty even after reverting).
@@ -1265,3 +1167,4 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// The webview asks for the initial document explicitly (requestDocument).
 	}
 }
+
