@@ -25,8 +25,8 @@ let pythonEditors = {};
 // - showDataLabels: boolean (show labels on data points)
 // - sortColumn: string (column to sort by)
 // - sortDirection: 'asc' | 'desc' | '' (sort direction)
-// - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel } (X-axis customizations)
-// - yAxisSettings: { showAxisLabel, customLabel, min, max } (Y-axis customizations)
+// - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel, titleGap } (X-axis customizations)
+// - yAxisSettings: { showAxisLabel, customLabel, min, max, seriesColors, titleGap } (Y-axis customizations)
 // Explicitly on window so persistence.js can access it
 window.chartStateByBoxId = window.chartStateByBoxId || {};
 var chartStateByBoxId = window.chartStateByBoxId;
@@ -285,7 +285,8 @@ function __kustoGetDefaultAxisSettings() {
 		scaleType: '',          // '' = auto, 'category', 'continuous'
 		labelDensity: 100,      // 100 = show all, 0 = hide all (slider value)
 		showAxisLabel: true,    // Show the axis title
-		customLabel: ''         // Custom axis title (empty = use column name)
+		customLabel: '',        // Custom axis title (empty = use column name)
+		titleGap: 30            // Gap between axis title and axis (default 30 for X)
 	};
 }
 
@@ -300,7 +301,8 @@ function __kustoHasCustomAxisSettings(settings) {
 		(settings.scaleType && settings.scaleType !== defaults.scaleType) ||
 		(typeof settings.labelDensity === 'number' && settings.labelDensity !== 100) ||
 		(settings.showAxisLabel === false) ||
-		(settings.customLabel && settings.customLabel !== defaults.customLabel)
+		(settings.customLabel && settings.customLabel !== defaults.customLabel) ||
+		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap)
 	);
 }
 
@@ -313,7 +315,8 @@ function __kustoGetDefaultYAxisSettings() {
 		customLabel: '',        // Custom axis title (empty = use column name)
 		min: '',                // Min value (empty = auto)
 		max: '',                // Max value (empty = auto)
-		seriesColors: {}        // Custom colors by column name, e.g. { 'Revenue': '#ff0000' }
+		seriesColors: {},       // Custom colors by column name, e.g. { 'Revenue': '#ff0000' }
+		titleGap: 45            // Gap between axis title and axis (default 45 for Y)
 	};
 }
 
@@ -322,13 +325,15 @@ function __kustoGetDefaultYAxisSettings() {
  */
 function __kustoHasCustomYAxisSettings(settings) {
 	if (!settings || typeof settings !== 'object') return false;
+	const defaults = __kustoGetDefaultYAxisSettings();
 	const hasCustomColors = settings.seriesColors && typeof settings.seriesColors === 'object' && Object.keys(settings.seriesColors).length > 0;
 	return (
 		(settings.showAxisLabel === false) ||
 		(settings.customLabel && settings.customLabel !== '') ||
 		(settings.min !== '' && settings.min !== undefined && settings.min !== null) ||
 		(settings.max !== '' && settings.max !== undefined && settings.max !== null) ||
-		hasCustomColors
+		hasCustomColors ||
+		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap)
 	);
 }
 
@@ -665,6 +670,24 @@ function __kustoSyncAxisSettingsUI(boxId, axis) {
 					}
 				}
 			}
+			
+			// X-axis specific: Title gap slider
+			const xTitleGapSlider = document.getElementById(id + '_chart_' + ax + '_title_gap');
+			if (xTitleGapSlider) {
+				const defaults = __kustoGetDefaultAxisSettings();
+				const titleGapValue = typeof settings.titleGap === 'number' ? settings.titleGap : defaults.titleGap;
+				xTitleGapSlider.value = titleGapValue;
+				const titleGapValueEl = document.getElementById(id + '_chart_' + ax + '_title_gap_value');
+				if (titleGapValueEl) {
+					titleGapValueEl.textContent = titleGapValue;
+				}
+			}
+			
+			// Show/hide title gap row based on show axis label setting
+			const xTitleGapRow = document.getElementById(id + '_chart_' + ax + '_title_gap_row');
+			if (xTitleGapRow) {
+				xTitleGapRow.style.display = (settings.showAxisLabel !== false) ? '' : 'none';
+			}
 		} else if (ax === 'y') {
 			// Y-axis specific: Min value
 			const minEl = document.getElementById(id + '_chart_' + ax + '_min');
@@ -680,6 +703,24 @@ function __kustoSyncAxisSettingsUI(boxId, axis) {
 			
 			// Y-axis specific: Series colors
 			__kustoUpdateSeriesColorsUI(id, settings);
+			
+			// Y-axis specific: Title gap slider
+			const yTitleGapSlider = document.getElementById(id + '_chart_' + ax + '_title_gap');
+			if (yTitleGapSlider) {
+				const defaults = __kustoGetDefaultYAxisSettings();
+				const titleGapValue = typeof settings.titleGap === 'number' ? settings.titleGap : defaults.titleGap;
+				yTitleGapSlider.value = titleGapValue;
+				const titleGapValueEl = document.getElementById(id + '_chart_' + ax + '_title_gap_value');
+				if (titleGapValueEl) {
+					titleGapValueEl.textContent = titleGapValue;
+				}
+			}
+			
+			// Show/hide title gap row based on show axis label setting
+			const yTitleGapRow = document.getElementById(id + '_chart_' + ax + '_title_gap_row');
+			if (yTitleGapRow) {
+				yTitleGapRow.style.display = (settings.showAxisLabel !== false) ? '' : 'none';
+			}
 		}
 		
 		// Common: Show axis label checkbox
@@ -780,6 +821,11 @@ function __kustoOnAxisSettingChanged(boxId, axis, setting, value) {
 				if (customLabelRow) {
 					customLabelRow.style.display = value ? '' : 'none';
 				}
+				// Show/hide title gap row
+				const titleGapRow = document.getElementById(id + '_chart_x_title_gap_row');
+				if (titleGapRow) {
+					titleGapRow.style.display = value ? '' : 'none';
+				}
 			} else if (key === 'labelDensity') {
 				// Update slider value display (100 = All/show all, 1 = minimum density)
 				const densityValue = typeof value === 'number' ? Math.max(1, value) : 100;
@@ -791,6 +837,14 @@ function __kustoOnAxisSettingChanged(boxId, axis, setting, value) {
 					} else {
 						densityValueEl.textContent = densityValue + '%';
 					}
+				}
+			} else if (key === 'titleGap') {
+				// Update slider value display
+				const titleGapValue = typeof value === 'number' ? value : 30;
+				st.xAxisSettings.titleGap = titleGapValue;
+				const titleGapValueEl = document.getElementById(id + '_chart_x_title_gap_value');
+				if (titleGapValueEl) {
+					titleGapValueEl.textContent = titleGapValue;
 				}
 			} else {
 				st.xAxisSettings[key] = value;
@@ -808,9 +862,22 @@ function __kustoOnAxisSettingChanged(boxId, axis, setting, value) {
 				if (customLabelRow) {
 					customLabelRow.style.display = value ? '' : 'none';
 				}
+				// Show/hide title gap row
+				const titleGapRow = document.getElementById(id + '_chart_y_title_gap_row');
+				if (titleGapRow) {
+					titleGapRow.style.display = value ? '' : 'none';
+				}
 			} else if (key === 'min' || key === 'max') {
 				// Store min/max as string (can be empty for auto)
 				st.yAxisSettings[key] = value !== undefined && value !== null ? String(value).trim() : '';
+			} else if (key === 'titleGap') {
+				// Update slider value display
+				const titleGapValue = typeof value === 'number' ? value : 45;
+				st.yAxisSettings.titleGap = titleGapValue;
+				const titleGapValueEl = document.getElementById(id + '_chart_y_title_gap_value');
+				if (titleGapValueEl) {
+					titleGapValueEl.textContent = titleGapValue;
+				}
 			} else {
 				st.yAxisSettings[key] = value;
 			}
@@ -1955,12 +2022,16 @@ function __kustoRenderChart(boxId) {
 			const yColName = st.yColumn || 'Y';
 			const showLabels = !!st.showDataLabels;
 			
+			// X-axis settings for scatter chart
+			const xAxisTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
+			
 			// Y-axis settings for scatter chart
 			const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
 			const yAxisCustomLabel = yAxisSettings.customLabel || '';
 			const yAxisName = yAxisShowLabel ? (yAxisCustomLabel || yColName) : '';
 			const yAxisMin = yAxisSettings.min;
 			const yAxisMax = yAxisSettings.max;
+			const yAxisTitleGap = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
 			// Parse min/max: empty string means auto (undefined)
 			const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
 			const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
@@ -2003,12 +2074,14 @@ function __kustoRenderChart(boxId) {
 				})) : false;
 				const rotate = useTime ? __kustoComputeTimeAxisLabelRotation(canvasWidthPx, points.length, showTime) : 0;
 				const axisFontSize = __kustoComputeAxisFontSize(points.length, canvasWidthPx, false);
-				// Calculate bottom margin for rotated labels.
-				const bottomMargin = rotate > 30 ? 70 : 50;
+				// Calculate bottom margin for rotated labels and X-axis title gap.
+				const bottomMargin = (rotate > 30 ? 40 : 20) + xAxisTitleGap;
+				// Calculate left margin for Y-axis title gap.
+				const leftMargin = 15 + yAxisTitleGap;
 				option = {
 					backgroundColor: 'transparent',
 					grid: {
-						left: 60,
+						left: leftMargin,
 						right: 20,
 						top: 20,
 						bottom: bottomMargin,
@@ -2037,7 +2110,7 @@ function __kustoRenderChart(boxId) {
 						type: 'time',
 						name: xColName,
 						nameLocation: 'middle',
-						nameGap: 30,
+						nameGap: xAxisTitleGap,
 						axisLabel: {
 							rotate,
 							fontSize: axisFontSize,
@@ -2049,7 +2122,7 @@ function __kustoRenderChart(boxId) {
 						type: 'value',
 						name: xColName,
 						nameLocation: 'middle',
-						nameGap: 30,
+						nameGap: xAxisTitleGap,
 						axisLabel: {
 							fontSize: axisFontSize,
 							fontFamily: 'monospace',
@@ -2060,7 +2133,7 @@ function __kustoRenderChart(boxId) {
 						type: 'value',
 						name: yAxisName,
 						nameLocation: 'middle',
-						nameGap: 45,
+						nameGap: yAxisTitleGap,
 						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
 						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
 						axisLabel: {
@@ -2128,12 +2201,14 @@ function __kustoRenderChart(boxId) {
 				const xAxisShowLabel = xAxisSettings.showAxisLabel !== false;
 				const xAxisCustomLabel = xAxisSettings.customLabel || '';
 				const xAxisName = xAxisShowLabel ? (xAxisCustomLabel || xColName) : '';
+				const xAxisTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
 				
 				// Y-axis settings for axis title, min, max
 				const yAxisShowLabel = yAxisSettings.showAxisLabel !== false;
 				const yAxisCustomLabel = yAxisSettings.customLabel || '';
 				const yAxisMin = yAxisSettings.min;
 				const yAxisMax = yAxisSettings.max;
+				const yAxisTitleGap = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
 				// Parse min/max: empty string means auto (undefined)
 				const yAxisMinValue = (yAxisMin !== '' && yAxisMin !== undefined) ? parseFloat(yAxisMin) : undefined;
 				const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
@@ -2465,12 +2540,13 @@ function __kustoRenderChart(boxId) {
 				}
 				// else densityValue >= 100, show all labels (interval = 0)
 				
-				// Calculate bottom margin for rotated labels.
-				const bottomMargin = rotate > 30 ? 70 : 40;
+				// Calculate bottom margin for rotated labels and X-axis title gap.
+				const bottomMargin = (rotate > 30 ? 40 : 10) + xAxisTitleGap;
 				
 				const legendEnabled = seriesData.length > 1;
 				const legendOpt = legendEnabled ? __kustoBuildLegendOption(legendPosition) : undefined;
-				const gridLeft = (legendEnabled && legendPosition === 'left') ? 140 : 60;
+				// Calculate left margin for Y-axis title gap.
+				const gridLeft = (legendEnabled && legendPosition === 'left') ? 140 : (15 + yAxisTitleGap);
 				const gridRight = (legendEnabled && legendPosition === 'right') ? 140 : 20;
 				const gridTop = legendEnabled && legendPosition === 'top' ? 50 : 20;
 				const gridBottom = bottomMargin + (legendEnabled && legendPosition === 'bottom' ? 40 : 0);
@@ -2534,7 +2610,7 @@ function __kustoRenderChart(boxId) {
 							type: 'category',
 							name: xAxisName,
 							nameLocation: 'middle',
-							nameGap: rotate > 30 ? 55 : 30,
+							nameGap: rotate > 30 ? xAxisTitleGap + 25 : xAxisTitleGap,
 							data: xLabels,
 							boundaryGap: (chartType === 'bar'),
 							triggerEvent: true,
@@ -2550,7 +2626,7 @@ function __kustoRenderChart(boxId) {
 						type: 'value',
 						name: yAxisShowLabel ? (yAxisCustomLabel || (yCols.length === 1 ? yCols[0] : '')) : '',
 						nameLocation: 'middle',
-						nameGap: 45,
+						nameGap: yAxisTitleGap,
 						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
 						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
 						axisLabel: {
@@ -2974,6 +3050,15 @@ function addChartBox(options) {
 										'<div class="kusto-axis-settings-row" id="' + id + '_chart_x_custom_label_row">' +
 											'<input type="text" id="' + id + '_chart_x_custom_label" placeholder="Column name" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'customLabel\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'customLabel\', this.value)}catch{}">' +
 										'</div>' +
+										'<div class="kusto-axis-settings-row kusto-axis-settings-slider-row" id="' + id + '_chart_x_title_gap_row">' +
+											'<div class="kusto-axis-settings-slider-header">' +
+												'<label for="' + id + '_chart_x_title_gap">Title Gap</label>' +
+												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_x_title_gap_value">30</span>' +
+											'</div>' +
+											'<div class="kusto-axis-settings-slider-container">' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_x_title_gap" min="10" max="100" value="30" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'x\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
+											'</div>' +
+										'</div>' +
 										'<div class="kusto-axis-settings-row">' +
 											'<label for="' + id + '_chart_x_sort">Sort Direction</label>' +
 											'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_sort_wrapper">' +
@@ -3043,6 +3128,15 @@ function addChartBox(options) {
 										'</div>' +
 										'<div class="kusto-axis-settings-row" id="' + id + '_chart_y_custom_label_row">' +
 											'<input type="text" id="' + id + '_chart_y_custom_label" placeholder="Column name" onchange="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'customLabel\', this.value)}catch{}" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'customLabel\', this.value)}catch{}">' +
+										'</div>' +
+										'<div class="kusto-axis-settings-row kusto-axis-settings-slider-row" id="' + id + '_chart_y_title_gap_row">' +
+											'<div class="kusto-axis-settings-slider-header">' +
+												'<label for="' + id + '_chart_y_title_gap">Title Gap</label>' +
+												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_y_title_gap_value">45</span>' +
+											'</div>' +
+											'<div class="kusto-axis-settings-slider-container">' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_y_title_gap" min="10" max="100" value="45" oninput="try{__kustoOnAxisSettingChanged(\'' + id + '\', \'y\', \'titleGap\', parseInt(this.value, 10))}catch{}">' +
+											'</div>' +
 										'</div>' +
 										'<div class="kusto-axis-settings-row kusto-axis-settings-minmax-row">' +
 											'<div class="kusto-axis-settings-minmax-field">' +

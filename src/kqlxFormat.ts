@@ -110,6 +110,7 @@ export type KqlxSectionV1 =
 				labelDensity?: number;
 				showAxisLabel?: boolean;
 				customLabel?: string;
+				titleGap?: number;
 			};
 			// Y-axis customization settings
 			yAxisSettings?: {
@@ -118,6 +119,7 @@ export type KqlxSectionV1 =
 				min?: string;
 				max?: string;
 				seriesColors?: Record<string, string>;
+				titleGap?: number;
 			};
 		}
 	| {

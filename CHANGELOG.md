@@ -5,7 +5,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.6.0] - Unreleased
 
-* Many UX improvements for **Transformation** and **Chart** sections, both visual and functional. They are both WIP, so more improvements to come.
+* Many UX improvements for **Charts**. Biggest change is the ability to click on X or Y axis and configure additional settings. Still WIP, so more improvements to come.
+* Many UX improvements for **Transformation**. Still WIP, so more improvements to come.
 * Double click the resize handle to autofit to the contents of the section (available on all types of sections and editors).
 * Export to Power BI has better formatting now, using fewer " characters.
 * More responsive UX and better experience at tiny widths.
