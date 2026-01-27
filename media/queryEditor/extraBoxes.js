@@ -316,7 +316,7 @@ function __kustoGetChartDatasetsInDomOrder() {
 					sectionIndex++;
 				}
 				// Only include sections that can be data sources
-				if (!(id.startsWith('query_') || id.startsWith('url_'))) continue;
+				if (!(id.startsWith('query_') || id.startsWith('url_') || id.startsWith('transformation_'))) continue;
 				if (typeof __kustoGetResultsState !== 'function') continue;
 				const st = __kustoGetResultsState(id);
 				const cols = st && Array.isArray(st.columns) ? st.columns : [];
@@ -947,7 +947,7 @@ function __kustoRenderChart(boxId) {
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
 	if (!st.dataSourceId) {
-		showErrorAndReturn('Select a data source (a query or CSV URL section with results).');
+		showErrorAndReturn('Select a data source (a query, CSV URL, or transformation section with results).');
 		return;
 	}
 	if (!chartType) {
@@ -7683,7 +7683,7 @@ function __kustoRenderTransformation(boxId) {
 	const datasets = __kustoGetChartDatasetsInDomOrder();
 	const ds = datasets.find(d => String(d.id) === String(st.dataSourceId || ''));
 	if (!ds) {
-		__kustoRenderTransformationError(id, 'Select a data source (a query or CSV URL section with results).');
+		__kustoRenderTransformationError(id, 'Select a data source (a query, CSV URL, or transformation section with results).');
 		return;
 	}
 
