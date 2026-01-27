@@ -1291,6 +1291,9 @@ function __kustoUpdateChartBuilderUI(boxId) {
 		}
 	} catch { /* ignore */ }
 
+	// Update legend position button visibility based on current state.
+	try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
+
 	// Auto-fit if the chart canvas is being clipped after control changes.
 	try { __kustoAutoFitChartIfClipped(id); } catch { /* ignore */ }
 }
