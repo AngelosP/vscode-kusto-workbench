@@ -663,10 +663,10 @@
 			flex-direction: column;
 			height: 100%;
 			min-height: 0;
-			background: var(--vscode-editor-background);
+			background: transparent;
 			color: var(--vscode-foreground);
-			overflow-x: hidden;
-			overflow-y: auto;
+			/* Allow edit-mode control background to bleed into the section padding. */
+			overflow: visible;
 			font-family: var(--vscode-font-family);
 			font-size: 13px;
 		}
@@ -693,7 +693,7 @@
 
 		.transformation-box .query-editor-wrapper {
 			border: none;
-			overflow: hidden;
+			overflow: visible;
 			height: auto;
 			min-height: 0;
 		}
@@ -724,18 +724,21 @@
 			height: auto;
 			flex: 0 0 auto;
 			overflow: visible;
-			padding-bottom: 0;
+			/* Remove padding and background so the controls can bleed edge-to-edge. */
+			padding: 0;
+			gap: 0;
+			background: transparent;
 		}
 
 		.transformation-box .results-wrapper {
 			flex: 1 1 auto;
 			min-height: 0;
-			margin-top: 10px;
-			border-top: 1px solid var(--vscode-panel-border);
+			margin-top: 0;
+			border-top: none;
 		}
 
 		.transformation-box.is-preview .results-wrapper {
-			margin-top: 10px;
+			margin-top: 0;
 		}
 
 		.kusto-chart-controls {
@@ -746,9 +749,10 @@
 			flex-shrink: 0;
 		}
 
-		/* Charts: Edit controls get a subtle full-width background (solid, no border).
+		/* Edit controls get a subtle full-width background (solid, no border).
 		   This targets only the controls region (which is hidden in Preview mode). */
-		.chart-box .kusto-chart-controls {
+		.chart-box .kusto-chart-controls,
+		.transformation-box .kusto-chart-controls {
 			/* Solid surface (no gradients, no borders). */
 			background: var(--vscode-editor-background);
 			/* True full-bleed:
@@ -766,36 +770,43 @@
 			gap: 0;
 		}
 
-		/* Inner scroll wrapper for chart controls - enables horizontal scrolling at narrow widths
+		/* Inner scroll wrapper for controls - enables horizontal scrolling at narrow widths
 		   while keeping the background bleed effect on the outer container. */
-		.chart-box .kusto-chart-controls-scroll {
+		.chart-box .kusto-chart-controls-scroll,
+		.transformation-box .kusto-chart-controls-scroll {
 			overflow-x: auto;
 			overflow-y: visible;
 			/* Bottom padding here so scrollbar appears at bottom edge of background. */
 			padding-bottom: 16px;
 		}
 
-		/* Scrollbar styling for chart controls. */
-		.chart-box .kusto-chart-controls-scroll {
+		/* Scrollbar styling for controls. */
+		.chart-box .kusto-chart-controls-scroll,
+		.transformation-box .kusto-chart-controls-scroll {
 			scrollbar-width: thin; /* Firefox - 'thin' typically has no arrows */
 			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar {
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar {
 			height: 8px;
 			background: transparent;
 		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-track {
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-track,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-track {
 			background: transparent;
 		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb {
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb {
 			background: var(--vscode-scrollbarSlider-background);
 		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover {
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover {
 			background: var(--vscode-scrollbarSlider-hoverBackground);
 		}
 
 		/* Minimum width for the scrollable content area to ensure controls remain functional. */
-		.chart-box .kusto-chart-controls-scroll-content {
+		.chart-box .kusto-chart-controls-scroll-content,
+		.transformation-box .kusto-chart-controls-scroll-content {
 			min-width: 480px;
 			display: flex;
 			flex-direction: column;
@@ -804,7 +815,8 @@
 
 		/* Theme-aware tint so the surface is visible even when VS Code theme tokens
 		   are very close to the editor background (common in dark themes). */
-		.chart-box .kusto-chart-controls::before {
+		.chart-box .kusto-chart-controls::before,
+		.transformation-box .kusto-chart-controls::before {
 			content: '';
 			position: absolute;
 			inset: 0;
@@ -814,7 +826,9 @@
 		}
 
 		body.vscode-dark .chart-box .kusto-chart-controls::before,
-		body.vscode-high-contrast .chart-box .kusto-chart-controls::before {
+		body.vscode-high-contrast .chart-box .kusto-chart-controls::before,
+		body.vscode-dark .transformation-box .kusto-chart-controls::before,
+		body.vscode-high-contrast .transformation-box .kusto-chart-controls::before {
 			/* dark-ish: subtle light tint */
 			background: rgba(255, 255, 255, 0.04);
 		}
@@ -826,8 +840,9 @@
 			flex-wrap: wrap;
 		}
 
-		/* Chart controls rows should not wrap - parent scroll wrapper handles overflow. */
-		.chart-box .kusto-chart-controls .kusto-chart-row {
+		/* Controls rows should not wrap - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-row,
+		.transformation-box .kusto-chart-controls .kusto-chart-row {
 			flex-wrap: nowrap;
 		}
 
@@ -1425,6 +1440,16 @@
 			overflow: hidden;
 		}
 
+		/* Error/placeholder messages in chart and transformation sections.
+		   Use VS Code UI font (not monospace) to match transformation section styling. */
+		.kusto-chart-canvas .error-message,
+		.results .error-message {
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+			color: var(--vscode-foreground);
+			padding: 12px;
+		}
+
 		/* Chart type picker with icons */
 		.kusto-chart-type-picker {
 			display: flex;
@@ -1433,8 +1458,9 @@
 			align-items: center;
 		}
 
-		/* In chart controls, prevent type picker from wrapping - parent scroll wrapper handles overflow. */
-		.chart-box .kusto-chart-controls .kusto-chart-type-picker {
+		/* In controls, prevent type picker from wrapping - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-type-picker,
+		.transformation-box .kusto-chart-controls .kusto-chart-type-picker {
 			flex-wrap: nowrap;
 		}
 

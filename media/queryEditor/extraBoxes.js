@@ -886,7 +886,7 @@ function __kustoRenderChart(boxId) {
 	}
 
 	// Helper to dispose ECharts instance before showing error text.
-	// Setting textContent destroys ECharts DOM, so we must dispose the instance first.
+	// Setting innerHTML destroys ECharts DOM, so we must dispose the instance first.
 	const showErrorAndReturn = (msg) => {
 		try {
 			if (st.__echarts && st.__echarts.instance) {
@@ -894,14 +894,16 @@ function __kustoRenderChart(boxId) {
 				delete st.__echarts;
 			}
 		} catch { /* ignore */ }
-		try { canvas.textContent = msg; } catch { /* ignore */ }
+		try {
+			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof escapeHtml === 'function') ? escapeHtml(String(msg || '')) : String(msg || '')) + '</div>';
+		} catch { /* ignore */ }
 		// Reduce canvas min-height when showing placeholder text to avoid overflow.
-		try { canvas.style.minHeight = '40px'; } catch { /* ignore */ }
+		try { canvas.style.minHeight = '60px'; } catch { /* ignore */ }
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
 	if (!st.dataSourceId) {
-		showErrorAndReturn('Select a data source.');
+		showErrorAndReturn('Select a data source (a query or CSV URL section with results).');
 		return;
 	}
 	if (!chartType) {
@@ -8189,6 +8191,8 @@ function addTransformationBox(options) {
 			'<div class="query-editor" id="' + id + '_tf_editor" data-kusto-no-editor-focus="true">' +
 				'<div class="kusto-chart-builder" data-kusto-no-editor-focus="true">' +
 					'<div class="kusto-chart-controls" id="' + id + '_tf_controls" data-kusto-no-editor-focus="true">' +
+						'<div class="kusto-chart-controls-scroll" data-kusto-no-editor-focus="true">' +
+							'<div class="kusto-chart-controls-scroll-content" data-kusto-no-editor-focus="true">' +
 						'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
 							'<label>Type</label>' +
 							'<div class="kusto-chart-type-picker" id="' + id + '_tf_type_picker" data-kusto-no-editor-focus="true">' +
@@ -8281,6 +8285,8 @@ function addTransformationBox(options) {
 									'<label>Max columns</label>' +
 									'<input type="number" class="kusto-transform-input" id="' + id + '_tf_pivot_max" min="1" max="500" value="50" oninput="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}" />' +
 								'</span>' +
+							'</div>' +
+						'</div>' +
 							'</div>' +
 						'</div>' +
 					'</div>' +
