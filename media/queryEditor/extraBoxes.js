@@ -166,11 +166,19 @@ function __kustoUpdateLegendPositionButtonUI(boxId) {
 		const st = __kustoGetChartState(id);
 		const chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
 		const btn = document.getElementById(id + '_chart_legend_pos_btn');
+		const legendWrapper = document.getElementById(id + '_chart_legend_wrapper');
 		if (!btn) return;
 
-		// Only show legend controls for chart types that actually expose the Legend column UI.
-		const show = (chartType === 'line' || chartType === 'area' || chartType === 'bar');
+		// Only show legend position button for chart types that expose the Legend column UI
+		// AND when a legend column is actually selected.
+		const isValidChartType = (chartType === 'line' || chartType === 'area' || chartType === 'bar');
+		const hasLegendColumn = (st && typeof st.legendColumn === 'string' && st.legendColumn !== '');
+		const show = isValidChartType && hasLegendColumn;
 		btn.style.display = show ? '' : 'none';
+		// Adjust the legend dropdown wrapper to take full width when button is hidden.
+		if (legendWrapper) {
+			legendWrapper.style.flex = show ? '1 1 auto' : '1 1 100%';
+		}
 		if (!show) return;
 
 		const pos = __kustoNormalizeLegendPosition(st && st.legendPosition);
@@ -2391,6 +2399,8 @@ function __kustoOnChartMappingChanged(boxId) {
 	try { st.legendColumn = String(((document.getElementById(id + '_chart_legend') || {}).value || '')); } catch { /* ignore */ }
 	try { st.labelColumn = String(((document.getElementById(id + '_chart_label') || {}).value || '')); } catch { /* ignore */ }
 	try { st.valueColumn = String(((document.getElementById(id + '_chart_value') || {}).value || '')); } catch { /* ignore */ }
+	// Update legend position button visibility based on whether a legend column is selected.
+	try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
 	// If X column changed, rebuild Y column options (excluding the new X) to keep UI in sync.
 	if (oldX !== st.xColumn) {
 		try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
@@ -2431,6 +2441,8 @@ function __kustoOnChartYCheckboxChanged(dropdownId) {
 				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
 			}
 			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch { /* ignore */ }
+			// Update legend position button visibility when legend column is cleared.
+			try { __kustoUpdateLegendPositionButtonUI(boxId); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 		// Update button text.
 		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
