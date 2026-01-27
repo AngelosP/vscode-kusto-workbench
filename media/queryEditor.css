@@ -757,8 +757,8 @@
 			position: relative;
 			left: -12px;
 			width: calc(100% + 24px);
-			/* 18px top/bottom = 8px base + 10px extra breathing room */
-			padding: 16px 16px;
+			/* Top/side padding only; bottom padding moves to scroll wrapper so scrollbar sits at bottom edge. */
+			padding: 16px 16px 0 16px;
 			/* 20px gap between background and chart preview (margin is outside the background,
 			   and disappears in Preview mode since the controls are hidden). */
 			margin-bottom: 20px;
@@ -771,6 +771,27 @@
 		.chart-box .kusto-chart-controls-scroll {
 			overflow-x: auto;
 			overflow-y: visible;
+			/* Bottom padding here so scrollbar appears at bottom edge of background. */
+			padding-bottom: 16px;
+		}
+
+		/* Scrollbar styling for chart controls. */
+		.chart-box .kusto-chart-controls-scroll {
+			scrollbar-width: thin; /* Firefox - 'thin' typically has no arrows */
+			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar {
+			height: 8px;
+			background: transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-track {
+			background: transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb {
+			background: var(--vscode-scrollbarSlider-background);
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover {
+			background: var(--vscode-scrollbarSlider-hoverBackground);
 		}
 
 		/* Minimum width for the scrollable content area to ensure controls remain functional. */
