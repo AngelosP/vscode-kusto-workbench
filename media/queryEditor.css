@@ -1390,6 +1390,68 @@
 			display: block;
 		}
 
+		/* Funnel Sort control styles */
+		.kusto-chart-funnel-sort-group {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-chart-funnel-sort-control {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		/* When no sort column is selected, dropdown takes full width */
+		.kusto-chart-funnel-sort-group:not(.has-sort-column) .kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+		}
+
+		/* When sort column is selected, make room for direction button */
+		.kusto-chart-funnel-sort-group.has-sort-column .kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn {
+			flex: 0 0 auto;
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 3px;
+		}
+
+		/* Hide direction button when no sort column is selected */
+		.kusto-chart-funnel-sort-group:not(.has-sort-column) .kusto-chart-funnel-sort-dir-btn {
+			display: none;
+		}
+
+		/* Sort direction icons - show/hide based on state */
+		.kusto-chart-funnel-sort-dir-btn .kusto-sort-asc-icon,
+		.kusto-chart-funnel-sort-dir-btn .kusto-sort-desc-icon {
+			display: none;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn.is-asc .kusto-sort-asc-icon {
+			display: block;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn.is-desc .kusto-sort-desc-icon {
+			display: block;
+		}
+
 		/* Keep label + dropdown together as a unit when wrapping */
 		.kusto-chart-field-group {
 			display: inline-flex;

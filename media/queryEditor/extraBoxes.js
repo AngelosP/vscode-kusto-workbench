@@ -23,8 +23,8 @@ let pythonEditors = {};
 // - labelColumn/valueColumn: for pie/funnel
 // - tooltipColumns: string[] (columns to show in tooltip)
 // - showDataLabels: boolean (show labels on data points)
-// - sortColumn: string (column to sort by)
-// - sortDirection: 'asc' | 'desc' | '' (sort direction)
+// - sortColumn: string (column to sort by, for funnel chart only)
+// - sortDirection: 'asc' | 'desc' | '' (sort direction, for funnel chart only)
 // - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel, titleGap } (X-axis customizations)
 // - yAxisSettings: { showAxisLabel, customLabel, min, max, seriesColors, titleGap } (Y-axis customizations)
 // Explicitly on window so persistence.js can access it
@@ -1360,6 +1360,23 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
 	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
 
+	// Funnel Sort dropdown: show only for funnel chart type.
+	try {
+		const funnelSortGroup = document.getElementById(id + '_chart_funnel_sort_group');
+		if (funnelSortGroup) {
+			funnelSortGroup.style.display = (chartType === 'funnel') ? '' : 'none';
+		}
+		if (chartType === 'funnel') {
+			// Populate sort dropdown with (none) option plus all columns.
+			const sortOptions = ['', ...colNames.filter(c => c)];
+			const currentSortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
+			__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch { /* ignore */ }
+			// Update the sort UI (direction button visibility).
+			try { __kustoUpdateFunnelSortUI(id); } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+
 	// Best-effort defaults once we have a dataset.
 	// Note: X column is NOT auto-assigned - user must explicitly select it.
 	try {
@@ -1952,12 +1969,54 @@ function __kustoRenderChart(boxId) {
 				showErrorAndReturn('Select columns.');
 				return;
 			} else {
-				const data = (rows || []).map(r => {
+				// Get sort column index if specified.
+				const sortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
+				const sortDir = (typeof st.sortDirection === 'string') ? st.sortDirection : '';
+				const si = sortCol ? indexOf(sortCol) : -1;
+				
+				let data = (rows || []).map((r, originalIndex) => {
 					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
 					const value = (r && r.length > vi) ? __kustoCellToChartNumber(r[vi]) : null;
 					const tooltipPayload = __kustoGetTooltipPayloadForRow(r);
-					return { name: label, value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0, __kustoTooltip: tooltipPayload };
+					// Store the sort value for sorting later.
+					let sortValue = null;
+					if (si >= 0 && r && r.length > si) {
+						sortValue = r[si];
+					}
+					return { 
+						name: label, 
+						value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0, 
+						__kustoTooltip: tooltipPayload,
+						__kustoSortValue: sortValue,
+						__kustoOriginalIndex: originalIndex
+					};
 				});
+				
+				// Sort data if a sort column is specified.
+				if (si >= 0 && sortDir) {
+					data.sort((a, b) => {
+						const av = a.__kustoSortValue;
+						const bv = b.__kustoSortValue;
+						// Handle null/undefined values - push them to the end.
+						if (av == null && bv == null) return 0;
+						if (av == null) return 1;
+						if (bv == null) return -1;
+						// Compare values.
+						let cmp = 0;
+						if (typeof av === 'number' && typeof bv === 'number') {
+							cmp = av - bv;
+						} else if (typeof av === 'string' && typeof bv === 'string') {
+							cmp = av.localeCompare(bv);
+						} else if (av instanceof Date && bv instanceof Date) {
+							cmp = av.getTime() - bv.getTime();
+						} else {
+							// Convert to string for comparison.
+							cmp = String(av).localeCompare(String(bv));
+						}
+						return sortDir === 'asc' ? cmp : -cmp;
+					});
+				}
+				
 				// Calculate max value for percentage (first step in funnel, which should be the largest)
 				const maxValue = data.length > 0 ? Math.max(...data.map(d => d.value)) : 1;
 				const showLabels = !!st.showDataLabels;
@@ -3244,6 +3303,23 @@ function addChartBox(options) {
 									'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_chart_tooltip_pie_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 								'</div>' +
 							'</span>' +
+							'<span class="kusto-chart-field-group kusto-chart-funnel-sort-group" id="' + id + '_chart_funnel_sort_group" style="display:none;">' +
+								'<label>Sort</label>' +
+								'<div class="kusto-chart-funnel-sort-control">' +
+									'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_funnel_sort_wrapper">' +
+										'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_funnel_sort" onchange="try{__kustoOnChartFunnelSortChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
+										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_funnel_sort_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_funnel_sort\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+											'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_funnel_sort_text">(none)</span>' +
+											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+										'</button>' +
+										'<div class="kusto-dropdown-menu" id="' + id + '_chart_funnel_sort_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+									'</div>' +
+									'<button type="button" class="unified-btn-secondary kusto-chart-funnel-sort-dir-btn" id="' + id + '_chart_funnel_sort_dir_btn" onclick="try{__kustoOnChartFunnelSortDirToggle(\'' + id + '\')}catch{}" title="Toggle sort direction" aria-label="Toggle sort direction">' +
+										'<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" class="kusto-sort-asc-icon"><path fill="currentColor" d="M8 3L4 8h8L8 3z"/><path fill="currentColor" d="M7 8h2v5H7V8z"/></svg>' +
+										'<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" class="kusto-sort-desc-icon"><path fill="currentColor" d="M8 13l4-5H4l4 5z"/><path fill="currentColor" d="M7 3h2v5H7V3z"/></svg>' +
+									'</button>' +
+								'</div>' +
+							'</span>' +
 							'<div class="kusto-chart-labels-toggle" id="' + id + '_chart_labels_pie_toggle" onclick="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" data-kusto-no-editor-focus="true" role="switch" aria-checked="false" tabindex="0" title="Toggle data labels">' +
 								'<span class="kusto-chart-labels-toggle-text">Labels</span>' +
 								'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
@@ -3531,6 +3607,76 @@ function __kustoOnChartTooltipCheckboxChanged(dropdownId) {
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Handler for funnel sort column dropdown changes.
+function __kustoOnChartFunnelSortChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	try {
+		const selectEl = document.getElementById(id + '_chart_funnel_sort');
+		const newValue = selectEl ? String(selectEl.value || '') : '';
+		st.sortColumn = newValue;
+		// If sort column is cleared, also clear direction.
+		if (!newValue) {
+			st.sortDirection = '';
+		} else if (!st.sortDirection) {
+			// Default to descending when a column is first selected.
+			st.sortDirection = 'desc';
+		}
+		// Update the UI to show/hide direction button and update its state.
+		__kustoUpdateFunnelSortUI(id);
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Handler for funnel sort direction toggle button.
+function __kustoOnChartFunnelSortDirToggle(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	// Only toggle if a sort column is selected.
+	if (!st.sortColumn) return;
+	try {
+		// Toggle between 'asc' and 'desc'.
+		st.sortDirection = (st.sortDirection === 'asc') ? 'desc' : 'asc';
+		__kustoUpdateFunnelSortUI(id);
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Update the funnel sort UI (direction button visibility and icon state).
+function __kustoUpdateFunnelSortUI(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const hasSortColumn = !!(st.sortColumn);
+	const sortDir = st.sortDirection || 'desc';
+	
+	// Update the wrapper class to show/hide direction button.
+	const wrapper = document.getElementById(id + '_chart_funnel_sort_wrapper');
+	if (wrapper) {
+		wrapper.classList.toggle('has-sort-column', hasSortColumn);
+	}
+	
+	// Update the group to add class for layout.
+	const group = document.getElementById(id + '_chart_funnel_sort_group');
+	if (group) {
+		group.classList.toggle('has-sort-column', hasSortColumn);
+	}
+	
+	// Update direction button state.
+	const dirBtn = document.getElementById(id + '_chart_funnel_sort_dir_btn');
+	if (dirBtn) {
+		dirBtn.style.display = hasSortColumn ? '' : 'none';
+		dirBtn.classList.toggle('is-asc', sortDir === 'asc');
+		dirBtn.classList.toggle('is-desc', sortDir === 'desc');
+		dirBtn.title = sortDir === 'asc' ? 'Ascending (click to change)' : 'Descending (click to change)';
+		dirBtn.setAttribute('aria-label', sortDir === 'asc' ? 'Sort ascending, click to change to descending' : 'Sort descending, click to change to ascending');
+	}
 }
 
 function removeChartBox(boxId) {
