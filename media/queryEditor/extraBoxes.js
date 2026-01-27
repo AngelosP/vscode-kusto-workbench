@@ -372,6 +372,19 @@ function __kustoUpdateSeriesColorsUI(boxId, settings) {
 		const seriesColors = (settings && settings.seriesColors) || {};
 		let html = '';
 		
+		// Use global escapeHtml function (defined in utils.js) since __kustoEscapeHtml is only defined inside __kustoRenderChart
+		const escHtml = (v) => {
+			try {
+				if (typeof escapeHtml === 'function') return escapeHtml(String(v ?? ''));
+			} catch { /* ignore */ }
+			return String(v ?? '')
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;')
+				.replace(/\"/g, '&quot;')
+				.replace(/'/g, '&#39;');
+		};
+		
 		for (let i = 0; i < yColumns.length; i++) {
 			const colName = yColumns[i];
 			const customColor = seriesColors[colName] || '';
@@ -382,12 +395,12 @@ function __kustoUpdateSeriesColorsUI(boxId, settings) {
 				'<input type="color" class="kusto-axis-settings-color-input" ' +
 				'id="' + id + '_chart_y_color_' + i + '" ' +
 				'value="' + displayColor + '" ' +
-				'data-column="' + __kustoEscapeHtml(colName) + '" ' +
+				'data-column="' + escHtml(colName) + '" ' +
 				'data-default="' + defaultColor + '" ' +
 				'onchange="try{__kustoOnSeriesColorChanged(\'' + id + '\', this)}catch{}">' +
-				'<span class="kusto-axis-settings-color-label" title="' + __kustoEscapeHtml(colName) + '">' + __kustoEscapeHtml(colName) + '</span>' +
+				'<span class="kusto-axis-settings-color-label" title="' + escHtml(colName) + '">' + escHtml(colName) + '</span>' +
 				(customColor ? '<button type="button" class="kusto-axis-settings-color-reset" title="Reset to default" ' +
-				'onclick="try{__kustoResetSeriesColor(\'' + id + '\', \'' + __kustoEscapeHtml(colName).replace(/'/g, "\\'") + '\', ' + i + ')}catch{}">' +
+				'onclick="try{__kustoResetSeriesColor(\'' + id + '\', \'' + escHtml(colName).replace(/'/g, "\\'") + '\', ' + i + ')}catch{}">' +
 				'<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z" fill="currentColor"/></svg>' +
 				'</button>' : '') +
 				'</div>';
@@ -3481,6 +3494,11 @@ function __kustoOnChartYCheckboxChanged(dropdownId) {
 		} catch { /* ignore */ }
 		// Update button text.
 		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
+	} catch { /* ignore */ }
+	// Update series colors UI in Y-axis settings popup (in case it's open)
+	try {
+		const st2 = __kustoGetChartState(boxId);
+		__kustoUpdateSeriesColorsUI(boxId, st2.yAxisSettings || {});
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
