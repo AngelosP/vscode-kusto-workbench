@@ -1276,7 +1276,7 @@
 		.kusto-chart-mapping-grid {
 			display: grid;
 			grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
-			column-gap: 8px;
+			column-gap: 24px;
 			row-gap: 14px;
 			align-items: center;
 		}
