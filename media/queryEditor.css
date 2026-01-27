@@ -1321,12 +1321,6 @@
 			min-width: 0;
 		}
 
-		/* Extend the Legend field group so its dropdown right edge aligns with the Data dropdown.
-		   The legend position button (30px) + gap (6px) = 36px needs to extend past the grid column. */
-		.kusto-chart-mapping-grid > [id$="_chart_legend_group"] {
-			width: calc(100% + 36px);
-		}
-
 		.kusto-chart-legend-pos-btn {
 			width: 30px;
 			height: 30px;

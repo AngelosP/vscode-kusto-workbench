@@ -3867,6 +3867,14 @@ ${query}
 		const clusterKey = this.getClusterCacheKey(connection.clusterUrl);
 		const cachedBefore = (this.getCachedDatabases()[clusterKey] ?? []).filter(Boolean);
 
+		// If we have cached data and this is NOT a force refresh, return cached data immediately
+		// without making a network call. This prevents network timeouts when offline (e.g., VPN disconnected)
+		// while still providing a good UX with cached data showing instantly.
+		if (!forceRefresh && cachedBefore.length > 0) {
+			this.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+			return;
+		}
+
 		const fetchAndNormalize = async (): Promise<string[]> => {
 			const databasesRaw = await this.kustoClient.getDatabases(connection, true, { allowInteractive: false });
 			return (Array.isArray(databasesRaw) ? databasesRaw : [])
@@ -4242,13 +4250,16 @@ ${query}
 				return;
 			}
 
-			if (!forceRefresh && cached && cachedIsFresh && !cachedIsLatest) {
+			// If we have cached data (even if stale or outdated version) and this is NOT a force refresh,
+			// return the cached data immediately without making a network call.
+			// This prevents network timeouts when offline (e.g., VPN disconnected).
+			if (!forceRefresh && cached) {
 				const schema = cached.schema;
 				const tablesCount = schema.tables?.length ?? 0;
 				const columnsCount = countColumns(schema);
 
 				this.output.appendLine(
-					`[schema] loaded (persisted cache, outdated version=${cached.version ?? 0}) db=${database} tables=${tablesCount} columns=${columnsCount}; refreshing…`
+					`[schema] loaded (persisted cache, stale/outdated) db=${database} tables=${tablesCount} columns=${columnsCount}`
 				);
 				this.postMessage({
 					type: 'schemaData',
@@ -4265,8 +4276,7 @@ ${query}
 						columnsCount
 					}
 				});
-				// Continue through to fetch a fresh schema below.
-				forceRefresh = true;
+				return;
 			}
 
 			const result = await this.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
@@ -4468,6 +4478,23 @@ ${query}
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
 				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (cached) ==========`);
+				return;
+			}
+
+			// If we have stale cached data with rawSchemaJson, use it instead of making a network call
+			// This prevents network timeouts when offline (e.g., VPN disconnected)
+			if (cached && cached.schema.rawSchemaJson) {
+				this.output.appendLine(`[DEBUG:CrossCluster] Using STALE cached schema to avoid network call`);
+				this.postMessage({
+					type: 'crossClusterSchemaData',
+					clusterName,
+					clusterUrl: connection.clusterUrl,
+					database,
+					boxId,
+					requestToken,
+					rawSchemaJson: cached.schema.rawSchemaJson
+				});
+				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (stale cache) ==========`);
 				return;
 			}
 

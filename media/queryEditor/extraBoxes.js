@@ -250,6 +250,48 @@ function __kustoGetChartState(boxId) {
 	}
 }
 
+/**
+ * Computes the minimum resize height for a Chart section wrapper.
+ * Accounts for: controls panel height (in Edit mode) + chart canvas min-height.
+ * @param {string} boxId - The chart box ID
+ * @returns {number} Minimum height in pixels
+ */
+function __kustoGetChartMinResizeHeight(boxId) {
+	const CHART_CANVAS_RENDERING_MIN_HEIGHT = 140; // When chart is rendering
+	const CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT = 60; // When showing placeholder text
+	const CONTROLS_MARGIN_BOTTOM = 20; // CSS margin-bottom on .kusto-chart-controls
+	const FALLBACK_MIN = 80;
+	try {
+		const id = String(boxId || '');
+		if (!id) return FALLBACK_MIN;
+		const st = __kustoGetChartState(id);
+		const isEditMode = st.mode === 'edit';
+		
+		// Determine the canvas min-height based on whether a chart is actually rendering
+		// Use the __wasRendering flag set by __kustoRenderChart as the source of truth
+		const isChartRendering = st.__wasRendering || false;
+		const canvasMinH = isChartRendering ? CHART_CANVAS_RENDERING_MIN_HEIGHT : CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT;
+		
+		// In preview mode, we only need space for the chart canvas
+		if (!isEditMode) {
+			return canvasMinH;
+		}
+		
+		// In edit mode, account for the controls panel height
+		// The controls div doesn't have an ID, so find it via the edit container
+		const editContainer = document.getElementById(id + '_chart_edit');
+		const controlsEl = editContainer ? editContainer.querySelector('.kusto-chart-controls') : null;
+		const controlsH = controlsEl && controlsEl.getBoundingClientRect
+			? Math.ceil(controlsEl.getBoundingClientRect().height || 0)
+			: 0;
+		
+		// Min = controls height + margin-bottom (not captured by getBoundingClientRect) + chart canvas min-height
+		return Math.max(FALLBACK_MIN, controlsH + CONTROLS_MARGIN_BOTTOM + canvasMinH);
+	} catch {
+		return FALLBACK_MIN;
+	}
+}
+
 function __kustoGetChartDatasetsInDomOrder() {
 	const out = [];
 	try {
@@ -544,11 +586,11 @@ function __kustoUpdateChartBuilderUI(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	// Populate X select.
+	// Populate X select with (none) option.
 	let desiredX = '';
 	try { desiredX = String(((document.getElementById(id + '_chart_x') || {}).value || st.xColumn || '')).trim(); } catch { desiredX = String(st.xColumn || ''); }
-	const xOptions = colNames.filter(c => c);
-	__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX);
+	const xOptions = ['', ...colNames.filter(c => c)];
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
 	// Sync the unified dropdown button text for X.
 	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch { /* ignore */ }
 
@@ -650,16 +692,9 @@ function __kustoUpdateChartBuilderUI(boxId) {
 	try { __kustoUpdateSortDirectionButtonUI(id); } catch { /* ignore */ }
 
 	// Best-effort defaults once we have a dataset.
+	// Note: X column is NOT auto-assigned - user must explicitly select it.
 	try {
 		if (colNames.length) {
-			if ((chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter')) {
-				if (!st.xColumn) st.xColumn = colNames[0] || '';
-				// Prefer a distinct Y column.
-				if ((!st.yColumns || !st.yColumns.length) && (!st.yColumn || st.yColumn === st.xColumn)) {
-					st.yColumn = __kustoPickFirstNonEmpty(colNames.filter(c => c !== st.xColumn)) || '';
-					st.yColumns = st.yColumn ? [st.yColumn] : [];
-				}
-			}
 			if (chartType === 'pie' || chartType === 'funnel') {
 				if (!st.labelColumn) st.labelColumn = colNames[0] || '';
 				if (!st.valueColumn) st.valueColumn = __kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
@@ -815,6 +850,9 @@ function __kustoRenderChart(boxId) {
 	if (!id) return;
 	try { __kustoStartEchartsThemeObserver(); } catch { /* ignore */ }
 	const st = __kustoGetChartState(id);
+	
+	// Track previous rendering state to detect transitions
+	const wasRendering = st.__wasRendering || false;
 
 	// Defensive: ensure dataSourceId is synced from the DOM dropdown in case state became stale.
 	try {
@@ -899,6 +937,13 @@ function __kustoRenderChart(boxId) {
 		} catch { /* ignore */ }
 		// Reduce canvas min-height when showing placeholder text to avoid overflow.
 		try { canvas.style.minHeight = '60px'; } catch { /* ignore */ }
+		// Track that we're now showing a message, not a chart
+		const isNowRendering = false;
+		st.__wasRendering = isNowRendering;
+		// Auto-fit section when transitioning from rendering to not-rendering
+		if (wasRendering !== isNowRendering) {
+			try { __kustoMaximizeChartBox(id); } catch { /* ignore */ }
+		}
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
@@ -1671,6 +1716,39 @@ function __kustoRenderChart(boxId) {
 			}
 		}
 		inst.setOption(option || {}, true);
+		
+		// Track that we're now rendering a chart
+		const isNowRendering = true;
+		// Auto-expand section when transitioning from not-rendering to rendering a chart
+		// This makes the chart nicely visible so the user can continue configuring settings.
+		if (!wasRendering && isNowRendering) {
+			try {
+				const wrapper = document.getElementById(id + '_chart_wrapper');
+				if (wrapper && !wrapper.dataset.kustoUserResized) {
+					// Set a nice default height for viewing the chart (600px is good for visibility)
+					const defaultChartHeight = 600;
+					wrapper.style.height = defaultChartHeight + 'px';
+					
+					// Force the outer section box to recalculate its layout
+					// This ensures the section border moves to contain the expanded chart
+					const sectionBox = document.getElementById(id);
+					if (sectionBox) {
+						// Trigger a reflow by temporarily modifying the display
+						sectionBox.style.display = 'none';
+						// Force reflow
+						void sectionBox.offsetHeight;
+						sectionBox.style.display = '';
+					}
+					
+					// Resize the ECharts instance to fit the new container size
+					requestAnimationFrame(() => {
+						try { inst.resize(); } catch { /* ignore */ }
+					});
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				}
+			} catch { /* ignore */ }
+		}
+		st.__wasRendering = isNowRendering;
 	} catch { /* ignore */ }
 	try {
 		requestAnimationFrame(() => {
@@ -1816,66 +1894,29 @@ function __kustoMaximizeChartBox(boxId) {
 		if (!wrapper) return;
 		
 		const st = __kustoGetChartState(boxId);
-		const isPreview = st.mode === 'preview';
 		
-		// Get the active editor (edit or preview)
-		const editEditor = document.getElementById(boxId + '_chart_edit');
-		const previewEditor = document.getElementById(boxId + '_chart_preview');
-		const activeEditor = isPreview ? previewEditor : editEditor;
-		
-		if (!activeEditor) return;
-		
-		// Minimum height for the chart canvas when it has actual content
-		const CHART_MIN_HEIGHT = 140;
-		// Height for empty/unconfigured state (just shows placeholder text)
-		const CHART_EMPTY_HEIGHT = 40;
-		const SLACK_PX = 10;
-		
-		// Determine if chart is configured (has data source and chart type)
-		const hasDataSource = typeof st.dataSourceId === 'string' && st.dataSourceId;
-		const hasChartType = typeof st.chartType === 'string' && st.chartType;
-		const isConfigured = hasDataSource && hasChartType;
-		
-		// Use smaller height when chart is not fully configured
-		const canvasHeight = isConfigured ? CHART_MIN_HEIGHT : CHART_EMPTY_HEIGHT;
-		
-		let desiredHeight = canvasHeight;
-		
-		if (isPreview) {
-			// Preview mode: just the chart canvas
-			desiredHeight = canvasHeight + SLACK_PX;
-		} else {
-			// Edit mode: controls + chart canvas
-			const controls = activeEditor.querySelector('.kusto-chart-controls');
-			const builder = activeEditor.querySelector('.kusto-chart-builder');
-			
-			let controlsHeight = 0;
-			if (controls) {
-				try {
-					const rect = controls.getBoundingClientRect();
-					controlsHeight = rect.height || 0;
-				} catch { /* ignore */ }
-			}
-			
-			// Get builder padding
-			let builderPadding = 0;
-			if (builder) {
-				try {
-					const cs = getComputedStyle(builder);
-					builderPadding = (parseFloat(cs.paddingTop || '0') || 0) + 
-					                 (parseFloat(cs.paddingBottom || '0') || 0) +
-					                 (parseFloat(cs.gap || '0') || 0); // gap between controls and canvas
-				} catch { /* ignore */ }
-			}
-			
-			desiredHeight = controlsHeight + canvasHeight + builderPadding + SLACK_PX;
-		}
+		// If a chart is currently rendered, use the standard chart viewing height (600px)
+		// Otherwise, use the minimum height for showing the placeholder/error message
+		const isChartRendered = st && st.__echarts && st.__echarts.instance && st.__wasRendering;
+		const targetHeight = isChartRendered 
+			? 600  // Same as the default height when first rendering a chart
+			: (typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(boxId) : 80);
 		
 		// Apply the calculated height
-		wrapper.style.height = Math.ceil(desiredHeight) + 'px';
+		wrapper.style.height = Math.ceil(targetHeight) + 'px';
 		try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
 		
-		try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+		// NOTE: Do NOT call __kustoRenderChart here - it would create an infinite loop
+		// because __kustoRenderChart calls __kustoMaximizeChartBox on state transitions.
+		// The chart will be rendered by the caller that triggered the state transition.
+		// Instead, just resize the existing ECharts instance if one exists.
+		try {
+			if (st && st.__echarts && st.__echarts.instance) {
+				requestAnimationFrame(() => {
+					try { st.__echarts.instance.resize(); } catch { /* ignore */ }
+				});
+			}
+		} catch { /* ignore */ }
 		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	} catch {
 		// ignore
@@ -2037,7 +2078,7 @@ function addChartBox(options) {
 							'<span class="kusto-chart-field-group">' +
 								'<label>X</label>' +
 								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_x_wrapper">' +
-									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"></select>' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_x" onchange="try{__kustoOnChartMappingChanged(\'' + id + '\')}catch{}"><option value="">(none)</option></select>' +
 									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_x_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_x\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
 										'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_x_text">Select...</span>' +
 										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
@@ -2066,7 +2107,9 @@ function addChartBox(options) {
 										'</button>' +
 										'<div class="kusto-dropdown-menu" id="' + id + '_chart_legend_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
 									'</div>' +
-									'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-chart-legend-pos-btn" id="' + id + '_chart_legend_pos_btn" onclick="try{__kustoOnChartLegendPositionClicked(\'' + id + '\')}catch{}; event.stopPropagation();" title="Legend position" aria-label="Legend position"></button>' +
+									'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-chart-legend-pos-btn" id="' + id + '_chart_legend_pos_btn" onclick="try{__kustoOnChartLegendPositionClicked(\'' + id + '\')}catch{}; event.stopPropagation();" title="Legend position: Top" aria-label="Legend position: Top">' +
+										'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="9" height="9" rx="1" /><path d="M3 3h9" /><path d="M3 4.5h6" /></svg>' +
+									'</button>' +
 								'</div>' +
 							'</span>' +
 							'<span class="kusto-chart-field-group">' +
@@ -2225,7 +2268,10 @@ function addChartBox(options) {
 				const startHeight = wrapper.getBoundingClientRect().height;
 				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
 
-				const minH = 80;
+				// Compute minimum height dynamically based on controls panel + chart canvas
+				const minH = typeof __kustoGetChartMinResizeHeight === 'function'
+					? __kustoGetChartMinResizeHeight(id)
+					: 80;
 				const maxH = 900;
 				const onMove = (moveEvent) => {
 					try {
@@ -2235,7 +2281,11 @@ function addChartBox(options) {
 					} catch { /* ignore */ }
 					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
-					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
+					// Recompute min height in case mode changed during drag
+					const currentMinH = typeof __kustoGetChartMinResizeHeight === 'function'
+						? __kustoGetChartMinResizeHeight(id)
+						: 80;
+					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
 					wrapper.style.height = nextHeight + 'px';
 					try { __kustoRenderChart(id); } catch { /* ignore */ }
 				};
@@ -6246,6 +6296,40 @@ function __kustoGetTransformationState(boxId) {
 	}
 }
 
+/**
+ * Computes the minimum resize height for a Transformation section wrapper.
+ * Accounts for: controls panel height (in Edit mode) + results area min-height.
+ * @param {string} boxId - The transformation box ID
+ * @returns {number} Minimum height in pixels
+ */
+function __kustoGetTransformationMinResizeHeight(boxId) {
+	const RESULTS_MIN_HEIGHT = 80; // Minimum height for results table
+	const CONTROLS_MARGIN_BOTTOM = 20; // CSS margin-bottom on .kusto-chart-controls
+	const FALLBACK_MIN = 80;
+	try {
+		const id = String(boxId || '');
+		if (!id) return FALLBACK_MIN;
+		const st = __kustoGetTransformationState(id);
+		const isEditMode = st.mode === 'edit';
+		
+		// In preview mode, we only need space for the results area
+		if (!isEditMode) {
+			return RESULTS_MIN_HEIGHT;
+		}
+		
+		// In edit mode, account for the controls panel height
+		const controlsEl = document.getElementById(id + '_tf_controls');
+		const controlsH = controlsEl && controlsEl.getBoundingClientRect
+			? Math.ceil(controlsEl.getBoundingClientRect().height || 0)
+			: 0;
+		
+		// Min = controls height + margin-bottom (not captured by getBoundingClientRect) + results min-height
+		return Math.max(FALLBACK_MIN, controlsH + CONTROLS_MARGIN_BOTTOM + RESULTS_MIN_HEIGHT);
+	} catch {
+		return FALLBACK_MIN;
+	}
+}
+
 function __kustoUpdateTransformationModeButtons(boxId) {
 	try {
 		const st = transformationStateByBoxId && transformationStateByBoxId[boxId] ? transformationStateByBoxId[boxId] : null;
@@ -8336,7 +8420,10 @@ function addTransformationBox(options) {
 				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 				const startHeight = wrapper.getBoundingClientRect().height;
 				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
-				const minH = 80;
+				// Compute minimum height dynamically based on controls panel + results area
+				const minH = typeof __kustoGetTransformationMinResizeHeight === 'function'
+					? __kustoGetTransformationMinResizeHeight(id)
+					: 80;
 				const maxH = 900;
 				const onMove = (moveEvent) => {
 					try {
@@ -8346,7 +8433,11 @@ function addTransformationBox(options) {
 					} catch { /* ignore */ }
 					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
-					const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
+					// Recompute min height in case mode changed during drag
+					const currentMinH = typeof __kustoGetTransformationMinResizeHeight === 'function'
+						? __kustoGetTransformationMinResizeHeight(id)
+						: 80;
+					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
 					try { wrapper.style.height = Math.ceil(nextHeight) + 'px'; } catch { /* ignore */ }
 				};
 				const onUp = () => {
