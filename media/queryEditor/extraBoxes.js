@@ -136,27 +136,23 @@ const __kustoLegendPositionCycle = ['top', 'right', 'bottom', 'left'];
 const __kustoLegendPositionIcons = {
 	top:
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<rect x="3" y="5" width="9" height="9" rx="1" />' +
-		'<path d="M3 3h9" />' +
-		'<path d="M3 4.5h6" />' +
+		'<rect x="3" y="5" width="10" height="8" rx="1" />' +
+		'<path d="M3 3h10" />' +
 		'</svg>',
 	bottom:
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<rect x="3" y="2" width="9" height="9" rx="1" />' +
-		'<path d="M3 13h9" />' +
-		'<path d="M3 14.5h6" />' +
+		'<rect x="3" y="3" width="10" height="8" rx="1" />' +
+		'<path d="M3 13h10" />' +
 		'</svg>',
 	left:
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<rect x="5" y="3" width="9" height="9" rx="1" />' +
-		'<path d="M2.5 3v9" />' +
-		'<path d="M4 3v6" />' +
+		'<rect x="5" y="3" width="8" height="10" rx="1" />' +
+		'<path d="M3 3v10" />' +
 		'</svg>',
 	right:
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<rect x="2" y="3" width="9" height="9" rx="1" />' +
-		'<path d="M13.5 3v9" />' +
-		'<path d="12 3v6" />' +
+		'<rect x="3" y="3" width="8" height="10" rx="1" />' +
+		'<path d="M13 3v10" />' +
 		'</svg>'
 };
 
