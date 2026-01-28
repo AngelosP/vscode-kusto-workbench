@@ -8283,15 +8283,37 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	// Summarize: group-by checkbox dropdown
+	// Summarize: group-by rows (multiple columns with add/remove)
 	try {
-		const menu = document.getElementById(id + '_tf_groupby_menu');
-		const txt = document.getElementById(id + '_tf_groupby_text');
-		const selected = new Set((Array.isArray(st.groupByColumns) ? st.groupByColumns : []).map(c => String(c)));
-		if (menu) {
-			menu.innerHTML = __kustoBuildCheckboxMenuHtml(id, colNames, selected);
+		const host = document.getElementById(id + '_tf_groupby_rows');
+		if (host) {
+			if (!Array.isArray(st.groupByColumns) || st.groupByColumns.length === 0) {
+				st.groupByColumns = [''];
+			}
+			const groupByCols = Array.isArray(st.groupByColumns) ? st.groupByColumns : [''];
+			let html = '';
+			for (let i = 0; i < groupByCols.length; i++) {
+				const col = String(groupByCols[i] || '');
+				const selectId = id + '_tf_groupby_col_' + i;
+				html +=
+					'<div class="kusto-transform-groupby-row" data-kusto-no-editor-focus="true" ondragover="try{__kustoOnGroupByDragOver(\'' + id + '\',' + i + ', event)}catch{}" ondrop="try{__kustoOnGroupByDrop(\'' + id + '\',' + i + ', event)}catch{}">' +
+						'<select id="' + selectId + '" class="kusto-transform-select kusto-transform-groupby-select" onchange="try{__kustoOnGroupByColumnChanged(\'' + id + '\',' + i + ', this.value)}catch{}">' +
+							'<option value=""' + (col ? '' : ' selected') + '>(select column)</option>';
+				for (const c of colNames) {
+					const esc = (typeof escapeHtml === 'function') ? escapeHtml(c) : c;
+					html += '<option value="' + esc + '"' + (c === col ? ' selected' : '') + '>' + esc + '</option>';
+				}
+				html +=
+						'</select>' +
+						'<div class="kusto-transform-groupby-row-actions" data-kusto-no-editor-focus="true">' +
+							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoAddGroupByColumn(\'' + id + '\',' + i + ')}catch{}" title="Add group-by column" aria-label="Add group-by column">' + __kustoTransformMiniPlusIconSvg + '</button>' +
+							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoRemoveGroupByColumn(\'' + id + '\',' + i + ')}catch{}" ' + (groupByCols.length <= 1 ? 'disabled' : '') + ' title="Remove group-by column" aria-label="Remove group-by column">' + __kustoTransformMiniTrashIconSvg + '</button>' +
+							'<button type="button" class="section-drag-handle kusto-transform-groupby-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder group-by column" ondragstart="try{__kustoOnGroupByDragStart(\'' + id + '\',' + i + ', event)}catch{}" ondragend="try{__kustoOnGroupByDragEnd(\'' + id + '\', event)}catch{}"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
+						'</div>' +
+					'</div>';
+			}
+			host.innerHTML = html;
 		}
-		__kustoSetCheckboxDropdownText(txt, Array.from(selected));
 	} catch { /* ignore */ }
 
 	// Summarize: aggregations list
@@ -8513,6 +8535,160 @@ function __kustoRemoveTransformationAgg(boxId, index) {
 		}, 80);
 	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Group-by column handlers for Summarize
+function __kustoOnGroupByColumnChanged(boxId, index, value) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.groupByColumns)) st.groupByColumns = [''];
+	if (i >= 0 && i < st.groupByColumns.length) {
+		st.groupByColumns[i] = String(value || '');
+	}
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoAddGroupByColumn(boxId, insertAfterIndex) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.groupByColumns) || st.groupByColumns.length === 0) st.groupByColumns = [''];
+	let insertedIndex = st.groupByColumns.length;
+	if (Number.isFinite(insertAfterIndex) && insertAfterIndex >= 0 && insertAfterIndex < st.groupByColumns.length) {
+		insertedIndex = Math.floor(insertAfterIndex) + 1;
+		st.groupByColumns.splice(insertedIndex, 0, '');
+	} else {
+		st.groupByColumns.push('');
+		insertedIndex = st.groupByColumns.length - 1;
+	}
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try {
+				const el = document.getElementById(id + '_tf_groupby_col_' + insertedIndex);
+				if (el && typeof el.focus === 'function') el.focus();
+			} catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+function __kustoRemoveGroupByColumn(boxId, index) {
+	const id = String(boxId || '');
+	const i = Number(index);
+	if (!id || !Number.isFinite(i)) return;
+	const st = __kustoGetTransformationState(id);
+	if (!Array.isArray(st.groupByColumns)) st.groupByColumns = [''];
+	if (st.groupByColumns.length <= 1) return;
+	st.groupByColumns.splice(i, 1);
+	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try {
+		setTimeout(() => {
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+		}, 0);
+	} catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+// Group-by drag and drop handlers
+function __kustoOnGroupByDragStart(boxId, index, event) {
+	try {
+		const id = String(boxId || '');
+		const i = Number(index);
+		if (!id || !Number.isFinite(i)) return;
+		window.__kustoGroupByDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		try {
+			const e = event;
+			if (e && e.dataTransfer) {
+				e.dataTransfer.effectAllowed = 'move';
+				try { e.dataTransfer.setData('text/plain', 'kusto-groupby'); } catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+		try {
+			const host = document.getElementById(id + '_tf_groupby_rows');
+			if (host) host.classList.add('is-dragging');
+		} catch { /* ignore */ }
+		try { __kustoClearGroupByDropIndicators(id); } catch { /* ignore */ }
+	} catch { /* ignore */ }
+}
+
+function __kustoClearGroupByDropIndicators(boxId) {
+	try {
+		const id = String(boxId || '');
+		const host = document.getElementById(id + '_tf_groupby_rows');
+		if (host) {
+			host.querySelectorAll('.kusto-transform-groupby-row').forEach(r => {
+				r.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+			});
+		}
+	} catch { /* ignore */ }
+}
+
+function __kustoOnGroupByDragOver(boxId, index, event) {
+	try {
+		const e = event;
+		const state = window.__kustoGroupByDragState;
+		if (!state || state.boxId !== boxId) return;
+		if (e && typeof e.preventDefault === 'function') e.preventDefault();
+		const id = String(boxId || '');
+		const i = Number(index);
+		if (!Number.isFinite(i)) return;
+		__kustoClearGroupByDropIndicators(id);
+		const row = e.target.closest('.kusto-transform-groupby-row');
+		if (!row) return;
+		const rect = row.getBoundingClientRect();
+		const midY = rect.top + rect.height / 2;
+		const insertAfter = e.clientY > midY;
+		state.overIndex = Math.floor(i);
+		state.insertAfter = insertAfter;
+		row.classList.add('is-drop-target');
+		row.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
+	} catch { /* ignore */ }
+}
+
+function __kustoOnGroupByDragEnd(boxId, event) {
+	try {
+		const id = String(boxId || '');
+		const host = document.getElementById(id + '_tf_groupby_rows');
+		if (host) host.classList.remove('is-dragging');
+		__kustoClearGroupByDropIndicators(id);
+		window.__kustoGroupByDragState = null;
+	} catch { /* ignore */ }
+}
+
+function __kustoOnGroupByDrop(boxId, index, event) {
+	try {
+		const e = event;
+		if (e && typeof e.preventDefault === 'function') e.preventDefault();
+		const state = window.__kustoGroupByDragState;
+		if (!state || state.boxId !== boxId) return;
+		const id = String(boxId || '');
+		const fromIdx = state.fromIndex;
+		let toIdx = state.overIndex;
+		const insertAfter = state.insertAfter;
+		if (!Number.isFinite(fromIdx) || !Number.isFinite(toIdx)) return;
+		if (insertAfter) toIdx++;
+		if (fromIdx < toIdx) toIdx--;
+		if (fromIdx === toIdx) {
+			__kustoOnGroupByDragEnd(id, e);
+			return;
+		}
+		const st = __kustoGetTransformationState(id);
+		if (!Array.isArray(st.groupByColumns)) st.groupByColumns = [''];
+		const arr = st.groupByColumns;
+		const item = arr.splice(fromIdx, 1)[0];
+		arr.splice(toIdx, 0, item);
+		__kustoOnGroupByDragEnd(id, e);
+		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	} catch { /* ignore */ }
 }
 
 function __kustoOnAggDragStart(boxId, index, event) {
@@ -9901,12 +10077,8 @@ function addTransformationBox(options) {
 									'</div>' +
 									'<div class="kusto-transform-summarize-row kusto-transform-summarize-row-by" data-kusto-no-editor-focus="true">' +
 										'<label>By</label>' +
-										'<div class="select-wrapper kusto-dropdown-wrapper kusto-checkbox-dropdown" id="' + id + '_tf_groupby_wrapper">' +
-											'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_groupby_btn" onclick="try{window.__kustoDropdown.toggleCheckboxMenu(\'' + id + '_tf_groupby_btn\',\'' + id + '_tf_groupby_menu\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-												'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_groupby_text">(none)</span>' +
-												'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-											'</button>' +
-											'<div class="kusto-dropdown-menu kusto-checkbox-menu" id="' + id + '_tf_groupby_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+										'<div class="kusto-transform-groupby-body" data-kusto-no-editor-focus="true">' +
+											'<div id="' + id + '_tf_groupby_rows" class="kusto-transform-groupby-rows" data-kusto-no-editor-focus="true"></div>' +
 										'</div>' +
 									'</div>' +
 								'</div>' +

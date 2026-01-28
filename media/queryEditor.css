@@ -903,6 +903,13 @@
 			font-size: 12px;
 		}
 
+		.kusto-transform-input:focus,
+		.kusto-transform-textarea:focus,
+		.kusto-transform-select:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
 		.kusto-transform-textarea {
 			resize: vertical;
 			min-height: 28px;
@@ -970,7 +977,12 @@
 		}
 
 		.kusto-transform-summarize-row-by {
-			align-items: center;
+			align-items: flex-start;
+		}
+
+		.kusto-transform-summarize-row-by > label {
+			padding-top: 0;
+			margin-top: 4px;
 		}
 
 		.kusto-transform-summarize-row-by .select-wrapper {
@@ -1002,7 +1014,7 @@
 
 		.kusto-transform-agg-name {
 			border-radius: 0;
-			min-width: 140px;
+			min-width: 150px;
 			height: 28px;
 			min-height: 28px;
 			padding-top: 2px;
@@ -1057,6 +1069,81 @@
 		}
 
 		.kusto-transform-agg-row.is-drop-after::after {
+			bottom: -1px;
+		}
+
+		/* Transformation: Group-by rows for Summarize */
+		.kusto-transform-groupby-body {
+			display: flex;
+			flex-direction: column;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.kusto-transform-groupby-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.kusto-transform-groupby-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			position: relative;
+		}
+
+		.kusto-transform-groupby-select {
+			flex: 1;
+			min-width: 120px;
+			border-radius: 0;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-groupby-row-actions {
+			align-self: center;
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			justify-content: flex-end;
+		}
+
+		.kusto-transform-groupby-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-groupby-rows.is-dragging .kusto-transform-groupby-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-groupby-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-groupby-row.is-drop-before::before,
+		.kusto-transform-groupby-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-groupby-row.is-drop-before::before {
+			top: -1px;
+		}
+
+		.kusto-transform-groupby-row.is-drop-after::after {
 			bottom: -1px;
 		}
 
