@@ -682,6 +682,14 @@
 			min-width: var(--kusto-transform-label-width);
 		}
 
+		/* Pivot labels that follow a dropdown need extra left margin for visual spacing
+		   and extra width to fit longer labels like "Aggregation" */
+		.transformation-box label.kusto-pivot-label-spaced {
+			margin-left: 14px;
+			flex: 0 0 calc(var(--kusto-transform-label-width) + 25px);
+			min-width: calc(var(--kusto-transform-label-width) + 25px);
+		}
+
 		.chart-box .query-editor-wrapper {
 			border: none;
 			overflow: visible;
@@ -1507,6 +1515,13 @@
 
 		.kusto-chart-mapping {
 			margin-top: 0;
+		}
+
+		/* Pivot mapping contains multiple chart-rows that need vertical spacing */
+		.transformation-box .kusto-chart-mapping {
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
 		}
 
 		.kusto-chart-mapping-row {
@@ -4261,6 +4276,11 @@
 		.kusto-checkbox-dropdown .kusto-dropdown-btn {
 			padding: 4px 24px 4px 8px;
 			min-height: auto;
+		}
+
+		/* Min-width for transformation dropdowns (except Data which spans full row) */
+		.transformation-box .kusto-chart-mapping .kusto-single-select-dropdown .kusto-dropdown-btn {
+			min-width: 150px;
 		}
 
 		/* Disabled state for unified dropdown buttons */

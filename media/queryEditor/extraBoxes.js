@@ -7658,7 +7658,7 @@ function __kustoGetTransformationState(boxId) {
 				pivotColumnKeyColumn: '',
 				pivotValueColumn: '',
 				pivotAggregation: 'sum',
-				pivotMaxColumns: 50
+				pivotMaxColumns: 100
 			};
 		}
 		// Back-compat migration: if we have a legacy single derive field but no deriveColumns.
@@ -8375,8 +8375,17 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 		if (valSel) __kustoSetSelectOptions(valSel, colNames, String(st.pivotValueColumn || ''), null);
 		const aggSel = document.getElementById(id + '_tf_pivot_agg');
 		if (aggSel && typeof st.pivotAggregation === 'string') aggSel.value = st.pivotAggregation;
-		const maxEl = document.getElementById(id + '_tf_pivot_max');
-		if (maxEl && typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) maxEl.value = String(Math.max(1, Math.floor(st.pivotMaxColumns)));
+		// Sync dropdown button text for custom dropdowns
+		try {
+			const rowTxt = document.getElementById(id + '_tf_pivot_row_text');
+			if (rowTxt && rowSel) rowTxt.textContent = String(rowSel.value || '') || '(select)';
+			const colTxt = document.getElementById(id + '_tf_pivot_col_text');
+			if (colTxt && colSel) colTxt.textContent = String(colSel.value || '') || '(select)';
+			const valTxt = document.getElementById(id + '_tf_pivot_val_text');
+			if (valTxt && valSel) valTxt.textContent = String(valSel.value || '') || '(select)';
+			const aggTxt = document.getElementById(id + '_tf_pivot_agg_text');
+			if (aggTxt && aggSel) aggTxt.textContent = String(aggSel.value || '') || 'sum';
+		} catch { /* ignore */ }
 	} catch { /* ignore */ }
 
 	// Distinct select
@@ -9044,15 +9053,44 @@ function __kustoOnTransformationPivotChanged(boxId) {
 	if (!id) return;
 	const st = __kustoGetTransformationState(id);
 	try {
-		st.pivotRowKeyColumn = String(((document.getElementById(id + '_tf_pivot_row') || {}).value || ''));
-		st.pivotColumnKeyColumn = String(((document.getElementById(id + '_tf_pivot_col') || {}).value || ''));
-		st.pivotValueColumn = String(((document.getElementById(id + '_tf_pivot_val') || {}).value || ''));
-		st.pivotAggregation = String(((document.getElementById(id + '_tf_pivot_agg') || {}).value || 'sum'));
-		const maxEl = document.getElementById(id + '_tf_pivot_max');
-		const n = maxEl ? parseInt(String(maxEl.value || '50'), 10) : 50;
-		st.pivotMaxColumns = Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 50;
+		const rowSel = document.getElementById(id + '_tf_pivot_row');
+		const colSel = document.getElementById(id + '_tf_pivot_col');
+		const valSel = document.getElementById(id + '_tf_pivot_val');
+		const aggSel = document.getElementById(id + '_tf_pivot_agg');
+		st.pivotRowKeyColumn = String((rowSel || {}).value || '');
+		st.pivotColumnKeyColumn = String((colSel || {}).value || '');
+		st.pivotValueColumn = String((valSel || {}).value || '');
+		st.pivotAggregation = String((aggSel || {}).value || 'sum');
+		// Keep max columns at 100 internally (UI removed)
+		st.pivotMaxColumns = 100;
+		// Sync dropdown button text for custom dropdowns
+		try {
+			const rowTxt = document.getElementById(id + '_tf_pivot_row_text');
+			if (rowTxt) rowTxt.textContent = st.pivotRowKeyColumn || '(select)';
+			const colTxt = document.getElementById(id + '_tf_pivot_col_text');
+			if (colTxt) colTxt.textContent = st.pivotColumnKeyColumn || '(select)';
+			const valTxt = document.getElementById(id + '_tf_pivot_val_text');
+			if (valTxt) valTxt.textContent = st.pivotValueColumn || '(select)';
+			const aggTxt = document.getElementById(id + '_tf_pivot_agg_text');
+			if (aggTxt) aggTxt.textContent = st.pivotAggregation || 'sum';
+		} catch { /* ignore */ }
 	} catch { /* ignore */ }
 	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	// When pivot settings change, the results can vary significantly in content and width.
+	// Allow the section to shrink/grow to fit the new contents.
+	try {
+		const runFit = () => {
+			try {
+				const w = document.getElementById(id + '_tf_wrapper');
+				if (!w) return;
+				w.dataset.kustoAutoFitActive = 'true';
+				w.dataset.kustoAutoFitAllowShrink = 'true';
+				__kustoMaybeAutoFitTransformationBox(id);
+				w.dataset.kustoAutoFitAllowShrink = '';
+			} catch { /* ignore */ }
+		};
+		setTimeout(runFit, 0);
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
@@ -9766,7 +9804,7 @@ function __kustoRenderTransformation(boxId) {
 			const colKey = String(st.pivotColumnKeyColumn || '');
 			const valKey = String(st.pivotValueColumn || '');
 			const agg = String(st.pivotAggregation || 'sum');
-			const maxCols = (typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) ? Math.max(1, Math.min(500, Math.floor(st.pivotMaxColumns))) : 50;
+			const maxCols = (typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) ? Math.max(1, Math.min(500, Math.floor(st.pivotMaxColumns))) : 100;
 			if (!rowKey || !colKey) {
 				__kustoRenderTransformationError(id, 'Pick Row key and Column key.');
 				return;
@@ -9982,7 +10020,7 @@ function addTransformationBox(options) {
 	st.pivotColumnKeyColumn = (options && typeof options.pivotColumnKeyColumn === 'string') ? String(options.pivotColumnKeyColumn) : (st.pivotColumnKeyColumn || '');
 	st.pivotValueColumn = (options && typeof options.pivotValueColumn === 'string') ? String(options.pivotValueColumn) : (st.pivotValueColumn || '');
 	st.pivotAggregation = (options && typeof options.pivotAggregation === 'string') ? String(options.pivotAggregation) : (st.pivotAggregation || 'sum');
-	st.pivotMaxColumns = (options && typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns)) ? options.pivotMaxColumns : (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 50);
+	st.pivotMaxColumns = (options && typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns)) ? options.pivotMaxColumns : (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 100);
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -10107,32 +10145,50 @@ function addTransformationBox(options) {
 							'</div>' +
 						'</div>' +
 						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
-							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Row key</label>' +
-									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_row" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-								'</span>' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Column key</label>' +
-									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_col" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-								'</span>' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Value</label>' +
-									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_val" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-								'</span>' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Aggregation</label>' +
-									'<select class="kusto-transform-select" id="' + id + '_tf_pivot_agg" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}">' +
+							'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
+								'<label>Rows</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_row_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_row" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_row_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_row\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_row_text">(select)</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_row_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+								'<label class="kusto-pivot-label-spaced">Columns</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_col_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_col" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_col_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_col\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_col_text">(select)</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_col_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+							'</div>' +
+							'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
+								'<label>Value</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_val_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_val" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_val_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_val\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_val_text">(select)</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_val_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
+								'<label class="kusto-pivot-label-spaced">Aggregation</label>' +
+								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_agg_wrapper">' +
+									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_agg" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}">' +
 										'<option value="sum">sum</option>' +
 										'<option value="avg">avg</option>' +
 										'<option value="count">count</option>' +
 										'<option value="first">first</option>' +
 									'</select>' +
-								'</span>' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Max columns</label>' +
-									'<input type="number" class="kusto-transform-input" id="' + id + '_tf_pivot_max" min="1" max="500" value="50" oninput="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}" />' +
-								'</span>' +
+									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_agg_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_agg\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_agg_text">sum</span>' +
+										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+									'</button>' +
+									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_agg_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+								'</div>' +
 							'</div>' +
 						'</div>' +
 							'</div>' +
