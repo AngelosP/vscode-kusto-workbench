@@ -873,13 +873,6 @@
 			min-width: auto;
 		}
 
-		/* Hide the 'Type' label at narrow widths, but keep the chart type picker visible */
-		@media (max-width: 450px) {
-			.kusto-chart-row-type > label {
-				display: none;
-			}
-		}
-
 		.kusto-chart-row-type {
 			margin-bottom: 0;
 		}
@@ -1113,7 +1106,7 @@
 
 		.kusto-transform-derive-row {
 			display: grid;
-			grid-template-columns: 220px auto 1fr auto;
+			grid-template-columns: minmax(150px, 220px) auto 1fr auto;
 			gap: 8px;
 			align-items: center;
 			border: none;
@@ -1207,27 +1200,19 @@
 		.kusto-transform-derive-name {
 			height: 28px;
 			min-height: 28px;
+			min-width: 150px;
 			padding-top: 2px;
 			padding-bottom: 2px;
 		}
 
 		.kusto-transform-derive-expr {
 			min-height: 28px;
+			min-width: 150px;
 			padding-top: 7px;
 			padding-bottom: 2px;
 		}
 
-		@media (max-width: 720px) {
-			.kusto-transform-derive-row {
-				grid-template-columns: 1fr auto;
-			}
-			.kusto-transform-derive-eq {
-				display: none;
-			}
-			.kusto-transform-derive-expr {
-				grid-column: 1 / -1;
-			}
-		}
+
 
 		.kusto-transform-field {
 			display: flex;
@@ -1302,6 +1287,7 @@
 			align-items: center;
 			gap: 10px;
 			width: 100%;
+			min-width: 0;
 		}
 
 		.kusto-chart-mapping-grid .select-wrapper {
@@ -1314,6 +1300,7 @@
 			align-items: center;
 			gap: 6px;
 			width: 100%;
+			min-width: 0;
 		}
 
 		.kusto-chart-legend-inline .select-wrapper {
@@ -1322,6 +1309,7 @@
 		}
 
 		.kusto-chart-legend-pos-btn {
+			flex-shrink: 0;
 			width: 30px;
 			height: 30px;
 			padding: 0;
@@ -4006,7 +3994,7 @@
 		/* Unified dropdown styling for chart controls (single-select and multi-select) */
 		.kusto-single-select-dropdown,
 		.kusto-checkbox-dropdown {
-			min-width: 140px;
+			min-width: 150px;
 		}
 
 		/* Match native <select> styling for unified dropdown buttons */
