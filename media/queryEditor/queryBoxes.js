@@ -1060,7 +1060,7 @@ function __kustoMaximizeQueryBox(boxId) {
 			if (!resultsContent || !Number.isFinite(resultsContent) || resultsContent <= 0) return;
 
 			// Extra padding: tabular results need a touch more so the last row isn't clipped.
-			const extraPad = hasTable ? 18 : 8; // +10px compared to previous
+			const extraPad = hasTable ? 28 : 8;
 			// NOTE: For large tables, "Fit to contents" must not expand to thousands of rows.
 			// Keep a reasonable max so the table remains scrollable and virtualization can work.
 			const maxDesiredPx = hasTable ? 900 : 200000;

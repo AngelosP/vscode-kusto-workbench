@@ -770,6 +770,11 @@
 			gap: 0;
 		}
 
+		/* Transformation boxes have a smaller gap between controls and results (no chart preview). */
+		.transformation-box .kusto-chart-controls {
+			margin-bottom: 5px;
+		}
+
 		/* Inner scroll wrapper for controls - enables horizontal scrolling at narrow widths
 		   while keeping the background bleed effect on the outer container. */
 		.chart-box .kusto-chart-controls-scroll,

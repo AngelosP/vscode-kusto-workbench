@@ -7996,7 +7996,7 @@ function __kustoComputeTransformationFitHeightPx(boxId) {
 				}
 			} catch { /* ignore */ }
 
-			const extraPad = hasTable ? 28 : 18;
+			const extraPad = hasTable ? 38 : 18;
 			desired = Math.ceil(Math.max(0, controlsH) + resultsWrapperMargins + resultsWrapperBoxExtra + Math.max(0, resultsContentH) + extraPad + tableSlackPx);
 		} catch { /* ignore */ }
 		if (!desired || !Number.isFinite(desired)) {
@@ -8416,16 +8416,23 @@ function __kustoOnTransformationDistinctChanged(boxId) {
 		st.distinctColumn = String(((document.getElementById(id + '_tf_distinct_col') || {}).value || ''));
 	} catch { /* ignore */ }
 	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	// When the distinct column changes, the results can vary significantly in content and width.
+	// Allow the section to shrink/grow to fit the new contents.
 	try {
-		setTimeout(() => {
+		const runFit = () => {
 			try {
 				const w = document.getElementById(id + '_tf_wrapper');
-				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
+				if (!w) return;
+				const userResized = String(w.dataset.kustoUserResized || '') === 'true';
+				if (!userResized) {
 					w.dataset.kustoAutoFitActive = 'true';
+					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
 			} catch { /* ignore */ }
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
-		}, 0);
+		};
+		setTimeout(runFit, 0);
+		setTimeout(runFit, 80);
 	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
