@@ -7361,12 +7361,181 @@ const __kustoTransformMiniTrashIconSvg =
 	'<path d="M9 7.4v4.6"/>' +
 	'</svg>';
 
+// Rich tooltip content for calculated column expression help
+const __kustoTransformExpressionHelpHtml =
+	'<div class="kusto-transform-expr-help-tooltip">' +
+		'<div class="kusto-transform-expr-help-title">Expression Syntax</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">Column References</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>[ColumnName]</code></td><td>Reference a column by name</td></tr>' +
+				'<tr><td><code>ColumnName</code></td><td>Also works for simple names</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">Operators</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>+</code></td><td>Add numbers or concatenate strings</td></tr>' +
+				'<tr><td><code>-</code></td><td>Subtract</td></tr>' +
+				'<tr><td><code>*</code></td><td>Multiply</td></tr>' +
+				'<tr><td><code>/</code></td><td>Divide</td></tr>' +
+				'<tr><td><code>( )</code></td><td>Grouping for precedence</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">Math Functions</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>round(val, digits)</code></td><td>Round to N decimal places</td></tr>' +
+				'<tr><td><code>floor(val)</code></td><td>Round down to integer</td></tr>' +
+				'<tr><td><code>ceiling(val)</code></td><td>Round up to integer</td></tr>' +
+				'<tr><td><code>abs(val)</code></td><td>Absolute value</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">String Functions</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>len(text)</code></td><td>Length of string</td></tr>' +
+				'<tr><td><code>trim(text)</code></td><td>Remove leading/trailing spaces</td></tr>' +
+				'<tr><td><code>toupper(text)</code></td><td>Convert to uppercase</td></tr>' +
+				'<tr><td><code>tolower(text)</code></td><td>Convert to lowercase</td></tr>' +
+				'<tr><td><code>substring(text, start, len)</code></td><td>Extract substring (0-based)</td></tr>' +
+				'<tr><td><code>replace(text, old, new)</code></td><td>Replace occurrences</td></tr>' +
+				'<tr><td><code>indexof(text, search)</code></td><td>Find position (-1 if not found)</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">Date Functions</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>now()</code></td><td>Current date/time</td></tr>' +
+				'<tr><td><code>datetime(text)</code></td><td>Parse date string</td></tr>' +
+				'<tr><td><code>format_datetime(dt, fmt)</code></td><td>Format date (yyyy, MM, dd, etc.)</td></tr>' +
+				'<tr><td><code>getyear(dt)</code></td><td>Get year</td></tr>' +
+				'<tr><td><code>getmonth(dt)</code></td><td>Get month (1-12)</td></tr>' +
+				'<tr><td><code>getday(dt)</code></td><td>Get day of month</td></tr>' +
+				'<tr><td><code>dayofweek(dt)</code></td><td>Day of week (0=Sun)</td></tr>' +
+				'<tr><td><code>startofday(dt)</code></td><td>Start of day (midnight)</td></tr>' +
+				'<tr><td><code>startofweek(dt)</code></td><td>Start of week (Sunday)</td></tr>' +
+				'<tr><td><code>startofmonth(dt)</code></td><td>Start of month</td></tr>' +
+				'<tr><td><code>startofyear(dt)</code></td><td>Start of year</td></tr>' +
+				'<tr><td><code>datetime_add(unit, n, dt)</code></td><td>Add time (year/month/day/hour/minute)</td></tr>' +
+				'<tr><td><code>datetime_diff(unit, dt1, dt2)</code></td><td>Difference between dates</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section">' +
+			'<div class="kusto-transform-expr-help-subtitle">Conversion</div>' +
+			'<table class="kusto-transform-expr-help-table">' +
+				'<tr><td><code>tostring(val)</code></td><td>Convert to string</td></tr>' +
+				'<tr><td><code>tonumber(val)</code></td><td>Convert to number</td></tr>' +
+				'<tr><td><code>coalesce(a, b)</code></td><td>First non-empty value</td></tr>' +
+			'</table>' +
+		'</div>' +
+		'<div class="kusto-transform-expr-help-section kusto-transform-expr-help-examples">' +
+			'<div class="kusto-transform-expr-help-subtitle">Examples</div>' +
+			'<code>[Price] * 1.1</code>' +
+			'<code>round([Amount] / 100, 2)</code>' +
+			'<code>toupper(trim([Name]))</code>' +
+			'<code>startofmonth([Date])</code>' +
+			'<code>coalesce([Value], 0)</code>' +
+		'</div>' +
+	'</div>';
+
 const __kustoTransformationTypeLabels = {
 	derive: 'Calc. Column',
 	summarize: 'Summarize',
 	distinct: 'Distinct',
 	pivot: 'Pivot'
 };
+
+// Tooltip state and functions for expression help
+let __kustoExprHelpTooltipEl = null;
+let __kustoExprHelpTooltipTimer = null;
+
+function __kustoShowExpressionHelpTooltip(textareaEl, event) {
+	// Clear any pending hide timer
+	if (__kustoExprHelpTooltipTimer) {
+		clearTimeout(__kustoExprHelpTooltipTimer);
+		__kustoExprHelpTooltipTimer = null;
+	}
+
+	// Create tooltip element if it doesn't exist
+	if (!__kustoExprHelpTooltipEl) {
+		__kustoExprHelpTooltipEl = document.createElement('div');
+		__kustoExprHelpTooltipEl.className = 'kusto-transform-expr-help-tooltip-container';
+		__kustoExprHelpTooltipEl.innerHTML = __kustoTransformExpressionHelpHtml;
+		document.body.appendChild(__kustoExprHelpTooltipEl);
+
+		// Keep tooltip open when hovering over it
+		__kustoExprHelpTooltipEl.addEventListener('mouseenter', function() {
+			if (__kustoExprHelpTooltipTimer) {
+				clearTimeout(__kustoExprHelpTooltipTimer);
+				__kustoExprHelpTooltipTimer = null;
+			}
+		});
+		__kustoExprHelpTooltipEl.addEventListener('mouseleave', function() {
+			__kustoHideExpressionHelpTooltip();
+		});
+	}
+
+	// Position the tooltip - always fully above or below the textarea, never overlapping
+	const rect = textareaEl.getBoundingClientRect();
+	const tooltipWidth = 380;
+	const tooltipHeight = 480; // max-height from CSS
+
+	// Calculate horizontal position
+	let left = rect.left;
+	if (left + tooltipWidth > window.innerWidth - 10) {
+		left = window.innerWidth - tooltipWidth - 10;
+	}
+	if (left < 10) left = 10;
+
+	// Decide: show below if there's room, otherwise show above
+	const spaceBelow = window.innerHeight - rect.bottom;
+	const spaceAbove = rect.top;
+	let top;
+
+	if (spaceBelow >= tooltipHeight + 8) {
+		// Enough space below - show below the textarea
+		top = rect.bottom + 6;
+	} else if (spaceAbove >= tooltipHeight + 8) {
+		// Enough space above - show above the textarea
+		top = rect.top - tooltipHeight - 6;
+	} else {
+		// Not enough space either way - pick the side with more space
+		if (spaceBelow >= spaceAbove) {
+			top = rect.bottom + 6;
+		} else {
+			top = Math.max(10, rect.top - tooltipHeight - 6);
+		}
+	}
+
+	__kustoExprHelpTooltipEl.style.left = left + 'px';
+	__kustoExprHelpTooltipEl.style.top = top + 'px';
+	__kustoExprHelpTooltipEl.classList.add('is-visible');
+}
+
+function __kustoHideExpressionHelpTooltip() {
+	// Delay hiding slightly so user can move mouse to tooltip
+	if (__kustoExprHelpTooltipTimer) {
+		clearTimeout(__kustoExprHelpTooltipTimer);
+	}
+	__kustoExprHelpTooltipTimer = setTimeout(function() {
+		if (__kustoExprHelpTooltipEl) {
+			__kustoExprHelpTooltipEl.classList.remove('is-visible');
+		}
+		__kustoExprHelpTooltipTimer = null;
+	}, 150);
+}
+
+function __kustoHideExpressionHelpTooltipImmediate() {
+	// Hide immediately when user clicks/focuses on input
+	if (__kustoExprHelpTooltipTimer) {
+		clearTimeout(__kustoExprHelpTooltipTimer);
+		__kustoExprHelpTooltipTimer = null;
+	}
+	if (__kustoExprHelpTooltipEl) {
+		__kustoExprHelpTooltipEl.classList.remove('is-visible');
+	}
+}
 
 function __kustoGetTransformationState(boxId) {
 	try {
@@ -8007,7 +8176,7 @@ function __kustoUpdateTransformationBuilderUI(boxId) {
 					'<div class="kusto-transform-derive-row" data-kusto-no-editor-focus="true" ondragover="try{__kustoOnDeriveDragOver(\'' + id + '\',' + i + ', event)}catch{}" ondrop="try{__kustoOnDeriveDrop(\'' + id + '\',' + i + ', event)}catch{}">' +
 						'<input id="' + nameInputId + '" type="text" class="kusto-transform-input kusto-transform-derive-name" value="' + escName + '" placeholder="Column name" aria-label="New column name" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'name\', this.value)}catch{}" />' +
 						'<span class="kusto-transform-derive-eq" aria-hidden="true">=</span>' +
-						'<textarea id="' + exprInputId + '" class="kusto-transform-textarea kusto-transform-derive-expr" rows="1" placeholder="Expression (e.g. [Amount] * 1.2)" aria-label="Expression" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'expression\', this.value)}catch{}">' + escExpr + '</textarea>' +
+						'<textarea id="' + exprInputId + '" class="kusto-transform-textarea kusto-transform-derive-expr" rows="1" placeholder="Expression (e.g. [Amount] * 1.2)" aria-label="Expression" oninput="try{__kustoOnCalculatedColumnChanged(\'' + id + '\',' + i + ',\'expression\', this.value)}catch{}" onmouseenter="__kustoShowExpressionHelpTooltip(this, event)" onmouseleave="__kustoHideExpressionHelpTooltip()" onfocus="__kustoHideExpressionHelpTooltipImmediate()">' + escExpr + '</textarea>' +
 						'<div class="kusto-transform-derive-row-actions" data-kusto-no-editor-focus="true">' +
 							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoAddCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" title="Add column" aria-label="Add column">' + __kustoTransformMiniPlusIconSvg + '</button>' +
 							'<button type="button" class="unified-btn-secondary unified-btn-icon-only kusto-transform-mini-btn" onclick="try{__kustoRemoveCalculatedColumn(\'' + id + '\',' + i + ')}catch{}" ' + (st.deriveColumns.length <= 1 ? 'disabled' : '') + ' title="Remove column" aria-label="Remove column">' + __kustoTransformMiniTrashIconSvg + '</button>' +
@@ -8622,6 +8791,41 @@ function __kustoTryParseFiniteNumber(v) {
 	}
 }
 
+function __kustoTryParseDate(v) {
+	try {
+		if (v === null || v === undefined) return null;
+		if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+		const d = new Date(v);
+		return isNaN(d.getTime()) ? null : d;
+	} catch {
+		return null;
+	}
+}
+
+function __kustoFormatDate(d, fmt) {
+	try {
+		if (!d || !(d instanceof Date)) return null;
+		const pad = (n, len) => String(n).padStart(len || 2, '0');
+		return fmt
+			.replace(/yyyy/g, d.getFullYear())
+			.replace(/yy/g, String(d.getFullYear()).slice(-2))
+			.replace(/MM/g, pad(d.getMonth() + 1))
+			.replace(/M/g, d.getMonth() + 1)
+			.replace(/dd/g, pad(d.getDate()))
+			.replace(/d/g, d.getDate())
+			.replace(/HH/g, pad(d.getHours()))
+			.replace(/H/g, d.getHours())
+			.replace(/hh/g, pad(d.getHours() % 12 || 12))
+			.replace(/h/g, d.getHours() % 12 || 12)
+			.replace(/mm/g, pad(d.getMinutes()))
+			.replace(/m/g, d.getMinutes())
+			.replace(/ss/g, pad(d.getSeconds()))
+			.replace(/s/g, d.getSeconds());
+	} catch {
+		return null;
+	}
+}
+
 function __kustoGetRawCellValueForTransform(cell) {
 	try { return __kustoGetRawCellValueForChart(cell); } catch { /* ignore */ }
 	try {
@@ -8829,6 +9033,144 @@ function __kustoEvalRpn(rpn, env) {
 		if (f === 'len') {
 			return String(args.length ? args[0] ?? '' : '').length;
 		}
+		if (f === 'round') {
+			const val = __kustoTryParseFiniteNumber(args.length ? args[0] : null);
+			if (val === null) return null;
+			const digits = args.length > 1 ? __kustoTryParseFiniteNumber(args[1]) : 0;
+			if (digits === null || digits < 0 || !Number.isInteger(digits)) {
+				// Invalid digits - default to 0 decimal places
+				return Math.round(val);
+			}
+			const factor = Math.pow(10, digits);
+			return Math.round(val * factor) / factor;
+		}
+		if (f === 'floor') {
+			const val = __kustoTryParseFiniteNumber(args.length ? args[0] : null);
+			return val === null ? null : Math.floor(val);
+		}
+		if (f === 'ceiling' || f === 'ceil') {
+			const val = __kustoTryParseFiniteNumber(args.length ? args[0] : null);
+			return val === null ? null : Math.ceil(val);
+		}
+		if (f === 'abs') {
+			const val = __kustoTryParseFiniteNumber(args.length ? args[0] : null);
+			return val === null ? null : Math.abs(val);
+		}
+		// String functions
+		if (f === 'trim') {
+			return String(args.length ? args[0] ?? '' : '').trim();
+		}
+		if (f === 'toupper' || f === 'upper') {
+			return String(args.length ? args[0] ?? '' : '').toUpperCase();
+		}
+		if (f === 'tolower' || f === 'lower') {
+			return String(args.length ? args[0] ?? '' : '').toLowerCase();
+		}
+		if (f === 'substring') {
+			const text = String(args.length ? args[0] ?? '' : '');
+			const start = args.length > 1 ? __kustoTryParseFiniteNumber(args[1]) : 0;
+			const len = args.length > 2 ? __kustoTryParseFiniteNumber(args[2]) : undefined;
+			if (start === null) return null;
+			if (len !== undefined && len !== null) {
+				return text.substring(start, start + len);
+			}
+			return text.substring(start);
+		}
+		if (f === 'replace') {
+			const text = String(args.length ? args[0] ?? '' : '');
+			const oldStr = String(args.length > 1 ? args[1] ?? '' : '');
+			const newStr = String(args.length > 2 ? args[2] ?? '' : '');
+			return text.split(oldStr).join(newStr);
+		}
+		if (f === 'indexof') {
+			const text = String(args.length ? args[0] ?? '' : '');
+			const search = String(args.length > 1 ? args[1] ?? '' : '');
+			return text.indexOf(search);
+		}
+		// Date functions
+		if (f === 'now') {
+			return new Date();
+		}
+		if (f === 'datetime') {
+			const val = args.length ? args[0] : null;
+			if (val === null || val === undefined) return null;
+			if (val instanceof Date) return val;
+			const d = new Date(val);
+			return isNaN(d.getTime()) ? null : d;
+		}
+		if (f === 'getyear') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			return d ? d.getFullYear() : null;
+		}
+		if (f === 'getmonth') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			return d ? (d.getMonth() + 1) : null;
+		}
+		if (f === 'getday') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			return d ? d.getDate() : null;
+		}
+		if (f === 'dayofweek') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			return d ? d.getDay() : null;
+		}
+		if (f === 'format_datetime') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			if (!d) return null;
+			const fmt = String(args.length > 1 ? args[1] ?? '' : 'yyyy-MM-dd');
+			return __kustoFormatDate(d, fmt);
+		}
+		if (f === 'datetime_add') {
+			const unit = String(args.length ? args[0] ?? '' : '').toLowerCase();
+			const amount = args.length > 1 ? __kustoTryParseFiniteNumber(args[1]) : 0;
+			const d = __kustoTryParseDate(args.length > 2 ? args[2] : null);
+			if (!d || amount === null) return null;
+			const result = new Date(d.getTime());
+			if (unit === 'year') result.setFullYear(result.getFullYear() + amount);
+			else if (unit === 'month') result.setMonth(result.getMonth() + amount);
+			else if (unit === 'day') result.setDate(result.getDate() + amount);
+			else if (unit === 'hour') result.setHours(result.getHours() + amount);
+			else if (unit === 'minute') result.setMinutes(result.getMinutes() + amount);
+			else if (unit === 'second') result.setSeconds(result.getSeconds() + amount);
+			else return null;
+			return result;
+		}
+		if (f === 'datetime_diff') {
+			const unit = String(args.length ? args[0] ?? '' : '').toLowerCase();
+			const d1 = __kustoTryParseDate(args.length > 1 ? args[1] : null);
+			const d2 = __kustoTryParseDate(args.length > 2 ? args[2] : null);
+			if (!d1 || !d2) return null;
+			const diffMs = d1.getTime() - d2.getTime();
+			if (unit === 'year') return Math.floor(diffMs / (365.25 * 24 * 60 * 60 * 1000));
+			if (unit === 'month') return Math.floor(diffMs / (30.44 * 24 * 60 * 60 * 1000));
+			if (unit === 'day') return Math.floor(diffMs / (24 * 60 * 60 * 1000));
+			if (unit === 'hour') return Math.floor(diffMs / (60 * 60 * 1000));
+			if (unit === 'minute') return Math.floor(diffMs / (60 * 1000));
+			if (unit === 'second') return Math.floor(diffMs / 1000);
+			return null;
+		}
+		if (f === 'startofday') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			if (!d) return null;
+			return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+		}
+		if (f === 'startofweek') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			if (!d) return null;
+			const result = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+			result.setDate(result.getDate() - result.getDay()); // Subtract days to get to Sunday
+			return result;
+		}
+		if (f === 'startofmonth') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			if (!d) return null;
+			return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+		}
+		if (f === 'startofyear') {
+			const d = __kustoTryParseDate(args.length ? args[0] : null);
+			if (!d) return null;
+			return new Date(d.getFullYear(), 0, 1, 0, 0, 0, 0);
+		}
 		throw new Error('Unknown function: ' + fnName);
 	};
 	for (const tok of rpn) {
@@ -8878,13 +9220,45 @@ function __kustoEvalRpn(rpn, env) {
 			throw new Error('Unsupported operator: ' + tok.v);
 		}
 		if (tok.t === 'fn') {
-			// Heuristic: pop up to 3 args if they were pushed since last '(' isn't tracked.
-			// To keep this safe/simple, only support 1-3 args by reading an arity hint from name.
+			// Heuristic: pop up to N args if they were pushed since last '(' isn't tracked.
+			// To keep this safe/simple, we define the arity for each supported function.
 			const name = String(tok.v || '');
 			const lower = name.toLowerCase();
-			let argc = 1;
-			if (lower === 'coalesce') argc = 2;
-			if (lower === 'len' || lower === 'tostring' || lower === 'tonumber') argc = 1;
+			const fnArgCounts = {
+				'coalesce': 2,
+				'len': 1,
+				'tostring': 1,
+				'tonumber': 1,
+				'round': 2,
+				'floor': 1,
+				'ceiling': 1,
+				'ceil': 1,
+				'abs': 1,
+				// String functions
+				'trim': 1,
+				'toupper': 1,
+				'upper': 1,
+				'tolower': 1,
+				'lower': 1,
+				'substring': 3,
+				'replace': 3,
+				'indexof': 2,
+				// Date functions
+				'now': 0,
+				'datetime': 1,
+				'getyear': 1,
+				'getmonth': 1,
+				'getday': 1,
+				'dayofweek': 1,
+				'startofday': 1,
+				'startofweek': 1,
+				'startofmonth': 1,
+				'startofyear': 1,
+				'format_datetime': 2,
+				'datetime_add': 3,
+				'datetime_diff': 3
+			};
+			const argc = fnArgCounts[lower] ?? 1;
 			const args = [];
 			for (let k = 0; k < argc; k++) args.unshift(stack.pop());
 			stack.push(callFn(name, args));

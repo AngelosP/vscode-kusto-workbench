@@ -1212,6 +1212,97 @@
 			padding-bottom: 2px;
 		}
 
+		/* Expression help icon and tooltip */
+		.kusto-transform-expr-help-tooltip-container {
+			position: fixed;
+			z-index: 10000;
+			max-width: 380px;
+			max-height: 480px;
+			overflow: auto;
+			background: var(--vscode-editorHoverWidget-background, #252526);
+			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+			border-radius: 6px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+			padding: 0;
+			display: none;
+			pointer-events: auto;
+		}
+
+		.kusto-transform-expr-help-tooltip-container.is-visible {
+			display: block;
+		}
+
+		.kusto-transform-expr-help-tooltip {
+			padding: 12px 14px;
+		}
+
+		.kusto-transform-expr-help-title {
+			font-size: 13px;
+			font-weight: 600;
+			color: var(--vscode-foreground);
+			margin-bottom: 12px;
+			padding-bottom: 8px;
+			border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+		}
+
+		.kusto-transform-expr-help-section {
+			margin-bottom: 10px;
+		}
+
+		.kusto-transform-expr-help-section:last-child {
+			margin-bottom: 0;
+		}
+
+		.kusto-transform-expr-help-subtitle {
+			font-size: 10px;
+			font-weight: 600;
+			color: var(--vscode-textLink-foreground, #4fc1ff);
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			margin-bottom: 4px;
+		}
+
+		.kusto-transform-expr-help-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 11.5px;
+		}
+
+		.kusto-transform-expr-help-table td {
+			padding: 2px 0;
+			vertical-align: top;
+		}
+
+		.kusto-transform-expr-help-table td:first-child {
+			white-space: nowrap;
+			padding-right: 12px;
+			width: 1%;
+		}
+
+		.kusto-transform-expr-help-table td:last-child {
+			color: color-mix(in srgb, var(--vscode-foreground) 75%, transparent);
+		}
+
+		.kusto-transform-expr-help-table code,
+		.kusto-transform-expr-help-tooltip code {
+			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+			font-size: 11px;
+			background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.1));
+			padding: 1px 4px;
+			border-radius: 3px;
+			color: var(--vscode-textPreformat-foreground, #d7ba7d);
+		}
+
+		.kusto-transform-expr-help-examples {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+
+		.kusto-transform-expr-help-examples code {
+			display: block;
+		}
+
 
 
 		.kusto-transform-field {

@@ -31,7 +31,7 @@ The extension runs in VS Code's extension host and consists of:
 | File | Purpose |
 | ---- | ------- |
 | `extension.ts` | Entry point. Registers providers, commands, and diagnostics |
-| `queryEditorProvider.ts` | **Core class (\~3700 lines)**. Manages the webview panel, handles all webview↔extension messages, query execution, Copilot integration |
+| `queryEditorProvider.ts` | **Core class (\~4500 lines)**. Manages the webview panel, handles all webview↔extension messages, query execution, Copilot integration |
 | `kustoClient.ts` | Azure Kusto client wrapper. Authentication, query execution, schema fetching, caching |
 | `connectionManager.ts` | Persists Kusto cluster connections in VS Code global state |
 | `kqlxEditorProvider.ts` | Custom editor for `.kqlx` and `.mdx` notebook files |
@@ -39,7 +39,12 @@ The extension runs in VS Code's extension host and consists of:
 | `mdCompatEditorProvider.ts` | Custom editor for `.md` files with embedded KQL |
 | `kqlxFormat.ts` | Type definitions for the `.kqlx` JSON file format (`KqlxSectionV1`, `KqlxStateV1`) |
 | `schemaCache.ts` | Disk-based caching for database schemas |
+| `schemaIndexUtils.ts` | Schema formatting utilities for compact text representation |
 | `kqlSchemaInference.ts` | Extracts table/function references from KQL for schema matching |
+| `queryEditorHtml.ts` | HTML rendering for the query editor webview |
+| `selectionTracker.ts` | Tracks text editor selections for compatibility mode |
+| `diffViewerUtils.ts` | Utilities for rendering diff views |
+| `cachedValuesViewer.ts` | Cached values viewer panel |
 
 ### KQL Language Service (`src/kqlLanguageService/`)
 
@@ -58,7 +63,7 @@ The notebook UI runs as a VS Code webview. Key files:
 | File | Purpose |
 | ---- | ------- |
 | `main.js` | Event handlers, keyboard shortcuts, modal dialogs |
-| `queryBoxes.js` | **Core UI (\~6400 lines)**. Query box creation, Monaco editor setup, toolbar, results |
+| `queryBoxes.js` | **Core UI (\~7300 lines)**. Query box creation, Monaco editor setup, toolbar, results |
 | `monaco.js` | Monaco Editor configuration (\~10000 lines). KQL completions, column inference |
 | `state.js` | Global state: connections, editors, schemas, caches |
 | `resultsTable.js` | Query results rendering with virtual scrolling |
@@ -67,6 +72,13 @@ The notebook UI runs as a VS Code webview. Key files:
 | `persistence.js` | State serialization for `.kqlx` files |
 | `copilotQueryBoxes.js` | Copilot chat integration UI |
 | `extraBoxes.js` | Markdown, Python, URL, and Chart section types |
+| `dropdown.js` | Custom dropdown/menu component |
+| `cellViewer.js` | Cell viewer for detailed cell inspection |
+| `columnAnalysis.js` | Column analysis utilities |
+| `objectViewer.js` | Object/JSON viewer modal |
+| `diffView.js` | Diff view rendering |
+| `searchControl.js` | Search control component |
+| `utils.js` | Shared utility functions |
 
 ## File Formats
 
@@ -123,7 +135,7 @@ KustoConnection {
 ## 'Copilot Chat' feature
 
 * The 'Copilot Chat' feauture in our application is an integration with an LLM via VS Code's Copilot API.
-* The UX is a chat window that opens up along side the Kusto query editor, inside a Kusto section. It has a main content view where the conversation with the LLM takes place, a textbox for the user to type the request, and two buttons called 'Send', and 'Cancel'.
+* The UX is a chat window that opens up along side the Kusto query editor, inside a Kusto section. It has a main content view where the conversation with the LLM takes place, a textbox for the user to type the request, and two buttons called 'Send', and 'Cancel'. In the header, there is also a 'Clear' button (with a clear-all icon) that allows users to reset the conversation history.
 * The LLM has access to two categories of tools: 'Optional' and 'Final Step'. The 'Optional' category contains tools that the LLM can choose to use zero or multiple times, it's completely up to it. The 'Final Step' category contains the tools that the LLM needs to use to provide its reponse to the user.
 
 **How to manage the convesation history with the LLM**
@@ -148,6 +160,8 @@ Tests are in `src/test/`. Run with `npm test`.
 | `kqlCompletionFunctions.test.ts` | Function completion |
 | `kqlSchemaInference.test.ts` | Table/function extraction from queries |
 | `kqlCompatInference.test.ts` | Schema inference for compatibility mode |
+| `kqlPrettify.test.ts` | KQL prettification/formatting |
+| `kqlSidecar.test.ts` | Sidecar .kql.json file strategy |
 
 ## Build System
 
