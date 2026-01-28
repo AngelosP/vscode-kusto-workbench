@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-28-01
 
 * Many UX improvements for **Charts**. Biggest change is the ability to click on X or Y axis and configure additional settings. Still WIP, so more improvements to come.
 * Many UX improvements for **Transformation**. Still WIP, so more improvements to come.
