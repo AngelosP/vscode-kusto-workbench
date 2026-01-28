@@ -7364,78 +7364,96 @@ const __kustoTransformMiniTrashIconSvg =
 // Rich tooltip content for calculated column expression help
 const __kustoTransformExpressionHelpHtml =
 	'<div class="kusto-transform-expr-help-tooltip">' +
-		'<div class="kusto-transform-expr-help-title">Expression Syntax</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">Column References</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>[ColumnName]</code></td><td>Reference a column by name</td></tr>' +
-				'<tr><td><code>ColumnName</code></td><td>Also works for simple names</td></tr>' +
-			'</table>' +
+		'<div class="kusto-transform-expr-help-header">' +
+			'<span class="kusto-transform-expr-help-title">Expression Syntax</span>' +
 		'</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">Operators</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>+</code></td><td>Add numbers or concatenate strings</td></tr>' +
-				'<tr><td><code>-</code></td><td>Subtract</td></tr>' +
-				'<tr><td><code>*</code></td><td>Multiply</td></tr>' +
-				'<tr><td><code>/</code></td><td>Divide</td></tr>' +
-				'<tr><td><code>( )</code></td><td>Grouping for precedence</td></tr>' +
-			'</table>' +
+		'<div class="kusto-transform-expr-help-grid">' +
+			// Left column
+			'<div class="kusto-transform-expr-help-col">' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">References</span>' +
+					'<span class="kusto-transform-expr-help-item"><code data-ex="[ColumnName]">[Col]</code> or <code data-ex="ColumnName">Col</code></span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Operators</span>' +
+					'<span class="kusto-transform-expr-help-ops">' +
+						'<code data-ex="[Price] + [Tax]">+</code>' +
+						'<code data-ex="[Total] - [Discount]">-</code>' +
+						'<code data-ex="[Qty] * [UnitPrice]">*</code>' +
+						'<code data-ex="[Amount] / 100">/</code>' +
+						'<code data-ex="([A] + [B]) * [C]">( )</code>' +
+					'</span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Math</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="round([Price], 2)">round</code>' +
+						'<code data-ex="floor([Value])">floor</code>' +
+						'<code data-ex="ceiling([Score])">ceiling</code>' +
+						'<code data-ex="abs([Delta])">abs</code>' +
+					'</span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">String</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="len([Name])">len</code>' +
+						'<code data-ex="trim([Text])">trim</code>' +
+						'<code data-ex="toupper([Code])">toupper</code>' +
+						'<code data-ex="tolower([Email])">tolower</code>' +
+						'<code data-ex="substring([Str], 0, 5)">substring</code>' +
+						'<code data-ex="replace([Path], &apos;/&apos;, &apos;-&apos;)">replace</code>' +
+						'<code data-ex="indexof([Text], &apos;@&apos;)">indexof</code>' +
+					'</span>' +
+				'</div>' +
+			'</div>' +
+			// Right column
+			'<div class="kusto-transform-expr-help-col">' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Date</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="now()">now</code>' +
+						'<code data-ex="datetime(&apos;2024-01-15&apos;)">datetime</code>' +
+						'<code data-ex="format_datetime([Date], &apos;yyyy-MM-dd&apos;)">format_datetime</code>' +
+						'<code data-ex="getyear([Date])">getyear</code>' +
+						'<code data-ex="getmonth([Date])">getmonth</code>' +
+						'<code data-ex="getday([Date])">getday</code>' +
+						'<code data-ex="dayofweek([Date])">dayofweek</code>' +
+					'</span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Truncate</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="startofday([Timestamp])">startofday</code>' +
+						'<code data-ex="startofweek([Date])">startofweek</code>' +
+						'<code data-ex="startofmonth([Date])">startofmonth</code>' +
+						'<code data-ex="startofyear([Date])">startofyear</code>' +
+					'</span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Date Math</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="datetime_add(&apos;day&apos;, 7, [Date])">datetime_add</code>' +
+						'<code data-ex="datetime_diff(&apos;day&apos;, [End], [Start])">datetime_diff</code>' +
+					'</span>' +
+				'</div>' +
+				'<div class="kusto-transform-expr-help-group">' +
+					'<span class="kusto-transform-expr-help-label">Convert</span>' +
+					'<span class="kusto-transform-expr-help-funcs">' +
+						'<code data-ex="tostring([Id])">tostring</code>' +
+						'<code data-ex="tonumber([Str])">tonumber</code>' +
+						'<code data-ex="coalesce([Value], 0)">coalesce</code>' +
+					'</span>' +
+				'</div>' +
+			'</div>' +
 		'</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">Math Functions</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>round(val, digits)</code></td><td>Round to N decimal places</td></tr>' +
-				'<tr><td><code>floor(val)</code></td><td>Round down to integer</td></tr>' +
-				'<tr><td><code>ceiling(val)</code></td><td>Round up to integer</td></tr>' +
-				'<tr><td><code>abs(val)</code></td><td>Absolute value</td></tr>' +
-			'</table>' +
-		'</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">String Functions</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>len(text)</code></td><td>Length of string</td></tr>' +
-				'<tr><td><code>trim(text)</code></td><td>Remove leading/trailing spaces</td></tr>' +
-				'<tr><td><code>toupper(text)</code></td><td>Convert to uppercase</td></tr>' +
-				'<tr><td><code>tolower(text)</code></td><td>Convert to lowercase</td></tr>' +
-				'<tr><td><code>substring(text, start, len)</code></td><td>Extract substring (0-based)</td></tr>' +
-				'<tr><td><code>replace(text, old, new)</code></td><td>Replace occurrences</td></tr>' +
-				'<tr><td><code>indexof(text, search)</code></td><td>Find position (-1 if not found)</td></tr>' +
-			'</table>' +
-		'</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">Date Functions</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>now()</code></td><td>Current date/time</td></tr>' +
-				'<tr><td><code>datetime(text)</code></td><td>Parse date string</td></tr>' +
-				'<tr><td><code>format_datetime(dt, fmt)</code></td><td>Format date (yyyy, MM, dd, etc.)</td></tr>' +
-				'<tr><td><code>getyear(dt)</code></td><td>Get year</td></tr>' +
-				'<tr><td><code>getmonth(dt)</code></td><td>Get month (1-12)</td></tr>' +
-				'<tr><td><code>getday(dt)</code></td><td>Get day of month</td></tr>' +
-				'<tr><td><code>dayofweek(dt)</code></td><td>Day of week (0=Sun)</td></tr>' +
-				'<tr><td><code>startofday(dt)</code></td><td>Start of day (midnight)</td></tr>' +
-				'<tr><td><code>startofweek(dt)</code></td><td>Start of week (Sunday)</td></tr>' +
-				'<tr><td><code>startofmonth(dt)</code></td><td>Start of month</td></tr>' +
-				'<tr><td><code>startofyear(dt)</code></td><td>Start of year</td></tr>' +
-				'<tr><td><code>datetime_add(unit, n, dt)</code></td><td>Add time (year/month/day/hour/minute)</td></tr>' +
-				'<tr><td><code>datetime_diff(unit, dt1, dt2)</code></td><td>Difference between dates</td></tr>' +
-			'</table>' +
-		'</div>' +
-		'<div class="kusto-transform-expr-help-section">' +
-			'<div class="kusto-transform-expr-help-subtitle">Conversion</div>' +
-			'<table class="kusto-transform-expr-help-table">' +
-				'<tr><td><code>tostring(val)</code></td><td>Convert to string</td></tr>' +
-				'<tr><td><code>tonumber(val)</code></td><td>Convert to number</td></tr>' +
-				'<tr><td><code>coalesce(a, b)</code></td><td>First non-empty value</td></tr>' +
-			'</table>' +
-		'</div>' +
-		'<div class="kusto-transform-expr-help-section kusto-transform-expr-help-examples">' +
-			'<div class="kusto-transform-expr-help-subtitle">Examples</div>' +
-			'<code>[Price] * 1.1</code>' +
-			'<code>round([Amount] / 100, 2)</code>' +
-			'<code>toupper(trim([Name]))</code>' +
-			'<code>startofmonth([Date])</code>' +
-			'<code>coalesce([Value], 0)</code>' +
+		'<div class="kusto-transform-expr-help-examples">' +
+			'<span class="kusto-transform-expr-help-example-text">[Price] * 1.1</span>' +
+			'<button class="kusto-transform-expr-help-inject-btn" title="Insert into expression">' +
+				'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+					'<path d="M2 4v8M14 4v8"/>' +
+					'<path d="M5 8h6M8 5l3 3-3 3"/>' +
+				'</svg>' +
+			'</button>' +
 		'</div>' +
 	'</div>';
 
@@ -7449,6 +7467,7 @@ const __kustoTransformationTypeLabels = {
 // Tooltip state and functions for expression help
 let __kustoExprHelpTooltipEl = null;
 let __kustoExprHelpTooltipTimer = null;
+let __kustoExprHelpActiveTextarea = null;
 
 function __kustoShowExpressionHelpTooltip(textareaEl, event) {
 	// Clear any pending hide timer
@@ -7456,6 +7475,9 @@ function __kustoShowExpressionHelpTooltip(textareaEl, event) {
 		clearTimeout(__kustoExprHelpTooltipTimer);
 		__kustoExprHelpTooltipTimer = null;
 	}
+
+	// Store reference to the textarea for injection
+	__kustoExprHelpActiveTextarea = textareaEl;
 
 	// Create tooltip element if it doesn't exist
 	if (!__kustoExprHelpTooltipEl) {
@@ -7474,43 +7496,116 @@ function __kustoShowExpressionHelpTooltip(textareaEl, event) {
 		__kustoExprHelpTooltipEl.addEventListener('mouseleave', function() {
 			__kustoHideExpressionHelpTooltip();
 		});
+
+		// Click handler for function pills to update example
+		__kustoExprHelpTooltipEl.addEventListener('click', function(e) {
+			// Handle inject button click
+			const injectBtn = e.target.closest('.kusto-transform-expr-help-inject-btn');
+			if (injectBtn) {
+				const exampleEl = __kustoExprHelpTooltipEl.querySelector('.kusto-transform-expr-help-example-text');
+				if (exampleEl && __kustoExprHelpActiveTextarea) {
+					const text = exampleEl.textContent;
+					const textarea = __kustoExprHelpActiveTextarea;
+					const start = textarea.selectionStart;
+					const end = textarea.selectionEnd;
+					const before = textarea.value.substring(0, start);
+					const after = textarea.value.substring(end);
+					textarea.value = before + text + after;
+					// Position cursor after inserted text
+					const newPos = start + text.length;
+					textarea.setSelectionRange(newPos, newPos);
+					// Trigger input event so the change is registered
+					textarea.dispatchEvent(new Event('input', { bubbles: true }));
+					// Focus the textarea and hide tooltip
+					textarea.focus();
+					__kustoHideExpressionHelpTooltipImmediate();
+				}
+				return;
+			}
+
+			// Handle function pill click
+			const code = e.target.closest('code[data-ex]');
+			if (code) {
+				const example = code.getAttribute('data-ex');
+				const exampleEl = __kustoExprHelpTooltipEl.querySelector('.kusto-transform-expr-help-example-text');
+				if (exampleEl && example) {
+					exampleEl.textContent = example;
+					// Brief highlight animation
+					exampleEl.classList.remove('kusto-transform-expr-help-example-flash');
+					void exampleEl.offsetWidth; // Force reflow
+					exampleEl.classList.add('kusto-transform-expr-help-example-flash');
+				}
+			}
+		});
 	}
 
-	// Position the tooltip - always fully above or below the textarea, never overlapping
+	// Position the tooltip - NEVER cover the textarea
+	// Priority: 1) Below if enough space, 2) Above if enough space, 3) Constrain height to fit
 	const rect = textareaEl.getBoundingClientRect();
-	const tooltipWidth = 380;
-	const tooltipHeight = 480; // max-height from CSS
+	const tooltipWidth = 340;
+	const gap = 6; // space between textarea and tooltip
+	const minTooltipHeight = 150; // minimum usable height before it gets too cramped
+	const edgePadding = 10; // padding from viewport edges
+
+	// First, make tooltip visible but off-screen to measure its natural height
+	__kustoExprHelpTooltipEl.style.left = '-9999px';
+	__kustoExprHelpTooltipEl.style.top = '-9999px';
+	__kustoExprHelpTooltipEl.style.maxHeight = '';
+	__kustoExprHelpTooltipEl.style.overflowY = '';
+	__kustoExprHelpTooltipEl.classList.add('is-visible');
+	const tooltipNaturalHeight = __kustoExprHelpTooltipEl.offsetHeight;
 
 	// Calculate horizontal position
 	let left = rect.left;
-	if (left + tooltipWidth > window.innerWidth - 10) {
-		left = window.innerWidth - tooltipWidth - 10;
+	if (left + tooltipWidth > window.innerWidth - edgePadding) {
+		left = window.innerWidth - tooltipWidth - edgePadding;
 	}
-	if (left < 10) left = 10;
+	if (left < edgePadding) left = edgePadding;
 
-	// Decide: show below if there's room, otherwise show above
-	const spaceBelow = window.innerHeight - rect.bottom;
-	const spaceAbove = rect.top;
+	// Calculate available space above and below the textarea
+	const spaceBelow = window.innerHeight - rect.bottom - gap - edgePadding;
+	const spaceAbove = rect.top - gap - edgePadding;
+
 	let top;
+	let constrainedHeight = null;
 
-	if (spaceBelow >= tooltipHeight + 8) {
-		// Enough space below - show below the textarea
-		top = rect.bottom + 6;
-	} else if (spaceAbove >= tooltipHeight + 8) {
-		// Enough space above - show above the textarea
-		top = rect.top - tooltipHeight - 6;
+	if (spaceBelow >= tooltipNaturalHeight) {
+		// Plenty of space below - use it at natural height
+		top = rect.bottom + gap;
+	} else if (spaceAbove >= tooltipNaturalHeight) {
+		// Plenty of space above - use it at natural height
+		top = rect.top - gap - tooltipNaturalHeight;
+	} else if (spaceBelow >= spaceAbove && spaceBelow >= minTooltipHeight) {
+		// More space below, constrain height to fit
+		top = rect.bottom + gap;
+		constrainedHeight = spaceBelow;
+	} else if (spaceAbove >= minTooltipHeight) {
+		// More space above (or below is too small), constrain height to fit
+		constrainedHeight = spaceAbove;
+		top = rect.top - gap - constrainedHeight;
 	} else {
-		// Not enough space either way - pick the side with more space
+		// Extreme case: neither direction has minimum space
+		// Pick the larger one and use what we can
 		if (spaceBelow >= spaceAbove) {
-			top = rect.bottom + 6;
+			top = rect.bottom + gap;
+			constrainedHeight = Math.max(spaceBelow, 100);
 		} else {
-			top = Math.max(10, rect.top - tooltipHeight - 6);
+			constrainedHeight = Math.max(spaceAbove, 100);
+			top = rect.top - gap - constrainedHeight;
 		}
 	}
 
+	// Apply final positioning and height constraint
 	__kustoExprHelpTooltipEl.style.left = left + 'px';
 	__kustoExprHelpTooltipEl.style.top = top + 'px';
-	__kustoExprHelpTooltipEl.classList.add('is-visible');
+	if (constrainedHeight !== null) {
+		__kustoExprHelpTooltipEl.style.maxHeight = constrainedHeight + 'px';
+		__kustoExprHelpTooltipEl.style.overflowY = 'auto';
+	} else {
+		__kustoExprHelpTooltipEl.style.maxHeight = '';
+		__kustoExprHelpTooltipEl.style.overflowY = '';
+	}
+	// Tooltip is already visible from measurement step
 }
 
 function __kustoHideExpressionHelpTooltip() {

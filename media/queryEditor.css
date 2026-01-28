@@ -1212,17 +1212,16 @@
 			padding-bottom: 2px;
 		}
 
-		/* Expression help icon and tooltip */
+		/* Expression help tooltip - sleek compact design */
 		.kusto-transform-expr-help-tooltip-container {
 			position: fixed;
 			z-index: 10000;
-			max-width: 380px;
-			max-height: 480px;
-			overflow: auto;
-			background: var(--vscode-editorHoverWidget-background, #252526);
+			width: 340px;
+			overflow: hidden;
+			background: var(--vscode-editorHoverWidget-background, #1e1e1e);
 			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
-			border-radius: 6px;
-			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+			border-radius: 0;
+			box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
 			padding: 0;
 			display: none;
 			pointer-events: auto;
@@ -1233,74 +1232,151 @@
 		}
 
 		.kusto-transform-expr-help-tooltip {
-			padding: 12px 14px;
+			padding: 0;
+		}
+
+		.kusto-transform-expr-help-header {
+			padding: 10px 14px;
+			background: linear-gradient(135deg, rgba(79, 193, 255, 0.12) 0%, rgba(79, 193, 255, 0.04) 100%);
+			border-bottom: 1px solid rgba(79, 193, 255, 0.2);
 		}
 
 		.kusto-transform-expr-help-title {
-			font-size: 13px;
-			font-weight: 600;
-			color: var(--vscode-foreground);
-			margin-bottom: 12px;
-			padding-bottom: 8px;
-			border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
-		}
-
-		.kusto-transform-expr-help-section {
-			margin-bottom: 10px;
-		}
-
-		.kusto-transform-expr-help-section:last-child {
-			margin-bottom: 0;
-		}
-
-		.kusto-transform-expr-help-subtitle {
-			font-size: 10px;
+			font-size: 11px;
 			font-weight: 600;
 			color: var(--vscode-textLink-foreground, #4fc1ff);
 			text-transform: uppercase;
-			letter-spacing: 0.5px;
-			margin-bottom: 4px;
+			letter-spacing: 0.8px;
 		}
 
-		.kusto-transform-expr-help-table {
-			width: 100%;
-			border-collapse: collapse;
-			font-size: 11.5px;
+		.kusto-transform-expr-help-grid {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0;
 		}
 
-		.kusto-transform-expr-help-table td {
-			padding: 2px 0;
-			vertical-align: top;
+		.kusto-transform-expr-help-col {
+			padding: 10px 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
 		}
 
-		.kusto-transform-expr-help-table td:first-child {
-			white-space: nowrap;
-			padding-right: 12px;
-			width: 1%;
+		.kusto-transform-expr-help-col:first-child {
+			border-right: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 		}
 
-		.kusto-transform-expr-help-table td:last-child {
-			color: color-mix(in srgb, var(--vscode-foreground) 75%, transparent);
-		}
-
-		.kusto-transform-expr-help-table code,
-		.kusto-transform-expr-help-tooltip code {
-			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
-			font-size: 11px;
-			background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.1));
-			padding: 1px 4px;
-			border-radius: 3px;
-			color: var(--vscode-textPreformat-foreground, #d7ba7d);
-		}
-
-		.kusto-transform-expr-help-examples {
+		.kusto-transform-expr-help-group {
 			display: flex;
 			flex-direction: column;
 			gap: 4px;
 		}
 
-		.kusto-transform-expr-help-examples code {
+		.kusto-transform-expr-help-label {
+			font-size: 9px;
+			font-weight: 600;
+			color: color-mix(in srgb, var(--vscode-foreground) 50%, transparent);
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+		}
+
+		.kusto-transform-expr-help-item {
+			font-size: 11px;
+			color: color-mix(in srgb, var(--vscode-foreground) 85%, transparent);
+		}
+
+		.kusto-transform-expr-help-ops {
+			display: flex;
+			gap: 4px;
+			flex-wrap: wrap;
+		}
+
+		.kusto-transform-expr-help-ops code {
+			padding: 2px 6px;
+			min-width: 20px;
+			text-align: center;
+		}
+
+		.kusto-transform-expr-help-funcs {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 3px;
+		}
+
+		.kusto-transform-expr-help-tooltip code {
+			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+			font-size: 10px;
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 12%, transparent);
+			color: var(--vscode-foreground);
+			padding: 1px 5px;
+			border-radius: 0;
+			border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 20%, transparent);
+			transition: background 0.15s ease;
+			cursor: pointer;
+		}
+
+		.kusto-transform-expr-help-tooltip code:hover {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 28%, transparent);
+		}
+
+		.kusto-transform-expr-help-tooltip code:active {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 40%, transparent);
+		}
+
+		.kusto-transform-expr-help-examples {
+			display: flex;
+			align-items: center;
+			padding: 10px 12px;
+			background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+			border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+			min-height: 36px;
+			gap: 8px;
+		}
+
+		.kusto-transform-expr-help-example-text {
+			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+			font-size: 11px;
+			color: var(--vscode-textPreformat-foreground, #d7ba7d);
+			word-break: break-all;
+			flex: 1;
+		}
+
+		.kusto-transform-expr-help-inject-btn {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 24px;
+			height: 24px;
+			padding: 0;
+			border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 30%, transparent);
+			border-radius: 0;
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 15%, transparent);
+			color: var(--vscode-textLink-foreground, #4fc1ff);
+			cursor: pointer;
+			transition: background 0.15s ease, border-color 0.15s ease;
+			flex-shrink: 0;
+		}
+
+		.kusto-transform-expr-help-inject-btn:hover {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 30%, transparent);
+			border-color: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 50%, transparent);
+		}
+
+		.kusto-transform-expr-help-inject-btn:active {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 45%, transparent);
+		}
+
+		.kusto-transform-expr-help-inject-btn svg {
 			display: block;
+		}
+
+		.kusto-transform-expr-help-example-flash {
+			animation: kusto-example-flash 0.3s ease-out;
+		}
+
+		@keyframes kusto-example-flash {
+			0% { color: var(--vscode-textLink-foreground, #4fc1ff); }
+			100% { color: var(--vscode-textPreformat-foreground, #d7ba7d); }
 		}
 
 
