@@ -6,10 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.8.0] - 2026-29-01
 
 * After user feedback (thank you Kristen), added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
-* After user feedback again (thank you Chris), Implemented the concept of 'Leave no trace' Kusto clusters. These are clusters that the user can mark to never leave any trace of data behind. It will never persist any data to disk, only queries and section configurations will be saved, but never actual tabular data or chart data. 
+* After user feedback again (thank you Chris), Implemented the concept of 'Leave no trace' Kusto clusters. These are clusters that the user can mark to never leave any trace of data behind. It will never persist any data to disk, only queries and section configurations will be saved, but never actual tabular data or chart data.
 * Added new UX for managing connections called **Connection Manager**. It can be launched either from the command bar, or from the Activity Bar.
 * Bugs
     * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)
+    * Copilot had to audacity to tell me the reason it added a random timer a couple of releases ago without telling is because, and I quote 'The JS approach was likely written before Container Queries had broad browser support (they became widely available around 2023), or it was just the solution chosen at the time.'. Yeah, OK buddy. Anyway, fixed the random bug of adding new sections that look broken, with controls that have minimal width.
 
 ## [0.7.0] - 2026-28-01
 
