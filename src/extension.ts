@@ -342,6 +342,187 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 
+	// Register Activity Bar quick access view
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider('kustoWorkbench.quickAccess', {
+			resolveWebviewView(webviewView: vscode.WebviewView) {
+				webviewView.webview.options = { enableScripts: true };
+				webviewView.webview.html = `<!DOCTYPE html>
+<html>
+<head>
+	<link rel="stylesheet" href="https://unpkg.com/@vscode/codicons@0.0.35/dist/codicon.css">
+	<style>
+		* { box-sizing: border-box; }
+		body { 
+			padding: 12px; 
+			font-family: var(--vscode-font-family); 
+			color: var(--vscode-foreground); 
+			margin: 0;
+		}
+		
+		.section {
+			margin-bottom: 20px;
+		}
+		.section:last-child { margin-bottom: 0; }
+		
+		.section-header {
+			font-size: 11px;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 10px;
+			padding-bottom: 6px;
+			border-bottom: 1px solid var(--vscode-widget-border);
+		}
+		
+		.card {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 6px;
+			padding: 12px;
+			margin-bottom: 10px;
+		}
+		.card:last-child { margin-bottom: 0; }
+		.card.featured {
+			border-color: var(--vscode-focusBorder);
+			background: color-mix(in srgb, var(--vscode-focusBorder) 8%, var(--vscode-editor-background));
+		}
+		
+		.card-title {
+			font-size: 13px;
+			font-weight: 600;
+			margin-bottom: 6px;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+		.card-title .codicon {
+			font-size: 16px;
+			opacity: 0.85;
+		}
+		
+		.card-desc { 
+			font-size: 12px; 
+			opacity: 0.8; 
+			margin-bottom: 10px;
+			line-height: 1.5;
+		}
+		
+		.button { 
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 100%;
+			gap: 6px;
+			padding: 8px 12px; 
+			background: var(--vscode-button-background); 
+			color: var(--vscode-button-foreground); 
+			border: none; 
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 13px;
+			font-family: inherit;
+		}
+		.button:hover { background: var(--vscode-button-hoverBackground); }
+	</style>
+</head>
+<body>
+	<div class="section">
+		<div class="section-header">Get Started</div>
+		<div class="card featured">
+			<div class="card-title">
+				<i class="codicon codicon-play"></i> Query Playground
+			</div>
+			<div class="card-desc">New here? Start with the playground, it auto-saves your work. Use <strong>File → Save As...</strong> anytime to save it to disk.</div>
+			<button class="button" onclick="sendCommand('openQueryEditor')">Open Query Editor</button>
+		</div>
+	</div>
+
+	<div class="section">
+		<div class="section-header">Files</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-folder-opened"></i> Open Existing File
+			</div>
+			<div class="card-desc">The extension works with .kql, .csl, and .kqlx files. Open via Explorer or use the button below.</div>
+			<button class="button" onclick="sendCommand('openKqlFile')">Browse Files...</button>
+		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-new-file"></i> Create New Notebook
+			</div>
+			<div class="card-desc">Want to save from the start? Create a new .kqlx file on disk.</div>
+			<button class="button" onclick="sendCommand('createKqlxFile')">Create .kqlx File...</button>
+		</div>
+	</div>
+
+	<div class="section">
+		<div class="section-header">Settings & Data</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-database"></i> Cached Data
+			</div>
+			<div class="card-desc">View or clear cached auth tokens and schemas.</div>
+			<button class="button" onclick="sendCommand('seeCachedValues')">View Cache</button>
+		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-plug"></i> Connections
+			</div>
+			<div class="card-desc">Manage cluster connections. This is also accessible from the editor toolbar itself, with a much nicer UI than this VS Code built in one. I suggest you use that one instead, but here is this just in case you need it.</div>
+			<button class="button" onclick="sendCommand('manageConnections')">Manage...</button>
+		</div>
+	</div>
+
+	<script>
+		const vscode = acquireVsCodeApi();
+		function sendCommand(cmd) {
+			vscode.postMessage({ command: cmd });
+		}
+	</script>
+</body>
+</html>`;
+				webviewView.webview.onDidReceiveMessage(async (message: { command: string }) => {
+					switch (message.command) {
+						case 'openQueryEditor':
+							await vscode.commands.executeCommand('kusto.openQueryEditor');
+							break;
+						case 'openKqlFile': {
+							const uris = await vscode.window.showOpenDialog({
+								canSelectMany: false,
+								filters: { 'Kusto Files': ['kql', 'csl', 'kqlx'] },
+								title: 'Open Kusto File'
+							});
+							if (uris && uris.length > 0) {
+								await vscode.commands.executeCommand('vscode.open', uris[0]);
+							}
+							break;
+						}
+						case 'createKqlxFile': {
+							const uri = await vscode.window.showSaveDialog({
+								filters: { 'Kusto Notebook': ['kqlx'] },
+								saveLabel: 'Create',
+								title: 'Create new .kqlx file'
+							});
+							if (uri) {
+								await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(''));
+								await vscode.commands.executeCommand('vscode.openWith', uri, 'kusto.kqlxEditor');
+							}
+							break;
+						}
+						case 'seeCachedValues':
+							await vscode.commands.executeCommand('kusto.seeCachedValues');
+							break;
+						case 'manageConnections':
+							await vscode.commands.executeCommand('kusto.manageConnections');
+							break;
+					}
+				});
+			}
+		})
+	);
+
 	// Register commands
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openQueryEditor', async () => {

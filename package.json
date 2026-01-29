@@ -22,6 +22,11 @@
     "configuration": {
       "title": "Kusto Workbench",
       "properties": {
+        "kustoWorkbench.showActivityBarIcon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Kusto Workbench icon in the Activity Bar for quick access to the Query Editor."
+        },
         "kustoWorkbench.openKqlFiles": {
           "type": "boolean",
           "default": true,
@@ -118,7 +123,11 @@
       {
         "command": "kusto.openQueryEditor",
         "title": "Open Query Editor",
-        "category": "Kusto Workbench"
+        "category": "Kusto Workbench",
+        "icon": {
+          "light": "./media/images/kusto-file-light.svg",
+          "dark": "./media/images/kusto-file-dark.svg"
+        }
       },
       {
         "command": "kusto.openKqlxFile",
@@ -149,6 +158,40 @@
         "command": "kusto.seeCachedValues",
         "title": "Show Cached Values",
         "category": "Kusto Workbench"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "kusto.openQueryEditor",
+          "group": "navigation",
+          "when": "view == kustoWorkbench.quickAccess"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kustoWorkbench",
+          "title": "Kusto Workbench",
+          "icon": "./media/images/kusto-file-dark.svg",
+          "when": "config.kustoWorkbench.showActivityBarIcon"
+        }
+      ]
+    },
+    "views": {
+      "kustoWorkbench": [
+        {
+          "id": "kustoWorkbench.quickAccess",
+          "name": "Quick Access",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "kustoWorkbench.quickAccess",
+        "contents": "Open the Kusto Query Editor to start writing queries.\n[Open Query Editor](command:kusto.openQueryEditor)"
       }
     ]
   },

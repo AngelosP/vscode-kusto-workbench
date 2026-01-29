@@ -3,9 +3,13 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.8.0] - Unreleased
+
+* After user feedback, added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
+
 ## [0.7.0] - 2026-28-01
 
-* Improved instructions for working with raw data in Kusto. 
+* Improved instructions for working with raw data in Kusto.
 
 ## [0.6.0] - 2026-28-01
 
