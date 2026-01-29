@@ -5009,6 +5009,14 @@ function __kustoApplyMarkdownEditorMode(boxId) {
 			md = '';
 		}
 		try { initMarkdownViewer(boxId, md); } catch { /* ignore */ }
+
+		// In .md files, reset scroll position to prevent layout shift.
+		try {
+			if (document.body && document.body.dataset && document.body.dataset.kustoDocumentKind === 'md') {
+				document.body.scrollTop = 0;
+				document.documentElement.scrollTop = 0;
+			}
+		} catch { /* ignore */ }
 		return;
 	}
 
@@ -5028,6 +5036,15 @@ function __kustoApplyMarkdownEditorMode(boxId) {
 	try {
 		if (markdownEditors[boxId] && typeof markdownEditors[boxId].layout === 'function') {
 			markdownEditors[boxId].layout();
+		}
+	} catch { /* ignore */ }
+
+	// In .md files, the body shouldn't scroll but Toast UI's changeMode may trigger
+	// scrollIntoView internally. Reset scroll position to prevent layout shift.
+	try {
+		if (document.body && document.body.dataset && document.body.dataset.kustoDocumentKind === 'md') {
+			document.body.scrollTop = 0;
+			document.documentElement.scrollTop = 0;
 		}
 	} catch { /* ignore */ }
 }

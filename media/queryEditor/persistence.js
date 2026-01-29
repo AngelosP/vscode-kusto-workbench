@@ -33,18 +33,21 @@ function __kustoApplyDocumentCapabilities() {
 			? window.__kustoAllowedSectionKinds.map(k => String(k))
 			: ['query', 'markdown', 'python', 'url'];
 
-		// Update inline buttons visibility
-		const btns = document.querySelectorAll('.add-controls .add-control-btn');
+		// If no section kinds are allowed, hide the entire add-controls container.
+		const addControlsContainer = document.querySelector('.add-controls');
+		if (addControlsContainer) {
+			addControlsContainer.style.display = allowed.length === 0 ? 'none' : '';
+		}
+
+		// Update inline buttons visibility.
+		// NOTE: Buttons inside .add-controls-options share a common parent, so we hide
+		// individual buttons directly rather than trying to hide a wrapper element.
+		const btns = document.querySelectorAll('.add-controls-options .add-control-btn');
 		for (const btn of btns) {
 			try {
 				const kind = btn && btn.getAttribute ? String(btn.getAttribute('data-add-kind') || '') : '';
-				const wrapper = btn && btn.parentElement ? btn.parentElement : null;
 				const visible = !kind || allowed.includes(kind);
-				if (wrapper) {
-					wrapper.style.display = visible ? '' : 'none';
-				} else {
-					btn.style.display = visible ? '' : 'none';
-				}
+				btn.style.display = visible ? '' : 'none';
 			} catch {
 				// ignore
 			}

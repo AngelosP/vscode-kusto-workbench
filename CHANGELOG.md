@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.8.0] - Unreleased
 
 * After user feedback, added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
+* Bugs
+    * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)
 
 ## [0.7.0] - 2026-28-01
 

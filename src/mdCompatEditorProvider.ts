@@ -392,7 +392,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
-				allowedSectionKinds: ['markdown', 'url'],
+				allowedSectionKinds: [],
 				defaultSectionKind: 'markdown',
 				upgradeRequestType: 'requestUpgradeToMdx',
 				compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.'
@@ -412,7 +412,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
-				allowedSectionKinds: ['markdown', 'url'],
+				allowedSectionKinds: [],
 				defaultSectionKind: 'markdown',
 				upgradeRequestType: 'requestUpgradeToMdx',
 				compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.',
@@ -466,7 +466,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 							documentUri: document.uri.toString(),
 							documentKind: 'md',
 							compatibilitySingleKind: 'markdown',
-							allowedSectionKinds: ['markdown', 'url'],
+							allowedSectionKinds: [],
 							defaultSectionKind: 'markdown',
 							upgradeRequestType: 'requestUpgradeToMdx',
 							compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.'
