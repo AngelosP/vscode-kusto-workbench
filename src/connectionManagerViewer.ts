@@ -606,13 +606,262 @@ export class ConnectionManagerViewer {
 
 		/* Main layout */
 		.main-container {
-			display: grid;
-			grid-template-columns: 340px 1fr;
-			gap: 20px;
-			min-height: calc(100vh - 100px);
+			display: flex;
+			height: calc(100vh - 80px);
+			position: relative;
 		}
 
-		/* Sections */
+		.left-panel {
+			width: 280px;
+			min-width: 200px;
+			max-width: 500px;
+			height: 100%;
+			display: flex;
+			flex-direction: column;
+			flex-shrink: 0;
+			transition: width 0.15s ease, min-width 0.15s ease, opacity 0.15s ease;
+			overflow: hidden;
+			margin-right: 8px;
+		}
+
+		.left-panel.collapsed {
+			width: 0 !important;
+			min-width: 0 !important;
+			opacity: 0;
+			pointer-events: none;
+			margin-right: 0;
+		}
+
+		.splitter {
+			width: 6px;
+			cursor: col-resize;
+			background: transparent;
+			transition: background 0.1s;
+			position: relative;
+			flex-shrink: 0;
+			margin-right: 8px;
+		}
+
+		.splitter::after {
+			content: '';
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			left: 2px;
+			width: 2px;
+			background: transparent;
+			transition: background 0.1s;
+		}
+
+		.splitter:hover::after,
+		.splitter.dragging::after {
+			background: var(--vscode-focusBorder);
+		}
+
+		.splitter-collapse-btn {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			width: 18px;
+			height: 32px;
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-radius: 3px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			opacity: 0;
+			transition: opacity 0.15s, background 0.1s;
+			z-index: 5;
+		}
+
+		.splitter:hover .splitter-collapse-btn,
+		.splitter-collapse-btn:hover {
+			opacity: 1;
+		}
+
+		.splitter-collapse-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.splitter-collapse-btn svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+			transform: rotate(180deg);
+		}
+
+		.splitter.collapsed {
+			width: 0;
+			pointer-events: none;
+			margin-right: 0;
+		}
+
+		.right-panel {
+			flex: 1;
+			min-width: 300px;
+			display: flex;
+			flex-direction: column;
+			transition: margin-left 0.15s ease;
+		}
+
+		.left-panel.collapsed ~ .splitter.collapsed ~ .right-panel {
+			margin-left: 28px;
+		}
+
+		/* Panel toggle button */
+		.panel-toggle {
+			position: absolute;
+			left: 0;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 48px;
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-left: none;
+			border-radius: 0 4px 4px 0;
+			cursor: pointer;
+			display: none;
+			align-items: center;
+			justify-content: center;
+			transition: background 0.1s, opacity 0.15s;
+			z-index: 10;
+		}
+
+		.panel-toggle:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.panel-toggle svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+			transition: transform 0.15s;
+		}
+
+		.left-panel.collapsed ~ .panel-toggle {
+			display: flex;
+		}
+
+		/* Left panel accordion */
+		.left-accordion {
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-radius: 4px;
+			background: var(--vscode-editorWidget-background);
+			display: flex;
+			flex-direction: column;
+			max-height: 100%;
+			min-height: 0;
+		}
+
+		.left-accordion-item {
+			display: flex;
+			flex-direction: column;
+			flex-shrink: 0;
+		}
+
+		.left-accordion-item:not(:last-child) {
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.left-accordion-item.expanded {
+			/* Allow shrinking when space is limited, enabling scroll */
+			flex-shrink: 1;
+			min-height: 0;
+			overflow: hidden;
+		}
+
+		.left-accordion-header {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 12px;
+			height: 42px;
+			box-sizing: border-box;
+			cursor: pointer;
+			user-select: none;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			transition: background 0.1s;
+			flex-shrink: 0;
+		}
+
+		.left-accordion-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.left-accordion-icon {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+		}
+
+		.left-accordion-icon svg {
+			width: 16px;
+			height: 16px;
+			fill: currentColor;
+		}
+
+		.left-accordion-icon.star {
+			color: #f5c518;
+		}
+
+		.left-accordion-title {
+			flex: 1;
+			font-weight: 600;
+			font-size: 12px;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+		}
+
+		.left-accordion-count {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-descriptionForeground);
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			padding: 2px 6px;
+			border-radius: 10px;
+			min-width: 18px;
+			text-align: center;
+		}
+
+		.left-accordion-chevron {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+			transition: transform 0.15s ease;
+			opacity: 0.7;
+		}
+
+		.left-accordion-chevron svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
+
+		.left-accordion-header:hover .left-accordion-chevron {
+			opacity: 1;
+		}
+
+		.left-accordion-chevron.expanded {
+			transform: rotate(90deg);
+		}
+
+		.left-accordion-body {
+			display: none;
+		}
+
+		.left-accordion-body.expanded {
+			display: block;
+			overflow-y: auto;
+			/* Don't force flex growth - let content determine size, scroll only when needed */
+			min-height: 0;
+		}
+
+		/* Keep old section styles for right panel */
 		.section {
 			border: 1px solid var(--vscode-editorWidget-border);
 			border-radius: 4px;
@@ -624,72 +873,11 @@ export class ConnectionManagerViewer {
 			display: flex;
 			align-items: center;
 			gap: 8px;
-			padding: 12px 14px;
+			padding: 8px 12px;
+			height: 42px;
+			box-sizing: border-box;
 			border-bottom: 1px solid var(--vscode-editorWidget-border);
 			background: var(--vscode-editorGroupHeader-tabsBackground);
-		}
-
-		.section-header.collapsible {
-			cursor: pointer;
-			user-select: none;
-		}
-
-		.section-header.collapsible:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-
-		.section-icon {
-			width: 16px;
-			height: 16px;
-			flex-shrink: 0;
-		}
-
-		.section-icon svg {
-			width: 16px;
-			height: 16px;
-			fill: currentColor;
-		}
-
-		.section-icon.star {
-			color: #f5c518;
-		}
-
-		.section-chevron {
-			width: 20px;
-			height: 20px;
-			margin-left: auto;
-			transition: transform 0.15s ease;
-			flex-shrink: 0;
-			opacity: 0.7;
-			transform: rotate(180deg);
-		}
-
-		.section-chevron svg {
-			width: 16px;
-			height: 16px;
-		}
-
-		.section-header:hover .section-chevron {
-			opacity: 1;
-		}
-
-		.section-chevron.expanded {
-			transform: rotate(90deg);
-		}
-
-		.section-body.collapsed {
-			display: none;
-		}
-
-		.section-collapsed-hint {
-			display: none;
-			padding: 8px 14px;
-			font-size: 11px;
-			opacity: 0.5;
-		}
-
-		.section-body.collapsed + .section-collapsed-hint {
-			display: block;
 		}
 
 		.section-title {
@@ -700,7 +888,36 @@ export class ConnectionManagerViewer {
 		.section-body {
 			padding: 12px 14px;
 			overflow-y: auto;
-			max-height: calc(100vh - 200px);
+			flex: 1;
+		}
+
+		/* Explorer section special handling */
+		.right-panel .section {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+		}
+
+		.right-panel .section-body {
+			padding: 0;
+			overflow-y: auto;
+			flex: 1;
+		}
+
+		.left-panel .section {
+			flex-shrink: 0;
+		}
+
+		.left-panel #connectionsSection {
+			flex: 1;
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+		}
+
+		.left-panel #connectionsSection .section-body {
+			flex: 1;
+			overflow-y: auto;
 		}
 
 		/* Buttons */
@@ -881,32 +1098,33 @@ export class ConnectionManagerViewer {
 
 		.favorite-item {
 			display: flex;
-			align-items: flex-start;
-			gap: 10px;
+			flex-direction: column;
 			padding: 10px 12px;
-			border-radius: 4px;
-			background: var(--vscode-list-hoverBackground);
-			margin-bottom: 6px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
 			cursor: pointer;
+			transition: background 0.1s;
+		}
+
+		.favorite-item:last-child {
+			border-bottom: none;
 		}
 
 		.favorite-item:hover {
-			background: var(--vscode-badge-background);
+			background: var(--vscode-list-hoverBackground);
 		}
 
-		.favorite-info {
-			flex: 1;
-			min-width: 0;
-			overflow: hidden;
+		.favorite-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
 		}
 
 		.favorite-name {
-			font-size: 13px;
+			flex: 1;
 			font-weight: 500;
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
-			margin-bottom: 2px;
 		}
 
 		.favorite-detail {
@@ -915,19 +1133,719 @@ export class ConnectionManagerViewer {
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+			margin-top: 2px;
 		}
 
 		.favorite-actions {
-			flex-shrink: 0;
+			display: flex;
+			gap: 2px;
 			opacity: 0;
 			transition: opacity 0.1s;
+			flex-shrink: 0;
 		}
 
 		.favorite-item:hover .favorite-actions {
 			opacity: 1;
 		}
 
-		/* Explorer tree */
+		/* Breadcrumb navigation */
+		.explorer-breadcrumb {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 8px 12px;
+			font-size: 12px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+			background: var(--vscode-sideBar-background);
+			flex-wrap: wrap;
+		}
+
+		.breadcrumb-item {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			color: var(--vscode-textLink-foreground);
+			cursor: pointer;
+			padding: 2px 4px;
+			border-radius: 3px;
+			transition: background 0.1s;
+		}
+
+		.breadcrumb-item:hover {
+			background: var(--vscode-list-hoverBackground);
+			text-decoration: underline;
+		}
+
+		.breadcrumb-item.current {
+			color: var(--vscode-foreground);
+			cursor: default;
+			font-weight: 500;
+		}
+
+		.breadcrumb-item.current:hover {
+			background: transparent;
+			text-decoration: none;
+		}
+
+		.breadcrumb-separator {
+			color: var(--vscode-descriptionForeground);
+			opacity: 0.6;
+		}
+
+		.breadcrumb-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.breadcrumb-icon svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
+
+		/* Explorer list items */
+		.explorer-list {
+			flex: 1;
+			overflow-y: auto;
+		}
+
+		.explorer-list-item {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 10px 12px;
+			cursor: pointer;
+			transition: background 0.1s;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.explorer-list-item:last-child {
+			border-bottom: none;
+		}
+
+		.explorer-list-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.explorer-list-item-icon {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+		}
+
+		.explorer-list-item-icon svg {
+			width: 16px;
+			height: 16px;
+			fill: currentColor;
+		}
+
+		.explorer-list-item-icon.cluster { color: var(--vscode-symbolIcon-classForeground, #ee9d28); }
+		.explorer-list-item-icon.database { color: var(--vscode-symbolIcon-fieldForeground, #75beff); }
+		.explorer-list-item-icon.table { color: var(--vscode-symbolIcon-structForeground, #00bcb4); }
+		.explorer-list-item-icon.function { color: var(--vscode-symbolIcon-methodForeground, #b180d7); }
+		.explorer-list-item-icon.folder { color: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
+		.explorer-list-item-icon.column { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
+
+		.explorer-list-item-name {
+			flex-shrink: 0;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			max-width: 100%;
+		}
+
+		.explorer-list-item-meta {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			flex-shrink: 0;
+		}
+
+		/* Function signature - hidden by default, shown on hover */
+		.explorer-list-item-params {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			white-space: nowrap;
+			opacity: 0;
+			transition: opacity 0.15s;
+			flex-shrink: 1;
+			overflow: hidden;
+			min-width: 0;
+		}
+
+		.function-item-row {
+			overflow: hidden;
+		}
+
+		.function-item-row:hover .explorer-list-item-params {
+			opacity: 1;
+		}
+
+		.function-item-row:hover .explorer-list-item-name {
+			flex-shrink: 1;
+			min-width: 60px;
+		}
+
+		.explorer-list-item-actions {
+			display: flex;
+			gap: 2px;
+			opacity: 0;
+			transition: opacity 0.1s;
+			flex-shrink: 0;
+		}
+
+		.explorer-list-item:hover .explorer-list-item-actions {
+			opacity: 1;
+		}
+
+		/* Explorer accordion */
+		.explorer-cluster-header {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 12px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+			background: var(--vscode-sideBar-background);
+			position: sticky;
+			top: 0;
+			z-index: 1;
+		}
+
+		.explorer-db-header {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+			background: var(--vscode-sideBar-background);
+			position: sticky;
+			top: 0;
+			z-index: 1;
+		}
+
+		.explorer-back-btn {
+			margin-right: 4px;
+		}
+
+		.explorer-back-btn svg {
+			width: 14px;
+			height: 14px;
+		}
+
+		.database-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 10px 12px;
+			cursor: pointer;
+			transition: background 0.1s;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.database-row:last-child {
+			border-bottom: none;
+		}
+
+		.database-row:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.database-row .accordion-title {
+			flex: 1;
+		}
+
+		.database-row .accordion-actions {
+			opacity: 0;
+			transition: opacity 0.1s;
+		}
+
+		.database-row:hover .accordion-actions {
+			opacity: 1;
+		}
+
+		.accordion {
+			font-size: 13px;
+			flex: 1;
+			overflow-y: auto;
+		}
+
+		.accordion-item {
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.accordion-item:last-child {
+			border-bottom: none;
+		}
+
+		.accordion-header {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 6px 10px;
+			cursor: pointer;
+			user-select: none;
+			transition: background 0.1s;
+		}
+
+		.accordion-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.accordion-header.expanded {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		.accordion-chevron {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+			transition: transform 0.15s ease;
+			opacity: 0.7;
+		}
+
+		.accordion-chevron svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
+
+		.accordion-header:hover .accordion-chevron {
+			opacity: 1;
+		}
+
+		.accordion-chevron.expanded {
+			transform: rotate(90deg);
+		}
+
+		.accordion-icon {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+		}
+
+		.accordion-icon svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
+
+		.accordion-icon.database svg { fill: var(--vscode-symbolIcon-namespaceForeground, #6c71c4); }
+		.accordion-icon.table svg { fill: var(--vscode-symbolIcon-structForeground, #2aa198); }
+		.accordion-icon.function svg { fill: var(--vscode-symbolIcon-functionForeground, #859900); }
+		.accordion-icon.folder svg { fill: var(--vscode-symbolIcon-folderForeground, #b58900); }
+
+		.accordion-title {
+			flex: 1;
+			font-weight: 500;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.accordion-badge {
+			font-size: 10px;
+			padding: 2px 6px;
+			border-radius: 10px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			flex-shrink: 0;
+		}
+
+		.accordion-actions {
+			display: flex;
+			gap: 2px;
+			opacity: 0;
+			transition: opacity 0.1s;
+			flex-shrink: 0;
+		}
+
+		.accordion-header:hover .accordion-actions {
+			opacity: 1;
+		}
+
+		.accordion-body {
+			display: none;
+		}
+
+		.accordion-body.expanded {
+			display: block;
+		}
+
+		/* Sub-accordion (Tables/Functions level) */
+		.sub-accordion {
+			border-top: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.sub-accordion-header {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 8px 12px;
+			cursor: pointer;
+			user-select: none;
+			font-size: 11px;
+			text-transform: uppercase;
+			letter-spacing: 0.3px;
+			opacity: 0.8;
+			transition: background 0.1s, opacity 0.1s;
+		}
+
+		.sub-accordion-header:hover {
+			background: var(--vscode-list-hoverBackground);
+			opacity: 1;
+		}
+
+		.sub-accordion-chevron {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+			transition: transform 0.15s ease;
+		}
+
+		.sub-accordion-chevron svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.sub-accordion-chevron.expanded {
+			transform: rotate(90deg);
+		}
+
+		.sub-accordion-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.sub-accordion-icon svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.sub-accordion-icon.folder svg { fill: var(--vscode-symbolIcon-folderForeground, #b58900); }
+		.sub-accordion-icon.table svg { fill: var(--vscode-symbolIcon-structForeground, #2aa198); }
+		.sub-accordion-icon.function svg { fill: var(--vscode-symbolIcon-functionForeground, #859900); }
+
+		.sub-accordion-title {
+			flex: 1;
+			font-weight: 600;
+		}
+
+		.sub-accordion-badge {
+			font-size: 9px;
+			padding: 1px 5px;
+			border-radius: 8px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+		}
+
+		.sub-accordion-body {
+			display: none;
+			padding: 4px 0;
+		}
+
+		.sub-accordion-body.expanded {
+			display: block;
+		}
+
+		/* Item list (tables/functions) */
+		.item-list {
+			list-style: none;
+			margin: 0;
+			padding: 0;
+		}
+
+		.item-row {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 3px 12px 3px 24px;
+			cursor: pointer;
+			font-size: 12px;
+			transition: background 0.1s;
+		}
+
+		.item-row:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.item-row.nested {
+			padding-left: 36px;
+		}
+
+		.item-row.nested-2 {
+			padding-left: 48px;
+		}
+
+		.item-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.item-icon svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.item-icon.table svg { fill: var(--vscode-symbolIcon-structForeground, #2aa198); }
+		.item-icon.function svg { fill: var(--vscode-symbolIcon-functionForeground, #859900); }
+		.item-icon.folder svg { fill: var(--vscode-symbolIcon-folderForeground, #b58900); }
+
+		.item-name {
+			flex: 1;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.item-meta {
+			font-size: 10px;
+			opacity: 0.6;
+			flex-shrink: 0;
+		}
+
+		.item-params {
+			font-size: 11px;
+			opacity: 0;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			transition: opacity 0.15s;
+			color: var(--vscode-descriptionForeground);
+			margin-left: 2px;
+		}
+
+		.item-row:hover .item-params {
+			opacity: 0.6;
+		}
+
+		/* Nested accordion for folders */
+		.nested-accordion {
+			border-left: 2px solid var(--vscode-symbolIcon-folderForeground, #b58900);
+		}
+
+		.nested-accordion-header {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 8px 10px;
+			cursor: pointer;
+			user-select: none;
+			font-size: 12px;
+			font-weight: 500;
+			background: rgba(128, 128, 128, 0.1);
+			transition: background 0.1s;
+		}
+
+		.nested-accordion-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.nested-accordion-chevron {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+			transition: transform 0.15s ease;
+			opacity: 0.7;
+		}
+
+		.nested-accordion-chevron svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.nested-accordion-chevron.expanded {
+			transform: rotate(90deg);
+		}
+
+		.nested-accordion-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.nested-accordion-icon svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.nested-accordion-icon.folder svg { fill: var(--vscode-symbolIcon-folderForeground, #b58900); }
+
+		.nested-accordion-title {
+			flex: 1;
+		}
+
+		.nested-accordion-body {
+			display: none;
+		}
+
+		.nested-accordion-body.expanded {
+			display: block;
+		}
+
+		/* Table accordion (expandable to show columns) */
+		.table-accordion {
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.table-accordion:last-child {
+			border-bottom: none;
+		}
+
+		.table-accordion-header {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 7px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			transition: background 0.1s;
+		}
+
+		.table-accordion-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.table-accordion-chevron {
+			width: 12px;
+			height: 12px;
+			flex-shrink: 0;
+			transition: transform 0.1s;
+			opacity: 0.5;
+		}
+
+		.table-accordion-chevron svg {
+			width: 10px;
+			height: 10px;
+			fill: currentColor;
+		}
+
+		.table-accordion-chevron.expanded {
+			transform: rotate(90deg);
+			opacity: 0.8;
+		}
+
+		.table-accordion-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.table-accordion-icon svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.table-accordion-icon.table svg { fill: var(--vscode-symbolIcon-structForeground, #2aa198); }
+
+		.table-accordion-name {
+			flex: 1;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.table-accordion-meta {
+			font-size: 10px;
+			opacity: 0.6;
+			flex-shrink: 0;
+		}
+
+		.table-accordion-body {
+			display: none;
+			padding: 4px 0;
+			background: rgba(0, 0, 0, 0.1);
+		}
+
+		.table-accordion-body.expanded {
+			display: block;
+		}
+
+		.column-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 5px 10px 5px 32px;
+			font-size: 11px;
+		}
+
+		.column-row:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-name {
+			flex: 1;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.column-type {
+			font-size: 10px;
+			opacity: 0.6;
+			font-family: var(--vscode-editor-font-family, monospace);
+			flex-shrink: 0;
+		}
+
+		/* Function item */
+		.function-item {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 7px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			transition: background 0.1s;
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.function-item:last-child {
+			border-bottom: none;
+		}
+
+		.function-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.function-item-icon {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+		}
+
+		.function-item-icon svg {
+			width: 12px;
+			height: 12px;
+			fill: var(--vscode-symbolIcon-functionForeground, #859900);
+		}
+
+		.function-item-name {
+			white-space: nowrap;
+		}
+
+		.function-item-params {
+			font-size: 11px;
+			opacity: 0;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			transition: opacity 0.15s;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.function-item:hover .function-item-params {
+			opacity: 0.6;
+		}
+
+		/* Keep tree styles for backward compat */
 		.tree-view {
 			font-size: 13px;
 		}
@@ -1201,43 +2119,60 @@ export class ConnectionManagerViewer {
 
 	<div class="main-container">
 		<!-- Left Panel: Connections List -->
-		<div class="left-panel">
-			<!-- Favorites Section -->
-			<div id="favoritesSection" class="section favorites-section" style="display: none;">
-				<div class="section-header collapsible" data-toggle-section="favorites">
-					<span class="section-icon star">${this.getStarFilledIcon()}</span>
-					<span class="section-title">Favorites</span>
-					<span class="section-chevron">${this.getChevronIcon()}</span>
+		<div class="left-panel" id="leftPanel">
+			<div class="left-accordion">
+				<!-- Favorites -->
+				<div class="left-accordion-item" id="favoritesSection" data-accordion-item="favorites" style="display: none;">
+					<div class="left-accordion-header" data-toggle-accordion="favorites">
+						<span class="left-accordion-chevron">${this.getChevronIcon()}</span>
+						<span class="left-accordion-icon star">${this.getStarFilledIcon()}</span>
+						<span class="left-accordion-title">Favorites</span>
+						<span class="left-accordion-count" id="favoritesCount">0</span>
+					</div>
+					<div class="left-accordion-body" id="favoritesList"></div>
 				</div>
-				<div class="section-body collapsed" id="favoritesList"></div>
-				<div class="section-collapsed-hint">Expand section to view items</div>
-			</div>
 
-			<!-- All Clusters -->
-			<div class="section" id="connectionsSection">
-				<div class="section-header collapsible" data-toggle-section="connections">
-					<span class="section-icon">${this.getClusterIcon()}</span>
-					<span class="section-title">Clusters</span>
-					<button class="btn-icon header-action" id="addConnectionBtn" title="Add new cluster">
-						${this.getAddIcon()}
-					</button>
-					<span class="section-chevron expanded">${this.getChevronIcon()}</span>
-				</div>
-				<div class="section-body" id="connectionsList">
-					<div class="empty-state">
-						<div class="empty-state-icon">${this.getClusterIcon()}</div>
-						<div class="empty-state-title">No clusters yet</div>
-						<div class="empty-state-text">Add a Kusto cluster to get started.</div>
+				<!-- Clusters -->
+				<div class="left-accordion-item expanded" id="connectionsSection" data-accordion-item="connections">
+					<div class="left-accordion-header" data-toggle-accordion="connections">
+						<span class="left-accordion-chevron expanded">${this.getChevronIcon()}</span>
+						<span class="left-accordion-icon">${this.getClusterIcon()}</span>
+						<span class="left-accordion-title">Clusters</span>
+						<button class="btn-icon header-action" id="addConnectionBtn" title="Add new cluster">
+							${this.getAddIcon()}
+						</button>
+						<span class="left-accordion-count" id="clustersCount">0</span>
+					</div>
+					<div class="left-accordion-body expanded" id="connectionsList">
+						<div class="empty-state">
+							<div class="empty-state-icon">${this.getClusterIcon()}</div>
+							<div class="empty-state-title">No clusters yet</div>
+							<div class="empty-state-text">Add a Kusto cluster to get started.</div>
+						</div>
 					</div>
 				</div>
-				<div class="section-collapsed-hint">Expand section to view items</div>
 			</div>
+		</div>
+
+		<!-- Splitter -->
+		<div class="splitter" id="splitter">
+			<button class="splitter-collapse-btn" id="splitterCollapseBtn" title="Collapse sidebar">
+				${this.getChevronIcon()}
+			</button>
+		</div>
+
+		<!-- Panel Toggle (visible when collapsed) -->
+		<div class="panel-toggle" id="panelToggle" title="Show sidebar">
+			${this.getChevronIcon()}
 		</div>
 
 		<!-- Right Panel: Explorer & Details -->
 		<div class="right-panel">
 			<div class="section" style="height: 100%;">
-				<div class="section-header">
+				<div class="section-header" id="explorerHeader">
+					<button class="btn-icon" id="toggleSidebarBtn" title="Toggle sidebar" style="margin-right: 4px;">
+						${this.getSidebarIcon()}
+					</button>
 					<span class="section-title">Cluster Explorer</span>
 				</div>
 				<div class="section-body" id="explorerContent">
@@ -1292,6 +2227,87 @@ export class ConnectionManagerViewer {
 		var expandedFolders = new Set(); // Track expanded Tables/Functions folders
 		var loadingDatabases = new Set();
 		var databaseSchemas = {};
+		// Navigation path for breadcrumb: { connectionId, database?, section?, folderPath? }
+		// section can be 'tables' or 'functions'
+		// folderPath is an array of folder names for nested folders
+		var explorerPath = null;
+		var sidebarCollapsed = false;
+		var sidebarWidth = 280;
+
+		// Splitter functionality
+		(function() {
+			var leftPanel = document.getElementById('leftPanel');
+			var splitter = document.getElementById('splitter');
+			var panelToggle = document.getElementById('panelToggle');
+			var isDragging = false;
+			var startX = 0;
+			var startWidth = 0;
+
+			function toggleSidebar() {
+				sidebarCollapsed = !sidebarCollapsed;
+				if (sidebarCollapsed) {
+					leftPanel.classList.add('collapsed');
+					splitter.classList.add('collapsed');
+				} else {
+					leftPanel.classList.remove('collapsed');
+					splitter.classList.remove('collapsed');
+				}
+			}
+
+			// Make toggleSidebar globally accessible for dynamic buttons
+			window.toggleSidebar = toggleSidebar;
+
+			splitter.addEventListener('mousedown', function(e) {
+				if (sidebarCollapsed) return;
+				isDragging = true;
+				startX = e.clientX;
+				startWidth = leftPanel.offsetWidth;
+				splitter.classList.add('dragging');
+				document.body.style.cursor = 'col-resize';
+				document.body.style.userSelect = 'none';
+				e.preventDefault();
+			});
+
+			document.addEventListener('mousemove', function(e) {
+				if (!isDragging) return;
+				var newWidth = startWidth + (e.clientX - startX);
+				newWidth = Math.max(200, Math.min(500, newWidth));
+				leftPanel.style.width = newWidth + 'px';
+				sidebarWidth = newWidth;
+			});
+
+			document.addEventListener('mouseup', function() {
+				if (isDragging) {
+					isDragging = false;
+					splitter.classList.remove('dragging');
+					document.body.style.cursor = '';
+					document.body.style.userSelect = '';
+				}
+			});
+
+			// Double-click to collapse
+			splitter.addEventListener('dblclick', function() {
+				toggleSidebar();
+			});
+
+			// Panel toggle button (when collapsed)
+			panelToggle.addEventListener('click', function() {
+				toggleSidebar();
+			});
+
+			// Splitter collapse button
+			document.getElementById('splitterCollapseBtn').addEventListener('click', function(e) {
+				e.stopPropagation();
+				toggleSidebar();
+			});
+
+			// Use event delegation for dynamically created toggle button
+			document.addEventListener('click', function(e) {
+				if (e.target.closest('#toggleSidebarBtn')) {
+					toggleSidebar();
+				}
+			});
+		})();
 
 		// Icons
 		var ICONS = {
@@ -1299,6 +2315,7 @@ export class ConnectionManagerViewer {
 			database: '${this.escapeJs(this.getDatabaseIcon())}',
 			table: '${this.escapeJs(this.getTableIcon())}',
 			function: '${this.escapeJs(this.getFunctionIcon())}',
+			column: '${this.escapeJs(this.getColumnIcon())}',
 			folder: '${this.escapeJs(this.getFolderIcon())}',
 			chevron: '${this.escapeJs(this.getChevronIcon())}',
 			star: '${this.escapeJs(this.getStarIcon())}',
@@ -1307,8 +2324,17 @@ export class ConnectionManagerViewer {
 			delete: '${this.escapeJs(this.getDeleteIcon())}',
 			copy: '${this.escapeJs(this.getCopyIcon())}',
 			refresh: '${this.escapeJs(this.getRefreshIcon())}',
-			spinner: '${this.escapeJs(this.getSpinnerIcon())}'
+			spinner: '${this.escapeJs(this.getSpinnerIcon())}',
+			back: '${this.escapeJs(this.getBackIcon())}',
+			sidebar: '${this.escapeJs(this.getSidebarIcon())}'
 		};
+
+		// Helper to build header with toggle button
+		function buildExplorerHeader(extraButtons) {
+			return '<button class="btn-icon" id="toggleSidebarBtn" title="Toggle sidebar" style="margin-right: 4px;">' + ICONS.sidebar + '</button>' +
+				(extraButtons || '') +
+				'<span class="section-title">Cluster Explorer</span>';
+		}
 
 		function escapeHtml(str) {
 			return String(str || '')
@@ -1355,18 +2381,22 @@ export class ConnectionManagerViewer {
 		function renderFavorites() {
 			var section = document.getElementById('favoritesSection');
 			var list = document.getElementById('favoritesList');
+			var countEl = document.getElementById('favoritesCount');
 			
 			// Only show database favorites (filter out any cluster-only favorites)
 			var dbFavorites = (lastSnapshot && lastSnapshot.favorites) 
 				? lastSnapshot.favorites.filter(function(f) { return f.database && f.clusterUrl; })
 				: [];
 			
+			// Update count
+			if (countEl) countEl.textContent = dbFavorites.length;
+			
 			if (dbFavorites.length === 0) {
 				section.style.display = 'none';
 				return;
 			}
 
-			section.style.display = 'block';
+			section.style.display = 'flex';
 			var html = '';
 			
 			// Build a map of clusterUrl -> connection for finding matching connections
@@ -1388,16 +2418,15 @@ export class ConnectionManagerViewer {
 				var displayName = fav.name || (conn ? conn.name : shortClusterName(fav.clusterUrl));
 				var clusterShort = shortClusterName(fav.clusterUrl);
 				var detailLine = clusterShort + '.' + fav.database;
-				var tooltipText = displayName + '\\n' + detailLine;
 
 				html += '<div class="favorite-item" title="' + escapeHtml(displayName + ' — ' + detailLine) + '" data-fav-cluster="' + escapeHtml(fav.clusterUrl) + '" data-fav-db="' + escapeHtml(fav.database) + '"' + (conn ? ' data-fav-conn="' + escapeHtml(conn.id) + '"' : '') + '>';
-				html += '<div class="favorite-info">';
+				html += '<div class="favorite-row">';
 				html += '<div class="favorite-name">' + escapeHtml(displayName) + '</div>';
-				html += '<div class="favorite-detail">' + escapeHtml(detailLine) + '</div>';
-				html += '</div>';
 				html += '<div class="favorite-actions">';
 				html += '<button class="btn-icon" data-remove-fav-cluster="' + escapeHtml(fav.clusterUrl) + '" data-remove-fav-db="' + escapeHtml(fav.database) + '" title="Remove from favorites">' + ICONS.delete + '</button>';
 				html += '</div>';
+				html += '</div>';
+				html += '<div class="favorite-detail">' + escapeHtml(detailLine) + '</div>';
 				html += '</div>';
 			});
 
@@ -1406,6 +2435,12 @@ export class ConnectionManagerViewer {
 
 		function renderConnections() {
 			var list = document.getElementById('connectionsList');
+			var countEl = document.getElementById('clustersCount');
+			var count = (lastSnapshot && lastSnapshot.connections) ? lastSnapshot.connections.length : 0;
+			
+			// Update count
+			if (countEl) countEl.textContent = count;
+			
 			if (!lastSnapshot || !lastSnapshot.connections || lastSnapshot.connections.length === 0) {
 				list.innerHTML = '<div class="empty-state">' +
 					'<div class="empty-state-icon">' + ICONS.cluster + '</div>' +
@@ -1439,18 +2474,22 @@ export class ConnectionManagerViewer {
 
 		function renderExplorer() {
 			var content = document.getElementById('explorerContent');
+			var header = document.getElementById('explorerHeader');
+			
 			if (!selectedConnectionId || !lastSnapshot) {
+				header.innerHTML = buildExplorerHeader();
 				content.innerHTML = '<div class="empty-state">' +
 					'<div class="empty-state-icon">' + ICONS.database + '</div>' +
-					'<div class="empty-state-title">Select a connection</div>' +
-					'<div class="empty-state-text">Click on a connection to explore its databases, tables, and functions.</div>' +
+					'<div class="empty-state-title">Select a cluster</div>' +
+					'<div class="empty-state-text">Click on a cluster to explore its databases, tables, and functions.</div>' +
 					'</div>';
 				return;
 			}
 
 			var conn = lastSnapshot.connections.find(function(c) { return c.id === selectedConnectionId; });
 			if (!conn) {
-				content.innerHTML = '<div class="empty-state">Connection not found</div>';
+				header.innerHTML = buildExplorerHeader();
+				content.innerHTML = '<div class="empty-state">Cluster not found</div>';
 				return;
 			}
 
@@ -1466,114 +2505,267 @@ export class ConnectionManagerViewer {
 			var databases = lastSnapshot.cachedDatabases[clusterKey] || [];
 			var isLoading = loadingDatabases.has(conn.id);
 
-			var html = '<div class="tree-view">';
-			
-			// Header with connection name and refresh button
-			html += '<div class="explorer-header" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; margin-bottom: 8px; border-bottom: 1px solid var(--vscode-editorWidget-border);">';
-			html += '<span class="tree-icon cluster">' + ICONS.cluster + '</span>';
-			html += '<span style="font-weight: 500; flex: 1;">' + escapeHtml(conn.name) + '</span>';
-			if (isLoading) {
-				html += '<span class="tree-chevron loading">' + ICONS.spinner + '</span>';
+			header.innerHTML = buildExplorerHeader();
+
+			// Helper to build folder tree
+			function buildFolderTree(items, getFolderFn) {
+				var tree = { __items: [] };
+				items.forEach(function(item) {
+					var folder = getFolderFn(item);
+					if (folder) {
+						var parts = folder.split('/').filter(function(p) { return p; });
+						var node = tree;
+						parts.forEach(function(part) {
+							if (!node[part]) node[part] = { __items: [] };
+							node = node[part];
+						});
+						node.__items.push(item);
+					} else {
+						tree.__items.push(item);
+					}
+				});
+				return tree;
 			}
-			html += '<button class="btn-icon" data-refresh-cluster="' + escapeHtml(conn.id) + '" title="Refresh databases">' + ICONS.refresh + '</button>';
-			html += '</div>';
 
-			if (databases.length > 0) {
-				databases.forEach(function(db) {
-					var dbKey = conn.id + '|' + db;
-					var dbExpanded = expandedDatabases.has(dbKey);
-					var schema = databaseSchemas[dbKey];
-					var dbFav = isFavorite(conn.clusterUrl, db);
+			// Get items at a specific folder path within a tree
+			function getTreeAtPath(tree, path) {
+				var node = tree;
+				for (var i = 0; i < path.length; i++) {
+					if (node[path[i]]) {
+						node = node[path[i]];
+					} else {
+						return { __items: [] };
+					}
+				}
+				return node;
+			}
 
-					html += '<div class="tree-node">';
-					html += '<div class="tree-node-content" data-expand-db="' + escapeHtml(conn.id) + '" data-db-name="' + escapeHtml(db) + '">';
-					html += '<span class="tree-chevron' + (dbExpanded ? ' expanded' : '') + '">' + ICONS.chevron + '</span>';
-					html += '<span class="tree-icon database">' + ICONS.database + '</span>';
-					html += '<span class="tree-label">' + escapeHtml(db) + '</span>';
-					html += '<button class="btn-icon favorite' + (dbFav ? ' is-favorite' : '') + '" data-toggle-db-fav="' + escapeHtml(conn.id) + '" data-toggle-db-fav-cluster="' + escapeHtml(conn.clusterUrl) + '" data-toggle-db-fav-name="' + escapeHtml(conn.name) + '" data-db="' + escapeHtml(db) + '" title="' + (dbFav ? 'Remove from favorites' : 'Add to favorites') + '" style="margin-left: auto;">' + (dbFav ? ICONS.starFilled : ICONS.star) + '</button>';
-					html += '</div>';
-
-					if (dbExpanded && schema) {
-						html += '<div class="tree-children">';
-						
-						// Tables folder
-						if (schema.tables && schema.tables.length > 0) {
-							var tablesFolderKey = dbKey + '|tables';
-							var tablesExpanded = expandedFolders.has(tablesFolderKey);
-							html += '<div class="tree-node">';
-							html += '<div class="tree-node-content" data-toggle-folder="' + escapeHtml(tablesFolderKey) + '">';
-							html += '<span class="tree-chevron' + (tablesExpanded ? ' expanded' : '') + '">' + ICONS.chevron + '</span>';
-							html += '<span class="tree-icon folder">' + ICONS.folder + '</span>';
-							html += '<span class="tree-label">Tables</span>';
-							html += '<span class="tree-badge">' + schema.tables.length + '</span>';
-							html += '</div>';
-							if (tablesExpanded) {
-								html += '<div class="tree-children">';
-								schema.tables.slice(0, 100).forEach(function(table) {
-									var cols = schema.columnTypesByTable[table] || {};
-									var colCount = Object.keys(cols).length;
-									html += '<div class="tree-node">';
-									html += '<div class="tree-node-content" data-table="' + escapeHtml(table) + '" data-db="' + escapeHtml(db) + '" data-conn="' + escapeHtml(conn.id) + '">';
-									html += '<span class="tree-chevron"></span>';
-									html += '<span class="tree-icon table">' + ICONS.table + '</span>';
-									html += '<span class="tree-label">' + escapeHtml(table) + '</span>';
-									if (colCount > 0) html += '<span class="tree-badge">' + colCount + ' cols</span>';
-									html += '</div>';
-									html += '</div>';
-								});
-								if (schema.tables.length > 100) {
-									html += '<div class="tree-node"><div class="tree-node-content small">...and ' + (schema.tables.length - 100) + ' more tables</div></div>';
+			// Build breadcrumb HTML
+			function buildBreadcrumb() {
+				var html = '<div class="explorer-breadcrumb">';
+				
+				// Cluster (always shown, clickable to go back to databases)
+				var isClusterCurrent = !explorerPath || !explorerPath.database;
+				html += '<span class="breadcrumb-item' + (isClusterCurrent ? ' current' : '') + '" data-nav-to="cluster">';
+				html += '<span class="breadcrumb-icon">' + ICONS.cluster + '</span>';
+				html += escapeHtml(conn.name);
+				html += '</span>';
+				
+				if (explorerPath && explorerPath.database) {
+					html += '<span class="breadcrumb-separator">/</span>';
+					var isDbCurrent = !explorerPath.section;
+					html += '<span class="breadcrumb-item' + (isDbCurrent ? ' current' : '') + '" data-nav-to="database">';
+					html += '<span class="breadcrumb-icon">' + ICONS.database + '</span>';
+					html += escapeHtml(explorerPath.database);
+					html += '</span>';
+					
+					if (explorerPath.section) {
+						// Handle table-columns specially
+						if (explorerPath.section === 'table-columns') {
+							// Show Tables link
+							html += '<span class="breadcrumb-separator">/</span>';
+							html += '<span class="breadcrumb-item" data-nav-to="section" data-section-type="tables">';
+							html += '<span class="breadcrumb-icon">' + ICONS.table + '</span>';
+							html += 'Tables';
+							html += '</span>';
+							
+							// Show folder path if any
+							if (explorerPath.folderPath && explorerPath.folderPath.length > 0) {
+								for (var i = 0; i < explorerPath.folderPath.length; i++) {
+									html += '<span class="breadcrumb-separator">/</span>';
+									html += '<span class="breadcrumb-item" data-nav-to="folder" data-folder-index="' + i + '">';
+									html += '<span class="breadcrumb-icon">' + ICONS.folder + '</span>';
+									html += escapeHtml(explorerPath.folderPath[i]);
+									html += '</span>';
 								}
-								html += '</div>';
 							}
-							html += '</div>';
-						}
-
-						// Functions folder
-						if (schema.functions && schema.functions.length > 0) {
-							var fnFolderKey = dbKey + '|functions';
-							var fnExpanded = expandedFolders.has(fnFolderKey);
-							html += '<div class="tree-node">';
-							html += '<div class="tree-node-content" data-toggle-folder="' + escapeHtml(fnFolderKey) + '">';
-							html += '<span class="tree-chevron' + (fnExpanded ? ' expanded' : '') + '">' + ICONS.chevron + '</span>';
-							html += '<span class="tree-icon folder">' + ICONS.folder + '</span>';
-							html += '<span class="tree-label">Functions</span>';
-							html += '<span class="tree-badge">' + schema.functions.length + '</span>';
-							html += '</div>';
-							if (fnExpanded) {
-								html += '<div class="tree-children">';
-								schema.functions.slice(0, 50).forEach(function(fn) {
-									html += '<div class="tree-node">';
-									html += '<div class="tree-node-content" data-fn="' + escapeHtml(fn.name) + '" data-db="' + escapeHtml(db) + '" data-conn="' + escapeHtml(conn.id) + '">';
-									html += '<span class="tree-chevron"></span>';
-									html += '<span class="tree-icon function">' + ICONS.function + '</span>';
-									html += '<span class="tree-label">' + escapeHtml(fn.name) + '</span>';
-									html += '</div>';
-									html += '</div>';
-								});
-								if (schema.functions.length > 50) {
-									html += '<div class="tree-node"><div class="tree-node-content small">...and ' + (schema.functions.length - 50) + ' more functions</div></div>';
+							
+							// Show table name (current)
+							html += '<span class="breadcrumb-separator">/</span>';
+							html += '<span class="breadcrumb-item current">';
+							html += '<span class="breadcrumb-icon">' + ICONS.table + '</span>';
+							html += escapeHtml(explorerPath.tableName);
+							html += '</span>';
+						} else {
+							// Normal section (tables/functions)
+							html += '<span class="breadcrumb-separator">/</span>';
+							var isSectionCurrent = !explorerPath.folderPath || explorerPath.folderPath.length === 0;
+							var sectionIcon = explorerPath.section === 'tables' ? ICONS.table : ICONS.function;
+							var sectionLabel = explorerPath.section === 'tables' ? 'Tables' : 'Functions';
+							html += '<span class="breadcrumb-item' + (isSectionCurrent ? ' current' : '') + '" data-nav-to="section">';
+							html += '<span class="breadcrumb-icon">' + sectionIcon + '</span>';
+							html += escapeHtml(sectionLabel);
+							html += '</span>';
+							
+							// Folder path
+							if (explorerPath.folderPath && explorerPath.folderPath.length > 0) {
+								for (var i = 0; i < explorerPath.folderPath.length; i++) {
+									html += '<span class="breadcrumb-separator">/</span>';
+									var isFolderCurrent = i === explorerPath.folderPath.length - 1;
+									html += '<span class="breadcrumb-item' + (isFolderCurrent ? ' current' : '') + '" data-nav-to="folder" data-folder-index="' + i + '">';
+									html += '<span class="breadcrumb-icon">' + ICONS.folder + '</span>';
+									html += escapeHtml(explorerPath.folderPath[i]);
+									html += '</span>';
 								}
-								html += '</div>';
 							}
-							html += '</div>';
 						}
+					}
+				}
+				
+				html += '</div>';
+				return html;
+			}
 
+			var html = '';
+			
+			// Add breadcrumb
+			html += buildBreadcrumb();
+			
+			// Render based on current navigation level
+			html += '<div class="explorer-list">';
+			
+			if (!explorerPath || !explorerPath.database) {
+				// Level 1: Show databases
+				if (isLoading) {
+					html += '<div style="padding: 16px; text-align: center; opacity: 0.7;">' + ICONS.spinner + ' Loading databases...</div>';
+				} else if (databases.length > 0) {
+					databases.forEach(function(db) {
+						var dbFav = isFavorite(conn.clusterUrl, db);
+						html += '<div class="explorer-list-item" data-nav-database="' + escapeHtml(db) + '">';
+						html += '<span class="explorer-list-item-icon database">' + ICONS.database + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(db) + '</span>';
+						html += '<div class="explorer-list-item-actions">';
+						html += '<button class="btn-icon' + (dbFav ? ' is-favorite' : '') + '" data-toggle-db-fav="' + escapeHtml(conn.id) + '" data-toggle-db-fav-cluster="' + escapeHtml(conn.clusterUrl) + '" data-toggle-db-fav-name="' + escapeHtml(conn.name) + '" data-db="' + escapeHtml(db) + '" title="' + (dbFav ? 'Remove from favorites' : 'Add to favorites') + '" style="color: ' + (dbFav ? '#f5c518' : 'inherit') + ';">' + (dbFav ? ICONS.starFilled : ICONS.star) + '</button>';
+						html += '<button class="btn-icon" data-refresh-cluster="' + escapeHtml(conn.id) + '" title="Refresh">' + ICONS.refresh + '</button>';
 						html += '</div>';
-					} else if (dbExpanded && !schema) {
-						html += '<div class="tree-children">';
-						html += '<div class="tree-node"><div class="tree-node-content small">Loading schema...</div></div>';
+						html += '</div>';
+					});
+				} else {
+					html += '<div class="empty-state">';
+					html += '<div class="empty-state-text">No databases found.</div>';
+					html += '<button class="btn" data-refresh-cluster="' + escapeHtml(conn.id) + '">Refresh</button>';
+					html += '</div>';
+				}
+			} else if (!explorerPath.section) {
+				// Level 2: Show Tables/Functions for selected database
+				var dbKey = conn.id + '|' + explorerPath.database;
+				var schema = databaseSchemas[dbKey];
+				
+				if (!schema) {
+					html += '<div style="padding: 16px; text-align: center; opacity: 0.7;">' + ICONS.spinner + ' Loading schema...</div>';
+				} else {
+					var tableCount = schema.tables ? schema.tables.length : 0;
+					var fnCount = schema.functions ? schema.functions.length : 0;
+					
+					if (tableCount > 0) {
+						html += '<div class="explorer-list-item" data-nav-section="tables">';
+						html += '<span class="explorer-list-item-icon table">' + ICONS.table + '</span>';
+						html += '<span class="explorer-list-item-name">Tables</span>';
+						html += '<span class="explorer-list-item-meta">' + tableCount + '</span>';
 						html += '</div>';
 					}
-
-					html += '</div>';
-				});
-			} else if (!isLoading && databases.length === 0) {
-				html += '<div class="tree-node"><div class="tree-node-content small">No databases found. Click refresh to load.</div></div>';
+					
+					if (fnCount > 0) {
+						html += '<div class="explorer-list-item" data-nav-section="functions">';
+						html += '<span class="explorer-list-item-icon function">' + ICONS.function + '</span>';
+						html += '<span class="explorer-list-item-name">Functions</span>';
+						html += '<span class="explorer-list-item-meta">' + fnCount + '</span>';
+						html += '</div>';
+					}
+					
+					if (tableCount === 0 && fnCount === 0) {
+						html += '<div class="empty-state"><div class="empty-state-text">No tables or functions found.</div></div>';
+					}
+				}
+			} else {
+				// Level 3+: Show tables/functions/folders
+				var dbKey = conn.id + '|' + explorerPath.database;
+				var schema = databaseSchemas[dbKey];
+				
+				if (!schema) {
+					html += '<div style="padding: 16px; text-align: center; opacity: 0.7;">' + ICONS.spinner + ' Loading schema...</div>';
+				} else if (explorerPath.section === 'tables') {
+					var tableFolders = schema.tableFolders || {};
+					var tableTree = buildFolderTree(schema.tables || [], function(t) { return tableFolders[t]; });
+					var currentNode = getTreeAtPath(tableTree, explorerPath.folderPath || []);
+					
+					// Get subfolders and items at current level
+					var folders = Object.keys(currentNode).filter(function(k) { return k !== '__items'; }).sort();
+					var tables = currentNode.__items || [];
+					
+					// Render folders first
+					folders.forEach(function(folderName) {
+						html += '<div class="explorer-list-item" data-nav-folder="' + escapeHtml(folderName) + '">';
+						html += '<span class="explorer-list-item-icon folder">' + ICONS.folder + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(folderName) + '</span>';
+						html += '</div>';
+					});
+					
+					// Render tables
+					tables.forEach(function(table) {
+						var cols = schema.columnTypesByTable[table] || {};
+						var colCount = Object.keys(cols).length;
+						html += '<div class="explorer-list-item" data-nav-table="' + escapeHtml(table) + '">';
+						html += '<span class="explorer-list-item-icon table">' + ICONS.table + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(table) + '</span>';
+						if (colCount > 0) html += '<span class="explorer-list-item-meta">' + colCount + ' cols</span>';
+						html += '</div>';
+					});
+					
+					if (folders.length === 0 && tables.length === 0) {
+						html += '<div class="empty-state"><div class="empty-state-text">No tables in this folder.</div></div>';
+					}
+				} else if (explorerPath.section === 'functions') {
+					var fnTree = buildFolderTree(schema.functions || [], function(f) { return f.folder; });
+					var currentNode = getTreeAtPath(fnTree, explorerPath.folderPath || []);
+					
+					var folders = Object.keys(currentNode).filter(function(k) { return k !== '__items'; }).sort();
+					var functions = currentNode.__items || [];
+					
+					// Render folders first
+					folders.forEach(function(folderName) {
+						html += '<div class="explorer-list-item" data-nav-folder="' + escapeHtml(folderName) + '">';
+						html += '<span class="explorer-list-item-icon folder">' + ICONS.folder + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(folderName) + '</span>';
+						html += '</div>';
+					});
+					
+					// Render functions
+					functions.forEach(function(fn) {
+						var params = fn.parametersText || '';
+						var fullSignature = fn.name + (params ? '(' + params + ')' : '');
+						html += '<div class="explorer-list-item function-item-row" data-fn-name="' + escapeHtml(fn.name) + '" title="' + escapeHtml(fullSignature) + '">';
+						html += '<span class="explorer-list-item-icon function">' + ICONS.function + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(fn.name) + '</span>';
+						if (params) html += '<span class="explorer-list-item-params">(' + escapeHtml(params) + ')</span>';
+						html += '</div>';
+					});
+					
+					if (folders.length === 0 && functions.length === 0) {
+						html += '<div class="empty-state"><div class="empty-state-text">No functions in this folder.</div></div>';
+					}
+				} else if (explorerPath.section === 'table-columns') {
+					// Show columns for a specific table
+					var tableName = explorerPath.tableName;
+					var cols = schema.columnTypesByTable[tableName] || {};
+					var colNames = Object.keys(cols).sort();
+					
+					colNames.forEach(function(colName) {
+						var colType = cols[colName] || '';
+						html += '<div class="explorer-list-item">';
+						html += '<span class="explorer-list-item-icon column">' + ICONS.column + '</span>';
+						html += '<span class="explorer-list-item-name">' + escapeHtml(colName) + '</span>';
+						if (colType) html += '<span class="explorer-list-item-meta">' + escapeHtml(colType) + '</span>';
+						html += '</div>';
+					});
+					
+					if (colNames.length === 0) {
+						html += '<div class="empty-state"><div class="empty-state-text">No columns found.</div></div>';
+					}
+				}
 			}
-
+			
 			html += '</div>';
-
 			content.innerHTML = html;
 		}
 
@@ -1670,27 +2862,54 @@ export class ConnectionManagerViewer {
 		document.getElementById('modalSaveBtn').addEventListener('click', saveConnection);
 		document.getElementById('testConnectionBtn').addEventListener('click', testConnection);
 
-		// Section toggle (collapsible Favorites/Connections)
-		var collapsedSections = new Set(['favorites']); // Favorites collapsed by default
-		document.querySelectorAll('[data-toggle-section]').forEach(function(header) {
+		// Left panel accordion toggle
+		var expandedAccordion = 'connections'; // Connections expanded by default
+		
+		function setAccordionState(itemName, isExpanded) {
+			var item = document.querySelector('[data-accordion-item="' + itemName + '"]');
+			if (!item) {
+				console.log('Accordion item not found:', itemName);
+				return;
+			}
+			var chevron = item.querySelector('.left-accordion-chevron');
+			var body = item.querySelector('.left-accordion-body');
+			
+			if (isExpanded) {
+				item.classList.add('expanded');
+				chevron.classList.add('expanded');
+				body.classList.add('expanded');
+				// Remove any inline style so CSS class takes over
+				body.style.removeProperty('display');
+			} else {
+				item.classList.remove('expanded');
+				chevron.classList.remove('expanded');
+				body.classList.remove('expanded');
+				// Remove any inline style so CSS class takes over
+				body.style.removeProperty('display');
+			}
+		}
+		
+		document.querySelectorAll('[data-toggle-accordion]').forEach(function(header) {
 			header.addEventListener('click', function(e) {
 				// Don't toggle if clicking a button inside the header
 				if (e.target.closest('.btn') || e.target.closest('.btn-icon')) return;
 				
-				var section = header.getAttribute('data-toggle-section');
-				var chevron = header.querySelector('.section-chevron');
-				var body = header.closest('.section').querySelector('.section-body');
-				var hint = header.closest('.section').querySelector('.section-collapsed-hint');
+				var itemName = header.getAttribute('data-toggle-accordion');
+				console.log('Accordion clicked:', itemName, 'current expanded:', expandedAccordion);
 				
-				if (collapsedSections.has(section)) {
-					collapsedSections.delete(section);
-					chevron.classList.add('expanded');
-					body.classList.remove('collapsed');
-				} else {
-					collapsedSections.add(section);
-					chevron.classList.remove('expanded');
-					body.classList.add('collapsed');
+				if (expandedAccordion === itemName) {
+					// Already expanded, do nothing (always keep one open)
+					return;
 				}
+				
+				// Collapse the currently expanded one
+				if (expandedAccordion) {
+					setAccordionState(expandedAccordion, false);
+				}
+				
+				// Expand the clicked one
+				expandedAccordion = itemName;
+				setAccordionState(itemName, true);
 			});
 		});
 
@@ -1713,6 +2932,10 @@ export class ConnectionManagerViewer {
 			if (connItem && !closest(target, '.btn-icon')) {
 				var connId = connItem.getAttribute('data-conn-id');
 				if (connId) {
+					// Clear navigation path when switching clusters
+					if (selectedConnectionId !== connId) {
+						explorerPath = null;
+					}
 					selectedConnectionId = connId;
 					// Auto-expand cluster
 					vscode.postMessage({ type: 'cluster.expand', connectionId: connId });
@@ -1784,6 +3007,19 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
+			// Toggle table expand/collapse (show columns)
+			var expandTable = closest(target, '[data-expand-table]');
+			if (expandTable) {
+				var tableKey = expandTable.getAttribute('data-expand-table');
+				if (expandedFolders.has(tableKey)) {
+					expandedFolders.delete(tableKey);
+				} else {
+					expandedFolders.add(tableKey);
+				}
+				renderExplorer();
+				return;
+			}
+
 			// Refresh cluster databases
 			var refreshCluster = closest(target, '[data-refresh-cluster]');
 			if (refreshCluster) {
@@ -1792,22 +3028,92 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
-			// Expand/collapse database
-			var expandDb = closest(target, '[data-expand-db]');
-			if (expandDb && !closest(target, '[data-toggle-db-fav]')) {
-				var connId = expandDb.getAttribute('data-expand-db');
-				var db = expandDb.getAttribute('data-db-name');
-				var dbKey = connId + '|' + db;
-				if (expandedDatabases.has(dbKey)) {
-					expandedDatabases.delete(dbKey);
-				} else {
-					expandedDatabases.add(dbKey);
-					// Load schema if not cached
-					if (!databaseSchemas[dbKey]) {
-						vscode.postMessage({ type: 'database.getSchema', connectionId: connId, database: db });
-					}
+			// Back button in explorer header (removed - using breadcrumbs now)
+			
+			// Breadcrumb navigation
+			var navTo = closest(target, '[data-nav-to]');
+			if (navTo) {
+				var navType = navTo.getAttribute('data-nav-to');
+				if (navType === 'cluster') {
+					explorerPath = null;
+				} else if (navType === 'database') {
+					explorerPath = { connectionId: selectedConnectionId, database: explorerPath.database };
+				} else if (navType === 'section') {
+					// Handle navigating from table-columns back to tables
+					var sectionType = navTo.getAttribute('data-section-type');
+					var section = sectionType || explorerPath.section;
+					if (section === 'table-columns') section = 'tables';
+					explorerPath = { connectionId: selectedConnectionId, database: explorerPath.database, section: section, folderPath: [] };
+				} else if (navType === 'folder') {
+					var folderIndex = parseInt(navTo.getAttribute('data-folder-index'), 10);
+					// When navigating from table-columns, go back to tables section
+					var section = explorerPath.section === 'table-columns' ? 'tables' : explorerPath.section;
+					explorerPath = { 
+						connectionId: selectedConnectionId, 
+						database: explorerPath.database, 
+						section: section, 
+						folderPath: explorerPath.folderPath.slice(0, folderIndex + 1) 
+					};
 				}
 				renderExplorer();
+				return;
+			}
+			
+			// Navigate to database
+			var navDatabase = closest(target, '[data-nav-database]');
+			if (navDatabase && !closest(target, '.btn-icon')) {
+				var db = navDatabase.getAttribute('data-nav-database');
+				var dbKey = selectedConnectionId + '|' + db;
+				explorerPath = { connectionId: selectedConnectionId, database: db };
+				// Load schema if not cached
+				if (!databaseSchemas[dbKey]) {
+					vscode.postMessage({ type: 'database.getSchema', connectionId: selectedConnectionId, database: db });
+				}
+				renderExplorer();
+				return;
+			}
+			
+			// Navigate to section (tables/functions)
+			var navSection = closest(target, '[data-nav-section]');
+			if (navSection) {
+				var section = navSection.getAttribute('data-nav-section');
+				explorerPath.section = section;
+				explorerPath.folderPath = [];
+				renderExplorer();
+				return;
+			}
+			
+			// Navigate into folder
+			var navFolder = closest(target, '[data-nav-folder]');
+			if (navFolder) {
+				var folderName = navFolder.getAttribute('data-nav-folder');
+				explorerPath.folderPath = explorerPath.folderPath || [];
+				explorerPath.folderPath.push(folderName);
+				renderExplorer();
+				return;
+			}
+			
+			// Navigate to table columns
+			var navTable = closest(target, '[data-nav-table]');
+			if (navTable) {
+				var tableName = navTable.getAttribute('data-nav-table');
+				// Store current folder path so we can add table-columns view
+				var currentFolderPath = explorerPath.folderPath ? explorerPath.folderPath.slice() : [];
+				explorerPath = {
+					connectionId: selectedConnectionId,
+					database: explorerPath.database,
+					section: 'table-columns',
+					tableName: tableName,
+					folderPath: currentFolderPath
+				};
+				renderExplorer();
+				return;
+			}
+
+			// Drill into database (legacy - remove this handler)
+			var drillDb = closest(target, '[data-drill-db]');
+			if (drillDb && !closest(target, '[data-toggle-db-fav]')) {
+				// This is now handled by data-nav-database
 				return;
 			}
 
@@ -1817,11 +3123,11 @@ export class ConnectionManagerViewer {
 				var connId = favItem.getAttribute('data-fav-conn');
 				var favDb = favItem.getAttribute('data-fav-db');
 				
-				// Helper function to expand the favorite database
-				function expandFavoriteDatabase(connectionId, database) {
+				// Helper function to navigate to the favorite database
+				function navigateToFavoriteDatabase(connectionId, database) {
 					if (connectionId && database) {
 						var dbKey = connectionId + '|' + database;
-						expandedDatabases.add(dbKey);
+						explorerPath = { connectionId: connectionId, database: database };
 						// Load schema if not cached
 						if (!databaseSchemas[dbKey]) {
 							vscode.postMessage({ type: 'database.getSchema', connectionId: connectionId, database: database });
@@ -1832,7 +3138,7 @@ export class ConnectionManagerViewer {
 				if (connId) {
 					selectedConnectionId = connId;
 					vscode.postMessage({ type: 'cluster.expand', connectionId: connId });
-					expandFavoriteDatabase(connId, favDb);
+					navigateToFavoriteDatabase(connId, favDb);
 					renderAll();
 				} else {
 					// No matching connection found, try to find one by clusterUrl
@@ -1844,7 +3150,7 @@ export class ConnectionManagerViewer {
 							if (normalizeClusterUrl(c.clusterUrl) === normalizedUrl) {
 								selectedConnectionId = c.id;
 								vscode.postMessage({ type: 'cluster.expand', connectionId: c.id });
-								expandFavoriteDatabase(c.id, favDb);
+								navigateToFavoriteDatabase(c.id, favDb);
 								renderAll();
 								break;
 							}
@@ -1961,6 +3267,13 @@ export class ConnectionManagerViewer {
 		</svg>`;
 	}
 
+	private getColumnIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M5 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H5zm0 1h6v12H5V2z"/>
+			<path d="M7 4h2v1H7V4zm0 2h2v1H7V6zm0 2h2v1H7V8zm0 2h2v1H7v-1z"/>
+		</svg>`;
+	}
+
 	private getFolderIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path d="M14.5 3H7.71l-.85-.85A.5.5 0 0 0 6.5 2h-5a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-10a.5.5 0 0 0-.5-.5zm-.5 10H2V3h4.29l.85.85a.5.5 0 0 0 .36.15H14v9z"/>
@@ -2025,6 +3338,18 @@ export class ConnectionManagerViewer {
 	private getSpinnerIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path d="M8 1a7 7 0 1 0 7 7h-1A6 6 0 1 1 8 2V1z"/>
+		</svg>`;
+	}
+
+	private getBackIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path fill-rule="evenodd" clip-rule="evenodd" d="M5.854 3.646a.5.5 0 0 1 0 .708L2.707 7.5H14a.5.5 0 0 1 0 1H2.707l3.147 3.146a.5.5 0 0 1-.708.708l-4-4a.5.5 0 0 1 0-.708l4-4a.5.5 0 0 1 .708 0z"/>
+		</svg>`;
+	}
+
+	private getSidebarIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M0 2.5A1.5 1.5 0 0 1 1.5 1h13A1.5 1.5 0 0 1 16 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 13.5v-11zM1.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5H5V2H1.5zM6 2v12h8.5a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5H6z"/>
 		</svg>`;
 	}
 }
