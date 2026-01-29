@@ -198,6 +198,35 @@ Custom diagnostics use codes like:
 * `@toast-ui/editor` \- WYSIWYG markdown editor
 * `echarts` \- Charting library
 
+## Leave No Trace Clusters
+
+"Leave no trace" is a privacy feature that allows users to mark specific Kusto clusters as sensitive. When a cluster is marked as "Leave no trace":
+
+* **Query results are not persisted**: Tabular results from queries executed against these clusters are never saved to `.kqlx` files or session storage
+* **Derived data is also excluded**: Any data derived from query results (chart previews, transformations, etc.) is not persisted
+* **Configuration is preserved**: Section configurations (query text, chart settings, etc.) are still saved—only the data itself is excluded
+
+### Implementation Details
+
+* **Storage**: Leave no trace cluster URLs are stored in VS Code global state under key `kusto.leaveNoTraceClusters`
+* **Connection Manager UI**: 
+  - Clusters section shows a "Mark as Leave no trace" action on hover
+  - A dedicated "Leave No Trace" accordion section displays marked clusters
+  - Users can remove the mark by clicking delete in the Leave No Trace section
+* **Persistence Logic**: 
+  - Before saving, check if a query section's `clusterUrl` matches a leave-no-trace cluster
+  - If matched, strip `resultJson` from that section
+  - Also strip data from chart/transformation sections that reference such query sections
+
+### Key Files
+
+| File | Changes |
+| ---- | ------- |
+| `connectionManagerViewer.ts` | Leave no trace accordion section, mark/unmark actions |
+| `connectionManager.ts` | Storage API for leave-no-trace cluster list |
+| `persistence.js` | Strip results from leave-no-trace clusters before persisting |
+| `queryEditorProvider.ts` | Pass leave-no-trace list to webview |
+
 ## Copilot Integration
 
 The extension integrates with VS Code's Copilot APIs for:

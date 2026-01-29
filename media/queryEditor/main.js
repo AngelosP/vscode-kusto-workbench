@@ -957,6 +957,7 @@ window.addEventListener('message', async event => {
 			lastDatabase = message.lastDatabase;
 			cachedDatabases = message.cachedDatabases || {};
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
+			leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;

@@ -3646,6 +3646,7 @@ ${query}
 		const copilotInlineCompletionsEnabledUserSet = typeof copilotInlineCompletionsEnabledStored === 'boolean';
 
 		const favorites = this.getFavorites();
+		const leaveNoTraceClusters = this.connectionManager.getLeaveNoTraceClusters();
 
 		this.postMessage({
 			type: 'connectionsData',
@@ -3659,7 +3660,8 @@ ${query}
 			autoTriggerAutocompleteEnabled,
 			autoTriggerAutocompleteEnabledUserSet,
 			copilotInlineCompletionsEnabled,
-			copilotInlineCompletionsEnabledUserSet
+			copilotInlineCompletionsEnabledUserSet,
+			leaveNoTraceClusters
 		});
 	}
 

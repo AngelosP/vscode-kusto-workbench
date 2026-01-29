@@ -13,6 +13,7 @@ export interface KustoConnection {
 export class ConnectionManager {
 	private connections: KustoConnection[] = [];
 	private readonly storageKey = 'kusto.connections';
+	private readonly leaveNoTraceKey = 'kusto.leaveNoTraceClusters';
 
 	constructor(private context: vscode.ExtensionContext) {
 		this.loadConnections();
@@ -27,6 +28,64 @@ export class ConnectionManager {
 
 	private async saveConnections() {
 		await this.context.globalState.update(this.storageKey, this.connections);
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// Leave No Trace API
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Get the list of cluster URLs marked as "Leave no trace".
+	 * URLs are normalized (lowercase, no trailing slashes).
+	 */
+	getLeaveNoTraceClusters(): string[] {
+		const stored = this.context.globalState.get<string[]>(this.leaveNoTraceKey);
+		return Array.isArray(stored) ? stored : [];
+	}
+
+	/**
+	 * Check if a cluster URL is marked as "Leave no trace".
+	 */
+	isLeaveNoTrace(clusterUrl: string): boolean {
+		const normalized = this.normalizeClusterUrl(clusterUrl);
+		if (!normalized) return false;
+		return this.getLeaveNoTraceClusters().includes(normalized);
+	}
+
+	/**
+	 * Mark a cluster as "Leave no trace".
+	 */
+	async addLeaveNoTrace(clusterUrl: string): Promise<void> {
+		const normalized = this.normalizeClusterUrl(clusterUrl);
+		if (!normalized) return;
+		const current = this.getLeaveNoTraceClusters();
+		if (!current.includes(normalized)) {
+			current.push(normalized);
+			await this.context.globalState.update(this.leaveNoTraceKey, current);
+		}
+	}
+
+	/**
+	 * Remove a cluster from "Leave no trace".
+	 */
+	async removeLeaveNoTrace(clusterUrl: string): Promise<void> {
+		const normalized = this.normalizeClusterUrl(clusterUrl);
+		if (!normalized) return;
+		const current = this.getLeaveNoTraceClusters();
+		const filtered = current.filter(u => u !== normalized);
+		await this.context.globalState.update(this.leaveNoTraceKey, filtered);
+	}
+
+	/**
+	 * Normalize a cluster URL for consistent comparison.
+	 */
+	normalizeClusterUrl(clusterUrl: string): string {
+		let u = String(clusterUrl || '').trim();
+		if (!u) return '';
+		if (!/^https?:\/\//i.test(u)) {
+			u = 'https://' + u;
+		}
+		return u.replace(/\/+$/g, '').toLowerCase();
 	}
 
 	getConnections(): KustoConnection[] {

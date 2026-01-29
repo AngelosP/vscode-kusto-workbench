@@ -4,6 +4,7 @@ let lastConnectionId = null;
 let lastDatabase = null;
 let cachedDatabases = {};
 let kustoFavorites = [];
+let leaveNoTraceClusters = [];
 let favoritesModeByBoxId = {};
 let pendingFavoriteSelectionByBoxId = {};
 let queryEditors = {};

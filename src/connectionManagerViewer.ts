@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 
-const VIEW_TITLE = 'Kusto Workbench: Connection Manager';
+const VIEW_TITLE = 'Connection Manager';
 
 const STORAGE_KEYS = {
 	favorites: 'kusto.favorites',
@@ -33,6 +33,7 @@ type Snapshot = {
 	favorites: KustoFavorite[];
 	cachedDatabases: Record<string, string[]>;
 	expandedClusters: string[];
+	leaveNoTraceClusters: string[];
 };
 
 type IncomingMessage =
@@ -50,7 +51,9 @@ type IncomingMessage =
 	| { type: 'cluster.refreshDatabases'; connectionId: string }
 	| { type: 'database.getSchema'; connectionId: string; database: string }
 	| { type: 'copyToClipboard'; text: string }
-	| { type: 'openInEditor'; connectionId: string; database?: string };
+	| { type: 'openInEditor'; connectionId: string; database?: string }
+	| { type: 'leaveNoTrace.add'; clusterUrl: string }
+	| { type: 'leaveNoTrace.remove'; clusterUrl: string };
 
 export class ConnectionManagerViewer {
 	private static current: ConnectionManagerViewer | undefined;
@@ -205,13 +208,15 @@ export class ConnectionManagerViewer {
 		const favorites = this.getFavorites();
 		const cachedDatabases = this.getCachedDatabases();
 		const expandedClusters = this.getExpandedClusters();
+		const leaveNoTraceClusters = this.connectionManager.getLeaveNoTraceClusters();
 
 		return {
 			timestamp: Date.now(),
 			connections,
 			favorites,
 			cachedDatabases,
-			expandedClusters
+			expandedClusters,
+			leaveNoTraceClusters
 		};
 	}
 
@@ -560,6 +565,42 @@ export class ConnectionManagerViewer {
 					// The webview will handle setting the connection
 				} catch (error) {
 					void vscode.window.showErrorMessage('Failed to open query editor.');
+				}
+				return;
+			}
+
+			case 'leaveNoTrace.add': {
+				const clusterUrl = String(msg.clusterUrl || '').trim();
+				if (!clusterUrl) {
+					return;
+				}
+
+				try {
+					await this.connectionManager.addLeaveNoTrace(clusterUrl);
+					// Send updated snapshot so UI reflects the change
+					const snapshot = await this.buildSnapshot();
+					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+					void vscode.window.setStatusBarMessage('Cluster marked as "Leave no trace"', 2000);
+				} catch (error) {
+					void vscode.window.showErrorMessage(`Failed to mark cluster: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				return;
+			}
+
+			case 'leaveNoTrace.remove': {
+				const clusterUrl = String(msg.clusterUrl || '').trim();
+				if (!clusterUrl) {
+					return;
+				}
+
+				try {
+					await this.connectionManager.removeLeaveNoTrace(clusterUrl);
+					// Send updated snapshot so UI reflects the change
+					const snapshot = await this.buildSnapshot();
+					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+					void vscode.window.setStatusBarMessage('Cluster removed from "Leave no trace"', 2000);
+				} catch (error) {
+					void vscode.window.showErrorMessage(`Failed to remove cluster from "Leave no trace": ${error instanceof Error ? error.message : String(error)}`);
 				}
 				return;
 			}
@@ -1037,7 +1078,7 @@ export class ConnectionManagerViewer {
 		.connection-item {
 			display: flex;
 			flex-direction: column;
-			padding: 10px 12px;
+			padding: 6px 12px;
 			border-bottom: 1px solid var(--vscode-editorWidget-border);
 			cursor: pointer;
 			transition: background 0.1s;
@@ -1059,15 +1100,15 @@ export class ConnectionManagerViewer {
 		.connection-row {
 			display: flex;
 			align-items: center;
-			gap: 8px;
+			gap: 0;
 		}
 
 		.connection-name {
-			flex: 1;
 			font-weight: 500;
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+			margin-right: 4px;
 		}
 
 		.connection-url {
@@ -1082,13 +1123,35 @@ export class ConnectionManagerViewer {
 		.connection-actions {
 			display: flex;
 			gap: 2px;
-			opacity: 0;
-			transition: opacity 0.1s;
 			flex-shrink: 0;
 		}
 
-		.connection-item:hover .connection-actions {
+		.connection-actions .btn-icon {
+			opacity: 0;
+			transition: opacity 0.1s;
+		}
+
+		.connection-item:hover .connection-actions .btn-icon {
 			opacity: 1;
+		}
+
+		/* Leave No Trace active button - always visible when active */
+		.connection-actions .btn-icon.lnt-active {
+			opacity: 1;
+		}
+
+		/* Leave No Trace icon in the LNT section */
+		.lnt-icon {
+			color: var(--vscode-symbolIcon-eventForeground, #d19a66);
+			display: flex;
+			align-items: center;
+			flex-shrink: 0;
+			margin-right: 6px;
+		}
+
+		.lnt-icon svg {
+			width: 14px;
+			height: 14px;
 		}
 
 		/* Favorites section */
@@ -1099,7 +1162,7 @@ export class ConnectionManagerViewer {
 		.favorite-item {
 			display: flex;
 			flex-direction: column;
-			padding: 10px 12px;
+			padding: 6px 12px;
 			border-bottom: 1px solid var(--vscode-editorWidget-border);
 			cursor: pointer;
 			transition: background 0.1s;
@@ -1116,15 +1179,15 @@ export class ConnectionManagerViewer {
 		.favorite-row {
 			display: flex;
 			align-items: center;
-			gap: 8px;
+			gap: 0;
 		}
 
 		.favorite-name {
-			flex: 1;
 			font-weight: 500;
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+			margin-right: 4px;
 		}
 
 		.favorite-detail {
@@ -1289,12 +1352,20 @@ export class ConnectionManagerViewer {
 		.explorer-list-item-actions {
 			display: flex;
 			gap: 2px;
-			opacity: 0;
-			transition: opacity 0.1s;
 			flex-shrink: 0;
 		}
 
-		.explorer-list-item:hover .explorer-list-item-actions {
+		.explorer-list-item-actions .btn-icon {
+			opacity: 0;
+			transition: opacity 0.1s;
+		}
+
+		.explorer-list-item:hover .explorer-list-item-actions .btn-icon {
+			opacity: 1;
+		}
+
+		/* Favorite button - always visible when active */
+		.explorer-list-item-actions .btn-icon.is-favorite {
 			opacity: 1;
 		}
 
@@ -2151,6 +2222,17 @@ export class ConnectionManagerViewer {
 						</div>
 					</div>
 				</div>
+
+				<!-- Leave No Trace -->
+				<div class="left-accordion-item" id="leaveNoTraceSection" data-accordion-item="leaveNoTrace" style="display: none;">
+					<div class="left-accordion-header" data-toggle-accordion="leaveNoTrace">
+						<span class="left-accordion-chevron">${this.getChevronIcon()}</span>
+						<span class="left-accordion-icon" style="color: var(--vscode-symbolIcon-eventForeground, #d19a66);">${this.getShieldIcon()}</span>
+						<span class="left-accordion-title">Leave No Trace</span>
+						<span class="left-accordion-count" id="leaveNoTraceCount">0</span>
+					</div>
+					<div class="left-accordion-body" id="leaveNoTraceList"></div>
+				</div>
 			</div>
 		</div>
 
@@ -2326,7 +2408,8 @@ export class ConnectionManagerViewer {
 			refresh: '${this.escapeJs(this.getRefreshIcon())}',
 			spinner: '${this.escapeJs(this.getSpinnerIcon())}',
 			back: '${this.escapeJs(this.getBackIcon())}',
-			sidebar: '${this.escapeJs(this.getSidebarIcon())}'
+			sidebar: '${this.escapeJs(this.getSidebarIcon())}',
+			shield: '${this.escapeJs(this.getShieldIcon())}'
 		};
 
 		// Helper to build header with toggle button
@@ -2455,10 +2538,17 @@ export class ConnectionManagerViewer {
 				var isSelected = conn.id === selectedConnectionId;
 				var fullUrl = conn.clusterUrl;
 				if (!/^https?:\\/\\//i.test(fullUrl)) fullUrl = 'https://' + fullUrl;
+				var isLnt = isLeaveNoTrace(conn.clusterUrl);
 				html += '<li class="connection-item' + (isSelected ? ' selected' : '') + '" data-conn-id="' + escapeHtml(conn.id) + '">';
 				html += '<div class="connection-row">';
 				html += '<div class="connection-name">' + escapeHtml(conn.name) + '</div>';
 				html += '<div class="connection-actions">';
+				// Leave No Trace toggle button - always visible, styled as active when enabled
+				if (isLnt) {
+					html += '<button class="btn-icon lnt-active" data-remove-lnt="' + escapeHtml(conn.clusterUrl) + '" title="Remove from Leave No Trace" style="color: var(--vscode-symbolIcon-eventForeground, #d19a66); opacity: 1;">' + ICONS.shield + '</button>';
+				} else {
+					html += '<button class="btn-icon" data-add-lnt="' + escapeHtml(conn.clusterUrl) + '" title="Mark as Leave No Trace">' + ICONS.shield + '</button>';
+				}
 				html += '<button class="btn-icon" data-edit-conn="' + escapeHtml(conn.id) + '" title="Edit cluster">' + ICONS.edit + '</button>';
 				html += '<button class="btn-icon" data-copy-url="' + escapeHtml(conn.clusterUrl) + '" title="Copy cluster URL">' + ICONS.copy + '</button>';
 				html += '<button class="btn-icon" data-delete-conn="' + escapeHtml(conn.id) + '" title="Delete cluster">' + ICONS.delete + '</button>';
@@ -2468,6 +2558,61 @@ export class ConnectionManagerViewer {
 				html += '</li>';
 			});
 			html += '</ul>';
+
+			list.innerHTML = html;
+		}
+
+		function isLeaveNoTrace(clusterUrl) {
+			if (!lastSnapshot || !lastSnapshot.leaveNoTraceClusters) return false;
+			var normalized = normalizeClusterUrl(clusterUrl);
+			return lastSnapshot.leaveNoTraceClusters.some(function(lntUrl) {
+				return normalizeClusterUrl(lntUrl) === normalized;
+			});
+		}
+
+		function renderLeaveNoTrace() {
+			var section = document.getElementById('leaveNoTraceSection');
+			var list = document.getElementById('leaveNoTraceList');
+			var countEl = document.getElementById('leaveNoTraceCount');
+			
+			var lntClusters = (lastSnapshot && lastSnapshot.leaveNoTraceClusters) 
+				? lastSnapshot.leaveNoTraceClusters
+				: [];
+			
+			// Update count
+			if (countEl) countEl.textContent = lntClusters.length;
+			
+			if (lntClusters.length === 0) {
+				section.style.display = 'none';
+				return;
+			}
+
+			section.style.display = 'flex';
+			var html = '';
+
+			lntClusters.forEach(function(lntUrl) {
+				// Find connection name if available
+				var connName = shortClusterName(lntUrl);
+				if (lastSnapshot && lastSnapshot.connections) {
+					var matchingConn = lastSnapshot.connections.find(function(c) {
+						return normalizeClusterUrl(c.clusterUrl) === normalizeClusterUrl(lntUrl);
+					});
+					if (matchingConn) {
+						connName = matchingConn.name;
+					}
+				}
+				
+				html += '<div class="favorite-item" data-lnt-url="' + escapeHtml(lntUrl) + '">';
+				html += '<div class="favorite-row">';
+				html += '<span class="lnt-icon">' + ICONS.shield + '</span>';
+				html += '<span class="favorite-name">' + escapeHtml(connName) + '</span>';
+				html += '<div class="favorite-actions">';
+				html += '<button class="btn-icon" data-remove-lnt="' + escapeHtml(lntUrl) + '" title="Remove from Leave No Trace">' + ICONS.delete + '</button>';
+				html += '</div>';
+				html += '</div>';
+				html += '<div class="favorite-detail">' + escapeHtml(lntUrl) + '</div>';
+				html += '</div>';
+			});
 
 			list.innerHTML = html;
 		}
@@ -2772,6 +2917,7 @@ export class ConnectionManagerViewer {
 		function renderAll() {
 			renderFavorites();
 			renderConnections();
+			renderLeaveNoTrace();
 			renderExplorer();
 		}
 
@@ -2983,6 +3129,22 @@ export class ConnectionManagerViewer {
 			if (deleteConn) {
 				var connId = deleteConn.getAttribute('data-delete-conn');
 				vscode.postMessage({ type: 'connection.delete', id: connId });
+				return;
+			}
+
+			// Add Leave No Trace
+			var addLnt = closest(target, '[data-add-lnt]');
+			if (addLnt) {
+				var clusterUrl = addLnt.getAttribute('data-add-lnt');
+				vscode.postMessage({ type: 'leaveNoTrace.add', clusterUrl: clusterUrl });
+				return;
+			}
+
+			// Remove Leave No Trace
+			var removeLnt = closest(target, '[data-remove-lnt]');
+			if (removeLnt) {
+				var clusterUrl = removeLnt.getAttribute('data-remove-lnt');
+				vscode.postMessage({ type: 'leaveNoTrace.remove', clusterUrl: clusterUrl });
 				return;
 			}
 
@@ -3350,6 +3512,12 @@ export class ConnectionManagerViewer {
 	private getSidebarIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path d="M0 2.5A1.5 1.5 0 0 1 1.5 1h13A1.5 1.5 0 0 1 16 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 13.5v-11zM1.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5H5V2H1.5zM6 2v12h8.5a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5H6z"/>
+		</svg>`;
+	}
+
+	private getShieldIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M8 0.5l-6 2v4c0 3.5 2.5 6.5 6 8 3.5-1.5 6-4.5 6-8v-4l-6-2zm4.5 5.5c0 2.8-1.9 5.2-4.5 6.5-2.6-1.3-4.5-3.7-4.5-6.5v-3l4.5-1.5 4.5 1.5v3z"/>
 		</svg>`;
 	}
 }

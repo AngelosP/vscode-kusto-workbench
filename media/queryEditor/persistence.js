@@ -16,6 +16,41 @@ window.__kustoIsSessionFile = false;
 // Set by the extension host; true for .kql/.csl files.
 window.__kustoCompatibilityMode = false;
 
+/**
+ * Helper to normalize a cluster URL for consistent comparison.
+ */
+function __kustoNormalizeClusterUrl(clusterUrl) {
+	try {
+		let u = String(clusterUrl || '').trim();
+		if (!u) return '';
+		if (!/^https?:\/\//i.test(u)) {
+			u = 'https://' + u;
+		}
+		return u.replace(/\/+$/g, '').toLowerCase();
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Check if a cluster URL is marked as "Leave no trace".
+ * When true, tabular results from this cluster should not be persisted.
+ */
+function __kustoIsLeaveNoTraceCluster(clusterUrl) {
+	try {
+		if (!clusterUrl) return false;
+		// leaveNoTraceClusters is defined in state.js and populated from connectionsData
+		if (typeof leaveNoTraceClusters === 'undefined' || !Array.isArray(leaveNoTraceClusters)) return false;
+		const normalized = __kustoNormalizeClusterUrl(clusterUrl);
+		if (!normalized) return false;
+		return leaveNoTraceClusters.some(function(lntUrl) {
+			return __kustoNormalizeClusterUrl(lntUrl) === normalized;
+		});
+	} catch {
+		return false;
+	}
+}
+
 // Document capabilities (set by extension host via the persistenceMode message).
 // - allowedSectionKinds controls which add buttons are shown/enabled.
 // - defaultSectionKind controls which section we create for an empty document.
@@ -586,7 +621,8 @@ function getKqlxState() {
 						query: q,
 						...(clusterUrl ? { clusterUrl } : {}),
 						...(database ? { database } : {}),
-						...(resultJson ? { resultJson } : {}),
+						// Leave no trace: don't persist results from sensitive clusters
+						...(resultJson && !__kustoIsLeaveNoTraceCluster(clusterUrl) ? { resultJson } : {}),
 						...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {})
 					}
 				]
@@ -654,6 +690,8 @@ function getKqlxState() {
 					}
 				}
 			} catch { /* ignore */ }
+			// Leave no trace: don't persist results from sensitive clusters
+			const shouldPersistResult = resultJson && !__kustoIsLeaveNoTraceCluster(clusterUrl);
 			sections.push({
 				id,
 				type: querySectionType,
@@ -664,7 +702,7 @@ function getKqlxState() {
 				query,
 				expanded,
 				resultsVisible,
-				...(resultJson ? { resultJson } : {}),
+				...(shouldPersistResult ? { resultJson } : {}),
 				runMode,
 				cacheEnabled,
 				cacheValue,

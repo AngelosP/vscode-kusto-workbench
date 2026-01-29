@@ -471,7 +471,7 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-title">
 				<i class="codicon codicon-plug"></i> Connections
 			</div>
-			<div class="card-desc">Manage cluster connections. This is also accessible from the editor toolbar itself, with a much nicer UI than this VS Code built in one. I suggest you use that one instead, but here is this just in case you need it.</div>
+			<div class="card-desc">Manage cluster connections. Use this to add or remove clusters, add or remove favorites, and flag / unflag clusters as 'Leave No Trace'.</div>
 			<button class="button" onclick="sendCommand('manageConnections')">Manage...</button>
 		</div>
 	</div>
