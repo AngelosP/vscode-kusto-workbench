@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.8.0] - Unreleased
+## [0.8.0] - 2026-29-01
 
 * After user feedback (thank you Kristen), added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
 * After user feedback again (thank you Chris), Implemented the concept of 'Leave no trace' Kusto clusters. These are clusters that the user can mark to never leave any trace of data behind. It will never persist any data to disk, only queries and section configurations will be saved, but never actual tabular data or chart data. 
