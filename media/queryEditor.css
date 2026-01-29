@@ -3837,6 +3837,8 @@
 		.query-header-row-bottom {
 			flex-wrap: nowrap;
 			min-width: 0;
+			/* Enable container queries for responsive layout */
+			container-type: inline-size;
 		}
 
 		.query-name {
@@ -3916,8 +3918,8 @@
 		.select-wrapper.kusto-favorites-combo {
 			/*
 				Prefer the full-size layout (~448px), but allow this control to shrink smoothly
-				as the available header width decreases. No min-width here - we use JS to
-				switch to minimal mode before it gets too narrow.
+				as the available header width decreases. CSS container queries handle switching
+				to minimal mode when the container gets narrow (see @container rules below).
 			*/
 			flex: 1 1 448px;
 			width: auto;
@@ -4421,7 +4423,130 @@
 			color: var(--vscode-dropdown-foreground);
 		}
 
-		/* Cluster/database dropdowns collapse to icon-only when below min-width (JS-driven via is-minimal class) */
+		/*
+		 * =======================================================================
+		 * RESPONSIVE TOOLBAR LAYOUT (CSS Container Queries)
+		 * =======================================================================
+		 * The query header toolbar adapts to available width using container queries.
+		 * This is more reliable than JS-based measurement which can race with layout.
+		 *
+		 * Layout tiers (based on .query-header-row-bottom container width):
+		 *   > 420px : Full layout - dropdowns show text + icon
+		 *   <= 420px: Minimal dropdowns - cluster/database show icon only (32px each)
+		 *   <= 200px: Ultra-compact - also hide refresh, favorite, and schema buttons
+		 *
+		 * Calculation for 420px breakpoint:
+		 *   - 2 half-width dropdowns at min-width 150px each = 300px
+		 *   - 3 buttons (refresh, favorite, schema) at ~32px each = 96px
+		 *   - Gaps (8px * 4) = 32px
+		 *   - Total: ~428px, rounded down to 420px for some breathing room
+		 *
+		 * Calculation for 200px breakpoint:
+		 *   - 2 minimal dropdowns at 32px each = 64px
+		 *   - 3 buttons at 32px each = 96px
+		 *   - Gaps = 32px
+		 *   - Total: ~192px, rounded up to 200px
+		 * =======================================================================
+		 */
+
+		/* Minimal mode styles for cluster/database dropdowns */
+		@container (max-width: 420px) {
+			.select-wrapper.half-width {
+				flex: 0 0 32px;
+				width: 32px;
+				min-width: 32px;
+				max-width: 32px;
+			}
+
+			.select-wrapper.half-width select {
+				padding-left: 8px;
+				padding-right: 8px;
+				text-indent: -9999px;
+				color: transparent;
+			}
+
+			.select-wrapper.half-width.has-icon select {
+				padding-left: 8px;
+			}
+
+			.select-wrapper.half-width select option {
+				text-indent: 0;
+				color: var(--vscode-dropdown-foreground);
+			}
+
+			.select-wrapper.half-width.has-icon .select-icon {
+				left: 50%;
+				transform: translate(-50%, -50%);
+			}
+
+			/* Hide text in cluster/database dropdown buttons, show only icon */
+			.select-wrapper.half-width .kusto-dropdown-btn-text {
+				display: none;
+			}
+
+			.select-wrapper.half-width .kusto-dropdown-btn-caret {
+				display: none;
+			}
+
+			.select-wrapper.half-width .kusto-dropdown-btn {
+				padding: 4px;
+				justify-content: center;
+			}
+
+			.select-wrapper.half-width.has-icon .kusto-dropdown-btn {
+				padding: 4px;
+			}
+
+			/* Favorites dropdown also goes minimal */
+			.select-wrapper.kusto-favorites-combo {
+				flex: 0 0 32px;
+				width: 32px;
+				min-width: 32px;
+				max-width: 32px;
+			}
+
+			/* Show icon inside favorites button in minimal mode */
+			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon,
+			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn .select-icon {
+				display: inline-flex;
+			}
+
+			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-text,
+			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn-text {
+				display: none;
+			}
+
+			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-caret,
+			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn-caret {
+				display: none;
+			}
+
+			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn,
+			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn {
+				padding: 4px;
+				justify-content: center;
+			}
+		}
+
+		/* Ultra-compact mode: hide extra buttons when space is extremely tight */
+		@container (max-width: 200px) {
+			button.refresh-btn[id$="_refresh"] {
+				display: none !important;
+			}
+
+			button.favorite-btn {
+				display: none !important;
+			}
+
+			.schema-info-wrapper {
+				display: none !important;
+			}
+		}
+
+		/*
+		 * Legacy class-based selectors (kept for backwards compatibility with any
+		 * code that might still add these classes manually)
+		 */
 		.query-header .select-wrapper.half-width.is-minimal {
 			flex: 0 0 32px;
 			width: 32px;
@@ -4450,7 +4575,6 @@
 			transform: translate(-50%, -50%);
 		}
 
-		/* Hide text in cluster/database dropdown buttons in minimal mode, show only icon */
 		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn-text {
 			display: none;
 		}
@@ -4468,7 +4592,6 @@
 			padding: 4px;
 		}
 
-		/* Ultra-compact mode: hide extra elements when space is extremely tight */
 		.query-header-row-bottom.is-ultra-compact > button.refresh-btn[id$="_refresh"] {
 			display: none !important;
 		}
@@ -4481,7 +4604,6 @@
 			display: none !important;
 		}
 
-		/* Favorites dropdown collapses to icon-only at a different (wider) breakpoint */
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal {
 			flex: 0 0 32px;
 			width: 32px;
@@ -4489,7 +4611,6 @@
 			max-width: 32px;
 		}
 
-		/* Show icon inside button in minimal mode */
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn .select-icon,
 		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn .select-icon {
 			display: inline-flex;

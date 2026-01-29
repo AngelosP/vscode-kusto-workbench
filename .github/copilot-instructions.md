@@ -198,6 +198,28 @@ Custom diagnostics use codes like:
 * `@toast-ui/editor` \- WYSIWYG markdown editor
 * `echarts` \- Charting library
 
+## Responsive Layout (CSS Container Queries)
+
+The query section header toolbar uses **CSS Container Queries** for responsive layout, not JavaScript. This ensures correct layout immediately when sections are added, without race conditions.
+
+### Breakpoints
+
+Defined in `queryEditor.css` on `.query-header-row-bottom` (which has `container-type: inline-size`):
+
+| Container Width | Layout Mode | Behavior |
+| --------------- | ----------- | -------- |
+| > 420px | Full | Dropdowns show icon + text |
+| ≤ 420px | Minimal | Dropdowns collapse to icon-only (32px) |
+| ≤ 200px | Ultra-compact | Also hides refresh, favorite, and schema buttons |
+
+### Why Not JavaScript?
+
+Previously, a 500ms `setInterval` polled element widths using `getBoundingClientRect()`. This caused a race condition: if the timer fired while a newly-added section was in the DOM but not yet laid out (width = 0), incorrect styles were applied. CSS Container Queries are synchronous with layout, eliminating this issue.
+
+### Legacy Classes
+
+The `.is-minimal` and `.is-ultra-compact` classes are still supported in CSS for backwards compatibility, but JavaScript no longer adds them. The container queries handle everything automatically.
+
 ## Leave No Trace Clusters
 
 "Leave no trace" is a privacy feature that allows users to mark specific Kusto clusters as sensitive. When a cluster is marked as "Leave no trace":

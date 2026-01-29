@@ -2272,95 +2272,20 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 	tryInstall();
 })();
 
-// Responsive dropdowns and ultra-compact mode
-// Priority when expanding: show hidden buttons first, then expand dropdowns
-(function __kustoInstallResponsiveMode() {
-	const FAVORITES_MIN_WIDTH = 150; // Switch favorites to icon-only below this width
-	const HALF_WIDTH_MIN = 150; // Switch cluster/database to icon-only below this width
-
-	const updateResponsiveModes = () => {
-		try {
-			// First, check ultra-compact mode for each row
-			const rows = document.querySelectorAll('.query-header-row-bottom');
-			for (const row of rows) {
-				if (!row) continue;
-				
-				// Temporarily remove ultra-compact AND force dropdowns to minimal to measure true overflow
-				const wasUltraCompact = row.classList.contains('is-ultra-compact');
-				row.classList.remove('is-ultra-compact');
-				
-				// Get all dropdowns in this row and temporarily set them to minimal
-				const dropdowns = row.querySelectorAll('.select-wrapper.half-width, .select-wrapper.kusto-favorites-combo');
-				const dropdownStates = [];
-				for (const dd of dropdowns) {
-					dropdownStates.push({ el: dd, wasMinimal: dd.classList.contains('is-minimal') });
-					dd.classList.add('is-minimal');
-				}
-				
-				// Check if row content overflows with dropdowns in minimal mode
-				const rowRect = row.getBoundingClientRect();
-				const rowWidth = rowRect.width;
-				
-				let childrenWidth = 0;
-				const children = row.children;
-				for (const child of children) {
-					const style = window.getComputedStyle(child);
-					if (style.display === 'none') continue;
-					const childRect = child.getBoundingClientRect();
-					childrenWidth += childRect.width;
-					childrenWidth += parseFloat(style.marginLeft) || 0;
-					childrenWidth += parseFloat(style.marginRight) || 0;
-				}
-				
-				const gap = 8;
-				const visibleChildren = Array.from(children).filter(c => window.getComputedStyle(c).display !== 'none').length;
-				childrenWidth += gap * Math.max(0, visibleChildren - 1);
-				
-				const shouldBeUltraCompact = rowWidth > 0 && childrenWidth > rowWidth;
-				row.classList.toggle('is-ultra-compact', shouldBeUltraCompact);
-				
-				// Now determine dropdown modes
-				// If ultra-compact, keep dropdowns minimal (priority: show buttons first when expanding)
-				if (shouldBeUltraCompact) {
-					// Keep all dropdowns in minimal mode
-					for (const dd of dropdowns) {
-						dd.classList.add('is-minimal');
-					}
-				} else {
-					// Not ultra-compact: check each dropdown individually
-					for (const { el } of dropdownStates) {
-						// Remove minimal to measure natural width
-						el.classList.remove('is-minimal');
-						const rect = el.getBoundingClientRect();
-						
-						if (el.classList.contains('kusto-favorites-combo')) {
-							const shouldBeMinimal = rect.width > 0 && rect.width < FAVORITES_MIN_WIDTH;
-							el.classList.toggle('is-minimal', shouldBeMinimal);
-						} else if (el.classList.contains('half-width')) {
-							const shouldBeMinimal = rect.width > 0 && rect.width <= HALF_WIDTH_MIN;
-							el.classList.toggle('is-minimal', shouldBeMinimal);
-						}
-					}
-				}
-			}
-		} catch { /* ignore */ }
-	};
-
-	// Run on window resize
-	let resizeTimeout = null;
-	window.addEventListener('resize', () => {
-		try {
-			if (resizeTimeout) clearTimeout(resizeTimeout);
-			resizeTimeout = setTimeout(updateResponsiveModes, 50);
-		} catch { /* ignore */ }
-	});
-
-	// Also run periodically to catch dynamic layout changes
-	setInterval(updateResponsiveModes, 500);
-
-	// Initial check
-	setTimeout(updateResponsiveModes, 100);
-})();
+// ==========================================================================
+// RESPONSIVE TOOLBAR LAYOUT
+// ==========================================================================
+// The query header toolbar now uses CSS Container Queries for responsive layout.
+// This is more reliable than JS-based measurement which could race with layout
+// when new sections are added (causing incorrect minimal/ultra-compact states).
+//
+// See queryEditor.css for the @container rules that handle:
+//   - Minimal mode: dropdowns collapse to icon-only at <= 420px
+//   - Ultra-compact: hide refresh/favorite/schema buttons at <= 200px
+//
+// The legacy is-minimal and is-ultra-compact classes are still supported in CSS
+// for backwards compatibility, but are no longer added by JavaScript.
+// ==========================================================================
 
 // ==========================================================================
 // ADD SECTION DROPDOWN (for narrow viewports)
