@@ -1036,6 +1036,184 @@ function __kustoRefreshAllDataSourceDropdowns() {
 // Expose globally for use by main.js reorder logic
 try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch { /* ignore */ }
 
+/**
+ * Configure a chart section programmatically (used by LLM tools).
+ * @param {string} boxId - The chart section ID
+ * @param {object} config - Configuration object with properties like:
+ *   - dataSourceId: string (ID of the data source section)
+ *   - chartType: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel'
+ *   - xColumn: string (for line/area/bar/scatter)
+ *   - yColumns: string[] (for line/area/bar/scatter)
+ *   - labelColumn: string (for pie/funnel)
+ *   - valueColumn: string (for pie/funnel)
+ *   - legendColumn: string (for multi-series charts)
+ *   - tooltipColumns: string[]
+ *   - showDataLabels: boolean
+ *   - legendPosition: 'top' | 'bottom' | 'left' | 'right' | 'none'
+ */
+function __kustoConfigureChartFromTool(boxId, config) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return false;
+		if (!config || typeof config !== 'object') return false;
+		
+		// Ensure state object exists
+		const st = __kustoGetChartState(id);
+		if (!st) return false;
+		
+		// Apply configuration properties
+		if (typeof config.dataSourceId === 'string') {
+			st.dataSourceId = config.dataSourceId;
+		}
+		if (typeof config.chartType === 'string') {
+			st.chartType = config.chartType;
+		}
+		if (typeof config.xColumn === 'string') {
+			st.xColumn = config.xColumn;
+		}
+		if (Array.isArray(config.yColumns)) {
+			st.yColumns = config.yColumns.map(c => String(c));
+		} else if (typeof config.yColumn === 'string') {
+			// Support single yColumn for backwards compat
+			st.yColumns = [config.yColumn];
+		}
+		if (typeof config.labelColumn === 'string') {
+			st.labelColumn = config.labelColumn;
+		}
+		if (typeof config.valueColumn === 'string') {
+			st.valueColumn = config.valueColumn;
+		}
+		if (typeof config.legendColumn === 'string') {
+			st.legendColumn = config.legendColumn;
+		}
+		if (Array.isArray(config.tooltipColumns)) {
+			st.tooltipColumns = config.tooltipColumns.map(c => String(c));
+		}
+		if (typeof config.showDataLabels === 'boolean') {
+			st.showDataLabels = config.showDataLabels;
+		}
+		if (typeof config.legendPosition === 'string') {
+			st.legendPosition = config.legendPosition;
+		}
+		if (typeof config.sortColumn === 'string') {
+			st.sortColumn = config.sortColumn;
+		}
+		if (typeof config.sortDirection === 'string') {
+			st.sortDirection = config.sortDirection;
+		}
+		
+		// Update the UI dropdowns to reflect new state and re-render the chart
+		try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		
+		// Persist changes
+		try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+		
+		return true;
+	} catch (err) {
+		console.error('[Kusto] Error configuring chart:', err);
+		return false;
+	}
+}
+
+// Expose for tool calls from main.js
+try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch { /* ignore */ }
+
+/**
+ * Configure a transformation section programmatically (used by LLM tools).
+ * @param {string} boxId - The transformation section ID
+ * @param {object} config - Configuration object with properties like:
+ *   - dataSourceId: string (ID of the data source section)
+ *   - transformationType: 'derive' | 'distinct' | 'summarize' | 'pivot'
+ *   - deriveColumns: Array<{name: string, expression: string}>
+ *   - distinctColumn: string
+ *   - groupByColumns: string[]
+ *   - aggregations: Array<{function: string, column: string, alias?: string}>
+ *   - pivotRowKeyColumn: string
+ *   - pivotColumnKeyColumn: string
+ *   - pivotValueColumn: string
+ *   - pivotAggregation: string
+ *   - pivotMaxColumns: number
+ */
+function __kustoConfigureTransformationFromTool(boxId, config) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return false;
+		if (!config || typeof config !== 'object') return false;
+		
+		// Ensure state object exists
+		const st = __kustoGetTransformationState(id);
+		if (!st) return false;
+		
+		// Apply configuration properties
+		if (typeof config.dataSourceId === 'string') {
+			st.dataSourceId = config.dataSourceId;
+		}
+		if (typeof config.transformationType === 'string') {
+			st.transformationType = config.transformationType;
+		}
+		
+		// Derive columns
+		if (Array.isArray(config.deriveColumns)) {
+			st.deriveColumns = config.deriveColumns.map(c => ({
+				name: String(c.name || ''),
+				expression: String(c.expression || '')
+			}));
+		}
+		
+		// Distinct
+		if (typeof config.distinctColumn === 'string') {
+			st.distinctColumn = config.distinctColumn;
+		}
+		
+		// Summarize
+		if (Array.isArray(config.groupByColumns)) {
+			st.groupByColumns = config.groupByColumns.map(c => String(c));
+		}
+		if (Array.isArray(config.aggregations)) {
+			st.aggregations = config.aggregations.map(a => ({
+				function: String(a.function || 'count'),
+				column: String(a.column || ''),
+				alias: a.alias ? String(a.alias) : undefined
+			}));
+		}
+		
+		// Pivot
+		if (typeof config.pivotRowKeyColumn === 'string') {
+			st.pivotRowKeyColumn = config.pivotRowKeyColumn;
+		}
+		if (typeof config.pivotColumnKeyColumn === 'string') {
+			st.pivotColumnKeyColumn = config.pivotColumnKeyColumn;
+		}
+		if (typeof config.pivotValueColumn === 'string') {
+			st.pivotValueColumn = config.pivotValueColumn;
+		}
+		if (typeof config.pivotAggregation === 'string') {
+			st.pivotAggregation = config.pivotAggregation;
+		}
+		if (typeof config.pivotMaxColumns === 'number') {
+			st.pivotMaxColumns = config.pivotMaxColumns;
+		}
+		
+		// Update the UI to reflect new state
+		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		
+		// Re-render the transformation
+		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		
+		// Persist changes
+		try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+		
+		return true;
+	} catch (err) {
+		console.error('[Kusto] Error configuring transformation:', err);
+		return false;
+	}
+}
+
+// Expose for tool calls from main.js
+try { window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool; } catch { /* ignore */ }
+
 function __kustoGetRawCellValueForChart(cell) {
 	try {
 		if (typeof __kustoGetRawCellValue === 'function') {

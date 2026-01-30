@@ -194,6 +194,449 @@
         "view": "kustoWorkbench.quickAccess",
         "contents": "Open the Kusto Query Editor to start writing queries.\n[Open Query Editor](command:kusto.openQueryEditor)"
       }
+    ],
+    "chatAgents": [
+      {
+        "id": "kusto-workbench.agent",
+        "name": "Kusto Workbench",
+        "description": "Use Kusto Workbench to write and execute KQL queries, analyze data, and create visualizations",
+        "path": "./copilot-instructions/custom-agent.md",
+        "tools": [
+          "kusto-workbench_list-connections",
+          "kusto-workbench_list-favorites",
+          "kusto-workbench_list-schemas",
+          "kusto-workbench_list-sections",
+          "kusto-workbench_add-section",
+          "kusto-workbench_remove-section",
+          "kusto-workbench_collapse-section",
+          "kusto-workbench_update-query-section",
+          "kusto-workbench_update-markdown-section",
+          "kusto-workbench_configure-chart",
+          "kusto-workbench_configure-transformation",
+          "kusto-workbench_ask-kusto-copilot",
+          "kusto-workbench_create-file"
+        ]
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "kusto-workbench_list-connections",
+        "tags": ["kusto", "azure", "data-explorer", "connections"],
+        "toolReferenceName": "listKustoConnections",
+        "displayName": "List Kusto Connections",
+        "modelDescription": "Lists all configured Kusto cluster connections in Kusto Workbench. Returns connection details including cluster URLs and default databases.",
+        "userDescription": "View all your saved Kusto cluster connections.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(plug)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "kusto-workbench_list-favorites",
+        "tags": ["kusto", "azure", "data-explorer", "favorites"],
+        "toolReferenceName": "listKustoFavorites",
+        "displayName": "List Kusto Favorites",
+        "modelDescription": "Lists all favorite cluster/database combinations saved in Kusto Workbench. These are quick-access shortcuts to commonly used databases.",
+        "userDescription": "View your favorite Kusto cluster/database combinations.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(star-full)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "kusto-workbench_list-schemas",
+        "tags": ["kusto", "azure", "data-explorer", "schema", "tables"],
+        "toolReferenceName": "listKustoSchemas",
+        "displayName": "List Kusto Schemas",
+        "modelDescription": "Lists cached database schemas (tables and functions) from Kusto Workbench. Optionally filter by cluster URL and/or database name. This helps understand what data is available for querying.",
+        "userDescription": "View cached database schemas (tables and functions).",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "clusterUrl": {
+              "type": "string",
+              "description": "Optional: Filter schemas by cluster URL"
+            },
+            "database": {
+              "type": "string",
+              "description": "Optional: Filter schemas by database name"
+            }
+          }
+        }
+      },
+      {
+        "name": "kusto-workbench_list-sections",
+        "tags": ["kusto", "workbench", "sections", "notebook"],
+        "toolReferenceName": "listSections",
+        "displayName": "List Sections",
+        "modelDescription": "Lists all sections in the currently open Kusto Workbench notebook. Sections can be query boxes, markdown, charts, transformations, URLs, or Python code. Returns section IDs needed for other operations.",
+        "userDescription": "View all sections in the current Kusto Workbench notebook.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-flat)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "kusto-workbench_add-section",
+        "tags": ["kusto", "workbench", "section", "create"],
+        "toolReferenceName": "addSection",
+        "displayName": "Add Section",
+        "modelDescription": "Adds a new section to the Kusto Workbench notebook. Supports query, markdown, chart, transformation, url, and python section types. For query sections, you can specify the initial query text, cluster URL, and database. For charts, specify the data source and chart configuration.",
+        "userDescription": "Add a new section (query, markdown, chart, etc.) to the workbench.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(add)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["query", "markdown", "chart", "transformation", "url", "python"],
+              "description": "The type of section to add"
+            },
+            "query": {
+              "type": "string",
+              "description": "For query sections: the initial KQL query text"
+            },
+            "clusterUrl": {
+              "type": "string",
+              "description": "For query sections: the Kusto cluster URL to connect to"
+            },
+            "database": {
+              "type": "string",
+              "description": "For query sections: the database to use"
+            },
+            "text": {
+              "type": "string",
+              "description": "For markdown sections: the initial markdown text"
+            },
+            "url": {
+              "type": "string",
+              "description": "For URL sections: the URL to embed"
+            },
+            "dataSourceId": {
+              "type": "string",
+              "description": "For chart/transformation sections: the ID of the query section to use as data source"
+            },
+            "chartType": {
+              "type": "string",
+              "enum": ["line", "area", "bar", "scatter", "pie", "funnel"],
+              "description": "For chart sections: the type of chart to create"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
+            }
+          },
+          "required": ["type"]
+        }
+      },
+      {
+        "name": "kusto-workbench_remove-section",
+        "tags": ["kusto", "workbench", "section", "delete"],
+        "toolReferenceName": "removeSection",
+        "displayName": "Remove Section",
+        "modelDescription": "Removes a section from the Kusto Workbench notebook by its section ID. Use list-sections first to get available section IDs.",
+        "userDescription": "Remove a section from the workbench.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the section to remove"
+            }
+          },
+          "required": ["sectionId"]
+        }
+      },
+      {
+        "name": "kusto-workbench_collapse-section",
+        "tags": ["kusto", "workbench", "section", "visibility"],
+        "toolReferenceName": "collapseExpandSection",
+        "displayName": "Collapse/Expand Section",
+        "modelDescription": "Collapses or expands a section in the Kusto Workbench notebook. Collapsed sections take up less space while preserving their content.",
+        "userDescription": "Collapse or expand a workbench section.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(fold)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the section to collapse/expand"
+            },
+            "collapsed": {
+              "type": "boolean",
+              "description": "True to collapse, false to expand"
+            }
+          },
+          "required": ["sectionId", "collapsed"]
+        }
+      },
+      {
+        "name": "kusto-workbench_update-query-section",
+        "tags": ["kusto", "workbench", "query", "update"],
+        "toolReferenceName": "updateKustoQuerySection",
+        "displayName": "Update Kusto Query Section",
+        "modelDescription": "Updates a query section in Kusto Workbench. Can change the query text, cluster URL, database, and optionally execute the query immediately. Use this to modify existing queries or prepare them for execution.",
+        "userDescription": "Update a query section's content and settings.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(edit)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the query section to update"
+            },
+            "query": {
+              "type": "string",
+              "description": "The new KQL query text"
+            },
+            "clusterUrl": {
+              "type": "string",
+              "description": "The Kusto cluster URL to connect to"
+            },
+            "database": {
+              "type": "string",
+              "description": "The database to use"
+            },
+            "execute": {
+              "type": "boolean",
+              "description": "If true, execute the query after updating"
+            }
+          },
+          "required": ["sectionId"]
+        }
+      },
+      {
+        "name": "kusto-workbench_update-markdown-section",
+        "tags": ["kusto", "workbench", "markdown", "documentation"],
+        "toolReferenceName": "updateMarkdownSection",
+        "displayName": "Update Markdown Section",
+        "modelDescription": "Updates a markdown section in Kusto Workbench. Can change the text content and the display mode (preview, raw markdown, or WYSIWYG editor).",
+        "userDescription": "Update markdown section content and display mode.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(markdown)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the markdown section to update"
+            },
+            "text": {
+              "type": "string",
+              "description": "The new markdown text content"
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["preview", "markdown", "wysiwyg"],
+              "description": "The display mode: preview (rendered), markdown (raw), or wysiwyg (rich editor)"
+            }
+          },
+          "required": ["sectionId"]
+        }
+      },
+      {
+        "name": "kusto-workbench_configure-chart",
+        "tags": ["kusto", "workbench", "chart", "visualization"],
+        "toolReferenceName": "configureChart",
+        "displayName": "Configure Chart",
+        "modelDescription": "Configures a chart section in Kusto Workbench. Set the data source (a query section), chart type, axis columns, legend settings, and more. Charts visualize query results.",
+        "userDescription": "Configure chart visualization settings.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(graph)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the chart section to configure"
+            },
+            "dataSourceId": {
+              "type": "string",
+              "description": "The ID of the query section to use as data source"
+            },
+            "chartType": {
+              "type": "string",
+              "enum": ["line", "area", "bar", "scatter", "pie", "funnel"],
+              "description": "The type of chart"
+            },
+            "xColumn": {
+              "type": "string",
+              "description": "The column to use for the X axis"
+            },
+            "yColumns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "The columns to use for Y axis values"
+            },
+            "legendColumn": {
+              "type": "string",
+              "description": "The column to use for legend/series grouping"
+            },
+            "legendPosition": {
+              "type": "string",
+              "enum": ["left", "right", "top", "bottom"],
+              "description": "Position of the legend"
+            },
+            "showDataLabels": {
+              "type": "boolean",
+              "description": "Whether to show data labels on the chart"
+            }
+          },
+          "required": ["sectionId"]
+        }
+      },
+      {
+        "name": "kusto-workbench_configure-transformation",
+        "tags": ["kusto", "workbench", "transformation", "data"],
+        "toolReferenceName": "configureTransformation",
+        "displayName": "Configure Transformation",
+        "modelDescription": "Configures a transformation section in Kusto Workbench. Transformations process query results to derive new columns, summarize data, get distinct values, or pivot data.",
+        "userDescription": "Configure data transformation settings.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(symbol-event)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the transformation section to configure"
+            },
+            "dataSourceId": {
+              "type": "string",
+              "description": "The ID of the query section to use as data source"
+            },
+            "transformationType": {
+              "type": "string",
+              "enum": ["derive", "summarize", "distinct", "pivot"],
+              "description": "The type of transformation"
+            },
+            "distinctColumn": {
+              "type": "string",
+              "description": "For distinct: the column to get unique values from"
+            },
+            "groupByColumns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "For summarize: columns to group by"
+            },
+            "aggregations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "column": { "type": "string" },
+                  "function": { "type": "string", "enum": ["sum", "avg", "count", "min", "max", "distinct"] }
+                }
+              },
+              "description": "For summarize: aggregation definitions"
+            },
+            "deriveColumns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "expression": { "type": "string" }
+                }
+              },
+              "description": "For derive: calculated column definitions"
+            },
+            "pivotRowKeyColumn": {
+              "type": "string",
+              "description": "For pivot: the row key column"
+            },
+            "pivotColumnKeyColumn": {
+              "type": "string",
+              "description": "For pivot: the column key column"
+            },
+            "pivotValueColumn": {
+              "type": "string",
+              "description": "For pivot: the value column"
+            },
+            "pivotAggregation": {
+              "type": "string",
+              "enum": ["sum", "avg", "count", "first"],
+              "description": "For pivot: the aggregation function"
+            }
+          },
+          "required": ["sectionId"]
+        }
+      },
+      {
+        "name": "kusto-workbench_ask-kusto-copilot",
+        "tags": ["kusto", "copilot", "ai", "query", "assistant", "execute", "results"],
+        "toolReferenceName": "askKustoCopilot",
+        "displayName": "Ask Kusto Workbench Copilot",
+        "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool will write the appropriate KQL query, execute it against the specified cluster/database, and return the actual query results (rows, columns, and data). Use this for any data questions, KQL queries, or data exploration. Returns success/failure status, the generated query, row count, column names, and actual result data (up to 100 rows).",
+        "userDescription": "Ask the Kusto Workbench AI to write and execute a KQL query, returning the results.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(hubot)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "The question or request to send to Kusto Workbench Copilot (e.g., 'Calculate active users for the past 7 days' or 'Find the top 10 error messages')"
+            },
+            "sectionId": {
+              "type": "string",
+              "description": "Optional: The ID of a query section to use as context. If not provided, one will be created or the first available will be used."
+            },
+            "clusterUrl": {
+              "type": "string",
+              "description": "Optional: Cluster URL to connect to (e.g., 'https://help.kusto.windows.net'). If not provided, uses the current connection."
+            },
+            "database": {
+              "type": "string",
+              "description": "Optional: Database name to use. If not provided, uses the current database."
+            }
+          },
+          "required": ["question"]
+        }
+      },
+      {
+        "name": "kusto-workbench_create-file",
+        "tags": ["kusto", "file", "create", "notebook", "kqlx", "kql", "csl", "mdx", "markdown"],
+        "toolReferenceName": "createKustoFile",
+        "displayName": "Create Kusto File",
+        "modelDescription": "Creates a new file for Kusto Workbench. Supports multiple file types: kqlx (Kusto notebook with multiple sections), mdx (markdown-focused notebook), kql/csl (plain Kusto query files), md (markdown files), and kql-sidecar/csl-sidecar (query files with companion .json sidecar files for storing results and metadata). Use this tool when the user wants to start a new file or when no file is currently open. The file will be created and opened in the appropriate Kusto Workbench editor.",
+        "userDescription": "Create a new Kusto Workbench file (notebook, query, or markdown).",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(new-file)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "fileType": {
+              "type": "string",
+              "enum": ["kqlx", "mdx", "kql", "csl", "md", "kql-sidecar", "csl-sidecar"],
+              "description": "The type of file to create: kqlx (Kusto notebook), mdx (markdown notebook), kql (plain query), csl (plain script), md (markdown), kql-sidecar (query + sidecar), csl-sidecar (script + sidecar)"
+            },
+            "filePath": {
+              "type": "string",
+              "description": "Optional: Full file path (without extension) where to create the file. If not provided, a save dialog will be shown."
+            },
+            "initialContent": {
+              "type": "string",
+              "description": "Optional: Initial content for the file (query text for kql/csl, markdown for md/mdx)"
+            }
+          },
+          "required": ["fileType"]
+        }
+      }
     ]
   },
   "scripts": {

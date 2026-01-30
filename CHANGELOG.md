@@ -5,6 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.9.0] - 2026-30-01
 
+* Added extension tools that allow you to drive Kusto Workbench via VS Code's Copilot Chat ... so you can ask Copilot to ask Copilot to write you a query. Yes, I am certain this is the right architecture.
 * Added Copilot tool 'Ask user a clarifying question', so be on the look out for that in the chat window.
 * Added shortcut to extension setting sto Activity bar
 * Bugs

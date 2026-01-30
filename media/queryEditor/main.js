@@ -2001,6 +2001,671 @@ window.addEventListener('message', async event => {
 				}
 			} catch (err) { console.error('[Kusto] Error handling completion result', err); }
 			break;
+		
+		// ─────────────────────────────────────────────────────────────────────────
+		// VS Code Copilot Chat Tool Orchestrator Messages
+		// ─────────────────────────────────────────────────────────────────────────
+		
+		case 'requestToolState':
+			// Extension is requesting the current sections state
+			try {
+				const requestId = String(message.requestId || '');
+				if (requestId && typeof getKqlxState === 'function') {
+					const state = getKqlxState();
+					const sections = (state && state.sections) ? state.sections : [];
+					vscode.postMessage({ type: 'toolStateResponse', requestId, sections });
+				}
+			} catch (err) {
+				console.error('[Kusto Tools] Error getting state:', err);
+				try {
+					vscode.postMessage({ type: 'toolStateResponse', requestId: message.requestId, sections: [] });
+				} catch { /* ignore */ }
+			}
+			break;
+		
+		case 'toolAddSection':
+			// Add a new section via tool orchestrator
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionType = String(input.type || '').toLowerCase();
+				let sectionId = '';
+				let success = false;
+				
+				try {
+					if (sectionType === 'query') {
+						if (typeof addQueryBox === 'function') {
+							sectionId = addQueryBox();
+							success = !!sectionId;
+							// Set initial values if provided
+							if (sectionId && input.query) {
+								const editor = queryEditors && queryEditors[sectionId];
+								if (editor && typeof editor.setValue === 'function') {
+									editor.setValue(String(input.query));
+								}
+							}
+							if (sectionId && input.clusterUrl) {
+								// Find connection by cluster URL
+								const conn = (connections || []).find(c => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+								if (conn) {
+									const select = document.getElementById(sectionId + '_connection');
+									if (select) {
+										select.value = conn.id;
+										select.dispatchEvent(new Event('change'));
+									}
+								}
+							}
+							if (sectionId && input.database) {
+								const dbSelect = document.getElementById(sectionId + '_database');
+								if (dbSelect) {
+									dbSelect.value = input.database;
+									dbSelect.dispatchEvent(new Event('change'));
+								}
+							}
+						}
+					} else if (sectionType === 'markdown') {
+						if (typeof addMarkdownBox === 'function') {
+							sectionId = addMarkdownBox();
+							success = !!sectionId;
+							if (sectionId && input.text) {
+								window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
+								window.__kustoPendingMarkdownTextByBoxId[sectionId] = String(input.text);
+							}
+						}
+					} else if (sectionType === 'chart') {
+						if (typeof addChartBox === 'function') {
+							sectionId = addChartBox();
+							success = !!sectionId;
+						}
+					} else if (sectionType === 'transformation') {
+						if (typeof addTransformationBox === 'function') {
+							sectionId = addTransformationBox();
+							success = !!sectionId;
+						}
+					} else if (sectionType === 'url') {
+						if (typeof addUrlBox === 'function') {
+							sectionId = addUrlBox();
+							success = !!sectionId;
+						}
+					} else if (sectionType === 'python') {
+						if (typeof addPythonBox === 'function') {
+							sectionId = addPythonBox();
+							success = !!sectionId;
+						}
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error adding section:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				console.error('[Kusto Tools] Error in toolAddSection:', err);
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolRemoveSection':
+			// Remove a section by ID
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				let success = false;
+				
+				try {
+					const sectionEl = document.getElementById(sectionId);
+					if (sectionEl && typeof sectionEl.remove === 'function') {
+						sectionEl.remove();
+						success = true;
+						// Clean up any associated state
+						if (queryEditors && queryEditors[sectionId]) {
+							delete queryEditors[sectionId];
+						}
+						if (schemaByBoxId && schemaByBoxId[sectionId]) {
+							delete schemaByBoxId[sectionId];
+						}
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error removing section:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolCollapseSection':
+			// Collapse or expand a section
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				const collapsed = !!message.collapsed;
+				let success = false;
+				
+				try {
+					if (typeof window.__kustoSetSectionExpanded === 'function') {
+						window.__kustoSetSectionExpanded(sectionId, !collapsed);
+						success = true;
+					} else {
+						// Fallback: toggle visibility directly
+						const contentEl = document.getElementById(sectionId + '_content');
+						if (contentEl) {
+							contentEl.style.display = collapsed ? 'none' : '';
+							success = true;
+						}
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error collapsing section:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolUpdateQuerySection':
+			// Update a query section's content and settings
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionId = String(input.sectionId || '');
+				let success = false;
+				let resultPreview = '';
+				
+				try {
+					const editor = queryEditors && queryEditors[sectionId];
+					
+					// Update query text
+					if (input.query !== undefined && editor && typeof editor.setValue === 'function') {
+						editor.setValue(String(input.query));
+						success = true;
+					}
+					
+					// Update cluster
+					if (input.clusterUrl) {
+						const conn = (connections || []).find(c => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+						if (conn) {
+							const select = document.getElementById(sectionId + '_connection');
+							if (select) {
+								select.value = conn.id;
+								select.dispatchEvent(new Event('change'));
+								success = true;
+							}
+						}
+					}
+					
+					// Update database
+					if (input.database) {
+						const dbSelect = document.getElementById(sectionId + '_database');
+						if (dbSelect) {
+							dbSelect.value = input.database;
+							dbSelect.dispatchEvent(new Event('change'));
+							success = true;
+						}
+					}
+					
+					// Execute if requested
+					if (input.execute && typeof executeQuery === 'function') {
+						executeQuery(sectionId);
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error updating query section:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to update query section' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolExecuteQuery':
+			// Execute a query and return results preview
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				
+				// Set up a one-time listener for the result
+				const resultHandler = (resultEvent) => {
+					try {
+						const resultMsg = resultEvent && resultEvent.data;
+						if (resultMsg && resultMsg.type === 'queryResult' && resultMsg.boxId === sectionId) {
+							window.removeEventListener('message', resultHandler);
+							
+							const result = resultMsg.result || {};
+							const rows = result.rows || [];
+							const columns = result.columns || [];
+							const rowCount = rows.length;
+							
+							// Create a preview (first 5 rows)
+							let preview = '';
+							try {
+								const previewRows = rows.slice(0, 5);
+								preview = JSON.stringify({ columns, rows: previewRows, totalRows: rowCount }, null, 2);
+							} catch { /* ignore */ }
+							
+							vscode.postMessage({ 
+								type: 'toolResponse', 
+								requestId, 
+								result: { success: true, rowCount, columns, resultPreview: preview }
+							});
+						} else if (resultMsg && resultMsg.type === 'queryError' && resultMsg.boxId === sectionId) {
+							window.removeEventListener('message', resultHandler);
+							vscode.postMessage({ 
+								type: 'toolResponse', 
+								requestId, 
+								result: { success: false, error: resultMsg.error || 'Query execution failed' }
+							});
+						}
+					} catch { /* ignore */ }
+				};
+				
+				window.addEventListener('message', resultHandler);
+				
+				// Set timeout to clean up listener
+				setTimeout(() => {
+					window.removeEventListener('message', resultHandler);
+				}, 120000); // 2 minute timeout
+				
+				if (typeof executeQuery === 'function') {
+					executeQuery(sectionId);
+				} else {
+					window.removeEventListener('message', resultHandler);
+					vscode.postMessage({ type: 'toolResponse', requestId, result: { success: false }, error: 'executeQuery not available' });
+				}
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolUpdateMarkdownSection':
+			// Update a markdown section
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionId = String(input.sectionId || '');
+				let success = false;
+				
+				try {
+					if (input.text !== undefined) {
+						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
+						window.__kustoPendingMarkdownTextByBoxId[sectionId] = String(input.text);
+						
+						// Try to update existing editor
+						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
+						if (editorInstance && typeof editorInstance.setMarkdown === 'function') {
+							editorInstance.setMarkdown(String(input.text));
+							success = true;
+						} else {
+							success = true; // Will be applied when editor initializes
+						}
+					}
+					
+					if (input.mode && typeof window.__kustoSetMarkdownMode === 'function') {
+						window.__kustoSetMarkdownMode(sectionId, input.mode);
+						success = true;
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error updating markdown section:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolConfigureChart':
+			// Configure a chart section
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionId = String(input.sectionId || '');
+				let success = false;
+				
+				try {
+					// Apply chart configuration
+					if (typeof window.__kustoConfigureChart === 'function') {
+						window.__kustoConfigureChart(sectionId, input);
+						success = true;
+					} else {
+						// Fallback: store in pending state
+						window.__kustoPendingChartConfig = window.__kustoPendingChartConfig || {};
+						window.__kustoPendingChartConfig[sectionId] = input;
+						success = true;
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error configuring chart:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure chart' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolConfigureTransformation':
+			// Configure a transformation section
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionId = String(input.sectionId || '');
+				let success = false;
+				
+				try {
+					// Apply transformation configuration
+					if (typeof window.__kustoConfigureTransformation === 'function') {
+						window.__kustoConfigureTransformation(sectionId, input);
+						success = true;
+					} else {
+						// Fallback: store in pending state
+						window.__kustoPendingTransformationConfig = window.__kustoPendingTransformationConfig || {};
+						window.__kustoPendingTransformationConfig[sectionId] = input;
+						success = true;
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error configuring transformation:', err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolDelegateToKustoWorkbenchCopilot':
+			// Delegate a question to the internal Copilot Chat by simulating user interaction:
+			// 1. Toggle copilot button to show chat
+			// 2. Paste question into chat input
+			// 3. Click send button
+			// 4. Wait for results to be displayed before returning
+			(async () => {
+				try {
+					const requestId = String(message.requestId || '');
+					const input = message.input || {};
+					const question = String(input.question || '');
+					let sectionId = String(input.sectionId || '');
+					const clusterUrl = input.clusterUrl ? String(input.clusterUrl) : null;
+					const database = input.database ? String(input.database) : null;
+					
+					// If no section specified, use the first query section or create one
+					if (!sectionId) {
+						const sections = document.querySelectorAll('[data-section-type="query"]');
+						if (sections.length > 0) {
+							sectionId = sections[0].id;
+						} else if (typeof addQueryBox === 'function') {
+							sectionId = addQueryBox();
+						}
+					}
+					
+					if (!sectionId) {
+						vscode.postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'No query section available' } });
+						return;
+					}
+					
+					// If cluster/database specified, update the section connection
+					if (clusterUrl || database) {
+						const connectionDropdown = document.getElementById(sectionId + '_connection');
+						const databaseDropdown = document.getElementById(sectionId + '_database');
+						// Set connection by finding matching option or using URL directly
+						if (clusterUrl && connectionDropdown) {
+							const options = connectionDropdown.options;
+							for (let i = 0; i < options.length; i++) {
+								if (options[i].value && options[i].value.includes(clusterUrl)) {
+								connectionDropdown.value = options[i].value;
+								connectionDropdown.dispatchEvent(new Event('change'));
+								break;
+							}
+						}
+					}
+					if (database && databaseDropdown) {
+						// Wait a bit for database list to populate after connection change
+						await new Promise(r => setTimeout(r, 500));
+						const dbOptions = databaseDropdown.options;
+						for (let i = 0; i < dbOptions.length; i++) {
+							if (dbOptions[i].value === database) {
+								databaseDropdown.value = database;
+								databaseDropdown.dispatchEvent(new Event('change'));
+								break;
+							}
+						}
+					}
+				}
+				
+				// Step 1: Show the Copilot Chat panel (toggle the button)
+				if (typeof window.__kustoSetCopilotChatVisible === 'function') {
+					window.__kustoSetCopilotChatVisible(sectionId, true);
+				} else if (typeof window.__kustoToggleCopilotChatForBox === 'function') {
+					// Check if already visible, if not toggle
+					const isVisible = typeof window.__kustoGetCopilotChatVisible === 'function' 
+						? window.__kustoGetCopilotChatVisible(sectionId) 
+						: false;
+					if (!isVisible) {
+						window.__kustoToggleCopilotChatForBox(sectionId);
+					}
+				}
+				
+				// Give the UI a moment to render
+				await new Promise(r => setTimeout(r, 100));
+				
+				// Step 2: Paste the question into the chat input
+				const chatInput = document.getElementById(sectionId + '_copilot_input');
+				if (!chatInput) {
+					vscode.postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot chat input not found. Is Copilot available?' } });
+					return;
+				}
+				chatInput.value = question;
+				chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+				
+				// Set up listener for results BEFORE clicking send
+				let responded = false;
+				let generatedQuery = '';
+				let queryGenerated = false;
+				let pendingQueryResult = null; // Store queryResult if it arrives before copilotWriteQueryDone
+				
+				// Helper to send successful response
+				const sendSuccessResponse = (msg) => {
+					if (responded) return;
+					responded = true;
+					window.removeEventListener('message', resultHandler);
+					
+					// Get current query from editor
+					try {
+						const editor = queryEditors && queryEditors[sectionId];
+						if (editor && typeof editor.getValue === 'function') {
+							generatedQuery = editor.getValue() || generatedQuery;
+						}
+					} catch { /* ignore */ }
+					
+					// Clear the Copilot chat "thinking..." state
+					try {
+						if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
+							window.__kustoCopilotWriteQueryDone(sectionId, true, '');
+						}
+					} catch { /* ignore */ }
+					
+					// Get the results
+					let rows = [];
+					let columns = [];
+					let rowCount = 0;
+					
+					// Try to get from the result state (most reliable after display)
+					try {
+						if (typeof __kustoGetResultsState === 'function') {
+							const resultState = __kustoGetResultsState(sectionId);
+							if (resultState) {
+								columns = Array.isArray(resultState.columns) ? resultState.columns : [];
+								rows = Array.isArray(resultState.rows) ? resultState.rows : [];
+								rowCount = rows.length;
+							}
+						}
+					} catch { /* ignore */ }
+					
+					// Fallback to message data
+					if (columns.length === 0 && msg && msg.result && msg.result.primaryResults && msg.result.primaryResults.length > 0) {
+						const primary = msg.result.primaryResults[0];
+						columns = primary.columns ? primary.columns.map(c => c.name || c) : [];
+						rows = primary.rows || [];
+						rowCount = rows.length;
+					}
+					
+					// Limit rows for response size
+					const truncated = rows.length > 100;
+					if (truncated) {
+						rows = rows.slice(0, 100);
+					}
+					
+					vscode.postMessage({ 
+						type: 'toolResponse', 
+						requestId, 
+						result: { 
+							success: true,
+							query: generatedQuery,
+							rowCount,
+							columns,
+							results: rows,
+							truncated: truncated ? 'Results truncated to 100 rows' : undefined
+						}
+					});
+				};
+				
+				const resultHandler = (event) => {
+					try {
+						const msg = event && event.data;
+						if (!msg || responded) return;
+						
+						// Copilot finished generating/writing query
+						if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId) {
+							queryGenerated = true;
+							try {
+								const editor = queryEditors && queryEditors[sectionId];
+								generatedQuery = editor && typeof editor.getValue === 'function' ? editor.getValue() : '';
+							} catch { /* ignore */ }
+							
+							if (!msg.ok) {
+								responded = true;
+								window.removeEventListener('message', resultHandler);
+								
+								// Clear the Copilot chat "thinking..." state
+								try {
+									if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
+										window.__kustoCopilotWriteQueryDone(sectionId, false, msg.message || '');
+									}
+								} catch { /* ignore */ }
+								
+								vscode.postMessage({ 
+									type: 'toolResponse', 
+									requestId, 
+									result: { 
+										success: false,
+										error: msg.message || 'Copilot failed to generate query',
+										query: generatedQuery || undefined
+									}
+								});
+								return;
+							}
+							
+							// If we already received queryResult, process it now
+							if (pendingQueryResult) {
+								sendSuccessResponse(pendingQueryResult);
+								return;
+							}
+							// Otherwise wait for queryResult
+						}
+						
+						// Query results arrived
+						if (msg.type === 'queryResult' && msg.boxId === sectionId) {
+							if (queryGenerated) {
+								// copilotWriteQueryDone already arrived with ok=true, send response now
+								sendSuccessResponse(msg);
+							} else {
+								// copilotWriteQueryDone hasn't arrived yet, store for later
+								pendingQueryResult = msg;
+							}
+						}
+						
+						// Query execution error
+						if (msg.type === 'queryError' && msg.boxId === sectionId && queryGenerated) {
+							responded = true;
+							window.removeEventListener('message', resultHandler);
+							
+							// Clear the Copilot chat "thinking..." state
+							try {
+								if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
+									window.__kustoCopilotWriteQueryDone(sectionId, false, msg.error || 'Query execution failed');
+								}
+							} catch { /* ignore */ }
+							
+							vscode.postMessage({ 
+								type: 'toolResponse', 
+								requestId, 
+								result: { 
+									success: false,
+									query: generatedQuery || undefined,
+									error: msg.error || 'Query execution failed'
+								}
+							});
+						}
+					} catch (err) {
+						console.error('[Kusto Tools] Error in result handler:', err);
+					}
+				};
+				
+				window.addEventListener('message', resultHandler);
+				
+				// Timeout after 3 minutes
+				const timeoutId = setTimeout(() => {
+					if (!responded) {
+						responded = true;
+						window.removeEventListener('message', resultHandler);
+						
+						// Clear the Copilot chat "thinking..." state on timeout
+						try {
+							if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
+								window.__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
+							}
+						} catch { /* ignore */ }
+						
+						vscode.postMessage({ 
+							type: 'toolResponse', 
+							requestId, 
+							result: { 
+								success: false,
+								timedOut: true,
+								query: generatedQuery || undefined,
+								error: 'Request timed out after 3 minutes'
+							}
+						});
+					}
+				}, 180000);
+				
+				// Step 3: Click the send button (simulating user clicking Send)
+				const sendButton = document.getElementById(sectionId + '_copilot_send');
+				if (sendButton && !sendButton.disabled) {
+					sendButton.click();
+				} else if (typeof window.__kustoCopilotWriteQuerySend === 'function') {
+					// Fallback: call the send function directly
+					window.__kustoCopilotWriteQuerySend(sectionId);
+				} else {
+					// Clean up and report error
+					clearTimeout(timeoutId);
+					window.removeEventListener('message', resultHandler);
+					vscode.postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+				}
+				
+				} catch (err) {
+					console.error('[Kusto Tools] Error delegating to Copilot:', err);
+					vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
+				}
+			})();
+			break;
 	}
 });
 

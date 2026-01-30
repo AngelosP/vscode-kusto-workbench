@@ -10,6 +10,10 @@ import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
+import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './kustoWorkbenchTools';
+
+// Export the tool orchestrator instance so other modules can access it
+export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -80,6 +84,9 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
+
+	// Register Kusto Workbench tools for VS Code Copilot Chat integration
+	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager);
 
 	// Best-effort diagnostics for plain text editors ("Reopen With" → Text Editor)
 	// Uses last selected connection/database from the notebook experience.

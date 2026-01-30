@@ -13,6 +13,7 @@ import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText } from './schemaIndexUtils';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
+import { toolOrchestrator } from './extension';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
 
@@ -156,7 +157,11 @@ type IncomingWebviewMessage =
 			headersMatch?: boolean;
 			rowOrderMatches?: boolean;
 			columnOrderMatches?: boolean;
-		};
+		}
+	// Tool orchestrator response messages (from webview back to extension)
+	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
+	// Tool orchestrator state request (webview sends current state)
+	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] };
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -511,10 +516,107 @@ export class QueryEditorProvider {
 			});
 		}
 
+		// Connect the tool orchestrator to this webview instance
+		this.connectToolOrchestrator();
+
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
+			this.disconnectToolOrchestrator();
 			this.panel = undefined;
 		});
+	}
+
+	private connectToolOrchestrator(): void {
+		if (!toolOrchestrator) return;
+		
+		// Set up the message poster
+		toolOrchestrator.setWebviewMessagePoster((message: unknown) => {
+			this.postMessage(message);
+		});
+
+		// Set up the state getter to retrieve current sections
+		toolOrchestrator.setStateGetter(async () => {
+			const sections = await this.requestSectionsFromWebview();
+			// Cast to the expected type - webview returns untyped objects
+			return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
+		});
+
+		// Set up the schema getter
+		toolOrchestrator.setSchemaGetter(async (clusterUrl?: string, database?: string) => {
+			return this.getCachedSchemasForTools(clusterUrl, database);
+		});
+	}
+
+	private disconnectToolOrchestrator(): void {
+		if (!toolOrchestrator) return;
+		toolOrchestrator.setWebviewMessagePoster(undefined);
+		toolOrchestrator.setStateGetter(undefined);
+		toolOrchestrator.setSchemaGetter(undefined);
+	}
+
+	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
+
+	private async requestSectionsFromWebview(): Promise<unknown[] | undefined> {
+		if (!this.panel) return undefined;
+		
+		const requestId = `state_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+		
+		return new Promise<unknown[] | undefined>((resolve) => {
+			const timer = setTimeout(() => {
+				this.toolStateResponseResolvers.delete(requestId);
+				resolve(undefined);
+			}, 5000);
+			
+			this.toolStateResponseResolvers.set(requestId, (sections) => {
+				clearTimeout(timer);
+				this.toolStateResponseResolvers.delete(requestId);
+				resolve(sections);
+			});
+			
+			this.postMessage({ type: 'requestToolState', requestId });
+		});
+	}
+
+	private async getCachedSchemasForTools(clusterUrl?: string, database?: string): Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>> {
+		const results: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
+		
+		try {
+			const cacheDir = this.getSchemaCacheDirUri();
+			const files = await vscode.workspace.fs.readDirectory(cacheDir);
+			
+			for (const [fileName] of files) {
+				if (!fileName.endsWith('.json')) continue;
+				
+				try {
+					const fileUri = vscode.Uri.joinPath(cacheDir, fileName);
+					const buf = await vscode.workspace.fs.readFile(fileUri);
+					const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as CachedSchemaEntry & { clusterUrl?: string; database?: string };
+					
+					if (!parsed?.schema) continue;
+					
+					// Try to extract cluster/database from the cache file (they're in the filename hash, so we may need to iterate)
+					// For now, just collect tables and functions from all cached schemas
+					const schema = parsed.schema;
+					const tables = schema.tables || [];
+					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
+					
+					// Note: The actual clusterUrl and database aren't stored in the cache file itself,
+					// so this is a simplified version. In practice, the webview would need to provide this mapping.
+					results.push({
+						clusterUrl: clusterUrl || 'unknown',
+						database: database || 'unknown',
+						tables,
+						functions
+					});
+				} catch {
+					// Skip invalid cache files
+				}
+			}
+		} catch {
+			// Cache directory doesn't exist or can't be read
+		}
+		
+		return results;
 	}
 
 	async openEditor(): Promise<void> {
@@ -548,8 +650,12 @@ export class QueryEditorProvider {
 			return this.handleWebviewMessage(message);
 		});
 
+		// Connect the tool orchestrator to this webview instance
+		this.connectToolOrchestrator();
+
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
+			this.disconnectToolOrchestrator();
 			this.panel = undefined;
 		});
 	}
@@ -737,6 +843,21 @@ export class QueryEditorProvider {
 				return;
 			case 'kqlLanguageRequest':
 				await this.handleKqlLanguageRequest(message);
+				return;
+			case 'toolResponse':
+				// Handle response from webview for tool orchestrator commands
+				if (toolOrchestrator && message.requestId) {
+					toolOrchestrator.handleWebviewResponse(message.requestId, message.result, message.error);
+				}
+				return;
+			case 'toolStateResponse':
+				// Handle state response from webview
+				{
+					const resolver = this.toolStateResponseResolvers.get(message.requestId);
+					if (resolver) {
+						resolver(message.sections);
+					}
+				}
 				return;
 			default:
 				return;
