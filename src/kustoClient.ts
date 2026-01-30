@@ -55,6 +55,10 @@ export type KustoFunctionInfo = {
 	parameters?: KustoFunctionParameter[];
 	docString?: string;
 	folder?: string;
+	/**
+	 * The KQL body of the function.
+	 */
+	body?: string;
 };
 
 export interface DatabaseSchemaResult {
@@ -1340,6 +1344,7 @@ export class KustoQueryClient {
 			}
 			const docString = fnObj?.DocString ?? fnObj?.docString ?? fnObj?.Description ?? fnObj?.description;
 			const folder = fnObj?.Folder ?? fnObj?.folder;
+			const body = fnObj?.Body ?? fnObj?.body;
 			// Extract parameters from InputParameters array
 			const inputParams = fnObj?.InputParameters ?? fnObj?.inputParameters ?? [];
 			const parameters: KustoFunctionParameter[] = [];
@@ -1385,7 +1390,8 @@ export class KustoQueryClient {
 				parametersText: parametersText || undefined,
 				parameters: parameters.length > 0 ? parameters : undefined,
 				docString: docString ? String(docString).trim() : undefined,
-				folder: folder ? String(folder).trim() : undefined
+				folder: folder ? String(folder).trim() : undefined,
+				body: body ? String(body).trim() : undefined
 			});
 		};
 

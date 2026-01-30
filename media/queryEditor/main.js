@@ -1964,6 +1964,18 @@ window.addEventListener('message', async event => {
 				}
 			} catch { /* ignore */ }
 			break;
+		case 'copilotClarifyingQuestion':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendClarifyingQuestion === 'function') {
+					window.__kustoCopilotAppendClarifyingQuestion(
+						boxId,
+						message.question || '',
+						message.entryId || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
 		case 'copilotWriteQueryDone':
 			try {
 				const boxId = String(message.boxId || '');

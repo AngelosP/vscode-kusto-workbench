@@ -317,7 +317,8 @@
 
 		const FINAL_TOOL_NAMES = new Set([
 			'respond_to_query_performance_optimization_request',
-			'respond_to_all_other_queries'
+			'respond_to_all_other_queries',
+			'ask_user_clarifying_question'
 		]);
 
 		try { listHost.innerHTML = ''; } catch { /* ignore */ }
@@ -885,6 +886,20 @@
 			// Ask extension for model list + default selection.
 			try {
 				vscode.postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId || '') });
+			} catch { /* ignore */ }
+
+			// Add Enter key handler to send message
+			try {
+				const inputEl = document.getElementById(boxId + '_copilot_input');
+				if (inputEl) {
+					inputEl.addEventListener('keydown', (e) => {
+						// Enter without Shift sends the message
+						if (e.key === 'Enter' && !e.shiftKey) {
+							try { e.preventDefault(); } catch { /* ignore */ }
+							__kustoCopilotWriteQuerySend(boxId);
+						}
+					});
+				}
 			} catch { /* ignore */ }
 
 	// Expose get/set for persistence restore.
@@ -1474,6 +1489,98 @@
 				// No user message yet, append at end (will be before any assistant response)
 				host.appendChild(wrapper);
 			}
+		} catch {
+			// ignore
+		}
+	};
+
+	// Called by main.js when Copilot asks a clarifying question.
+	// Shows the question as an assistant message in the chat.
+	window.__kustoCopilotAppendClarifyingQuestion = function (boxId, question, entryId) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safeQuestion = String(question || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+			if (!safeQuestion) return;
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-clarifying-question';
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row: icon + label + action icons
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			// Left side: icon + label
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-comment-discussion';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const text = document.createElement('strong');
+			text.textContent = ' Clarifying question';
+			leftSide.appendChild(text);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// Remove icon button (if we have an entryId)
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Question content row
+			const questionRow = document.createElement('div');
+			questionRow.className = 'kusto-copilot-clarifying-question-text';
+			questionRow.textContent = safeQuestion;
+			wrapper.appendChild(questionRow);
+
+			host.appendChild(wrapper);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+
+			// Focus the input so user can respond
+			try {
+				const input = document.getElementById(id + '_copilot_input');
+				if (input) {
+					input.focus();
+				}
+			} catch { /* ignore */ }
 		} catch {
 			// ignore
 		}

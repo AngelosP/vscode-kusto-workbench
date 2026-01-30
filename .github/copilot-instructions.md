@@ -258,5 +258,7 @@ The extension integrates with VS Code's Copilot APIs for:
 * Local tools defined in `getCopilotLocalTools()`:
     * `get_extended_schema`
     * `get_query_optimization_best_practices` (reads `optimize-query-rules.md`)
+    * `execute_kusto_query`
     * `respond_to_query_performance_optimization_request`
     * `respond_to_all_other_queries`
+    * `ask_user_clarifying_question`

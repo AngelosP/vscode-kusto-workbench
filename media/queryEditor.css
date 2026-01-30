@@ -2794,6 +2794,21 @@
 			max-width: 350px;
 			margin-right: 25px;
 		}
+		/* Clarifying question display in Copilot chat */
+		.kusto-copilot-chat-msg-clarifying-question {
+			background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
+			border-left: 3px solid var(--vscode-charts-purple, #b180d7);
+			max-width: 350px;
+			margin-right: 25px;
+		}
+		.kusto-copilot-clarifying-question-text {
+			padding: 4px 0 0 0;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+			line-height: 1.4;
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
 		.kusto-copilot-query-snapshot-header {
 			display: flex;
 			gap: 6px;

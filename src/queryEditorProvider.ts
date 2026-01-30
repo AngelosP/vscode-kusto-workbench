@@ -223,9 +223,9 @@ export class QueryEditorProvider {
 			},
 			{
 				name: 'respond_to_query_performance_optimization_request',
-				label: 'Respond to query performance optimization request',
+				label: 'Respond to query performance optimization or data comparison request',
 				description:
-					'Creates a comparison section with your proposed query, prettifies it, and runs both queries to compare performance.',
+					'Creates a comparison section with your proposed query, prettifies it, and runs both queries to compare performance and / or results.',
 				enabledByDefault: true
 			},
 			{
@@ -233,6 +233,13 @@ export class QueryEditorProvider {
 				label: 'Respond to all other queries',
 				description:
 					'Returns a runnable query for all other requests. The extension will set it in the editor and run it.',
+				enabledByDefault: true
+			},
+			{
+				name: 'ask_user_clarifying_question',
+				label: 'Ask user clarifying question',
+				description:
+					'Ask the user a clarifying question when you need more information to write the correct query.',
 				enabledByDefault: true
 			}
 		];
@@ -295,6 +302,24 @@ export class QueryEditorProvider {
 				// If JSON parsing failed, we store the raw tool payload under args.raw
 				if (typeof a.raw === 'string') {
 					return String(a.raw);
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return '';
+	}
+
+	private extractQuestionArgument(args: unknown): string {
+		try {
+			if (args && typeof args === 'object') {
+				const a = args as any;
+				if (typeof a.question === 'string') {
+					return a.question.trim();
+				}
+				// If JSON parsing failed, we store the raw tool payload under args.raw
+				if (typeof a.raw === 'string') {
+					return String(a.raw).trim();
 				}
 			}
 		} catch {
@@ -1594,6 +1619,13 @@ Completion:`;
 				lines.push('- Do not include explanations or code blocks when using this tool.');
 				continue;
 			}
+			if (n === 'ask_user_clarifying_question') {
+				lines.push('- If you need more information from the user before you can write the query, respond with EXACTLY this and nothing else:');
+				lines.push('  @tool ask_user_clarifying_question {"question":"<your specific question>"}');
+				lines.push('- Use this when the user\'s request is ambiguous or you need clarification about tables, columns, filters, or logic.');
+				lines.push('- After the user responds, continue with the appropriate tool call based on their answer.');
+				continue;
+			}
 			lines.push(`- ${t.name}: ${t.description}`);
 		}
 		return lines.join('\n') + '\n';
@@ -2445,6 +2477,60 @@ Completion:`;
 							shouldBreakAttempt = true;
 							break;
 						}
+					}
+
+					if (toolCall?.tool === 'ask_user_clarifying_question') {
+						if (!this.isCopilotToolEnabled('ask_user_clarifying_question', enabledTools)) {
+							priorAttempts.push({
+								attempt,
+								error: 'Copilot requested a local tool that was disabled for this message.'
+							});
+							postStatus('Copilot requested a disabled tool. Retrying…');
+							generatedText = '';
+							shouldBreakAttempt = true;
+							break;
+						}
+
+						const question = this.extractQuestionArgument(toolCall.args);
+						if (!question) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty question argument.' });
+							postStatus('Tool call missing question argument. Retrying…');
+							generatedText = '';
+							shouldBreakAttempt = true;
+							break;
+						}
+
+						// Add the clarifying question to conversation history
+						const questionEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call',
+							id: questionEntryId,
+							tool: 'ask_user_clarifying_question',
+							args: { question },
+							result: 'Question displayed to user. Awaiting response.',
+							timestamp: Date.now()
+						});
+
+						// Post the question to the webview
+						try {
+							this.postMessage({
+								type: 'copilotClarifyingQuestion',
+								boxId,
+								entryId: questionEntryId,
+								question
+							} as any);
+						} catch {
+							// ignore
+						}
+
+						// Signal that we're done with this turn and waiting for user input
+						this.postMessage({
+							type: 'copilotWriteQueryDone',
+							boxId,
+							ok: true,
+							message: ''
+						} as any);
+						return;
 					}
 					} // End of for (const toolCall of toolCalls)
 

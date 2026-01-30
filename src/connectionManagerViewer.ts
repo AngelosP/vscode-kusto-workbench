@@ -1543,6 +1543,156 @@ export class ConnectionManagerViewer {
 			display: block;
 		}
 
+		/* Expandable item wrapper */
+		.explorer-list-item-wrapper {
+			border-bottom: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.explorer-list-item-wrapper:last-child {
+			border-bottom: none;
+		}
+
+		.explorer-list-item-wrapper .explorer-list-item {
+			border-bottom: none;
+		}
+
+		.explorer-list-item-wrapper.expanded {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.explorer-list-item-chevron {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+			transition: transform 0.15s ease;
+			opacity: 0.7;
+		}
+
+		.explorer-list-item-chevron svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.explorer-list-item:hover .explorer-list-item-chevron {
+			opacity: 1;
+		}
+
+		.explorer-list-item-chevron.expanded {
+			transform: rotate(90deg);
+		}
+
+		/* Expanded item details */
+		.explorer-item-details {
+			padding: 8px 12px 12px 44px;
+			background: var(--vscode-editorWidget-background);
+			border-top: 1px solid var(--vscode-editorWidget-border);
+		}
+
+		.explorer-detail-section {
+			margin-bottom: 12px;
+		}
+
+		.explorer-detail-section:last-child {
+			margin-bottom: 0;
+		}
+
+		.explorer-detail-label {
+			font-size: 10px;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 4px;
+		}
+
+		.explorer-detail-docstring {
+			font-size: 12px;
+			color: var(--vscode-editor-foreground);
+			line-height: 1.4;
+			white-space: pre-wrap;
+			word-wrap: break-word;
+		}
+
+		.explorer-detail-code {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 12px;
+			color: var(--vscode-symbolIcon-methodForeground, #b180d7);
+			padding: 4px 8px;
+			background: rgba(0, 0, 0, 0.1);
+			border-radius: 4px;
+		}
+
+		.explorer-detail-body {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 11px;
+			line-height: 1.4;
+			color: var(--vscode-editor-foreground);
+			background: rgba(0, 0, 0, 0.15);
+			border-radius: 4px;
+			padding: 8px 10px;
+			margin: 0;
+			white-space: pre-wrap;
+			word-wrap: break-word;
+			max-height: 200px;
+			overflow-y: auto;
+		}
+
+		.explorer-detail-schema {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+		}
+
+		.explorer-schema-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 3px 8px;
+			font-size: 11px;
+			background: rgba(0, 0, 0, 0.08);
+			border-radius: 3px;
+		}
+
+		.explorer-schema-row:hover {
+			background: rgba(0, 0, 0, 0.15);
+		}
+
+		.explorer-schema-col-name {
+			font-family: var(--vscode-editor-font-family, monospace);
+			color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe);
+			flex: 1;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.explorer-schema-col-type {
+			font-family: var(--vscode-editor-font-family, monospace);
+			color: var(--vscode-symbolIcon-typeParameterForeground, #4ec9b0);
+			font-size: 10px;
+			flex-shrink: 0;
+		}
+
+		.explorer-schema-col-doc {
+			width: 14px;
+			height: 14px;
+			flex-shrink: 0;
+			opacity: 0.6;
+			cursor: help;
+		}
+
+		.explorer-schema-col-doc svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.explorer-schema-col-doc:hover {
+			opacity: 1;
+		}
+
 		/* Sub-accordion (Tables/Functions level) */
 		.sub-accordion {
 			border-top: 1px solid var(--vscode-editorWidget-border);
@@ -2307,6 +2457,8 @@ export class ConnectionManagerViewer {
 		var editingConnectionId = null;
 		var expandedDatabases = new Set();
 		var expandedFolders = new Set(); // Track expanded Tables/Functions folders
+		var expandedTables = new Set(); // Track expanded tables (showing details)
+		var expandedFunctions = new Set(); // Track expanded functions (showing details)
 		var loadingDatabases = new Set();
 		var databaseSchemas = {};
 		// Navigation path for breadcrumb: { connectionId, database?, section?, folderPath? }
@@ -2400,6 +2552,8 @@ export class ConnectionManagerViewer {
 			column: '${this.escapeJs(this.getColumnIcon())}',
 			folder: '${this.escapeJs(this.getFolderIcon())}',
 			chevron: '${this.escapeJs(this.getChevronIcon())}',
+			chevronRight: '${this.escapeJs(this.getChevronRightIcon())}',
+			info: '${this.escapeJs(this.getInfoIcon())}',
 			star: '${this.escapeJs(this.getStarIcon())}',
 			starFilled: '${this.escapeJs(this.getStarFilledIcon())}',
 			edit: '${this.escapeJs(this.getEditIcon())}',
@@ -2846,14 +3000,58 @@ export class ConnectionManagerViewer {
 						html += '</div>';
 					});
 					
-					// Render tables
+					// Render tables with expandable details
 					tables.forEach(function(table) {
 						var cols = schema.columnTypesByTable[table] || {};
-						var colCount = Object.keys(cols).length;
-						html += '<div class="explorer-list-item" data-nav-table="' + escapeHtml(table) + '">';
+						var colNames = Object.keys(cols).sort();
+						var colCount = colNames.length;
+						var tableKey = dbKey + '|table|' + table;
+						var isExpanded = expandedTables.has(tableKey);
+						var tableDocString = schema.tableDocStrings ? schema.tableDocStrings[table] : null;
+						
+						html += '<div class="explorer-list-item-wrapper' + (isExpanded ? ' expanded' : '') + '">';
+						html += '<div class="explorer-list-item" data-toggle-table="' + escapeHtml(tableKey) + '" data-table-name="' + escapeHtml(table) + '">';
+						html += '<span class="explorer-list-item-chevron' + (isExpanded ? ' expanded' : '') + '">' + ICONS.chevronRight + '</span>';
 						html += '<span class="explorer-list-item-icon table">' + ICONS.table + '</span>';
 						html += '<span class="explorer-list-item-name">' + escapeHtml(table) + '</span>';
 						if (colCount > 0) html += '<span class="explorer-list-item-meta">' + colCount + ' cols</span>';
+						html += '</div>';
+						
+						// Render expanded details
+						if (isExpanded) {
+							html += '<div class="explorer-item-details">';
+							
+							// DocString section
+							if (tableDocString) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="explorer-detail-label">Description</div>';
+								html += '<div class="explorer-detail-docstring">' + escapeHtml(tableDocString) + '</div>';
+								html += '</div>';
+							}
+							
+							// Schema section (columns with types)
+							if (colCount > 0) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="explorer-detail-label">Schema (' + colCount + ' columns)</div>';
+								html += '<div class="explorer-detail-schema">';
+								colNames.forEach(function(colName) {
+									var colType = cols[colName] || '';
+									var colDocKey = table + '.' + colName;
+									var colDocString = schema.columnDocStrings ? schema.columnDocStrings[colDocKey] : null;
+									html += '<div class="explorer-schema-row">';
+									html += '<span class="explorer-schema-col-name">' + escapeHtml(colName) + '</span>';
+									html += '<span class="explorer-schema-col-type">' + escapeHtml(colType) + '</span>';
+									if (colDocString) {
+										html += '<span class="explorer-schema-col-doc" title="' + escapeHtml(colDocString) + '">' + ICONS.info + '</span>';
+									}
+									html += '</div>';
+								});
+								html += '</div>';
+							}
+							
+							html += '</div>';
+						}
+						
 						html += '</div>';
 					});
 					
@@ -2875,14 +3073,50 @@ export class ConnectionManagerViewer {
 						html += '</div>';
 					});
 					
-					// Render functions
+					// Render functions with expandable details
 					functions.forEach(function(fn) {
 						var params = fn.parametersText || '';
 						var fullSignature = fn.name + (params ? '(' + params + ')' : '');
-						html += '<div class="explorer-list-item function-item-row" data-fn-name="' + escapeHtml(fn.name) + '" title="' + escapeHtml(fullSignature) + '">';
+						var fnKey = dbKey + '|fn|' + fn.name;
+						var isExpanded = expandedFunctions.has(fnKey);
+						
+						html += '<div class="explorer-list-item-wrapper' + (isExpanded ? ' expanded' : '') + '">';
+						html += '<div class="explorer-list-item function-item-row" data-toggle-function="' + escapeHtml(fnKey) + '" data-fn-name="' + escapeHtml(fn.name) + '" title="' + escapeHtml(fullSignature) + '">';
+						html += '<span class="explorer-list-item-chevron' + (isExpanded ? ' expanded' : '') + '">' + ICONS.chevronRight + '</span>';
 						html += '<span class="explorer-list-item-icon function">' + ICONS.function + '</span>';
 						html += '<span class="explorer-list-item-name">' + escapeHtml(fn.name) + '</span>';
 						if (params) html += '<span class="explorer-list-item-params">(' + escapeHtml(params) + ')</span>';
+						html += '</div>';
+						
+						// Render expanded details
+						if (isExpanded) {
+							html += '<div class="explorer-item-details">';
+							
+							// DocString section
+							if (fn.docString) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="explorer-detail-label">Description</div>';
+								html += '<div class="explorer-detail-docstring">' + escapeHtml(fn.docString) + '</div>';
+								html += '</div>';
+							}
+							
+							// Full signature
+							html += '<div class="explorer-detail-section">';
+							html += '<div class="explorer-detail-label">Signature</div>';
+							html += '<div class="explorer-detail-code">' + escapeHtml(fn.name + (params || '()')) + '</div>';
+							html += '</div>';
+							
+							// Body section
+							if (fn.body) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="explorer-detail-label">Implementation</div>';
+								html += '<pre class="explorer-detail-body">' + escapeHtml(fn.body) + '</pre>';
+								html += '</div>';
+							}
+							
+							html += '</div>';
+						}
+						
 						html += '</div>';
 					});
 					
@@ -2890,7 +3124,7 @@ export class ConnectionManagerViewer {
 						html += '<div class="empty-state"><div class="empty-state-text">No functions in this folder.</div></div>';
 					}
 				} else if (explorerPath.section === 'table-columns') {
-					// Show columns for a specific table
+					// Show columns for a specific table (legacy view - keeping for backwards compat)
 					var tableName = explorerPath.tableName;
 					var cols = schema.columnTypesByTable[tableName] || {};
 					var colNames = Object.keys(cols).sort();
@@ -3255,7 +3489,33 @@ export class ConnectionManagerViewer {
 				return;
 			}
 			
-			// Navigate to table columns
+			// Toggle table expand/collapse (show details inline)
+			var toggleTable = closest(target, '[data-toggle-table]');
+			if (toggleTable) {
+				var tableKey = toggleTable.getAttribute('data-toggle-table');
+				if (expandedTables.has(tableKey)) {
+					expandedTables.delete(tableKey);
+				} else {
+					expandedTables.add(tableKey);
+				}
+				renderExplorer();
+				return;
+			}
+
+			// Toggle function expand/collapse (show details inline)
+			var toggleFunction = closest(target, '[data-toggle-function]');
+			if (toggleFunction) {
+				var fnKey = toggleFunction.getAttribute('data-toggle-function');
+				if (expandedFunctions.has(fnKey)) {
+					expandedFunctions.delete(fnKey);
+				} else {
+					expandedFunctions.add(fnKey);
+				}
+				renderExplorer();
+				return;
+			}
+
+			// Navigate to table columns (legacy - now replaced by inline expansion)
 			var navTable = closest(target, '[data-nav-table]');
 			if (navTable) {
 				var tableName = navTable.getAttribute('data-nav-table');
@@ -3445,6 +3705,19 @@ export class ConnectionManagerViewer {
 	private getChevronIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path d="M6 4l4 4-4 4V4z"/>
+		</svg>`;
+	}
+
+	private getChevronRightIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M6 4l4 4-4 4V4z"/>
+		</svg>`;
+	}
+
+	private getInfoIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 13A6 6 0 1 1 8 2a6 6 0 0 1 0 12z"/>
+			<path d="M8 4.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2zM7 8h2v4H7V8z"/>
 		</svg>`;
 	}
 
