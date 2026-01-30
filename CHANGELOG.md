@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.0.0] - 2026-30-01
+
+* [**** IT, WE'LL DO IT LIVE!](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+
 ## [0.9.0] - 2026-30-01
 
 * Added extension tools that allow you to drive Kusto Workbench via VS Code's Copilot Chat ... so you can ask Copilot to ask Copilot to write you a query. Yes, I am certain this is the right architecture.
