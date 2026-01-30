@@ -4651,7 +4651,7 @@
 			position: relative;
 			width: 100%;
 			min-height: 120px;
-			height: 175px;
+			height: 325px;
 			margin: 8px 0;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 2px;

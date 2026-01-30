@@ -6165,6 +6165,17 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 					// ignore
 				}
 
+				// Skip auto-resize if the editor content is blank (empty or whitespace-only).
+				// This preserves the default height for newly created sections.
+				try {
+					const value = (typeof editor.getValue === 'function') ? editor.getValue() : '';
+					if (!value || !value.trim()) {
+						return;
+					}
+				} catch {
+					// ignore
+				}
+
 				const contentHeight = (typeof editor.getContentHeight === 'function') ? editor.getContentHeight() : 0;
 				if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) {
 					return;

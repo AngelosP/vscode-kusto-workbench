@@ -119,8 +119,8 @@ export interface CreateFileInput {
 	 */
 	fileType: 'kqlx' | 'mdx' | 'kql' | 'csl' | 'md' | 'kql-sidecar' | 'csl-sidecar';
 	/**
-	 * Optional: The full file path (without extension) where the file should be created.
-	 * If not provided, the user will be prompted with a save dialog.
+	 * The full file path (without extension) where the file should be created.
+	 * The LLM must always provide a filename. If not provided, a default will be generated.
 	 * Example: '/path/to/my-queries/analysis' will create 'analysis.kqlx' (or appropriate extension)
 	 */
 	filePath?: string;
@@ -393,33 +393,21 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			fileUri = vscode.Uri.file(fullPath);
 		} else {
-			// Show save dialog
-			const filters: { [name: string]: string[] } = {};
-			switch (fileType) {
-				case 'kqlx':
-					filters['Kusto Notebook'] = ['kqlx'];
-					break;
-				case 'mdx':
-					filters['Markdown Notebook'] = ['mdx'];
-					break;
-				case 'kql':
-				case 'kql-sidecar':
-					filters['Kusto Query'] = ['kql'];
-					break;
-				case 'csl':
-				case 'csl-sidecar':
-					filters['Kusto Script'] = ['csl'];
-					break;
-				case 'md':
-					filters['Markdown'] = ['md'];
-					break;
+			// Generate a default filename in the workspace folder
+			const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+			if (!workspaceFolder) {
+				return { success: false, error: 'No workspace folder open. Please provide a full file path or open a folder first.' };
 			}
 			
-			fileUri = await vscode.window.showSaveDialog({
-				filters,
-				saveLabel: 'Create',
-				title: `Create new ${extension} file`
-			});
+			// Generate a unique filename based on the file type and timestamp
+			const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+			const baseName = fileType === 'kqlx' || fileType === 'mdx' 
+				? `kusto-notebook-${timestamp}`
+				: fileType === 'md'
+					? `notes-${timestamp}`
+					: `query-${timestamp}`;
+			
+			fileUri = vscode.Uri.joinPath(workspaceFolder, baseName + extension);
 		}
 
 		if (!fileUri) {

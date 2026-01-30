@@ -627,14 +627,14 @@
             },
             "filePath": {
               "type": "string",
-              "description": "Optional: Full file path (without extension) where to create the file. If not provided, a save dialog will be shown."
+              "description": "REQUIRED: Full file path (without extension) where to create the file. You MUST generate an appropriate filename based on the context. Use the current workspace folder as the base path. Example: '/Users/name/project/my-analysis' will create 'my-analysis.kqlx'. Always provide a descriptive filename."
             },
             "initialContent": {
               "type": "string",
               "description": "Optional: Initial content for the file (query text for kql/csl, markdown for md/mdx)"
             }
           },
-          "required": ["fileType"]
+          "required": ["fileType", "filePath"]
         }
       }
     ]
