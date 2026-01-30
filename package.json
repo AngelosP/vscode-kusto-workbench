@@ -184,7 +184,8 @@
         {
           "id": "kustoWorkbench.quickAccess",
           "name": "Quick Access",
-          "type": "webview"
+          "type": "webview",
+          "when": "config.kustoWorkbench.showActivityBarIcon"
         }
       ]
     },

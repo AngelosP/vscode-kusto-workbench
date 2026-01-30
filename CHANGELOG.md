@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)
     * Copilot had to audacity to tell me the reason it added a random timer a couple of releases ago without telling is because, and I quote 'The JS approach was likely written before Container Queries had broad browser support (they became widely available around 2023), or it was just the solution chosen at the time.'. Yeah, OK buddy. Anyway, fixed the random bug of adding new sections that look broken, with controls that have minimal width.
+    * Fixed issue with the setting for the activity bar not taking effect
 
 ## [0.7.0] - 2026-28-01
 
