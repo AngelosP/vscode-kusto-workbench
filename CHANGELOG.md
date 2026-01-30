@@ -3,6 +3,15 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.9.0] - 2026-30-01
+
+* Added Copilot tool 'Ask user a clarifying question', so be on the look out for that in the chat window.
+* Added shortcut to extension setting sto Activity bar
+* Bugs
+    * Copilot had to audacity to tell me the reason it added a random timer a couple of releases ago without telling is because, and I quote 'The JS approach was likely written before Container Queries had broad browser support (they became widely available around 2023), or it was just the solution chosen at the time.'. Yeah, OK buddy. Anyway, fixed the random bug of adding new sections that look broken, with controls that have minimal width.
+    * Fixed issue with the setting for the activity bar not taking effect.
+    * Fixed missing top border from tabular results and CSV files.
+
 ## [0.8.0] - 2026-29-01
 
 * After user feedback (thank you Kristen), added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
@@ -10,8 +19,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Added new UX for managing connections called **Connection Manager**. It can be launched either from the command bar, or from the Activity Bar.
 * Bugs
     * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)
-    * Copilot had to audacity to tell me the reason it added a random timer a couple of releases ago without telling is because, and I quote 'The JS approach was likely written before Container Queries had broad browser support (they became widely available around 2023), or it was just the solution chosen at the time.'. Yeah, OK buddy. Anyway, fixed the random bug of adding new sections that look broken, with controls that have minimal width.
-    * Fixed issue with the setting for the activity bar not taking effect
 
 ## [0.7.0] - 2026-28-01
 
