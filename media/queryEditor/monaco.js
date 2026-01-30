@@ -6165,6 +6165,21 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 					// ignore
 				}
 
+				// Skip auto-resize if Copilot chat is visible for this box.
+				// The chat panel adds content that would cause the section to keep growing;
+				// instead, we rely on internal scrolling within the chat.
+				try {
+					const box = wrapper.closest ? wrapper.closest('.query-box') : null;
+					if (box && box.id) {
+						const boxId = box.id.replace(/_box$/, '');
+						if (typeof window.__kustoGetCopilotChatVisible === 'function' && window.__kustoGetCopilotChatVisible(boxId)) {
+							return;
+						}
+					}
+				} catch {
+					// ignore
+				}
+
 				// Skip auto-resize if the editor content is blank (empty or whitespace-only).
 				// This preserves the default height for newly created sections.
 				try {
