@@ -474,6 +474,13 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-desc">Manage cluster connections. Use this to add or remove clusters, add or remove favorites, and flag / unflag clusters as 'Leave No Trace'.</div>
 			<button class="button" onclick="sendCommand('manageConnections')">Manage...</button>
 		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-settings-gear"></i> Settings
+			</div>
+			<div class="card-desc">Configure Kusto Workbench preferences and behavior. You can even hide this activity bar icon.</div>
+			<button class="button" onclick="sendCommand('openSettings')">Open Settings</button>
+		</div>
 	</div>
 
 	<script>
@@ -517,6 +524,9 @@ export function activate(context: vscode.ExtensionContext) {
 							break;
 						case 'manageConnections':
 							await vscode.commands.executeCommand('kusto.manageConnections');
+							break;
+						case 'openSettings':
+							await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:angelos-petropoulos.vscode-kusto-workbench');
 							break;
 					}
 				});
