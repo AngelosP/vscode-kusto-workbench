@@ -2167,8 +2167,8 @@ window.addEventListener('message', async event => {
 			}
 			break;
 		
-		case 'toolUpdateQuerySection':
-			// Update a query section's content and settings
+		case 'toolConfigureQuerySection':
+			// Configure a query section's connection, database, and optionally update query text
 			try {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
@@ -2195,16 +2195,60 @@ window.addEventListener('message', async event => {
 								select.dispatchEvent(new Event('change'));
 								success = true;
 							}
+						} else {
+							// Connection not found - return error with available connections
+							const availableConnections = (connections || []).map(c => c && c.clusterUrl ? String(c.clusterUrl) : '').filter(Boolean);
+							vscode.postMessage({ 
+								type: 'toolResponse', 
+								requestId, 
+								result: { 
+									success: false, 
+									error: `Cluster "${input.clusterUrl}" not found in configured connections.`,
+									availableConnections,
+									fix: 'Use #listKustoConnections to see available clusters.'
+								}
+							});
+							return;
 						}
 					}
 					
-					// Update database
+					// Update database (wait a bit for database list to populate after connection change)
 					if (input.database) {
+						if (input.clusterUrl) {
+							await new Promise(r => setTimeout(r, 500));
+						}
 						const dbSelect = document.getElementById(sectionId + '_database');
 						if (dbSelect) {
-							dbSelect.value = input.database;
-							dbSelect.dispatchEvent(new Event('change'));
-							success = true;
+							// Check if database exists in the dropdown
+							let found = false;
+							for (let i = 0; i < dbSelect.options.length; i++) {
+								if (dbSelect.options[i].value === input.database) {
+									found = true;
+									break;
+								}
+							}
+							if (found) {
+								dbSelect.value = input.database;
+								dbSelect.dispatchEvent(new Event('change'));
+								success = true;
+							} else {
+								// Database not found - return available databases
+								const availableDatabases = [];
+								for (let i = 0; i < dbSelect.options.length; i++) {
+									if (dbSelect.options[i].value) availableDatabases.push(dbSelect.options[i].value);
+								}
+								vscode.postMessage({ 
+									type: 'toolResponse', 
+									requestId, 
+									result: { 
+										success: false, 
+										error: `Database "${input.database}" not found on this cluster.`,
+										availableDatabases,
+										fix: 'Use #listKustoSchemas with the clusterUrl to see available databases.'
+									}
+								});
+								return;
+							}
 						}
 					}
 					
@@ -2213,10 +2257,10 @@ window.addEventListener('message', async event => {
 						executeQuery(sectionId);
 					}
 				} catch (err) {
-					console.error('[Kusto Tools] Error updating query section:', err);
+					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
-				vscode.postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to update query section' });
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
 				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
 			} catch (err) {
 				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -2327,6 +2371,7 @@ window.addEventListener('message', async event => {
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
 				let success = false;
+				let validationStatus = null;
 				
 				try {
 					// Apply chart configuration
@@ -2339,11 +2384,18 @@ window.addEventListener('message', async event => {
 						window.__kustoPendingChartConfig[sectionId] = input;
 						success = true;
 					}
+					
+					// Get validation status to help agent verify configuration
+					if (typeof window.__kustoGetChartValidationStatus === 'function') {
+						validationStatus = window.__kustoGetChartValidationStatus(sectionId);
+					}
 				} catch (err) {
 					console.error('[Kusto Tools] Error configuring chart:', err);
 				}
 				
-				vscode.postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure chart' });
+				// Include validation status in response so agent can verify configuration worked
+				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
+				vscode.postMessage({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
 				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
 			} catch (err) {
 				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -2392,8 +2444,6 @@ window.addEventListener('message', async event => {
 					const input = message.input || {};
 					const question = String(input.question || '');
 					let sectionId = String(input.sectionId || '');
-					const clusterUrl = input.clusterUrl ? String(input.clusterUrl) : null;
-					const database = input.database ? String(input.database) : null;
 					
 					// If no section specified, use the first query section or create one
 					if (!sectionId) {
@@ -2410,34 +2460,49 @@ window.addEventListener('message', async event => {
 						return;
 					}
 					
-					// If cluster/database specified, update the section connection
-					if (clusterUrl || database) {
-						const connectionDropdown = document.getElementById(sectionId + '_connection');
-						const databaseDropdown = document.getElementById(sectionId + '_database');
-						// Set connection by finding matching option or using URL directly
-						if (clusterUrl && connectionDropdown) {
-							const options = connectionDropdown.options;
-							for (let i = 0; i < options.length; i++) {
-								if (options[i].value && options[i].value.includes(clusterUrl)) {
-								connectionDropdown.value = options[i].value;
-								connectionDropdown.dispatchEvent(new Event('change'));
-								break;
-							}
+					// VALIDATE: Check that connection and database are configured on this section
+					const connectionDropdown = document.getElementById(sectionId + '_connection');
+					const databaseDropdown = document.getElementById(sectionId + '_database');
+					const currentConnectionId = connectionDropdown ? String(connectionDropdown.value || '') : '';
+					const currentDatabase = databaseDropdown ? String(databaseDropdown.value || '') : '';
+					
+					// Get cluster URL for context
+					let currentClusterUrl = '';
+					try {
+						if (currentConnectionId && Array.isArray(connections)) {
+							const conn = connections.find(c => c && String(c.id || '') === currentConnectionId);
+							currentClusterUrl = conn ? String(conn.clusterUrl || '') : '';
 						}
-					}
-					if (database && databaseDropdown) {
-						// Wait a bit for database list to populate after connection change
-						await new Promise(r => setTimeout(r, 500));
-						const dbOptions = databaseDropdown.options;
-						for (let i = 0; i < dbOptions.length; i++) {
-							if (dbOptions[i].value === database) {
-								databaseDropdown.value = database;
-								databaseDropdown.dispatchEvent(new Event('change'));
-								break;
+					} catch { /* ignore */ }
+					
+					if (!currentConnectionId) {
+						vscode.postMessage({ 
+							type: 'toolResponse', 
+							requestId, 
+							result: { 
+								success: false, 
+								error: 'Query section has no cluster connection configured.',
+								sectionId,
+								fix: 'Use #configureKustoQuerySection to set up the connection first. Call #listKustoFavorites to find available cluster/database pairs.'
 							}
-						}
+						});
+						return;
 					}
-				}
+					
+					if (!currentDatabase) {
+						vscode.postMessage({ 
+							type: 'toolResponse', 
+							requestId, 
+							result: { 
+								success: false, 
+								error: `Query section is connected to cluster${currentClusterUrl ? ` (${currentClusterUrl})` : ''} but no database is selected.`,
+								sectionId,
+								clusterUrl: currentClusterUrl || undefined,
+								fix: 'Use #configureKustoQuerySection to set the database. You can use #listKustoSchemas with the clusterUrl to see available databases.'
+							}
+						});
+						return;
+					}
 				
 				// Step 1: Show the Copilot Chat panel (toggle the button)
 				if (typeof window.__kustoSetCopilotChatVisible === 'function') {

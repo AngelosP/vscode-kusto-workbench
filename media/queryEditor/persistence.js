@@ -763,6 +763,15 @@ function getKqlxState() {
 					yAxisSettings = { ...st.yAxisSettings };
 				}
 			} catch { /* ignore */ }
+			
+			// Get validation status for tools
+			let validationStatus = null;
+			try {
+				if (typeof window.__kustoGetChartValidationStatus === 'function') {
+					validationStatus = window.__kustoGetChartValidationStatus(id);
+				}
+			} catch { /* ignore */ }
+			
 			const chartSection = {
 				id,
 				type: 'chart',
@@ -784,7 +793,8 @@ function getKqlxState() {
 				...(sortDirection ? { sortDirection } : {}),
 				...(xAxisSettings && Object.keys(xAxisSettings).length ? { xAxisSettings } : {}),
 				...(yAxisSettings && Object.keys(yAxisSettings).length ? { yAxisSettings } : {}),
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper')
+				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper'),
+				...(validationStatus ? { validation: validationStatus } : {})
 			};
 			sections.push(chartSection);
 			continue;

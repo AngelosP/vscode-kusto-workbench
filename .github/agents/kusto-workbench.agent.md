@@ -9,12 +9,12 @@ tools:
   - kusto-workbench_add-section
   - kusto-workbench_remove-section
   - kusto-workbench_collapse-section
-  - kusto-workbench_update-query-section
-  - kusto-workbench_execute-query
+  - kusto-workbench_configure-query-section
   - kusto-workbench_update-markdown-section
   - kusto-workbench_configure-chart
   - kusto-workbench_configure-transformation
   - kusto-workbench_ask-kusto-copilot
+  - kusto-workbench_create-file
 ---
 
 [Kusto Workbench Custom Agent Instructions](../../copilot-instructions/custom-agent.md)

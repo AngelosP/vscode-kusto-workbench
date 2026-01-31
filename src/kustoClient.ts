@@ -1448,6 +1448,68 @@ export class KustoQueryClient {
 					}
 				}
 
+				// Extract MaterializedViews (same structure as tables)
+				const materializedViewsObj = dbObj?.MaterializedViews ?? dbObj?.materializedViews;
+				if (materializedViewsObj && typeof materializedViewsObj === 'object' && !Array.isArray(materializedViewsObj)) {
+					for (const [viewKey, viewValue] of Object.entries(materializedViewsObj)) {
+						const view: any = viewValue;
+						const viewName = view?.Name ?? view?.name ?? viewKey;
+						if (!viewName) {
+							continue;
+						}
+						const viewDocString = view?.DocString ?? view?.docString ?? view?.Description ?? view?.description;
+						if (viewDocString) {
+							addTableDocString(String(viewName), String(viewDocString));
+						}
+						const viewFolder = view?.Folder ?? view?.folder;
+						if (viewFolder) {
+							addTableFolder(String(viewName), String(viewFolder));
+						}
+						const cols = view?.Columns ?? view?.columns ?? view?.OrderedColumns ?? view?.orderedColumns;
+						if (Array.isArray(cols)) {
+							for (const col of cols) {
+								const colName = (col as any)?.Name ?? (col as any)?.name;
+								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
+								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
+								if (colName) {
+									addColumn(String(viewName), String(colName), colType, colDocString ? String(colDocString) : undefined);
+								}
+							}
+						}
+					}
+				}
+
+				// Extract ExternalTables (same structure as tables)
+				const externalTablesObj = dbObj?.ExternalTables ?? dbObj?.externalTables;
+				if (externalTablesObj && typeof externalTablesObj === 'object' && !Array.isArray(externalTablesObj)) {
+					for (const [extKey, extValue] of Object.entries(externalTablesObj)) {
+						const extTable: any = extValue;
+						const extName = extTable?.Name ?? extTable?.name ?? extKey;
+						if (!extName) {
+							continue;
+						}
+						const extDocString = extTable?.DocString ?? extTable?.docString ?? extTable?.Description ?? extTable?.description;
+						if (extDocString) {
+							addTableDocString(String(extName), String(extDocString));
+						}
+						const extFolder = extTable?.Folder ?? extTable?.folder;
+						if (extFolder) {
+							addTableFolder(String(extName), String(extFolder));
+						}
+						const cols = extTable?.Columns ?? extTable?.columns ?? extTable?.OrderedColumns ?? extTable?.orderedColumns;
+						if (Array.isArray(cols)) {
+							for (const col of cols) {
+								const colName = (col as any)?.Name ?? (col as any)?.name;
+								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
+								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
+								if (colName) {
+									addColumn(String(extName), String(colName), colType, colDocString ? String(colDocString) : undefined);
+								}
+							}
+						}
+					}
+				}
+
 				// Also recurse into each database object for any alternative shapes.
 				if (dbObj && typeof dbObj === 'object') {
 					this.extractSchemaFromJson(dbObj, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);

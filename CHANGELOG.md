@@ -3,6 +3,14 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.1.0] - 2026-31-01
+
+* Additional extension tools to allow Kusto Workbench custom agent double check its work, and improvements to custom agent prompt.
+* Added the docstring of Kusto tables and views to the response of **`get_extended_schema`.**
+* Small README.md fixes
+* Bugs
+    * Fixed a bug where if the user opened a .kql or .cls file after installing the extension, the built-in editor would open instead of the extension. Problem was that the extension had not activated yet to register for these file types.
+
 ## [1.0.0] - 2026-30-01
 
 * [**** IT, WE'LL DO IT LIVE!](https://www.youtube.com/watch?v=dQw4w9WgXcQ)

@@ -17,6 +17,15 @@
   "categories": [
     "Other"
   ],
+  "activationEvents": [
+    "onLanguage:kql",
+    "onLanguage:kqlx",
+    "workspaceContains:**/*.kql",
+    "workspaceContains:**/*.csl",
+    "workspaceContains:**/*.kqlx",
+    "workspaceContains:**/*.mdx",
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "configuration": {
@@ -209,7 +218,7 @@
           "kusto-workbench_add-section",
           "kusto-workbench_remove-section",
           "kusto-workbench_collapse-section",
-          "kusto-workbench_update-query-section",
+          "kusto-workbench_configure-query-section",
           "kusto-workbench_update-markdown-section",
           "kusto-workbench_configure-chart",
           "kusto-workbench_configure-transformation",
@@ -383,11 +392,11 @@
         }
       },
       {
-        "name": "kusto-workbench_update-query-section",
-        "tags": ["kusto", "workbench", "query", "update"],
-        "toolReferenceName": "updateKustoQuerySection",
-        "displayName": "Update Kusto Query Section",
-        "modelDescription": "Updates a query section in Kusto Workbench. Can change the query text, cluster URL, database, and optionally execute the query immediately. Use this to modify existing queries or prepare them for execution.",
+        "name": "kusto-workbench_configure-query-section",
+        "tags": ["kusto", "workbench", "query", "configure", "connection"],
+        "toolReferenceName": "configureKustoQuerySection",
+        "displayName": "Configure Kusto Query Section",
+        "modelDescription": "Configures a query section in Kusto Workbench. Use this to set up the cluster connection and database before running queries with #askKustoCopilot. Can also change the query text and optionally execute the query immediately.",
         "userDescription": "Update a query section's content and settings.",
         "canBeReferencedInPrompt": true,
         "icon": "$(edit)",

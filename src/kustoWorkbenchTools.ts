@@ -52,7 +52,7 @@ export interface CollapseSectionInput {
 	collapsed: boolean;
 }
 
-export interface UpdateQuerySectionInput {
+export interface ConfigureQuerySectionInput {
 	sectionId: string;
 	query?: string;
 	clusterUrl?: string;
@@ -299,8 +299,8 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.sendToWebview('toolCollapseSection', { sectionId: input.sectionId, collapsed: input.collapsed });
 	}
 
-	async updateQuerySection(input: UpdateQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
-		return this.sendToWebview('toolUpdateQuerySection', { input });
+	async configureQuerySection(input: ConfigureQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+		return this.sendToWebview('toolConfigureQuerySection', { input });
 	}
 
 	async updateMarkdownSection(input: UpdateMarkdownSectionInput): Promise<{ success: boolean }> {
@@ -623,15 +623,15 @@ export class CollapseSectionTool implements vscode.LanguageModelTool<CollapseSec
 	}
 }
 
-export class UpdateQuerySectionTool implements vscode.LanguageModelTool<UpdateQuerySectionInput> {
+export class ConfigureQuerySectionTool implements vscode.LanguageModelTool<ConfigureQuerySectionInput> {
 	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
 
 	async invoke(
-		options: vscode.LanguageModelToolInvocationOptions<UpdateQuerySectionInput>,
+		options: vscode.LanguageModelToolInvocationOptions<ConfigureQuerySectionInput>,
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.updateQuerySection(options.input);
+			const result = await this.orchestrator.configureQuerySection(options.input);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -786,7 +786,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_collapse-section', new CollapseSectionTool(orchestrator)),
-		vscode.lm.registerTool('kusto-workbench_update-query-section', new UpdateQuerySectionTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_configure-query-section', new ConfigureQuerySectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_update-markdown-section', new UpdateMarkdownSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-chart', new ConfigureChartTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-transformation', new ConfigureTransformationTool(orchestrator)),

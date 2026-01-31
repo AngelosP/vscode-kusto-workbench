@@ -1120,6 +1120,124 @@ function __kustoConfigureChartFromTool(boxId, config) {
 try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch { /* ignore */ }
 
 /**
+ * Validate a chart's configuration and return detailed status for tools.
+ * This helps the LLM verify that chart configuration was successful.
+ * @param {string} boxId - The chart section ID
+ * @returns {object} Status object with validation details
+ */
+function __kustoGetChartValidationStatus(boxId) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return { valid: false, error: 'No chart ID provided' };
+		
+		const st = __kustoGetChartState(id);
+		if (!st) return { valid: false, error: 'Chart section not found' };
+		
+		const issues = [];
+		
+		// Check data source
+		const dataSourceId = typeof st.dataSourceId === 'string' ? st.dataSourceId : '';
+		if (!dataSourceId) {
+			issues.push('No data source selected. Use dataSourceId to link to a query section with results.');
+		}
+		
+		// Check chart type
+		const chartType = typeof st.chartType === 'string' ? st.chartType : '';
+		if (!chartType) {
+			issues.push('No chart type selected. Specify chartType (line, area, bar, scatter, pie, or funnel).');
+		}
+		
+		// Check if data source exists and has data
+		let dataSourceExists = false;
+		let dataSourceHasData = false;
+		let availableColumns = [];
+		if (dataSourceId) {
+			try {
+				if (typeof __kustoGetResultsState === 'function') {
+					const dsState = __kustoGetResultsState(dataSourceId);
+					if (dsState) {
+						dataSourceExists = true;
+						const cols = Array.isArray(dsState.columns) ? dsState.columns : [];
+						const rows = Array.isArray(dsState.rows) ? dsState.rows : [];
+						availableColumns = cols.map(c => String(c || ''));
+						dataSourceHasData = cols.length > 0 && rows.length > 0;
+						if (!dataSourceHasData) {
+							if (cols.length === 0) {
+								issues.push(`Data source "${dataSourceId}" has no columns. Execute the query first to get results.`);
+							} else if (rows.length === 0) {
+								issues.push(`Data source "${dataSourceId}" has columns but no data rows. Execute the query first.`);
+							}
+						}
+					} else {
+						issues.push(`Data source "${dataSourceId}" not found or has no results. Make sure the query has been executed.`);
+					}
+				}
+			} catch { /* ignore */ }
+		}
+		
+		// Check column configuration based on chart type
+		if (chartType && dataSourceHasData && availableColumns.length > 0) {
+			const xColumn = typeof st.xColumn === 'string' ? st.xColumn : '';
+			const yColumns = Array.isArray(st.yColumns) ? st.yColumns : [];
+			const labelColumn = typeof st.labelColumn === 'string' ? st.labelColumn : '';
+			const valueColumn = typeof st.valueColumn === 'string' ? st.valueColumn : '';
+			
+			if (chartType === 'pie' || chartType === 'funnel') {
+				// Pie/funnel need label and value columns
+				if (!labelColumn) {
+					issues.push(`${chartType} chart requires labelColumn (the category names). Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(labelColumn)) {
+					issues.push(`labelColumn "${labelColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				if (!valueColumn) {
+					issues.push(`${chartType} chart requires valueColumn (the numeric values). Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(valueColumn)) {
+					issues.push(`valueColumn "${valueColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+			} else {
+				// Line, area, bar, scatter need x and y columns
+				if (!xColumn) {
+					issues.push(`${chartType} chart requires xColumn. Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(xColumn)) {
+					issues.push(`xColumn "${xColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				if (!yColumns || yColumns.length === 0) {
+					issues.push(`${chartType} chart requires yColumns (array of column names for Y axis). Available columns: ${availableColumns.join(', ')}`);
+				} else {
+					const invalidYCols = yColumns.filter(c => !availableColumns.includes(c));
+					if (invalidYCols.length > 0) {
+						issues.push(`yColumns "${invalidYCols.join(', ')}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+					}
+				}
+			}
+		}
+		
+		const valid = issues.length === 0;
+		return {
+			valid,
+			chartType: chartType || null,
+			dataSourceId: dataSourceId || null,
+			dataSourceExists,
+			dataSourceHasData,
+			availableColumns: availableColumns.length > 0 ? availableColumns : undefined,
+			currentConfig: {
+				xColumn: st.xColumn || null,
+				yColumns: (Array.isArray(st.yColumns) && st.yColumns.length > 0) ? st.yColumns : null,
+				labelColumn: st.labelColumn || null,
+				valueColumn: st.valueColumn || null,
+				legendColumn: st.legendColumn || null
+			},
+			...(issues.length > 0 ? { issues } : {})
+		};
+	} catch (err) {
+		return { valid: false, error: `Validation error: ${err.message || String(err)}` };
+	}
+}
+
+// Expose for tool calls
+try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch { /* ignore */ }
+
+/**
  * Configure a transformation section programmatically (used by LLM tools).
  * @param {string} boxId - The transformation section ID
  * @param {object} config - Configuration object with properties like:
