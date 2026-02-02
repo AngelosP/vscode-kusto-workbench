@@ -777,7 +777,8 @@ export function registerKustoWorkbenchTools(
 ): KustoWorkbenchToolOrchestrator {
 	const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connectionManager);
 
-	// Register all tools
+	// Register all tools using the languageModelTools[].name values from package.json
+	// This is how VS Code binds the manifest contribution to the implementation
 	context.subscriptions.push(
 		vscode.lm.registerTool('kusto-workbench_list-connections', new ListConnectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-favorites', new ListFavoritesTool(orchestrator)),
