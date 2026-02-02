@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.2.0] - 2026-02-02
+
+* Better instructions for the custom agent + it now selects its tools automatically
+
 ## [1.1.0] - 2026-31-01
 
 * Additional extension tools to allow Kusto Workbench custom agent double check its work, and improvements to custom agent prompt.
