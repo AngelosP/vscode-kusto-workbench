@@ -627,6 +627,26 @@ export function activate(context: vscode.ExtensionContext) {
 			CachedValuesViewer.open(context, context.extensionUri, connectionManager);
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.resetCopilotModelSelection', async () => {
+			// Clear extension globalState (this is the source of truth now).
+			try {
+				await context.globalState.update('kusto.optimize.lastCopilotModelId', undefined);
+			} catch {
+				// ignore
+			}
+
+			// Also notify any active webview to clear local caches and refresh UI.
+			try {
+				toolOrchestrator?.postToActiveWebview({ type: 'resetCopilotModelSelection' });
+			} catch {
+				// ignore
+			}
+
+			void vscode.window.showInformationMessage('Reset Copilot model selection. New editors will use the default model.');
+		})
+	);
 }
 
 // This method is called when your extension is deactivated

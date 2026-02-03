@@ -167,6 +167,11 @@
         "command": "kusto.seeCachedValues",
         "title": "Show Cached Values",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.resetCopilotModelSelection",
+        "title": "Reset Copilot Model Selection",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {

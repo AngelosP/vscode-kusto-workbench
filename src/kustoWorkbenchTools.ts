@@ -209,6 +209,16 @@ export class KustoWorkbenchToolOrchestrator {
 		this.schemaGetter = getter;
 	}
 
+	/**
+	 * Posts a message directly to the active webview (fire-and-forget).
+	 * Used for one-way notifications that don't expect a response.
+	 */
+	postToActiveWebview(message: unknown): void {
+		if (this.webviewMessagePoster) {
+			this.webviewMessagePoster(message);
+		}
+	}
+
 	handleWebviewResponse(requestId: string, result: unknown, error?: string): void {
 		const pending = this.pendingResponses.get(requestId);
 		if (!pending) return;

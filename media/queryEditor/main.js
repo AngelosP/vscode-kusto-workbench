@@ -2874,6 +2874,22 @@ window.addEventListener('message', async event => {
 				}
 			})();
 			break;
+		
+		case 'resetCopilotModelSelection':
+			// Clear the cached model selection from webview state and localStorage
+			try {
+				// Clear from vscode state
+				const state = (typeof vscode !== 'undefined' && vscode && vscode.getState) ? (vscode.getState() || {}) : {};
+				delete state.lastOptimizeModelId;
+				if (typeof vscode !== 'undefined' && vscode && vscode.setState) {
+					vscode.setState(state);
+				}
+			} catch { /* ignore */ }
+			try {
+				// Clear from localStorage
+				localStorage.removeItem('kusto.optimize.lastModelId');
+			} catch { /* ignore */ }
+			break;
 	}
 });
 

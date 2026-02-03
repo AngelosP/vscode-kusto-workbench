@@ -32,6 +32,24 @@ const STORAGE_KEYS = {
 
 type KustoFavorite = { name: string; clusterUrl: string; database: string };
 
+/**
+ * Default preferred Copilot model when user hasn't made a selection.
+ * We look for models whose name, id, family, or version contains these substrings (case-insensitive).
+ */
+const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4.5';
+
+/**
+ * Finds the preferred default Copilot model from the available models.
+ * Looks for a model matching the default preferred ID, falls back to first model.
+ */
+function findPreferredDefaultCopilotModel(models: vscode.LanguageModelChat[]): vscode.LanguageModelChat | undefined {
+	if (models.length === 0) {
+		return undefined;
+	}
+	const preferredModel = models.find(m => m.id === DEFAULT_PREFERRED_COPILOT_MODEL_ID);
+	return preferredModel || models[0];
+}
+
 type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
@@ -1340,8 +1358,8 @@ export class QueryEditorProvider {
 				return;
 			}
 
-			// Use the first available model (usually the fastest for inline completions)
-			const model = models[0];
+			// Use the preferred default model
+			const model = findPreferredDefaultCopilotModel(models)!;
 
 			// Build a completion prompt tailored for KQL
 			const prompt = `You are an expert Kusto Query Language (KQL) assistant providing inline code completions.
@@ -1455,10 +1473,11 @@ Completion:`;
 
 			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
 			const preferredModelId = String(lastModelId || '').trim();
+			const defaultModelId = findPreferredDefaultCopilotModel(models)?.id || '';
 			const selectedModelId =
 				preferredModelId && modelOptions.some((m) => m.id === preferredModelId)
 					? preferredModelId
-					: modelOptions[0]?.id || '';
+					: defaultModelId;
 
 			this.postMessage({
 				type: 'copilotWriteQueryOptions',
@@ -1981,7 +2000,7 @@ Completion:`;
 				model = preferred ? models.find((m) => String(m.id) === preferred) : undefined;
 			}
 			if (!model) {
-				model = models[0];
+				model = findPreferredDefaultCopilotModel(models)!;
 			}
 
 			try {
@@ -3119,9 +3138,10 @@ ${query}
 
 			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
 			const preferredModelId = String(lastModelId || '').trim();
+			const defaultModelId = findPreferredDefaultCopilotModel(models)?.id || '';
 			const selectedModelId = preferredModelId && modelOptions.some(m => m.id === preferredModelId)
 				? preferredModelId
-				: (modelOptions[0]?.id || '');
+				: defaultModelId;
 
 			this.postMessage({
 				type: 'optimizeQueryOptions',
@@ -3188,7 +3208,7 @@ ${query}
 				model = models.find(m => m.id === requestedModelId);
 			}
 			if (!model) {
-				model = models[0];
+				model = findPreferredDefaultCopilotModel(models)!;
 			}
 			try {
 				await this.context.globalState.update(STORAGE_KEYS.lastOptimizeCopilotModelId, String(model.id));
