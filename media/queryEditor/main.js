@@ -2081,7 +2081,7 @@ window.addEventListener('message', async event => {
 					} else if (sectionType === 'markdown') {
 						if (typeof addMarkdownBox === 'function') {
 							// Pass text as option so it's available when the editor initializes
-							const markdownOptions = input.text ? { text: String(input.text) } : undefined;
+							const markdownOptions = (input.text !== undefined) ? { text: String(input.text) } : undefined;
 							sectionId = addMarkdownBox(markdownOptions);
 							success = !!sectionId;
 							// Set section name if provided
@@ -2443,8 +2443,8 @@ window.addEventListener('message', async event => {
 						
 						// Try to update existing editor (exposed on window from extraBoxes.js)
 						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
-						if (editorInstance && typeof editorInstance.setMarkdown === 'function') {
-							editorInstance.setMarkdown(textToSet);
+						if (editorInstance && typeof editorInstance.setValue === 'function') {
+							editorInstance.setValue(textToSet);
 							success = true;
 							
 							// Fit to contents after updating - with retries to handle async layout
@@ -2459,6 +2459,12 @@ window.addEventListener('message', async event => {
 							fitToContents();
 							setTimeout(fitToContents, 100);
 							setTimeout(fitToContents, 300);
+							// If currently in Preview mode, re-render the viewer immediately
+							try {
+								if (typeof window.__kustoApplyMarkdownEditorMode === 'function') {
+									window.__kustoApplyMarkdownEditorMode(sectionId);
+								}
+							} catch { /* ignore */ }
 						} else {
 							// Editor not initialized yet - text will be applied when editor initializes
 							// from __kustoPendingMarkdownTextByBoxId

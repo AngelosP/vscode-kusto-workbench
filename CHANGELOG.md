@@ -7,6 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Bugs
     * Fixed double-clicking to resize the section did not do the right thing, ended up with the wrong height.
+    * Fixed a bug that would leave the markdown sections empty until the file was saved / loaded and then the contents would show up.
 
 ## [1.3.0] - 2026-02-03
 

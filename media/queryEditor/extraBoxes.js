@@ -6345,6 +6345,17 @@ function initMarkdownEditor(boxId) {
 	};
 
 	markdownEditors[boxId] = api;
+	
+	// Check for any pending text that might have been set during async initialization
+	// (e.g., if toolUpdateMarkdownSection was called while we were creating the editor)
+	try {
+		const latePending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
+		if (typeof latePending === 'string') {
+			api.setValue(latePending);
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+	
 	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
 	try { __kustoTryApplyPendingMarkdownReveal(boxId); } catch { /* ignore */ }
 
