@@ -1,8 +1,13 @@
---- 
+---
+
 name: Kusto Workbench
+
 description: Use Kusto Workbench to do notebook style data retrieval, analysis, transformation, and visualization.argument-hint: A data analysis task, KQL query request, or visualization to create.
-tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'listSections', 'removeSection', 'updateMarkdownSection']
+
+tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
+
 model: Claude Opus 4.5
+
 ---
 
 # Kusto Workbench Agent
@@ -21,6 +26,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#listSections` | List notebook sections with IDs and validation status |
 | `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
 | `#removeSection` | Remove a section by ID |
+| `#reorderSections` | Reorder all sections by providing IDs in desired order |
 | `#collapseExpandSection` | Collapse/expand a section |
 | `#configureKustoQuerySection` | **Configure query section connection** (set cluster, database, query text) |
 | `#updateMarkdownSection` | Update markdown section content |
@@ -84,6 +90,22 @@ How to get the most out of your questions to **`#askKustoCopilot`**:
 ### 5\. For documentation
 
 `#addSection` type `"markdown"` then `#updateMarkdownSection`
+
+### 6\. For reorganizing content
+
+Use `#reorderSections` to safely move sections around:
+
+1. Call `#listSections` to get all section IDs
+2. Call `#reorderSections` with ALL section IDs in the desired order
+
+Example: Move a chart section to appear right after its data source:
+
+```
+1. #listSections → returns [{id: "query_1"}, {id: "markdown_1"}, {id: "chart_1"}]
+2. #reorderSections(sectionIds: ["query_1", "chart_1", "markdown_1"])
+```
+
+**Important:** You must include ALL section IDs—missing or unknown IDs will cause an error.
 
 ## ⚠️ Always Verify Tool Responses
 

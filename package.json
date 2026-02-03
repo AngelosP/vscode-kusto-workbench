@@ -374,6 +374,27 @@
         }
       },
       {
+        "name": "kusto-workbench_reorder-sections",
+        "tags": ["kusto", "workbench", "section", "organize", "reorder"],
+        "toolReferenceName": "reorderSections",
+        "displayName": "Reorder Sections",
+        "modelDescription": "Reorders all sections in the Kusto Workbench notebook. Provide an array of ALL section IDs in the desired order. Use #listSections first to get the current section IDs. This is the safe way to reorganize content without accidentally losing sections.",
+        "userDescription": "Reorder sections in the workbench notebook.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-ordered)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionIds": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Array of ALL section IDs in the desired order. Must include every section ID from #listSections."
+            }
+          },
+          "required": ["sectionIds"]
+        }
+      },
+      {
         "name": "kusto-workbench_configure-query-section",
         "tags": ["kusto", "workbench", "query", "configure", "connection"],
         "toolReferenceName": "configureKustoQuerySection",

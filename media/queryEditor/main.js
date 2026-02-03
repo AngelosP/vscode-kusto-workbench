@@ -2165,6 +2165,54 @@ window.addEventListener('message', async event => {
 			}
 			break;
 		
+		case 'toolReorderSections':
+			// Reorder all sections in the notebook
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionIds = Array.isArray(message.sectionIds) ? message.sectionIds.map(id => String(id)) : [];
+				let success = false;
+				let error = '';
+				
+				try {
+					const container = document.getElementById('queries-container');
+					if (!container) {
+						error = 'Container not found';
+					} else {
+						// Get current section elements
+						const currentBoxes = Array.from(container.querySelectorAll('.query-box'));
+						const currentIds = currentBoxes.map(el => el.id).filter(id => id);
+						
+						// Validate: all current IDs must be in the new order
+						const missingIds = currentIds.filter(id => !sectionIds.includes(id));
+						const unknownIds = sectionIds.filter(id => !currentIds.includes(id));
+						
+						if (missingIds.length > 0) {
+							error = 'Missing section IDs in reorder list: ' + missingIds.join(', ');
+						} else if (unknownIds.length > 0) {
+							error = 'Unknown section IDs: ' + unknownIds.join(', ');
+						} else {
+							// Reorder: move sections to match the new order
+							for (const sectionId of sectionIds) {
+								const el = document.getElementById(sectionId);
+								if (el && el.parentNode === container) {
+									container.appendChild(el);
+								}
+							}
+							success = true;
+						}
+					}
+				} catch (err) {
+					console.error('[Kusto Tools] Error reordering sections:', err);
+					error = err.message || String(err);
+				}
+				
+				vscode.postMessage({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
+				try { if (typeof schedulePersist === 'function') schedulePersist(); } catch { /* ignore */ }
+			} catch (err) {
+				vscode.postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
 		case 'toolConfigureQuerySection':
 			// Configure a query section's connection, database, and optionally update query text
 			try {

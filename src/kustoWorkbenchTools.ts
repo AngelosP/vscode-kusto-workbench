@@ -52,6 +52,11 @@ export interface CollapseSectionInput {
 	collapsed: boolean;
 }
 
+export interface ReorderSectionsInput {
+	/** Array of section IDs in the desired order. All section IDs must be included. */
+	sectionIds: string[];
+}
+
 export interface ConfigureQuerySectionInput {
 	sectionId: string;
 	query?: string;
@@ -297,6 +302,10 @@ export class KustoWorkbenchToolOrchestrator {
 
 	async collapseSection(input: CollapseSectionInput): Promise<{ success: boolean }> {
 		return this.sendToWebview('toolCollapseSection', { sectionId: input.sectionId, collapsed: input.collapsed });
+	}
+
+	async reorderSections(input: ReorderSectionsInput): Promise<{ success: boolean; error?: string }> {
+		return this.sendToWebview('toolReorderSections', { sectionIds: input.sectionIds });
 	}
 
 	async configureQuerySection(input: ConfigureQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
@@ -623,6 +632,26 @@ export class CollapseSectionTool implements vscode.LanguageModelTool<CollapseSec
 	}
 }
 
+export class ReorderSectionsTool implements vscode.LanguageModelTool<ReorderSectionsInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ReorderSectionsInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.reorderSections(options.input);
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+}
+
 export class ConfigureQuerySectionTool implements vscode.LanguageModelTool<ConfigureQuerySectionInput> {
 	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
 
@@ -787,6 +816,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_collapse-section', new CollapseSectionTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_reorder-sections', new ReorderSectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-query-section', new ConfigureQuerySectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_update-markdown-section', new UpdateMarkdownSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-chart', new ConfigureChartTool(orchestrator)),

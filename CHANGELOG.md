@@ -3,11 +3,17 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.3.0] - 2026-02-03
+
+* Added extension tool for custom agent called 'orderSections'.
+* Bugs
+    * Fixed the updateMarkdownSection tool to properly display the contents after the changes are made
+
 ## [1.2.0] - 2026-02-02
 
 * Better instructions for the custom agent + it now selects its tools automatically
 
-## [1.1.0] - 2026-31-01
+## [1.1.0] - 2026-01-31
 
 * Additional extension tools to allow Kusto Workbench custom agent double check its work, and improvements to custom agent prompt.
 * Added the docstring of Kusto tables and views to the response of **`get_extended_schema`.**
@@ -15,11 +21,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Fixed a bug where if the user opened a .kql or .cls file after installing the extension, the built-in editor would open instead of the extension. Problem was that the extension had not activated yet to register for these file types.
 
-## [1.0.0] - 2026-30-01
+## [1.0.0] - 2026-01-30
 
 * [**** IT, WE'LL DO IT LIVE!](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
 
-## [0.9.0] - 2026-30-01
+## [0.9.0] - 2026-01-30
 
 * Added extension tools that allow you to drive Kusto Workbench via VS Code's Copilot Chat ... so you can ask Copilot to ask Copilot to write you a query. Yes, I am certain this is the right architecture.
 * Added Copilot tool 'Ask user a clarifying question', so be on the look out for that in the chat window.
@@ -29,7 +35,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Fixed issue with the setting for the activity bar not taking effect.
     * Fixed missing top border from tabular results and CSV files.
 
-## [0.8.0] - 2026-29-01
+## [0.8.0] - 2026-01-29
 
 * After user feedback (thank you Kristen), added an extension icon to the VS Code **Activity Bar** as they call it. It does the same thing as executing the command `Open Query Editor` from the command pallete does. If the extra icon is annoying to you because you prefer a more minimal look, you can turn the extension icon off in the extension's settings.
 * After user feedback again (thank you Chris), Implemented the concept of 'Leave no trace' Kusto clusters. These are clusters that the user can mark to never leave any trace of data behind. It will never persist any data to disk, only queries and section configurations will be saved, but never actual tabular data or chart data.
@@ -37,11 +43,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Randomly started seeing 2 sections at the bottom of .md files. The joys of vibe coding :)
 
-## [0.7.0] - 2026-28-01
+## [0.7.0] - 2026-01-28
 
 * Improved instructions for working with raw data in Kusto.
 
-## [0.6.0] - 2026-28-01
+## [0.6.0] - 2026-01-28
 
 * Many UX improvements for **Charts**. Biggest change is the ability to click on X or Y axis and configure additional settings. Still WIP, so more improvements to come.
 * Many UX improvements for **Transformation**. Still WIP, so more improvements to come.
@@ -53,7 +59,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bug fixes
     * Kusto schema based completion dropdown annoyingly showed up when at the end of a term / word, even after successfully accepting a completion for the exact same term / word. I thought I had arleady fixed this, but apparently not. The joys of vibe coding :)
 
-## [0.5.0] - 2026-25-01
+## [0.5.0] - 2026-01-25
 
 * Improved the Copilot integration.
     * The LLM gets general instructions ala copilot-instructions.md in each new conversation.
@@ -79,14 +85,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Undo inside a .md file would reset the view and move the cursor to the very top of the file, position 0,0.
     * Paste into a .md file would reset the view and move the cursor to the very top of the file, position 0,0.
 
-## [0.4.0] - 2026-22-01
+## [0.4.0] - 2026-01-22
 
 * Added extension settings for controlling whether the extension opens .kql and .cls files
 * Copilot inline auto-complete (ghost text) support + new toolbar button turning it on / off
 * Bug fixes
     * When a single editor contained multiple queries, it would complain about the non-active statements when they should be getting completely ignored.
 
-## [0.3.0] - 2026-15-01
+## [0.3.0] - 2026-01-15
 
 * Data Transformations. New type of section that allows you to manipulate data that comes from a kusto query, a .csv file, or another data transformation.
 * Cell Value Viewer. Improved the tabular control with the ability to double click any cell and open its contents up into a 'cell viewer' with search capabilities. This should help with scenarios where the value is just a string, not JSON, but still a very long string that makes it uncomfortable to deal with.
