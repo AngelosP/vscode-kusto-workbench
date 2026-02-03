@@ -5308,6 +5308,23 @@ function __kustoApplyMarkdownEditorMode(boxId) {
 		}
 		try { initMarkdownViewer(boxId, md); } catch { /* ignore */ }
 
+		// After switching to Preview, auto-run "Fit to contents" so the user
+		// immediately sees the full rendered markdown without needing to click.
+		// Use a couple retries to handle async preview rendering/layout.
+		try {
+			const fitToContents = () => {
+				try {
+					if (typeof __kustoMaximizeMarkdownBox === 'function') {
+						__kustoMaximizeMarkdownBox(boxId);
+					}
+				} catch { /* ignore */ }
+			};
+			fitToContents();
+			setTimeout(fitToContents, 50);
+			setTimeout(fitToContents, 150);
+			setTimeout(fitToContents, 350);
+		} catch { /* ignore */ }
+
 		// In .md files, reset scroll position to prevent layout shift.
 		try {
 			if (document.body && document.body.dataset && document.body.dataset.kustoDocumentKind === 'md') {
