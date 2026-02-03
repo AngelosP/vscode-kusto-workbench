@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.4.0] - Unreleased
+
+* Bugs
+    * Fixed double-clicking to resize the section did not do the right thing, ended up with the wrong height.
+
 ## [1.3.0] - 2026-02-03
 
 * Added ability to rename sections through the custom agent.

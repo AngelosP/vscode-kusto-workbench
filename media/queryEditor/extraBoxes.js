@@ -6435,111 +6435,16 @@ function initMarkdownEditor(boxId) {
 				document.addEventListener('mouseup', onUp, true);
 			});
 
-			// Double-click to fit editor to contents
+			// Double-click to fit editor to contents - delegate to the button's function
+			// which already handles all modes (wysiwyg, markdown, preview) correctly with
+			// proper fallbacks and retries for async layout settling.
 			resizer.addEventListener('dblclick', (e) => {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-
-					if (!wrapper) return;
-
-					const mode = (typeof __kustoGetMarkdownMode === 'function') ? __kustoGetMarkdownMode(boxId) : 'wysiwyg';
-					const FIT_SLACK_PX = 5;
-
-					// Get ToastUI editor content height
-					const ui = container && container.querySelector ? container.querySelector('.toastui-editor-defaultUI') : null;
-					if (!ui) return;
-
-					const toolbar = ui.querySelector('.toastui-editor-defaultUI-toolbar');
-					const toolbarH = toolbar && toolbar.getBoundingClientRect ? toolbar.getBoundingClientRect().height : 0;
-
-					let contentH = 0;
-					const m = String(mode || '').toLowerCase();
-					if (m === 'wysiwyg') {
-						// Measure intrinsic content height from ProseMirror
-						const prose = ui.querySelector('.toastui-editor-ww-container .ProseMirror');
-						if (prose) {
-							try {
-								let minTop = Infinity;
-								let maxBottom = 0;
-								const kids = prose.children ? Array.from(prose.children) : [];
-								for (const child of kids) {
-									try {
-										if (!child || child.nodeType !== 1) continue;
-										const top = (typeof child.offsetTop === 'number') ? child.offsetTop : 0;
-										const h = (typeof child.offsetHeight === 'number') ? child.offsetHeight : 0;
-										let mt = 0, mb = 0;
-										try {
-											const cs = getComputedStyle(child);
-											mt = parseFloat(cs.marginTop || '0') || 0;
-											mb = parseFloat(cs.marginBottom || '0') || 0;
-										} catch { /* ignore */ }
-										minTop = Math.min(minTop, Math.max(0, top - mt));
-										maxBottom = Math.max(maxBottom, Math.max(0, top + h + mb));
-									} catch { /* ignore */ }
-								}
-								let docH = 0;
-								if (Number.isFinite(minTop) && maxBottom > minTop) {
-									docH = Math.max(0, maxBottom - minTop);
-								}
-								try {
-									const cs = getComputedStyle(prose);
-									docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
-								} catch { /* ignore */ }
-								if (docH && Number.isFinite(docH)) {
-									contentH = Math.max(contentH, Math.ceil(docH));
-								}
-							} catch { /* ignore */ }
-						}
-					} else if (m === 'markdown') {
-						// Markdown mode uses CodeMirror
-						const cmSizer = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-sizer');
-						if (cmSizer) {
-							try {
-								const oh = (typeof cmSizer.offsetHeight === 'number') ? cmSizer.offsetHeight : 0;
-								if (oh && Number.isFinite(oh)) contentH = Math.max(contentH, oh);
-							} catch { /* ignore */ }
-						}
-					} else if (m === 'preview') {
-						// Preview mode: measure the viewer content
-						const viewer = document.getElementById(boxId + '_md_viewer');
-						if (viewer) {
-							try {
-								const sh = (typeof viewer.scrollHeight === 'number') ? viewer.scrollHeight : 0;
-								if (sh && Number.isFinite(sh)) contentH = Math.max(contentH, sh);
-							} catch { /* ignore */ }
-						}
+					if (typeof __kustoMaximizeMarkdownBox === 'function') {
+						__kustoMaximizeMarkdownBox(boxId);
 					}
-
-					if (!contentH || contentH <= 0) return;
-
-					// Calculate chrome (wrapper padding, borders)
-					let chrome = 0;
-					try {
-						const csw = getComputedStyle(wrapper);
-						chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
-						chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-					} catch { /* ignore */ }
-
-					// Account for resizer element height
-					let extras = 0;
-					try {
-						if (resizer) {
-							const cs = getComputedStyle(resizer);
-							if (cs && cs.display !== 'none') {
-								extras += resizer.getBoundingClientRect().height || 0;
-								extras += (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
-							}
-						}
-					} catch { /* ignore */ }
-
-					const desired = Math.max(120, Math.ceil(chrome + extras + toolbarH + contentH + FIT_SLACK_PX));
-					wrapper.style.height = desired + 'px';
-					wrapper.style.minHeight = '0';
-					try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-					try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
-					try { api.layout(); } catch { /* ignore */ }
-					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 				} catch { /* ignore */ }
 			});
 		}
@@ -6875,50 +6780,15 @@ function initPythonEditor(boxId) {
 					document.addEventListener('mouseup', onUp, true);
 				});
 
-				// Double-click to fit editor to contents
+				// Double-click to fit editor to contents - delegate to the button's function
+				// which already handles measurement with proper retries for async layout settling.
 				resizer.addEventListener('dblclick', (e) => {
 					try {
 						e.preventDefault();
 						e.stopPropagation();
-
-						const ed = (typeof pythonEditors === 'object' && pythonEditors) ? pythonEditors[boxId] : null;
-						if (!ed || !wrapper) return;
-
-						// Get Monaco editor's content height
-						let contentHeight = 0;
-						try {
-							const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
-							if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
-						} catch { /* ignore */ }
-						if (!contentHeight || contentHeight <= 0) return;
-
-						// Calculate chrome (padding, borders)
-						let chrome = 0;
-						try {
-							const csw = getComputedStyle(wrapper);
-							chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
-							chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-						} catch { /* ignore */ }
-
-						// Account for resizer element height
-						let extras = 0;
-						try {
-							if (resizer) {
-								const cs = getComputedStyle(resizer);
-								if (cs && cs.display !== 'none') {
-									extras += resizer.getBoundingClientRect().height || 0;
-									extras += (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
-								}
-							}
-						} catch { /* ignore */ }
-
-						const FIT_SLACK_PX = 5;
-						const desired = Math.max(120, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX));
-						wrapper.style.height = desired + 'px';
-						wrapper.style.minHeight = '0';
-						try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-						try { ed.layout(); } catch { /* ignore */ }
-						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						if (typeof __kustoMaximizePythonBox === 'function') {
+							__kustoMaximizePythonBox(boxId);
+						}
 					} catch { /* ignore */ }
 				});
 			}
