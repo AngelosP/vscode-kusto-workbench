@@ -10,7 +10,9 @@ let urlBoxes = [];
 let chartBoxes = [];
 let transformationBoxes = [];
 
-let markdownEditors = {};
+// Expose markdownEditors on window so main.js can access it for tool handlers
+window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
+let markdownEditors = window.__kustoMarkdownEditors;
 let markdownViewers = {};
 let pythonEditors = {};
 

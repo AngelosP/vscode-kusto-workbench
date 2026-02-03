@@ -2065,12 +2065,10 @@ window.addEventListener('message', async event => {
 						}
 					} else if (sectionType === 'markdown') {
 						if (typeof addMarkdownBox === 'function') {
-							sectionId = addMarkdownBox();
+							// Pass text as option so it's available when the editor initializes
+							const markdownOptions = input.text ? { text: String(input.text) } : undefined;
+							sectionId = addMarkdownBox(markdownOptions);
 							success = !!sectionId;
-							if (sectionId && input.text) {
-								window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
-								window.__kustoPendingMarkdownTextByBoxId[sectionId] = String(input.text);
-							}
 						}
 					} else if (sectionType === 'chart') {
 						if (typeof addChartBox === 'function') {
@@ -2336,16 +2334,19 @@ window.addEventListener('message', async event => {
 				
 				try {
 					if (input.text !== undefined) {
+						const textToSet = String(input.text);
 						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
-						window.__kustoPendingMarkdownTextByBoxId[sectionId] = String(input.text);
+						window.__kustoPendingMarkdownTextByBoxId[sectionId] = textToSet;
 						
-						// Try to update existing editor
+						// Try to update existing editor (exposed on window from extraBoxes.js)
 						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
 						if (editorInstance && typeof editorInstance.setMarkdown === 'function') {
-							editorInstance.setMarkdown(String(input.text));
+							editorInstance.setMarkdown(textToSet);
 							success = true;
 						} else {
-							success = true; // Will be applied when editor initializes
+							// Editor not initialized yet - text will be applied when editor initializes
+							// from __kustoPendingMarkdownTextByBoxId
+							success = true;
 						}
 					}
 					
