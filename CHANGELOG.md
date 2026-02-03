@@ -5,6 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [1.3.0] - 2026-02-03
 
+* Added ability to rename sections through the custom agent.
 * Added extension tool for custom agent called 'orderSections'.
 * Bugs
     * Fixed the updateMarkdownSection tool to properly display the contents after the changes are made

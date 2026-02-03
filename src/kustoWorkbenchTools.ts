@@ -59,6 +59,8 @@ export interface ReorderSectionsInput {
 
 export interface ConfigureQuerySectionInput {
 	sectionId: string;
+	/** Optional name/title for the section */
+	name?: string;
 	query?: string;
 	clusterUrl?: string;
 	database?: string;
@@ -67,12 +69,16 @@ export interface ConfigureQuerySectionInput {
 
 export interface UpdateMarkdownSectionInput {
 	sectionId: string;
+	/** Optional name/title for the section */
+	name?: string;
 	text?: string;
 	mode?: 'preview' | 'markdown' | 'wysiwyg';
 }
 
 export interface ConfigureChartInput {
 	sectionId: string;
+	/** Optional name/title for the section */
+	name?: string;
 	dataSourceId?: string;
 	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel';
 	xColumn?: string;
@@ -84,6 +90,8 @@ export interface ConfigureChartInput {
 
 export interface ConfigureTransformationInput {
 	sectionId: string;
+	/** Optional name/title for the section */
+	name?: string;
 	dataSourceId?: string;
 	transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot';
 	// For distinct

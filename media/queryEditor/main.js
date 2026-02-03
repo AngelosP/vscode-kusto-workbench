@@ -2032,11 +2032,26 @@ window.addEventListener('message', async event => {
 				let sectionId = '';
 				let success = false;
 				
+				// Helper to set section name
+				const setSectionName = (id, name) => {
+					if (id && name) {
+						const nameInput = document.getElementById(id + '_name');
+						if (nameInput) {
+							nameInput.value = String(name);
+							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+						}
+					}
+				};
+				
 				try {
 					if (sectionType === 'query') {
 						if (typeof addQueryBox === 'function') {
 							sectionId = addQueryBox();
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 							// Set initial values if provided
 							if (sectionId && input.query) {
 								const editor = queryEditors && queryEditors[sectionId];
@@ -2069,26 +2084,46 @@ window.addEventListener('message', async event => {
 							const markdownOptions = input.text ? { text: String(input.text) } : undefined;
 							sectionId = addMarkdownBox(markdownOptions);
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 						}
 					} else if (sectionType === 'chart') {
 						if (typeof addChartBox === 'function') {
 							sectionId = addChartBox();
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 						}
 					} else if (sectionType === 'transformation') {
 						if (typeof addTransformationBox === 'function') {
 							sectionId = addTransformationBox();
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 						}
 					} else if (sectionType === 'url') {
 						if (typeof addUrlBox === 'function') {
 							sectionId = addUrlBox();
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 						}
 					} else if (sectionType === 'python') {
 						if (typeof addPythonBox === 'function') {
 							sectionId = addPythonBox();
 							success = !!sectionId;
+							// Set section name if provided
+							if (sectionId && input.name) {
+								setSectionName(sectionId, input.name);
+							}
 						}
 					}
 				} catch (err) {
@@ -2224,6 +2259,16 @@ window.addEventListener('message', async event => {
 				
 				try {
 					const editor = queryEditors && queryEditors[sectionId];
+					
+					// Update section name if provided
+					if (input.name !== undefined) {
+						const nameInput = document.getElementById(sectionId + '_name');
+						if (nameInput) {
+							nameInput.value = String(input.name);
+							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							success = true;
+						}
+					}
 					
 					// Update query text
 					if (input.query !== undefined && editor && typeof editor.setValue === 'function') {
@@ -2381,6 +2426,16 @@ window.addEventListener('message', async event => {
 				let success = false;
 				
 				try {
+					// Update section name if provided
+					if (input.name !== undefined) {
+						const nameInput = document.getElementById(sectionId + '_name');
+						if (nameInput) {
+							nameInput.value = String(input.name);
+							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							success = true;
+						}
+					}
+					
 					if (input.text !== undefined) {
 						const textToSet = String(input.text);
 						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
@@ -2391,6 +2446,19 @@ window.addEventListener('message', async event => {
 						if (editorInstance && typeof editorInstance.setMarkdown === 'function') {
 							editorInstance.setMarkdown(textToSet);
 							success = true;
+							
+							// Fit to contents after updating - with retries to handle async layout
+							const fitToContents = () => {
+								try {
+									if (typeof __kustoMaximizeMarkdownBox === 'function') {
+										__kustoMaximizeMarkdownBox(sectionId);
+									}
+								} catch { /* ignore */ }
+							};
+							// Apply immediately and with delays to handle async editor layout
+							fitToContents();
+							setTimeout(fitToContents, 100);
+							setTimeout(fitToContents, 300);
 						} else {
 							// Editor not initialized yet - text will be applied when editor initializes
 							// from __kustoPendingMarkdownTextByBoxId
@@ -2423,6 +2491,16 @@ window.addEventListener('message', async event => {
 				let validationStatus = null;
 				
 				try {
+					// Update section name if provided
+					if (input.name !== undefined) {
+						const nameInput = document.getElementById(sectionId + '_name');
+						if (nameInput) {
+							nameInput.value = String(input.name);
+							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							success = true;
+						}
+					}
+					
 					// Apply chart configuration
 					if (typeof window.__kustoConfigureChart === 'function') {
 						window.__kustoConfigureChart(sectionId, input);
@@ -2460,6 +2538,16 @@ window.addEventListener('message', async event => {
 				let success = false;
 				
 				try {
+					// Update section name if provided
+					if (input.name !== undefined) {
+						const nameInput = document.getElementById(sectionId + '_name');
+						if (nameInput) {
+							nameInput.value = String(input.name);
+							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							success = true;
+						}
+					}
+					
 					// Apply transformation configuration
 					if (typeof window.__kustoConfigureTransformation === 'function') {
 						window.__kustoConfigureTransformation(sectionId, input);

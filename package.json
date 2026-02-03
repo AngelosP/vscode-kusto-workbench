@@ -410,6 +410,10 @@
               "type": "string",
               "description": "The ID of the query section to update"
             },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
+            },
             "query": {
               "type": "string",
               "description": "The new KQL query text"
@@ -446,6 +450,10 @@
               "type": "string",
               "description": "The ID of the markdown section to update"
             },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
+            },
             "text": {
               "type": "string",
               "description": "The new markdown text content"
@@ -474,6 +482,10 @@
             "sectionId": {
               "type": "string",
               "description": "The ID of the chart section to configure"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
             },
             "dataSourceId": {
               "type": "string",
@@ -525,6 +537,10 @@
             "sectionId": {
               "type": "string",
               "description": "The ID of the transformation section to configure"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
             },
             "dataSourceId": {
               "type": "string",
