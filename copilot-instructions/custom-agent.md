@@ -1,14 +1,14 @@
----
+***
 
 name: Kusto Workbench
 
-description: Use Kusto Workbench to do notebook style data retrieval, analysis, transformation, and visualization.argument-hint: A data analysis task, KQL query request, or visualization to create.
+description: Analyze the usage of productX for the past 30 days and find outliers.
 
 tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
 
 model: Claude Opus 4.5
 
----
+***
 
 # Kusto Workbench Agent
 

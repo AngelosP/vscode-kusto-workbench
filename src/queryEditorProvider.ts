@@ -2663,6 +2663,17 @@ Completion:`;
 							// ignore
 						}
 
+						// Show VS Code notification to alert user about the clarifying question
+						vscode.window.showInformationMessage(
+							'Kusto Copilot has a clarifying question for you.',
+							'View'
+						).then(selection => {
+							if (selection === 'View') {
+								// Reveal the webview panel
+								this.panel?.reveal(vscode.ViewColumn.One);
+							}
+						});
+
 						// Signal that we're done with this turn and waiting for user input
 						this.postMessage({
 							type: 'copilotWriteQueryDone',

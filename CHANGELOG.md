@@ -3,10 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [1.4.0] - Unreleased
+## [1.4.0] - 2026-02-03
 
+* Notification when a clarifying question has been asked.
+* Default to Claude Opus 4.5 unless the user selects something different (please don't unless you know what you are doing)
 * New command to allow users to reset their sticky model choice inside the Copilot Chat integrated into Kusto sections.
-* We'll default to Claude Opus 4.5 unless the user selects something different (please don't unless you know what you are doing)
 * Bugs
     * Fixed double-clicking to resize the section did not do the right thing, ended up with the wrong height.
     * Fixed a bug that would leave the markdown sections empty until the file was saved / loaded and then the contents would show up.
