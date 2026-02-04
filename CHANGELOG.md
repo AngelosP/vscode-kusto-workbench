@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.5.0] - Unreleased
+
+* Bugs
+    * Removed 1 pixel of unwanted gap between the top of the tabular results and the top border. It made it possible to see the text that was being scrolled, super annoying.
+
 ## [1.4.1] - 2026-02-03
 
 * Bugs
