@@ -1,4 +1,4 @@
-***
+---
 
 name: Kusto Workbench
 
@@ -8,7 +8,7 @@ tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', '
 
 model: Claude Opus 4.5
 
-***
+---
 
 # Kusto Workbench Agent
 

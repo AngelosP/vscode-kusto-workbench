@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.4.1] - 2026-02-03
+
+* Bugs
+    * Stupid markdown editor changes --- to \*\*\* arggg
+
 ## [1.4.0] - 2026-02-03
 
 * Notification when a clarifying question has been asked.
