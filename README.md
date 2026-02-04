@@ -37,6 +37,12 @@ Don't manually add every single Kusto cluster and database you work with. If you
 Save frequently used connections to favorites, with a friendly name so you can remind yourself what the connection is used for.
 ![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
 
+### VS Code custom agent that actually works
+
+Just let the custom VS Code agent 'Kusto Workbench' do all your work. It's crazy how good this thing is. If you are having problems, make sure you have a really good model like Opus 4.5 selected. If it still doesn't work, report the issue and I'll fix it for you. I use this every day, if it doesn't work for you, just tell me!
+
+![VS Code custom agent that actually works called Kusto Workbench](marketplace-media/vscode-custom-agent.png)
+
 ### Modern Kusto editor using the official bits from Microsoft
 
 Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
