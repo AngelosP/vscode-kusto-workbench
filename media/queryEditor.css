@@ -7186,6 +7186,48 @@
 			margin-bottom: 14px;
 		}
 
+		/* Column differences section */
+		.diff-column-diff-section {
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			padding: 12px;
+		}
+
+		.diff-section-header {
+			font-weight: 600;
+			font-size: 13px;
+			margin-bottom: 8px;
+			color: var(--vscode-foreground);
+		}
+
+		.diff-column-list {
+			margin: 6px 0;
+			font-size: 12px;
+			line-height: 1.6;
+		}
+
+		.diff-column-list-label {
+			color: var(--vscode-descriptionForeground);
+			margin-right: 6px;
+		}
+
+		.diff-column-only-a .diff-column-list-label {
+			color: var(--vscode-charts-red, #f48771);
+		}
+
+		.diff-column-only-b .diff-column-list-label {
+			color: var(--vscode-charts-yellow, #cca700);
+		}
+
+		.diff-column-name {
+			background: var(--vscode-textCodeBlock-background);
+			padding: 2px 6px;
+			border-radius: 3px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 11px;
+		}
+
 		/* Section headers removed by design. */
 
 		.diff-results-host {

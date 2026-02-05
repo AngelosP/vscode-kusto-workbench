@@ -1355,6 +1355,33 @@ function __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState) {
 	}
 }
 
+function __kustoGetColumnDifferences(sourceState, comparisonState) {
+	// Returns { onlyInA: string[], onlyInB: string[] } with original (non-normalized) column names.
+	try {
+		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
+		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
+		const aNorm = aCols.map(__kustoNormalizeColumnNameForComparison);
+		const bNorm = bCols.map(__kustoNormalizeColumnNameForComparison);
+		const aSet = new Set(aNorm);
+		const bSet = new Set(bNorm);
+		const onlyInA = [];
+		const onlyInB = [];
+		for (let i = 0; i < aCols.length; i++) {
+			if (!bSet.has(aNorm[i])) {
+				onlyInA.push(String(aCols[i]));
+			}
+		}
+		for (let i = 0; i < bCols.length; i++) {
+			if (!aSet.has(bNorm[i])) {
+				onlyInB.push(String(bCols[i]));
+			}
+		}
+		return { onlyInA, onlyInB };
+	} catch {
+		return { onlyInA: [], onlyInB: [] };
+	}
+}
+
 function __kustoDoColumnOrderMatch(sourceState, comparisonState) {
 	try {
 		const a = __kustoGetNormalizedColumnNameList(sourceState);
@@ -1362,6 +1389,30 @@ function __kustoDoColumnOrderMatch(sourceState, comparisonState) {
 		if (a.length !== b.length) return false;
 		for (let i = 0; i < a.length; i++) {
 			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoDoRowOrderMatch(sourceState, comparisonState) {
+	try {
+		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
+		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
+		if (aRows.length !== bRows.length) return false;
+		// Build column mapping by name for consistent comparison.
+		const columnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState);
+		if (!columnHeaderNamesMatch) return false;
+		const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
+		const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
+		const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
+		const rowKeyForA = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
+		const rowKeyForB = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
+		for (let i = 0; i < aRows.length; i++) {
+			if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
+				return false;
+			}
 		}
 		return true;
 	} catch {
@@ -3152,28 +3203,44 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 		perfMessage = `<span style="color: #cccccc;">${sourceExecTime} \u2192 ${comparisonExecTime}</span>`;
 	}
 	
-	// Check data consistency
-	const details = __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState);
-	const dataMatches = !!(details && details.dataMatches);
-	const rowOrderMatches = !!(details && details.rowOrderMatches);
-	const columnOrderMatches = !!(details && details.columnOrderMatches);
-	const columnHeaderNamesMatch = !!(details && details.columnHeaderNamesMatch);
-	const warningNeeded = dataMatches && !(rowOrderMatches && columnOrderMatches && columnHeaderNamesMatch);
-	const diffReason = (details && typeof details.reason === 'string' && details.reason) ? details.reason : '';
-	const diffReasonParts = [];
+	// Check data consistency.
+	// Data matches if:
+	// 1. Same columns (names match, order doesn't matter)
+	// 2. Same rows (no unmatched rows in either dataset, order doesn't matter)
+	const columnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState);
+	
+	let rowsMatch = false;
+	let commonCount = 0;
+	let onlyACount = 0;
+	let onlyBCount = 0;
+	let countsLabel = '';
 	try {
-		if (diffReason) diffReasonParts.push('Reason: ' + diffReason);
-		if (details && typeof details.columnCountA === 'number' && typeof details.columnCountB === 'number') {
-			diffReasonParts.push('Columns: ' + String(details.columnCountA) + ' vs ' + String(details.columnCountB));
-		}
-		if (details && typeof details.rowCountA === 'number' && typeof details.rowCountB === 'number') {
-			diffReasonParts.push('Rows: ' + String(details.rowCountA) + ' vs ' + String(details.rowCountB));
-		}
-		if (details && typeof details.firstMismatchedRowKey === 'string' && details.firstMismatchedRowKey) {
-			diffReasonParts.push('Key: ' + details.firstMismatchedRowKey);
+		const dv = (window && window.__kustoDiffView) ? window.__kustoDiffView : null;
+		if (dv && typeof dv.buildModelFromResultsStates === 'function') {
+			const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
+			const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
+			commonCount = Array.isArray(p && p.common) ? p.common.length : 0;
+			onlyACount = Array.isArray(p && p.onlyA) ? p.onlyA.length : 0;
+			onlyBCount = Array.isArray(p && p.onlyB) ? p.onlyB.length : 0;
+			countsLabel =
+				' (' +
+				String(commonCount) + ' matching ' + pluralRows(commonCount) +
+				', ' +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
+				', ' +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
+				')';
+			rowsMatch = (onlyACount === 0 && onlyBCount === 0);
 		}
 	} catch { /* ignore */ }
-	const diffTitle = diffReasonParts.length ? ('View diff\n' + diffReasonParts.join('\n')) : 'View diff';
+
+	// Data matches only if both columns AND rows match.
+	const dataMatches = columnHeaderNamesMatch && rowsMatch;
+
+	// Additional metadata for warnings (order differences don't affect data matching).
+	const rowOrderMatches = __kustoDoRowOrderMatch(sourceState, comparisonState);
+	const columnOrderMatches = __kustoDoColumnOrderMatch(sourceState, comparisonState);
+	const warningNeeded = dataMatches && !(rowOrderMatches && columnOrderMatches);
 
 	const yesNo = (v) => (v ? 'yes' : 'no');
 	const warningTitle =
@@ -3189,25 +3256,54 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 				? '<span class="comparison-warning-icon" title="' + warningTitle.replace(/"/g, '&quot;') + '">\u26a0</span>'
 				: '');
 	} else {
-		let countsLabel = '';
-		try {
-			const dv = (window && window.__kustoDiffView) ? window.__kustoDiffView : null;
-			if (dv && typeof dv.buildModelFromResultsStates === 'function') {
-				const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
-				const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
-				const commonCount = Array.isArray(p && p.common) ? p.common.length : 0;
-				const onlyACount = Array.isArray(p && p.onlyA) ? p.onlyA.length : 0;
-				const onlyBCount = Array.isArray(p && p.onlyB) ? p.onlyB.length : 0;
-				countsLabel =
-					' (' +
-					String(commonCount) + ' matching ' + pluralRows(commonCount) +
-					', ' +
-					String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
-					', ' +
-					String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
-					')';
+		// Determine if the difference is in columns, rows, or both.
+		const columnDiff = __kustoGetColumnDifferences(sourceState, comparisonState);
+		const hasColumnDiff = columnDiff.onlyInA.length > 0 || columnDiff.onlyInB.length > 0;
+		const hasRowDiff = onlyACount > 0 || onlyBCount > 0;
+
+		let diffLabel = '';
+		let diffTitle = 'View diff';
+		if (hasColumnDiff && !hasRowDiff) {
+			// Only column differences
+			const parts = [];
+			if (columnDiff.onlyInA.length > 0) {
+				parts.push(String(columnDiff.onlyInA.length) + ' missing ' + (columnDiff.onlyInA.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
 			}
-		} catch { /* ignore */ }
+			if (columnDiff.onlyInB.length > 0) {
+				parts.push(String(columnDiff.onlyInB.length) + ' extra ' + (columnDiff.onlyInB.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
+			}
+			diffLabel = ' (' + parts.join(', ') + ')';
+			const titleParts = ['View diff'];
+			if (columnDiff.onlyInA.length > 0) {
+				titleParts.push('Missing in ' + comparisonLabel + ': ' + columnDiff.onlyInA.join(', '));
+			}
+			if (columnDiff.onlyInB.length > 0) {
+				titleParts.push('Extra in ' + comparisonLabel + ': ' + columnDiff.onlyInB.join(', '));
+			}
+			diffTitle = titleParts.join('\n');
+		} else if (hasRowDiff && !hasColumnDiff) {
+			// Only row differences
+			diffLabel = ' (' +
+				String(commonCount) + ' matching ' + pluralRows(commonCount) +
+				', ' +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
+				', ' +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
+				')';
+			diffTitle = 'View diff\nUnmatched rows: ' + String(onlyACount) + ' in ' + sourceLabel + ', ' + String(onlyBCount) + ' in ' + comparisonLabel;
+		} else if (hasColumnDiff && hasRowDiff) {
+			// Both column and row differences
+			const colParts = [];
+			if (columnDiff.onlyInA.length > 0) {
+				colParts.push(String(columnDiff.onlyInA.length) + ' missing');
+			}
+			if (columnDiff.onlyInB.length > 0) {
+				colParts.push(String(columnDiff.onlyInB.length) + ' extra');
+			}
+			diffLabel = ' (' + colParts.join('/') + ' columns, ' +
+				String(onlyACount + onlyBCount) + ' unmatched ' + pluralRows(onlyACount + onlyBCount) + ')';
+			diffTitle = 'View diff\nColumn differences and row differences detected.';
+		}
 
 		// Use JSON.stringify to produce a valid JS string literal (double-quoted) so the
 		// inline onclick handler never breaks due to escaping.
@@ -3217,7 +3313,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			'<span class="comparison-data-diff-icon" aria-hidden="true">\u26a0</span> ' +
 			'<a href="#" class="comparison-data-diff comparison-diff-link" ' +
 			"onclick='try{openDiffViewModal({ aBoxId: " + aBoxIdLit + ", bBoxId: " + bBoxIdLit + " })}catch{}; return false;' " +
-			'title="' + diffTitle.replace(/"/g, '&quot;') + '">Data differs' + countsLabel + '</a>';
+			'title="' + diffTitle.replace(/"/g, '&quot;') + '">Data differs' + diffLabel + '</a>';
 	}
 	
 	// Create or update comparison summary banner

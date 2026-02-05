@@ -550,11 +550,32 @@
 	const buildDiffModelFromStates = (aState, bState, labels) => {
 		const { columns } = buildCanonicalColumnsSorted(aState, bState);
 		const partitions = buildPartitionedRows(aState, bState, columns);
+		
+		// Compute column differences by comparing the raw column name sets.
+		const aCols = getColumns(aState);
+		const bCols = getColumns(bState);
+		const normalizeName = (n) => {
+			try {
+				if (typeof window.__kustoNormalizeColumnNameForComparison === 'function') {
+					return window.__kustoNormalizeColumnNameForComparison(n);
+				}
+			} catch { /* ignore */ }
+			return safeString(n).trim().toLowerCase();
+		};
+		const aSet = new Set(aCols.map(normalizeName));
+		const bSet = new Set(bCols.map(normalizeName));
+		const columnsOnlyInA = aCols.filter(c => !bSet.has(normalizeName(c)));
+		const columnsOnlyInB = bCols.filter(c => !aSet.has(normalizeName(c)));
+		
 		return {
 			aLabel: (labels && labels.aLabel) ? String(labels.aLabel) : 'A',
 			bLabel: (labels && labels.bLabel) ? String(labels.bLabel) : 'B',
 			columns,
 			partitions,
+			columnDiff: {
+				onlyInA: columnsOnlyInA,
+				onlyInB: columnsOnlyInB
+			},
 			_aState: aState,
 			_bState: bState
 		};
@@ -572,6 +593,12 @@
 		const common = Array.isArray(partitions.common) ? partitions.common : [];
 		const onlyA = Array.isArray(partitions.onlyA) ? partitions.onlyA : [];
 		const onlyB = Array.isArray(partitions.onlyB) ? partitions.onlyB : [];
+		
+		// Column differences
+		const columnDiff = (m.columnDiff && typeof m.columnDiff === 'object') ? m.columnDiff : { onlyInA: [], onlyInB: [] };
+		const colsOnlyInA = Array.isArray(columnDiff.onlyInA) ? columnDiff.onlyInA : [];
+		const colsOnlyInB = Array.isArray(columnDiff.onlyInB) ? columnDiff.onlyInB : [];
+		const hasColumnDiff = colsOnlyInA.length > 0 || colsOnlyInB.length > 0;
 
 		const renderSection = (hostId) => {
 			return (
@@ -580,6 +607,27 @@
 				'</section>'
 			);
 		};
+		
+		// Build column diff section HTML if there are differences
+		let columnDiffSectionHtml = '';
+		if (hasColumnDiff) {
+			let columnDiffContent = '<div class="diff-column-diff-section">';
+			columnDiffContent += '<div class="diff-section-header">Column Differences</div>';
+			if (colsOnlyInA.length > 0) {
+				columnDiffContent += '<div class="diff-column-list diff-column-only-a">';
+				columnDiffContent += '<span class="diff-column-list-label">Missing in ' + escapeHtml(m.bLabel || 'B') + ':</span> ';
+				columnDiffContent += colsOnlyInA.map(c => '<code class="diff-column-name">' + escapeHtml(c) + '</code>').join(', ');
+				columnDiffContent += '</div>';
+			}
+			if (colsOnlyInB.length > 0) {
+				columnDiffContent += '<div class="diff-column-list diff-column-only-b">';
+				columnDiffContent += '<span class="diff-column-list-label">Extra in ' + escapeHtml(m.bLabel || 'B') + ':</span> ';
+				columnDiffContent += colsOnlyInB.map(c => '<code class="diff-column-name">' + escapeHtml(c) + '</code>').join(', ');
+				columnDiffContent += '</div>';
+			}
+			columnDiffContent += '</div>';
+			columnDiffSectionHtml = '<section class="diff-section">' + columnDiffContent + '</section>';
+		}
 
 		const joinSelectOptionsHtml = columns.map((c) => {
 			const key = c ? String(c.key) : '';
@@ -601,6 +649,7 @@
 
 		containerEl.innerHTML = (
 			'<div class="diff-view">' +
+			columnDiffSectionHtml +
 			renderSection(diffKeyPrefix + '_common_host') +
 			renderSection(diffKeyPrefix + '_onlyA_host') +
 			renderSection(diffKeyPrefix + '_onlyB_host') +
