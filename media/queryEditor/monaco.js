@@ -10672,8 +10672,16 @@ function initQueryEditor(boxId) {
 					} catch { /* ignore */ }
 					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
+					// Use a larger min-height when the Copilot chat is visible.
+					let minHeightPx = 120;
+					try {
+						const split = w.querySelector('.kusto-copilot-split');
+						if (split && !split.classList.contains('kusto-copilot-chat-hidden')) {
+							minHeightPx = 180;
+						}
+					} catch { /* ignore */ }
 					// Manual resizing should not have a max height cap.
-					const nextHeight = Math.max(120, startHeight + delta);
+					const nextHeight = Math.max(minHeightPx, startHeight + delta);
 					w.style.height = nextHeight + 'px';
 					try {
 						if (window.__kustoManualQueryEditorHeightPxByBoxId && typeof window.__kustoManualQueryEditorHeightPxByBoxId === 'object') {

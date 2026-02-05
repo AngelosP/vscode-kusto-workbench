@@ -944,6 +944,28 @@
 			}
 		} catch { /* ignore */ }
 
+		// When showing the chat, ensure the wrapper meets the min-height requirement.
+		if (next) {
+			try {
+				const wrapper = document.getElementById(id + '_query_editor');
+				const editorWrapper = wrapper && wrapper.closest ? wrapper.closest('.query-editor-wrapper') : null;
+				if (editorWrapper) {
+					const currentHeight = editorWrapper.getBoundingClientRect().height;
+					const minHeight = 180;
+					if (currentHeight < minHeight) {
+						editorWrapper.style.height = minHeight + 'px';
+						// Update the manual height tracker so persistence is correct.
+						try {
+							if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+								window.__kustoManualQueryEditorHeightPxByBoxId = {};
+							}
+							window.__kustoManualQueryEditorHeightPxByBoxId[id] = minHeight;
+						} catch { /* ignore */ }
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
 		__kustoSetCopilotToggleButtonState(id, next);
 
 		try {
