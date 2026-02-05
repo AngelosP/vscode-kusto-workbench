@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [1.5.0] - Unreleased
+## [1.5.0] - 2026-02-05
 
 * Improved the data labels in pie charts
 * Improved data comparison UX to list the columns that are extra
