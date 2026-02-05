@@ -632,7 +632,7 @@
 			flex: 0 0 360px;
 			width: 360px;
 			min-width: 240px;
-			min-height: 0;
+			min-height: 180px;
 			display: flex;
 			flex-direction: column;
 			align-items: stretch;
@@ -2338,6 +2338,12 @@
 			flex: 1 1 auto;
 			width: 100%;
 			min-width: 0;
+		}
+
+		/* When the Copilot chat is visible, enforce its min-height on the wrapper
+		   so the vertical resize handle cannot squeeze it below the chat's min-height. */
+		.query-editor-wrapper:has(.kusto-copilot-split:not(.kusto-copilot-chat-hidden)) {
+			min-height: 180px;
 		}
 
 		.kusto-copilot-chat-model select {
