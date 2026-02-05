@@ -730,6 +730,8 @@ function getKqlxState() {
 			let labelColumn = '';
 			let valueColumn = '';
 			let showDataLabels = false;
+			let labelMode = 'auto';
+			let labelDensity = 50;
 			let sortColumn = '';
 			let sortDirection = '';
 			let xAxisSettings = null;
@@ -752,6 +754,8 @@ function getKqlxState() {
 				labelColumn = (st && typeof st.labelColumn === 'string') ? String(st.labelColumn) : '';
 				valueColumn = (st && typeof st.valueColumn === 'string') ? String(st.valueColumn) : '';
 				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
+				labelMode = (st && typeof st.labelMode === 'string') ? String(st.labelMode) : 'auto';
+				labelDensity = (st && typeof st.labelDensity === 'number') ? st.labelDensity : 50;
 				sortColumn = (st && typeof st.sortColumn === 'string') ? String(st.sortColumn) : '';
 				sortDirection = (st && typeof st.sortDirection === 'string') ? String(st.sortDirection) : '';
 				// X-axis settings - copy directly from state like other chart properties
@@ -789,6 +793,8 @@ function getKqlxState() {
 				...(labelColumn ? { labelColumn } : {}),
 				...(valueColumn ? { valueColumn } : {}),
 				...(showDataLabels ? { showDataLabels } : {}),
+				...(labelMode && labelMode !== 'auto' ? { labelMode } : {}),
+				...(typeof labelDensity === 'number' && labelDensity !== 50 ? { labelDensity } : {}),
 				...(sortColumn ? { sortColumn } : {}),
 				...(sortDirection ? { sortDirection } : {}),
 				...(xAxisSettings && Object.keys(xAxisSettings).length ? { xAxisSettings } : {}),

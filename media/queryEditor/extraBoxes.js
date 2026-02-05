@@ -638,6 +638,185 @@ function __kustoCloseAllAxisSettingsPopups() {
 }
 
 /**
+ * Toggle the label settings popup visibility for pie/funnel charts.
+ */
+function __kustoToggleLabelSettingsPopup(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	
+	try {
+		const popup = document.getElementById(id + '_chart_label_settings_popup');
+		if (!popup) return;
+		
+		const isOpen = popup.classList.contains('is-open');
+		
+		// Close all other popups first
+		try { __kustoCloseAllAxisSettingsPopups(); } catch { /* ignore */ }
+		
+		if (isOpen) {
+			// Was open, now closed (by closeAll above)
+			return;
+		}
+		
+		// Position the popup using fixed positioning relative to the "Labels" text
+		const toggle = document.getElementById(id + '_chart_labels_pie_toggle');
+		const labelText = toggle ? toggle.querySelector('.kusto-chart-labels-toggle-text') : null;
+		if (labelText) {
+			const labelRect = labelText.getBoundingClientRect();
+			// Position below the label with a small gap
+			const arrowTipOffset = 17; // 12px + 5px for arrow center
+			const textCenter = labelRect.left + (labelRect.width / 2);
+			popup.style.top = (labelRect.bottom + 8) + 'px';
+			popup.style.left = (textCenter - arrowTipOffset) + 'px';
+		}
+		
+		// Open this popup
+		popup.classList.add('is-open');
+		
+		// Sync UI with current state
+		__kustoSyncLabelSettingsUI(id);
+		
+		// Adjust if popup goes off-screen
+		setTimeout(() => {
+			try {
+				const popupRect = popup.getBoundingClientRect();
+				const viewportWidth = window.innerWidth;
+				const viewportHeight = window.innerHeight;
+				
+				// Adjust horizontal position if off-screen to the right
+				if (popupRect.right > viewportWidth - 8) {
+					popup.style.left = Math.max(8, viewportWidth - popupRect.width - 8) + 'px';
+				}
+				
+				// Adjust vertical position if off-screen at the bottom
+				if (popupRect.bottom > viewportHeight - 8) {
+					const toggle = document.getElementById(id + '_chart_labels_pie_toggle');
+					const labelText = toggle ? toggle.querySelector('.kusto-chart-labels-toggle-text') : null;
+					if (labelText) {
+						const labelRect = labelText.getBoundingClientRect();
+						const newTop = labelRect.top - popupRect.height - 8;
+						if (newTop > 8) {
+							popup.style.top = newTop + 'px';
+							popup.classList.add('is-above');
+						}
+					}
+				}
+			} catch { /* ignore */ }
+		}, 0);
+		
+		// Add click-outside listener
+		setTimeout(() => {
+			const closeOnClickOutside = (e) => {
+				try {
+					// Check if click is inside the popup
+					if (popup.contains(e.target)) return;
+					// Check if click is on the label text that toggles the popup
+					const toggle = document.getElementById(id + '_chart_labels_pie_toggle');
+					const labelText = toggle ? toggle.querySelector('.kusto-chart-labels-toggle-text') : null;
+					if (labelText && labelText.contains(e.target)) return;
+					// Check if click is inside a dropdown menu
+					if (e.target.closest && (e.target.closest('.kusto-dropdown-menu') || e.target.closest('.kusto-dropdown-item'))) return;
+					popup.classList.remove('is-open');
+					popup.classList.remove('is-above');
+					document.removeEventListener('click', closeOnClickOutside);
+				} catch { /* ignore */ }
+			};
+			document.addEventListener('click', closeOnClickOutside);
+		}, 0);
+	} catch { /* ignore */ }
+}
+
+/**
+ * Close the label settings popup.
+ */
+function __kustoCloseLabelSettingsPopup(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	
+	try {
+		const popup = document.getElementById(id + '_chart_label_settings_popup');
+		if (popup) {
+			popup.classList.remove('is-open');
+			popup.classList.remove('is-above');
+		}
+	} catch { /* ignore */ }
+}
+
+/**
+ * Sync the label settings popup UI with current state.
+ */
+function __kustoSyncLabelSettingsUI(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	
+	try {
+		const st = __kustoGetChartState(id);
+		const mode = st.labelMode || 'auto';
+		const density = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
+		
+		// Sync mode dropdown
+		const modeEl = document.getElementById(id + '_chart_label_mode');
+		if (modeEl) {
+			modeEl.value = mode;
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+		}
+		
+		// Sync density slider
+		const densityEl = document.getElementById(id + '_chart_label_density');
+		const densityValueEl = document.getElementById(id + '_chart_label_density_value');
+		if (densityEl) {
+			densityEl.value = density;
+		}
+		if (densityValueEl) {
+			densityValueEl.textContent = density + '%';
+		}
+		
+		// Show/hide density slider based on mode
+		const densityRow = document.getElementById(id + '_chart_label_density_row');
+		if (densityRow) {
+			densityRow.style.display = (mode === 'auto') ? '' : 'none';
+		}
+		
+		// Update indicator
+		__kustoUpdateLabelSettingsIndicator(id);
+	} catch { /* ignore */ }
+}
+
+/**
+ * Check if label settings have been customized from defaults.
+ */
+function __kustoHasCustomLabelSettings(st) {
+	if (!st) return false;
+	const mode = st.labelMode || 'auto';
+	const density = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
+	// Has custom if mode is not 'auto' OR if density differs from default (50)
+	return mode !== 'auto' || density !== 50;
+}
+
+/**
+ * Update the visual indicator on the Labels text showing if it has custom settings.
+ */
+function __kustoUpdateLabelSettingsIndicator(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	
+	try {
+		const toggle = document.getElementById(id + '_chart_labels_pie_toggle');
+		const labelText = toggle ? toggle.querySelector('.kusto-chart-labels-toggle-text') : null;
+		if (!labelText) return;
+		
+		const st = __kustoGetChartState(id);
+		const hasCustom = __kustoHasCustomLabelSettings(st);
+		
+		if (hasCustom) {
+			labelText.classList.add('has-settings');
+		} else {
+			labelText.classList.remove('has-settings');
+		}
+	} catch { /* ignore */ }
+}
+
+/**
  * Sync the axis settings popup UI with current state.
  */
 function __kustoSyncAxisSettingsUI(boxId, axis) {
@@ -1522,6 +1701,22 @@ function __kustoUpdateChartBuilderUI(boxId) {
 		}
 	} catch { /* ignore */ }
 
+	// Update pie/funnel label mode dropdown
+	try {
+		const labelModeSelect = document.getElementById(id + '_chart_label_mode');
+		const labelModeText = document.getElementById(id + '_chart_label_mode_text');
+		if (labelModeSelect) {
+			const mode = st.labelMode || 'auto';
+			labelModeSelect.value = mode;
+			if (labelModeText) {
+				const opt = labelModeSelect.options[labelModeSelect.selectedIndex];
+				labelModeText.textContent = opt ? opt.text : 'Auto (smart)';
+			}
+			// Also sync dropdown if it exists
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+		}
+	} catch { /* ignore */ }
+
 	let ds = null;
 	try {
 		const desired = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
@@ -2203,7 +2398,225 @@ function __kustoRenderChart(boxId) {
 					const tooltipPayload = __kustoGetTooltipPayloadForRow(r);
 					return { name: label, value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0, __kustoTooltip: tooltipPayload };
 				});
-				const showLabels = !!st.showDataLabels;
+				
+				// ========== SMART PIE CHART LABEL CONFIGURATION ==========
+				// Custom labeling system with user-controllable density modes
+				// Toggle controls on/off, labelMode controls which slices get labels
+				
+				const labelMode = st.labelMode || 'auto';
+				const labelDensity = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
+				const showLabels = !!st.showDataLabels; // Controlled by toggle
+				const sliceCount = data.length;
+				const totalValue = data.reduce((sum, d) => sum + (d.value || 0), 0);
+				
+				// Calculate percentages for each slice and their cumulative angles
+				const slicesWithPercent = data.map((d, i) => ({
+					index: i,
+					percent: totalValue > 0 ? (d.value / totalValue) * 100 : 0,
+					value: d.value,
+					name: d.name
+				}));
+				
+				// Determine which slices should show labels based on mode
+				const sortedByPercent = [...slicesWithPercent].sort((a, b) => b.percent - a.percent);
+				const labelEligibleIndices = new Set();
+				
+				if (labelMode === 'all') {
+					// Show all labels (let overlap handling deal with it)
+					slicesWithPercent.forEach(s => labelEligibleIndices.add(s.index));
+				} else if (labelMode === 'top5') {
+					sortedByPercent.slice(0, 5).forEach(s => labelEligibleIndices.add(s.index));
+				} else if (labelMode === 'top10') {
+					sortedByPercent.slice(0, 10).forEach(s => labelEligibleIndices.add(s.index));
+				} else if (labelMode === 'topPercent') {
+					slicesWithPercent.filter(s => s.percent >= 5).forEach(s => labelEligibleIndices.add(s.index));
+				} else {
+					// 'auto' mode - adaptive thresholds based on slice count AND density slider
+					// Density 0 = very sparse (high min%), Density 100 = show most (low min%)
+					// Base thresholds adjusted by density
+					let baseMinPercent = 0;
+					if (sliceCount <= 4) {
+						baseMinPercent = 0;
+					} else if (sliceCount <= 8) {
+						baseMinPercent = 1;
+					} else if (sliceCount <= 15) {
+						baseMinPercent = 2;
+					} else if (sliceCount <= 30) {
+						baseMinPercent = 4;
+					} else {
+						baseMinPercent = 6;
+					}
+					
+					// Density adjusts the threshold: 
+					// density=100 -> minPercent = 0 (show all)
+					// density=50 -> minPercent = baseMinPercent
+					// density=0 -> minPercent = baseMinPercent * 2 (very sparse)
+					const densityFactor = (100 - labelDensity) / 50; // 0 at density=100, 1 at density=50, 2 at density=0
+					const minPercent = baseMinPercent * densityFactor;
+					
+					slicesWithPercent.filter(s => s.percent >= minPercent).forEach(s => labelEligibleIndices.add(s.index));
+				}
+				
+				// Apply label visibility directly to data items
+				// This ensures labelLine is also hidden for non-eligible slices
+				data.forEach((d, idx) => {
+					if (!labelEligibleIndices.has(idx)) {
+						d.label = { show: false };
+						d.labelLine = { show: false };
+					}
+				});
+				
+				// Pie sizing - smaller when more slices to give labels more room
+				let pieRadius = '48%';
+				let fontSize = 11;
+				if (sliceCount > 20) {
+					pieRadius = '38%';
+					fontSize = 10;
+				} else if (sliceCount > 10) {
+					pieRadius = '42%';
+					fontSize = 10;
+				} else if (sliceCount > 6) {
+					pieRadius = '45%';
+				}
+				
+				// Helper to truncate label name with ellipsis
+				const maxLabelLength = sliceCount > 15 ? 18 : (sliceCount > 8 ? 25 : 35);
+				const truncateName = (name, maxLen) => {
+					if (!name || name.length <= maxLen) return name;
+					return name.substring(0, maxLen - 1) + '…';
+				};
+				
+				// Build label configuration
+				const labelConfig = {
+					show: showLabels,
+					position: 'outside',
+					fontFamily: 'monospace',
+					fontSize: fontSize,
+					formatter: (params) => {
+						try {
+							const percent = params && typeof params.percent === 'number' ? params.percent : 0;
+							const name = params && params.name ? String(params.name) : '';
+							const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
+							const pctStr = percent.toFixed(1) + '%';
+							
+							const displayName = truncateName(name, maxLabelLength);
+							
+							// For significant slices (>=5%), show full info
+							if (percent >= 5) {
+								return displayName + '\n' + value + ' (' + pctStr + ')';
+							}
+							// For smaller slices, single line
+							return displayName + ' (' + pctStr + ')';
+						} catch {
+							return '';
+						}
+					}
+				};
+				
+				// Label line configuration
+				const labelLineConfig = {
+					show: showLabels,
+					length: 15,
+					length2: 20,
+					smooth: 0.2,
+					minTurnAngle: 90
+				};
+				
+				// ========== CLOCKWISE OVERLAP-AVOIDING LABEL LAYOUT ==========
+				// Places labels clockwise around the pie, adjusting positions to avoid overlap.
+				// Non-eligible labels are already hidden via data item's label.show = false.
+				
+				const placedLabels = []; // Array of {x, y, width, height, dataIndex, isRightSide}
+				const LABEL_PADDING = 4; // Minimum gap between labels
+				const SHIFT_STEP = 2; // Pixels to shift each iteration
+				const MAX_VERTICAL_SHIFT = 80; // Maximum vertical adjustment
+				
+				const labelLayoutFn = (params) => {
+					try {
+						const idx = params.dataIndex;
+						
+						const rect = params.labelRect;
+						if (!rect || rect.width === 0) {
+							return {};
+						}
+						
+						const width = rect.width;
+						const height = rect.height;
+						
+						// Determine which side of the pie this label is on
+						const labelLinePoints = params.labelLinePoints;
+						const pieCenter = labelLinePoints?.[0] || [0, 0];
+						const labelEnd = labelLinePoints?.[2] || [rect.x, rect.y];
+						const isRightSide = labelEnd[0] > pieCenter[0];
+						
+						// Start at the natural position ECharts calculated
+						let x = rect.x;
+						let y = rect.y;
+						
+						// Check for overlap with already placed labels
+						const checkOverlap = (testX, testY) => {
+							for (const placed of placedLabels) {
+								// AABB collision detection with padding
+								const overlapX = testX < placed.x + placed.width + LABEL_PADDING && 
+								                 testX + width + LABEL_PADDING > placed.x;
+								const overlapY = testY < placed.y + placed.height + LABEL_PADDING && 
+								                 testY + height + LABEL_PADDING > placed.y;
+								if (overlapX && overlapY) {
+									return placed;
+								}
+							}
+							return null;
+						};
+						
+						// Find the closest non-overlapping position by shifting vertically
+						let overlappingLabel = checkOverlap(x, y);
+						let totalShift = 0;
+						
+						if (overlappingLabel) {
+							// Try to find a clear position by shifting up or down
+							// Prefer direction away from the overlapping label's center
+							const overlapCenterY = overlappingLabel.y + overlappingLabel.height / 2;
+							const myPreferredDirection = y < overlapCenterY ? -1 : 1; // -1 = up, 1 = down
+							
+							let bestY = y;
+							let foundClear = false;
+							
+							// First try preferred direction
+							for (let shift = SHIFT_STEP; shift <= MAX_VERTICAL_SHIFT; shift += SHIFT_STEP) {
+								const testY = y + (shift * myPreferredDirection);
+								if (!checkOverlap(x, testY)) {
+									bestY = testY;
+									foundClear = true;
+									break;
+								}
+							}
+							
+							// If preferred direction didn't work, try opposite
+							if (!foundClear) {
+								for (let shift = SHIFT_STEP; shift <= MAX_VERTICAL_SHIFT; shift += SHIFT_STEP) {
+									const testY = y + (shift * -myPreferredDirection);
+									if (!checkOverlap(x, testY)) {
+										bestY = testY;
+										foundClear = true;
+										break;
+									}
+								}
+							}
+							
+							// Use best position found - if still overlapping, accept it
+							// User can adjust density slider to reduce overlaps
+							y = bestY;
+						}
+						
+						// Record this label's final position
+						placedLabels.push({ x, y, width, height, dataIndex: idx, isRightSide });
+						
+						return { x, y };
+					} catch {
+						return {};
+					}
+				};
+				
 				option = {
 					backgroundColor: 'transparent',
 					tooltip: {
@@ -2226,32 +2639,13 @@ function __kustoRenderChart(boxId) {
 					legend: __kustoBuildLegendOption(legendPosition),
 					series: [{
 						type: 'pie',
-						radius: '60%',
+						radius: pieRadius,
+						center: ['50%', '50%'],
+						avoidLabelOverlap: true,
 						data,
-						label: {
-							show: showLabels,
-							fontFamily: 'monospace',
-							fontSize: 11,
-							formatter: (params) => {
-								try {
-									// For pie charts, show labels only for slices >= 3% to reduce clutter
-									const percent = params && typeof params.percent === 'number' ? params.percent : 0;
-									if (percent < 3) return '';
-									const name = params && params.name ? String(params.name) : '';
-									const value = params && typeof params.value === 'number' ? __kustoFormatNumber(params.value) : '';
-									const pctStr = percent.toFixed(1) + '%';
-									// Show: Category\nValue (Percent)
-									return name + '\n' + value + ' (' + pctStr + ')';
-								} catch {
-									return '';
-								}
-							}
-						},
-						labelLine: {
-							show: showLabels,
-							length: 10,
-							length2: 15
-						}
+						label: labelConfig,
+						labelLine: labelLineConfig,
+						labelLayout: labelLayoutFn
 					}]
 				};
 			}
@@ -3294,6 +3688,10 @@ function addChartBox(options) {
 	st.labelColumn = (options && typeof options.labelColumn === 'string') ? String(options.labelColumn) : (st.labelColumn || '');
 	st.valueColumn = (options && typeof options.valueColumn === 'string') ? String(options.valueColumn) : (st.valueColumn || '');
 	st.showDataLabels = (options && typeof options.showDataLabels === 'boolean') ? !!options.showDataLabels : (st.showDataLabels || false);
+	// Label mode for pie/funnel: 'auto', 'all', 'top5', 'top10', 'topPercent'
+	st.labelMode = (options && typeof options.labelMode === 'string') ? String(options.labelMode) : (st.labelMode || 'auto');
+	// Label density for 'auto' mode: 0-100, where 100 = most labels, 0 = fewest labels
+	st.labelDensity = (options && typeof options.labelDensity === 'number') ? options.labelDensity : (typeof st.labelDensity === 'number' ? st.labelDensity : 50);
 	st.tooltipColumns = (options && Array.isArray(options.tooltipColumns)) ? options.tooltipColumns.filter(c => c) : (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
 	st.sortColumn = (options && typeof options.sortColumn === 'string') ? String(options.sortColumn) : (st.sortColumn || '');
 	st.sortDirection = (options && typeof options.sortDirection === 'string') ? String(options.sortDirection) : (st.sortDirection || '');
@@ -3614,10 +4012,50 @@ function addChartBox(options) {
 									'</button>' +
 								'</div>' +
 							'</span>' +
-							'<div class="kusto-chart-labels-toggle" id="' + id + '_chart_labels_pie_toggle" onclick="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" data-kusto-no-editor-focus="true" role="switch" aria-checked="false" tabindex="0" title="Toggle data labels">' +
-								'<span class="kusto-chart-labels-toggle-text">Labels</span>' +
-								'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
-							'</div>' +
+							'<span class="kusto-chart-field-group kusto-chart-labels-pie-group">' +
+								'<div class="kusto-chart-labels-toggle" id="' + id + '_chart_labels_pie_toggle" onclick="try{__kustoOnChartLabelsToggled(\'' + id + '\')}catch{}" data-kusto-no-editor-focus="true" role="switch" aria-checked="false" tabindex="0" title="Toggle data labels">' +
+									'<span class="kusto-chart-labels-toggle-text kusto-axis-label-clickable" onclick="event.stopPropagation(); try{__kustoToggleLabelSettingsPopup(\'' + id + '\')}catch{}" title="Click to configure label settings">Labels</span>' +
+									'<span class="kusto-chart-labels-toggle-track"><span class="kusto-chart-labels-toggle-thumb"></span></span>' +
+								'</div>' +
+								'<div class="kusto-axis-settings-popup kusto-label-settings-popup" id="' + id + '_chart_label_settings_popup" data-kusto-no-editor-focus="true">' +
+									'<div class="kusto-axis-settings-popup-header">' +
+										'<span>Label Settings</span>' +
+										'<button type="button" class="kusto-axis-settings-popup-close" onclick="try{__kustoCloseLabelSettingsPopup(\'' + id + '\')}catch{}" title="Close" aria-label="Close">' +
+											'<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z" fill="currentColor"/></svg>' +
+										'</button>' +
+									'</div>' +
+									'<div class="kusto-axis-settings-popup-content">' +
+										'<div class="kusto-axis-settings-row">' +
+											'<label for="' + id + '_chart_label_mode">Display Mode</label>' +
+											'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_chart_label_mode_wrapper">' +
+												'<select class="kusto-dropdown-hidden-select" id="' + id + '_chart_label_mode" onchange="try{__kustoOnChartLabelModeChanged(\'' + id + '\')}catch{}">' +
+													'<option value="auto" selected>Auto (smart)</option>' +
+													'<option value="all">All slices</option>' +
+													'<option value="top5">Top 5 only</option>' +
+													'<option value="top10">Top 10 only</option>' +
+													'<option value="topPercent">≥5% only</option>' +
+												'</select>' +
+												'<button type="button" class="kusto-dropdown-btn" id="' + id + '_chart_label_mode_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_chart_label_mode\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
+													'<span class="kusto-dropdown-btn-text" id="' + id + '_chart_label_mode_text">Auto (smart)</span>' +
+													'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
+												'</button>' +
+												'<div class="kusto-dropdown-menu" id="' + id + '_chart_label_mode_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
+											'</div>' +
+										'</div>' +
+										'<div class="kusto-axis-settings-slider-row" id="' + id + '_chart_label_density_row">' +
+											'<div class="kusto-axis-settings-slider-header">' +
+												'<label for="' + id + '_chart_label_density">Density</label>' +
+												'<span class="kusto-axis-settings-slider-value" id="' + id + '_chart_label_density_value">50%</span>' +
+											'</div>' +
+											'<div class="kusto-axis-settings-slider-container">' +
+												'<span class="kusto-axis-settings-slider-label-left">Fewer</span>' +
+												'<input type="range" class="kusto-axis-settings-slider" id="' + id + '_chart_label_density" min="0" max="100" value="50" oninput="try{__kustoOnChartLabelDensityChanged(\'' + id + '\', parseInt(this.value, 10))}catch{}">' +
+												'<span class="kusto-axis-settings-slider-label-right">More</span>' +
+											'</div>' +
+										'</div>' +
+									'</div>' +
+								'</div>' +
+							'</span>' +
 							'<span class="kusto-chart-grid-spacer" aria-hidden="true"></span>' +
 						'</div>' +
 					'</div>' +
@@ -3804,6 +4242,55 @@ function __kustoOnChartLabelsToggled(boxId) {
 		}
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+/** Handler for when the pie/funnel label mode dropdown changes */
+function __kustoOnChartLabelModeChanged(boxId) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const el = document.getElementById(id + '_chart_label_mode');
+	if (el) {
+		st.labelMode = String(el.value || 'auto');
+	}
+	// Update the button text display
+	try {
+		const textEl = document.getElementById(id + '_chart_label_mode_text');
+		if (textEl && el) {
+			const opt = el.options[el.selectedIndex];
+			textEl.textContent = opt ? opt.text : 'Auto (smart)';
+		}
+	} catch { /* ignore */ }
+	// Show/hide density slider based on mode
+	try {
+		const densityRow = document.getElementById(id + '_chart_label_density_row');
+		if (densityRow) {
+			densityRow.style.display = (st.labelMode === 'auto') ? '' : 'none';
+		}
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+}
+
+/** Handler for when the pie/funnel label density slider changes */
+function __kustoOnChartLabelDensityChanged(boxId, value) {
+	const id = String(boxId || '');
+	if (!id) return;
+	const st = __kustoGetChartState(id);
+	const densityValue = Math.max(0, Math.min(100, typeof value === 'number' ? value : 50));
+	st.labelDensity = densityValue;
+	// Update the display value
+	try {
+		const valueEl = document.getElementById(id + '_chart_label_density_value');
+		if (valueEl) {
+			valueEl.textContent = densityValue + '%';
+		}
+	} catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch { /* ignore */ }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

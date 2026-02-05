@@ -1747,6 +1747,18 @@
 			vertical-align: middle;
 		}
 
+		/* Indicator dot when Labels has custom settings */
+		.kusto-chart-labels-toggle-text.has-settings::after {
+			content: '';
+			display: inline-block;
+			width: 5px;
+			height: 5px;
+			background: var(--vscode-focusBorder, #007fd4);
+			border-radius: 50%;
+			margin-left: 4px;
+			vertical-align: middle;
+		}
+
 		/* Axis settings popup */
 		.kusto-axis-settings-popup {
 			position: fixed;
