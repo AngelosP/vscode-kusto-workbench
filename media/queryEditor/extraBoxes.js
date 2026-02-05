@@ -69,6 +69,8 @@ function __kustoRefreshDependentExtraBoxes(rootSourceId) {
 						if (ds !== sourceId) continue;
 						if (visitedTransformations.has(boxId)) continue;
 						visitedTransformations.add(boxId);
+						// Update UI dropdowns (column selects) before rendering so new columns are visible.
+						try { __kustoUpdateTransformationBuilderUI(boxId); } catch { /* ignore */ }
 						try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
 						queue.push(boxId);
 					}
@@ -82,6 +84,8 @@ function __kustoRefreshDependentExtraBoxes(rootSourceId) {
 						if (!st || typeof st !== 'object') continue;
 						const ds = (typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
 						if (ds !== sourceId) continue;
+						// Update UI dropdowns (axis/column selects) before rendering so new columns are visible.
+						try { __kustoUpdateChartBuilderUI(boxId); } catch { /* ignore */ }
 						try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 					}
 				}

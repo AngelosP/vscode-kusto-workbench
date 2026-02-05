@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Data comparison of two sections would say the data differs even when there are 0 different rows or columns.
     * Removed 1 pixel of unwanted gap between the top of the tabular results and the top border. It made it possible to see the text that was being scrolled, super annoying.
+    * Sections that had their data changed were not refreshing automatically and the data source had to be re-picked through the Data picker.
 
 ## [1.4.1] - 2026-02-03
 
