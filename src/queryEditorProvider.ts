@@ -36,7 +36,7 @@ type KustoFavorite = { name: string; clusterUrl: string; database: string };
  * Default preferred Copilot model when user hasn't made a selection.
  * We look for models whose name, id, family, or version contains these substrings (case-insensitive).
  */
-const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4-6';
+const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4.6';
 
 /**
  * Finds the preferred default Copilot model from the available models.

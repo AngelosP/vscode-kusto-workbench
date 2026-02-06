@@ -120,22 +120,13 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
 		const diffContext = this.detectDiffContext(document);
-		if (diffContext.isDiff) {
-			if (diffContext.originalUri) {
-				// This is the "original" side (git: scheme) - render the diff viewer
-				await renderDiffInWebview(webviewPanel, this.extensionUri, diffContext.originalUri);
-			} else {
-				// This is the "modified" side (file: scheme) - just show a message
-				// The diff is already being shown in the other panel
-				webviewPanel.webview.html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-<style>body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
-.message { text-align: center; opacity: 0.7; }</style></head>
-<body><div class="message"><p>Diff view is shown in the left panel</p></div></body></html>`;
-			}
+		if (diffContext.isDiff && diffContext.originalUri) {
+			// This is the "original" side (git: scheme) of a diff view.
+			// Render a Monaco-based diff viewer showing original vs working copy.
+			await renderDiffInWebview(webviewPanel, this.extensionUri, diffContext.originalUri);
 			return;
 		}
+		// For the "modified" side (file: scheme) or normal usage, render the regular editor.
 
 		const disposables: vscode.Disposable[] = [];
 		const isMdSearchDebugEnabled = (): boolean => {

@@ -577,9 +577,9 @@
 		try {
 			const opt = select.selectedOptions && select.selectedOptions.length ? select.selectedOptions[0] : null;
 			if (opt) {
-				// Always use the selected option's text, even if value is empty
-				// This handles cases like "Auto (default)" with value=""
-				selectedLabel = String(opt.textContent || '').trim();
+				// Prefer the short label (without model id suffix) for the button text.
+				const shortLabel = opt.getAttribute('data-short-label');
+				selectedLabel = String(shortLabel || opt.textContent || '').trim();
 			}
 		} catch { /* ignore */ }
 

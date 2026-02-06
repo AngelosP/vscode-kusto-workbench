@@ -3568,7 +3568,10 @@ function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, prompt
 			}
 			const opt = document.createElement('option');
 			opt.value = String(m.id);
-			opt.textContent = String(m.label || m.id);
+			const label = String(m.label || m.id);
+			const id = String(m.id);
+			opt.textContent = (label && label !== id) ? label + ' (' + id + ')' : id;
+			opt.setAttribute('data-short-label', label);
 			selectEl.appendChild(opt);
 		}
 

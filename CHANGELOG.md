@@ -5,6 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [1.6.0] - Unreleased
 
+* Much better diff mode
 * Now it automatically changes the mode to just 'Run query' when using Kusto Workbench agent to run queries (no sample, no top 100)
 * Defaults to Claude Opus 4.6 for the custom agent in VS Code called Kusto Workbench
 * Improved labels on X axis (making sure they are always readable)

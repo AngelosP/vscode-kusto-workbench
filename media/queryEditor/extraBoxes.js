@@ -2044,10 +2044,10 @@ function __kustoComputeTimeAxisLabelRotation(axisPixelWidth, labelCount, showTim
 	const maxNoRotate = Math.max(1, Math.floor(w / Math.max(1, approxLabelPx)));
 
 	// If we have many labels relative to available width, rotate.
-	// We cap `n` because ECharts won't render all labels anyway.
-	const effectiveLabels = Math.min(n, 24);
-	if (effectiveLabels > maxNoRotate * 2) return 60;
-	if (effectiveLabels > maxNoRotate * 1.3) return 45;
+	// Note: bar/line/area charts use category axes where all labels are rendered,
+	// so we must use the actual count — no artificial cap.
+	if (n > maxNoRotate * 2) return 60;
+	if (n > maxNoRotate * 1.3) return 45;
 	return 0;
 }
 

@@ -683,7 +683,10 @@
 				if (!m || !m.id) continue;
 				const opt = document.createElement('option');
 				opt.value = String(m.id);
-				opt.textContent = String(m.label || m.id);
+				const label = String(m.label || m.id);
+				const id = String(m.id);
+				opt.textContent = (label && label !== id) ? label + ' (' + id + ')' : id;
+				opt.setAttribute('data-short-label', label);
 				sel.appendChild(opt);
 			}
 
