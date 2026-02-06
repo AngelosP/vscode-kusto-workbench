@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [1.6.0] - Unreleased
+## [1.6.0] - 2026-02-06
 
 * Much better diff mode
 * Now it automatically changes the mode to just 'Run query' when using Kusto Workbench agent to run queries (no sample, no top 100)
