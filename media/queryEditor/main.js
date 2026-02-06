@@ -2081,7 +2081,9 @@ window.addEventListener('message', async event => {
 					} else if (sectionType === 'markdown') {
 						if (typeof addMarkdownBox === 'function') {
 							// Pass text as option so it's available when the editor initializes
-							const markdownOptions = (input.text !== undefined) ? { text: String(input.text) } : undefined;
+							// Accept both 'text' and 'content' - LLMs may use either property name
+							const textValue = input.text ?? input.content;
+							const markdownOptions = (textValue !== undefined) ? { text: String(textValue) } : undefined;
 							sectionId = addMarkdownBox(markdownOptions);
 							success = !!sectionId;
 							// Set section name if provided
@@ -2436,8 +2438,10 @@ window.addEventListener('message', async event => {
 						}
 					}
 					
-					if (input.text !== undefined) {
-						const textToSet = String(input.text);
+					// Accept both 'text' and 'content' - LLMs may use either property name
+					const textValue = input.text ?? input.content;
+					if (textValue !== undefined) {
+						const textToSet = String(textValue);
 						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
 						window.__kustoPendingMarkdownTextByBoxId[sectionId] = textToSet;
 						

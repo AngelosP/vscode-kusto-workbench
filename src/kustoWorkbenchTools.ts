@@ -3,6 +3,18 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helper to extract tool input from invocation options
+// VS Code API changed from 'input' to 'parameters' - handle both for compatibility
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> | vscode.LanguageModelToolInvocationPrepareOptions<T>): T {
+	// Try 'input' first (original API), then 'parameters' (new API)
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const opts = options as any;
+	return opts.input ?? opts.parameters ?? ({} as T);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Types for tool inputs
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -558,7 +570,7 @@ export class ListSchemasTool implements vscode.LanguageModelTool<ListSchemasInpu
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.listSchemas(options.input);
+			const result = await this.orchestrator.listSchemas(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -598,7 +610,7 @@ export class AddSectionTool implements vscode.LanguageModelTool<AddSectionInput>
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.addSection(options.input);
+			const result = await this.orchestrator.addSection(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -618,7 +630,7 @@ export class RemoveSectionTool implements vscode.LanguageModelTool<RemoveSection
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.removeSection(options.input);
+			const result = await this.orchestrator.removeSection(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -638,7 +650,7 @@ export class CollapseSectionTool implements vscode.LanguageModelTool<CollapseSec
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.collapseSection(options.input);
+			const result = await this.orchestrator.collapseSection(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -658,7 +670,7 @@ export class ReorderSectionsTool implements vscode.LanguageModelTool<ReorderSect
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.reorderSections(options.input);
+			const result = await this.orchestrator.reorderSections(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -678,7 +690,7 @@ export class ConfigureQuerySectionTool implements vscode.LanguageModelTool<Confi
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.configureQuerySection(options.input);
+			const result = await this.orchestrator.configureQuerySection(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -698,7 +710,7 @@ export class UpdateMarkdownSectionTool implements vscode.LanguageModelTool<Updat
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.updateMarkdownSection(options.input);
+			const result = await this.orchestrator.updateMarkdownSection(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -718,7 +730,7 @@ export class ConfigureChartTool implements vscode.LanguageModelTool<ConfigureCha
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.configureChart(options.input);
+			const result = await this.orchestrator.configureChart(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -738,7 +750,7 @@ export class ConfigureTransformationTool implements vscode.LanguageModelTool<Con
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.configureTransformation(options.input);
+			const result = await this.orchestrator.configureTransformation(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -758,7 +770,7 @@ export class DelegateToKustoWorkbenchCopilotTool implements vscode.LanguageModel
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.delegateToKustoWorkbenchCopilot(options.input);
+			const result = await this.orchestrator.delegateToKustoWorkbenchCopilot(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -773,7 +785,8 @@ export class DelegateToKustoWorkbenchCopilotTool implements vscode.LanguageModel
 		options: vscode.LanguageModelToolInvocationPrepareOptions<DelegateToKustoWorkbenchCopilotInput>,
 		_token: vscode.CancellationToken
 	): Promise<vscode.PreparedToolInvocation> {
-		const question = options.input?.question || 'your question';
+		const input = getToolInput(options);
+		const question = input?.question || 'your question';
 		return {
 			invocationMessage: `Asking Kusto Workbench Copilot: "${question.slice(0, 100)}${question.length > 100 ? '...' : ''}"`
 		};
@@ -788,7 +801,7 @@ export class CreateFileTool implements vscode.LanguageModelTool<CreateFileInput>
 		_token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.createFile(options.input);
+			const result = await this.orchestrator.createFile(getToolInput(options));
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -803,8 +816,9 @@ export class CreateFileTool implements vscode.LanguageModelTool<CreateFileInput>
 		options: vscode.LanguageModelToolInvocationPrepareOptions<CreateFileInput>,
 		_token: vscode.CancellationToken
 	): Promise<vscode.PreparedToolInvocation> {
-		const fileType = options.input?.fileType || 'kqlx';
-		const filePath = options.input?.filePath;
+		const input = getToolInput(options);
+		const fileType = input?.fileType || 'kqlx';
+		const filePath = input?.filePath;
 		const message = filePath
 			? `Creating ${fileType} file: ${filePath}`
 			: `Creating new ${fileType} file...`;

@@ -311,7 +311,11 @@
             },
             "text": {
               "type": "string",
-              "description": "For markdown sections: the initial markdown text"
+              "description": "For markdown sections: the initial markdown text (alias: 'content')"
+            },
+            "content": {
+              "type": "string",
+              "description": "Alias for 'text' - for markdown sections: the initial markdown text"
             },
             "url": {
               "type": "string",
@@ -461,7 +465,11 @@
             },
             "text": {
               "type": "string",
-              "description": "The new markdown text content"
+              "description": "The new markdown text content (alias: 'content')"
+            },
+            "content": {
+              "type": "string",
+              "description": "Alias for 'text' - the new markdown text content"
             },
             "mode": {
               "type": "string",

@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.5.1] - 2026-02-05
+
+* Latest VS Code update broke tool calling because the LLMs are now prone to using the wrong property names. The fix is to check for both the right property names and the wrong ones ... crazy times we live in.
+
 ## [1.5.0] - 2026-02-05
 
 * Improved the data labels in pie charts
