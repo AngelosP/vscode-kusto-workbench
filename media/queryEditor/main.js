@@ -2651,6 +2651,20 @@ window.addEventListener('message', async event => {
 						return;
 					}
 				
+				// Ensure the section is in 'Run Query' mode (plain) — not 'take 100' or 'sample 100'.
+				// This prevents the Copilot-generated queries from having unwanted limits appended.
+				try {
+					const currentMode = typeof getRunMode === 'function' ? getRunMode(sectionId) : '';
+					if (currentMode && currentMode !== 'plain') {
+						if (typeof __kustoBackupRunMode === 'function') {
+							__kustoBackupRunMode(sectionId);
+						}
+						if (typeof setRunMode === 'function') {
+							setRunMode(sectionId, 'plain');
+						}
+					}
+				} catch { /* ignore */ }
+
 				// Step 1: Show the Copilot Chat panel (toggle the button)
 				if (typeof window.__kustoSetCopilotChatVisible === 'function') {
 					window.__kustoSetCopilotChatVisible(sectionId, true);

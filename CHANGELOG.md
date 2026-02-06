@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.6.0] - Unreleased
+
+* Now it automatically changes the mode to just 'Run query' when using Kusto Workbench agent to run queries (no sample, no top 100)
+* Defaults to Claude Opus 4.6 for the custom agent in VS Code called Kusto Workbench
+* Improved labels on X axis (making sure they are always readable)
+
 ## [1.5.1] - 2026-02-05
 
 * Latest VS Code update broke tool calling because the LLMs are now prone to using the wrong property names. The fix is to check for both the right property names and the wrong ones ... crazy times we live in.

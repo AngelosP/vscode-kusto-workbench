@@ -6,7 +6,7 @@ description: Analyze the usage of productX for the past 30 days and find outlier
 
 tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
 
-model: Claude Opus 4.5
+model: Claude Opus 4.6
 
 ---
 
@@ -144,3 +144,4 @@ Example: Move a chart section to appear right after its data source:
 * **Sequencing:** Charts/transformations need their data source to have results first
 * **Section IDs:** Use `#listSections` when you need an ID
 * **Be proactive:** Execute, visualize, document — don't ask permission
+* **Avoid LLM tropes:** Avoid — use → or : or ; or just word it differently

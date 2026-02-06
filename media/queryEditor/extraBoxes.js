@@ -2051,6 +2051,54 @@ function __kustoComputeTimeAxisLabelRotation(axisPixelWidth, labelCount, showTim
 	return 0;
 }
 
+/**
+ * Compute the optimal X-axis label rotation for category (non-time) labels.
+ * Uses the actual label string lengths to estimate whether labels will overlap,
+ * and returns an appropriate tilt angle.
+ *
+ * @param {number} axisPixelWidth - Available pixel width for the X axis.
+ * @param {number} labelCount     - Number of labels.
+ * @param {number} avgLabelChars  - Average character count across labels.
+ * @param {number} maxLabelChars  - Max character count among labels.
+ * @returns {number} Rotation angle in degrees (0, 30, 45, 60, or 75).
+ */
+function __kustoComputeCategoryLabelRotation(axisPixelWidth, labelCount, avgLabelChars, maxLabelChars) {
+	const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
+	const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
+	if (!w || !n) return 0;
+
+	const avg = (typeof avgLabelChars === 'number' && Number.isFinite(avgLabelChars)) ? avgLabelChars : 6;
+	const mx  = (typeof maxLabelChars === 'number' && Number.isFinite(maxLabelChars)) ? maxLabelChars : avg;
+
+	const approxCharPx = 7; // heuristic for monospace font in VS Code webviews
+	// Blend average and max so one abnormally long label doesn't dominate,
+	// but we still account for it.
+	const effectiveLabelChars = Math.ceil(avg * 0.6 + mx * 0.4);
+	const approxLabelPx = effectiveLabelChars * approxCharPx + 12; // with padding
+	const maxNoRotate = Math.max(1, Math.floor(w / Math.max(1, approxLabelPx)));
+
+	if (n > maxNoRotate * 3) return 75;
+	if (n > maxNoRotate * 2) return 60;
+	if (n > maxNoRotate * 1.3) return 45;
+	if (n > maxNoRotate) return 30;
+	return 0;
+}
+
+/**
+ * Measure label character stats from an array of label strings.
+ * Returns { avgLabelChars, maxLabelChars }.
+ */
+function __kustoMeasureLabelChars(labels) {
+	let total = 0, mx = 0;
+	const len = labels ? labels.length : 0;
+	for (let i = 0; i < len; i++) {
+		const c = String(labels[i] || '').length;
+		total += c;
+		if (c > mx) mx = c;
+	}
+	return { avgLabelChars: len ? total / len : 6, maxLabelChars: mx || 6 };
+}
+
 let __kustoEchartsThemeObserverStarted = false;
 let __kustoLastAppliedEchartsIsDarkTheme = null;
 
@@ -3277,12 +3325,24 @@ function __kustoRenderChart(boxId) {
 				}
 				
 				const showTime = treatAsTime ? timeShowTime : false;
-				// For continuous labels, use shorter label estimation since period labels are more compact
-				const rotate = treatAsTime 
-					? (useContinuousLabels 
-						? 0  // Continuous period labels are short, usually no rotation needed
-						: __kustoComputeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime))
-					: 0;
+				// Compute rotation based on label content.
+				// - Time + continuous: estimate from period label lengths
+				// - Time + categorical: use dedicated time rotation heuristic
+				// - Non-time categories: measure actual label strings
+				let rotate;
+				let __categoryLabelStats = null;
+				if (treatAsTime) {
+					if (useContinuousLabels) {
+						// Period labels vary in length (e.g. "Jan 2025", "Q3 2024"), measure them
+						__categoryLabelStats = __kustoMeasureLabelChars(xLabels);
+						rotate = __kustoComputeCategoryLabelRotation(canvasWidthPx, xLabels.length, __categoryLabelStats.avgLabelChars, __categoryLabelStats.maxLabelChars);
+					} else {
+						rotate = __kustoComputeTimeAxisLabelRotation(canvasWidthPx, xLabels.length, showTime);
+					}
+				} else {
+					__categoryLabelStats = __kustoMeasureLabelChars(xLabels);
+					rotate = __kustoComputeCategoryLabelRotation(canvasWidthPx, xLabels.length, __categoryLabelStats.avgLabelChars, __categoryLabelStats.maxLabelChars);
+				}
 				const axisFontSize = __kustoComputeAxisFontSize(xLabels.length, canvasWidthPx, false);
 				
 				// Calculate label interval based on density slider (100 = show all, 1 = minimum density with first & last always shown)
@@ -3402,10 +3462,20 @@ function __kustoRenderChart(boxId) {
 					series: seriesData
 				};
 				
-				if (treatAsTime) {
+				if (treatAsTime && !useContinuousLabels) {
 						st.__lastTimeAxis = { showTime, labelCount: xLabels.length, rotate };
+						try { delete st.__lastCategoryAxis; } catch { /* ignore */ }
 				} else {
 					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+					// Store category label stats so the resize observer can recompute rotation.
+					if (__categoryLabelStats) {
+						st.__lastCategoryAxis = {
+							labelCount: xLabels.length,
+							avgLabelChars: __categoryLabelStats.avgLabelChars,
+							maxLabelChars: __categoryLabelStats.maxLabelChars,
+							rotate
+						};
+					}
 				}
 			}
 		}
@@ -3468,11 +3538,20 @@ function __kustoRenderChart(boxId) {
 			st.__resizeObserver = new ResizeObserver(() => {
 				try { inst.resize(); } catch { /* ignore */ }
 				try {
+					const w = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
 					if (st.__lastTimeAxis) {
-						const w = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
 						const rotate = __kustoComputeTimeAxisLabelRotation(w, st.__lastTimeAxis.labelCount, st.__lastTimeAxis.showTime);
 						if (rotate !== st.__lastTimeAxis.rotate) {
 							st.__lastTimeAxis.rotate = rotate;
+							try {
+								inst.setOption({ xAxis: { axisLabel: { rotate } } });
+							} catch { /* ignore */ }
+						}
+					} else if (st.__lastCategoryAxis) {
+						const ca = st.__lastCategoryAxis;
+						const rotate = __kustoComputeCategoryLabelRotation(w, ca.labelCount, ca.avgLabelChars, ca.maxLabelChars);
+						if (rotate !== ca.rotate) {
+							ca.rotate = rotate;
 							try {
 								inst.setOption({ xAxis: { axisLabel: { rotate } } });
 							} catch { /* ignore */ }
