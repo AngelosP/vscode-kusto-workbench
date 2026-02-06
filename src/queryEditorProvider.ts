@@ -1516,10 +1516,11 @@ Completion:`;
 	 * Parses ALL tool calls from the LLM response.
 	 * The LLM may batch multiple tool calls in a single response like:
 	 * @tool execute_kusto_query {"query":"..."} @tool execute_kusto_query {"query":"..."}
+	 * Tool calls can appear anywhere in the text (the model may include narrative around them).
 	 */
 	private parseAllCopilotToolCalls(text: string): Array<{ tool: string; args: any }> {
 		const raw = String(text || '').trim();
-		if (!raw.startsWith('@tool')) {
+		if (!raw.includes('@tool')) {
 			return [];
 		}
 
@@ -1561,6 +1562,87 @@ Completion:`;
 		}
 
 		return results;
+	}
+
+	/**
+	 * Extracts narrative text from an LLM response that also contains @tool calls.
+	 * Returns everything that is NOT part of a @tool call (name + JSON args).
+	 */
+	private extractNarrativeFromToolResponse(text: string): string {
+		const raw = String(text || '').trim();
+		if (!raw.includes('@tool')) {
+			return raw; // entire response is narrative
+		}
+
+		// Build a regex that matches each @tool <name> <json-object?>
+		// We'll replace all tool call segments with empty strings to get the narrative
+		const toolCallRegex = /@tool\s+[a-zA-Z0-9_\-]+\s*/g;
+		const matches: Array<{ start: number; end: number }> = [];
+
+		let match;
+		while ((match = toolCallRegex.exec(raw)) !== null) {
+			const toolStart = match.index;
+			let toolEnd = match.index + match[0].length;
+
+			// If what follows is a JSON object, include it in the tool call span
+			const afterTool = raw.substring(toolEnd).trimStart();
+			if (afterTool.startsWith('{')) {
+				const offset = raw.indexOf('{', toolEnd);
+				try {
+					const jsonEnd = this.findJsonObjectEnd(raw, offset);
+					if (jsonEnd > offset) {
+						toolEnd = jsonEnd;
+					}
+				} catch {
+					// If JSON parsing fails, just take up to the next @tool or end
+				}
+			}
+			matches.push({ start: toolStart, end: toolEnd });
+		}
+
+		if (matches.length === 0) {
+			return raw;
+		}
+
+		// Collect everything outside the tool call spans
+		const parts: string[] = [];
+		let cursor = 0;
+		for (const m of matches) {
+			if (cursor < m.start) {
+				parts.push(raw.substring(cursor, m.start));
+			}
+			cursor = m.end;
+		}
+		if (cursor < raw.length) {
+			parts.push(raw.substring(cursor));
+		}
+
+		return parts.join(' ').replace(/\s+/g, ' ').trim();
+	}
+
+	/**
+	 * Finds the end index of a JSON object starting at the given position.
+	 * Returns the index after the closing brace.
+	 */
+	private findJsonObjectEnd(text: string, startIndex: number): number {
+		let depth = 0;
+		let inString = false;
+		let escape = false;
+
+		for (let i = startIndex; i < text.length; i++) {
+			const c = text[i];
+			if (escape) { escape = false; continue; }
+			if (c === '\\' && inString) { escape = true; continue; }
+			if (c === '"') { inString = !inString; continue; }
+			if (!inString) {
+				if (c === '{') depth++;
+				if (c === '}') {
+					depth--;
+					if (depth === 0) return i + 1;
+				}
+			}
+		}
+		return startIndex; // couldn't find matching brace
 	}
 
 	/**
@@ -1841,11 +1923,13 @@ Completion:`;
 		}
 
 		// Hard constraints
-		parts.push('Hard constraints:');
-		parts.push('- You MUST respond with ONLY a single @tool call and nothing else.');
-		parts.push('- Do NOT output plain text, explanations, bullets, or code blocks (including ```kusto```).');
+		parts.push('RESPONSE FORMAT RULES:');
+		parts.push('- Every response MUST include at least one @tool call. You may include brief narrative text alongside the tool call if it helps explain your reasoning.');
+		parts.push('- Do NOT respond with ONLY plain text, explanations, or code blocks — a @tool call is always required.');
+		parts.push('- Do NOT put queries in ```kusto``` code blocks. Always use one of the @tool calls below to deliver your query.');
 		parts.push('- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.');
-		parts.push('- Always provide the FULL query (not a diff) as the tool argument.\n');
+		parts.push('- Always provide the FULL query (not a diff) as the tool argument.');
+		parts.push('- If you cannot fulfill the request, use @tool ask_user_clarifying_question to ask for more information.\n');
 
 		// Tools
 		const localToolsText = this.buildLocalToolsText(args.enabledTools);
@@ -1916,11 +2000,13 @@ Completion:`;
 			'User request:\n' +
 			request +
 			'\n\n' +
-			'Hard constraints:\n' +
-			'- You MUST respond with ONLY a single @tool call and nothing else.\n' +
-			'- Do NOT output plain text, explanations, bullets, or code blocks (including ```kusto```).\n' +
+			'RESPONSE FORMAT RULES:\n' +
+			'- Every response MUST include at least one @tool call. You may include brief narrative text alongside the tool call if it helps explain your reasoning.\n' +
+			'- Do NOT respond with ONLY plain text, explanations, or code blocks — a @tool call is always required.\n' +
+			'- Do NOT put queries in ```kusto``` code blocks. Always use one of the @tool calls below to deliver your query.\n' +
 			'- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.\n' +
-			'- Always provide the FULL query (not a diff) as the tool argument.\n\n' +
+			'- Always provide the FULL query (not a diff) as the tool argument.\n' +
+			'- If you cannot fulfill the request, use @tool ask_user_clarifying_question to ask for more information.\n\n' +
 			(localToolsText ? localToolsText : '')
 		);
 	}
@@ -1972,9 +2058,19 @@ Completion:`;
 			return !!current && current.cts === cts && current.seq === seq;
 		};
 
-		const postStatus = (status: string) => {
+		const postStatus = (status: string, detail?: string) => {
 			try {
-				this.postMessage({ type: 'copilotWriteQueryStatus', boxId, status } as any);
+				this.postMessage({ type: 'copilotWriteQueryStatus', boxId, status, detail: detail || '' } as any);
+			} catch {
+				// ignore
+			}
+		};
+
+		const postNarrative = (narrative: string) => {
+			const text = String(narrative || '').trim();
+			if (!text) return;
+			try {
+				this.postMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, role: 'assistant' } as any);
 			} catch {
 				// ignore
 			}
@@ -2122,9 +2218,15 @@ Completion:`;
 					// If no tool calls, treat as non-compliant
 					if (toolCalls.length === 0) {
 						priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
-						postStatus('Copilot returned a non-tool response. Retrying…');
+						postStatus('Copilot returned a non-tool response. Retrying…', generatedText);
 						generatedText = '';
 						break;
+					}
+
+					// If the model included narrative text alongside tool calls, display it
+					const narrative = this.extractNarrativeFromToolResponse(generatedText);
+					if (narrative) {
+						postNarrative(narrative);
 					}
 
 					// Process each tool call sequentially
@@ -2695,9 +2797,9 @@ Completion:`;
 						continue;
 					}
 
-					// If we get here without processing any valid tool, treat as non-compliant
+					// If we get here without processing any valid tool (all tools were disabled etc.), treat as non-compliant
 					priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
-					postStatus('Copilot returned a non-tool response. Retrying…');
+					postStatus('Copilot returned a non-tool response. Retrying…', generatedText);
 					generatedText = '';
 					break;
 				}

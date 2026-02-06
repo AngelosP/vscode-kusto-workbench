@@ -484,7 +484,7 @@
 		} catch { /* ignore */ }
 	}
 
-	function __kustoAppendChatMessage(boxId, role, text) {
+	function __kustoAppendChatMessage(boxId, role, text, detail) {
 		try {
 			const host = document.getElementById(boxId + '_copilot_messages');
 			if (!host) return;
@@ -494,6 +494,13 @@
 			const el = document.createElement('div');
 			el.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-' + safeRole;
 			el.textContent = String(text || '');
+			// If detail text is provided, show it on hover
+			const safeDetail = String(detail || '').trim();
+			if (safeDetail) {
+				el.title = safeDetail;
+				el.style.cursor = 'help';
+				el.style.textDecoration = 'underline dotted';
+			}
 			host.appendChild(el);
 			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
 		} catch {
@@ -1210,8 +1217,10 @@
 		__kustoCopilotCloseToolsPanel(id);
 	}, true);
 
-	window.__kustoCopilotWriteQueryStatus = function (boxId, text) {
-		__kustoAppendChatMessage(String(boxId || ''), 'notification', String(text || ''));
+	window.__kustoCopilotWriteQueryStatus = function (boxId, text, detail, role) {
+		// If role is specified (e.g. 'assistant'), use that; otherwise default to 'notification'
+		const effectiveRole = (role === 'assistant') ? 'assistant' : 'notification';
+		__kustoAppendChatMessage(String(boxId || ''), effectiveRole, String(text || ''), String(detail || ''));
 	};
 	window.__kustoCopilotWriteQuerySetQuery = function (boxId, queryText) {
 		__kustoSetQueryText(String(boxId || ''), queryText);

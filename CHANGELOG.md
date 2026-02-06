@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.7.0] - 2026-02-06
+
+* Models no longer listen to instructions about local function tool calling very well. Keep finding instances were previous instructions followed well no longer work. For this case I had to adapt to allow the model to send me narrative back about the various tools it is using, which is not a bad thing in the end, so we'll just adapt.
+
 ## [1.6.0] - 2026-02-06
 
 * Much better diff mode
@@ -10,7 +14,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Defaults to Claude Opus 4.6 for the custom agent in VS Code called Kusto Workbench
 * Improved labels on X axis (making sure they are always readable)
 * Bugs
-    * Fixed the issue of the model drop down becoming disabled after a cancelled query. 
+    * Fixed the issue of the model drop down becoming disabled after a cancelled query.
 
 ## [1.5.1] - 2026-02-05
 

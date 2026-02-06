@@ -1889,7 +1889,7 @@ window.addEventListener('message', async event => {
 			try {
 				const boxId = String(message.boxId || '');
 				if (boxId && typeof window.__kustoCopilotWriteQueryStatus === 'function') {
-					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '');
+					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '', message.detail || '', message.role || '');
 				}
 			} catch { /* ignore */ }
 			break;
