@@ -8,6 +8,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Now it automatically changes the mode to just 'Run query' when using Kusto Workbench agent to run queries (no sample, no top 100)
 * Defaults to Claude Opus 4.6 for the custom agent in VS Code called Kusto Workbench
 * Improved labels on X axis (making sure they are always readable)
+* Bugs
+    * Fixed the issue of the model drop down becoming disabled after a cancelled query. 
 
 ## [1.5.1] - 2026-02-05
 

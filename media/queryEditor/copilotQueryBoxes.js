@@ -651,6 +651,12 @@
 				cancelBtn.style.display = '';
 				cancelBtn.disabled = !running;
 			}
+			// Sync the custom dropdown wrapper so the visible button reflects the new disabled state.
+			try {
+				if (modelSel && window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
+					window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_copilot_model');
+				}
+			} catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		if (statusText) {

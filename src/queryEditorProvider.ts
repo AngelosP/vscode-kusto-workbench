@@ -36,7 +36,7 @@ type KustoFavorite = { name: string; clusterUrl: string; database: string };
  * Default preferred Copilot model when user hasn't made a selection.
  * We look for models whose name, id, family, or version contains these substrings (case-insensitive).
  */
-const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4.6';
+const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4-6';
 
 /**
  * Finds the preferred default Copilot model from the available models.
@@ -1469,7 +1469,8 @@ Completion:`;
 
 			const modelOptions = models
 				.map((m) => ({ id: String(m.id), label: this.formatCopilotModelLabel(m) }))
-				.filter((m) => !!m.id);
+				.filter((m) => !!m.id)
+				.sort((a, b) => a.label.localeCompare(b.label));
 
 			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
 			const preferredModelId = String(lastModelId || '').trim();
@@ -3145,7 +3146,8 @@ ${query}
 
 			const modelOptions = models
 				.map(m => ({ id: String(m.id), label: this.formatCopilotModelLabel(m) }))
-				.filter(m => !!m.id);
+				.filter(m => !!m.id)
+				.sort((a, b) => a.label.localeCompare(b.label));
 
 			const lastModelId = this.context.globalState.get<string>(STORAGE_KEYS.lastOptimizeCopilotModelId);
 			const preferredModelId = String(lastModelId || '').trim();
