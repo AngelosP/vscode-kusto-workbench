@@ -1,3 +1,20 @@
+function __kustoCopyClientActivityId(boxId) {
+	try {
+		const el = document.getElementById(boxId + '_client_activity_id');
+		const text = el ? el.textContent : '';
+		if (text && navigator.clipboard) {
+			navigator.clipboard.writeText(text).then(function () {
+				// Brief visual feedback
+				const btn = el && el.nextElementSibling;
+				if (btn) {
+					btn.classList.add('results-footer-copy-done');
+					setTimeout(function () { btn.classList.remove('results-footer-copy-done'); }, 1200);
+				}
+			}).catch(function () { /* ignore */ });
+		}
+	} catch { /* ignore */ }
+}
+
 function __kustoGetSearchIconSvg() {
 	return (
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -2815,6 +2832,17 @@ function displayResultForBox(result, boxId, options) {
 		'</div>' +
 		'</div>';
 
+	const clientActivityId = metadata && typeof metadata.clientActivityId === 'string' ? metadata.clientActivityId : '';
+	const clientActivityIdHtml = clientActivityId
+		? '<div class="results-footer" id="' + boxId + '_results_footer">' +
+		  '<span class="results-footer-label">Client Activity ID:</span>' +
+		  '<span class="results-footer-value" id="' + boxId + '_client_activity_id" title="' + clientActivityId + '">' + clientActivityId + '</span>' +
+		  '<button class="results-footer-copy-btn" type="button" onclick="__kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
+		  copyIconSvg +
+		  '</button>' +
+		  '</div>'
+		: '';
+
 	let html =
 		'<div class="results-header">' +
 		'<div class="results-title-row">' +
@@ -2878,6 +2906,7 @@ function displayResultForBox(result, boxId, options) {
 		'</table>' +
 		'</div>' +
 		'</div>' +
+		clientActivityIdHtml +
 		'<div class="kusto-sort-modal" id="' + boxId + '_sort_modal" onclick="closeSortDialogOnBackdrop(event, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 		'<div class="kusto-sort-dialog" onclick="event.stopPropagation();">' +
 		'<div class="kusto-sort-header">' +
