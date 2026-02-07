@@ -123,7 +123,8 @@ type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: stri
 // Conversation history entry types for Copilot Chat
 type ConversationHistoryEntry =
 	| { type: 'user-message'; id: string; text: string; querySnapshot?: string; timestamp: number }
-	| { type: 'tool-call'; id: string; tool: string; args?: unknown; result: string; removed?: boolean; timestamp: number }
+	| { type: 'assistant-message'; id: string; text: string; toolCalls?: Array<{ callId: string; name: string; input: object }>; timestamp: number }
+	| { type: 'tool-call'; id: string; callId: string; tool: string; args?: unknown; result: string; removed?: boolean; timestamp: number }
 	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number };
 
 type IncomingWebviewMessage =
@@ -266,6 +267,108 @@ export class QueryEditorProvider {
 				enabledByDefault: true
 			}
 		];
+	}
+
+	/**
+	 * Returns native VS Code LanguageModelChatTool definitions for use with sendRequest().
+	 * Only includes tools that are currently enabled.
+	 */
+	private getCopilotChatTools(enabledTools: string[]): vscode.LanguageModelChatTool[] {
+		const localTools = this.getCopilotLocalTools();
+		const tools: vscode.LanguageModelChatTool[] = [];
+
+		for (const t of localTools) {
+			if (!this.isCopilotToolEnabled(t.name, enabledTools)) {
+				continue;
+			}
+			const n = this.normalizeToolName(t.name);
+			if (n === 'get_extended_schema') {
+				tools.push({
+					name: 'get_extended_schema',
+					description: 'Provides cached database schema (tables + columns) to improve query correctness. Call this when you need to know table names, column names, or column types before writing a query.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							database: {
+								type: 'string',
+								description: 'The database name to get the schema for. Defaults to the currently selected database if omitted.'
+							}
+						}
+					}
+				});
+			} else if (n === 'get_query_optimization_best_practices') {
+				tools.push({
+					name: 'get_query_optimization_best_practices',
+					description: 'Returns the query optimization best practices document (optimize-query-rules.md). Call this before optimizing queries for performance.',
+					inputSchema: {
+						type: 'object',
+						properties: {}
+					}
+				});
+			} else if (n === 'execute_kusto_query') {
+				tools.push({
+					name: 'execute_kusto_query',
+					description: 'Executes a KQL query against the connected cluster and returns the results for analysis. Use when you need to run a query to analyze data, explore data, or verify something. The query is automatically limited to 100 rows.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: {
+								type: 'string',
+								description: 'The complete KQL query to execute.'
+							}
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'respond_to_query_performance_optimization_request') {
+				tools.push({
+					name: 'respond_to_query_performance_optimization_request',
+					description: 'Use this as your FINAL response when the user asks to improve or optimize query performance. Creates a side-by-side comparison section with your proposed query and runs both to compare performance and results. Provide the FULL optimized query (not a diff).',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: {
+								type: 'string',
+								description: 'The complete optimized KQL query.'
+							}
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'respond_to_all_other_queries') {
+				tools.push({
+					name: 'respond_to_all_other_queries',
+					description: 'Use this as your FINAL response for all non-optimization requests. Sets the query in the editor and runs it. Provide the FULL complete KQL query (not a diff).',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: {
+								type: 'string',
+								description: 'The complete KQL query to set in the editor and run.'
+							}
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'ask_user_clarifying_question') {
+				tools.push({
+					name: 'ask_user_clarifying_question',
+					description: 'Ask the user a clarifying question when you need more information to write the correct query. Use when the request is ambiguous or you need clarification about tables, columns, filters, or logic.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							question: {
+								type: 'string',
+								description: 'The specific clarifying question to ask the user.'
+							}
+						},
+						required: ['question']
+					}
+				});
+			}
+		}
+
+		return tools;
 	}
 
 	private async readOptimizeQueryRules(): Promise<string> {
@@ -1507,192 +1610,6 @@ Completion:`;
 		return raw.trim();
 	}
 
-	private tryParseCopilotToolCall(text: string): { tool: string; args: any } | undefined {
-		const calls = this.parseAllCopilotToolCalls(text);
-		return calls.length > 0 ? calls[0] : undefined;
-	}
-
-	/**
-	 * Parses ALL tool calls from the LLM response.
-	 * The LLM may batch multiple tool calls in a single response like:
-	 * @tool execute_kusto_query {"query":"..."} @tool execute_kusto_query {"query":"..."}
-	 * Tool calls can appear anywhere in the text (the model may include narrative around them).
-	 */
-	private parseAllCopilotToolCalls(text: string): Array<{ tool: string; args: any }> {
-		const raw = String(text || '').trim();
-		if (!raw.includes('@tool')) {
-			return [];
-		}
-
-		const results: Array<{ tool: string; args: any }> = [];
-		
-		// Split on @tool boundaries while keeping the delimiter
-		// We match: @tool <name> <json until next @tool or end>
-		const toolCallRegex = /@tool\s+([a-zA-Z0-9_\-]+)\s*/g;
-		const matches: Array<{ index: number; tool: string; endOfToolName: number }> = [];
-		
-		let match;
-		while ((match = toolCallRegex.exec(raw)) !== null) {
-			const tool = this.normalizeToolName(match[1]);
-			if (tool) {
-				matches.push({
-					index: match.index,
-					tool,
-					endOfToolName: match.index + match[0].length
-				});
-			}
-		}
-
-		for (let i = 0; i < matches.length; i++) {
-			const current = matches[i];
-			const nextIndex = i + 1 < matches.length ? matches[i + 1].index : raw.length;
-			const jsonPart = raw.substring(current.endOfToolName, nextIndex).trim();
-			
-			if (!jsonPart) {
-				results.push({ tool: current.tool, args: {} });
-			} else {
-				try {
-					// Try to parse just the JSON object (may have trailing content)
-					const parsed = this.parseJsonPrefix(jsonPart);
-					results.push({ tool: current.tool, args: parsed ?? { raw: jsonPart } });
-				} catch {
-					results.push({ tool: current.tool, args: { raw: jsonPart } });
-				}
-			}
-		}
-
-		return results;
-	}
-
-	/**
-	 * Extracts narrative text from an LLM response that also contains @tool calls.
-	 * Returns everything that is NOT part of a @tool call (name + JSON args).
-	 */
-	private extractNarrativeFromToolResponse(text: string): string {
-		const raw = String(text || '').trim();
-		if (!raw.includes('@tool')) {
-			return raw; // entire response is narrative
-		}
-
-		// Build a regex that matches each @tool <name> <json-object?>
-		// We'll replace all tool call segments with empty strings to get the narrative
-		const toolCallRegex = /@tool\s+[a-zA-Z0-9_\-]+\s*/g;
-		const matches: Array<{ start: number; end: number }> = [];
-
-		let match;
-		while ((match = toolCallRegex.exec(raw)) !== null) {
-			const toolStart = match.index;
-			let toolEnd = match.index + match[0].length;
-
-			// If what follows is a JSON object, include it in the tool call span
-			const afterTool = raw.substring(toolEnd).trimStart();
-			if (afterTool.startsWith('{')) {
-				const offset = raw.indexOf('{', toolEnd);
-				try {
-					const jsonEnd = this.findJsonObjectEnd(raw, offset);
-					if (jsonEnd > offset) {
-						toolEnd = jsonEnd;
-					}
-				} catch {
-					// If JSON parsing fails, just take up to the next @tool or end
-				}
-			}
-			matches.push({ start: toolStart, end: toolEnd });
-		}
-
-		if (matches.length === 0) {
-			return raw;
-		}
-
-		// Collect everything outside the tool call spans
-		const parts: string[] = [];
-		let cursor = 0;
-		for (const m of matches) {
-			if (cursor < m.start) {
-				parts.push(raw.substring(cursor, m.start));
-			}
-			cursor = m.end;
-		}
-		if (cursor < raw.length) {
-			parts.push(raw.substring(cursor));
-		}
-
-		return parts.join(' ').replace(/\s+/g, ' ').trim();
-	}
-
-	/**
-	 * Finds the end index of a JSON object starting at the given position.
-	 * Returns the index after the closing brace.
-	 */
-	private findJsonObjectEnd(text: string, startIndex: number): number {
-		let depth = 0;
-		let inString = false;
-		let escape = false;
-
-		for (let i = startIndex; i < text.length; i++) {
-			const c = text[i];
-			if (escape) { escape = false; continue; }
-			if (c === '\\' && inString) { escape = true; continue; }
-			if (c === '"') { inString = !inString; continue; }
-			if (!inString) {
-				if (c === '{') depth++;
-				if (c === '}') {
-					depth--;
-					if (depth === 0) return i + 1;
-				}
-			}
-		}
-		return startIndex; // couldn't find matching brace
-	}
-
-	/**
-	 * Attempts to parse a JSON object from the beginning of a string,
-	 * handling cases where there may be trailing content after the JSON.
-	 */
-	private parseJsonPrefix(text: string): any {
-		const trimmed = text.trim();
-		if (!trimmed.startsWith('{')) {
-			return JSON.parse(trimmed); // Let it throw if invalid
-		}
-		
-		// Find matching closing brace
-		let depth = 0;
-		let inString = false;
-		let escape = false;
-		
-		for (let i = 0; i < trimmed.length; i++) {
-			const c = trimmed[i];
-			
-			if (escape) {
-				escape = false;
-				continue;
-			}
-			
-			if (c === '\\' && inString) {
-				escape = true;
-				continue;
-			}
-			
-			if (c === '"') {
-				inString = !inString;
-				continue;
-			}
-			
-			if (!inString) {
-				if (c === '{') depth++;
-				else if (c === '}') {
-					depth--;
-					if (depth === 0) {
-						return JSON.parse(trimmed.substring(0, i + 1));
-					}
-				}
-			}
-		}
-		
-		// Fallback to parsing the whole thing
-		return JSON.parse(trimmed);
-	}
-
 	private async getExtendedSchemaToolResult(
 		connection: KustoConnection,
 		database: string,
@@ -1786,229 +1703,96 @@ Completion:`;
 	}
 
 	/**
-	 * Builds the tools description text for the prompt.
+	 * Builds a multi-message conversation from the history for native tool calling.
+	 * Returns an array of LanguageModelChatMessage with proper User/Assistant role alternation.
 	 */
-	private buildLocalToolsText(enabledTools?: string[]): string {
-		const enabledToolSet = new Set((enabledTools || []).map((t) => this.normalizeToolName(t)).filter(Boolean));
-		const localTools = this.getCopilotLocalTools();
-		const isToolEnabled = (name: string) => {
-			const n = this.normalizeToolName(name);
-			if (!n) return false;
-			// If the client didn't send enabledTools, default to tool defaults.
-			if ((enabledTools || []).length === 0) {
-				const def = localTools.find((t) => this.normalizeToolName(t.name) === n);
-				return def ? def.enabledByDefault !== false : false;
-			}
-			return enabledToolSet.has(n);
-		};
-
-		const enabledLocalTools = localTools.filter((t) => isToolEnabled(t.name));
-		if (enabledLocalTools.length === 0) {
-			return '';
-		}
-		const lines: string[] = [];
-		lines.push('Local tools (REQUIRED response format):');
-		for (const t of enabledLocalTools) {
-			const n = this.normalizeToolName(t.name);
-			if (n === 'get_extended_schema') {
-				lines.push('- If you need extended schema to write a correct query, respond with EXACTLY this and nothing else:');
-				lines.push('  @tool get_extended_schema {"database":"<database>"}');
-				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
-				continue;
-			}
-			if (n === 'get_query_optimization_best_practices') {
-				lines.push('- If you want to consult the repository\'s optimization best practices, respond with EXACTLY this and nothing else:');
-				lines.push('  @tool get_query_optimization_best_practices');
-				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
-				continue;
-			}
-			if (n === 'execute_kusto_query') {
-				lines.push('- If you need to run a query to analyze results or understand the data, respond with EXACTLY this and nothing else:');
-				lines.push('  @tool execute_kusto_query {"query":"<full kusto query>"}');
-				lines.push('- The query will be executed and you\'ll receive the results to analyze.');
-				lines.push('- Use this tool when the user asks about existing data, wants to explore data, or needs you to verify something.');
-				lines.push('- After you receive the tool result, keep using tool calls (do NOT output a ```kusto``` block).');
-				continue;
-			}
-			if (n === 'respond_to_query_performance_optimization_request') {
-				lines.push('- If the user asks you to improve/optimize query performance, your FINAL response MUST be EXACTLY this and nothing else:');
-				lines.push('  @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}');
-				lines.push('- Do not include explanations or code blocks when using this tool.');
-				continue;
-			}
-			if (n === 'respond_to_all_other_queries') {
-				lines.push('- For ALL other requests, your FINAL response MUST be EXACTLY this and nothing else:');
-				lines.push('  @tool respond_to_all_other_queries {"query":"<full kusto query>"}');
-				lines.push('- Do not include explanations or code blocks when using this tool.');
-				continue;
-			}
-			if (n === 'ask_user_clarifying_question') {
-				lines.push('- If you need more information from the user before you can write the query, respond with EXACTLY this and nothing else:');
-				lines.push('  @tool ask_user_clarifying_question {"question":"<your specific question>"}');
-				lines.push('- Use this when the user\'s request is ambiguous or you need clarification about tables, columns, filters, or logic.');
-				lines.push('- After the user responds, continue with the appropriate tool call based on their answer.');
-				continue;
-			}
-			lines.push(`- ${t.name}: ${t.description}`);
-		}
-		return lines.join('\n') + '\n';
-	}
-
-	/**
-	 * Builds a prompt from the conversation history.
-	 * This creates a continuous conversation where each message builds on the previous.
-	 */
-	private buildPromptFromHistory(args: {
+	private buildMessagesFromHistory(args: {
 		boxId: string;
 		clusterUrl: string;
 		database: string;
-		enabledTools?: string[];
 		priorAttempts?: Array<{ attempt: number; query?: string; error?: string }>;
-	}): string {
+	}): vscode.LanguageModelChatMessage[] {
 		const history = this.copilotConversationHistoryByBoxId.get(args.boxId) || [];
-		const parts: string[] = [];
+		const messages: vscode.LanguageModelChatMessage[] = [];
 
-		// System preamble
-		parts.push('Role: You are a senior Kusto Query Language (KQL) engineer.\n');
-		parts.push('Task: Write a complete, runnable KQL query for the user request.\n');
+		// System preamble as first User message
+		const preambleParts: string[] = [];
+		preambleParts.push('Role: You are a senior Kusto Query Language (KQL) engineer.');
+		preambleParts.push('Task: Write a complete, runnable KQL query for the user request.');
+		preambleParts.push('');
+		preambleParts.push('Context:');
+		preambleParts.push(`- Cluster: ${args.clusterUrl || '(unknown)'}`);
+		preambleParts.push(`- Database: ${args.database || '(unknown)'}`);
+		preambleParts.push('');
+		preambleParts.push('RESPONSE FORMAT RULES:');
+		preambleParts.push('- Use the provided tools to accomplish your task. You have access to tools for getting schema, executing queries, and delivering your final query.');
+		preambleParts.push('- Use as many tool calls as needed across turns: get schema, get best practices, execute queries, then finish with one of the final response tools.');
+		preambleParts.push('- Always provide the FULL query (not a diff) as the tool argument.');
+		preambleParts.push('- If you cannot fulfill the request, use the ask_user_clarifying_question tool.');
+		messages.push(vscode.LanguageModelChatMessage.User(preambleParts.join('\n')));
 
-		// Context
-		parts.push('Context:');
-		parts.push(`- Cluster: ${args.clusterUrl || '(unknown)'}`);
-		parts.push(`- Database: ${args.database || '(unknown)'}\n`);
-
-		// Build conversation from history
+		// Build conversation from history entries
 		for (const entry of history) {
 			if (entry.type === 'general-rules') {
 				if (entry.removed) {
-					parts.push('[Workspace-specific query rules: truncated from conversation history, refer to your knowledge if needed]\n');
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'[Workspace-specific query rules: truncated from conversation history, refer to your knowledge if needed]'
+					));
 				} else {
-					parts.push('Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):');
-					parts.push(entry.content + '\n');
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):\n' + entry.content
+					));
 				}
 			} else if (entry.type === 'user-message') {
-				parts.push('User message:');
-				parts.push(entry.text);
+				let text = entry.text;
 				if (entry.querySnapshot) {
-					parts.push('\nCurrent query in editor:');
-					parts.push('```kusto');
-					parts.push(entry.querySnapshot);
-					parts.push('```');
+					text += '\n\nCurrent query in editor:\n```kusto\n' + entry.querySnapshot + '\n```';
 				}
-				parts.push('');
+				messages.push(vscode.LanguageModelChatMessage.User(text));
+			} else if (entry.type === 'assistant-message') {
+				// Reconstruct the assistant message with its tool calls
+				const parts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart> = [];
+				if (entry.text) {
+					parts.push(new vscode.LanguageModelTextPart(entry.text));
+				}
+				if (entry.toolCalls) {
+					for (const tc of entry.toolCalls) {
+						parts.push(new vscode.LanguageModelToolCallPart(tc.callId, tc.name, tc.input));
+					}
+				}
+				if (parts.length > 0) {
+					messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
+				}
 			} else if (entry.type === 'tool-call') {
-				parts.push(`Tool call: @tool ${entry.tool}${entry.args ? ' ' + JSON.stringify(entry.args) : ''}`);
-				if (entry.removed) {
-					parts.push('Tool result: [truncated from conversation history, call tool again if needed]\n');
-				} else {
-					parts.push('Tool result:');
-					parts.push(entry.result + '\n');
-				}
+				// Tool results go as User messages with ToolResultPart
+				const resultText = entry.removed
+					? '[truncated from conversation history, call tool again if needed]'
+					: entry.result;
+				messages.push(vscode.LanguageModelChatMessage.User([
+					new vscode.LanguageModelToolResultPart(entry.callId, [
+						new vscode.LanguageModelTextPart(resultText)
+					])
+				]));
 			}
 		}
 
 		// Prior attempts (within current message execution only)
-		const attemptsText = (args.priorAttempts || [])
-			.map((a) => {
-				const header = `Attempt ${a.attempt}:`;
-				const q = a.query ? `Generated query:\n${a.query}` : '';
-				const e = a.error ? `Error:\n${a.error}` : '';
-				return [header, q, e].filter(Boolean).join('\n');
-			})
-			.filter(Boolean)
-			.join('\n\n');
-		if (attemptsText) {
-			parts.push('Prior attempts and errors (fix these):');
-			parts.push(attemptsText + '\n');
+		const attempts = args.priorAttempts || [];
+		if (attempts.length > 0) {
+			const attemptsText = attempts
+				.map((a) => {
+					const parts = [`Attempt ${a.attempt}:`];
+					if (a.query) parts.push(`Generated query:\n${a.query}`);
+					if (a.error) parts.push(`Error:\n${a.error}`);
+					return parts.join('\n');
+				})
+				.join('\n\n');
+			messages.push(vscode.LanguageModelChatMessage.User(
+				'Prior attempts and errors (fix these):\n' + attemptsText
+			));
 		}
 
-		// Hard constraints
-		parts.push('RESPONSE FORMAT RULES:');
-		parts.push('- Every response MUST include at least one @tool call. You may include brief narrative text alongside the tool call if it helps explain your reasoning.');
-		parts.push('- Do NOT respond with ONLY plain text, explanations, or code blocks — a @tool call is always required.');
-		parts.push('- Do NOT put queries in ```kusto``` code blocks. Always use one of the @tool calls below to deliver your query.');
-		parts.push('- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.');
-		parts.push('- Always provide the FULL query (not a diff) as the tool argument.');
-		parts.push('- If you cannot fulfill the request, use @tool ask_user_clarifying_question to ask for more information.\n');
-
-		// Tools
-		const localToolsText = this.buildLocalToolsText(args.enabledTools);
-		if (localToolsText) {
-			parts.push(localToolsText);
-		}
-
-		return parts.join('\n');
-	}
-
-	private buildCopilotWriteQueryPrompt(args: {
-		request: string;
-		clusterUrl: string;
-		database: string;
-		currentQuery?: string;
-		priorAttempts: Array<{ attempt: number; query?: string; error?: string }>;
-		toolResult?: string;
-		bestPracticesText?: string;
-		executeQueryResults?: Array<{ query: string; result: string }>;
-		generalQueryRulesText?: string;
-		enabledTools?: string[];
-	}): string {
-		const request = String(args.request || '').trim();
-		const clusterUrl = String(args.clusterUrl || '').trim();
-		const database = String(args.database || '').trim();
-		const currentQuery = String(args.currentQuery || '').trim();
-		const toolResult = typeof args.toolResult === 'string' ? args.toolResult : '';
-		const bestPracticesText = typeof args.bestPracticesText === 'string' ? args.bestPracticesText : '';
-		const generalQueryRulesText = typeof args.generalQueryRulesText === 'string' ? args.generalQueryRulesText : '';
-		const executeQueryResults = Array.isArray(args.executeQueryResults) ? args.executeQueryResults : [];
-
-		const localToolsText = this.buildLocalToolsText(args.enabledTools);
-
-		const attemptsText = (args.priorAttempts || [])
-			.map((a) => {
-				const header = `Attempt ${a.attempt}:`;
-				const q = a.query ? `Generated query:\n${a.query}` : '';
-				const e = a.error ? `Error:\n${a.error}` : '';
-				return [header, q, e].filter(Boolean).join('\n');
-			})
-			.filter(Boolean)
-			.join('\n\n');
-
-		const executeQueryResultsText = executeQueryResults.length > 0
-			? 'Query execution results:\n' + executeQueryResults.map((r, i) =>
-				`Query ${i + 1}:\n\`\`\`kusto\n${r.query}\n\`\`\`\nResult:\n${r.result}`
-			).join('\n\n') + '\n\n'
-			: '';
-
-		const generalQueryRulesSection = generalQueryRulesText
-			? 'Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):\n' + generalQueryRulesText + '\n\n'
-			: '';
-
-		return (
-			'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
-			'Task: Write a complete, runnable KQL query for the user request.\n\n' +
-			(generalQueryRulesSection) +
-			'Context:\n' +
-			`- Cluster: ${clusterUrl || '(unknown)'}\n` +
-			`- Database: ${database || '(unknown)'}\n\n` +
-			(currentQuery
-				? 'Current query (if any):\n```kusto\n' + currentQuery + '\n```\n\n'
-				: '') +
-			(attemptsText ? 'Prior attempts and errors (fix these):\n' + attemptsText + '\n\n' : '') +
-			(toolResult ? 'Tool result (extended schema):\n' + toolResult + '\n\n' : '') +
-			(bestPracticesText ? 'Tool result (optimization best practices):\n' + bestPracticesText + '\n\n' : '') +
-			executeQueryResultsText +
-			'User request:\n' +
-			request +
-			'\n\n' +
-			'RESPONSE FORMAT RULES:\n' +
-			'- Every response MUST include at least one @tool call. You may include brief narrative text alongside the tool call if it helps explain your reasoning.\n' +
-			'- Do NOT respond with ONLY plain text, explanations, or code blocks — a @tool call is always required.\n' +
-			'- Do NOT put queries in ```kusto``` code blocks. Always use one of the @tool calls below to deliver your query.\n' +
-			'- Use as many tool calls as needed across turns (one per message): get schema, get best practices, execute queries, then finish with exactly one of the two final tools.\n' +
-			'- Always provide the FULL query (not a diff) as the tool argument.\n' +
-			'- If you cannot fulfill the request, use @tool ask_user_clarifying_question to ask for more information.\n\n' +
-			(localToolsText ? localToolsText : '')
-		);
+		return messages;
 	}
 
 	private async startCopilotWriteQuery(
@@ -2175,97 +1959,95 @@ Completion:`;
 			}
 
 			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
+			const tools = this.getCopilotChatTools(enabledTools);
 
 			const maxAttempts = 6;
+			const maxToolTurns = 10;
+			let toolTurnCount = 0;
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				if (!isActive() || cts.token.isCancellationRequested) {
 					throw new Error('Copilot write-query canceled');
 				}
 				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
 
-				let generatedText = '';
-				const maxToolTurns = 5;
-				for (let toolTurn = 1; toolTurn <= maxToolTurns; toolTurn++) {
+				// Build messages from conversation history (proper multi-message format)
+				const messages = this.buildMessagesFromHistory({
+					boxId,
+					clusterUrl: String(connection.clusterUrl || ''),
+					database,
+					priorAttempts
+				});
+
+				const response = await model.sendRequest(
+					messages,
+					{ tools },
+					cts.token
+				);
+
+				// Collect text parts and tool call parts from the response stream
+				const nativeToolCalls: vscode.LanguageModelToolCallPart[] = [];
+				let responseText = '';
+				for await (const part of response.stream) {
 					if (!isActive() || cts.token.isCancellationRequested) {
 						throw new Error('Copilot write-query canceled');
 					}
-					// Build prompt from conversation history
-					const prompt = this.buildPromptFromHistory({
-						boxId,
-						clusterUrl: String(connection.clusterUrl || ''),
-						database,
-						enabledTools,
-						priorAttempts
-					});
+					if (part instanceof vscode.LanguageModelTextPart) {
+						responseText += part.value;
+					} else if (part instanceof vscode.LanguageModelToolCallPart) {
+						nativeToolCalls.push(part);
+					}
+				}
 
-					const response = await model.sendRequest(
-						[vscode.LanguageModelChatMessage.User(prompt)],
-						{},
-						cts.token
-					);
+				// Display any narrative text the model included
+				if (responseText.trim()) {
+					postNarrative(responseText.trim());
+				}
 
-					generatedText = '';
-					for await (const fragment of response.text) {
-						if (!isActive() || cts.token.isCancellationRequested) {
-							throw new Error('Copilot write-query canceled');
-						}
-						generatedText += fragment;
+				if (nativeToolCalls.length === 0) {
+					// Model didn't call any tools — treat as non-compliant, retry
+					priorAttempts.push({ attempt, error: 'Copilot did not call any tools. The model should use the available tools to respond.' });
+					postStatus('Copilot returned a non-tool response. Retrying…', responseText);
+					continue;
+				}
+
+				// Record the assistant message (with text + tool calls) in conversation history
+				const assistantEntryId = this.nextHistoryEntryId(boxId);
+				history.push({
+					type: 'assistant-message',
+					id: assistantEntryId,
+					text: responseText,
+					toolCalls: nativeToolCalls.map(tc => ({ callId: tc.callId, name: tc.name, input: tc.input })),
+					timestamp: Date.now()
+				});
+
+				// Process each tool call
+				let shouldRetryAttempt = false;
+				let hasOptionalToolCalls = false;
+
+				for (const tc of nativeToolCalls) {
+					if (!isActive() || cts.token.isCancellationRequested) {
+						throw new Error('Copilot write-query canceled');
 					}
 
-					// Parse ALL tool calls from the response (LLM may batch multiple)
-					const toolCalls = this.parseAllCopilotToolCalls(generatedText);
-					
-					// If no tool calls, treat as non-compliant
-					if (toolCalls.length === 0) {
-						priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
-						postStatus('Copilot returned a non-tool response. Retrying…', generatedText);
-						generatedText = '';
-						break;
-					}
+					const toolName = this.normalizeToolName(tc.name);
 
-					// If the model included narrative text alongside tool calls, display it
-					const narrative = this.extractNarrativeFromToolResponse(generatedText);
-					if (narrative) {
-						postNarrative(narrative);
-					}
-
-					// Process each tool call sequentially
-					let shouldBreakAttempt = false;
-					let shouldContinueToolTurn = false;
-
-					for (const toolCall of toolCalls) {
-						if (!isActive() || cts.token.isCancellationRequested) {
-							throw new Error('Copilot write-query canceled');
-						}
-
-						if (toolCall?.tool === 'get_extended_schema') {
-						if (!this.isCopilotToolEnabled('get_extended_schema', enabledTools)) {
-							// Treat as a non-answer; the next attempt will (usually) comply with the prompt.
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
-						const requestedDbRaw = (toolCall.args && typeof toolCall.args === 'object') ? (toolCall.args as any).database : undefined;
+					if (toolName === 'get_extended_schema') {
+						const requestedDbRaw = (tc.input as any)?.database;
 						const requestedDb = String(requestedDbRaw || database || '').trim() || database;
 						const schemaToolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
 						
-						// Add to conversation history
+						// Add tool result to conversation history
 						const schemaEntryId = this.nextHistoryEntryId(boxId);
 						history.push({
 							type: 'tool-call',
 							id: schemaEntryId,
+							callId: tc.callId,
 							tool: 'get_extended_schema',
 							args: { database: requestedDb },
 							result: schemaToolResult.result,
 							timestamp: Date.now()
 						});
 						
-						// Post message to webview with entryId
 						try {
 							this.postMessage({
 								type: 'copilotWriteQueryToolResult',
@@ -2278,28 +2060,18 @@ Completion:`;
 						} catch {
 							// ignore
 						}
-						shouldContinueToolTurn = true;
-						continue; // Process next tool in batch
+						hasOptionalToolCalls = true;
+						continue;
 					}
 
-					if (toolCall?.tool === 'get_query_optimization_best_practices') {
-						if (!this.isCopilotToolEnabled('get_query_optimization_best_practices', enabledTools)) {
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
+					if (toolName === 'get_query_optimization_best_practices') {
 						const bestPracticesResult = await this.readOptimizeQueryRules();
 						
-						// Add to conversation history
 						const bpEntryId = this.nextHistoryEntryId(boxId);
 						history.push({
 							type: 'tool-call',
 							id: bpEntryId,
+							callId: tc.callId,
 							tool: 'get_query_optimization_best_practices',
 							result: bestPracticesResult,
 							timestamp: Date.now()
@@ -2317,34 +2089,31 @@ Completion:`;
 						} catch {
 							// ignore
 						}
-						shouldContinueToolTurn = true;
-						continue; // Process next tool in batch
+						hasOptionalToolCalls = true;
+						continue;
 					}
 
-					if (toolCall?.tool === 'execute_kusto_query') {
-						if (!this.isCopilotToolEnabled('execute_kusto_query', enabledTools)) {
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
-						const rawQuery = this.extractQueryArgument(toolCall.args);
+					if (toolName === 'execute_kusto_query') {
+						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!query) {
-							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
-							postStatus('Tool call missing query argument. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
+							// Add error result for the tool call
+							const errEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: errEntryId,
+								callId: tc.callId,
+								tool: 'execute_kusto_query',
+								args: tc.input,
+								result: 'Error: query argument was empty. Please provide a non-empty KQL query.',
+								timestamp: Date.now()
+							});
+							hasOptionalToolCalls = true;
+							continue;
 						}
 						try {
 							const isControl = this.isControlCommand(query);
 							const queryWithLimit = this.appendQueryMode(query, 'take100');
-							// Control commands should not have cache directives prepended
 							const cacheDirective = isControl ? '' : this.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
@@ -2370,18 +2139,17 @@ Completion:`;
 								queryResultText = 'Query returned no results.';
 							}
 
-							// Add to conversation history
 							const execEntryId = this.nextHistoryEntryId(boxId);
 							history.push({
 								type: 'tool-call',
 								id: execEntryId,
+								callId: tc.callId,
 								tool: 'execute_kusto_query',
 								args: { query },
 								result: queryResultText,
 								timestamp: Date.now()
 							});
 
-							// Show the executed query in chat as a clickable link
 							try {
 								this.postMessage({
 									type: 'copilotExecutedQuery',
@@ -2389,28 +2157,27 @@ Completion:`;
 									entryId: execEntryId,
 									query,
 									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
-									result // Include full result for insert-with-results
+									result
 								} as any);
 							} catch {
 								// ignore
 							}
-							shouldContinueToolTurn = true;
-							continue; // Process next tool in batch
+							hasOptionalToolCalls = true;
+							continue;
 						} catch (e) {
 							const errMsg = this.getErrorMessage(e);
 							
-							// Add error to conversation history
 							const execErrEntryId = this.nextHistoryEntryId(boxId);
 							history.push({
 								type: 'tool-call',
 								id: execErrEntryId,
+								callId: tc.callId,
 								tool: 'execute_kusto_query',
 								args: { query },
 								result: `Query execution error: ${errMsg}`,
 								timestamp: Date.now()
 							});
 							
-							// Show error in chat
 							try {
 								this.postMessage({
 									type: 'copilotExecutedQuery',
@@ -2423,36 +2190,22 @@ Completion:`;
 							} catch {
 								// ignore
 							}
-							shouldContinueToolTurn = true;
-							continue; // Process next tool in batch, let LLM see the error
+							hasOptionalToolCalls = true;
+							continue;
 						}
 					}
 
-					if (toolCall?.tool === 'respond_to_query_performance_optimization_request') {
-						if (!this.isCopilotToolEnabled('respond_to_query_performance_optimization_request', enabledTools)) {
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
-						const rawQuery = this.extractQueryArgument(toolCall.args);
+					if (toolName === 'respond_to_query_performance_optimization_request') {
+						const rawQuery = this.extractQueryArgument(tc.input);
 						const improvedQuery = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!improvedQuery) {
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
+							shouldRetryAttempt = true;
 							break;
 						}
 
 						// Scenario #2: Two-layer retry logic.
-						// - Keep original query unchanged.
-						// - Ensure/reuse comparison editor and run execution retries (up to 6) for the comparison query.
-						// - After a successful execution, stop. (We do not retry based on result mismatches.)
 						const originalQueryForCompare = currentQuery;
 						let candidate = improvedQuery;
 
@@ -2481,7 +2234,6 @@ Completion:`;
 							}
 						};
 
-						// Ensure comparison editor exists and has the latest candidate query.
 						comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 						if (!comparisonBoxId) {
 							this.postMessage({
@@ -2493,7 +2245,6 @@ Completion:`;
 							return;
 						}
 
-						// Clear any previously cached summary for this pair so we don't read stale state.
 						try {
 							this.latestComparisonSummaryByKey.delete(`${boxId}::${comparisonBoxId}`);
 						} catch {
@@ -2528,7 +2279,6 @@ Completion:`;
 							}
 
 							postStatus(`Running comparison query (attempt ${execAttempt}/${maxExecAttempts})…`);
-							// Re-ensure in case the comparison box was closed/recreated.
 							comparisonBoxId = await this.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 							if (!comparisonBoxId) {
 								this.postMessage({
@@ -2571,38 +2321,49 @@ Completion:`;
 									return;
 								}
 
+								// Use native tool calling for the fix prompt too
 								postStatus('Query failed to execute. Asking Copilot to try again…');
-								const fixPrompt =
-									'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
-									'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
-									`Cluster: ${String(connection.clusterUrl || '')}\n` +
-									`Database: ${database}\n\n` +
-									'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
-									'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
-									'Execution error:\n' + lastExecErrorText + '\n\n' +
-									'Hard constraints:\n' +
-										'- Return ONLY a single @tool call and nothing else.\n' +
-										'- Use this tool: @tool respond_to_query_performance_optimization_request {"query":"<full kusto query>"}\n';
+								const fixTool: vscode.LanguageModelChatTool = {
+									name: 'respond_to_query_performance_optimization_request',
+									description: 'Provide the fixed optimized query.',
+									inputSchema: {
+										type: 'object',
+										properties: {
+											query: { type: 'string', description: 'The complete fixed KQL query.' }
+										},
+										required: ['query']
+									}
+								};
+								const fixMessages = [
+									vscode.LanguageModelChatMessage.User(
+										'Role: You are a senior Kusto Query Language (KQL) engineer.\n\n' +
+										'Task: Produce an optimized version of the original query that is functionally equivalent, but MUST execute successfully.\n\n' +
+										`Cluster: ${String(connection.clusterUrl || '')}\n` +
+										`Database: ${database}\n\n` +
+										'Original query:\n```kusto\n' + originalQueryForCompare + '\n```\n\n' +
+										'Candidate optimized query (failed):\n```kusto\n' + candidate + '\n```\n\n' +
+										'Execution error:\n' + lastExecErrorText + '\n\n' +
+										'Use the respond_to_query_performance_optimization_request tool to provide your fixed query.'
+									)
+								];
 
 								const fixResponse = await model.sendRequest(
-									[vscode.LanguageModelChatMessage.User(fixPrompt)],
-									{},
+									fixMessages,
+									{ tools: [fixTool], toolMode: vscode.LanguageModelChatToolMode.Required },
 									cts.token
 								);
-								let fixText = '';
-								for await (const fragment of fixResponse.text) {
+								let fixedQuery = '';
+								for await (const fixPart of fixResponse.stream) {
 									if (!isActive() || cts.token.isCancellationRequested) {
 										throw new Error('Copilot write-query canceled');
 									}
-									fixText += fragment;
+									if (fixPart instanceof vscode.LanguageModelToolCallPart) {
+										const rawQ = this.extractQueryArgument(fixPart.input);
+										fixedQuery = this.extractKustoCodeBlock(rawQ).trim();
+									}
 								}
-								const fixToolCall = this.tryParseCopilotToolCall(fixText);
-								const fixedRaw = fixToolCall?.tool === 'respond_to_query_performance_optimization_request'
-									? this.extractQueryArgument(fixToolCall.args)
-									: '';
-								const fixed = this.extractKustoCodeBlock(fixedRaw || fixText).trim();
-								if (fixed) {
-									candidate = fixed;
+								if (fixedQuery) {
+									candidate = fixedQuery;
 								}
 							}
 						}
@@ -2627,25 +2388,13 @@ Completion:`;
 						return;
 					}
 
-					if (toolCall?.tool === 'respond_to_all_other_queries') {
-						if (!this.isCopilotToolEnabled('respond_to_all_other_queries', enabledTools)) {
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
-
-						const rawQuery = this.extractQueryArgument(toolCall.args);
+					if (toolName === 'respond_to_all_other_queries') {
+						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!query) {
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
+							shouldRetryAttempt = true;
 							break;
 						}
 
@@ -2662,7 +2411,6 @@ Completion:`;
 							// ignore
 						}
 
-						// Cancel any in-flight manual run and run using default editor mode.
 						this.cancelRunningQuery(boxId);
 						const queryWithMode = this.appendQueryMode(query, 'take100');
 						const cacheDirective = this.buildCacheDirective(true, 1, 'days');
@@ -2681,7 +2429,6 @@ Completion:`;
 							const result = await promise;
 							if (isActive()) {
 								this.postMessage({ type: 'queryResult', result, boxId } as any);
-								// Ensure results are visible even if the user previously hid them.
 								this.postMessage({ type: 'ensureResultsVisible', boxId } as any);
 								this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
 								this.postMessage({
@@ -2716,30 +2463,17 @@ Completion:`;
 
 							priorAttempts.push({ attempt, query, error: userMessage });
 							postStatus('Query failed to execute. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
+							shouldRetryAttempt = true;
 							break;
 						}
 					}
 
-					if (toolCall?.tool === 'ask_user_clarifying_question') {
-						if (!this.isCopilotToolEnabled('ask_user_clarifying_question', enabledTools)) {
-							priorAttempts.push({
-								attempt,
-								error: 'Copilot requested a local tool that was disabled for this message.'
-							});
-							postStatus('Copilot requested a disabled tool. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
-							break;
-						}
-
-						const question = this.extractQuestionArgument(toolCall.args);
+					if (toolName === 'ask_user_clarifying_question') {
+						const question = this.extractQuestionArgument(tc.input);
 						if (!question) {
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty question argument.' });
 							postStatus('Tool call missing question argument. Retrying…');
-							generatedText = '';
-							shouldBreakAttempt = true;
+							shouldRetryAttempt = true;
 							break;
 						}
 
@@ -2748,13 +2482,13 @@ Completion:`;
 						history.push({
 							type: 'tool-call',
 							id: questionEntryId,
+							callId: tc.callId,
 							tool: 'ask_user_clarifying_question',
 							args: { question },
 							result: 'Question displayed to user. Awaiting response.',
 							timestamp: Date.now()
 						});
 
-						// Post the question to the webview
 						try {
 							this.postMessage({
 								type: 'copilotClarifyingQuestion',
@@ -2766,18 +2500,15 @@ Completion:`;
 							// ignore
 						}
 
-						// Show VS Code notification to alert user about the clarifying question
 						vscode.window.showInformationMessage(
 							'Kusto Copilot has a clarifying question for you.',
 							'View'
 						).then(selection => {
 							if (selection === 'View') {
-								// Reveal the webview panel
 								this.panel?.reveal(vscode.ViewColumn.One);
 							}
 						});
 
-						// Signal that we're done with this turn and waiting for user input
 						this.postMessage({
 							type: 'copilotWriteQueryDone',
 							boxId,
@@ -2786,27 +2517,24 @@ Completion:`;
 						} as any);
 						return;
 					}
-					} // End of for (const toolCall of toolCalls)
+				} // End of for (const tc of nativeToolCalls)
 
-					// Check control flow flags after processing all tool calls in the batch
-					if (shouldBreakAttempt) {
-						break;
-					}
-					if (shouldContinueToolTurn) {
-						// All intermediate tools processed successfully, continue to next LLM request
-						continue;
-					}
-
-					// If we get here without processing any valid tool (all tools were disabled etc.), treat as non-compliant
-					priorAttempts.push({ attempt, error: 'Copilot did not respond with a supported @tool call.' });
-					postStatus('Copilot returned a non-tool response. Retrying…', generatedText);
-					generatedText = '';
-					break;
+				if (shouldRetryAttempt) {
+					continue;
 				}
 
-				// If we reach here, we did not get a valid final tool call this attempt.
-				// Continue to the next attempt.
-				continue;
+				if (hasOptionalToolCalls) {
+					// Optional tool calls were processed; loop back for the next LLM turn
+					toolTurnCount++;
+					if (toolTurnCount >= maxToolTurns) {
+						priorAttempts.push({ attempt, error: 'Too many tool turns without a final response.' });
+						postStatus('Too many tool turns. Retrying…');
+						continue;
+					}
+					// Decrement attempt counter since this wasn't a failure, just a tool turn
+					attempt--;
+					continue;
+				}
 			}
 
 			this.postMessage({

@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.8.0] - 2026-02-06
+
+* Fixed tool calling for integrated Copilot Chat window inside of Kusto sections, it was not using the proper API for tool calls before, oops! Hadn't noticed because up until now the models were reliably obying the instructions. The latest stable release changed that. Previous change in v1.7.0 was a partial fix to the overall problem.
+
 ## [1.7.0] - 2026-02-06
 
 * Models no longer listen to instructions about local function tool calling very well. Keep finding instances were previous instructions followed well no longer work. For this case I had to adapt to allow the model to send me narrative back about the various tools it is using, which is not a bad thing in the end, so we'll just adapt.
