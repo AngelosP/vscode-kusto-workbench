@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.9.0] - Unreleased
+
+* Support for displaying and copying the Client Activity ID for Kusto queries in the results UI, and ensures that all Kusto requests are properly tagged with application and activity metadata. The changes improve traceability and user experience by surfacing the Client Activity ID in the results and allowing users to copy it easily for diagnostics or support.
+
 ## [1.8.0] - 2026-02-06
 
 * Fixed tool calling for integrated Copilot Chat window inside of Kusto sections, it was not using the proper API for tool calls before, oops! Hadn't noticed because up until now the models were reliably obying the instructions. The latest stable release changed that. Previous change in v1.7.0 was a partial fix to the overall problem.
