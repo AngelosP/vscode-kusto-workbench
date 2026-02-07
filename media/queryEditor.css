@@ -8417,4 +8417,59 @@
 		.results-tools-dropdown-menu.show-visibility-item .results-tools-dropdown-sep.results-visibility-item {
 			display: block;
 		}
+
+		/* ── Results footer (Client Activity ID) ── */
+		.results-footer {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 3px 8px;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground, #888);
+			border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+			flex-shrink: 0;
+			min-height: 22px;
+			user-select: text;
+		}
+
+		.results-footer-label {
+			white-space: nowrap;
+			font-weight: 500;
+		}
+
+		.results-footer-value {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 11px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			min-width: 0;
+		}
+
+		.results-footer-copy-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: none;
+			color: var(--vscode-descriptionForeground, #888);
+			cursor: pointer;
+			padding: 1px 3px;
+			border-radius: 3px;
+			flex-shrink: 0;
+		}
+
+		.results-footer-copy-btn:hover {
+			color: var(--vscode-foreground);
+			background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+		}
+
+		.results-footer-copy-btn svg {
+			width: 13px;
+			height: 13px;
+		}
+
+		.results-footer-copy-btn.results-footer-copy-done {
+			color: var(--vscode-terminal-ansiGreen, #89d185);
+		}
 	

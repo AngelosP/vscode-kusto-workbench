@@ -9,6 +9,7 @@ export interface QueryResult {
 		cluster: string;
 		database: string;
 		executionTime: string;
+		clientActivityId?: string;
 	};
 }
 
@@ -150,6 +151,31 @@ export class KustoQueryClient {
 		props.clientRequestId = `KW.${activityPrefix};${randomUUID()}`;
 		props.application = KustoQueryClient.APPLICATION_NAME;
 		return props;
+	}
+
+	/**
+	 * Extracts the Client Activity ID from a Kusto response's status table.
+	 * Works with both V1 (column: `ClientActivityId`) and V2 (column: `ClientRequestId`) responses.
+	 */
+	private extractClientActivityId(result: any): string | undefined {
+		try {
+			const statusTable = result?.statusTable;
+			if (!statusTable || !statusTable._rows || statusTable._rows.length === 0) {
+				return undefined;
+			}
+			// The response object exposes getCridColumn() which returns the correct column name
+			// for the protocol version (V1: "ClientActivityId", V2: "ClientRequestId").
+			// However, we access the result generically, so try both column names.
+			for (const row of statusTable.rows()) {
+				const id = row?.['ClientActivityId'] ?? row?.['ClientRequestId'];
+				if (typeof id === 'string' && id.trim()) {
+					return id.trim();
+				}
+			}
+		} catch {
+			// Extraction is best-effort; never let it break query execution.
+		}
+		return undefined;
 	}
 
 	private syncCacheClearEpoch(): void {
@@ -791,6 +817,7 @@ export class KustoQueryClient {
 			const props = await this.createRequestProperties('execute_query');
 			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
+			const clientActivityId = this.extractClientActivityId(result);
 			
 			// Get the primary result
 			const primaryResults = result.primaryResults[0];
@@ -882,7 +909,8 @@ export class KustoQueryClient {
 				metadata: {
 					cluster: connection.clusterUrl,
 					database: database,
-					executionTime
+					executionTime,
+					clientActivityId
 				}
 			};
 		} catch (error) {
@@ -947,6 +975,7 @@ export class KustoQueryClient {
 					{ allowInteractive: true, cancelableKey: key, onClient: (c2) => { client = c2; } }
 				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
+				const clientActivityId = this.extractClientActivityId(result);
 
 				const primaryResults = result.primaryResults[0];
 				const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
@@ -1012,7 +1041,8 @@ export class KustoQueryClient {
 					metadata: {
 						cluster: connection.clusterUrl,
 						database: database,
-						executionTime
+						executionTime,
+						clientActivityId
 					}
 				};
 			} catch (error) {
