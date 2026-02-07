@@ -1962,7 +1962,7 @@ Completion:`;
 			const tools = this.getCopilotChatTools(enabledTools);
 
 			const maxAttempts = 6;
-			const maxToolTurns = 10;
+			const maxToolTurns = 100;
 			let toolTurnCount = 0;
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				if (!isActive() || cts.token.isCancellationRequested) {
