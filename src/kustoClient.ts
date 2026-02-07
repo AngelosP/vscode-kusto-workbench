@@ -1,4 +1,5 @@
 import { KustoConnection } from './connectionManager';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 
 export interface QueryResult {
@@ -137,6 +138,20 @@ export class KustoQueryClient {
 		this.context = context;
 	}
 
+	private static readonly APPLICATION_NAME = 'KustoWorkbench';
+
+	/**
+	 * Creates a {@link ClientRequestProperties} with the `Application` and `ClientActivityId` headers set.
+	 * @param activityPrefix Short label for the operation, e.g. `execute_query` or `get_databases`.
+	 */
+	private async createRequestProperties(activityPrefix: string): Promise<any> {
+		const { ClientRequestProperties } = await import('azure-kusto-data');
+		const props = new ClientRequestProperties();
+		props.clientRequestId = `KW.${activityPrefix};${randomUUID()}`;
+		props.application = KustoQueryClient.APPLICATION_NAME;
+		return props;
+	}
+
 	private syncCacheClearEpoch(): void {
 		if (!this.context) {
 			return;
@@ -269,6 +284,7 @@ export class KustoQueryClient {
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 		const effectiveToken = await this.getEffectiveAccessToken(session);
 		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
+		kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
 		return { client: new Client(kcsb), clusterEndpoint, accountId };
 	}
 
@@ -581,6 +597,7 @@ export class KustoQueryClient {
 			const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 			const effectiveToken = await this.getEffectiveAccessToken(session);
 			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, effectiveToken);
+			kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
 			const entry: CachedClientEntry = { client: new Client(kcsb), clusterEndpoint: clusterEndpoint2, accountId };
 			if (storeInMain) {
 				this.clients.set(connection.id, entry);
@@ -645,6 +662,7 @@ export class KustoQueryClient {
 					const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 					const effectiveToken = await this.getEffectiveAccessToken(session);
 					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
+					kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
 					const client = new Client(kcsb);
 					await this.setClusterAccountId(clusterEndpoint, session.account.id);
 					await this.upsertKnownAccount(session.account);
@@ -729,9 +747,10 @@ export class KustoQueryClient {
 				}
 			}
 
+			const props = await this.createRequestProperties('get_databases');
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
-				(client) => client.execute('', '.show databases'),
+				(client) => client.execute('', '.show databases', props),
 				{ allowInteractive: opts?.allowInteractive }
 			);
 			
@@ -769,7 +788,8 @@ export class KustoQueryClient {
 		const startTime = Date.now();
 		
 		try {
-			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query));
+			const props = await this.createRequestProperties('execute_query');
+			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 			
 			// Get the primary result
@@ -920,9 +940,10 @@ export class KustoQueryClient {
 				if (cancelled) {
 					throw new QueryCancelledError();
 				}
+				const props = await this.createRequestProperties('execute_query');
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
-					(c) => c.execute(database, query),
+					(c) => c.execute(database, query, props),
 					{ allowInteractive: true, cancelableKey: key, onClient: (c2) => { client = c2; } }
 				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
@@ -1050,7 +1071,8 @@ export class KustoQueryClient {
 		let lastError: unknown = null;
 		for (const command of tryCommands) {
 			try {
-				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command));
+				const props = await this.createRequestProperties('get_schema');
+				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command, props));
 				const debug = this.buildSchemaDebug(result, command);
 				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
 
