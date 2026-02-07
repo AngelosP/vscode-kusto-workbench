@@ -5395,6 +5395,8 @@
 		/* Add a bit of space under the error UX so it doesn't visually collide with the bottom edge/handle. */
 		.results-header.kusto-error-ux {
 			margin-bottom: 10px;
+			flex-direction: column;
+			align-items: flex-start;
 		}
 
 		.results-title-row {
@@ -8418,34 +8420,62 @@
 			display: block;
 		}
 
-		/* ── Results footer (Client Activity ID) ── */
-		.results-footer {
-			display: flex;
+		/* ── Results label tooltip (Client Activity ID) ── */
+		.results-label-tooltip-anchor {
+			position: relative;
+			cursor: default;
+		}
+
+		.results-label-tooltip {
+			display: none;
+			position: absolute;
+			top: calc(100% + 4px);
+			left: 0;
+			z-index: 200;
+			background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background, #2d2d2d));
+			color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground, #ccc));
+			border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-editorWidget-border, #454545));
+			border-radius: 4px;
+			padding: 6px 8px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+			white-space: nowrap;
 			align-items: center;
 			gap: 6px;
-			padding: 3px 8px;
-			font-size: 11px;
-			color: var(--vscode-descriptionForeground, #888);
-			flex-shrink: 0;
-			min-height: 22px;
+			font-size: 12px;
+			font-weight: normal;
 			user-select: text;
+			pointer-events: auto;
 		}
 
-		.results-footer-label {
-			white-space: nowrap;
+		/* Invisible bridge so the mouse can travel from the title row to the tooltip */
+		.results-label-tooltip::before {
+			content: '';
+			position: absolute;
+			bottom: 100%;
+			left: 0;
+			width: 100%;
+			height: 10px;
+		}
+
+		.results-label-tooltip-anchor:hover .results-label-tooltip,
+		.results-label-tooltip:hover {
+			display: inline-flex;
+		}
+
+		.results-label-tooltip-title {
+			color: var(--vscode-descriptionForeground, #888);
+			font-size: 11px;
 			font-weight: 500;
+			margin-right: 2px;
 		}
 
-		.results-footer-value {
+		.results-label-tooltip-value {
 			font-family: var(--vscode-editor-font-family, monospace);
 			font-size: 11px;
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			min-width: 0;
+			user-select: all;
 		}
 
-		.results-footer-copy-btn {
+		.results-label-tooltip-copy {
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
@@ -8453,22 +8483,44 @@
 			border: none;
 			color: var(--vscode-descriptionForeground, #888);
 			cursor: pointer;
-			padding: 1px 3px;
+			padding: 2px 4px;
 			border-radius: 3px;
 			flex-shrink: 0;
 		}
 
-		.results-footer-copy-btn:hover {
+		.results-label-tooltip-copy:hover {
 			color: var(--vscode-foreground);
 			background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 		}
 
-		.results-footer-copy-btn svg {
+		.results-label-tooltip-copy svg {
 			width: 13px;
 			height: 13px;
 		}
 
-		.results-footer-copy-btn.results-footer-copy-done {
+		.results-label-tooltip-copy.results-footer-copy-done {
 			color: var(--vscode-terminal-ansiGreen, #89d185);
+		}
+
+		/* ── Inline Client Activity ID (shown in error UX) ── */
+		.kusto-error-activity-id {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 6px;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground, #888);
+			user-select: text;
+		}
+
+		.kusto-error-activity-id-label {
+			white-space: nowrap;
+			font-weight: 500;
+		}
+
+		.kusto-error-activity-id-value {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 11px;
+			user-select: all;
 		}
 	

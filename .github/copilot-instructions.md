@@ -262,3 +262,11 @@ The extension integrates with VS Code's Copilot APIs for:
     * `respond_to_query_performance_optimization_request`
     * `respond_to_all_other_queries`
     * `ask_user_clarifying_question`
+
+### VS Code Agent Tools (registered via `registerKustoWorkbenchTools()`)
+
+These tools are registered with `vscode.lm.registerTool()` and available to the custom VS Code agent:
+
+| Tool ID | Tool Reference Name | Purpose |
+| ------- | ------------------- | ------- |
+| `kusto-workbench_refresh-schema` | `refreshKustoSchema` | Force-refreshes schema from Kusto cluster, updates cache, returns schemas |

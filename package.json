@@ -267,6 +267,26 @@
         }
       },
       {
+        "name": "kusto-workbench_refresh-schema",
+        "tags": ["kusto", "azure", "data-explorer", "schema", "refresh", "reload"],
+        "toolReferenceName": "refreshKustoSchema",
+        "displayName": "Refresh Kusto Schema",
+        "modelDescription": "Force-refreshes the database schema for a given Kusto cluster by fetching it live from the cluster. This bypasses any cache, fetches the latest schema for all databases on the cluster, updates the local cache, and returns the refreshed schemas (tables and functions). Use this when the cached schema may be outdated or when the user explicitly asks to refresh or reload the schema.",
+        "userDescription": "Refresh database schemas by fetching the latest from the Kusto cluster.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(sync)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "clusterUrl": {
+              "type": "string",
+              "description": "The Kusto cluster URL to refresh schemas for (e.g., 'https://help.kusto.windows.net')"
+            }
+          },
+          "required": ["clusterUrl"]
+        }
+      },
+      {
         "name": "kusto-workbench_list-sections",
         "tags": ["kusto", "workbench", "sections", "notebook"],
         "toolReferenceName": "listSections",

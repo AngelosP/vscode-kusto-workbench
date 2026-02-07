@@ -2833,11 +2833,12 @@ function displayResultForBox(result, boxId, options) {
 		'</div>';
 
 	const clientActivityId = metadata && typeof metadata.clientActivityId === 'string' ? metadata.clientActivityId : '';
-	const clientActivityIdHtml = clientActivityId
-		? '<div class="results-footer" id="' + boxId + '_results_footer">' +
-		  '<span class="results-footer-label">Client Activity ID:</span>' +
-		  '<span class="results-footer-value" id="' + boxId + '_client_activity_id" title="' + clientActivityId + '">' + clientActivityId + '</span>' +
-		  '<button class="results-footer-copy-btn" type="button" onclick="__kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
+	const titleRowTooltipClass = clientActivityId ? ' results-label-tooltip-anchor' : '';
+	const resultsLabelTooltipHtml = clientActivityId
+		? '<div class="results-label-tooltip" id="' + boxId + '_activity_id_tooltip">' +
+		  '<span class="results-label-tooltip-title">Client Activity ID</span>' +
+		  '<span class="results-label-tooltip-value" id="' + boxId + '_client_activity_id">' + clientActivityId + '</span>' +
+		  '<button class="results-label-tooltip-copy" type="button" onclick="event.stopPropagation(); __kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
 		  copyIconSvg +
 		  '</button>' +
 		  '</div>'
@@ -2845,10 +2846,11 @@ function displayResultForBox(result, boxId, options) {
 
 	let html =
 		'<div class="results-header">' +
-		'<div class="results-title-row">' +
+		'<div class="results-title-row' + titleRowTooltipClass + '">' +
 		'<strong>' + label + ':</strong><span class="results-row-col-info"> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns</span>' +
 		execPart +
 		'<button class="unified-btn-secondary tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
+		resultsLabelTooltipHtml +
 		'</div>' +
 		'<div class="results-tools-row">' +
 		// Collapsed Tools dropdown (visible when narrow)
@@ -2906,7 +2908,6 @@ function displayResultForBox(result, boxId, options) {
 		'</table>' +
 		'</div>' +
 		'</div>' +
-		clientActivityIdHtml +
 		'<div class="kusto-sort-modal" id="' + boxId + '_sort_modal" onclick="closeSortDialogOnBackdrop(event, \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 		'<div class="kusto-sort-dialog" onclick="event.stopPropagation();">' +
 		'<div class="kusto-sort-header">' +
@@ -3213,11 +3214,29 @@ function __kustoEscapeForHtmlAttribute(s) {
 		.replace(/'/g, '&#39;');
 }
 
-function __kustoRenderErrorUxHtml(boxId, model) {
+function __kustoRenderActivityIdInlineHtml(boxId, clientActivityId) {
+	if (!clientActivityId || typeof clientActivityId !== 'string') {
+		return '';
+	}
+	const bid = String(boxId || '');
+	const copyIconSvg = __kustoGetCopyIconSvg();
+	return (
+		'<div class="kusto-error-activity-id">' +
+		'<span class="kusto-error-activity-id-label">Client Activity ID:</span> ' +
+		'<span class="kusto-error-activity-id-value" id="' + bid + '_client_activity_id">' + __kustoEscapeForHtml(clientActivityId) + '</span>' +
+		'<button class="results-label-tooltip-copy" type="button" onclick="event.stopPropagation(); __kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(bid) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
+		copyIconSvg +
+		'</button>' +
+		'</div>'
+	);
+}
+
+function __kustoRenderErrorUxHtml(boxId, model, clientActivityId) {
 	if (!model || model.kind === 'none') {
 		return '';
 	}
 	const bid = String(boxId || '');
+	const activityIdHtml = __kustoRenderActivityIdInlineHtml(bid, clientActivityId);
 	if (model.kind === 'badrequest') {
 		const msgEsc = __kustoEscapeForHtml(model.message);
 		let locHtml = '';
@@ -3237,6 +3256,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 		return (
 			'<div class="results-header kusto-error-ux" style="color: var(--vscode-errorForeground);">' +
 			'<div><strong>' + msgEsc + '</strong>' + locHtml + '</div>' +
+			activityIdHtml +
 			'</div>'
 		);
 	}
@@ -3247,6 +3267,7 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 			'<pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family);">' +
 			pre +
 			'</pre>' +
+			activityIdHtml +
 			'</div>'
 		);
 	}
@@ -3255,13 +3276,14 @@ function __kustoRenderErrorUxHtml(boxId, model) {
 	return (
 		'<div class="results-header kusto-error-ux" style="color: var(--vscode-errorForeground);">' +
 		lines +
+		activityIdHtml +
 		'</div>'
 	);
 }
 
 // Centralized error UX renderer (hidden when no error).
 try {
-	window.__kustoRenderErrorUx = function (boxId, error) {
+	window.__kustoRenderErrorUx = function (boxId, error, clientActivityId) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
 		try { __kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
@@ -3292,7 +3314,7 @@ try {
 			} catch { /* ignore */ }
 			return;
 		}
-		const html = __kustoRenderErrorUxHtml(bid, model);
+		const html = __kustoRenderErrorUxHtml(bid, model, clientActivityId);
 		resultsDiv.innerHTML = html;
 		resultsDiv.classList.add('visible');
 		try {

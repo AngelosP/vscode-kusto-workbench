@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
+tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'refreshKustoSchema', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
 
 model: Claude Opus 4.6
 
@@ -23,6 +23,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#listKustoConnections` | List configured cluster connections |
 | `#listKustoFavorites` | List favorite cluster/database pairs |
 | `#listKustoSchemas` | View database schemas (tables, functions) |
+| `#refreshKustoSchema` | Force-refresh schema from Kusto cluster (bypasses cache) |
 | `#listSections` | List notebook sections with IDs and validation status |
 | `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
 | `#removeSection` | Remove a section by ID |

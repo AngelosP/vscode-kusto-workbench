@@ -3,9 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [1.9.0] - Unreleased
+## [1.9.0] - 2026-02-07
 
 * Support for displaying and copying the Client Activity ID for Kusto queries in the results UI, and ensures that all Kusto requests are properly tagged with application and activity metadata. The changes improve traceability and user experience by surfacing the Client Activity ID in the results and allowing users to copy it easily for diagnostics or support.
+* New tool for Kusto Workbench agent to be able to get the schema of a cluster for which there is no cached data. Helps when it is trying to find data for you across many different connections. If this becomes a use case for people, we can make a dedicated agent that looks for specific data across many different connections.
+* Bugs
+    * In some cases the tool calls were not followed up with tool results in the convesation history and the Anthropic API did not love that.
 
 ## [1.8.0] - 2026-02-06
 

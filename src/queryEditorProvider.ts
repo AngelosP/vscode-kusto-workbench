@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
+import { DatabaseSchemaIndex, KustoQueryClient, QueryExecutionError } from './kustoClient';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
@@ -666,6 +666,11 @@ export class QueryEditorProvider {
 		toolOrchestrator.setSchemaGetter(async (clusterUrl?: string, database?: string) => {
 			return this.getCachedSchemasForTools(clusterUrl, database);
 		});
+
+		// Set up the schema refresher (force-fetches from Kusto and updates cache)
+		toolOrchestrator.setSchemaRefresher(async (clusterUrl: string) => {
+			return this.refreshSchemaForTools(clusterUrl);
+		});
 	}
 
 	private disconnectToolOrchestrator(): void {
@@ -673,6 +678,7 @@ export class QueryEditorProvider {
 		toolOrchestrator.setWebviewMessagePoster(undefined);
 		toolOrchestrator.setStateGetter(undefined);
 		toolOrchestrator.setSchemaGetter(undefined);
+		toolOrchestrator.setSchemaRefresher(undefined);
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
@@ -738,6 +744,68 @@ export class QueryEditorProvider {
 		}
 		
 		return results;
+	}
+
+	/**
+	 * Force-refreshes the schema for all databases on a given cluster.
+	 * Fetches from Kusto, updates both in-memory and disk caches, and returns the schemas.
+	 */
+	private async refreshSchemaForTools(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+		// Find a matching connection by cluster URL
+		const connections = this.connectionManager.getConnections();
+		const normalizedInput = clusterUrl.replace(/\/+$/, '').toLowerCase();
+		const connection = connections.find(c => c.clusterUrl.replace(/\/+$/, '').toLowerCase() === normalizedInput);
+		if (!connection) {
+			// No saved connection — create an ephemeral one so we can still authenticate
+			const ephemeral: KustoConnection = { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
+			return this.refreshSchemaForConnection(ephemeral);
+		}
+		return this.refreshSchemaForConnection(connection);
+	}
+
+	private async refreshSchemaForConnection(connection: KustoConnection): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
+		try {
+			// Get all databases for this cluster
+			const databases = await this.kustoClient.getDatabases(connection, true);
+			if (databases.length === 0) {
+				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
+			}
+
+			const errors: string[] = [];
+			for (const db of databases) {
+				try {
+					const result = await this.kustoClient.getDatabaseSchema(connection, db, true);
+					const schema = result.schema;
+
+					// Persist to disk cache
+					const cacheKey = `${connection.clusterUrl.replace(/\/+$/, '')}|${db}`;
+					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
+					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+
+					const tables = schema.tables || [];
+					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
+					schemas.push({
+						clusterUrl: connection.clusterUrl,
+						database: db,
+						tables,
+						functions
+					});
+				} catch (dbErr) {
+					errors.push(`${db}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
+				}
+			}
+
+			if (errors.length > 0 && schemas.length === 0) {
+				return { schemas, error: `Failed to refresh schema for all databases: ${errors.join('; ')}` };
+			}
+			if (errors.length > 0) {
+				return { schemas, error: `Some databases failed: ${errors.join('; ')}` };
+			}
+			return { schemas };
+		} catch (err) {
+			return { schemas, error: `Failed to refresh schema: ${err instanceof Error ? err.message : String(err)}` };
+		}
 	}
 
 	async openEditor(): Promise<void> {
@@ -1396,6 +1464,36 @@ export class QueryEditorProvider {
 	}
 
 	/**
+	 * Ensures every tool call from the latest assistant message has a corresponding
+	 * tool-result entry in the conversation history. Missing results cause 400 errors
+	 * with Claude's API ("tool_use ids were found without tool_result blocks").
+	 */
+	private ensureAllToolCallsHaveResults(
+		history: ConversationHistoryEntry[],
+		nativeToolCalls: Array<{ callId: string; name: string; input: any }>,
+		boxId: string
+	): void {
+		const existingCallIds = new Set(
+			history
+				.filter((e): e is Extract<ConversationHistoryEntry, { type: 'tool-call' }> => e.type === 'tool-call')
+				.map(e => e.callId)
+		);
+		for (const tc of nativeToolCalls) {
+			if (!existingCallIds.has(tc.callId)) {
+				history.push({
+					type: 'tool-call',
+					id: this.nextHistoryEntryId(boxId),
+					callId: tc.callId,
+					tool: tc.name,
+					args: tc.input,
+					result: '[Tool call was not processed — the turn ended before a result could be produced.]',
+					timestamp: Date.now()
+				});
+			}
+		}
+	}
+
+	/**
 	 * Opens tool result content in a new VS Code editor tab.
 	 */
 	private async openToolResultInEditor(
@@ -1776,6 +1874,42 @@ Completion:`;
 			}
 		}
 
+		// Safety check: verify every assistant tool_use has a matching tool_result.
+		// This defends against any code path that might add an assistant-message with
+		// tool calls without recording all tool results.
+		for (let i = 0; i < messages.length; i++) {
+			const msg = messages[i];
+			if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
+				const toolCallParts = msg.content.filter(
+					(p): p is vscode.LanguageModelToolCallPart => p instanceof vscode.LanguageModelToolCallPart
+				);
+				if (toolCallParts.length > 0) {
+					// Collect tool_result callIds from the messages that follow
+					const resultCallIds = new Set<string>();
+					for (let j = i + 1; j < messages.length; j++) {
+						for (const part of messages[j].content) {
+							if (part instanceof vscode.LanguageModelToolResultPart) {
+								resultCallIds.add(part.callId);
+							}
+						}
+						// Stop at the next assistant message
+						if (messages[j].role === vscode.LanguageModelChatMessageRole.Assistant) {
+							break;
+						}
+					}
+					// Insert missing tool_result messages right after the assistant message
+					const missing = toolCallParts.filter(tc => !resultCallIds.has(tc.callId));
+					for (let k = missing.length - 1; k >= 0; k--) {
+						messages.splice(i + 1, 0, vscode.LanguageModelChatMessage.User([
+							new vscode.LanguageModelToolResultPart(missing[k].callId, [
+								new vscode.LanguageModelTextPart('[Tool result was not recorded]')
+							])
+						]));
+					}
+				}
+			}
+		}
+
 		// Prior attempts (within current message execution only)
 		const attempts = args.priorAttempts || [];
 		if (attempts.length > 0) {
@@ -2024,6 +2158,7 @@ Completion:`;
 				let shouldRetryAttempt = false;
 				let hasOptionalToolCalls = false;
 
+				try { // finally → ensure every tool_use gets a matching tool_result
 				for (const tc of nativeToolCalls) {
 					if (!isActive() || cts.token.isCancellationRequested) {
 						throw new Error('Copilot write-query canceled');
@@ -2518,6 +2653,12 @@ Completion:`;
 						return;
 					}
 				} // End of for (const tc of nativeToolCalls)
+				} finally {
+					// Guarantee every tool_use in the assistant message gets a tool_result
+					// in the conversation history. Without this, retries/returns can leave
+					// orphaned tool_use entries which cause 400 errors from the LLM API.
+					this.ensureAllToolCallsHaveResults(history, nativeToolCalls, boxId);
+				}
 
 				if (shouldRetryAttempt) {
 					continue;
@@ -4165,8 +4306,9 @@ ${query}
 			if (isStillActiveRun()) {
 				this.logQueryExecutionError(error, connection, message.database, boxId, finalQuery);
 				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
+				const clientActivityId = error instanceof QueryExecutionError ? error.clientActivityId : undefined;
 				vscode.window.showErrorMessage(userMessage);
-				this.postMessage({ type: 'queryError', error: userMessage, boxId });
+				this.postMessage({ type: 'queryError', error: userMessage, boxId, clientActivityId });
 			}
 		} finally {
 			if (boxId) {

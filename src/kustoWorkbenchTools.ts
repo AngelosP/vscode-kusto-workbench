@@ -31,6 +31,11 @@ export interface ListSchemasInput {
 	database?: string;
 }
 
+export interface RefreshKustoSchemaInput {
+	/** The cluster URL for which to refresh the schema (e.g., 'https://help.kusto.windows.net'). */
+	clusterUrl: string;
+}
+
 export interface ListSectionsInput {
 	// No input required
 }
@@ -193,6 +198,8 @@ export class KustoWorkbenchToolOrchestrator {
 	private stateGetter: (() => Promise<ToolSection[] | undefined>) | undefined;
 	// Callback to get cached schemas
 	private schemaGetter: ((clusterUrl?: string, database?: string) => Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>>) | undefined;
+	// Callback to force-refresh schema from Kusto and update cache
+	private schemaRefresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
 	// Pending responses from webview
 	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private responseSeq = 0;
@@ -219,6 +226,10 @@ export class KustoWorkbenchToolOrchestrator {
 
 	setSchemaGetter(getter: ((clusterUrl?: string, database?: string) => Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>>) | undefined): void {
 		this.schemaGetter = getter;
+	}
+
+	setSchemaRefresher(refresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined): void {
+		this.schemaRefresher = refresher;
 	}
 
 	/**
@@ -292,6 +303,17 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 		}
 		return { favorites };
+	}
+
+	async refreshSchema(input: RefreshKustoSchemaInput): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+		if (!this.schemaRefresher) {
+			throw new Error('Kusto Workbench is not currently open. Please open a .kqlx file or use the Query Editor first.');
+		}
+		const clusterUrl = (input.clusterUrl || '').trim();
+		if (!clusterUrl) {
+			return { schemas: [], error: 'clusterUrl is required.' };
+		}
+		return this.schemaRefresher(clusterUrl);
 	}
 
 	async listSchemas(input: ListSchemasInput): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> }> {
@@ -559,6 +581,37 @@ export class ListFavoritesTool implements vscode.LanguageModelTool<ListFavorites
 				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
 			]);
 		}
+	}
+}
+
+export class RefreshKustoSchemaTool implements vscode.LanguageModelTool<RefreshKustoSchemaInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<RefreshKustoSchemaInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.refreshSchema(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<RefreshKustoSchemaInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const clusterUrl = input?.clusterUrl || 'unknown cluster';
+		return {
+			invocationMessage: `Refreshing schema for ${clusterUrl}...`
+		};
 	}
 }
 
@@ -844,6 +897,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_list-connections', new ListConnectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-favorites', new ListFavoritesTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-schemas', new ListSchemasTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_refresh-schema', new RefreshKustoSchemaTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sections', new ListSectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),

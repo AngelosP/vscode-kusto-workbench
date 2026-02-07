@@ -84,6 +84,15 @@ export class QueryCancelledError extends Error {
 	}
 }
 
+export class QueryExecutionError extends Error {
+	readonly clientActivityId?: string;
+	constructor(message: string, clientActivityId?: string) {
+		super(message);
+		this.name = 'QueryExecutionError';
+		this.clientActivityId = clientActivityId;
+	}
+}
+
 type StoredAuthAccount = {
 	/** VS Code AuthenticationSession.account.id */
 	id: string;
@@ -813,8 +822,10 @@ export class KustoQueryClient {
 	): Promise<QueryResult> {
 		const startTime = Date.now();
 		
+		let requestClientActivityId: string | undefined;
 		try {
 			const props = await this.createRequestProperties('execute_query');
+			requestClientActivityId = props.clientRequestId;
 			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 			const clientActivityId = this.extractClientActivityId(result);
@@ -928,7 +939,7 @@ export class KustoQueryClient {
 				errorMessage = String(error);
 			}
 			
-			throw new Error(errorMessage);
+			throw new QueryExecutionError(errorMessage, requestClientActivityId);
 		}
 	}
 
@@ -963,12 +974,14 @@ export class KustoQueryClient {
 				throw new QueryCancelledError();
 			}
 			const startTime = Date.now();
+			let requestClientActivityId: string | undefined;
 			try {
 				// Check again right before executing (cancellation can happen at any time).
 				if (cancelled) {
 					throw new QueryCancelledError();
 				}
 				const props = await this.createRequestProperties('execute_query');
+				requestClientActivityId = props.clientRequestId;
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
 					(c) => c.execute(database, query, props),
@@ -1067,7 +1080,7 @@ export class KustoQueryClient {
 				} else {
 					errorMessage = String(error);
 				}
-				throw new Error(errorMessage);
+				throw new QueryExecutionError(errorMessage, requestClientActivityId);
 			}
 		})();
 

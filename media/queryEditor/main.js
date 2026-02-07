@@ -1268,7 +1268,8 @@ window.addEventListener('message', async event => {
 					}
 				} catch { /* ignore */ }
 				if (boxId && typeof window.__kustoRenderErrorUx === 'function') {
-					window.__kustoRenderErrorUx(boxId, err);
+					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
+					window.__kustoRenderErrorUx(boxId, err, clientActivityId);
 				} else if (typeof displayError === 'function') {
 					displayError(err);
 				} else {
