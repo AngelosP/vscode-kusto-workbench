@@ -34,8 +34,9 @@ export class GitHubProvider implements FileSourceProvider {
 		}
 
 		// github.com/{owner}/{repo}/blob/{ref}/{path...}
+		// Also support /blame/ URLs so our tab persists when the user switches to blame view.
 		const parts = url.pathname.split('/').filter(Boolean);
-		if (parts.length < 5 || parts[2] !== 'blob') return null;
+		if (parts.length < 5 || (parts[2] !== 'blob' && parts[2] !== 'blame')) return null;
 
 		const [owner, repo, , ref, ...pathParts] = parts;
 		// Use github.com/…/raw/… (same origin) instead of raw.githubusercontent.com

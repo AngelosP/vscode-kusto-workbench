@@ -41,6 +41,12 @@ let iframeAnchor: HTMLElement | null = null;
 // Fallback button-mode state
 let renderButton: HTMLElement | null = null;
 
+// Cross-navigation state (survives cleanup so we remember user intent across SPA navigations)
+/** True when user explicitly clicked Code/Blame to leave the Kusto tab. */
+let wasKustoDeactivatedByUser = false;
+/** Last raw URL detected — used to reset deactivation flag when navigating to a different file. */
+let lastDetectedRawUrl: string | null = null;
+
 // ---- Main entry point ----
 
 function init() {
@@ -72,6 +78,13 @@ function detectAndSetup(retryCount = 0) {
 		console.log(LOG_PREFIX, 'Provider matched but no supported file detected');
 		return;
 	}
+
+	// If this is a different file than what we last saw, reset the deactivation flag
+	// so the Kusto tab auto-activates on the new file.
+	if (lastDetectedRawUrl !== null && lastDetectedRawUrl !== currentFile.rawContentUrl) {
+		wasKustoDeactivatedByUser = false;
+	}
+	lastDetectedRawUrl = currentFile.rawContentUrl;
 
 	console.log(LOG_PREFIX, 'Detected file:', currentFile.filename, '| Provider:', currentProvider.id);
 	injectStyles();
@@ -222,21 +235,30 @@ function injectTab(info: ViewModeTabBarInfo) {
 		activateKustoTab();
 	});
 
-	// Wire clicks on original tabs to deactivate ours
+	// Wire clicks on original tabs to deactivate ours and re-select the clicked tab
 	for (const tab of info.existingTabs) {
 		const btn = tab.querySelector('button') || tab;
-		btn.addEventListener('click', () => deactivateKustoTab());
+		btn.addEventListener('click', () => deactivateKustoTab(tab));
 	}
 
-	// Auto-activate by default
-	activateKustoTab();
+	// Auto-activate by default, unless the user explicitly navigated away from Kusto
+	// for this file (e.g. clicked Code or Blame)
+	if (!wasKustoDeactivatedByUser) {
+		activateKustoTab();
+	}
 }
 
 function activateKustoTab() {
 	if (!tabBarInfo || !kustoTab || !currentProvider) return;
 
-	// Deactivate all existing tabs
-	for (const tab of tabBarInfo.existingTabs) {
+	wasKustoDeactivatedByUser = false;
+
+	// Deactivate all sibling tabs (including any React may have re-rendered)
+	const allSiblingItems = kustoTab.parentElement
+		? Array.from(kustoTab.parentElement.querySelectorAll(':scope > li'))
+		: tabBarInfo.existingTabs;
+	for (const tab of allSiblingItems) {
+		if (tab === kustoTab) continue;
 		tab.removeAttribute('data-selected');
 		const btn = tab.querySelector('button');
 		if (btn) btn.setAttribute('aria-current', 'false');
@@ -255,16 +277,25 @@ function activateKustoTab() {
 	}
 }
 
-function deactivateKustoTab() {
+function deactivateKustoTab(clickedTab?: HTMLElement) {
 	if (!kustoTab || !tabBarInfo) return;
+
+	wasKustoDeactivatedByUser = true;
 
 	// Deactivate our tab
 	kustoTab.removeAttribute('data-selected');
 	const kustoBtn = kustoTab.querySelector('button');
 	if (kustoBtn) kustoBtn.setAttribute('aria-current', 'false');
 
-	// Note: we don't re-activate the original tab — GitHub's own click handler
-	// will set data-selected on whichever tab the user clicked (Code or Blame).
+	// Re-activate the tab the user clicked. We must do this ourselves because
+	// activateKustoTab() previously removed data-selected from all tabs, and
+	// if the URL doesn't change (e.g. clicking Code while already on /blob/),
+	// React won't re-render to restore it.
+	if (clickedTab) {
+		clickedTab.setAttribute('data-selected', '');
+		const btn = clickedTab.querySelector('button');
+		if (btn) btn.setAttribute('aria-current', 'true');
+	}
 
 	hideViewer();
 }
