@@ -13,6 +13,7 @@ import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText } from './schemaIndexUtils';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
+import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults } from './copilotConversationUtils';
 import { toolOrchestrator } from './extension';
 
 const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
@@ -120,12 +121,7 @@ type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; req
 
 type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
 
-// Conversation history entry types for Copilot Chat
-type ConversationHistoryEntry =
-	| { type: 'user-message'; id: string; text: string; querySnapshot?: string; timestamp: number }
-	| { type: 'assistant-message'; id: string; text: string; toolCalls?: Array<{ callId: string; name: string; input: object }>; timestamp: number }
-	| { type: 'tool-call'; id: string; callId: string; tool: string; args?: unknown; result: string; removed?: boolean; timestamp: number }
-	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number };
+// ConversationHistoryEntry type is imported from './copilotConversationUtils'
 
 type IncomingWebviewMessage =
 	| { type: 'getConnections' }
@@ -1467,30 +1463,18 @@ export class QueryEditorProvider {
 	 * Ensures every tool call from the latest assistant message has a corresponding
 	 * tool-result entry in the conversation history. Missing results cause 400 errors
 	 * with Claude's API ("tool_use ids were found without tool_result blocks").
+	 *
+	 * Delegates to insertMissingToolCallResults which inserts at the correct
+	 * position (right after the owning assistant-message) instead of pushing
+	 * to the end of the array — preventing race-condition-induced orphaned
+	 * tool_result entries.
 	 */
 	private ensureAllToolCallsHaveResults(
 		history: ConversationHistoryEntry[],
 		nativeToolCalls: Array<{ callId: string; name: string; input: any }>,
 		boxId: string
 	): void {
-		const existingCallIds = new Set(
-			history
-				.filter((e): e is Extract<ConversationHistoryEntry, { type: 'tool-call' }> => e.type === 'tool-call')
-				.map(e => e.callId)
-		);
-		for (const tc of nativeToolCalls) {
-			if (!existingCallIds.has(tc.callId)) {
-				history.push({
-					type: 'tool-call',
-					id: this.nextHistoryEntryId(boxId),
-					callId: tc.callId,
-					tool: tc.name,
-					args: tc.input,
-					result: '[Tool call was not processed — the turn ended before a result could be produced.]',
-					timestamp: Date.now()
-				});
-			}
-		}
+		insertMissingToolCallResults(history, nativeToolCalls, () => this.nextHistoryEntryId(boxId));
 	}
 
 	/**
@@ -1811,6 +1795,11 @@ Completion:`;
 		priorAttempts?: Array<{ attempt: number; query?: string; error?: string }>;
 	}): vscode.LanguageModelChatMessage[] {
 		const history = this.copilotConversationHistoryByBoxId.get(args.boxId) || [];
+
+		// Sanitize the history to fix any corruption from race conditions
+		// (e.g., cancelled requests leaving orphaned or mis-positioned tool-call entries).
+		sanitizeConversationHistory(history);
+
 		const messages: vscode.LanguageModelChatMessage[] = [];
 
 		// System preamble as first User message
@@ -1905,6 +1894,33 @@ Completion:`;
 								new vscode.LanguageModelTextPart('[Tool result was not recorded]')
 							])
 						]));
+					}
+				}
+			}
+		}
+
+		// Reverse safety check: verify every tool_result references a tool_use
+		// in a preceding assistant message. Remove orphaned tool_results.
+		{
+			const allToolUseIds = new Set<string>();
+			for (const msg of messages) {
+				if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
+					for (const part of msg.content) {
+						if (part instanceof vscode.LanguageModelToolCallPart) {
+							allToolUseIds.add(part.callId);
+						}
+					}
+				}
+			}
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const msg = messages[i];
+				if (msg.role === vscode.LanguageModelChatMessageRole.User) {
+					const hasOnlyOrphanedToolResults = msg.content.every(
+						(p) => p instanceof vscode.LanguageModelToolResultPart && !allToolUseIds.has(p.callId)
+					);
+					if (hasOnlyOrphanedToolResults && msg.content.length > 0 &&
+						msg.content.some((p) => p instanceof vscode.LanguageModelToolResultPart)) {
+						messages.splice(i, 1);
 					}
 				}
 			}

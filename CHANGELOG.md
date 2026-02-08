@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [1.9.1] - 2026-02-07
+
+* Bugs
+    * In some cases the tool calls were not followed up with tool results in the convesation history and the Anthropic API did not love that. Looks like the fix for 1.9.0 was not enough.
+
 ## [1.9.0] - 2026-02-07
 
 * Support for displaying and copying the Client Activity ID for Kusto queries in the results UI, and ensures that all Kusto requests are properly tagged with application and activity metadata. The changes improve traceability and user experience by surfacing the Client Activity ID in the results and allowing users to copy it easily for diagnostics or support.
