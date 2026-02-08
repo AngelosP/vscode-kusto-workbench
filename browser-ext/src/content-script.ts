@@ -466,7 +466,7 @@ function findContentToHideForTabMode(): { anchor: HTMLElement; siblings: HTMLEle
 	let headerEl: HTMLElement | null = tabBarInfo.container;
 	for (let i = 0; i < 10 && headerEl; i++) {
 		if (!headerEl.parentElement) break;
-		const p = headerEl.parentElement;
+		const p: HTMLElement = headerEl.parentElement;
 		// Stop when we reach an element whose next sibling would be the code view,
 		// i.e., the parent is the overall file viewer wrapper (not just the header).
 		const nextSib = headerEl.nextElementSibling;

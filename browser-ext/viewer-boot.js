@@ -365,6 +365,11 @@
 		if (__kustoLoadFileHandled) return;
 		__kustoLoadFileHandled = true;
 
+		// Acknowledge receipt so the sender can stop retrying
+		try {
+			window.parent.postMessage({ type: 'kusto-workbench-load-file-ack' }, '*');
+		} catch { /* ignore — might not be in an iframe */ }
+
 		var filename = event.data.filename || '';
 		var content = event.data.content || '';
 		var sidecarContent = event.data.sidecarContent || null;
