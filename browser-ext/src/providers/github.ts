@@ -90,6 +90,9 @@ export class GitHubProvider implements FileSourceProvider {
 	}
 
 	getViewModeTabBar(): ViewModeTabBarInfo | null {
+		// raw.githubusercontent.com has no tab bar — no point looking.
+		if (location.hostname.toLowerCase() === 'raw.githubusercontent.com') return null;
+
 		// Strategy 1: GitHub's Primer SegmentedControl for Code/Blame.
 		// The <ul aria-label="File view"> is the most reliable selector.
 		const segCtrl = document.querySelector('ul[aria-label="File view"]') as HTMLElement | null;
@@ -136,6 +139,18 @@ export class GitHubProvider implements FileSourceProvider {
 		}
 
 		return null;
+	}
+
+	supportsTabBar(): boolean {
+		// Only github.com blob/blame pages have a tab bar.
+		// raw.githubusercontent.com is a plain text page — no UI to inject into.
+		return location.hostname.toLowerCase() !== 'raw.githubusercontent.com';
+	}
+
+	requiresNewTabViewer(): boolean {
+		// raw.githubusercontent.com serves pages with CSP: sandbox, which blocks
+		// script execution in child iframes. We must open the viewer in a new tab.
+		return location.hostname.toLowerCase() === 'raw.githubusercontent.com';
 	}
 
 	observeNavigation(callback: () => void): () => void {

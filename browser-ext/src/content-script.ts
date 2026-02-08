@@ -89,20 +89,33 @@ function detectAndSetup(retryCount = 0) {
 	console.log(LOG_PREFIX, 'Detected file:', currentFile.filename, '| Provider:', currentProvider.id);
 	injectStyles();
 
+	// Check if this page requires a new-tab viewer (e.g. sandboxed pages)
+	const needsNewTab = currentProvider.requiresNewTabViewer ? currentProvider.requiresNewTabViewer() : false;
+	if (needsNewTab) {
+		console.log(LOG_PREFIX, 'Page requires new-tab viewer (sandboxed) — showing render button');
+		injectRenderButton();
+		return;
+	}
+
 	// Try the tab-bar approach first; fall back to the render button
-	tabBarInfo = currentProvider.getViewModeTabBar();
+	const canHaveTabBar = currentProvider.supportsTabBar ? currentProvider.supportsTabBar() : true;
+	tabBarInfo = canHaveTabBar ? currentProvider.getViewModeTabBar() : null;
 	if (tabBarInfo) {
 		console.log(LOG_PREFIX, 'Tab bar found — injecting tab. Container:', tabBarInfo.container.tagName, '| Tabs:', tabBarInfo.existingTabs.map(t => t.textContent?.trim()));
 		injectTab(tabBarInfo);
-	} else if (retryCount < 10) {
+	} else if (canHaveTabBar && retryCount < 10) {
 		// GitHub React UI renders tabs lazily — retry with increasing delay
 		const delay = retryCount < 3 ? 500 : 1000;
 		console.log(LOG_PREFIX, `Tab bar not found yet, retry ${retryCount + 1}/10 in ${delay}ms`);
 		retryTimer = setTimeout(() => detectAndSetup(retryCount + 1), delay);
 	} else {
-		console.log(LOG_PREFIX, 'Tab bar not found after retries — dumping DOM diagnostics');
-		dumpTabBarDiagnostics();
-		console.log(LOG_PREFIX, 'Falling back to render button');
+		if (canHaveTabBar) {
+			// Only dump diagnostics when we expected a tab bar but couldn't find it
+			console.log(LOG_PREFIX, 'Tab bar not found after retries — dumping DOM diagnostics');
+			dumpTabBarDiagnostics();
+		} else {
+			console.log(LOG_PREFIX, 'Page does not support tab bar — using render button');
+		}
 		injectRenderButton();
 	}
 }
@@ -300,6 +313,62 @@ function deactivateKustoTab(clickedTab?: HTMLElement) {
 	hideViewer();
 }
 
+// ---- New-tab viewer (for sandboxed pages like raw.githubusercontent.com) ----
+
+async function openViewerInNewTab() {
+	if (!currentProvider || !currentFile) return;
+
+	const btn = renderButton?.querySelector('.kusto-workbench-render-btn');
+	if (btn) {
+		btn.textContent = 'Loading...';
+		(btn as HTMLButtonElement).disabled = true;
+	}
+
+	try {
+		const content = await fetchContent(currentFile.rawContentUrl);
+
+		let sidecarContent: string | null = null;
+		if (currentFile.sidecarUrl) {
+			try {
+				sidecarContent = await fetchContent(currentFile.sidecarUrl);
+			} catch { /* optional */ }
+		}
+
+		const payload = {
+			type: 'kusto-workbench-load-file',
+			filename: currentFile.filename,
+			content,
+			sidecarContent,
+			pageUrl: currentFile.pageUrl,
+			sourceLabel: currentFile.sourceLabel,
+			standalone: true,
+		};
+
+		// Ask the background service worker to open the viewer in a new tab.
+		// We can't use window.open() because the page's sandbox CSP blocks popups.
+		chrome.runtime.sendMessage({ type: 'open-viewer-tab', payload });
+
+		if (btn) {
+			(btn as HTMLButtonElement).disabled = false;
+			btn.innerHTML =
+				`<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>` +
+				`<span>Opened in new tab</span>`;
+		}
+	} catch (err: any) {
+		console.error(LOG_PREFIX, 'Failed to open viewer in new tab:', err);
+		if (btn) {
+			btn.textContent = `Error: ${err?.message || String(err)}`;
+			setTimeout(() => {
+				if (btn) btn.innerHTML =
+					`<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/>` +
+					`<path d="M1 5h14" stroke="currentColor" stroke-width="1.2"/><path d="M5 5v9" stroke="currentColor" stroke-width="1.2"/></svg>` +
+					`<span>Open in Kusto Workbench</span>`;
+				(btn as HTMLButtonElement).disabled = false;
+			}, 3000);
+		}
+	}
+}
+
 // ---- Fallback render button (for platforms without tab bars) ----
 
 function injectRenderButton() {
@@ -340,6 +409,11 @@ function injectRenderButton() {
 }
 
 async function handleRenderButtonClick() {
+	// On sandboxed pages, open in a new tab instead of inline iframe
+	if (currentProvider?.requiresNewTabViewer?.()) {
+		await openViewerInNewTab();
+		return;
+	}
 	if (isRendered) {
 		toggleView();
 		return;

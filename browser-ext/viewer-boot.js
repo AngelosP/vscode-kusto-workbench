@@ -356,9 +356,14 @@
 		}
 	}
 
+	var __kustoLoadFileHandled = false;
+
 	function handleIncomingMessage(event) {
 		if (!event.data || typeof event.data !== 'object') return;
 		if (event.data.type !== 'kusto-workbench-load-file') return;
+		// Only handle the first load-file message (retries from the opener keep arriving)
+		if (__kustoLoadFileHandled) return;
+		__kustoLoadFileHandled = true;
 
 		var filename = event.data.filename || '';
 		var content = event.data.content || '';
@@ -374,10 +379,13 @@
 		// Add top spacing inside the iframe so there's a gap between the
 		// host page header and our content, without exposing the host's
 		// container background through an external margin.
-		try {
-			var container = document.getElementById('queries-container');
-			if (container) container.style.paddingTop = '20px';
-		} catch { /* ignore */ }
+		// Skip for standalone tabs (opened via new-tab viewer).
+		if (!event.data.standalone) {
+			try {
+				var container = document.getElementById('queries-container');
+				if (container) container.style.paddingTop = '20px';
+			} catch { /* ignore */ }
+		}
 
 		showLoading('Parsing ' + filename + '...');
 		updateBanner(filename, pageUrl, sourceLabel);

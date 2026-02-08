@@ -72,6 +72,22 @@ export interface FileSourceProvider {
 	getViewModeTabBar(): ViewModeTabBarInfo | null;
 
 	/**
+	 * Whether this page can potentially have a tab bar.
+	 * Returns false for pages where we know there is no tab bar (e.g. raw URLs),
+	 * so the content script can skip retries and fall back immediately.
+	 * Default behavior if not implemented: true.
+	 */
+	supportsTabBar?(): boolean;
+
+	/**
+	 * Whether this page requires opening the viewer in a new tab instead of
+	 * an inline iframe. Needed for pages with sandbox CSP headers (e.g.
+	 * raw.githubusercontent.com) where iframes can't run scripts.
+	 * Default behavior if not implemented: false.
+	 */
+	requiresNewTabViewer?(): boolean;
+
+	/**
 	 * Register a callback that fires whenever the page navigates (SPA-aware).
 	 * Returns a cleanup function to unregister.
 	 */

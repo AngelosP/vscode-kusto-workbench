@@ -92,7 +92,10 @@ const contentScriptBuild = esbuild.buildSync({
 console.log('Copying static files...');
 const staticFiles = [
 	'viewer.html',
+	'viewer-standalone.html',
+	'viewer-standalone-boot.js',
 	'viewer-boot.js',
+	'background.js',
 	'queryEditor-loader.js',
 	'manifest.json',
 ];

@@ -10,6 +10,9 @@
     "default_icon": "media/images/kusto-workbench-logo.png",
     "default_title": "Kusto Workbench Viewer"
   },
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
