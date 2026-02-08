@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Kusto Workbench Viewer",
+  "version": "1.0.0",
+  "description": "Renders .kqlx, .kql, and .csl Kusto notebook files inline on GitHub, Azure DevOps, and any raw file URL.",
+  "icons": {
+    "128": "media/images/kusto-workbench-logo.png"
+  },
+  "action": {
+    "default_icon": "media/images/kusto-workbench-logo.png",
+    "default_title": "Kusto Workbench Viewer"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://github.com/*",
+        "https://raw.githubusercontent.com/*",
+        "https://dev.azure.com/*",
+        "https://*.visualstudio.com/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "sandbox": {
+    "pages": ["viewer.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals allow-popups-to-escape-sandbox; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; child-src 'self' blob:; worker-src 'self' blob:;"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "viewer.html",
+        "viewer-boot.js",
+        "queryEditor-loader.js",
+        "vscode-shim.js",
+        "read-only-overrides.css",
+        "media/*",
+        "media/queryEditor/*",
+        "media/queryEditor/vendor/*",
+        "media/queryEditor/vendor/toastui-editor/*",
+        "media/images/*",
+        "dist/*",
+        "dist/monaco/*",
+        "dist/monaco/vs/*",
+        "dist/monaco/vs/base/*",
+        "dist/monaco/vs/base/worker/*",
+        "dist/monaco/vs/editor/*",
+        "dist/monaco/vs/language/*",
+        "dist/monaco/vs/language/kusto/*",
+        "dist/queryEditor/*",
+        "dist/queryEditor/vendor/*",
+        "dist/queryEditor/vendor/toastui-editor/*",
+        "dist/queryEditor/vendor/echarts/*"
+      ],
+      "matches": [
+        "https://github.com/*",
+        "https://raw.githubusercontent.com/*",
+        "https://dev.azure.com/*",
+        "https://*.visualstudio.com/*"
+      ]
+    }
+  ],
+  "permissions": [
+    "activeTab"
+  ]
+}

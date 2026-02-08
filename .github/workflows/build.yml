@@ -24,6 +24,8 @@ on:
       - 'docs/**'
       - 'sample/**'
       - 'scripts/**'
+      - 'browser-ext/**'
+      - 'web/**'
   workflow_dispatch:
     inputs:
       publish:

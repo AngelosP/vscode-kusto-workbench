@@ -10,6 +10,8 @@ esbuild.js
 vsc-extension-quickstart.md
 dev-backlog.md
 scripts/**
+web/**
+browser-ext/**
 **/*.vsix
 media/queryEditor/vendor/toastui-editor/toastui-editor.webview.js
 **/tsconfig.json

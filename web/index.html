@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Kusto Workbench Viewer</title>
+	<style>
+		* { box-sizing: border-box; margin: 0; padding: 0; }
+
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+			background: #ffffff;
+			color: #333;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			min-height: 100vh;
+			padding: 20px;
+		}
+
+		@media (prefers-color-scheme: dark) {
+			body { background: #1e1e1e; color: #cccccc; }
+			.landing-card { background: #252526; border-color: #444; }
+			.landing-input { background: #3c3c3c; border-color: #555; color: #ccc; }
+			.landing-input::placeholder { color: #888; }
+			.landing-input:focus { border-color: #007fd4; }
+			.landing-hint { color: #999; }
+			.landing-footer { color: #777; }
+			.landing-footer a { color: #3794ff; }
+			.landing-error { color: #f48771; }
+			.auth-status { color: #999; }
+			.auth-status a { color: #3794ff; }
+		}
+
+		.landing-card {
+			max-width: 600px;
+			width: 100%;
+			background: #ffffff;
+			border: 1px solid #e0e0e0;
+			border-radius: 8px;
+			padding: 40px;
+			text-align: center;
+		}
+
+		.landing-title {
+			font-size: 24px;
+			font-weight: 600;
+			margin-bottom: 8px;
+		}
+
+		.landing-subtitle {
+			font-size: 14px;
+			color: #717171;
+			margin-bottom: 24px;
+		}
+
+		.landing-form {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 16px;
+		}
+
+		.landing-input {
+			flex: 1;
+			padding: 10px 14px;
+			font-size: 14px;
+			border: 1px solid #cecece;
+			border-radius: 4px;
+			outline: none;
+			font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+			min-width: 0;
+		}
+
+		.landing-input:focus {
+			border-color: #0078d4;
+			box-shadow: 0 0 0 1px #0078d4;
+		}
+
+		.landing-btn {
+			padding: 10px 24px;
+			font-size: 14px;
+			font-weight: 500;
+			background: #0078d4;
+			color: #fff;
+			border: none;
+			border-radius: 4px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+
+		.landing-btn:hover { background: #106ebe; }
+
+		.landing-hint {
+			font-size: 12px;
+			color: #717171;
+			text-align: left;
+			line-height: 1.6;
+		}
+
+		.landing-hint code {
+			background: rgba(0,0,0,0.06);
+			padding: 1px 5px;
+			border-radius: 3px;
+			font-size: 11px;
+		}
+
+		@media (prefers-color-scheme: dark) {
+			.landing-hint code { background: rgba(255,255,255,0.1); }
+		}
+
+		.landing-error {
+			color: #d32f2f;
+			font-size: 13px;
+			margin-bottom: 12px;
+			display: none;
+		}
+
+		.landing-footer {
+			margin-top: 32px;
+			font-size: 12px;
+			color: #999;
+		}
+
+		.landing-footer a {
+			color: #0078d4;
+			text-decoration: none;
+		}
+
+		.landing-footer a:hover {
+			text-decoration: underline;
+		}
+
+		.auth-status {
+			font-size: 12px;
+			color: #717171;
+			margin-top: 16px;
+		}
+
+		.auth-status a {
+			color: #0078d4;
+			text-decoration: none;
+		}
+
+		.auth-status a:hover {
+			text-decoration: underline;
+		}
+
+		@media (max-width: 480px) {
+			.landing-form { flex-direction: column; }
+			.landing-card { padding: 24px; }
+		}
+	</style>
+</head>
+
+<body>
+	<div class="landing-card">
+		<div class="landing-title">Kusto Workbench Viewer</div>
+		<div class="landing-subtitle">View .kqlx and .kql files from GitHub — read-only, no setup required.</div>
+
+		<div class="landing-error" id="landing-error"></div>
+
+		<form class="landing-form" id="landing-form" onsubmit="return handleSubmit(event)">
+			<input
+				class="landing-input"
+				id="landing-url"
+				type="url"
+				placeholder="https://github.com/owner/repo/blob/main/file.kqlx"
+				required
+				autocomplete="url"
+				spellcheck="false"
+			/>
+			<button class="landing-btn" type="submit">Open</button>
+		</form>
+
+		<div class="landing-hint">
+			Supported file types:<br>
+			<code>.kqlx</code> — Kusto notebook files<br>
+			<code>.kql</code> / <code>.csl</code> — plain KQL files (with optional <code>.kql.json</code> sidecar)<br>
+			<code>.kql.json</code> / <code>.csl.json</code> — sidecar metadata files
+		</div>
+
+		<div class="auth-status" id="auth-status"></div>
+	</div>
+
+	<div class="landing-footer">
+		Powered by <a href="https://github.com/AngelosP/vscode-kusto-workbench" target="_blank" rel="noopener noreferrer">Kusto Workbench</a>
+	</div>
+
+	<script>
+		function handleSubmit(e) {
+			e.preventDefault();
+			var input = document.getElementById('landing-url');
+			var url = (input.value || '').trim();
+			var errorEl = document.getElementById('landing-error');
+
+			if (!url) {
+				errorEl.textContent = 'Please enter a GitHub file URL.';
+				errorEl.style.display = '';
+				return false;
+			}
+
+			// Basic validation
+			try {
+				var parsed = new URL(url);
+				if (parsed.hostname !== 'github.com' && parsed.hostname !== 'raw.githubusercontent.com') {
+					errorEl.textContent = 'URL must be from github.com or raw.githubusercontent.com.';
+					errorEl.style.display = '';
+					return false;
+				}
+			} catch {
+				errorEl.textContent = 'Please enter a valid URL.';
+				errorEl.style.display = '';
+				return false;
+			}
+
+			errorEl.style.display = 'none';
+			window.location.href = '/view?url=' + encodeURIComponent(url);
+			return false;
+		}
+
+		// Check auth status
+		(async function() {
+			try {
+				var res = await fetch('/auth/status');
+				var data = await res.json();
+				var el = document.getElementById('auth-status');
+				if (data.authenticated) {
+					el.innerHTML = '&#10003; Signed in with GitHub. <a href="#" onclick="logout(); return false;">Sign out</a>';
+				} else {
+					el.innerHTML = 'Not signed in. <a href="/auth/github?returnUrl=/">Sign in with GitHub</a> to access private repos.';
+				}
+			} catch {
+				// ignore
+			}
+		})();
+
+		async function logout() {
+			try {
+				await fetch('/auth/logout', { method: 'POST' });
+				window.location.reload();
+			} catch {
+				// ignore
+			}
+		}
+	</script>
+</body>
+
+</html>

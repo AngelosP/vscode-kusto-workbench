@@ -1,0 +1,17 @@
+{
+  "name": "kusto-workbench-browser-ext",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser extension that renders .kqlx, .kql, and .csl files inline on GitHub, Azure DevOps, and raw URLs.",
+  "scripts": {
+    "build": "node esbuild.js --production",
+    "dev": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.36",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}

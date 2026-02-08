@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Kusto Workbench Viewer</title>
+	<!-- Monaco Editor CSS -->
+	<link rel="stylesheet" href="dist/monaco/vs/style.css">
+	<!-- TOAST UI Editor CSS -->
+	<link rel="stylesheet" href="media/queryEditor/vendor/toastui-editor/toastui-editor.css">
+	<link rel="stylesheet" href="media/queryEditor/vendor/toastui-editor/toastui-editor-dark.css">
+	<link rel="stylesheet" href="media/queryEditor/vendor/toastui-editor/tui-color-picker.css">
+	<link rel="stylesheet" href="media/queryEditor/vendor/toastui-editor/toastui-editor-plugin-color-syntax.css">
+	<!-- Main query editor CSS (from the extension) -->
+	<link rel="stylesheet" href="media/queryEditor.css">
+	<!-- Read-only overrides: theme fallbacks + hide interactive UI -->
+	<link rel="stylesheet" href="read-only-overrides.css">
+</head>
+
+<body>
+	<!-- Viewer banner -->
+	<div id="viewer-banner" class="viewer-banner" style="display:none;">
+		<span class="viewer-banner-logo">Kusto Workbench</span>
+		<span class="viewer-banner-badge">Read-only</span>
+		<span class="viewer-banner-filename" id="viewer-banner-filename"></span>
+		<a class="viewer-banner-github-link" id="viewer-banner-source-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">View source</a>
+	</div>
+
+	<!-- Loading overlay -->
+	<div id="viewer-loading" class="viewer-loading">
+		<div class="viewer-loading-spinner"></div>
+		<div class="viewer-loading-message">Loading...</div>
+	</div>
+
+	<!-- Error display -->
+	<div id="viewer-error" class="viewer-error" style="display:none;">
+		<div class="viewer-error-title"></div>
+		<div class="viewer-error-detail"></div>
+	</div>
+
+	<!-- Queries container (same as queryEditor.html) -->
+	<div id="queries-container"></div>
+	<div class="add-controls" role="group" aria-label="Add sections">
+		<span class="add-controls-label">Add</span>
+		<span class="add-controls-options">
+			<button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Query</button>
+			<button class="add-control-btn" data-add-kind="chart" onclick="__kustoRequestAddSection('chart')">Chart</button>
+			<button class="add-control-btn" data-add-kind="transformation" onclick="__kustoRequestAddSection('transformation')">Transformation</button>
+			<button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Markdown</button>
+			<button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Python</button>
+			<button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">URL</button>
+		</span>
+	</div>
+
+	<!-- Object Viewer Modal -->
+	<div id="objectViewer" class="object-viewer-modal" onclick="closeObjectViewer(event)">
+		<div class="object-viewer-content" onclick="event.stopPropagation()">
+			<div class="object-viewer-header">
+				<h3 id="objectViewerTitle"></h3>
+				<div class="object-viewer-search">
+					<div id="objectViewerSearchHost"></div>
+					<span class="object-viewer-search-results" id="objectViewerSearchResults"></span>
+				</div>
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn object-viewer-close" type="button" onclick="closeObjectViewer()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" /><path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="object-viewer-body">
+				<div class="object-viewer-section object-viewer-props-section">
+					<div class="object-viewer-section-header">
+						<button id="objectViewerBackBtn" class="unified-btn-secondary tool-toggle-btn object-viewer-back-btn" type="button" onclick="objectViewerNavigateBack()" title="Back" aria-label="Back" style="display:none;">&#8592;</button>
+						<div class="object-viewer-section-title" id="objectViewerPropsTitle"></div>
+					</div>
+					<table class="object-viewer-props-table" id="objectViewerPropsTable" aria-label="Properties"></table>
+				</div>
+				<div class="object-viewer-section object-viewer-raw-section">
+					<div class="object-viewer-section-header">
+						<div class="object-viewer-section-title">Raw value</div>
+						<div class="object-viewer-raw-actions">
+							<button id="objectViewerRawCopy" class="unified-btn-secondary tool-toggle-btn object-viewer-raw-copy" type="button" onclick="copyObjectViewerRawToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+							<button id="objectViewerRawToggle" class="unified-btn-secondary tool-toggle-btn object-viewer-raw-toggle" type="button" onclick="toggleObjectViewerRaw()" title="Hide raw value" aria-label="Hide raw value"></button>
+						</div>
+					</div>
+					<div id="objectViewerRawBody" class="object-viewer-raw-body">
+						<div id="objectViewerContent" class="object-viewer-json object-viewer-json-wrap"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Column Analysis Modal -->
+	<div id="columnAnalysisModal" class="column-analysis-modal" onclick="closeColumnAnalysis(event)">
+		<div class="column-analysis-content" onclick="event.stopPropagation()">
+			<div class="column-analysis-header">
+				<h3 id="columnAnalysisTitle">Column Analysis</h3>
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn column-analysis-close" type="button" onclick="closeColumnAnalysis()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" /><path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="column-analysis-body" id="columnAnalysisBody"></div>
+		</div>
+	</div>
+
+	<!-- Cell Viewer Modal -->
+	<div id="cellViewer" class="cell-viewer-modal" onclick="closeCellViewer(event)">
+		<div class="cell-viewer-content" onclick="event.stopPropagation()">
+			<div class="cell-viewer-header">
+				<h3 id="cellViewerTitle"></h3>
+				<div class="cell-viewer-search">
+					<div id="cellViewerSearchHost"></div>
+				</div>
+				<div class="cell-viewer-actions">
+					<button id="cellViewerCopy" class="unified-btn-secondary tool-toggle-btn cell-viewer-copy" type="button" onclick="copyCellViewerToClipboard()" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+				</div>
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn cell-viewer-close" type="button" onclick="closeCellViewer()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" /><path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="cell-viewer-body">
+				<div id="cellViewerContent" class="cell-viewer-value"></div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Diff View Modal -->
+	<div id="diffViewModal" class="diff-view-modal">
+		<div class="diff-view-content" onclick="event.stopPropagation()">
+			<div class="diff-view-header">
+				<h3 id="diffViewTitle">Diff</h3>
+				<button id="diffViewCloseBtn" class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn diff-view-close" type="button" onclick="closeDiffView()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" /><path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="diff-view-body" id="diffViewBody"></div>
+		</div>
+	</div>
+
+	<!-- Monaco Editor loader -->
+	<script src="dist/monaco/vs/loader.js"></script>
+
+	<!-- Monaco + worker configuration -->
+	<script>
+		window.__kustoQueryEditorConfig = {
+			monacoVsUri: "dist/monaco/vs",
+			monacoLoaderUri: "dist/monaco/vs/loader.js",
+			monacoWorkers: {},
+			cacheBuster: "",
+			copilotLogoUri: ""
+		};
+
+		// In a sandboxed extension page the origin is 'null', so
+		// new Worker('chrome-extension://…') fails with an origin mismatch.
+		// Work-around: pre-fetch each worker script, inline it into a Blob,
+		// and hand Monaco the blob: URL (which shares the page's own origin).
+		(function () {
+			var baseUrl = location.href.substring(0, location.href.lastIndexOf('/') + 1) + 'dist/monaco/';
+			var blobUrls = {};
+
+			function prefetch(label, path) {
+				return fetch(path)
+					.then(function (r) { return r.text(); })
+					.then(function (text) {
+						// Prepend MonacoEnvironment.baseUrl so the AMD loader inside
+						// workerMain.js can resolve relative module paths.
+						var prefix = 'self.MonacoEnvironment = { baseUrl: "' + baseUrl + '" };\n';
+						blobUrls[label] = URL.createObjectURL(
+							new Blob([prefix + text], { type: 'text/javascript' })
+						);
+					})
+					.catch(function (err) {
+						console.warn('[Kusto Workbench] Worker prefetch failed for', label, err);
+					});
+			}
+
+			// Start prefetching immediately — these are local extension resources
+			// and will complete well before Monaco initialises.
+			Promise.all([
+				prefetch('editor', 'dist/monaco/vs/base/worker/workerMain.js'),
+				prefetch('kusto', 'dist/monaco/kusto.worker.bundle.js')
+			]);
+
+			window.MonacoEnvironment = {
+				getWorkerUrl: function (moduleId, label) {
+					var key = (label === 'kusto') ? 'kusto' : 'editor';
+					if (blobUrls[key]) return blobUrls[key];
+					// Fallback: try the direct URL.
+					// Will fail in sandbox, but Monaco falls back to main-thread.
+					if (label === 'kusto') return 'dist/monaco/kusto.worker.bundle.js';
+					return 'dist/monaco/vs/base/worker/workerMain.js';
+				}
+			};
+		})();
+	</script>
+
+	<!-- Webview bootstrap (loads all the shared JS from media/) -->
+	<script src="queryEditor-loader.js"></script>
+
+	<!-- Viewer boot script (receives file content from content script via postMessage) -->
+	<script src="viewer-boot.js"></script>
+</body>
+
+</html>
