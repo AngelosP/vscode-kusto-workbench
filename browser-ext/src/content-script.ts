@@ -683,6 +683,7 @@ function injectStyles() {
 		/* ---- Viewer iframe ---- */
 		.kusto-workbench-viewer-iframe {
 			width: 100%;
+			box-sizing: border-box;
 			border: none;
 			border-radius: 6px;
 			min-height: 600px;

@@ -330,12 +330,27 @@
 
 	// ---- Listen for file content from the content script ----
 
+	/**
+	 * Convert an rgb()/rgba() color string to a hex string (#rrggbb).
+	 * Monaco's token theme parser rejects rgb() values — it only accepts hex.
+	 */
+	function rgbToHex(color) {
+		if (!color || typeof color !== 'string') return color;
+		var m = color.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+		if (!m) return color; // already hex or unsupported format
+		var r = parseInt(m[1], 10);
+		var g = parseInt(m[2], 10);
+		var b = parseInt(m[3], 10);
+		return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+	}
+
 	function applyHostBackgroundColor(bgColor) {
 		if (!bgColor || typeof bgColor !== 'string') return;
 		try {
+			var hex = rgbToHex(bgColor);
 			// Apply the host page's background color to our viewer
-			document.documentElement.style.setProperty('--vscode-editor-background', bgColor);
-			document.body.style.background = bgColor;
+			document.documentElement.style.setProperty('--vscode-editor-background', hex);
+			document.body.style.background = hex;
 		} catch {
 			// ignore
 		}
@@ -355,6 +370,14 @@
 		if (event.data.hostBackgroundColor) {
 			applyHostBackgroundColor(event.data.hostBackgroundColor);
 		}
+
+		// Add top spacing inside the iframe so there's a gap between the
+		// host page header and our content, without exposing the host's
+		// container background through an external margin.
+		try {
+			var container = document.getElementById('queries-container');
+			if (container) container.style.paddingTop = '20px';
+		} catch { /* ignore */ }
 
 		showLoading('Parsing ' + filename + '...');
 		updateBanner(filename, pageUrl, sourceLabel);
