@@ -1,0 +1,208 @@
+# CI/CD workflow for publishing the Kusto Workbench Viewer browser extension
+# to the Microsoft Edge Add-ons marketplace.
+#
+# Triggers on version tags (v*) pushed to main.
+# Uses the Edge Add-ons Update REST API v1.1 (ApiKey auth).
+#
+# Required GitHub repository secrets:
+#   EDGE_PRODUCT_ID  – Product ID from Edge Developer Dashboard
+#   EDGE_CLIENT_ID   – Client ID from Partner Center → Publish API
+#   EDGE_API_KEY     – API key from Partner Center → Publish API
+
+name: publish-edge-extension
+
+on:
+  # TODO: Uncomment once the extension is approved on the Edge Add-ons marketplace
+  # push:
+  #   tags:
+  #     - v*
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to Edge Add-ons marketplace'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      # ── Extract version from tag ──────────────────────────────────
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            # For workflow_dispatch without a tag, read from version.json
+            VERSION=$(node -e "console.log(require('./version.json').version)")
+          fi
+          echo "version=$VERSION" | tee -a "$GITHUB_OUTPUT"
+
+          # Chrome/Edge manifest version supports max 4 dot-separated integers.
+          # Strip any pre-release suffix (e.g. 1.9.1-beta.1 → 1.9.1).
+          MANIFEST_VERSION=$(echo "$VERSION" | grep -oP '^\d+\.\d+\.\d+(\.\d+)?')
+          echo "manifest_version=$MANIFEST_VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      # ── Build root assets (Monaco, ECharts, TOAST UI) ─────────────
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Build root assets
+        run: npm run package
+
+      # ── Build browser extension ───────────────────────────────────
+      - name: Install browser extension dependencies
+        working-directory: browser-ext
+        run: npm install
+
+      - name: Stamp manifest.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Stamping browser-ext/manifest.json => ${{ steps.version.outputs.manifest_version }}"
+          node -e "
+            const fs = require('fs');
+            const p = 'browser-ext/manifest.json';
+            const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+            m.version = '${{ steps.version.outputs.manifest_version }}';
+            fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
+          "
+
+      - name: Build browser extension (production)
+        working-directory: browser-ext
+        run: node esbuild.js --production
+
+      # ── Package as ZIP ────────────────────────────────────────────
+      - name: Package extension as ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_NAME="kusto-workbench-viewer-${{ steps.version.outputs.manifest_version }}.zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          cd browser-ext/dist
+          zip -r "../../$ZIP_NAME" .
+          cd ../..
+          echo "Created $ZIP_NAME ($(du -h "$ZIP_NAME" | cut -f1))"
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-extension-${{ steps.version.outputs.manifest_version }}
+          path: ${{ env.ZIP_NAME }}
+
+      # ── Publish to Edge Add-ons marketplace ───────────────────────
+      - name: Publish to Edge Add-ons marketplace
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+        shell: bash
+        env:
+          EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+          EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+          EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # ── Validate secrets ──
+          for var in EDGE_PRODUCT_ID EDGE_CLIENT_ID EDGE_API_KEY; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Secret $var is not set. Add it as a repository secret."
+              exit 1
+            fi
+          done
+
+          API_BASE="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID"
+
+          # ── 1. Upload package ──
+          echo "Uploading ${{ env.ZIP_NAME }}..."
+          UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$API_BASE/submissions/draft/package" \
+            -H "Authorization: ApiKey $EDGE_API_KEY" \
+            -H "X-ClientID: $EDGE_CLIENT_ID" \
+            -H "Content-Type: application/zip" \
+            -T "${{ env.ZIP_NAME }}")
+
+          HTTP_CODE=$(echo "$UPLOAD_RESPONSE" | tail -n1)
+          UPLOAD_BODY=$(echo "$UPLOAD_RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ne 202 ] && [ "$HTTP_CODE" -lt 200 -o "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Upload failed with HTTP $HTTP_CODE"
+            echo "$UPLOAD_BODY"
+            exit 1
+          fi
+
+          # Extract operation ID from Location header
+          OPERATION_ID=$(curl -s -D - -o /dev/null -X POST \
+            "$API_BASE/submissions/draft/package" \
+            -H "Authorization: ApiKey $EDGE_API_KEY" \
+            -H "X-ClientID: $EDGE_CLIENT_ID" \
+            -H "Content-Type: application/zip" \
+            -T "${{ env.ZIP_NAME }}" | grep -i '^Location:' | awk '{print $2}' | tr -d '\r')
+
+          echo "Upload accepted (HTTP $HTTP_CODE). Operation: $OPERATION_ID"
+
+          # ── 2. Poll upload status ──
+          if [ -n "$OPERATION_ID" ]; then
+            echo "Polling upload status..."
+            for i in $(seq 1 30); do
+              sleep 10
+              STATUS_RESPONSE=$(curl -s -f \
+                "$API_BASE/submissions/draft/package/operations/$OPERATION_ID" \
+                -H "Authorization: ApiKey $EDGE_API_KEY" \
+                -H "X-ClientID: $EDGE_CLIENT_ID")
+
+              STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status // empty')
+              echo "  Attempt $i: status=$STATUS"
+
+              if [ "$STATUS" = "Succeeded" ]; then
+                echo "Upload completed successfully."
+                break
+              elif [ "$STATUS" = "Failed" ]; then
+                echo "::error::Upload failed."
+                echo "$STATUS_RESPONSE" | jq .
+                exit 1
+              fi
+            done
+
+            if [ "$STATUS" != "Succeeded" ]; then
+              echo "::error::Upload timed out after 5 minutes."
+              exit 1
+            fi
+          fi
+
+          # ── 3. Publish the submission ──
+          echo "Publishing submission..."
+          PUBLISH_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$API_BASE/submissions" \
+            -H "Authorization: ApiKey $EDGE_API_KEY" \
+            -H "X-ClientID: $EDGE_CLIENT_ID" \
+            -H "Content-Type: application/json" \
+            -d '{"notes":"Automated publish from GitHub Actions (v${{ steps.version.outputs.manifest_version }})"}')
+
+          PUB_CODE=$(echo "$PUBLISH_RESPONSE" | tail -n1)
+          PUB_BODY=$(echo "$PUBLISH_RESPONSE" | sed '$d')
+
+          if [ "$PUB_CODE" -ne 202 ] && [ "$PUB_CODE" -lt 200 -o "$PUB_CODE" -ge 300 ]; then
+            echo "::error::Publish failed with HTTP $PUB_CODE"
+            echo "$PUB_BODY"
+            exit 1
+          fi
+
+          echo "Submission published successfully! (HTTP $PUB_CODE)"
+          echo "$PUB_BODY" | jq . 2>/dev/null || echo "$PUB_BODY"
