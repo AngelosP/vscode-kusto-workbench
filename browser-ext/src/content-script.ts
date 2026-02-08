@@ -533,6 +533,15 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 	viewerIframe.style.minHeight = '600px';
 
 	viewerIframe.onload = () => {
+		// Detect host page background color so the viewer can match it
+		let hostBackgroundColor: string | undefined;
+		try {
+			const bodyBg = getComputedStyle(document.body).backgroundColor;
+			if (bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent') {
+				hostBackgroundColor = bodyBg;
+			}
+		} catch { /* ignore */ }
+
 		viewerIframe?.contentWindow?.postMessage({
 			type: 'kusto-workbench-load-file',
 			filename: currentFile!.filename,
@@ -540,6 +549,7 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 			sidecarContent,
 			pageUrl: currentFile!.pageUrl,
 			sourceLabel: currentFile!.sourceLabel,
+			hostBackgroundColor,
 		}, '*');
 
 		window.addEventListener('message', handleViewerMessage);

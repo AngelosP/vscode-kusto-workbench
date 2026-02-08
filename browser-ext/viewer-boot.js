@@ -121,6 +121,31 @@
 		}
 	}
 
+	// ---- Pre-process sections for browser extension defaults ----
+
+	/**
+	 * When viewing in the browser (read-only), apply sensible defaults:
+	 * - Query sections collapsed (reader wants to see results, not raw KQL)
+	 * - Markdown sections in Preview mode (rendered, not editable)
+	 * - Chart sections in Preview mode (show the chart, not the config)
+	 */
+	function applyBrowserViewDefaults(sections) {
+		if (!Array.isArray(sections)) return sections;
+		for (var i = 0; i < sections.length; i++) {
+			var sec = sections[i];
+			if (!sec || typeof sec !== 'object') continue;
+			var t = String(sec.type || '');
+			if (t === 'query' || t === 'copilotQuery') {
+				sec.expanded = false;
+			} else if (t === 'markdown') {
+				sec.mode = 'preview';
+			} else if (t === 'chart') {
+				sec.mode = 'preview';
+			}
+		}
+		return sections;
+	}
+
 	// ---- Process file content ----
 
 	function processFileContent(filename, content, sidecarContent) {
@@ -175,6 +200,11 @@
 		} else {
 			showError('Unsupported file type', 'Supported: .kqlx, .kql, .csl, .kql.json, .csl.json');
 			return null;
+		}
+
+		// Apply browser-view defaults (collapse queries, preview markdown/chart)
+		if (state && Array.isArray(state.sections)) {
+			state.sections = applyBrowserViewDefaults(state.sections);
 		}
 
 		return { state: state, documentKind: documentKind };
@@ -300,6 +330,17 @@
 
 	// ---- Listen for file content from the content script ----
 
+	function applyHostBackgroundColor(bgColor) {
+		if (!bgColor || typeof bgColor !== 'string') return;
+		try {
+			// Apply the host page's background color to our viewer
+			document.documentElement.style.setProperty('--vscode-editor-background', bgColor);
+			document.body.style.background = bgColor;
+		} catch {
+			// ignore
+		}
+	}
+
 	function handleIncomingMessage(event) {
 		if (!event.data || typeof event.data !== 'object') return;
 		if (event.data.type !== 'kusto-workbench-load-file') return;
@@ -309,6 +350,11 @@
 		var sidecarContent = event.data.sidecarContent || null;
 		var pageUrl = event.data.pageUrl || '';
 		var sourceLabel = event.data.sourceLabel || '';
+
+		// Apply host page background color if provided
+		if (event.data.hostBackgroundColor) {
+			applyHostBackgroundColor(event.data.hostBackgroundColor);
+		}
 
 		showLoading('Parsing ' + filename + '...');
 		updateBanner(filename, pageUrl, sourceLabel);
