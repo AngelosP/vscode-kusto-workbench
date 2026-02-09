@@ -4,8 +4,6 @@ node_modules
 .vscode-test/
 *.vsix
 dev-backlog.md
-web/dist/
-web/node_modules/
 browser-ext/dist/
 browser-ext/node_modules/
 .env
