@@ -106,15 +106,15 @@ for (const file of staticFiles) {
 	);
 }
 
-// Copy vscode-shim.js from web/ (reuse directly)
-copyIfExists(
-	path.join(ROOT, 'web', 'vscode-shim.js'),
+// Copy vscode-shim.js (local copy)
+copyFileSync(
+	path.join(__dirname, 'vscode-shim.js'),
 	path.join(DIST, 'vscode-shim.js')
 );
 
-// Copy read-only-overrides.css from web/
-copyIfExists(
-	path.join(ROOT, 'web', 'read-only-overrides.css'),
+// Copy read-only-overrides.css (local copy)
+copyFileSync(
+	path.join(__dirname, 'read-only-overrides.css'),
 	path.join(DIST, 'read-only-overrides.css')
 );
 
