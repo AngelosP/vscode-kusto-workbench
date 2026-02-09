@@ -134,9 +134,14 @@ Use `.kqlx` and `.mdx` files to keep everything in a single file (.kql and .csl 
 
 You don’t need to create a file to use the extension. Run `Kusto Workbench: Open Query Editor` and the extension opens a global, persistent session that auto-saves to a `.kqlx` file stored in VS Code’s global storage. This session is designed to survive VS Code restarts. If you want to turn that session into a real file in your workspace later, use `Kusto Workbench: Save Session As... (.kqlx)`.
 
+### Open Remote File
+
+You can open files directly from GitHub or Sharepoint using sharing or raw URLs using `Kusto Workbench: Open Remote File` from the command pallete or from the Quick Access panel off the Activity Bar icon.
+
 ## Commands
 
 * `Kusto Workbench: Open Query Editor`
+* `Kusto Workbench: Open Remote File`
 * `Kusto Workbench: Open .kqlx File`
 * `Kusto Workbench: Open .mdx File`
 * `Kusto Workbench: Save Session As... (.kqlx)`

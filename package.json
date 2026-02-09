@@ -172,6 +172,11 @@
         "command": "kusto.resetCopilotModelSelection",
         "title": "Reset Copilot Model Selection",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.openRemoteFile",
+        "title": "Open Remote File",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {

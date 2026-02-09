@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.0.0] - Unreleased
+
+* Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.
+
 ## [1.9.1] - 2026-02-07
 
 * Bugs

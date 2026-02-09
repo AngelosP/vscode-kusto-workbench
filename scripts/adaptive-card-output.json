@@ -1,0 +1,78 @@
+{
+  "version": "1.5",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "body": [
+    {
+      "type": "ColumnSet",
+      "columns": [
+        {
+          "width": "auto",
+          "type": "Column",
+          "verticalContentAlignment": "Center",
+          "items": [
+            {
+              "width": "36px",
+              "type": "Image",
+              "height": "36px",
+              "size": "Small",
+              "url": "https://github.com/AngelosP/vscode-kusto-workbench/raw/HEAD/media/images/kusto-workbench-logo.png"
+            }
+          ]
+        },
+        {
+          "width": "stretch",
+          "type": "Column",
+          "items": [
+            {
+              "wrap": true,
+              "text": "azd 12yr executive audit",
+              "type": "TextBlock",
+              "size": "Medium",
+              "weight": "Bolder"
+            },
+            {
+              "text": "9 🔍  10 📝  8 📊",
+              "size": "Small",
+              "type": "TextBlock",
+              "spacing": "None",
+              "isSubtle": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "spacing": "Medium",
+      "type": "ColumnSet",
+      "columns": [
+        {
+          "width": "stretch",
+          "type": "Column",
+          "items": [
+            {
+              "type": "ActionSet",
+              "actions": [
+                {
+                  "title": "Open in VS Code",
+                  "iconUrl": "https://code.visualstudio.com/favicon.ico",
+                  "type": "Action.OpenUrl",
+                  "style": "positive",
+                  "url": "vscode://angelpe.vscode-kusto-workbench/open?file=azd-12yr-executive-audit.kqlx"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "size": "Small",
+      "text": "[requires Kusto Workbench extension](https://marketplace.visualstudio.com/items?itemName=angelos-petropoulos.vscode-kusto-workbench)",
+      "horizontalAlignment": "Left",
+      "isSubtle": true,
+      "type": "TextBlock",
+      "spacing": "Small"
+    }
+  ]
+}

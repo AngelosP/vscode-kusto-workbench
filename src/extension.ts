@@ -11,6 +11,7 @@ import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
 import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './kustoWorkbenchTools';
+import { registerRemoteFileOpener } from './remoteFileOpener';
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -350,6 +351,9 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 
+	// Register URI handler and "Open Remote File" command
+	registerRemoteFileOpener(context);
+
 	// Register Activity Bar quick access view
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('kustoWorkbench.quickAccess', {
@@ -463,6 +467,13 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-desc">Want to save from the start? Create a new .kqlx file on disk.</div>
 			<button class="button" onclick="sendCommand('createKqlxFile')">Create .kqlx File...</button>
 		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-cloud-download"></i> Open Remote File
+			</div>
+			<div class="card-desc">Open a .kqlx or .kql file from a URL. Supports GitHub links (public &amp; private repos) and SharePoint sharing links.</div>
+			<button class="button" onclick="sendCommand('openRemoteFile')">Open from URL...</button>
+		</div>
 	</div>
 
 	<div class="section">
@@ -534,6 +545,9 @@ export function activate(context: vscode.ExtensionContext) {
 							break;
 						case 'openSettings':
 							await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:angelos-petropoulos.vscode-kusto-workbench');
+							break;
+						case 'openRemoteFile':
+							await vscode.commands.executeCommand('kusto.openRemoteFile');
 							break;
 					}
 				});
