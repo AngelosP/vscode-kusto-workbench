@@ -1439,6 +1439,7 @@ window.addEventListener('message', async event => {
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
 				const columnsCount = meta.columnsCount ?? 0;
+				const functionsCount = meta.functionsCount ?? (message.schema?.functions?.length ?? 0);
 				const hasRawSchemaJson = !!(message.schema && message.schema.rawSchemaJson);
 				const isFailoverToCache = !!meta.isFailoverToCache;
 				
@@ -1470,7 +1471,7 @@ window.addEventListener('message', async event => {
 					displayText,
 					tooltipText,
 					isError,
-					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, hasRawSchemaJson, isFailoverToCache }
+					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson, isFailoverToCache }
 				);
 			}
 			break;

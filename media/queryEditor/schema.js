@@ -98,6 +98,8 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 	const tablesValue = document.getElementById(boxId + '_schema_info_tables');
 	const colsRow = document.getElementById(boxId + '_schema_info_cols_row');
 	const colsValue = document.getElementById(boxId + '_schema_info_cols');
+	const funcsRow = document.getElementById(boxId + '_schema_info_funcs_row');
+	const funcsValue = document.getElementById(boxId + '_schema_info_funcs');
 	const cachedRow = document.getElementById(boxId + '_schema_info_cached_row');
 	const infoBtn = document.getElementById(boxId + '_schema_info_btn');
 
@@ -106,6 +108,7 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 	if (hasText && meta) {
 		const tablesCount = Number(meta.tablesCount);
 		const columnsCount = Number(meta.columnsCount);
+		const functionsCount = Number(meta.functionsCount);
 		const fromCache = !!meta.fromCache;
 
 		// Update status
@@ -124,6 +127,12 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 		if (colsRow && colsValue) {
 			colsRow.style.display = 'flex';
 			colsValue.textContent = String(columnsCount >= 0 ? columnsCount : 0);
+		}
+
+		// Update functions count
+		if (funcsRow && funcsValue) {
+			funcsRow.style.display = 'flex';
+			funcsValue.textContent = String(functionsCount >= 0 ? functionsCount : 0);
 		}
 
 		// Update cached indicator
@@ -145,6 +154,7 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 		}
 		if (tablesRow) tablesRow.style.display = 'none';
 		if (colsRow) colsRow.style.display = 'none';
+		if (funcsRow) funcsRow.style.display = 'none';
 		if (cachedRow) cachedRow.style.display = 'none';
 		if (infoBtn) {
 			infoBtn.classList.toggle('has-schema', false);
@@ -159,6 +169,7 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 		}
 		if (tablesRow) tablesRow.style.display = 'none';
 		if (colsRow) colsRow.style.display = 'none';
+		if (funcsRow) funcsRow.style.display = 'none';
 		if (cachedRow) cachedRow.style.display = 'none';
 		if (infoBtn) {
 			infoBtn.classList.remove('has-schema', 'is-error', 'is-cached');

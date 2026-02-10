@@ -452,6 +452,10 @@ function addQueryBox(options) {
 		'<span class="schema-info-label">Columns:</span>' +
 		'<span class="schema-info-value" id="' + id + '_schema_info_cols">-</span>' +
 		'</div>' +
+		'<div class="schema-info-row" id="' + id + '_schema_info_funcs_row" style="display:none;">' +
+		'<span class="schema-info-label">Functions:</span>' +
+		'<span class="schema-info-value" id="' + id + '_schema_info_funcs">-</span>' +
+		'</div>' +
 		'<div class="schema-info-row schema-info-cached-row" id="' + id + '_schema_info_cached_row" style="display:none;">' +
 		'<span class="schema-info-label">Source:</span>' +
 		'<a href="#" class="schema-info-cached-link" id="' + id + '_schema_info_cached_link" onclick="event.preventDefault(); event.stopPropagation(); try{vscode.postMessage({type:\'seeCachedValues\'})}catch{}">Cached</a>' +

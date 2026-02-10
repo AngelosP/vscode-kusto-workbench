@@ -6,6 +6,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [2.0.0] - 2026-02-10
 
 * Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.
+* Added function count to schema (i) info UI
 * Bugs
     * Fixed issue where markdown sections sometimes had the '/n' literal in them instead of a proper new lines and looked all messed up.
     * Fixed issue where the Kusto Workbench agent would switch over to 'Run Query' but would still get limited to just 100 results.

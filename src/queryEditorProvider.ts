@@ -4476,7 +4476,8 @@ ${query}
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
 						tablesCount,
-						columnsCount
+						columnsCount,
+						functionsCount: schema.functions?.length ?? 0
 					}
 				});
 				return;
@@ -4505,7 +4506,8 @@ ${query}
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
 						tablesCount,
-						columnsCount
+						columnsCount,
+						functionsCount: schema.functions?.length ?? 0
 					}
 				});
 				return;
@@ -4551,6 +4553,7 @@ ${query}
 					cacheAgeMs: result.cacheAgeMs,
 					tablesCount,
 					columnsCount,
+					functionsCount: schema.functions?.length ?? 0,
 					debug: result.debug,
 					forceRefresh
 				}
@@ -4586,6 +4589,7 @@ ${query}
 							cacheAgeMs: Date.now() - cached.timestamp,
 							tablesCount,
 							columnsCount,
+							functionsCount: schema.functions?.length ?? 0,
 							// Indicate this is a fallback after a failed refresh
 							isFailoverToCache: true,
 							hasRawSchemaJson
