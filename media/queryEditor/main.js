@@ -1371,6 +1371,7 @@ window.addEventListener('message', async event => {
 				// - Use addDatabaseToSchema for subsequent schemas (aggregate approach)
 				// - If setAsContext is true, also switch the database in context
 				const shouldUpdate = schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database;
+				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
 				
 				if (shouldUpdate) {
 					const applySchema = async () => {
@@ -1393,7 +1394,7 @@ window.addEventListener('message', async event => {
 							}
 
 							// Set as context if this is the active box
-							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri);
+							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri, isForceRefresh);
 							
 							// If this is the active box, trigger revalidation to reflect the new schema
 							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {

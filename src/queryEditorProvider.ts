@@ -4551,7 +4551,8 @@ ${query}
 					cacheAgeMs: result.cacheAgeMs,
 					tablesCount,
 					columnsCount,
-					debug: result.debug
+					debug: result.debug,
+					forceRefresh
 				}
 			});
 		} catch (error) {

@@ -4974,10 +4974,10 @@ function ensureMonaco() {
 					// Function to set/add schema in monaco-kusto worker for full IntelliSense support
 					// Uses aggregate approach: first schema uses setSchemaFromShowSchema, 
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
-					window.__kustoSetMonacoKustoSchema = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null) {
+					window.__kustoSetMonacoKustoSchema = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null, forceRefresh = false) {
 						// Serialize schema operations to prevent race conditions
 						const operationPromise = window.__kustoSchemaOperationQueue.then(async () => {
-							return await window.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri);
+							return await window.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
 						}).catch(e => {
 							console.error('[DEBUG:SetSchema] Queued operation failed:', e);
 						});
@@ -4986,7 +4986,7 @@ function ensureMonaco() {
 					};
 					
 					// Internal implementation - called through the queue
-					window.__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null) {
+					window.__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null, forceRefresh = false) {
 						// Resolve which Monaco model this operation applies to
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						if (!models || models.length === 0) {
@@ -5030,8 +5030,13 @@ function ensureMonaco() {
 						const schemaKey = `${clusterUrl}|${database}`;
 						console.log('[DEBUG:SetSchema] START schemaKey=' + schemaKey + ', setAsContext=' + setAsContext + ', modelUri=' + modelKey.slice(-40));
 						console.log('[DEBUG:SetSchema] loadedSchemas at START (model): ' + JSON.stringify(perModelLoadedSchemas));
+						// If this is a force refresh, invalidate the loaded tracking so we reload the schema
+						if (forceRefresh && perModelLoadedSchemas[schemaKey]) {
+							delete perModelLoadedSchemas[schemaKey];
+							console.log('[DEBUG:SetSchema] forceRefresh: invalidated loaded tracking for ' + schemaKey);
+						}
 						const alreadyLoaded = !!perModelLoadedSchemas[schemaKey];
-						console.log('[DEBUG:SetSchema] alreadyLoaded=' + alreadyLoaded + ' (key=' + schemaKey + ')');
+						console.log('[DEBUG:SetSchema] alreadyLoaded=' + alreadyLoaded + ' (key=' + schemaKey + ', forceRefresh=' + forceRefresh + ')');
 						
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url) => {
@@ -5160,9 +5165,12 @@ function ensureMonaco() {
 									
 										// If setAsContext is true and we're switching to a different cluster,
 										// we need to replace the schema entirely (not add to it)
-										// because __kustoSetDatabaseInContext looks for the database in the current cluster's schema
-										console.log('[DEBUG:SetSchema] Decision: setAsContext=' + setAsContext + ', !isSameCluster=' + !isSameCluster + ' => ' + (setAsContext && !isSameCluster ? 'REPLACE schema' : 'ADD to schema'));
-										if (setAsContext && !isSameCluster) {
+										// because __kustoSetDatabaseInContext looks for the database in the current cluster's schema.
+										// Also replace when forceRefresh is true - addDatabaseToSchema may not update
+										// an existing database's tables/functions, so we need a full replacement.
+										const needsReplace = (setAsContext && !isSameCluster) || forceRefresh;
+										console.log('[DEBUG:SetSchema] Decision: setAsContext=' + setAsContext + ', !isSameCluster=' + !isSameCluster + ', forceRefresh=' + forceRefresh + ' => ' + (needsReplace ? 'REPLACE schema' : 'ADD to schema'));
+										if (needsReplace) {
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
 												try {
 																	// Remember what other clusters we had loaded for THIS model before replacing
