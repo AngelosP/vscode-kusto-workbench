@@ -14,6 +14,16 @@ function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> |
 	return opts.input ?? opts.parameters ?? ({} as T);
 }
 
+/**
+ * LLMs frequently send literal two-character "\n" sequences in JSON string
+ * values instead of actual newline characters. This is especially problematic
+ * for markdown content where newlines are structurally significant.
+ * This helper replaces those literal escape sequences with real characters.
+ */
+function unescapeLLMText(text: string): string {
+	return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types for tool inputs
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,6 +60,8 @@ export interface AddSectionInput {
 	database?: string;
 	/** For markdown sections: initial text content */
 	text?: string;
+	/** Alias for text - LLMs may use either property name */
+	content?: string;
 	/** For URL sections: the URL to embed */
 	url?: string;
 	/** For chart sections: data source section ID */
@@ -89,6 +101,8 @@ export interface UpdateMarkdownSectionInput {
 	/** Optional name/title for the section */
 	name?: string;
 	text?: string;
+	/** Alias for text - LLMs may use either property name */
+	content?: string;
 	mode?: 'preview' | 'markdown' | 'wysiwyg';
 }
 
@@ -345,6 +359,11 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
+		// Unescape literal \n sequences that LLMs frequently produce in markdown text
+		const textValue = input.text ?? input.content;
+		if (textValue !== undefined) {
+			input = { ...input, text: unescapeLLMText(textValue) };
+		}
 		return this.sendToWebview('toolAddSection', { input });
 	}
 
@@ -365,6 +384,11 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async updateMarkdownSection(input: UpdateMarkdownSectionInput): Promise<{ success: boolean }> {
+		// Unescape literal \n sequences that LLMs frequently produce in markdown text
+		const textValue = input.text ?? input.content;
+		if (textValue !== undefined) {
+			input = { ...input, text: unescapeLLMText(textValue) };
+		}
 		return this.sendToWebview('toolUpdateMarkdownSection', { input });
 	}
 

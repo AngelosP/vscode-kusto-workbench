@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [2.0.0] - Unreleased
 
 * Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.
+* Bugs
+    * Fixed issue where markdown sections sometimes had the '/n' literal in them instead of a proper new lines and looked all messed up.
 
 ## [1.9.1] - 2026-02-07
 
