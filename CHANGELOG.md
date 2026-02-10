@@ -6,12 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [2.0.0] - 2026-02-10
 
 * Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.
-* Added function count to schema (i) info UI
+* Added function count to schema (i) info UI and removed 1 px break line.
+* Handles extremely large Kusto databases with thousands of tables without consuming the entire context window. It prunes the schema until it takes up only 40% of the context window available for the selected model, so it should scale with large context windows (like the 1M+ Opus 4.6 one)
 * Bugs
     * Fixed issue where markdown sections sometimes had the '/n' literal in them instead of a proper new lines and looked all messed up.
     * Fixed issue where the Kusto Workbench agent would switch over to 'Run Query' but would still get limited to just 100 results.
     * Fixed issue where even though the query had \`\`\` it was being treated as a new line and it was being split up into multiple queries.
     * Fixed issue where refreshing the schema of the database to find new tables / functions, the schema would refresh, but the Kusto section auto-complete would not refresh.
+    * Fixed issue where if the number of rows returned was very large, list virtualization would break and after 50 or so rows it would look like the results ended.
 
 ## [1.9.1] - 2026-02-07
 

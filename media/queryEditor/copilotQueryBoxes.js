@@ -897,7 +897,7 @@
 			}
 
 			__kustoSetCopilotChatRunning(boxId, false);
-			__kustoAppendChatMessage(boxId, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it.');
+			__kustoAppendChatMessage(boxId, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it. Tip: If the ask is very challenging or broad, use the Kusto Workbench custom agent instead.');
 
 			// Ask extension for model list + default selection.
 			try {
@@ -1171,7 +1171,7 @@
 
 		// Re-run the same initialization logic that runs when the chat first opens
 		__kustoSetCopilotChatRunning(id, false);
-		__kustoAppendChatMessage(id, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it.');
+		__kustoAppendChatMessage(id, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it. Tip: If the ask is very challenging or broad, use the Kusto Workbench custom agent instead.');
 
 		// Re-request model list + default selection (same as initial setup)
 		try {

@@ -2,7 +2,8 @@ import * as assert from 'assert';
 
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from '../kqlSchemaInference';
 import type { DatabaseSchemaIndex } from '../kustoClient';
-import { formatSchemaAsCompactText } from '../schemaIndexUtils';
+import { formatSchemaAsCompactText, formatSchemaWithOptions, formatSchemaWithTokenBudget, PRUNE_PHASE_DESCRIPTIONS } from '../schemaIndexUtils';
+import type { SchemaPrunePhase } from '../schemaIndexUtils';
 
 suite('kqlSchemaInference', () => {
 	test('extracts table references and function calls (best-effort)', () => {
@@ -346,5 +347,218 @@ suite('formatSchemaAsCompactText', () => {
 
 		assert.ok(rootIdx < parentIdx, 'unfoldered table should come before Parent folder');
 		assert.ok(parentIdx < parentChildIdx, 'Parent folder should come before Parent/Child folder');
+	});
+});
+
+// ── Tests for formatSchemaWithOptions (phase-level formatting) ───────────
+
+suite('formatSchemaWithOptions', () => {
+	const richSchema: DatabaseSchemaIndex = {
+		tables: ['Users', 'Orders'],
+		columnTypesByTable: {
+			Users: { Id: 'long', Name: 'string', Email: 'string' },
+			Orders: { Id: 'long', UserId: 'long', Amount: 'decimal' }
+		},
+		tableDocStrings: {
+			Users: 'All registered users',
+			Orders: 'Purchase transactions'
+		},
+		columnDocStrings: {
+			'Users.Id': 'Unique user ID',
+			'Orders.Amount': 'Total order value'
+		},
+		functions: [
+			{ name: 'GetActiveUsers', parameters: [{ name: 'days', type: 'int' }], docString: 'Returns active users' },
+			{ name: 'CalcRevenue', parameters: [{ name: 'year', type: 'int' }, { name: 'region', type: 'string' }] }
+		]
+	};
+
+	test('phase 0: identical to formatSchemaAsCompactText', () => {
+		const full = formatSchemaAsCompactText('TestDb', richSchema);
+		const withOpts = formatSchemaWithOptions('TestDb', richSchema, undefined, {});
+		assert.strictEqual(withOpts, full);
+	});
+
+	test('phase 1 (dropTypes): removes type abbreviations from columns and function params', () => {
+		const result = formatSchemaWithOptions('TestDb', richSchema, undefined, { dropTypes: true });
+		// Column entries: should have the name without parenthesized type
+		assert.ok(result.includes('Id, '), 'columns should be listed by name only');
+		assert.ok(!result.includes('Id(l)'), 'should NOT have type abbreviation');
+		// Docstrings should still be present
+		assert.ok(result.includes('"Unique user ID"'), 'column docstrings should remain');
+		assert.ok(result.includes('// All registered users'), 'table docstrings should remain');
+		// Type legend should be omitted
+		assert.ok(!result.includes('Types: s=string'), 'type legend should be omitted when dropTypes');
+		// Function parameter types should be dropped
+		assert.ok(result.includes('GetActiveUsers(days, ') || result.includes('GetActiveUsers(days)'), 'function param types dropped');
+		assert.ok(!result.includes(':i)') && !result.includes(':dt)'), 'no type annotations on function params');
+	});
+
+	test('phase 2 (dropTypes + dropDocStrings): removes all docstrings', () => {
+		const result = formatSchemaWithOptions('TestDb', richSchema, undefined, { dropTypes: true, dropDocStrings: true });
+		assert.ok(!result.includes('Unique user ID'), 'column docstrings should be gone');
+		assert.ok(!result.includes('All registered users'), 'table docstrings should be gone');
+		assert.ok(!result.includes('Returns active users'), 'function docstrings should be gone');
+		// Columns should still be listed
+		assert.ok(result.includes('Id, '), 'columns should still be listed by name');
+	});
+
+	test('phase 3 (dropColumns): table lines have just the name, no columns', () => {
+		const result = formatSchemaWithOptions('TestDb', richSchema, undefined, {
+			dropTypes: true, dropDocStrings: true, dropColumns: true
+		});
+		// Each table is just its name on a line (no colon, no columns)
+		const lines = result.split('\n');
+		const usersLine = lines.find(l => l.trim().startsWith('Users'));
+		assert.ok(usersLine, 'should have Users line');
+		assert.ok(!usersLine!.includes(':'), 'Users line should not have a colon (no columns)');
+		assert.ok(!usersLine!.includes('Id'), 'Users line should not have column names');
+		// Functions should still have params
+		assert.ok(result.includes('GetActiveUsers(days'), 'functions should still have params');
+	});
+
+	test('phase 4 (dropFunctionParams): function lines have just the name', () => {
+		const result = formatSchemaWithOptions('TestDb', richSchema, undefined, {
+			dropTypes: true, dropDocStrings: true, dropColumns: true, dropFunctionParams: true
+		});
+		assert.ok(result.includes('GetActiveUsers()'), 'function should have empty parens');
+		assert.ok(result.includes('CalcRevenue()'), 'function should have empty parens');
+		assert.ok(!result.includes('days'), 'should not have param name');
+	});
+
+	test('meta info is preserved across all phases', () => {
+		const meta = { tablesCount: 2, columnsCount: 6, functionsCount: 2, cacheAgeMs: 60000 };
+		const result = formatSchemaWithOptions('TestDb', richSchema, meta, {
+			dropTypes: true, dropDocStrings: true, dropColumns: true, dropFunctionParams: true
+		});
+		assert.ok(result.includes('2 tables'), 'should include meta table count');
+		assert.ok(result.includes('6 columns'), 'should include meta column count');
+		assert.ok(result.includes('cached 1m ago'), 'should include meta cache age');
+	});
+});
+
+// ── Tests for formatSchemaWithTokenBudget (progressive pruning) ──────────
+
+suite('formatSchemaWithTokenBudget', () => {
+	// Simple mock tokenizer: 1 token per 4 characters (rough approximation)
+	const mockCountTokens = async (text: string): Promise<number> => Math.ceil(text.length / 4);
+
+	function makeLargeSchema(tableCount: number, colsPerTable: number): DatabaseSchemaIndex {
+		const tables: string[] = [];
+		const columnTypesByTable: Record<string, Record<string, string>> = {};
+		const tableDocStrings: Record<string, string> = {};
+		const columnDocStrings: Record<string, string> = {};
+		for (let i = 0; i < tableCount; i++) {
+			const tableName = `Table${String(i).padStart(4, '0')}`;
+			tables.push(tableName);
+			columnTypesByTable[tableName] = {};
+			tableDocStrings[tableName] = `Documentation for ${tableName} with some extra text to pad it out`;
+			for (let j = 0; j < colsPerTable; j++) {
+				const colName = `Column${String(j).padStart(3, '0')}`;
+				columnTypesByTable[tableName][colName] = j % 3 === 0 ? 'string' : j % 3 === 1 ? 'long' : 'datetime';
+				columnDocStrings[`${tableName}.${colName}`] = `Description of ${colName}`;
+			}
+		}
+		return {
+			tables,
+			columnTypesByTable,
+			tableDocStrings,
+			columnDocStrings,
+			functions: Array.from({ length: 20 }, (_, i) => ({
+				name: `Func${i}`,
+				parameters: [{ name: 'param1', type: 'string' }, { name: 'param2', type: 'int' }],
+				docString: `Function ${i} documentation`
+			}))
+		};
+	}
+
+	test('phase 0: returns full schema when it fits', async () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: ['T1'],
+			columnTypesByTable: { T1: { Id: 'long' } }
+		};
+		const result = await formatSchemaWithTokenBudget('SmallDb', schema, undefined, 100000, mockCountTokens);
+		assert.strictEqual(result.phase, 0, 'should be phase 0 (full schema)');
+		assert.ok(result.text.includes('Id(l)'), 'should include full column types');
+	});
+
+	test('returns decreasing text length for each successive phase', async () => {
+		const schema = makeLargeSchema(100, 15); // reasonably large
+		const fullText = formatSchemaAsCompactText('TestDb', schema);
+		const fullTokens = await mockCountTokens(fullText);
+
+		// Phase 0 fits
+		const r0 = await formatSchemaWithTokenBudget('TestDb', schema, undefined, fullTokens + 100, mockCountTokens);
+		assert.strictEqual(r0.phase, 0);
+
+		// Force each phase by using progressively smaller budgets
+		const sizes: number[] = [r0.text.length];
+
+		for (let targetPhase = 1; targetPhase <= 4; targetPhase++) {
+			// Budget that just barely doesn't fit the previous phase
+			const prevTokens = await mockCountTokens(sizes[sizes.length - 1].toString().length > 0
+				? formatSchemaWithOptions('TestDb', schema, undefined,
+					targetPhase === 1 ? {} :
+					targetPhase === 2 ? { dropTypes: true } :
+					targetPhase === 3 ? { dropTypes: true, dropDocStrings: true } :
+					{ dropTypes: true, dropDocStrings: true, dropColumns: true })
+				: '');
+			// Use a budget smaller than previous phase but large enough for current
+			const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, prevTokens - 1, mockCountTokens);
+			assert.ok(result.phase >= targetPhase, `should reach at least phase ${targetPhase}, got phase ${result.phase}`);
+			sizes.push(result.text.length);
+		}
+
+		// Each phase's output should be smaller or equal in length
+		for (let i = 1; i < sizes.length; i++) {
+			assert.ok(sizes[i] <= sizes[i - 1], `phase ${i} text (${sizes[i]} chars) should be <= phase ${i - 1} text (${sizes[i - 1]} chars)`);
+		}
+	});
+
+	test('phase 5: truncates with cut-off message when budget is very small', async () => {
+		const schema = makeLargeSchema(200, 10);
+		// Very small budget that can't even fit table names
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 50, mockCountTokens);
+		assert.strictEqual(result.phase, 5, 'should be phase 5 (truncated)');
+		assert.ok(result.text.includes('schema cut off due to context window limits'), 'should include cut-off notice');
+	});
+
+	test('prune notice is included for phases 1-4', async () => {
+		const schema = makeLargeSchema(50, 10);
+		const fullText = formatSchemaAsCompactText('TestDb', schema);
+		const fullTokens = await mockCountTokens(fullText);
+
+		// Use a budget that's just under the full schema
+		const r1 = await formatSchemaWithTokenBudget('TestDb', schema, undefined, fullTokens - 1, mockCountTokens);
+		if (r1.phase >= 1 && r1.phase <= 4) {
+			const desc = PRUNE_PHASE_DESCRIPTIONS[r1.phase as SchemaPrunePhase];
+			assert.ok(r1.text.includes(desc), `should include prune phase description "${desc}"`);
+			assert.ok(r1.text.includes('[Note:'), 'should include [Note: prefix');
+		}
+	});
+
+	test('tokenCount is within budget', async () => {
+		const schema = makeLargeSchema(100, 10);
+		const budget = 500;
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, budget, mockCountTokens);
+		assert.ok(result.tokenCount <= budget, `tokenCount (${result.tokenCount}) should be within budget (${budget})`);
+		assert.strictEqual(result.tokenBudget, budget, 'should report the budget used');
+	});
+
+	test('handles schema with no functions gracefully during pruning', async () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: ['A', 'B', 'C'],
+			columnTypesByTable: {
+				A: { x: 'string' },
+				B: { y: 'long' },
+				C: { z: 'datetime' }
+			}
+		};
+		// Budget smaller than full but reasonable
+		const fullText = formatSchemaAsCompactText('TestDb', schema);
+		const fullTokens = await mockCountTokens(fullText);
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, fullTokens - 1, mockCountTokens);
+		assert.ok(result.phase >= 1, 'should prune since budget is under full');
+		assert.ok(!result.text.includes('# Functions'), 'should have no functions section');
 	});
 });

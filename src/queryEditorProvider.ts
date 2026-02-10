@@ -11,7 +11,7 @@ import { DatabaseSchemaIndex, KustoQueryClient, QueryExecutionError } from './ku
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { SCHEMA_CACHE_VERSION } from './schemaCache';
-import { countColumns, formatSchemaAsCompactText } from './schemaIndexUtils';
+import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults } from './copilotConversationUtils';
 import { toolOrchestrator } from './extension';
@@ -1697,8 +1697,9 @@ Completion:`;
 		connection: KustoConnection,
 		database: string,
 		boxId: string,
-		token: vscode.CancellationToken
-	): Promise<{ result: string; label: string }> {
+		token: vscode.CancellationToken,
+		model?: vscode.LanguageModelChat
+	): Promise<{ result: string; label: string; prunePhase?: number }> {
 		const db = String(database || '').trim();
 		const clusterKey = this.normalizeClusterUrlKey(connection.clusterUrl || '');
 		const memCacheKey = `${clusterKey}|${db}`;
@@ -1720,6 +1721,7 @@ Completion:`;
 
 		let jsonText = '';
 		let label = '';
+		let prunePhase: number | undefined;
 		try {
 			let cached = await this.getCachedSchemaFromDisk(diskCacheKey);
 			if (token.isCancellationRequested) {
@@ -1761,13 +1763,32 @@ Completion:`;
 				const functionsCount = schema.functions?.length ?? 0;
 				const cacheAgeMs = Math.max(0, now - cached.timestamp);
 				label = `${db || '(unknown db)'}: ${tablesCount} tables, ${columnsCount} columns, ${functionsCount} functions`;
-				// Use compact text format instead of JSON to reduce token usage
-				jsonText = formatSchemaAsCompactText(db, schema, {
-					cacheAgeMs,
-					tablesCount,
-					columnsCount,
-					functionsCount
-				});
+
+				const schemaMeta = { cacheAgeMs, tablesCount, columnsCount, functionsCount };
+
+				// If we have access to the model, apply token-budget-aware progressive pruning
+				if (model && typeof model.countTokens === 'function' && typeof model.maxInputTokens === 'number') {
+					const tokenBudget = Math.floor(model.maxInputTokens * DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION);
+					const countTokensFn = (text: string) => model.countTokens(text, token);
+
+					try {
+						const pruneResult: SchemaPruneResult = await formatSchemaWithTokenBudget(
+							db, schema, schemaMeta, tokenBudget, countTokensFn
+						);
+						jsonText = pruneResult.text;
+						prunePhase = pruneResult.phase;
+
+						if (pruneResult.phase > 0) {
+							label += ` (${PRUNE_PHASE_DESCRIPTIONS[pruneResult.phase]})`;
+						}
+					} catch {
+						// If token counting fails, fall through to the unpruned format
+						jsonText = formatSchemaAsCompactText(db, schema, schemaMeta);
+					}
+				} else {
+					// No model available – use full compact text (original behavior)
+					jsonText = formatSchemaAsCompactText(db, schema, schemaMeta);
+				}
 			}
 		} catch (error) {
 			const raw = this.getErrorMessage(error);
@@ -1782,7 +1803,7 @@ Completion:`;
 		}
 
 		// Return both result and label; caller is responsible for posting message with entryId
-		return { result: jsonText, label };
+		return { result: jsonText, label, prunePhase };
 	}
 
 	/**
@@ -2187,7 +2208,7 @@ Completion:`;
 					if (toolName === 'get_extended_schema') {
 						const requestedDbRaw = (tc.input as any)?.database;
 						const requestedDb = String(requestedDbRaw || database || '').trim() || database;
-						const schemaToolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token);
+						const schemaToolResult = await this.getExtendedSchemaToolResult(connection, requestedDb, boxId, cts.token, model);
 						
 						// Add tool result to conversation history
 						const schemaEntryId = this.nextHistoryEntryId(boxId);
@@ -2213,6 +2234,13 @@ Completion:`;
 						} catch {
 							// ignore
 						}
+
+						// Notify user in the chat window when schema was pruned to fit context
+						if (schemaToolResult.prunePhase && schemaToolResult.prunePhase > 0) {
+							const phaseDesc = PRUNE_PHASE_DESCRIPTIONS[schemaToolResult.prunePhase as 0 | 1 | 2 | 3 | 4 | 5] || 'reduced';
+							postStatus(`Schema was too large for the model\u2019s context window and was automatically reduced (${phaseDesc}). Provide specific table or column names for best results.`);
+						}
+
 						hasOptionalToolCalls = true;
 						continue;
 					}

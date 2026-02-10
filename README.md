@@ -35,6 +35,7 @@ Don't manually add every single Kusto cluster and database you work with. If you
 ### Save connections to favorites
 
 Save frequently used connections to favorites, with a friendly name so you can remind yourself what the connection is used for.
+
 ![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
 
 ### VS Code custom agent that actually works
@@ -51,21 +52,25 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 ### Load .csv data directly from the internet
 
 If you have a URL, then you can load it
+
 ![Load .csv data directly from the internet](./marketplace-media/csv.png)
 
 ### Transform data
 
 You can transform Kusto search results without changing the query itself. You can also transform .csv files loaded into the file by adding a 'URL' section.
+
 ![Using data transformation to add a calculated column](marketplace-media/transformation.png)
 
 ### Chart data
 
 You can create charts from Kusto search results or .csv files loaded intot he file by adding a 'URL' section.
+
 ![Creating a bar chart from a Kusto query](marketplace-media/chart.png)
 
 ### Prettify query
 
 Use the query toolbar “Prettify” action to apply Kusto-aware formatting rules (for example, improving layout around common operators such as `where` and `summarize`).
+
 ![Prettify a Kusto query](marketplace-media/prettify.png)
 
 ### Diagnostics and debugging

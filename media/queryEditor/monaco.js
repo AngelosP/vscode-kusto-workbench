@@ -5166,9 +5166,11 @@ function ensureMonaco() {
 										// If setAsContext is true and we're switching to a different cluster,
 										// we need to replace the schema entirely (not add to it)
 										// because __kustoSetDatabaseInContext looks for the database in the current cluster's schema.
-										// Also replace when forceRefresh is true - addDatabaseToSchema may not update
-										// an existing database's tables/functions, so we need a full replacement.
-										const needsReplace = (setAsContext && !isSameCluster) || forceRefresh;
+										// NOTE: forceRefresh deliberately uses the ADD path (addDatabaseToSchema) rather than
+										// REPLACE (setSchemaFromShowSchema). REPLACE wipes ALL loaded schemas which breaks
+										// fully-qualified cross-cluster/cross-database table references. The ADD path
+										// updates just the refreshed database's schema without disturbing others.
+										const needsReplace = setAsContext && !isSameCluster;
 										console.log('[DEBUG:SetSchema] Decision: setAsContext=' + setAsContext + ', !isSameCluster=' + !isSameCluster + ', forceRefresh=' + forceRefresh + ' => ' + (needsReplace ? 'REPLACE schema' : 'ADD to schema'));
 										if (needsReplace) {
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
@@ -5309,14 +5311,18 @@ function ensureMonaco() {
 																				const currentSchema = await worker.getSchema();
 																				const currentDatabases = currentSchema?.cluster?.databases || [];
 																				const existingDb = currentDatabases.find(db => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase());
-																				const nextDatabases = existingDb ? currentDatabases : [...currentDatabases, databaseSchema];
+																				// When the database already exists, replace it with the fresh databaseSchema
+																				// (important for forceRefresh — the old entry has stale tables/functions).
+																				const nextDatabases = existingDb
+																					? currentDatabases.map(db => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
+																					: [...currentDatabases, databaseSchema];
 																				const updatedSchema = {
 																					...currentSchema,
 																					cluster: {
 																						...(currentSchema?.cluster || {}),
 																						databases: nextDatabases
 																					},
-																					database: existingDb || databaseSchema
+																					database: databaseSchema
 																				};
 																				await worker.setSchema(updatedSchema);
 																				window.__kustoMonacoDatabaseInContextByModel = window.__kustoMonacoDatabaseInContextByModel || {};

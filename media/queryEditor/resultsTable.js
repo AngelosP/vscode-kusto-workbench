@@ -2244,7 +2244,7 @@ function __kustoGetVirtualizationState(state) {
 		state.__kustoVirtual = {
 			enabled: false,
 			rowHeight: 22,
-			overScan: 8,
+			overScan: 20,
 			lastStart: -1,
 			lastEnd: -1,
 			lastDisplayVersion: -1,
@@ -2253,7 +2253,8 @@ function __kustoGetVirtualizationState(state) {
 			resizeObserver: null,
 			scrollEl: null,
 			scrollHandler: null,
-			observedEls: []
+			observedEls: [],
+			theadHeight: 0
 		};
 	}
 	return state.__kustoVirtual;
@@ -2382,14 +2383,33 @@ function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, optio
 	let scrollTop = 0;
 	let clientH = 0;
 	try {
-		const scrollEl = (options && options.scrollEl) ? options.scrollEl : __kustoResolveVirtualScrollElement(containerEl);
-		const m = __kustoGetVirtualScrollMetrics(scrollEl, containerEl);
+		// Always prefer the container's own scroll position when it is scrollable.
+		// Using a cached scrollSourceEl (which can be e.g. the document scroller, set by an
+		// unrelated document-level scroll event) would give wrong metrics and cause the
+		// virtual window to get "stuck" at its initial position.
+		let effectiveScrollEl = null;
+		try {
+			const sh = Math.max(0, containerEl.scrollHeight || 0);
+			const ch = Math.max(0, containerEl.clientHeight || 0);
+			if (sh > (ch + 1)) {
+				effectiveScrollEl = containerEl;
+			}
+		} catch { /* ignore */ }
+		if (!effectiveScrollEl) {
+			effectiveScrollEl = (options && options.scrollEl) ? options.scrollEl : __kustoResolveVirtualScrollElement(containerEl);
+		}
+		const m = __kustoGetVirtualScrollMetrics(effectiveScrollEl, containerEl);
 		scrollTop = Math.max(0, Math.floor(m.scrollTop || 0));
 		clientH = Math.max(0, Math.floor(m.clientH || 0));
 	} catch { /* ignore */ }
+
+	// Subtract the thead height so scrollTop maps to the data row area, not the header.
+	const theadH = Math.max(0, Math.floor(v.theadHeight || 0));
+	const dataScrollTop = Math.max(0, scrollTop - theadH);
+
 	const visibleCount = Math.max(1, Math.ceil(clientH / rowH));
-	const overscan = Math.max(2, Math.floor(v.overScan || 8));
-	let start = Math.max(0, Math.floor(scrollTop / rowH) - overscan);
+	const overscan = Math.max(4, Math.floor(v.overScan || 20));
+	let start = Math.max(0, Math.floor(dataScrollTop / rowH) - overscan);
 	let end = Math.min(total, start + visibleCount + overscan * 2);
 
 	// If a specific display row should be visible (selected cell, current search match),
@@ -2514,7 +2534,24 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 		if (countEl) {
 			const total = rows ? rows.length : 0;
 			const shown = displayRowIndices ? displayRowIndices.length : 0;
-			countEl.textContent = (shown !== total) ? (String(shown) + ' / ' + String(total)) : String(total);
+			// When results were truncated during persistence (file too large), show the
+			// original row count alongside the restored count so the user knows why the
+			// number is smaller than expected.
+			const meta = (state && state.metadata && typeof state.metadata === 'object') ? state.metadata : {};
+			const wasTruncated = !!meta.persistedTruncated;
+			const originalTotal = (wasTruncated && typeof meta.persistedTotalRows === 'number' && isFinite(meta.persistedTotalRows))
+				? meta.persistedTotalRows
+				: 0;
+			let countText = '';
+			if (shown !== total) {
+				countText = String(shown) + ' / ' + String(total);
+			} else {
+				countText = String(total);
+			}
+			if (wasTruncated && originalTotal > total) {
+				countText += ' (of ' + String(originalTotal) + ' \u2014 truncated to fit file)';
+			}
+			countEl.textContent = countText;
 		}
 	} catch { /* ignore */ }
 
@@ -2579,7 +2616,22 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 		const tbody = table.querySelector('tbody');
 		if (tbody) {
 			if (!v || !v.enabled || v.lastStart !== visibleRange.start || v.lastEnd !== visibleRange.end || v.lastDisplayVersion !== displayVersion || v.lastVisualVersion !== visualVersion) {
+				// Save scrollTop before innerHTML replacement. Replacing tbody content can
+				// cause the browser to momentarily recalculate scroll metrics. If the content
+				// height drops briefly (between removing old content and rendering new), the
+				// browser clamps scrollTop to 0, which causes the virtual window to jump back
+				// to the beginning. Restoring scrollTop after the update prevents this.
+				let savedScrollTop = -1;
+				try {
+					if (container) savedScrollTop = container.scrollTop;
+				} catch { /* ignore */ }
 				tbody.innerHTML = tbodyHtml;
+				// Restore scrollTop immediately after DOM update.
+				try {
+					if (container && savedScrollTop > 0 && Math.abs(container.scrollTop - savedScrollTop) > 1) {
+						container.scrollTop = savedScrollTop;
+					}
+				} catch { /* ignore */ }
 				if (v && v.enabled) {
 					v.lastStart = visibleRange.start;
 					v.lastEnd = visibleRange.end;
@@ -2590,17 +2642,45 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 		}
 	} catch { /* ignore */ }
 
-	// Measure row height once (after first render) to make virtualization accurate.
+	// Measure row height and thead height once (after first render) to make virtualization accurate.
 	try {
-		if (v && v.enabled && (!v.rowHeight || v.rowHeight === 22)) {
-			const sample = table.querySelector('tbody tr[data-row]');
-			if (sample) {
-				const h = Math.max(12, Math.round(sample.getBoundingClientRect().height || 0));
-				if (h && isFinite(h)) {
-					v.rowHeight = h;
-					v.lastStart = -1;
-					v.lastEnd = -1;
+		if (v && v.enabled) {
+			let needsRerender = false;
+			// Measure actual data row height.
+			// Re-measure if rowHeight was never set, is still the default (22),
+			// or was set from a hidden-element measurement (12 = Math.max(12, 0)).
+			// When the table is inside a display:none tree, getBoundingClientRect()
+			// returns 0, so Math.max(12, 0) = 12 locks in a bogus value. The
+			// condition below ensures we re-measure until a real (> 12) value is
+			// obtained.
+			if (!v.rowHeight || v.rowHeight <= 12 || v.rowHeight === 22) {
+				const sample = table.querySelector('tbody tr[data-row]');
+				if (sample) {
+					const h = Math.max(12, Math.round(sample.getBoundingClientRect().height || 0));
+					if (h && isFinite(h) && h > 12 && h !== v.rowHeight) {
+						v.rowHeight = h;
+						needsRerender = true;
+					}
 				}
+			}
+			// Measure thead height so scrollTop-to-row-index mapping accounts for the header.
+			if (!v.theadHeight) {
+				const thead = table.querySelector('thead');
+				if (thead) {
+					const th = Math.max(0, Math.round(thead.getBoundingClientRect().height || 0));
+					if (th && isFinite(th)) {
+						v.theadHeight = th;
+						needsRerender = true;
+					}
+				}
+			}
+			if (needsRerender) {
+				v.lastStart = -1;
+				v.lastEnd = -1;
+				// Re-render immediately with corrected measurements so spacer heights are
+				// accurate from the start, preventing scroll jumps and empty regions.
+				try { __kustoRerenderResultsTableBody(boxId, { reason: 'measurement' }); } catch { /* ignore */ }
+				return; // the recursive call already handled the rest
 			}
 		}
 	} catch { /* ignore */ }
@@ -2633,23 +2713,54 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 							} catch { /* ignore */ }
 
 							// Record the actual scroll source so range calculation matches the host's scroll behavior.
+							// IMPORTANT: only update scrollSourceEl when the source is directly related
+							// to this table (the container or one of its ancestors that contains it).
+							// Document-level captured events from unrelated scrollers (or the document
+							// scroller itself) would corrupt the cached source, causing all subsequent
+							// range calculations to use wrong metrics and making the virtual window
+							// appear "stuck" — showing only the initial ~30 rows.
 							try {
 								const cont = document.getElementById(boxId + '_table_container');
 								if (cont) {
 									const src = __kustoResolveScrollSourceForEvent(ev, cont);
-									if (src) vv.scrollSourceEl = src;
+									// Only store the source if it is the container itself or a direct
+									// scrollable ancestor that actually contains the table. The document
+									// scrolling element should not override a more specific source.
+									if (src && src !== document.scrollingElement && src !== document.documentElement) {
+										vv.scrollSourceEl = src;
+									} else if (src && !vv.scrollSourceEl) {
+										// Only use document scroller as fallback if nothing better was found
+										vv.scrollSourceEl = src;
+									}
 								}
 							} catch { /* ignore */ }
 
 							const st2 = __kustoGetResultsState(boxId);
 							const vv2 = __kustoGetVirtualizationState(st2);
-							if (!vv2 || !vv2.enabled) return;
+							if (!vv2) return;
+							// The enabled flag may be stale if the state object was replaced
+							// (e.g. displayResultForBox creates a new state). Re-derive it
+							// from the actual row count so the handler doesn't silently die.
+							if (!vv2.enabled) {
+								const rows2 = Array.isArray(st2.rows) ? st2.rows : [];
+								const disp2 = Array.isArray(st2.displayRowIndices) ? st2.displayRowIndices : rows2;
+								if (disp2.length > 500) {
+									vv2.enabled = true;
+								} else {
+									return; // genuinely small result, no virtualization needed
+								}
+							}
 							if (vv2.rafPending) return;
 							vv2.rafPending = true;
-							requestAnimationFrame(() => {
+							// Use setTimeout(0) instead of requestAnimationFrame for coalescing.
+							// RAF callbacks can be delayed or skipped in VS Code webviews under
+							// certain conditions (e.g. background tabs, rapid scrolling during
+							// layout recalculations). setTimeout(0) ensures the callback fires
+							// on the next event-loop turn regardless of rendering state.
+							setTimeout(() => {
 								vv2.rafPending = false;
 								try { __kustoRerenderResultsTableBody(boxId, { reason: 'scroll' }); } catch { /* ignore */ }
-							});
+							}, 0);
 						} catch { /* ignore */ }
 					};
 				}
@@ -2706,6 +2817,70 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 								vv.observedEls.push(scrollEl);
 							}
 						}
+					}
+				} catch { /* ignore */ }
+
+				// IntersectionObserver fallback: when a virtual spacer row becomes visible, it
+				// means the user has scrolled to the edge of the rendered window. Trigger a
+				// re-render to materialize the next batch of rows. This is more robust than
+				// relying solely on scroll events, which can be missed or coalesced away.
+				try {
+					if (typeof IntersectionObserver !== 'undefined' && vv.enabled) {
+						if (!vv.spacerObserver) {
+							vv.spacerObserver = new IntersectionObserver((entries) => {
+								try {
+									if (vv._suppressSpacerCallback) return;
+									let anyVisible = false;
+									for (const entry of entries) {
+										if (entry.isIntersecting) { anyVisible = true; break; }
+									}
+									if (!anyVisible) return;
+									// Debounce: at most one re-render per 50ms from the observer.
+									if (vv._spacerRenderPending) return;
+									vv._spacerRenderPending = true;
+									setTimeout(() => {
+										vv._spacerRenderPending = false;
+										try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible' }); } catch { /* ignore */ }
+									}, 50);
+								} catch { /* ignore */ }
+							}, { root: container, threshold: 0 });
+						}
+						// Disconnect old observations and observe the current spacer rows.
+						try { vv.spacerObserver.disconnect(); } catch { /* ignore */ }
+						// Suppress callbacks briefly so that observing freshly-rendered spacers doesn't
+						// immediately trigger a re-render loop.
+						vv._suppressSpacerCallback = true;
+						try {
+							const spacers = table.querySelectorAll('tbody tr.kusto-virtual-spacer');
+							for (const sp of spacers) {
+								vv.spacerObserver.observe(sp);
+							}
+						} catch { /* ignore */ }
+						setTimeout(() => {
+							vv._suppressSpacerCallback = false;
+							// After suppression ends, manually check if any observed spacer is
+							// visible. The initial observe() callback fires immediately (and was
+							// suppressed), but IntersectionObserver won't fire again until the
+							// intersection *changes*. So if a spacer was already visible when
+							// observed, we'd never get another callback. Re-check now.
+							try {
+								const obs = vv.spacerObserver;
+								if (obs && typeof obs.takeRecords === 'function') {
+									const records = obs.takeRecords();
+									let anyVisible = false;
+									for (const entry of records) {
+										if (entry.isIntersecting) { anyVisible = true; break; }
+									}
+									if (anyVisible && !vv._spacerRenderPending) {
+										vv._spacerRenderPending = true;
+										setTimeout(() => {
+											vv._spacerRenderPending = false;
+											try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible-deferred' }); } catch { /* ignore */ }
+										}, 50);
+									}
+								}
+							} catch { /* ignore */ }
+						}, 100);
 					}
 				} catch { /* ignore */ }
 			}
@@ -2844,10 +3019,18 @@ function displayResultForBox(result, boxId, options) {
 		  '</div>'
 		: '';
 
+	const wasTruncated = !!metadata.persistedTruncated;
+	const originalTotal = (wasTruncated && typeof metadata.persistedTotalRows === 'number' && isFinite(metadata.persistedTotalRows))
+		? metadata.persistedTotalRows : 0;
+	const initialRowCountText = (rows ? rows.length : 0) +
+		(wasTruncated && originalTotal > (rows ? rows.length : 0)
+			? ' (of ' + String(originalTotal) + ' \u2014 truncated to fit file)'
+			: '');
+
 	let html =
 		'<div class="results-header">' +
 		'<div class="results-title-row' + titleRowTooltipClass + '">' +
-		'<strong>' + label + ':</strong><span class="results-row-col-info"> <span id="' + boxId + '_results_count">' + (rows ? rows.length : 0) + '</span> rows / ' + (columns ? columns.length : 0) + ' columns</span>' +
+		'<strong>' + label + ':</strong><span class="results-row-col-info"> <span id="' + boxId + '_results_count">' + initialRowCountText + '</span> rows / ' + (columns ? columns.length : 0) + ' columns</span>' +
 		execPart +
 		'<button class="unified-btn-secondary tool-toggle-btn results-visibility-toggle" id="' + boxId + '_results_toggle" type="button" onclick="toggleQueryResultsVisibility(\'' + boxId + '\')" title="Hide results" aria-label="Hide results">' + resultsVisibilityIconSvg + '</button>' +
 		resultsLabelTooltipHtml +
@@ -2959,15 +3142,19 @@ function displayResultForBox(result, boxId, options) {
 	// Some hosts (notably URL/CSV previews) can inject the table before the container has a
 	// real height, so virtualization may bind scroll handlers to the wrong element until a
 	// later rerender (e.g. on click). Do a one-time post-layout rerender to rebind.
+	// Use setTimeout instead of requestAnimationFrame because RAF can be delayed or
+	// skipped entirely in VS Code webview environments (background tabs, rapid layout
+	// recalculations). Two nested setTimeout(0) calls approximate double-RAF timing
+	// while guaranteeing execution.
 	try {
 		const st = __kustoGetResultsState(boxId);
 		if (st && !st.__kustoPostLayoutRerenderScheduled) {
 			st.__kustoPostLayoutRerenderScheduled = true;
-			requestAnimationFrame(() => {
-				requestAnimationFrame(() => {
+			setTimeout(() => {
+				setTimeout(() => {
 					try { __kustoRerenderResultsTableBody(boxId, { reason: 'post-layout' }); } catch { /* ignore */ }
-				});
-			});
+				}, 0);
+			}, 0);
 		}
 	} catch { /* ignore */ }
 	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
