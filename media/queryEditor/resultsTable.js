@@ -2244,7 +2244,7 @@ function __kustoGetVirtualizationState(state) {
 		state.__kustoVirtual = {
 			enabled: false,
 			rowHeight: 22,
-			overScan: 20,
+			overScan: 5,
 			lastStart: -1,
 			lastEnd: -1,
 			lastDisplayVersion: -1,
@@ -2408,9 +2408,17 @@ function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, optio
 	const dataScrollTop = Math.max(0, scrollTop - theadH);
 
 	const visibleCount = Math.max(1, Math.ceil(clientH / rowH));
-	const overscan = Math.max(4, Math.floor(v.overScan || 20));
-	let start = Math.max(0, Math.floor(dataScrollTop / rowH) - overscan);
-	let end = Math.min(total, start + visibleCount + overscan * 2);
+	const overscan = Math.max(4, Math.floor(v.overScan || 5));
+	// Compute the first visible row index from the scroll position.
+	const topRow = Math.floor(dataScrollTop / rowH);
+	// Start `overscan` rows above the viewport, end `overscan` rows below it.
+	// Unlike `end = start + visibleCount + 2*overscan`, this formula ensures `end`
+	// tracks the actual viewport bottom even when `start` is clamped to 0 near the
+	// top of the list. The old formula created an over-extended window at the top
+	// (e.g. 47 rows for a 7-row viewport), causing the window to stay stuck at
+	// [0, 47) until the user scrolled past 600+ pixels into the empty spacer.
+	let start = Math.max(0, topRow - overscan);
+	let end = Math.min(total, topRow + visibleCount + overscan);
 
 	// If a specific display row should be visible (selected cell, current search match),
 	// expand/shift the window so it is included.
@@ -2418,10 +2426,10 @@ function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, optio
 	if (forceDisplayRow !== null && forceDisplayRow >= 0 && forceDisplayRow < total) {
 		if (forceDisplayRow < start) {
 			start = Math.max(0, forceDisplayRow - overscan);
-			end = Math.min(total, start + visibleCount + overscan * 2);
+			end = Math.min(total, Math.max(end, forceDisplayRow + visibleCount + overscan));
 		} else if (forceDisplayRow >= end) {
-			start = Math.max(0, forceDisplayRow - visibleCount - overscan);
-			end = Math.min(total, start + visibleCount + overscan * 2);
+			end = Math.min(total, forceDisplayRow + overscan + 1);
+			start = Math.max(0, Math.min(start, forceDisplayRow - visibleCount - overscan));
 		}
 	}
 
@@ -2472,9 +2480,9 @@ function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, match
 
 function __kustoRerenderResultsTableBody(boxId, options) {
 	const state = __kustoGetResultsState(boxId);
-	if (!state) return;
+	if (!state) { return; }
 	const table = document.getElementById(boxId + '_table');
-	if (!table) return;
+	if (!table) { return; }
 	const container = document.getElementById(boxId + '_table_container');
 	const boxIdArg = __kustoEscapeForHtmlAttribute(JSON.stringify(String(boxId)));
 
@@ -2561,9 +2569,14 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 	try { if (v) v.enabled = (displayRowIndices.length > virtualThreshold); } catch { /* ignore */ }
 
 	// Determine which display row should be forced into view (selected cell or current search match).
+	// IMPORTANT: Only apply forceDisplayRow for programmatic navigation (initial render, search,
+	// keyboard cell navigation). During user-initiated scrolling, forceDisplayRow would anchor the
+	// virtual window to the selected cell and prevent it from advancing as the user scrolls.
+	const _reason = (options && options.reason) ? options.reason : '';
+	const _isScrollDriven = (_reason === 'scroll' || _reason === 'resize' || _reason === 'spacer-visible' || _reason === 'spacer-visible-deferred');
 	let forceDisplayRow = null;
 	try {
-		if (v && v.enabled) {
+		if (v && v.enabled && !_isScrollDriven) {
 			const inv = Array.isArray(state.rowIndexToDisplayIndex) ? state.rowIndexToDisplayIndex : null;
 			if (state.selectedCell && inv && isFinite(inv[state.selectedCell.row])) {
 				forceDisplayRow = inv[state.selectedCell.row];
@@ -2707,7 +2720,9 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 										const te = t;
 										// If the scroll target neither contains the container nor is contained by it,
 										// it's unrelated (e.g. a different scrollable panel).
-										if (!te.contains(cont) && !cont.contains(te)) return;
+										if (!te.contains(cont) && !cont.contains(te)) {
+											return;
+										}
 									}
 								}
 							} catch { /* ignore */ }
@@ -2737,7 +2752,9 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 
 							const st2 = __kustoGetResultsState(boxId);
 							const vv2 = __kustoGetVirtualizationState(st2);
-							if (!vv2) return;
+							if (!vv2) {
+								return;
+							}
 							// The enabled flag may be stale if the state object was replaced
 							// (e.g. displayResultForBox creates a new state). Re-derive it
 							// from the actual row count so the handler doesn't silently die.
@@ -2750,7 +2767,9 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 									return; // genuinely small result, no virtualization needed
 								}
 							}
-							if (vv2.rafPending) return;
+							if (vv2.rafPending) {
+								return;
+							}
 							vv2.rafPending = true;
 							// Use setTimeout(0) instead of requestAnimationFrame for coalescing.
 							// RAF callbacks can be delayed or skipped in VS Code webviews under
@@ -2947,7 +2966,6 @@ function displayResultForBox(result, boxId, options) {
 	const columns = Array.isArray(result && result.columns) ? result.columns : [];
 	const rows = Array.isArray(result && result.rows) ? result.rows : [];
 	const metadata = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
-
 	__kustoSetResultsState(boxId, {
 		boxId: boxId,
 		columns: columns,
