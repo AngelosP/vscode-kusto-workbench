@@ -64,6 +64,7 @@ type StartCopilotWriteQueryMessage = {
 	request: string;
 	modelId?: string;
 	enabledTools?: string[];
+	queryMode?: string;
 };
 
 type CopilotLocalTool = {
@@ -1954,6 +1955,7 @@ Completion:`;
 		const request = String(message.request || '').trim();
 		const currentQuery = String(message.currentQuery || '').trim();
 		const requestedModelId = String(message.modelId || '').trim();
+		const copilotQueryMode = String(message.queryMode || 'take100').trim();
 		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
 		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
 		if (!boxId) {
@@ -2264,7 +2266,7 @@ Completion:`;
 						}
 						try {
 							const isControl = this.isControlCommand(query);
-							const queryWithLimit = this.appendQueryMode(query, 'take100');
+							const queryWithLimit = this.appendQueryMode(query, copilotQueryMode);
 							const cacheDirective = isControl ? '' : this.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
@@ -2373,7 +2375,7 @@ Completion:`;
 						}
 
 						const executeQueryAndPost = async (targetBoxId: string, queryText: string, cancelSuffix: string) => {
-							const queryWithMode = this.appendQueryMode(queryText, 'take100');
+							const queryWithMode = this.appendQueryMode(queryText, copilotQueryMode);
 							const cacheDirective = this.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
@@ -2563,7 +2565,7 @@ Completion:`;
 						}
 
 						this.cancelRunningQuery(boxId);
-						const queryWithMode = this.appendQueryMode(query, 'take100');
+						const queryWithMode = this.appendQueryMode(query, copilotQueryMode);
 						const cacheDirective = this.buildCacheDirective(true, 1, 'days');
 						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 

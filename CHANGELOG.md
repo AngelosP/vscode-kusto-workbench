@@ -3,11 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-02-10
 
 * Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.
 * Bugs
     * Fixed issue where markdown sections sometimes had the '/n' literal in them instead of a proper new lines and looked all messed up.
+    * Fixed issue where the Kusto Workbench agent would switch over to 'Run Query' but would still get limited to just 100 results.
 
 ## [1.9.1] - 2026-02-07
 

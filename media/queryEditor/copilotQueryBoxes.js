@@ -1076,7 +1076,8 @@
 				currentQuery: String(currentQuery || ''),
 				request: String(prompt || ''),
 				modelId: String(modelId || ''),
-				enabledTools
+				enabledTools,
+				queryMode: typeof getRunMode === 'function' ? getRunMode(id) : 'take100'
 			});
 			// Do not reset: tool selection persists for this conversation.
 		} catch {
