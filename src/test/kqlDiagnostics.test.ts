@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 
-import { KqlLanguageService } from '../kqlLanguageService/service';
+import { KqlLanguageService, _splitTopLevelStatements } from '../kqlLanguageService/service';
 
 
 suite('KQL diagnostics', () => {
@@ -58,6 +58,47 @@ suite('KQL diagnostics', () => {
 			expectedPipe.length,
 			0,
 			`Expected no KW_EXPECTED_PIPE diagnostics across blank-line-separated statements, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	// Regression: blank lines inside triple-backtick multi-line string literals (```) should NOT
+	// be treated as statement separators. The content between ``` and ``` is a string literal where
+	// any characters — including blank lines — are allowed.
+	test('does not split on blank lines inside triple-backtick string literals', () => {
+		// Case 1: triple-backtick at depth 0 (not inside brackets)
+		const text1 = [
+			'print ```hello',
+			'',
+			'world```',
+		].join('\n');
+
+		const stmts1 = _splitTopLevelStatements(text1);
+		assert.strictEqual(
+			stmts1.length,
+			1,
+			`Expected 1 statement for depth-0 triple-backtick string with blank lines, got ${stmts1.length}: ${JSON.stringify(stmts1.map(s => s.text), null, 2)}`
+		);
+
+		// Case 2: the full .create table pattern (depth > 0 due to parentheses; should also work)
+		const text2 = [
+			'.create table test_Funnels (',
+			'Date: datetime,',
+			'Count: long',
+			')',
+			'with (',
+			'docstring = ```Funnel metrics table.',
+			'',
+			'Columns:',
+			'Date - Start of the cohort window.```,',
+			'folder = "test"',
+			')',
+		].join('\n');
+
+		const stmts2 = _splitTopLevelStatements(text2);
+		assert.strictEqual(
+			stmts2.length,
+			1,
+			`Expected 1 statement for .create table with triple-backtick docstring, got ${stmts2.length}: ${JSON.stringify(stmts2.map(s => s.text), null, 2)}`
 		);
 	});
 

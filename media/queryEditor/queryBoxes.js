@@ -2279,12 +2279,27 @@ function copyQueryAsAdeLink(boxId) {
 			}
 
 			// Statements are separated by one or more blank lines.
+			// Blank lines inside triple-backtick (```) multi-line string literals are NOT separators.
 			const blocks = [];
 			let inBlock = false;
 			let startLine = 1;
+			let inTripleBacktick = false;
 			for (let ln = 1; ln <= lineCount; ln++) {
 				let lineText = '';
 				try { lineText = model.getLineContent(ln); } catch { lineText = ''; }
+				// Track triple-backtick state.
+				let tripleCount = 0;
+				for (let ci = 0; ci < lineText.length - 2; ci++) {
+					if (lineText[ci] === '`' && lineText[ci + 1] === '`' && lineText[ci + 2] === '`') {
+						tripleCount++;
+						ci += 2;
+					}
+				}
+				if (tripleCount % 2 === 1) inTripleBacktick = !inTripleBacktick;
+				if (inTripleBacktick) {
+					if (!inBlock) { startLine = ln; inBlock = true; }
+					continue;
+				}
 				const isBlank = !String(lineText || '').trim();
 				if (isBlank) {
 					if (inBlock) {
@@ -7195,12 +7210,27 @@ function executeQuery(boxId, mode) {
 			}
 
 			// Statements are separated by one or more blank lines.
+			// Blank lines inside triple-backtick (```) multi-line string literals are NOT separators.
 			const blocks = [];
 			let inBlock = false;
 			let startLine = 1;
+			let inTripleBacktick = false;
 			for (let ln = 1; ln <= lineCount; ln++) {
 				let lineText = '';
 				try { lineText = model.getLineContent(ln); } catch { lineText = ''; }
+				// Track triple-backtick state.
+				let tripleCount = 0;
+				for (let ci = 0; ci < lineText.length - 2; ci++) {
+					if (lineText[ci] === '`' && lineText[ci + 1] === '`' && lineText[ci + 2] === '`') {
+						tripleCount++;
+						ci += 2;
+					}
+				}
+				if (tripleCount % 2 === 1) inTripleBacktick = !inTripleBacktick;
+				if (inTripleBacktick) {
+					if (!inBlock) { startLine = ln; inBlock = true; }
+					continue;
+				}
 				const isBlank = !String(lineText || '').trim();
 				if (isBlank) {
 					if (inBlock) {

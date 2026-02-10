@@ -9,6 +9,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Fixed issue where markdown sections sometimes had the '/n' literal in them instead of a proper new lines and looked all messed up.
     * Fixed issue where the Kusto Workbench agent would switch over to 'Run Query' but would still get limited to just 100 results.
+    * Fixed issue where even though the query had \`\`\` it was being treated as a new line and it was being split up into multiple queries
 
 ## [1.9.1] - 2026-02-07
 

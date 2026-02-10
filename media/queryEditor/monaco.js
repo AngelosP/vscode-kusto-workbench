@@ -3439,6 +3439,7 @@ function ensureMonaco() {
 						let inBlockComment = false;
 						let inSingle = false;
 						let inDouble = false;
+						let inTripleBacktick = false;
 						for (let i = 0; i < raw.length; i++) {
 							const ch = raw[i];
 							const next = raw[i + 1];
@@ -3453,6 +3454,14 @@ function ensureMonaco() {
 								if (ch === '*' && next === '/') {
 									inBlockComment = false;
 									i++;
+								}
+								continue;
+							}
+							// KQL triple-backtick multi-line string literal: everything between ``` and ``` is string content.
+							if (inTripleBacktick) {
+								if (ch === '`' && next === '`' && raw[i + 2] === '`') {
+									inTripleBacktick = false;
+									i += 2;
 								}
 								continue;
 							}
@@ -3487,6 +3496,13 @@ function ensureMonaco() {
 							if (ch === '/' && next === '*') {
 								inBlockComment = true;
 								i++;
+								continue;
+							}
+
+							// Detect triple-backtick string literal opening (must check before single-char backtick use)
+							if (ch === '`' && next === '`' && raw[i + 2] === '`') {
+								inTripleBacktick = true;
+								i += 2;
 								continue;
 							}
 
@@ -8782,8 +8798,29 @@ function initQueryEditor(boxId) {
 							let startLine = null;
 							let lastNonBlankLine = null;
 							let blankRun = 0;
+							let inTripleBacktick = false;
 							for (let ln = 1; ln <= lineCount; ln++) {
 								const lineText = String(model.getLineContent(ln) || '');
+								// Track triple-backtick (```) multi-line string literals.
+								// Count occurrences of ``` on this line to toggle the state;
+								// an odd count flips the state, an even count keeps it unchanged.
+								let tripleCount = 0;
+								for (let ci = 0; ci < lineText.length - 2; ci++) {
+									if (lineText[ci] === '`' && lineText[ci + 1] === '`' && lineText[ci + 2] === '`') {
+										tripleCount++;
+										ci += 2; // skip past the triple
+									}
+								}
+								if (tripleCount % 2 === 1) {
+									inTripleBacktick = !inTripleBacktick;
+								}
+								// While inside a triple-backtick string, blank lines are NOT separators.
+								if (inTripleBacktick) {
+									if (startLine === null) startLine = ln;
+									lastNonBlankLine = ln;
+									blankRun = 0;
+									continue;
+								}
 								const isBlank = /^\s*$/.test(lineText);
 								if (!isBlank) {
 									if (startLine === null) {

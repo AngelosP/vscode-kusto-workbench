@@ -385,6 +385,7 @@ const splitTopLevelStatements = (text: string): TextStatement[] => {
 	let inBlockComment = false;
 	let inSingle = false;
 	let inDouble = false;
+	let inTripleBacktick = false;
 	for (let i = 0; i < raw.length; i++) {
 		const ch = raw[i];
 		const next = raw[i + 1];
@@ -399,6 +400,14 @@ const splitTopLevelStatements = (text: string): TextStatement[] => {
 			if (ch === '*' && next === '/') {
 				inBlockComment = false;
 				i++;
+			}
+			continue;
+		}
+		// KQL triple-backtick multi-line string literal: everything between ``` and ``` is string content.
+		if (inTripleBacktick) {
+			if (ch === '`' && next === '`' && raw[i + 2] === '`') {
+				inTripleBacktick = false;
+				i += 2;
 			}
 			continue;
 		}
@@ -432,6 +441,12 @@ const splitTopLevelStatements = (text: string): TextStatement[] => {
 		if (ch === '/' && next === '*') {
 			inBlockComment = true;
 			i++;
+			continue;
+		}
+		// Detect triple-backtick string literal opening (must check before single-char backtick use)
+		if (ch === '`' && next === '`' && raw[i + 2] === '`') {
+			inTripleBacktick = true;
+			i += 2;
 			continue;
 		}
 		if (ch === "'") {
@@ -543,6 +558,9 @@ const toRange = (lineStarts: number[], startOffset: number, endOffset: number): 
 };
 
 const sameLower = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** @internal – exported for unit tests only */
+export { splitTopLevelStatements as _splitTopLevelStatements };
 
 export class KqlLanguageService {
 	findTableReferences(text: string): KqlTableReference[] {
