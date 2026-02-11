@@ -446,7 +446,7 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-title">
 				<i class="codicon codicon-play"></i> Query Playground
 			</div>
-			<div class="card-desc">New here? Start with the playground, it auto-saves your work. Use <strong>File → Save As...</strong> anytime to save it to disk.</div>
+			<div class="card-desc">New here? Start with the playground, it auto-saves your work. Use <strong>File → Save As...</strong> anytime to save it to disk. Default shortcut is <strong>CTRL+SHIFT+ALT+K.</strong></div>
 			<button class="button" onclick="sendCommand('openQueryEditor')">Open Query Editor</button>
 		</div>
 		<div class="card">

@@ -6,6 +6,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [2.3.0] - Unreleased
 
 * <span data-teams="true">When in the connection manager, if you select a database you have the option to create new </span>`<span data-teams="true">.kqlx</span>`<span data-teams="true"> file with the connection details for that database already prefilled, ready to go. </span>
+* VS Code wide shortcut for opening the Query Editor is now CTRL+SHIFT+ALT+K and users can change it.
 
 ## [2.2.0] - 2026-02-11
 

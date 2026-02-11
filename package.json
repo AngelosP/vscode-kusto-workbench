@@ -198,6 +198,13 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "kusto.openQueryEditor",
+        "key": "ctrl+shift+alt+k",
+        "mac": "cmd+shift+alt+k"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
