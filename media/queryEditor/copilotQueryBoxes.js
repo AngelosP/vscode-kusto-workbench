@@ -7,7 +7,7 @@
 
 (function () {
 	const COPILOT_QUERY_KIND = 'copilotQuery';
-	const DEFAULT_CHAT_WIDTH_PX = 360;
+	const DEFAULT_CHAT_WIDTH_PX = 720;
 	const MIN_CHAT_WIDTH_PX = 160;
 	const MIN_EDITOR_WIDTH_PX = 240;
 	const COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';

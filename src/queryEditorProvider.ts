@@ -2636,9 +2636,11 @@ Completion:`;
 							}
 						} catch (error) {
 							if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
+								// Reset the executing spinner but don't send queryCancelled —
+								// the copilotWriteQueryDone 'Canceled.' notification handles it.
 								if (isActive()) {
 									try {
-										this.postMessage({ type: 'queryCancelled', boxId } as any);
+										this.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
 									} catch {
 										// ignore
 									}

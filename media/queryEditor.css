@@ -633,7 +633,7 @@
 		}
 
 		.kusto-copilot-chat-pane {
-			flex: 0 1 360px;
+			flex: 0 1 720px;
 			min-width: 160px;
 			min-height: 180px;
 			display: flex;
