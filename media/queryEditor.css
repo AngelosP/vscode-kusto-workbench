@@ -2491,6 +2491,7 @@
 			padding: 6px 8px;
 			font-size: 12px;
 			line-height: 1.35;
+			outline: none;
 		}
 
 		/* Bottom bar beneath textarea: model + tools on left, send icon on right */
@@ -2498,23 +2499,24 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			gap: 4px;
-			padding: 3px 4px;
+			gap: 0;
+			padding: 3px 4px 3px 0;
 			background: var(--vscode-input-background);
 			border: 1px solid var(--vscode-input-border);
 			border-top: none;
 			min-height: 28px;
 			container-type: inline-size;
 			container-name: copilot-input-bar;
+			position: relative;
 		}
 
 		/* When the input bar is narrow, collapse the model dropdown to icon-only */
 		@container copilot-input-bar (max-width: 220px) {
 			.kusto-copilot-chat-model-dropdown {
-				max-width: 20px;
-				width: 20px;
-				min-width: 20px;
-				flex: 0 0 20px;
+				max-width: 30px;
+				width: 30px;
+				min-width: 30px;
+				flex: 0 0 30px;
 			}
 			.kusto-copilot-chat-model-dropdown .kusto-dropdown-btn-text {
 				display: none;
@@ -2524,7 +2526,7 @@
 			}
 			.kusto-copilot-chat-model-dropdown .kusto-dropdown-btn {
 				padding: 2px 2px;
-				width: 20px;
+				width: 30px;
 				min-width: 0;
 				justify-content: center;
 			}
@@ -2542,22 +2544,21 @@
 			align-items: center;
 			gap: 0;
 			min-width: 0;
-			overflow: hidden;
 		}
 
 		/* Model dropdown in input bar: borderless, smaller font */
 		.kusto-copilot-chat-input-bar .kusto-dropdown-btn {
 			border: none;
 			background: transparent;
-			padding: 2px 20px 2px 4px;
+			padding: 2px 21px 2px 2px;
 			min-height: 22px;
 			font-size: 11px;
 		}
 		.kusto-copilot-chat-input-bar .has-icon .kusto-dropdown-btn {
-			padding-left: 22px;
+			padding-left: 18px;
 		}
 		.kusto-copilot-chat-input-bar .has-icon .select-icon {
-			left: 4px;
+			left: 2px;
 			width: 14px;
 			height: 14px;
 		}
@@ -2574,6 +2575,7 @@
 			max-width: 160px;
 			min-width: 0;
 			flex: 0 1 auto;
+			overflow: hidden;
 		}
 
 		/* Send / Stop icon button */
@@ -2641,7 +2643,7 @@
 			flex: 0 0 auto;
 		}
 		.kusto-copilot-chat-tools .codicon {
-			font-size: 12px;
+			font-size: 10px;
 			line-height: 1;
 		}
 		.kusto-copilot-chat-tools:hover {
@@ -2679,9 +2681,9 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 
-		/* Tools container (position relative anchor, outside overflow:hidden parent) */
+		/* Tools container - no longer needs position:relative since panel positions from input-bar */
 		.kusto-copilot-tools-container {
-			position: relative;
+			position: static;
 			display: inline-flex;
 			margin-left: 0;
 			flex: 0 0 auto;
@@ -2691,7 +2693,7 @@
 		.kusto-copilot-tools-panel {
 			position: absolute;
 			bottom: 100%;
-			right: 0;
+			left: 0;
 			z-index: 1000;
 			min-width: 300px;
 			max-width: 380px;

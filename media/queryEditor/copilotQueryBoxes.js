@@ -233,14 +233,14 @@
 					'<div class="kusto-copilot-chat-input-bar">' +
 						'<div class="kusto-copilot-chat-input-bar-left">' +
 							modelDropdown +
-						'</div>' +
-						'<div class="kusto-copilot-tools-container">' +
-							'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
-								'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
-							'</button>' +
-							'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
-								'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
-								'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
+							'<div class="kusto-copilot-tools-container">' +
+								'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
+									'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
+								'</button>' +
+								'<div class="kusto-copilot-tools-panel" id="' + boxId + '_copilot_tools_panel" style="display:none;" data-kusto-no-editor-focus="true">' +
+									'<div class="kusto-copilot-tools-panel-title">Tools (next message)</div>' +
+									'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
+								'</div>' +
 							'</div>' +
 						'</div>' +
 						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send-icon" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')" title="Send (Enter)">' +
@@ -959,7 +959,7 @@
 							const minH = 40;
 							inputEl.style.height = 'auto';
 							const scrollH = inputEl.scrollHeight;
-							inputEl.style.height = Math.max(minH, Math.min(maxH, scrollH)) + 'px';
+							inputEl.style.height = Math.max(minH, Math.min(maxH, scrollH + 4)) + 'px';
 						} catch { /* ignore */ }
 					};
 					inputEl.addEventListener('input', autoGrow);

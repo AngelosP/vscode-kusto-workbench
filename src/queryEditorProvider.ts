@@ -177,7 +177,8 @@ type IncomingWebviewMessage =
 	// Tool orchestrator response messages (from webview back to extension)
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	// Tool orchestrator state request (webview sends current state)
-	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] };
+	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
+	| { type: 'openCopilotAgent' };
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
