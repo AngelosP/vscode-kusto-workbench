@@ -9,6 +9,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Trying to improve the UX around resizing everything, hopefully this is a little better now (been watching users and taking notes of common pain points and nobody discovers how the chat window resizes right now).
 * Bugs
     * Small alignment issues with resize grips and little things like that
+    * Fixed cancelation token propagaton so that users can reliably cancel Kusto query executions
 
 ## [2.1.0] - 2026-02-11
 

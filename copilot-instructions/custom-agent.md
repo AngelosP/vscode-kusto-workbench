@@ -145,4 +145,4 @@ Example: Move a chart section to appear right after its data source:
 * **Sequencing:** Charts/transformations need their data source to have results first
 * **Section IDs:** Use `#listSections` when you need an ID
 * **Be proactive:** Execute, visualize, document — don't ask permission
-* **Avoid LLM tropes:** Avoid — use → or : or ; or just word it differently
+* **Avoid LLM tropes:** Do not use em dashes, en dashes, or hyphens. Use → or : or ; or just word it differently

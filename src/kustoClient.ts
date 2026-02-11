@@ -952,8 +952,28 @@ export class KustoQueryClient {
 		const key = String(clientKey || connection.id || '').trim() || 'default';
 		let client: any | undefined;
 		let cancelled = false;
+
+		// Use a deferred rejection so that cancel() immediately resolves the
+		// outer promise instead of waiting for the HTTP round-trip to complete.
+		// client.close() is still called for clean-up, but we no longer rely on
+		// the SDK's deprecated Axios CancelToken to abort the request promptly.
+		let rejectWithCancel: ((err: Error) => void) | undefined;
+		const cancelPromise = new Promise<never>((_resolve, reject) => {
+			rejectWithCancel = reject;
+		});
+		// Prevent unhandled-rejection noise when the query completes normally
+		// and cancelPromise is never settled.
+		cancelPromise.catch(() => { /* intentionally ignored */ });
+
 		const cancel = () => {
 			cancelled = true;
+			// Immediately trip the race so the caller gets QueryCancelledError
+			// without waiting for the network response.
+			try {
+				rejectWithCancel?.(new QueryCancelledError());
+			} catch {
+				// ignore – already settled
+			}
 			try {
 				// Evict the client for this key so the next run starts clean.
 				this.cancelableClientsByKey.delete(key);
@@ -963,7 +983,7 @@ export class KustoQueryClient {
 			}
 		};
 
-		const promise = (async () => {
+		const executeAsync = async (): Promise<QueryResult> => {
 			// If this run was cancelled before we even started, bail out early.
 			if (cancelled) {
 				throw new QueryCancelledError();
@@ -1082,7 +1102,11 @@ export class KustoQueryClient {
 				}
 				throw new QueryExecutionError(errorMessage, requestClientActivityId);
 			}
-		})();
+		};
+
+		// Race the actual execution against the cancel promise so that calling
+		// cancel() causes the outer promise to reject immediately.
+		const promise = Promise.race([executeAsync(), cancelPromise]);
 
 		return { promise, cancel };
 	}

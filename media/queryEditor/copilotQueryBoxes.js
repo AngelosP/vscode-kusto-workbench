@@ -8,7 +8,7 @@
 (function () {
 	const COPILOT_QUERY_KIND = 'copilotQuery';
 	const DEFAULT_CHAT_WIDTH_PX = 360;
-	const MIN_CHAT_WIDTH_PX = 180;
+	const MIN_CHAT_WIDTH_PX = 160;
 	const MIN_EDITOR_WIDTH_PX = 240;
 	const COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';
 
@@ -475,8 +475,7 @@
 		try {
 			const pane = document.getElementById(id + '_copilot_chat_pane');
 			if (pane && pane.style) {
-				pane.style.width = next + 'px';
-				pane.style.flex = '0 0 ' + next + 'px';
+				pane.style.flex = '0 1 ' + next + 'px';
 			}
 		} catch { /* ignore */ }
 		try {
@@ -836,8 +835,7 @@
 			const chatPane = document.createElement('div');
 			chatPane.className = 'kusto-copilot-chat-pane';
 			chatPane.id = boxId + '_copilot_chat_pane';
-			chatPane.style.width = DEFAULT_CHAT_WIDTH_PX + 'px';
-			chatPane.style.flex = '0 0 ' + DEFAULT_CHAT_WIDTH_PX + 'px';
+			chatPane.style.flex = '0 1 ' + DEFAULT_CHAT_WIDTH_PX + 'px';
 			chatPane.insertAdjacentHTML('beforeend', __kustoCopilotChatHtml(boxId));
 			split.appendChild(chatPane);
 
@@ -892,8 +890,7 @@
 						} catch { /* ignore */ }
 						const next = __kustoClampNumber(startW - delta, MIN_CHAT_WIDTH_PX, max);
 						try {
-							chatPane.style.width = next + 'px';
-							chatPane.style.flex = '0 0 ' + next + 'px';
+							chatPane.style.flex = '0 1 ' + next + 'px';
 						} catch { /* ignore */ }
 						try {
 							const map = __kustoEnsureCopilotChatWidthState();
@@ -999,6 +996,30 @@
 						document.addEventListener('mouseup', onUp, true);
 					});
 				}
+			} catch { /* ignore */ }
+
+			// ResizeObserver: when the split container crosses the auto-hide threshold
+			// (320px = MIN_EDITOR_WIDTH + MIN_CHAT_WIDTH), the CSS container query
+			// hides/shows the chat pane. We need to re-layout Monaco when that happens.
+			try {
+				const AUTO_HIDE_THRESHOLD = MIN_EDITOR_WIDTH_PX + MIN_CHAT_WIDTH_PX;
+				let wasBelowThreshold = false;
+				const splitObserver = new ResizeObserver((entries) => {
+					try {
+						const entry = entries[0];
+						if (!entry) return;
+						const w = entry.contentRect.width;
+						const isBelowNow = w > 0 && w <= AUTO_HIDE_THRESHOLD;
+						if (isBelowNow !== wasBelowThreshold) {
+							wasBelowThreshold = isBelowNow;
+							const editor = queryEditors && queryEditors[boxId];
+							if (editor && typeof editor.layout === 'function') {
+								editor.layout();
+							}
+						}
+					} catch { /* ignore */ }
+				});
+				splitObserver.observe(split);
 			} catch { /* ignore */ }
 
 	// Expose get/set for persistence restore.

@@ -626,12 +626,15 @@
 			gap: 0;
 			flex: 1 1 auto;
 			min-height: 0;
+			min-width: 0;
+			overflow: hidden;
+			container-type: inline-size;
+			container-name: copilot-split;
 		}
 
 		.kusto-copilot-chat-pane {
-			flex: 0 0 360px;
-			width: 360px;
-			min-width: 180px;
+			flex: 0 1 360px;
+			min-width: 160px;
 			min-height: 180px;
 			display: flex;
 			flex-direction: column;
@@ -2346,6 +2349,22 @@
 			min-height: 180px;
 		}
 
+		/* Auto-hide chat when the split container is too narrow to fit both editor and chat.
+		   Threshold = MIN_EDITOR_WIDTH (240) + MIN_CHAT_WIDTH (160) = 400px.
+		   The chat stays logically toggled-on but is visually hidden; it reappears when
+		   the container grows back to a usable size. */
+		@container copilot-split (max-width: 400px) {
+			.kusto-copilot-split:not(.kusto-copilot-chat-hidden) .kusto-copilot-chat-pane,
+			.kusto-copilot-split:not(.kusto-copilot-chat-hidden) .kusto-copilot-splitter {
+				display: none;
+			}
+			.kusto-copilot-split:not(.kusto-copilot-chat-hidden) .kusto-copilot-editor-pane {
+				flex: 1 1 auto;
+				width: 100%;
+				min-width: 0;
+			}
+		}
+
 		.kusto-copilot-chat-model select {
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
@@ -2642,8 +2661,8 @@
 			padding: 0;
 			flex: 0 0 auto;
 		}
-		.kusto-copilot-chat-tools .codicon {
-			font-size: 10px;
+		.kusto-copilot-chat-tools .codicon[class*='codicon-'] {
+			font-size: 12px;
 			line-height: 1;
 		}
 		.kusto-copilot-chat-tools:hover {
