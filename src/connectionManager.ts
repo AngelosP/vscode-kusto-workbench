@@ -24,10 +24,12 @@ export class ConnectionManager {
 		if (stored) {
 			this.connections = stored;
 		}
+		void vscode.commands.executeCommand('setContext', 'kusto.hasConnections', this.connections.length > 0);
 	}
 
 	private async saveConnections() {
 		await this.context.globalState.update(this.storageKey, this.connections);
+		void vscode.commands.executeCommand('setContext', 'kusto.hasConnections', this.connections.length > 0);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────

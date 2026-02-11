@@ -661,6 +661,26 @@ export function activate(context: vscode.ExtensionContext) {
 			void vscode.window.showInformationMessage('Reset Copilot model selection. New editors will use the default model.');
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.openWalkthroughs', async () => {
+			const walkthroughs = [
+				{ label: '$(rocket) Agent-First Workflow', description: 'Let the agent build queries and charts for you', id: 'kusto-workbench.agent-first' },
+				{ label: '$(edit) Editor-First Workflow', description: 'Write KQL, explore results, build charts, and use AI', id: 'kusto-workbench.editor-first' },
+				{ label: '$(folder-opened) Import Connections & Files', description: 'Bring your Kusto Explorer connections and .kql files', id: 'kusto-workbench.import-connections-files' },
+			];
+			const picked = await vscode.window.showQuickPick(walkthroughs, {
+				placeHolder: 'Choose a walkthrough to get started',
+			});
+			if (picked) {
+				void vscode.commands.executeCommand(
+					'workbench.action.openWalkthrough',
+					{ category: `angelos-petropoulos.vscode-kusto-workbench#${picked.id}` },
+					true
+				);
+			}
+		})
+	);
 }
 
 // This method is called when your extension is deactivated

@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as os from 'os';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 
@@ -53,7 +55,8 @@ type IncomingMessage =
 	| { type: 'copyToClipboard'; text: string }
 	| { type: 'openInEditor'; connectionId: string; database?: string }
 	| { type: 'leaveNoTrace.add'; clusterUrl: string }
-	| { type: 'leaveNoTrace.remove'; clusterUrl: string };
+	| { type: 'leaveNoTrace.remove'; clusterUrl: string }
+	| { type: 'connection.importXml' };
 
 export class ConnectionManagerViewer {
 	private static current: ConnectionManagerViewer | undefined;
@@ -67,7 +70,7 @@ export class ConnectionManagerViewer {
 			ConnectionManagerViewer.current.panel.webview.html = ConnectionManagerViewer.current.buildHtml(
 				ConnectionManagerViewer.current.panel.webview
 			);
-			ConnectionManagerViewer.current.panel.reveal(vscode.ViewColumn.Active);
+			ConnectionManagerViewer.current.panel.reveal(vscode.ViewColumn.One);
 			return;
 		}
 		ConnectionManagerViewer.current = new ConnectionManagerViewer(context, extensionUri, connectionManager);
@@ -87,7 +90,7 @@ export class ConnectionManagerViewer {
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.connectionManager',
 			VIEW_TITLE,
-			{ viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+			{ viewColumn: vscode.ViewColumn.One, preserveFocus: false },
 			{
 				enableScripts: true,
 				retainContextWhenHidden: true,
@@ -299,6 +302,10 @@ export class ConnectionManagerViewer {
 
 					await this.connectionManager.removeConnection(id);
 					void vscode.window.setStatusBarMessage(`Connection "${connName}" deleted`, 2000);
+
+					// Refresh the UI
+					const snapshot = await this.buildSnapshot();
+					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
 				} catch (error) {
 					void vscode.window.showErrorMessage(`Failed to delete connection: ${error instanceof Error ? error.message : String(error)}`);
 				}
@@ -605,8 +612,165 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
+			case 'connection.importXml': {
+				await this.handleImportConnectionsXml();
+				return;
+			}
+
 			default:
 				return;
+		}
+	}
+
+	private async handleImportConnectionsXml(): Promise<void> {
+		try {
+			const localAppData = process.env.LOCALAPPDATA;
+			const base = localAppData && localAppData.trim()
+				? localAppData.trim()
+				: path.join(os.homedir(), 'AppData', 'Local');
+			const defaultFolder = path.join(base, 'Kusto.Explorer');
+			const defaultUri = vscode.Uri.file(defaultFolder);
+
+			const picked = await vscode.window.showOpenDialog({
+				canSelectFiles: true,
+				canSelectFolders: false,
+				canSelectMany: false,
+				defaultUri,
+				openLabel: 'Import',
+				filters: {
+					'XML files': ['xml'],
+					'All files': ['*']
+				}
+			});
+			if (!picked || picked.length === 0) {
+				return;
+			}
+
+			const uri = picked[0];
+			const bytes = await vscode.workspace.fs.readFile(uri);
+			const text = new TextDecoder('utf-8').decode(bytes);
+			const connections = this.parseKustoExplorerConnectionsXml(text);
+
+			if (!connections.length) {
+				void vscode.window.showInformationMessage('No connections found in the selected XML file.');
+				return;
+			}
+
+			const existing = this.connectionManager.getConnections();
+			const existingKeys = new Set(
+				existing.map((c) => this.normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean)
+			);
+
+			let added = 0;
+			for (const c of connections) {
+				const key = this.normalizeClusterUrlKey(c.clusterUrl);
+				if (existingKeys.has(key)) {
+					continue;
+				}
+				await this.connectionManager.addConnection({
+					name: c.name || c.clusterUrl,
+					clusterUrl: c.clusterUrl,
+					database: c.database
+				});
+				existingKeys.add(key);
+				added++;
+			}
+
+			if (added > 0) {
+				void vscode.window.showInformationMessage(`Imported ${added} Kusto connection${added === 1 ? '' : 's'}.`);
+			} else {
+				void vscode.window.showInformationMessage('No new connections were imported (they may already exist).');
+			}
+
+			// Refresh the UI
+			const snapshot = await this.buildSnapshot();
+			this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+		} catch (e: any) {
+			void vscode.window.showErrorMessage(
+				`Failed to import connections: ${e instanceof Error ? e.message : String(e)}`
+			);
+		}
+	}
+
+	private parseKustoExplorerConnectionsXml(xmlText: string): Array<{ name: string; clusterUrl: string; database?: string }> {
+		const text = String(xmlText || '').trim();
+		if (!text) {
+			return [];
+		}
+
+		const results: Array<{ name: string; clusterUrl: string; database?: string }> = [];
+		// Match each <ServerDescriptionBase ...>...</ServerDescriptionBase> block
+		const blockRegex = /<ServerDescriptionBase[^>]*>([\s\S]*?)<\/ServerDescriptionBase>/gi;
+		let blockMatch: RegExpExecArray | null;
+
+		while ((blockMatch = blockRegex.exec(text)) !== null) {
+			const block = blockMatch[1];
+			const name = this.getXmlChildText(block, 'Name');
+			const details = this.getXmlChildText(block, 'Details');
+			const connectionString = this.getXmlChildText(block, 'ConnectionString');
+			const parsed = this.parseKustoConnectionString(connectionString);
+			let clusterUrl = (parsed.dataSource || details || '').trim();
+			if (!clusterUrl) {
+				continue;
+			}
+			if (!/^https?:\/\//i.test(clusterUrl)) {
+				clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
+			}
+			results.push({
+				name: name.trim() || clusterUrl,
+				clusterUrl: clusterUrl.trim(),
+				database: parsed.initialCatalog.trim() || undefined
+			});
+		}
+
+		// De-dupe within the file
+		const seen = new Set<string>();
+		return results.filter((r) => {
+			const key = this.normalizeClusterUrlKey(r.clusterUrl);
+			if (!key || seen.has(key)) {
+				return false;
+			}
+			seen.add(key);
+			return true;
+		});
+	}
+
+	private getXmlChildText(parentContent: string, tagName: string): string {
+		const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+		const match = regex.exec(parentContent);
+		return match ? match[1].trim() : '';
+	}
+
+	private parseKustoConnectionString(cs: string): { dataSource: string; initialCatalog: string } {
+		const raw = String(cs || '');
+		const parts = raw.split(';').map((p) => p.trim()).filter(Boolean);
+		const map: Record<string, string> = {};
+		for (const part of parts) {
+			const idx = part.indexOf('=');
+			if (idx <= 0) {
+				continue;
+			}
+			const key = part.slice(0, idx).trim().toLowerCase();
+			const val = part.slice(idx + 1).trim();
+			map[key] = val;
+		}
+		return {
+			dataSource: map['data source'] || map['datasource'] || map['server'] || map['address'] || '',
+			initialCatalog: map['initial catalog'] || map['database'] || ''
+		};
+	}
+
+	private normalizeClusterUrlKey(url: string): string {
+		try {
+			const raw = String(url || '').trim();
+			if (!raw) {
+				return '';
+			}
+			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+			const u = new URL(withScheme);
+			return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
+		} catch {
+			return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
 		}
 	}
 
@@ -640,7 +804,19 @@ export class ConnectionManagerViewer {
 			margin: 0;
 		}
 
-		h1 { font-size: 18px; margin: 0 0 16px 0; font-weight: 600; }
+		h1 { font-size: 18px; margin: 0 0 8px 0; font-weight: 600; }
+
+		.title-actions {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 16px;
+		}
+
+		.title-actions .btn svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
 		h2 { font-size: 14px; margin: 16px 0 8px 0; font-weight: 600; }
 		.small { opacity: 0.8; font-size: 12px; }
 		.mono { font-family: var(--vscode-editor-font-family); }
@@ -2337,6 +2513,10 @@ export class ConnectionManagerViewer {
 </head>
 <body>
 	<h1>${VIEW_TITLE}</h1>
+	<div class="title-actions">
+		<button class="btn btn-primary" id="titleAddConnectionBtn">${this.getAddIcon()} Add new connection</button>
+		<button class="btn btn-secondary" id="titleImportConnectionsBtn">${this.getImportIcon()} Import connections</button>
+	</div>
 
 	<div class="main-container">
 		<!-- Left Panel: Connections List -->
@@ -3237,6 +3417,14 @@ export class ConnectionManagerViewer {
 			openModal('add');
 		});
 
+		document.getElementById('titleAddConnectionBtn').addEventListener('click', function() {
+			openModal('add');
+		});
+
+		document.getElementById('titleImportConnectionsBtn').addEventListener('click', function() {
+			vscode.postMessage({ type: 'connection.importXml' });
+		});
+
 		document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
 		document.getElementById('modalCancelBtn').addEventListener('click', closeModal);
 		document.getElementById('modalSaveBtn').addEventListener('click', saveConnection);
@@ -3760,7 +3948,7 @@ export class ConnectionManagerViewer {
 
 	private getAddIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-			<path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+			<path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/>
 		</svg>`;
 	}
 
@@ -3791,6 +3979,12 @@ export class ConnectionManagerViewer {
 	private getShieldIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path d="M8 0.5l-6 2v4c0 3.5 2.5 6.5 6 8 3.5-1.5 6-4.5 6-8v-4l-6-2zm4.5 5.5c0 2.8-1.9 5.2-4.5 6.5-2.6-1.3-4.5-3.7-4.5-6.5v-3l4.5-1.5 4.5 1.5v3z"/>
+		</svg>`;
+	}
+
+	private getImportIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1a.5.5 0 0 1 .5.5v8.793l2.146-2.147a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 10.293V1.5A.5.5 0 0 1 8 1zM2 13.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11a.5.5 0 0 1-.5-.5z"/>
 		</svg>`;
 	}
 }

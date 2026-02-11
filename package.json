@@ -177,6 +177,11 @@
         "command": "kusto.openRemoteFile",
         "title": "Open Remote File",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.openWalkthroughs",
+        "title": "Open Walkthroughs...",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {
@@ -217,6 +222,153 @@
     "chatAgents": [
       {
         "path": "./copilot-instructions/custom-agent.md"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "kusto-workbench.agent-first",
+        "title": "Kusto Workbench: Agent-First Workflow",
+        "description": "Let the VS Code agent build queries and charts for you — the fastest way to go from question to insight.",
+        "steps": [
+          {
+            "id": "agent-add-connection",
+            "title": "Add a Kusto connection",
+            "description": "Connect to a Kusto cluster and database to start querying your data.\n\n[Manage Connections](command:kusto.manageConnections)",
+            "media": {
+              "markdown": "media/walkthrough/agent-01-add-connection.md"
+            },
+            "completionEvents": [
+              "onContext:kusto.hasConnections"
+            ]
+          },
+          {
+            "id": "agent-first-chart",
+            "title": "Ask the agent for your first chart",
+            "description": "Open the VS Code Copilot Chat and ask for your first query and chart, something like:\n\n\"Give me the active user count for the past 30 days and chart it as a line graph\"\n\nThe agent will create a Kusto section, execute it, and configure a chart. Pay attention as this agent orchestrates the end-to-end, yet delegates out the task of creating new Kusto queries to a sub-agent inside of the file itself in an integrated chat window. More on that later.\n\n[Open Kusto Workbench Agent](command:workbench.action.chat.open?%7B%22mode%22%3A%22Kusto%20Workbench%22%7D)",
+            "media": {
+              "markdown": "media/walkthrough/agent-02-first-chart.md"
+            }
+          },
+          {
+            "id": "agent-refine-query",
+            "title": "Refine with follow-up requests",
+            "description": "Now ask the agent to iterate on the result:\n\n*\"Change this to a rolling 7-day average and go back 90 days\"*\n\nThe agent sees the open file and updates the existing query and chart in place. You can always come back to a file without resume the same chat session, the file itself is enough context.",
+            "media": {
+              "markdown": "media/walkthrough/agent-03-refine-query.md"
+            }
+          },
+          {
+            "id": "agent-explore-report",
+            "title": "Explore and tweak your report",
+            "description": "Take a closer look at what the agent built. Edit the query directly, adjust chart axes, change chart types, and explore the results table. All the building blocks are yours to customize.",
+            "media": {
+              "markdown": "media/walkthrough/agent-04-explore-report.md"
+            }
+          }
+        ]
+      },
+      {
+        "id": "kusto-workbench.editor-first",
+        "title": "Kusto Workbench: Editor-First Workflow",
+        "description": "Write KQL queries, explore results, build charts, and use AI assistance — all from the editor.",
+        "steps": [
+          {
+            "id": "editor-add-connection",
+            "title": "Add a Kusto Connection",
+            "description": "Connect to a Kusto cluster and database to start querying your data.\n\n[Manage Connections](command:kusto.manageConnections)",
+            "media": {
+              "markdown": "media/walkthrough/editor-01-add-connection.md"
+            },
+            "completionEvents": [
+              "onContext:kusto.hasConnections"
+            ]
+          },
+          {
+            "id": "editor-first-query",
+            "title": "Run Your First Query",
+            "description": "Type a KQL query in the editor and press **Shift+Enter** to execute it. Start with something simple like `StormEvents | take 10` and see the results appear inline.\n\n[Open Query Editor](command:kusto.openQueryEditor)",
+            "media": {
+              "markdown": "media/walkthrough/editor-02-first-query.md"
+            },
+            "completionEvents": [
+              "onCommand:kusto.openQueryEditor"
+            ]
+          },
+          {
+            "id": "editor-caching-run-modes",
+            "title": "Caching & Run Modes",
+            "description": "Learn how **Take 100**, **Sample 100**, and **Run Query** modes help you iterate faster — and how result caching lets you save and share data without re-running queries.",
+            "media": {
+              "markdown": "media/walkthrough/editor-03-caching-run-modes.md"
+            }
+          },
+          {
+            "id": "editor-table-tools",
+            "title": "Table Tools",
+            "description": "Right-click column headers to sort, filter, see statistics, and view distinct values. Click rows to expand complex values with the interactive tree viewer. Add **Transformation** sections for derived columns, aggregations, distinct values, and pivot tables.",
+            "media": {
+              "markdown": "media/walkthrough/editor-04-table-tools.md"
+            }
+          },
+          {
+            "id": "editor-build-chart",
+            "title": "Build a Chart",
+            "description": "Click the **+** button below a query section and select **Chart** to visualize your results. Pick a chart type, configure axes, and watch the chart update live when you re-run your query.",
+            "media": {
+              "markdown": "media/walkthrough/editor-05-build-chart.md"
+            }
+          },
+          {
+            "id": "editor-copilot-chat",
+            "title": "Copilot Chat: AI-Assisted Editing",
+            "description": "Click the **Copilot button** (sparkle icon) in the query toolbar to open the integrated Copilot Chat. Describe what you want in plain English and Copilot will write or refine the KQL for you — it knows your schema and can execute queries to validate its suggestions.",
+            "media": {
+              "markdown": "media/walkthrough/editor-06-copilot-chat.md"
+            }
+          },
+          {
+            "id": "editor-agent",
+            "title": "The VS Code Agent",
+            "description": "For full-notebook orchestration — creating multiple sections, configuring charts, adding markdown — use the **VS Code Copilot Chat** panel. The agent builds entire reports in one go while the in-editor Copilot Chat focuses on individual queries.",
+            "media": {
+              "markdown": "media/walkthrough/editor-07-agent.md"
+            }
+          }
+        ]
+      },
+      {
+        "id": "kusto-workbench.import-connections-files",
+        "title": "Kusto Workbench: Import Connections & Files",
+        "description": "Bring your Kusto Explorer connections and existing .kql files into Kusto Workbench.",
+        "steps": [
+          {
+            "id": "import-xml-connections",
+            "title": "Import Connections from Kusto Explorer",
+            "description": "Export your connections as an `.xml` file from Kusto Explorer (Desktop or Web), then import them into Kusto Workbench in one step.\n\n[Manage Connections](command:kusto.manageConnections)",
+            "media": {
+              "markdown": "media/walkthrough/import-01-xml-connections.md"
+            },
+            "completionEvents": [
+              "onContext:kusto.hasConnections"
+            ]
+          },
+          {
+            "id": "import-open-kql",
+            "title": "Open Existing .kql Files",
+            "description": "Just open a `.kql` or `.csl` file in VS Code — Kusto Workbench provides its enhanced editor automatically with IntelliSense, query execution, and inline results. Your file stays a standard `.kql` text file.",
+            "media": {
+              "markdown": "media/walkthrough/import-02-open-kql-files.md"
+            }
+          },
+          {
+            "id": "import-sidecar",
+            "title": "Sidecar Files: Metadata for .kql",
+            "description": "When you run a query or configure a connection for a `.kql` file, Kusto Workbench creates a companion `.kql.json` sidecar file. It stores connection settings, cached results, and extra sections — while the **query text stays in the `.kql` file**. The sidecar is optional and can be `.gitignore`d.",
+            "media": {
+              "markdown": "media/walkthrough/import-03-sidecar-files.md"
+            }
+          }
+        ]
       }
     ],
     "languageModelTools": [
