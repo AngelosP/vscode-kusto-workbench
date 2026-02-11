@@ -3,10 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [2.1.0] - 2026-02-10
+## [2.1.0] - 2026-02-11
 
 * Added walkthroughs! Access them via the command pallete, activity bar, or welcome page.
+* Added shortcuts to add a new connection or import connections, directly to the Connection Manager UI under the title.
 * Bug
+    * Sometimes the markdown content that gets sent has \\n\\n in it, instead of new lines, and we don't format things correctly.
 
 ## [2.0.1] - 2026-02-10
 

@@ -359,10 +359,13 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
-		// Unescape literal \n sequences that LLMs frequently produce in markdown text
+		// Unescape literal \n sequences that LLMs frequently produce in text content
 		const textValue = input.text ?? input.content;
 		if (textValue !== undefined) {
 			input = { ...input, text: unescapeLLMText(textValue) };
+		}
+		if (input.query !== undefined) {
+			input = { ...input, query: unescapeLLMText(input.query) };
 		}
 		return this.sendToWebview('toolAddSection', { input });
 	}
@@ -380,6 +383,10 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async configureQuerySection(input: ConfigureQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+		// Unescape literal \n sequences that LLMs frequently produce in query text
+		if (input.query !== undefined) {
+			input = { ...input, query: unescapeLLMText(input.query) };
+		}
 		return this.sendToWebview('toolConfigureQuerySection', { input });
 	}
 
@@ -419,7 +426,10 @@ export class KustoWorkbenchToolOrchestrator {
 		filePath?: string;
 		error?: string;
 	}> {
-		const { fileType, filePath: requestedPath, initialContent } = input;
+		// Unescape literal \n sequences that LLMs frequently produce in text content
+		const rawContent = input.initialContent;
+		const initialContent = typeof rawContent === 'string' ? unescapeLLMText(rawContent) : rawContent;
+		const { fileType, filePath: requestedPath } = input;
 
 		// Determine the file extension and editor to use
 		let extension: string;
