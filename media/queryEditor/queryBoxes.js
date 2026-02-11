@@ -503,7 +503,7 @@ function addQueryBox(options) {
 		'' +
 		'<span class="query-exec-status" id="' + id + '_exec_status" style="display: none;">' +
 		'<span class="query-spinner" aria-hidden="true"></span>' +
-		'<span id="' + id + '_exec_elapsed">0:00.0</span>' +
+		'<span id="' + id + '_exec_elapsed">0:00</span>' +
 		'</span>' +
 		'<button class="refresh-btn cancel-btn" id="' + id + '_cancel_btn" onclick="cancelQuery(\'' + id + '\')" style="display: none;" title="Cancel running query" aria-label="Cancel running query">' +
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -7090,8 +7090,7 @@ function formatElapsed(ms) {
 	const totalSeconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
-	const tenths = Math.floor((ms % 1000) / 100);
-	return minutes + ':' + seconds.toString().padStart(2, '0') + '.' + tenths;
+	return minutes + ':' + seconds.toString().padStart(2, '0');
 }
 
 function setQueryExecuting(boxId, executing) {
@@ -7122,7 +7121,7 @@ function setQueryExecuting(boxId, executing) {
 			status.style.display = 'inline-flex';
 		}
 		if (elapsed) {
-			elapsed.textContent = '0:00.0';
+			elapsed.textContent = '0:00';
 		}
 
 		// Clear stale results/errors from the previous query so the user
@@ -7140,7 +7139,7 @@ function setQueryExecuting(boxId, executing) {
 			if (elapsed) {
 				elapsed.textContent = formatElapsed(performance.now() - start);
 			}
-		}, 100);
+		}, 1000);
 		return;
 	}
 
