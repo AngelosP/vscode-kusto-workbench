@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.3.0] - Unreleased
+
+* <span data-teams="true">When in the connection manager, if you select a database you have the option to create new </span>`<span data-teams="true">.kqlx</span>`<span data-teams="true"> file with the connection details for that database already prefilled, ready to go. </span>
+
 ## [2.2.0] - 2026-02-11
 
 * Added 'Share' feature for Kusto sections so they paste nicely into Teams and other rich editors

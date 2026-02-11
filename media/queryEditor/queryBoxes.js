@@ -5265,21 +5265,23 @@ function __kustoTryAutoEnterFavoritesModeForBox(boxId) {
 	} catch { desired = null; }
 	if (!desired) return;
 
-	// Only auto-enter if not already in favorites mode.
-	try {
-		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
-		if (enabled) {
-			try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
-			return;
-		}
-	} catch { /* ignore */ }
-
 	// Wait until favorites are available.
 	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 	if (!hasAny) return;
 
 	const fav = __kustoFindFavorite(desired.clusterUrl, desired.database);
-	if (!fav) return;
+	if (!fav) {
+		// No matching favorite — ensure we're NOT in favorites mode so the
+		// cluster/database dropdowns are visible and the user can see the connection.
+		try {
+			const isInFavMode = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
+			if (isInFavMode) {
+				__kustoApplyFavoritesMode(id, false);
+			}
+		} catch { /* ignore */ }
+		try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
+		return;
+	}
 
 	try { __kustoApplyFavoritesMode(id, true); } catch { /* ignore */ }
 	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
@@ -5311,6 +5313,38 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 		try {
 			if (favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
 				return;
+			}
+		} catch { /* ignore */ }
+
+		// If the box has a stashed desired connection that doesn't match any favorite,
+		// don't enter favorites mode — let the cluster/database dropdowns show instead.
+		try {
+			let desiredCluster = '';
+			let desiredDb = '';
+			const pending = __kustoAutoEnterFavoritesByBoxId && __kustoAutoEnterFavoritesByBoxId[id];
+			if (pending) {
+				desiredCluster = pending.clusterUrl || '';
+				desiredDb = pending.database || '';
+			}
+			if (!desiredCluster) {
+				const connEl = document.getElementById(id + '_connection');
+				if (connEl && connEl.dataset && connEl.dataset.desiredClusterUrl) {
+					desiredCluster = String(connEl.dataset.desiredClusterUrl).trim();
+				}
+			}
+			if (!desiredDb) {
+				const dbEl = document.getElementById(id + '_database');
+				if (dbEl && dbEl.dataset && dbEl.dataset.desired) {
+					desiredDb = String(dbEl.dataset.desired).trim();
+				}
+			}
+			if (desiredCluster && desiredDb) {
+				const fav = __kustoFindFavorite(desiredCluster, desiredDb);
+				if (!fav) {
+					// Connection exists but no matching favorite — skip favorites mode.
+					__kustoDidDefaultFirstBoxToFavorites = true;
+					return;
+				}
 			}
 		} catch { /* ignore */ }
 
@@ -5962,6 +5996,35 @@ try {
 		if (!id) return;
 		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 		if (!hasAny) return;
+		// When restoring favorites mode, verify that a matching favorite actually exists.
+		// If not, fall back to cluster/database dropdowns so the user can see the connection.
+		if (enabled) {
+			try {
+				let clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
+				let db = __kustoGetCurrentDatabaseForBox(id);
+				// During restore the dropdowns may not be populated yet; check dataset stashes.
+				if (!clusterUrl) {
+					const connEl = document.getElementById(id + '_connection');
+					if (connEl && connEl.dataset && connEl.dataset.desiredClusterUrl) {
+						clusterUrl = String(connEl.dataset.desiredClusterUrl).trim();
+					}
+				}
+				if (!db) {
+					const dbEl = document.getElementById(id + '_database');
+					if (dbEl && dbEl.dataset && dbEl.dataset.desired) {
+						db = String(dbEl.dataset.desired).trim();
+					}
+				}
+				if (clusterUrl && db) {
+					const fav = __kustoFindFavorite(clusterUrl, db);
+					if (!fav) {
+						// No matching favorite — stay in cluster/database mode.
+						__kustoApplyFavoritesMode(id, false);
+						return;
+					}
+				}
+			} catch { /* ignore */ }
+		}
 		__kustoApplyFavoritesMode(id, !!enabled);
 		try {
 			if (typeof window.__kustoUpdateFavoritesUiForBox === 'function') {

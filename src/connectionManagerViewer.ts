@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
+import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
 
 const VIEW_TITLE = 'Connection Manager';
 
@@ -56,7 +57,8 @@ type IncomingMessage =
 	| { type: 'openInEditor'; connectionId: string; database?: string }
 	| { type: 'leaveNoTrace.add'; clusterUrl: string }
 	| { type: 'leaveNoTrace.remove'; clusterUrl: string }
-	| { type: 'connection.importXml' };
+	| { type: 'connection.importXml' }
+	| { type: 'database.openInNewFile'; clusterUrl: string; database: string };
 
 export class ConnectionManagerViewer {
 	private static current: ConnectionManagerViewer | undefined;
@@ -572,6 +574,53 @@ export class ConnectionManagerViewer {
 					// The webview will handle setting the connection
 				} catch (error) {
 					void vscode.window.showErrorMessage('Failed to open query editor.');
+				}
+				return;
+			}
+
+			case 'database.openInNewFile': {
+				const clusterUrl = String(msg.clusterUrl || '').trim();
+				const database = String(msg.database || '').trim();
+				if (!clusterUrl || !database) {
+					return;
+				}
+
+				try {
+					const file = createEmptyKqlxOrMdxFile('kqlx');
+					file.state.sections.push({
+						type: 'query',
+						expanded: true,
+						clusterUrl,
+						database,
+						query: '',
+					});
+
+					const defaultName = `${database}.kqlx`;
+					const uri = await vscode.window.showSaveDialog({
+						filters: { 'Kusto Notebook': ['kqlx'] },
+						saveLabel: 'Create',
+						title: 'Create new .kqlx file',
+						defaultUri: vscode.workspace.workspaceFolders?.[0]
+							? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, defaultName)
+							: undefined
+					});
+
+					if (uri) {
+						const content = JSON.stringify(file, null, 2) + '\n';
+						await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
+						// Ensure VS Code's in-memory document model is synced with disk before opening
+						const doc = await vscode.workspace.openTextDocument(uri);
+						if (doc.getText().trim() !== content.trim()) {
+							// Force the document content via a workspace edit
+							const edit = new vscode.WorkspaceEdit();
+							edit.replace(uri, new vscode.Range(0, 0, doc.lineCount, 0), content);
+							await vscode.workspace.applyEdit(edit);
+							await doc.save();
+						}
+						await vscode.commands.executeCommand('vscode.openWith', uri, 'kusto.kqlxEditor');
+					}
+				} catch (error) {
+					void vscode.window.showErrorMessage('Failed to create .kqlx file.');
 				}
 				return;
 			}
@@ -2743,7 +2792,8 @@ export class ConnectionManagerViewer {
 			spinner: '${this.escapeJs(this.getSpinnerIcon())}',
 			back: '${this.escapeJs(this.getBackIcon())}',
 			sidebar: '${this.escapeJs(this.getSidebarIcon())}',
-			shield: '${this.escapeJs(this.getShieldIcon())}'
+			shield: '${this.escapeJs(this.getShieldIcon())}',
+			newFile: '${this.escapeJs(this.getNewFileIcon())}'
 		};
 
 		// Helper to build header with toggle button
@@ -2840,6 +2890,7 @@ export class ConnectionManagerViewer {
 				html += '<div class="favorite-row">';
 				html += '<div class="favorite-name">' + escapeHtml(displayName) + '</div>';
 				html += '<div class="favorite-actions">';
+				html += '<button class="btn-icon" data-open-db-in-new-file="' + escapeHtml(fav.database) + '" data-open-db-cluster="' + escapeHtml(fav.clusterUrl) + '" title="Open in new .kqlx file">' + ICONS.newFile + '</button>';
 				html += '<button class="btn-icon" data-remove-fav-cluster="' + escapeHtml(fav.clusterUrl) + '" data-remove-fav-db="' + escapeHtml(fav.database) + '" title="Remove from favorites">' + ICONS.delete + '</button>';
 				html += '</div>';
 				html += '</div>';
@@ -3116,6 +3167,7 @@ export class ConnectionManagerViewer {
 						html += '<div class="explorer-list-item-actions">';
 						html += '<button class="btn-icon' + (dbFav ? ' is-favorite' : '') + '" data-toggle-db-fav="' + escapeHtml(conn.id) + '" data-toggle-db-fav-cluster="' + escapeHtml(conn.clusterUrl) + '" data-toggle-db-fav-name="' + escapeHtml(conn.name) + '" data-db="' + escapeHtml(db) + '" title="' + (dbFav ? 'Remove from favorites' : 'Add to favorites') + '" style="color: ' + (dbFav ? '#f5c518' : 'inherit') + ';">' + (dbFav ? ICONS.starFilled : ICONS.star) + '</button>';
 						html += '<button class="btn-icon" data-refresh-cluster="' + escapeHtml(conn.id) + '" title="Refresh">' + ICONS.refresh + '</button>';
+						html += '<button class="btn-icon" data-open-db-in-new-file="' + escapeHtml(db) + '" title="Open in new .kqlx file">' + ICONS.newFile + '</button>';
 						html += '</div>';
 						html += '</div>';
 					});
@@ -3195,6 +3247,9 @@ export class ConnectionManagerViewer {
 						html += '<span class="explorer-list-item-icon table">' + ICONS.table + '</span>';
 						html += '<span class="explorer-list-item-name">' + escapeHtml(table) + '</span>';
 						if (colCount > 0) html += '<span class="explorer-list-item-meta">' + colCount + ' cols</span>';
+						html += '<div class="explorer-list-item-actions">';
+						html += '<button class="btn-icon" data-open-db-in-new-file="' + escapeHtml(explorerPath.database) + '" title="Open in new .kqlx file">' + ICONS.newFile + '</button>';
+						html += '</div>';
 						html += '</div>';
 						
 						// Render expanded details
@@ -3677,6 +3732,22 @@ export class ConnectionManagerViewer {
 				return;
 			}
 			
+			// Open database in new .kqlx file
+			var openDbInNewFile = closest(target, '[data-open-db-in-new-file]');
+			if (openDbInNewFile) {
+				var dbName = openDbInNewFile.getAttribute('data-open-db-in-new-file');
+				var explicitCluster = openDbInNewFile.getAttribute('data-open-db-cluster');
+				var clusterUrl = explicitCluster;
+				if (!clusterUrl) {
+					var conn = lastSnapshot.connections.find(function(c) { return c.id === selectedConnectionId; });
+					clusterUrl = conn ? conn.clusterUrl : null;
+				}
+				if (clusterUrl && dbName) {
+					vscode.postMessage({ type: 'database.openInNewFile', clusterUrl: clusterUrl, database: dbName });
+				}
+				return;
+			}
+
 			// Toggle table expand/collapse (show details inline)
 			var toggleTable = closest(target, '[data-toggle-table]');
 			if (toggleTable) {
@@ -3985,6 +4056,13 @@ export class ConnectionManagerViewer {
 	private getImportIcon(): string {
 		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
 			<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1a.5.5 0 0 1 .5.5v8.793l2.146-2.147a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 1 1 .708-.708L7.5 10.293V1.5A.5.5 0 0 1 8 1zM2 13.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11a.5.5 0 0 1-.5-.5z"/>
+		</svg>`;
+	}
+
+	private getNewFileIcon(): string {
+		return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M9.5 1H3.5A1.5 1.5 0 0 0 2 2.5v11A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5V5.5L9.5 1zM3 2.5a.5.5 0 0 1 .5-.5H9v3.5a.5.5 0 0 0 .5.5H13v7.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11zM10 2.7L12.3 5H10V2.7z"/>
+			<path d="M8.5 8a.5.5 0 0 0-1 0v1.5H6a.5.5 0 0 0 0 1h1.5V12a.5.5 0 0 0 1 0v-1.5H10a.5.5 0 0 0 0-1H8.5V8z"/>
 		</svg>`;
 	}
 }
