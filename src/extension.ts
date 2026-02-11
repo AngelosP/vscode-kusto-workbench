@@ -453,7 +453,7 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-title">
 				<i class="codicon codicon-rocket"></i> Agent-First Tutorial
 			</div>
-			<div class="card-desc">Let the VS Code agent build queries and charts for you — the fastest way to go from question to insight.</div>
+			<div class="card-desc">Let the VS Code agent build queries and charts for you, the fastest way to go from question to insight.</div>
 			<button class="button" onclick="sendCommand('openWalkthroughAgent')">Start Tutorial</button>
 		</div>
 		<div class="card">

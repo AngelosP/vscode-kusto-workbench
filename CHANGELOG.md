@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.2.0] - Unreleased
+
+* Trying to improve the UX around resizing everything, hopefully this is a little better now (been watching users and taking notes of common pain points and nobody discovers how the chat window resizes right now).
+
 ## [2.1.0] - 2026-02-11
 
 * Added walkthroughs! Access them via the command pallete, activity bar, or welcome page.

@@ -791,17 +791,7 @@
 
 			const editorPane = document.createElement('div');
 			editorPane.className = 'kusto-copilot-editor-pane';
-			let queryResizerEl = null;
 			for (const n of existingChildren) {
-				try {
-					if (n && n.nodeType === 1) {
-						const el = n;
-						if (el.id && el.id === (boxId + '_query_resizer')) {
-							queryResizerEl = el;
-							continue;
-						}
-					}
-				} catch { /* ignore */ }
 				try { editorPane.appendChild(n); } catch { /* ignore */ }
 			}
 
@@ -820,9 +810,11 @@
 			split.appendChild(chatPane);
 
 			editorWrapper.appendChild(split);
-			// Hoist the vertical query resizer to the wrapper level so it resizes
-			// the entire split (chat + editor), not just the editor pane.
+			// Hoist the vertical query resizer to the wrapper level so it spans
+			// the entire width of the section (chat + editor), not just the editor pane.
+			// The resizer is nested inside qe-editor-clip, so use getElementById.
 			try {
+				const queryResizerEl = document.getElementById(boxId + '_query_resizer');
 				if (queryResizerEl) {
 					editorWrapper.appendChild(queryResizerEl);
 				}

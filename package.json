@@ -228,7 +228,7 @@
       {
         "id": "kusto-workbench.agent-first",
         "title": "Kusto Workbench: Agent-First Workflow",
-        "description": "Let the VS Code agent build queries and charts for you — the fastest way to go from question to insight.",
+        "description": "Let the VS Code agent build queries and charts for you, the fastest way to go from question to insight.",
         "steps": [
           {
             "id": "agent-add-connection",
