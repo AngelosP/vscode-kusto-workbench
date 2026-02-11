@@ -335,40 +335,6 @@
             }
           }
         ]
-      },
-      {
-        "id": "kusto-workbench.import-connections-files",
-        "title": "Kusto Workbench: Import Connections & Files",
-        "description": "Bring your Kusto Explorer connections and existing .kql files into Kusto Workbench.",
-        "steps": [
-          {
-            "id": "import-xml-connections",
-            "title": "Import Connections from Kusto Explorer",
-            "description": "Export your connections as an `.xml` file from Kusto Explorer (Desktop or Web), then import them into Kusto Workbench in one step.\n\n[Manage Connections](command:kusto.manageConnections)",
-            "media": {
-              "markdown": "media/walkthrough/import-01-xml-connections.md"
-            },
-            "completionEvents": [
-              "onContext:kusto.hasConnections"
-            ]
-          },
-          {
-            "id": "import-open-kql",
-            "title": "Open Existing .kql Files",
-            "description": "Just open a `.kql` or `.csl` file in VS Code — Kusto Workbench provides its enhanced editor automatically with IntelliSense, query execution, and inline results. Your file stays a standard `.kql` text file.",
-            "media": {
-              "markdown": "media/walkthrough/import-02-open-kql-files.md"
-            }
-          },
-          {
-            "id": "import-sidecar",
-            "title": "Sidecar Files: Metadata for .kql",
-            "description": "When you run a query or configure a connection for a `.kql` file, Kusto Workbench creates a companion `.kql.json` sidecar file. It stores connection settings, cached results, and extra sections — while the **query text stays in the `.kql` file**. The sidecar is optional and can be `.gitignore`d.",
-            "media": {
-              "markdown": "media/walkthrough/import-03-sidecar-files.md"
-            }
-          }
-        ]
       }
     ],
     "languageModelTools": [

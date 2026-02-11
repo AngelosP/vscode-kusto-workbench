@@ -449,6 +449,20 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-desc">New here? Start with the playground, it auto-saves your work. Use <strong>File → Save As...</strong> anytime to save it to disk.</div>
 			<button class="button" onclick="sendCommand('openQueryEditor')">Open Query Editor</button>
 		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-rocket"></i> Agent-First Tutorial
+			</div>
+			<div class="card-desc">Let the VS Code agent build queries and charts for you — the fastest way to go from question to insight.</div>
+			<button class="button" onclick="sendCommand('openWalkthroughAgent')">Start Tutorial</button>
+		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-edit"></i> Editor-First Tutorial
+			</div>
+			<div class="card-desc">Write KQL queries, explore results, build charts, and use Copilot for the boring stuff.</div>
+			<button class="button" onclick="sendCommand('openWalkthroughEditor')">Start Tutorial</button>
+		</div>
 	</div>
 
 	<div class="section">
@@ -548,6 +562,12 @@ export function activate(context: vscode.ExtensionContext) {
 							break;
 						case 'openRemoteFile':
 							await vscode.commands.executeCommand('kusto.openRemoteFile');
+							break;
+						case 'openWalkthroughAgent':
+							await vscode.commands.executeCommand('workbench.action.openWalkthrough', { category: 'angelos-petropoulos.vscode-kusto-workbench#kusto-workbench.agent-first' }, true);
+							break;
+						case 'openWalkthroughEditor':
+							await vscode.commands.executeCommand('workbench.action.openWalkthrough', { category: 'angelos-petropoulos.vscode-kusto-workbench#kusto-workbench.editor-first' }, true);
 							break;
 					}
 				});
@@ -667,7 +687,6 @@ export function activate(context: vscode.ExtensionContext) {
 			const walkthroughs = [
 				{ label: '$(rocket) Agent-First Workflow', description: 'Let the agent build queries and charts for you', id: 'kusto-workbench.agent-first' },
 				{ label: '$(edit) Editor-First Workflow', description: 'Write KQL, explore results, build charts, and use AI', id: 'kusto-workbench.editor-first' },
-				{ label: '$(folder-opened) Import Connections & Files', description: 'Bring your Kusto Explorer connections and .kql files', id: 'kusto-workbench.import-connections-files' },
 			];
 			const picked = await vscode.window.showQuickPick(walkthroughs, {
 				placeHolder: 'Choose a walkthrough to get started',
