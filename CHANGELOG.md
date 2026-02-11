@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.0.1] - 2026-02-10
+
+* Bug
+    * This is a bug where the query returned a server-side semantic error, but the UI didn't transition out of the "running" state, so the timer keeps ticking and cancel has nothing to cancel.
+    * Timing issue stopped the 'addKustoSection' tool from adding its query contents when the new section is added (monaco editor not fully initialized)
+
 ## [2.0.0] - 2026-02-10
 
 * Added support for opening files from remote locations, like GitHub and Sharepoint. Added `Kusto Workbench: Open Remote File` to command pallete and an entry to the Quick Access panel of Activity Bar icon.

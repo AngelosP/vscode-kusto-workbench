@@ -21,6 +21,7 @@ Click the icon in the Activity bar for a bunch of helpful shortcuts.
 ![Activity bar](marketplace-media/activity-bar.png)
 
 All of this is also available through the VS Code command pallete, so if you prefer a more minimal look, you can turn of the activity bar icon in the extension's settings.
+
 ![Settings](marketplace-media/settings.png)
 
 ### Import connections

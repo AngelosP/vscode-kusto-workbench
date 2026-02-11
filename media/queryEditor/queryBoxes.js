@@ -791,17 +791,13 @@ function addQueryBox(options) {
 		}
 	} catch { /* ignore */ }
 	
-	// Set initial query text if provided
+	// Set initial query text if provided — use the pending-text map so the Monaco editor
+	// picks it up reliably during async initialization (instead of a fragile setTimeout).
 	if (initialQuery) {
-		setTimeout(() => {
-			const editor = queryEditors[id];
-			if (editor) {
-				const model = editor.getModel();
-				if (model) {
-					model.setValue(initialQuery);
-				}
-			}
-		}, 50);
+		try {
+			window.__kustoPendingQueryTextByBoxId = window.__kustoPendingQueryTextByBoxId || {};
+			window.__kustoPendingQueryTextByBoxId[id] = initialQuery;
+		} catch { /* ignore */ }
 	}
 	
 	// Check Copilot availability for this box
@@ -7128,6 +7124,16 @@ function setQueryExecuting(boxId, executing) {
 		if (elapsed) {
 			elapsed.textContent = '0:00.0';
 		}
+
+		// Clear stale results/errors from the previous query so the user
+		// doesn't see an old error while a new query is running.
+		try {
+			const resultsDiv = document.getElementById(boxId + '_results');
+			if (resultsDiv) {
+				resultsDiv.innerHTML = '';
+				resultsDiv.classList.remove('visible');
+			}
+		} catch { /* ignore */ }
 
 		const start = performance.now();
 		queryExecutionTimers[boxId] = setInterval(() => {

@@ -1007,6 +1007,14 @@ export class QueryEditorProvider {
 				return;
 			case 'cancelQuery':
 				this.cancelRunningQuery(message.boxId);
+				// If there was nothing to cancel (query already completed but UI is
+				// stuck), send queryCancelled so the webview resets the executing state.
+				{
+					const bid = String(message.boxId || '').trim();
+					if (bid && !this.runningQueriesByBoxId.has(bid)) {
+						this.postMessage({ type: 'queryCancelled', boxId: bid });
+					}
+				}
 				return;
 			case 'executePython':
 				await this.executePythonFromWebview(message);

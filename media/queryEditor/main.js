@@ -1287,6 +1287,12 @@ window.addEventListener('message', async event => {
 			} catch {
 				// ignore
 			}
+			try {
+				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
+				if (cancelledBoxId && typeof setQueryExecuting === 'function') {
+					setQueryExecuting(cancelledBoxId, false);
+				}
+			} catch { /* ignore */ }
 			if (typeof displayCancelled === 'function') {
 				displayCancelled();
 			} else {
@@ -2049,18 +2055,15 @@ window.addEventListener('message', async event => {
 				try {
 					if (sectionType === 'query') {
 						if (typeof addQueryBox === 'function') {
-							sectionId = addQueryBox();
+							const queryOpts = {};
+							if (input.query) {
+								queryOpts.initialQuery = String(input.query);
+							}
+							sectionId = addQueryBox(queryOpts);
 							success = !!sectionId;
 							// Set section name if provided
 							if (sectionId && input.name) {
 								setSectionName(sectionId, input.name);
-							}
-							// Set initial values if provided
-							if (sectionId && input.query) {
-								const editor = queryEditors && queryEditors[sectionId];
-								if (editor && typeof editor.setValue === 'function') {
-									editor.setValue(String(input.query));
-								}
 							}
 							if (sectionId && input.clusterUrl) {
 								// Find connection by cluster URL
