@@ -229,7 +229,7 @@
 				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
 				'<div class="kusto-copilot-chat-input-resizer" id="' + boxId + '_copilot_input_resizer" title="Drag to resize input area"></div>' +
 				'<div class="kusto-copilot-chat-input">' +
-					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query\u2026" spellcheck="true"></textarea>' +
+					'<textarea id="' + boxId + '_copilot_input" rows="1" style="height:32px" placeholder="Ask Copilot\u2026" spellcheck="true"></textarea>' +
 					'<div class="kusto-copilot-chat-input-bar">' +
 						'<div class="kusto-copilot-chat-input-bar-left">' +
 							modelDropdown +
@@ -953,7 +953,7 @@
 					const autoGrow = () => {
 						try {
 							const maxH = 400;
-							const minH = 40;
+							const minH = 32;
 							inputEl.style.height = 'auto';
 							const scrollH = inputEl.scrollHeight;
 							inputEl.style.height = Math.max(minH, Math.min(maxH, scrollH + 4)) + 'px';
@@ -982,7 +982,7 @@
 						const onMove = (moveEvt) => {
 							// Dragging up grows the textarea (delta is negative).
 							const delta = startY - moveEvt.clientY;
-							const next = Math.max(40, Math.min(400, startH + delta));
+							const next = Math.max(32, Math.min(400, startH + delta));
 							chatTextarea.style.height = next + 'px';
 						};
 						const onUp = () => {
@@ -1165,7 +1165,10 @@
 
 		try {
 			__kustoAppendChatMessage(id, 'user', prompt);
-			if (inputEl) inputEl.value = '';
+			if (inputEl) {
+				inputEl.value = '';
+				inputEl.style.height = '32px';
+			}
 		} catch { /* ignore */ }
 
 		__kustoSetCopilotChatRunning(id, true);
