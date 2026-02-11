@@ -5,18 +5,21 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [2.2.0] - Unreleased
 
+* Improved the UX of the integrated Copilot Chat to make it look and feel more like the native one
 * Trying to improve the UX around resizing everything, hopefully this is a little better now (been watching users and taking notes of common pain points and nobody discovers how the chat window resizes right now).
+* Bugs
+    * Small alignment issues with resize grips and little things like that
 
 ## [2.1.0] - 2026-02-11
 
 * Added walkthroughs! Access them via the command pallete, activity bar, or welcome page.
 * Added shortcuts to add a new connection or import connections, directly to the Connection Manager UI under the title.
-* Bug
+* Bugs
     * Sometimes the markdown content that gets sent has \\n\\n in it, instead of new lines, and we don't format things correctly.
 
 ## [2.0.1] - 2026-02-10
 
-* Bug
+* Bugs
     * This is a bug where the query returned a server-side semantic error, but the UI didn't transition out of the "running" state, so the timer keeps ticking and cancel has nothing to cancel.
     * Timing issue stopped the 'addKustoSection' tool from adding its query contents when the new section is added (monaco editor not fully initialized)
 

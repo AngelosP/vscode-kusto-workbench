@@ -700,6 +700,14 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.openCustomAgent', async () => {
+			try {
+				await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
+			} catch { /* ignore */ }
+		})
+	);
 }
 
 // This method is called when your extension is deactivated

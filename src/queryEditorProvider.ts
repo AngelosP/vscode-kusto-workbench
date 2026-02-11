@@ -981,6 +981,11 @@ export class QueryEditorProvider {
 			case 'clearCopilotConversation':
 				this.clearCopilotConversation(message.boxId);
 				return;
+			case 'openCopilotAgent':
+				try {
+					await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
+				} catch { /* ignore */ }
+				return;
 			case 'removeFromCopilotHistory':
 				this.removeFromCopilotHistory(message.boxId, message.entryId);
 				return;

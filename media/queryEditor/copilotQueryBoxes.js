@@ -8,7 +8,7 @@
 (function () {
 	const COPILOT_QUERY_KIND = 'copilotQuery';
 	const DEFAULT_CHAT_WIDTH_PX = 360;
-	const MIN_CHAT_WIDTH_PX = 240;
+	const MIN_CHAT_WIDTH_PX = 180;
 	const MIN_EDITOR_WIDTH_PX = 240;
 	const COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';
 
@@ -181,14 +181,16 @@
 	}
 
 	function __kustoCopilotChatHtml(boxId) {
-		const icon = __kustoCopilotLogoHtml();
 		const modelDropdown = (() => {
 			try {
 				if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuDropdownHtml === 'function') {
+					// Small sparkle icon shown beside (or instead of) the model name.
+					const modelIconSvg = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3.18 8l1.83-.55L5.56 5.6a.3.3 0 0 1 .57 0l.55 1.85L8.5 8a.3.3 0 0 1 0 .57l-1.83.55-.55 1.84a.3.3 0 0 1-.57 0l-.55-1.84L3.18 8.57a.3.3 0 0 1 0-.57ZM9.14 3l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17L12.53 3a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17L9.14 3.36a.19.19 0 0 1 0-.36ZM9.14 11l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17 1.16.35a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17-1.16-.35a.19.19 0 0 1 0-.36Z"/></svg>';
 					return window.__kustoDropdown.renderMenuDropdownHtml({
 						wrapperClass: 'kusto-copilot-chat-model-dropdown kusto-dropdown-tooltip-label',
 						// No generic tooltip; we show the selected model name and per-item tooltips instead.
 						title: '',
+						iconSvg: modelIconSvg,
 						includeHiddenSelect: true,
 						selectId: boxId + '_copilot_model',
 						onChange: "try{if(typeof __kustoSetLastOptimizeModelId==='function'){__kustoSetLastOptimizeModelId(this.value)}}catch{}",
@@ -214,9 +216,24 @@
 		return (
 			'<div class="kusto-copilot-chat" id="' + boxId + '_copilot_chat" data-kusto-no-editor-focus="true">' +
 				'<div class="kusto-copilot-chat-header">' +
-					'<div class="kusto-copilot-chat-title" title="Copilot Chat">' + icon + '<span>Copilot Chat</span></div>' +
-					'<div class="kusto-copilot-chat-model">' +
-						modelDropdown +
+					'<div class="kusto-copilot-chat-title" title="Chat"><span>CHAT</span></div>' +
+					'<div class="kusto-copilot-chat-header-actions">' +
+						'<button type="button" id="' + boxId + '_copilot_clear_btn" class="unified-btn-secondary kusto-copilot-chat-clear" onclick="__kustoCopilotClearConversation(\'' + boxId + '\')" title="Clear conversation history">' +
+							'<span class="codicon codicon-clear-all" aria-hidden="true"></span>' +
+						'</button>' +
+						'<button type="button" class="unified-btn-secondary kusto-copilot-chat-close" onclick="__kustoToggleCopilotChatForBox(\'' + boxId + '\')" title="Close chat">' +
+							'<span class="codicon codicon-close" aria-hidden="true"></span>' +
+						'</button>' +
+					'</div>' +
+				'</div>' +
+				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
+				'<div class="kusto-copilot-chat-input-resizer" id="' + boxId + '_copilot_input_resizer" title="Drag to resize input area"></div>' +
+				'<div class="kusto-copilot-chat-input">' +
+					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query\u2026" spellcheck="true"></textarea>' +
+					'<div class="kusto-copilot-chat-input-bar">' +
+						'<div class="kusto-copilot-chat-input-bar-left">' +
+							modelDropdown +
+						'</div>' +
 						'<div class="kusto-copilot-tools-container">' +
 							'<button type="button" id="' + boxId + '_copilot_tools_btn" class="unified-btn-secondary kusto-copilot-chat-tools" onclick="__kustoCopilotToggleToolsPanel(\'' + boxId + '\')" aria-pressed="false" title="Tools">' +
 								'<span class="codicon codicon-tools" aria-hidden="true"></span>' +
@@ -226,20 +243,10 @@
 								'<div class="kusto-copilot-tools-list" id="' + boxId + '_copilot_tools_list"></div>' +
 							'</div>' +
 						'</div>' +
-						'<button type="button" id="' + boxId + '_copilot_clear_btn" class="unified-btn-secondary kusto-copilot-chat-clear" onclick="__kustoCopilotClearConversation(\'' + boxId + '\')" title="Clear conversation history">' +
-							'<span class="codicon codicon-clear-all" aria-hidden="true"></span>' +
+						'<button type="button" id="' + boxId + '_copilot_send" class="kusto-copilot-chat-send-icon" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')" title="Send (Enter)">' +
+							'<svg class="kusto-copilot-icon-send" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1.724 1.053a.5.5 0 0 0-.714.545l1.403 4.85a.5.5 0 0 0 .397.354l5.69.953c.268.053.268.437 0 .49l-5.69.953a.5.5 0 0 0-.397.354l-1.403 4.85a.5.5 0 0 0 .714.545l13-6.5a.5.5 0 0 0 0-.894l-13-6.5Z"/></svg>' +
+							'<svg class="kusto-copilot-icon-stop" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>' +
 						'</button>' +
-					'</div>' +
-				'</div>' +
-				'<div class="kusto-copilot-chat-messages" id="' + boxId + '_copilot_messages" aria-live="polite"></div>' +
-				'<div class="kusto-copilot-chat-input">' +
-					'<textarea id="' + boxId + '_copilot_input" rows="2" placeholder="Ask Copilot to write a Kusto query…" spellcheck="true"></textarea>' +
-					'<div class="kusto-copilot-chat-actions">' +
-						'<button type="button" id="' + boxId + '_copilot_send" class="unified-btn-primary kusto-copilot-chat-send" onclick="__kustoCopilotWriteQuerySend(\'' + boxId + '\')">' +
-							'<span class="kusto-copilot-chat-send-label">Send</span>' +
-							'<span class="kusto-copilot-chat-send-spinner" aria-hidden="true"></span>' +
-						'</button>' +
-						'<button type="button" id="' + boxId + '_copilot_cancel" class="unified-btn-secondary kusto-copilot-chat-cancel" onclick="__kustoCopilotWriteQueryCancel(\'' + boxId + '\')">Cancel</button>' +
 					'</div>' +
 				'</div>' +
 			'</div>'
@@ -508,6 +515,29 @@
 		}
 	}
 
+	function __kustoAppendCopilotTipMessage(boxId) {
+		try {
+			const host = document.getElementById(boxId + '_copilot_messages');
+			if (!host) return;
+			const el = document.createElement('div');
+			el.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-notification';
+			const link = document.createElement('a');
+			link.href = '#';
+			link.textContent = 'Kusto Workbench custom agent';
+			link.title = 'Open the Kusto Workbench agent in VS Code Copilot Chat';
+			link.style.cursor = 'pointer';
+			link.addEventListener('click', (e) => {
+				try { e.preventDefault(); } catch { /* ignore */ }
+				try { vscode.postMessage({ type: 'openCopilotAgent' }); } catch { /* ignore */ }
+			});
+			el.appendChild(document.createTextNode('Tip: If the ask is very challenging or broad, use the '));
+			el.appendChild(link);
+			el.appendChild(document.createTextNode(' instead.'));
+			host.appendChild(el);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+		} catch { /* ignore */ }
+	}
+
 	function __kustoAppendToolResponse(boxId, toolName, label, jsonText, entryId) {
 		try {
 			const host = document.getElementById(boxId + '_copilot_messages');
@@ -642,22 +672,24 @@
 
 		try {
 			const sendBtn = document.getElementById(boxId + '_copilot_send');
-			const cancelBtn = document.getElementById(boxId + '_copilot_cancel');
 			const toolsBtn = document.getElementById(boxId + '_copilot_tools_btn');
 			const input = document.getElementById(boxId + '_copilot_input');
 			const modelSel = document.getElementById(boxId + '_copilot_model');
 			if (sendBtn) {
-				sendBtn.disabled = !!running;
 				try { sendBtn.classList.toggle('is-running', !!running); } catch { /* ignore */ }
+				// When running, clicking the button should cancel instead of send.
+				if (running) {
+					sendBtn.title = 'Stop (Esc)';
+					sendBtn.onclick = function () { __kustoCopilotWriteQueryCancel(boxId); };
+				} else {
+					sendBtn.title = 'Send (Enter)';
+					sendBtn.onclick = function () { __kustoCopilotWriteQuerySend(boxId); };
+				}
 			}
 			// Tools button stays usable while running.
 			if (toolsBtn) toolsBtn.disabled = !!toolsBtn.disabled;
 			if (input) input.disabled = !!running;
 			if (modelSel) modelSel.disabled = !!running;
-			if (cancelBtn) {
-				cancelBtn.style.display = '';
-				cancelBtn.disabled = !running;
-			}
 			// Sync the custom dropdown wrapper so the visible button reflects the new disabled state.
 			try {
 				if (modelSel && window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
@@ -889,23 +921,82 @@
 			}
 
 			__kustoSetCopilotChatRunning(boxId, false);
-			__kustoAppendChatMessage(boxId, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it. Tip: If the ask is very challenging or broad, use the Kusto Workbench custom agent instead.');
+			__kustoAppendCopilotTipMessage(boxId);
 
 			// Ask extension for model list + default selection.
 			try {
 				vscode.postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId || '') });
 			} catch { /* ignore */ }
 
-			// Add Enter key handler to send message
+			// Add Enter key handler to send message, Ctrl+Enter for newline
 			try {
 				const inputEl = document.getElementById(boxId + '_copilot_input');
 				if (inputEl) {
 					inputEl.addEventListener('keydown', (e) => {
+						if (e.key === 'Enter' && e.ctrlKey) {
+							// Ctrl+Enter inserts a newline
+							try {
+								e.preventDefault();
+								const start = inputEl.selectionStart;
+								const end = inputEl.selectionEnd;
+								inputEl.value = inputEl.value.substring(0, start) + '\n' + inputEl.value.substring(end);
+								inputEl.selectionStart = inputEl.selectionEnd = start + 1;
+								inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+							} catch { /* ignore */ }
+							return;
+						}
 						// Enter without Shift sends the message
 						if (e.key === 'Enter' && !e.shiftKey) {
 							try { e.preventDefault(); } catch { /* ignore */ }
 							__kustoCopilotWriteQuerySend(boxId);
 						}
+					});
+
+					// Auto-grow textarea as user types
+					const autoGrow = () => {
+						try {
+							const maxH = 400;
+							const minH = 40;
+							inputEl.style.height = 'auto';
+							const scrollH = inputEl.scrollHeight;
+							inputEl.style.height = Math.max(minH, Math.min(maxH, scrollH)) + 'px';
+						} catch { /* ignore */ }
+					};
+					inputEl.addEventListener('input', autoGrow);
+				}
+			} catch { /* ignore */ }
+
+			// Chat input area resizer – drag to grow/shrink the textarea.
+			try {
+				const inputResizer = document.getElementById(boxId + '_copilot_input_resizer');
+				const chatTextarea = document.getElementById(boxId + '_copilot_input');
+				if (inputResizer && chatTextarea) {
+					inputResizer.addEventListener('mousedown', (e) => {
+						try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+						inputResizer.classList.add('is-dragging');
+						const prevCursor = document.body.style.cursor;
+						const prevUserSelect = document.body.style.userSelect;
+						document.body.style.cursor = 'ns-resize';
+						document.body.style.userSelect = 'none';
+
+						const startY = e.clientY;
+						const startH = chatTextarea.getBoundingClientRect().height;
+
+						const onMove = (moveEvt) => {
+							// Dragging up grows the textarea (delta is negative).
+							const delta = startY - moveEvt.clientY;
+							const next = Math.max(40, Math.min(400, startH + delta));
+							chatTextarea.style.height = next + 'px';
+						};
+						const onUp = () => {
+							document.removeEventListener('mousemove', onMove, true);
+							document.removeEventListener('mouseup', onUp, true);
+							inputResizer.classList.remove('is-dragging');
+							document.body.style.cursor = prevCursor;
+							document.body.style.userSelect = prevUserSelect;
+						};
+						document.addEventListener('mousemove', onMove, true);
+						document.addEventListener('mouseup', onUp, true);
 					});
 				}
 			} catch { /* ignore */ }
@@ -1089,10 +1180,7 @@
 		try {
 			vscode.postMessage({ type: 'cancelCopilotWriteQuery', boxId: id });
 		} catch { /* ignore */ }
-		try {
-			const cancelBtn = document.getElementById(id + '_copilot_cancel');
-			if (cancelBtn) cancelBtn.disabled = true;
-		} catch { /* ignore */ }
+		// The send-icon button is toggled back to send mode via __kustoSetCopilotChatRunning(false).
 	};
 
 	window.__kustoDisposeCopilotQueryBox = function __kustoDisposeCopilotQueryBox(boxId) {
@@ -1163,7 +1251,7 @@
 
 		// Re-run the same initialization logic that runs when the chat first opens
 		__kustoSetCopilotChatRunning(id, false);
-		__kustoAppendChatMessage(id, 'notification', 'Describe what you want, and I will generate a full Kusto query and run it. Tip: If the ask is very challenging or broad, use the Kusto Workbench custom agent instead.');
+		__kustoAppendCopilotTipMessage(id);
 
 		// Re-request model list + default selection (same as initial setup)
 		try {

@@ -182,6 +182,11 @@
         "command": "kusto.openWalkthroughs",
         "title": "Open Walkthroughs...",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.openCustomAgent",
+        "title": "Open Kusto Workbench Custom Agent",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {
