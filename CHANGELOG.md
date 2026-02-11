@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.3.1] - 2026-02-11
+
+* Bugs
+    * Timing issue when opening a file and the Kusto Monaco editor would not intialize in time to receive the text for the query. The end result was a blank query section, and if the file was saved, it would blast over the query and save it blank to file. The workaround was to re-open the file without saving, but anybody who saved blasted over it.
+
 ## [2.3.0] - 2026-02-11
 
 * <span data-teams="true">When in the connection manager, if you select a database you have the option to create new </span>`<span data-teams="true">.kqlx</span>`<span data-teams="true"> file with the connection details for that database already prefilled, ready to go. </span>

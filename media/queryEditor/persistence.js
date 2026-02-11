@@ -667,7 +667,17 @@ function getKqlxState() {
 				// ignore
 			}
 			const database = (document.getElementById(id + '_database') || {}).value || '';
-			const query = queryEditors && queryEditors[id] ? (queryEditors[id].getValue() || '') : '';
+			let query = queryEditors && queryEditors[id] ? (queryEditors[id].getValue() || '') : '';
+			// If the editor hasn't initialized yet (e.g. Monaco still loading on a slow machine),
+			// don't lose content: use the pending restore buffer.
+			if (!query) {
+				try {
+					const pending = window.__kustoPendingQueryTextByBoxId && window.__kustoPendingQueryTextByBoxId[id];
+					if (typeof pending === 'string' && pending) {
+						query = pending;
+					}
+				} catch { /* ignore */ }
+			}
 			const resultJson = (window.__kustoQueryResultJsonByBoxId && window.__kustoQueryResultJsonByBoxId[id])
 				? String(window.__kustoQueryResultJsonByBoxId[id])
 				: '';
@@ -951,7 +961,17 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('python_')) {
-			const code = pythonEditors && pythonEditors[id] ? (pythonEditors[id].getValue() || '') : '';
+			let code = pythonEditors && pythonEditors[id] ? (pythonEditors[id].getValue() || '') : '';
+			// If the editor hasn't initialized yet (e.g. Monaco still loading on a slow machine),
+			// don't lose content: use the pending restore buffer.
+			if (!code) {
+				try {
+					const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[id];
+					if (typeof pending === 'string' && pending) {
+						code = pending;
+					}
+				} catch { /* ignore */ }
+			}
 			const output = (document.getElementById(id + '_py_output') || {}).textContent || '';
 			sections.push({
 				id,
