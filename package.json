@@ -270,7 +270,7 @@
       {
         "id": "kusto-workbench.editor-first",
         "title": "Kusto Workbench: Editor-First Workflow",
-        "description": "Write KQL queries, explore results, build charts, and use AI assistance — all from the editor.",
+        "description": "Write KQL queries, explore results, build charts, and use Copilot for the boring stuff.",
         "steps": [
           {
             "id": "editor-add-connection",
@@ -285,8 +285,8 @@
           },
           {
             "id": "editor-first-query",
-            "title": "Run Your First Query",
-            "description": "Type a KQL query in the editor and press **Shift+Enter** to execute it. Start with something simple like `StormEvents | take 10` and see the results appear inline.\n\n[Open Query Editor](command:kusto.openQueryEditor)",
+            "title": "Run your first query",
+            "description": "Open the query editor, which will use a scratchpad file (nothing saved to your local workspace, persists across VS Code sessions). \n\n Alternatively you can just create a new .kqlx file in your workspace and open that, then keep following along. \n\n[Open Query Editor](command:kusto.openQueryEditor)\n\nType a KQL query in the editor and press **Shift+Enter** to execute it. Start with something simple like `StormEvents | take 10` and see the results appear inline.",
             "media": {
               "markdown": "media/walkthrough/editor-02-first-query.md"
             },
@@ -296,24 +296,24 @@
           },
           {
             "id": "editor-caching-run-modes",
-            "title": "Caching & Run Modes",
-            "description": "Learn how **Take 100**, **Sample 100**, and **Run Query** modes help you iterate faster — and how result caching lets you save and share data without re-running queries.",
+            "title": "Caching & Run modes",
+            "description": "Learn how **Take 100**, **Sample 100**, and **Run Query** modes help you iterate faster and how result caching lets you save and share data without re-running queries.",
             "media": {
               "markdown": "media/walkthrough/editor-03-caching-run-modes.md"
             }
           },
           {
             "id": "editor-table-tools",
-            "title": "Table Tools",
-            "description": "Right-click column headers to sort, filter, see statistics, and view distinct values. Click rows to expand complex values with the interactive tree viewer. Add **Transformation** sections for derived columns, aggregations, distinct values, and pivot tables.",
+            "title": "Table tools",
+            "description": "Right-click column headers to sort, filter, see statistics, and view distinct values. \n\n Click rows to expand complex values with the interactive tree viewer. \n\nAdd **Transformation** sections for derived columns, aggregations, distinct values, and pivot tables.",
             "media": {
               "markdown": "media/walkthrough/editor-04-table-tools.md"
             }
           },
           {
             "id": "editor-build-chart",
-            "title": "Build a Chart",
-            "description": "Click the **+** button below a query section and select **Chart** to visualize your results. Pick a chart type, configure axes, and watch the chart update live when you re-run your query.",
+            "title": "Build a chart",
+            "description": "Click the **+** button below a query section and select **Chart** to visualize your results. \n\n Pick a chart type, configure axes, and watch the chart update live when you re-run your query.",
             "media": {
               "markdown": "media/walkthrough/editor-05-build-chart.md"
             }
@@ -321,15 +321,15 @@
           {
             "id": "editor-copilot-chat",
             "title": "Copilot Chat: AI-Assisted Editing",
-            "description": "Click the **Copilot button** (sparkle icon) in the query toolbar to open the integrated Copilot Chat. Describe what you want in plain English and Copilot will write or refine the KQL for you — it knows your schema and can execute queries to validate its suggestions.",
+            "description": "Click the **Copilot button** (logo icon) in the query toolbar to open the integrated Copilot Chat. \n\n Describe what you want in plain English and Copilot will write or refine the KQL for you, it knows the schema of the selected database and can execute queries to validate its suggestions.",
             "media": {
               "markdown": "media/walkthrough/editor-06-copilot-chat.md"
             }
           },
           {
             "id": "editor-agent",
-            "title": "The VS Code Agent",
-            "description": "For full-notebook orchestration — creating multiple sections, configuring charts, adding markdown — use the **VS Code Copilot Chat** panel. The agent builds entire reports in one go while the in-editor Copilot Chat focuses on individual queries.",
+            "title": "The custom agent",
+            "description": "For full-notebook orchestration, creating multiple sections, configuring charts, adding markdown, going across multiple clusters and doing grand things, use the **VS Code Copilot Chat** panel. \n\n The Kusto Workbench custom agent builds entire reports in one go while the in-editor Copilot Chat focuses on individual queries. \n\n[Open Kusto Workbench Agent](command:workbench.action.chat.open?%7B%22mode%22%3A%22Kusto%20Workbench%22%7D)",
             "media": {
               "markdown": "media/walkthrough/editor-07-agent.md"
             }
