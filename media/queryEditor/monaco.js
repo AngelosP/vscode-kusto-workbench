@@ -416,12 +416,6 @@ function ensureMonaco() {
 									// Only intercept kusto markers
 									if (owner === 'kusto') {
 										const uri = model && model.uri ? model.uri.toString() : '';
-										// DEBUG: Log ALL marker sets from kusto
-										const errorMarkers = markers.filter(m => m.severity === 8); // 8 = Error
-										if (errorMarkers.length > 0) {
-											console.log('[DEBUG:Markers] SETTING ' + errorMarkers.length + ' error markers on uri=' + uri.slice(-30) + ', firstError=' + (errorMarkers[0]?.message || '').slice(0, 80));
-											console.log('[DEBUG:Markers] currentContext=' + JSON.stringify(window.__kustoMonacoDatabaseInContext));
-										}
 										if (!window.__kustoMarkersEnabledModels.has(uri)) {
 											// Suppress markers for models that haven't been focused yet
 											return;
@@ -437,7 +431,6 @@ function ensureMonaco() {
 											const currentClusterNorm = normalizeUrl(currentCluster);
 											if (modelClusterNorm !== currentClusterNorm) {
 												// This model belongs to a different cluster - suppress markers
-												console.log('[DEBUG:Markers] SUPPRESSED - model cluster=' + modelClusterNorm + ' != current=' + currentClusterNorm);
 												return;
 											}
 										}
@@ -4979,7 +4972,7 @@ function ensureMonaco() {
 						const operationPromise = window.__kustoSchemaOperationQueue.then(async () => {
 							return await window.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
 						}).catch(e => {
-							console.error('[DEBUG:SetSchema] Queued operation failed:', e);
+							console.error('[monaco-kusto] Queued operation failed:', e);
 						});
 						window.__kustoSchemaOperationQueue = operationPromise;
 						return operationPromise;
@@ -5028,15 +5021,11 @@ function ensureMonaco() {
 						const perModelLoadedSchemas = window.__kustoMonacoLoadedSchemasByModel[modelKey];
 						
 						const schemaKey = `${clusterUrl}|${database}`;
-						console.log('[DEBUG:SetSchema] START schemaKey=' + schemaKey + ', setAsContext=' + setAsContext + ', modelUri=' + modelKey.slice(-40));
-						console.log('[DEBUG:SetSchema] loadedSchemas at START (model): ' + JSON.stringify(perModelLoadedSchemas));
 						// If this is a force refresh, invalidate the loaded tracking so we reload the schema
 						if (forceRefresh && perModelLoadedSchemas[schemaKey]) {
 							delete perModelLoadedSchemas[schemaKey];
-							console.log('[DEBUG:SetSchema] forceRefresh: invalidated loaded tracking for ' + schemaKey);
 						}
 						const alreadyLoaded = !!perModelLoadedSchemas[schemaKey];
-						console.log('[DEBUG:SetSchema] alreadyLoaded=' + alreadyLoaded + ' (key=' + schemaKey + ', forceRefresh=' + forceRefresh + ')');
 						
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url) => {
@@ -5053,7 +5042,6 @@ function ensureMonaco() {
 						const newClusterNormalized = normalizeClusterUrl(clusterUrl);
 						const isSameCluster = currentContext && currentClusterNormalized === newClusterNormalized;
 						const isSameDatabase = isSameCluster && currentContext?.database?.toLowerCase() === database?.toLowerCase();
-						console.log('[DEBUG:SetSchema] isSameCluster=' + isSameCluster + ', isSameDatabase=' + isSameDatabase + ' (current=' + currentClusterNormalized + '/' + currentContext?.database + ', new=' + newClusterNormalized + '/' + database + ')');
 						
 						// If already loaded, we might still need to switch context
 						// BUT: we need to verify the cluster is still the same - if user switched clusters,
@@ -5171,16 +5159,13 @@ function ensureMonaco() {
 										// fully-qualified cross-cluster/cross-database table references. The ADD path
 										// updates just the refreshed database's schema without disturbing others.
 										const needsReplace = setAsContext && !isSameCluster;
-										console.log('[DEBUG:SetSchema] Decision: setAsContext=' + setAsContext + ', !isSameCluster=' + !isSameCluster + ', forceRefresh=' + forceRefresh + ' => ' + (needsReplace ? 'REPLACE schema' : 'ADD to schema'));
 										if (needsReplace) {
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
 												try {
 																	// Remember what other clusters we had loaded for THIS model before replacing
 																	const previouslyLoadedSchemas = { ...perModelLoadedSchemas };
-													console.log('[DEBUG:SetSchema] REPLACE: calling setSchemaFromShowSchema for ' + clusterUrl + '/' + databaseInContext);
 													
 													await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-													console.log('[DEBUG:SetSchema] REPLACE: setSchemaFromShowSchema succeeded');
 													
 																	// Clear loaded schemas tracking for THIS model and cache this new schema
 																	try {
@@ -5202,11 +5187,9 @@ function ensureMonaco() {
 																			const cachedClusterNorm = normalizeClusterUrl(cachedClusterUrl);
 																			return cachedClusterNorm && cachedClusterNorm !== newClusterNormalized;
 																		});
-													console.log('[DEBUG:SetSchema] REPLACE: re-adding ' + otherClusterSchemas.length + ' other cluster schemas: ' + otherClusterSchemas.join(', '));
 													
 													for (const otherKey of otherClusterSchemas) {
 														const cached = window.__kustoSchemaCache[otherKey];
-														console.log('[DEBUG:SetSchema] REPLACE: re-add ' + otherKey + ', cached=' + !!cached + ', hasRawSchema=' + !!(cached && cached.rawSchemaJson));
 														if (cached && cached.rawSchemaJson) {
 															try {
 																// Use addDatabaseToSchema to add this without replacing
@@ -5227,29 +5210,19 @@ function ensureMonaco() {
 																		await worker.addDatabaseToSchema(modelKey, otherClusterUrl, databaseSchema);
 																	// NOTE: Do NOT mark as loaded! Re-added schemas are only for cross-cluster references.
 																	// They are NOT primary schemas and need full REPLACE when actually focused.
-																	// window.__kustoMonacoLoadedSchemas[otherKey] = true; // REMOVED
-																	console.log('[DEBUG:SetSchema] REPLACE: re-added ' + otherKey + ' for cross-cluster refs (NOT marked as loaded)');
 																} else {
-																	console.log('[DEBUG:SetSchema] REPLACE: re-add ' + otherKey + ' FAILED - no databaseSchema found');
+																	// re-add failed - no databaseSchema found
 																}
 															} catch (readdError) {
-																console.log('[DEBUG:SetSchema] REPLACE: re-add ' + otherKey + ' EXCEPTION: ' + readdError);
+																// re-add failed for otherKey
 															}
 														}
-													}
-													// Verify actual worker state after REPLACE
-													try {
-														const verifySchema = await worker.getSchema();
-														console.log('[DEBUG:SetSchema] REPLACE: VERIFY worker state - database.name=' + verifySchema?.database?.name + ', cluster.databases=' + JSON.stringify((verifySchema?.cluster?.databases || []).map(d => d.name)));
-													} catch (ve) {
-														console.log('[DEBUG:SetSchema] REPLACE: VERIFY failed: ' + ve);
 													}
 													
 													// CRITICAL FIX: Clear markers for all boxes that DON'T match the new context
 													// setSchemaFromShowSchema validates ALL models against new context, which is wrong for other boxes
 													const newClusterNorm = normalizeClusterUrl(clusterUrl);
 													const allQueryBoxes = document.querySelectorAll('.query-box[data-box-id]');
-													console.log('[DEBUG:SetSchema] REPLACE: Clearing markers for boxes NOT matching cluster ' + newClusterNorm);
 													allQueryBoxes.forEach(box => {
 														const boxId = box.getAttribute('data-box-id');
 														const boxEditor = window.__kustoEditors?.[boxId];
@@ -5260,21 +5233,18 @@ function ensureMonaco() {
 																// This box uses a different cluster - clear its markers (they were set with wrong context)
 																const boxModel = boxEditor.getModel();
 																if (boxModel) {
-																	console.log('[DEBUG:SetSchema] REPLACE: Clearing markers for box ' + boxId + ' (cluster=' + boxClusterNorm + ')');
 																	monaco.editor.setModelMarkers(boxModel, 'kusto', []);
 																}
 															}
 														}
 													});
 													
-													console.log('[DEBUG:SetSchema] REPLACE: completed. Context now=' + clusterUrl + '/' + databaseInContext);
 												} catch (schemaError) {
-													console.error('[DEBUG:SetSchema] REPLACE: setSchemaFromShowSchema EXCEPTION: ' + schemaError);
+													console.error('[monaco-kusto] REPLACE: setSchemaFromShowSchema failed:', schemaError);
 												}
 											}
 										} else {
 											// Same cluster or not setting as context: use addDatabaseToSchema to ADD without replacing
-											console.log('[DEBUG:SetSchema] ADD: starting for ' + clusterUrl + '/' + databaseInContext);
 											if (typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
 												try {
 													// First normalize the raw schema to get the Database object
@@ -5294,7 +5264,6 @@ function ensureMonaco() {
 																			perModelLoadedSchemas[schemaKey] = true;
 																			// Keep legacy/global in sync for debugging only
 																			window.__kustoMonacoLoadedSchemas[schemaKey] = true;
-														console.log('[DEBUG:SetSchema] ADD: addDatabaseToSchema succeeded');
 														
 														// Cache the schema for re-adding after future cluster switches
 														window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
@@ -5304,7 +5273,6 @@ function ensureMonaco() {
 																	// in currentSchema.cluster.databases. If we rely purely on __kustoSetDatabaseInContext,
 																	// context switching can fail and IntelliSense stays on the previous database.
 																	if (setAsContext) {
-																		console.log('[DEBUG:SetSchema] ADD: switching context to this database');
 																		let contextSet = false;
 																		try {
 																			if (typeof worker.getSchema === 'function' && typeof worker.setSchema === 'function') {
@@ -5338,10 +5306,10 @@ function ensureMonaco() {
 																		}
 																	}
 													} else {
-														console.log('[DEBUG:SetSchema] ADD: FAILED - no databaseSchema found in engineSchema');
+														// ADD failed - no databaseSchema found in engineSchema
 													}
 												} catch (addError) {
-													console.error('[DEBUG:SetSchema] ADD: EXCEPTION: ' + addError);
+													console.error('[monaco-kusto] ADD: addDatabaseToSchema failed:', addError);
 												}
 											} else {
 												// Fallback: just use setSchemaFromShowSchema (will replace, but better than nothing)
@@ -5373,7 +5341,6 @@ function ensureMonaco() {
 					// This allows unqualified table names to resolve to the correct database
 					// Returns true if context switch succeeded, false otherwise
 					window.__kustoSetDatabaseInContext = async function (clusterUrl, database, modelUri = null) {
-						console.log('[DEBUG:SetContext] START clusterUrl=' + clusterUrl + ', database=' + database);
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url) => {
 							if (!url) return '';
@@ -5413,7 +5380,6 @@ function ensureMonaco() {
 							
 							// Get the current aggregated schema
 							const currentSchema = await worker.getSchema();
-							console.log('[DEBUG:SetContext] currentSchema.cluster.databases=' + JSON.stringify((currentSchema?.cluster?.databases || []).map(d => d.name)));
 
 							if (!currentSchema || currentSchema.clusterType !== 'Engine') {
 								return false;
@@ -5428,12 +5394,10 @@ function ensureMonaco() {
 							
 							if (!targetDatabase) {
 								// Database not found in primary cluster's databases.
-								console.log('[DEBUG:SetContext] Database NOT FOUND. Available databases: ' + databases.map(d => d.name).join(', '));
 								// This can happen when the database was added via addDatabaseToSchema for a different cluster.
 								// Returning false signals the caller to do a full schema reload.
 								return false;
 							}
-							console.log('[DEBUG:SetContext] Database FOUND, switching context');
 							
 							// Create updated schema with new database in context
 							const updatedSchema = {
@@ -5470,12 +5434,10 @@ function ensureMonaco() {
 							
 							// If we're already processing this exact box, skip
 							if (window.__kustoFocusInProgress === boxId) {
-								console.log('[DEBUG:FocusBox] SKIP duplicate boxId=' + boxId);
 								return;
 							}
 							
 							window.__kustoFocusInProgress = boxId;
-							console.log('[DEBUG:FocusBox] START boxId=' + boxId);
 							
 							// Mark worker as initialized once a query box gets focus
 							window.__kustoWorkerInitialized = true;
@@ -5544,12 +5506,10 @@ function ensureMonaco() {
 							
 							const schemaKey = `${clusterUrl}|${database}`;
 							const currentContextForModel = window.__kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || window.__kustoMonacoDatabaseInContext;
-							console.log('[DEBUG:FocusBox] schemaKey=' + schemaKey + ', currentContext=' + JSON.stringify(currentContextForModel));
 											
 							// Check if this schema is already loaded in the worker
 							const perModelLoaded = window.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
 							const alreadyLoaded = !!perModelLoaded[schemaKey];
-							console.log('[DEBUG:FocusBox] alreadyLoaded=' + alreadyLoaded + ', loadedSchemas(model)=' + JSON.stringify(perModelLoaded));
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							// This is the single source of truth - no duplicate caching
 							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
@@ -5572,7 +5532,6 @@ function ensureMonaco() {
 								const currentClusterNormalized = normalizeClusterUrl(currentContext?.clusterUrl);
 								const focusedClusterNormalized = normalizeClusterUrl(clusterUrl);
 								const isSameCluster = currentContext && currentClusterNormalized === focusedClusterNormalized;
-								console.log('[DEBUG:FocusBox] isSameCluster=' + isSameCluster + ' (current=' + currentClusterNormalized + ', focused=' + focusedClusterNormalized + ')');
 								
 								if (!isSameCluster) {
 									// Cluster changed! The "loaded" schema is no longer in the worker.
@@ -5583,12 +5542,10 @@ function ensureMonaco() {
 									// Continue to the loading logic below instead of returning
 								} else {
 									// Same cluster, try to switch context
-									console.log('[DEBUG:FocusBox] Same cluster, calling __kustoSetDatabaseInContext');
 									let contextSwitched = false;
 									if (typeof window.__kustoSetDatabaseInContext === 'function') {
 										contextSwitched = await window.__kustoSetDatabaseInContext(clusterUrl, database, focusedModelUri);
 									}
-									console.log('[DEBUG:FocusBox] contextSwitched=' + contextSwitched);
 									
 									if (contextSwitched) {
 										// Context switch succeeded, trigger re-validation
@@ -5606,12 +5563,10 @@ function ensureMonaco() {
 							}
 							
 							if (rawSchemaJson) {
-								console.log('[DEBUG:FocusBox] Calling __kustoSetMonacoKustoSchema for ' + schemaKey);
 								// Load the schema AND set as context (setAsContext = true)
 								if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
 									await window.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 								}
-								console.log('[DEBUG:FocusBox] __kustoSetMonacoKustoSchema completed');
 								
 								// Trigger re-validation with the newly loaded schema
 								window.__kustoTriggerRevalidation(boxId);
@@ -5652,7 +5607,6 @@ function ensureMonaco() {
 					// Helper to trigger re-validation for a specific box's editor
 					// This is needed after context switch since monaco-kusto doesn't auto-revalidate
 					window.__kustoTriggerRevalidation = function(boxId) {
-						console.log('[DEBUG:Revalidate] START boxId=' + boxId + ', currentContext=' + JSON.stringify(window.__kustoMonacoDatabaseInContext));
 						try {
 							const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
@@ -5661,12 +5615,7 @@ function ensureMonaco() {
 									try {
 										// Clear existing markers first
 										monaco.editor.setModelMarkers(model, 'kusto', []);
-										console.log('[DEBUG:Revalidate] Cleared markers for boxId=' + boxId);
-										
-										// DEBUG: Don't trigger revalidation - see if markers come back on their own
-										console.log('[DEBUG:Revalidate] NOT triggering edits - testing if external source revalidates');
 									} catch (e) {
-										console.log('[DEBUG:Revalidate] EXCEPTION: ' + e);
 									}
 								}
 							}

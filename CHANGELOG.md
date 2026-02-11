@@ -3,8 +3,9 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [2.2.0] - Unreleased
+## [2.2.0] - 2026-02-11
 
+* Added 'Share' feature for Kusto sections so they paste nicely into Teams and other rich editors
 * Improved the UX of the integrated Copilot Chat to make it look and feel more like the native one
 * Trying to improve the UX around resizing everything, hopefully this is a little better now (been watching users and taking notes of common pain points and nobody discovers how the chat window resizes right now).
 * Bugs

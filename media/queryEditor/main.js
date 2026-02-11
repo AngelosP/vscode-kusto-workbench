@@ -200,6 +200,21 @@ document.addEventListener('keydown', (event) => {
 			} catch { /* ignore */ }
 		}
 
+		// Share Modal
+		if (!handled) {
+			try {
+				const modal = document.getElementById('shareModal');
+				if (modal && modal.classList && modal.classList.contains('visible')) {
+					handled = true;
+					if (typeof window.__kustoCloseShareModal === 'function') {
+						window.__kustoCloseShareModal();
+					} else {
+						modal.classList.remove('visible');
+					}
+				}
+			} catch { /* ignore */ }
+		}
+
 		if (!handled) {
 			return;
 		}
@@ -2716,12 +2731,8 @@ window.addEventListener('message', async event => {
 						}
 					} catch { /* ignore */ }
 					
-					// Clear the Copilot chat "thinking..." state
-					try {
-						if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
-							window.__kustoCopilotWriteQueryDone(sectionId, true, '');
-						}
-					} catch { /* ignore */ }
+					// Don't call __kustoCopilotWriteQueryDone here — the regular
+					// 'copilotWriteQueryDone' handler already does it.
 					
 					// Get the results
 					let rows = [];
@@ -2785,12 +2796,9 @@ window.addEventListener('message', async event => {
 								responded = true;
 								window.removeEventListener('message', resultHandler);
 								
-								// Clear the Copilot chat "thinking..." state
-								try {
-									if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
-										window.__kustoCopilotWriteQueryDone(sectionId, false, msg.message || '');
-									}
-								} catch { /* ignore */ }
+								// Don't call __kustoCopilotWriteQueryDone here — the regular
+								// 'copilotWriteQueryDone' handler already does it, and calling
+								// it again produces a duplicate "Canceled." notification.
 								
 								vscode.postMessage({ 
 									type: 'toolResponse', 
@@ -2828,13 +2836,6 @@ window.addEventListener('message', async event => {
 							responded = true;
 							window.removeEventListener('message', resultHandler);
 							
-							// Clear the Copilot chat "thinking..." state
-							try {
-								if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
-									window.__kustoCopilotWriteQueryDone(sectionId, false, msg.error || 'Query execution failed');
-								}
-							} catch { /* ignore */ }
-							
 							vscode.postMessage({ 
 								type: 'toolResponse', 
 								requestId, 
@@ -2859,6 +2860,7 @@ window.addEventListener('message', async event => {
 						window.removeEventListener('message', resultHandler);
 						
 						// Clear the Copilot chat "thinking..." state on timeout
+						// (unlike cancel/error, no regular handler will clear this)
 						try {
 							if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
 								window.__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
@@ -2899,6 +2901,26 @@ window.addEventListener('message', async event => {
 			})();
 			break;
 		
+		case 'shareContentReady':
+			// Write rich HTML + plain text to the clipboard for Teams / rich-text paste.
+			try {
+				const html = String(message.html || '');
+				const text = String(message.text || '');
+				if (navigator.clipboard && typeof navigator.clipboard.write === 'function') {
+					const htmlBlob = new Blob([html], { type: 'text/html' });
+					const textBlob = new Blob([text], { type: 'text/plain' });
+					navigator.clipboard.write([
+						new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })
+					]).catch(() => {
+						// Fallback to plain text if HTML clipboard write fails.
+						try { navigator.clipboard.writeText(text); } catch { /* ignore */ }
+					});
+				} else if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+					navigator.clipboard.writeText(text);
+				}
+			} catch { /* ignore */ }
+			break;
+
 		case 'resetCopilotModelSelection':
 			// Clear the cached model selection from webview state and localStorage
 			try {

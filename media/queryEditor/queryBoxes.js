@@ -195,6 +195,14 @@ function addQueryBox(options) {
 		'<path d="M13 13l-4-4" />' +
 		'</svg>';
 
+	const shareIconSvg =
+		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+		'<path d="M12 3a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 3zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
+		'<path d="M4 6a2 2 0 1 1-.001 4.001A2 2 0 0 1 4 6zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
+		'<path d="M12 9a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 9zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
+		'<path d="M5.5 7.5l5-2.5M5.5 8.5l5 2.5" stroke="currentColor" stroke-width="1" fill="none"/>' +
+		'</svg>';
+
 	const summaryIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
 		'<rect x="2" y="10" width="3" height="4"/>' +
@@ -402,6 +410,7 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="section-actions">' +
 		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
+		'<button class="unified-btn-secondary md-tab md-share-btn" id="' + id + '_share" type="button" onclick="__kustoOpenShareModal(\'' + id + '\')" title="Share" aria-label="Share">' + shareIconSvg + '</button>' +
 		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
 		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
 		'</div>' +
@@ -2421,6 +2430,229 @@ function copyQueryAsAdeLink(boxId) {
 	} catch {
 		// ignore
 	}
+}
+
+/**
+ * Opens the Share modal for a query section, allowing users to copy
+ * title, query, and results to clipboard formatted for Teams.
+ */
+function __kustoOpenShareModal(boxId) {
+	if (!boxId) return;
+
+	const modal = document.getElementById('shareModal');
+	if (!modal) return;
+
+	// Store the active box id on the modal.
+	modal.dataset.boxId = boxId;
+
+	// Pre-populate the section name.
+	const nameInput = document.getElementById(boxId + '_name');
+	const titleEl = document.getElementById('shareModal_title');
+	if (titleEl) titleEl.textContent = (nameInput && nameInput.value) ? nameInput.value : 'Kusto Query';
+
+	// Determine whether results are available.
+	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+	const hasResults = !!(state && Array.isArray(state.columns) && state.columns.length > 0 && Array.isArray(state.rows) && state.rows.length > 0);
+	const totalRows = hasResults ? state.rows.length : 0;
+	const resultsCheck = document.getElementById('shareModal_chk_results');
+	if (resultsCheck) {
+		resultsCheck.checked = hasResults;
+		resultsCheck.disabled = !hasResults;
+	}
+	const resultsLabel = document.getElementById('shareModal_label_results');
+	if (resultsLabel) {
+		resultsLabel.classList.toggle('share-modal-option-disabled', !hasResults);
+	}
+
+	// Set up row limit input with total row count.
+	const rowLimitInput = document.getElementById('shareModal_rowLimit');
+	if (rowLimitInput) {
+		rowLimitInput.max = String(totalRows || 200);
+		rowLimitInput.value = String(Math.min(totalRows || 10, 10));
+		rowLimitInput.disabled = !hasResults;
+	}
+	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup');
+	if (rowLimitGroup) {
+		rowLimitGroup.style.display = hasResults ? '' : 'none';
+	}
+	const resultsSubtitle = document.getElementById('shareModal_results_subtitle');
+	if (resultsSubtitle) {
+		resultsSubtitle.textContent = 'Formatted as a table';
+	}
+	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal');
+	if (rowLimitTotal) {
+		rowLimitTotal.textContent = 'of ' + totalRows.toLocaleString() + ' rows';
+	}
+
+	// Determine whether we have connection info for the ADE link.
+	let connectionId = '';
+	let database = '';
+	try {
+		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
+		database = String((document.getElementById(boxId + '_database') || {}).value || '');
+	} catch { /* ignore */ }
+
+	// Inherit from source box if this is a comparison section.
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				const src = String(meta.sourceBoxId || '');
+				const sc = document.getElementById(src + '_connection');
+				const sd = document.getElementById(src + '_database');
+				if (sc && sc.value) connectionId = sc.value;
+				if (sd && sd.value) database = sd.value;
+			}
+		}
+	} catch { /* ignore */ }
+
+	const hasLink = !!(String(connectionId || '').trim() && String(database || '').trim());
+	const linkCheck = document.getElementById('shareModal_chk_title');
+	if (linkCheck) {
+		linkCheck.checked = hasLink;
+		linkCheck.disabled = !hasLink;
+	}
+	const linkLabel = document.getElementById('shareModal_label_title');
+	if (linkLabel) {
+		linkLabel.classList.toggle('share-modal-option-disabled', !hasLink);
+	}
+
+	// Also update the link subtitle with a preview of what we'll generate.
+	const linkSubtitle = document.getElementById('shareModal_link_subtitle');
+	if (linkSubtitle) {
+		linkSubtitle.textContent = hasLink ? 'Includes a Direct link to query (Azure Data Explorer)' : 'Select a cluster and database to include a link';
+	}
+
+	// Reset the query checkbox.
+	const queryCheck = document.getElementById('shareModal_chk_query');
+	if (queryCheck) {
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		const hasQuery = !!(editor && String(editor.getValue() || '').trim());
+		queryCheck.checked = hasQuery;
+		queryCheck.disabled = !hasQuery;
+	}
+
+	// Show the modal.
+	modal.classList.add('visible');
+}
+
+function __kustoCloseShareModal(event) {
+	if (event && event.target && event.target.id !== 'shareModal') return;
+	const modal = document.getElementById('shareModal');
+	if (modal) modal.classList.remove('visible');
+}
+
+function __kustoShareCopyToClipboard() {
+	const modal = document.getElementById('shareModal');
+	if (!modal) return;
+	const boxId = modal.dataset.boxId;
+	if (!boxId) return;
+
+	const includeTitle = !!(document.getElementById('shareModal_chk_title') || {}).checked;
+	const includeQuery = !!(document.getElementById('shareModal_chk_query') || {}).checked;
+	const includeResults = !!(document.getElementById('shareModal_chk_results') || {}).checked;
+
+	if (!includeTitle && !includeQuery && !includeResults) {
+		try { vscode.postMessage({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch { /* ignore */ }
+		return;
+	}
+
+	// Gather query text.
+	let queryText = '';
+	try {
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		queryText = editor ? (editor.getValue() || '') : '';
+	} catch { /* ignore */ }
+
+	// Gather connection info.
+	let connectionId = '';
+	let database = '';
+	try {
+		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
+		database = String((document.getElementById(boxId + '_database') || {}).value || '');
+	} catch { /* ignore */ }
+	try {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				const src = String(meta.sourceBoxId || '');
+				const sc = document.getElementById(src + '_connection');
+				const sd = document.getElementById(src + '_database');
+				if (sc && sc.value) connectionId = sc.value;
+				if (sd && sd.value) database = sd.value;
+			}
+		}
+	} catch { /* ignore */ }
+
+	// Gather results data.
+	let columns = [];
+	let rowsData = [];
+	let totalRows = 0;
+	if (includeResults) {
+		try {
+			const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+			if (state && Array.isArray(state.columns) && Array.isArray(state.rows)) {
+				// columns are plain strings in state.columns.
+				columns = state.columns.map(c => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
+				totalRows = state.rows.length;
+				// Read the user-configured row limit from the Share modal input.
+				let rowLimit = 10;
+				try {
+					const rlInput = document.getElementById('shareModal_rowLimit');
+					if (rlInput) {
+						const parsed = parseInt(rlInput.value, 10);
+						if (parsed > 0) rowLimit = parsed;
+					}
+				} catch { /* ignore */ }
+				const maxRows = Math.min(totalRows, rowLimit);
+				for (let i = 0; i < maxRows; i++) {
+					const row = state.rows[i];
+					if (!Array.isArray(row)) continue;
+					const vals = [];
+					for (let j = 0; j < row.length; j++) {
+						const cell = row[j];
+						// Use the same display pipeline as the results table so
+						// numbers have commas, dates are formatted, etc.
+						const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+						const displayValue = hasHover ? cell.display : cell;
+						const formatted = (typeof __kustoFormatCellDisplayValueForTable === 'function')
+							? __kustoFormatCellDisplayValueForTable(displayValue)
+							: String(displayValue ?? '');
+						vals.push(String(formatted ?? ''));
+					}
+					rowsData.push(vals);
+				}
+			}
+		} catch { /* ignore */ }
+	}
+
+	// Get section name.
+	let sectionName = '';
+	try {
+		const nameInput = document.getElementById(boxId + '_name');
+		sectionName = nameInput ? (nameInput.value || '') : '';
+	} catch { /* ignore */ }
+
+	// Send to extension to build ADE link and copy to clipboard.
+	try {
+		vscode.postMessage({
+			type: 'shareToClipboard',
+			boxId,
+			includeTitle,
+			includeQuery,
+			includeResults,
+			sectionName,
+			queryText,
+			connectionId,
+			database,
+			columns,
+			rowsData,
+			totalRows
+		});
+	} catch { /* ignore */ }
+
+	// Close the modal.
+	__kustoCloseShareModal();
 }
 
 function setToolbarActionBusy(boxId, action, busy) {

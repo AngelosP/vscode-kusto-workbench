@@ -105,6 +105,21 @@ type CopyAdeLinkMessage = {
 	boxId: string;
 };
 
+type ShareToClipboardMessage = {
+	type: 'shareToClipboard';
+	boxId: string;
+	includeTitle: boolean;
+	includeQuery: boolean;
+	includeResults: boolean;
+	sectionName: string;
+	queryText: string;
+	connectionId: string;
+	database: string;
+	columns: string[];
+	rowsData: string[][];
+	totalRows: number;
+};
+
 type ImportConnectionsFromXmlMessage = {
 	type: 'importConnectionsFromXml';
 	connections: Array<{ name: string; clusterUrl: string; database?: string }>;
@@ -156,6 +171,7 @@ type IncomingWebviewMessage =
 	| OptimizeQueryMessage
 	| ExecuteQueryMessage
 	| CopyAdeLinkMessage
+	| ShareToClipboardMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string }
 	| { type: 'promptAddConnection'; boxId?: string }
@@ -1011,6 +1027,9 @@ export class QueryEditorProvider {
 			case 'copyAdeLink':
 				await this.copyAdeLinkFromWebview(message);
 				return;
+			case 'shareToClipboard':
+				await this.shareToClipboardFromWebview(message);
+				return;
 			case 'cancelQuery':
 				this.cancelRunningQuery(message.boxId);
 				// If there was nothing to cancel (query already completed but UI is
@@ -1122,6 +1141,124 @@ export class QueryEditorProvider {
 			}
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy Azure Data Explorer link.');
+		}
+	}
+
+	private async shareToClipboardFromWebview(
+		message: Extract<IncomingWebviewMessage, { type: 'shareToClipboard' }>
+	): Promise<void> {
+		try {
+			const {
+				includeTitle, includeQuery, includeResults,
+				sectionName, queryText, connectionId, database,
+				columns, rowsData, totalRows
+			} = message;
+
+			if (!includeTitle && !includeQuery && !includeResults) {
+				vscode.window.showInformationMessage('Select at least one section to share.');
+				return;
+			}
+
+			const htmlParts: string[] = [];
+			const textParts: string[] = [];
+
+			// Build the ADE link URL (shared between title HTML and plain text).
+			let adeUrl = '';
+			try {
+				const trimmedQuery = String(queryText || '').trim();
+				const trimmedConnectionId = String(connectionId || '').trim();
+				const trimmedDatabase = String(database || '').trim();
+				if (trimmedQuery && trimmedConnectionId && trimmedDatabase) {
+					const connection = this.findConnection(trimmedConnectionId);
+					if (connection) {
+						const clusterShortName = this.getClusterShortName(String(connection.clusterUrl || '').trim());
+						if (clusterShortName) {
+							const gz = zlib.gzipSync(Buffer.from(trimmedQuery, 'utf8'));
+							const encoded = gz.toString('base64').replace(/=+$/g, '');
+							adeUrl =
+								`https://dataexplorer.azure.com/clusters/${encodeURIComponent(clusterShortName)}` +
+								`/databases/${encodeURIComponent(trimmedDatabase)}` +
+								`?query=${encodeURIComponent(encoded)}`;
+						}
+					}
+				}
+			} catch {
+				// If URL generation fails, just skip the link.
+			}
+
+			const escHtml = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+			// 1. Title
+			if (includeTitle) {
+				const title = sectionName || 'Kusto Query';
+				if (adeUrl) {
+					htmlParts.push(`<b>${escHtml(title)}</b><br><a href="${escHtml(adeUrl)}">Direct link to query</a>`);
+					textParts.push(`${title}\nDirect link to query: ${adeUrl}`);
+				} else {
+					htmlParts.push(`<b>${escHtml(title)}</b>`);
+					textParts.push(title);
+				}
+			}
+
+			// 2. Query — as a styled code block with a "Query" header.
+			if (includeQuery) {
+				const q = String(queryText || '').trim();
+				if (q) {
+					htmlParts.push(
+						`<b style="font-size:13px">Query</b>` +
+						`<pre style="background:#1e1e1e;color:#d4d4d4;padding:12px 16px;border-radius:6px;font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;overflow-x:auto;white-space:pre;border:1px solid #333;margin-top:4px"><code class="kql">${escHtml(q)}</code></pre>`
+					);
+					textParts.push('Query\n' + q);
+				}
+			}
+
+			// 3. Results — as an HTML table with a "Results" header.
+			if (includeResults && Array.isArray(columns) && columns.length > 0 && Array.isArray(rowsData) && rowsData.length > 0) {
+				const thCells = columns.map(c => `<th align="left" style="border:1px solid #555;padding:6px 10px;background:#2d2d2d;color:#e0e0e0;text-align:left;font-weight:600;font-size:12px;white-space:nowrap">${escHtml(c)}</th>`).join('');
+				const bodyRows = rowsData.map((row, ri) => {
+					const bg = ri % 2 === 0 ? '#1e1e1e' : '#252526';
+					const cells = row.map(v => `<td align="left" style="border:1px solid #444;padding:4px 10px;color:#d4d4d4;font-size:12px;white-space:nowrap;text-align:left">${escHtml(v)}</td>`).join('');
+					return `<tr style="background:${bg}">${cells}</tr>`;
+				}).join('');
+
+				// Plain-text fallback table.
+				const escCell = (v: string) => String(v ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+				const headerRow = '| ' + columns.map(escCell).join(' | ') + ' |';
+				const separator = '| ' + columns.map(() => '---').join(' | ') + ' |';
+				const dataRows = rowsData.map(row =>
+					'| ' + row.map(escCell).join(' | ') + ' |'
+				).join('\n');
+
+				// Add a summary line when not all rows are included.
+				const shownRows = rowsData.length;
+				const total = typeof totalRows === 'number' && totalRows > 0 ? totalRows : shownRows;
+				const summaryLine = total > shownRows
+					? `Showing ${shownRows.toLocaleString()} of ${total.toLocaleString()} rows`
+					: `${shownRows.toLocaleString()} rows`;
+
+				htmlParts.push(
+					`<b style="font-size:13px">Results</b><br>` +
+					`<span style="font-size:11px;color:#888;font-style:italic">${escHtml(summaryLine)}</span>` +
+					`<table style="border-collapse:collapse;font-family:'Segoe UI',sans-serif;margin:4px 0"><thead><tr>${thCells}</tr></thead><tbody>${bodyRows}</tbody></table>`
+				);
+
+				textParts.push('Results\n' + summaryLine + '\n' + headerRow + '\n' + separator + '\n' + dataRows);
+			}
+
+			if (htmlParts.length === 0) {
+				vscode.window.showInformationMessage('Nothing to share — the selected sections are empty.');
+				return;
+			}
+
+			const html = htmlParts.join('<br><br>');
+			const text = textParts.join('\n\n');
+
+			// Send the formatted content back to the webview so it can write
+			// both text/html and text/plain to the clipboard via the browser API.
+			this.postMessage({ type: 'shareContentReady', html, text } as any);
+			vscode.window.showInformationMessage('Copied to clipboard and ready to paste into Teams.');
+		} catch {
+			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
 		}
 	}
 
@@ -4688,9 +4825,6 @@ ${query}
 		boxId: string,
 		requestToken: string
 	): Promise<void> {
-		this.output.appendLine(`[DEBUG:CrossCluster] ========== CROSS-CLUSTER SCHEMA REQUEST ==========`);
-		this.output.appendLine(`[DEBUG:CrossCluster] Input: clusterName=${clusterName}, database=${database}, boxId=${boxId}`);
-		
 		// Normalize the cluster name to a URL
 		let clusterUrl = clusterName.trim();
 		if (clusterUrl && !clusterUrl.includes('.')) {
@@ -4700,11 +4834,8 @@ ${query}
 			clusterUrl = `https://${clusterUrl}`;
 		}
 
-		this.output.appendLine(`[DEBUG:CrossCluster] Normalized URL: ${clusterUrl}`);
-
 		// Find a connection that matches this cluster URL
 		const connections = this.connectionManager.getConnections();
-		this.output.appendLine(`[DEBUG:CrossCluster] Available connections: ${connections.map(c => c.clusterUrl).join(', ')}`);
 		
 		const connection = connections.find(c => {
 			const connUrl = String(c.clusterUrl || '').trim().toLowerCase();
@@ -4721,7 +4852,6 @@ ${query}
 		});
 
 		if (!connection) {
-			this.output.appendLine(`[DEBUG:CrossCluster] NO CONNECTION FOUND for cluster ${clusterUrl}`);
 			this.postMessage({
 				type: 'crossClusterSchemaError',
 				clusterName,
@@ -4730,25 +4860,18 @@ ${query}
 				requestToken,
 				error: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
 			});
-			this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (no connection) ==========`);
 			return;
 		}
-		
-		this.output.appendLine(`[DEBUG:CrossCluster] Found connection: ${connection.id} -> ${connection.clusterUrl}`);
 
 		try {
 			const cacheKey = `${connection.clusterUrl}|${database}`;
-			this.output.appendLine(`[DEBUG:CrossCluster] Cache key: ${cacheKey}`);
 
 			// Try to load from cache first
 			const cached = await this.getCachedSchemaFromDisk(cacheKey);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
-			
-			this.output.appendLine(`[DEBUG:CrossCluster] Cache check: hasCached=${!!cached}, ageMs=${cachedAgeMs}, isFresh=${cachedIsFresh}, hasRawSchemaJson=${!!(cached?.schema?.rawSchemaJson)}`);
 
 			if (cached && cachedIsFresh && cached.schema.rawSchemaJson) {
-				this.output.appendLine(`[DEBUG:CrossCluster] Using CACHED schema`);
 				this.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -4758,14 +4881,12 @@ ${query}
 					requestToken,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
-				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (cached) ==========`);
 				return;
 			}
 
 			// If we have stale cached data with rawSchemaJson, use it instead of making a network call
 			// This prevents network timeouts when offline (e.g., VPN disconnected)
 			if (cached && cached.schema.rawSchemaJson) {
-				this.output.appendLine(`[DEBUG:CrossCluster] Using STALE cached schema to avoid network call`);
 				this.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -4775,16 +4896,12 @@ ${query}
 					requestToken,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
-				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (stale cache) ==========`);
 				return;
 			}
 
 			// Fetch fresh schema
-			this.output.appendLine(`[DEBUG:CrossCluster] Fetching FRESH schema...`);
 			const result = await this.kustoClient.getDatabaseSchema(connection, database, false);
 			const schema = result.schema;
-			
-			this.output.appendLine(`[DEBUG:CrossCluster] Schema fetched: hasRawSchemaJson=${!!schema.rawSchemaJson}, tablesCount=${schema.tables?.length}`);
 
 			// Cache the result
 			const timestamp = result.fromCache
@@ -4793,7 +4910,6 @@ ${query}
 			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
 
 			if (schema.rawSchemaJson) {
-				this.output.appendLine(`[DEBUG:CrossCluster] Sending schema to webview SUCCESS`);
 				this.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -4803,9 +4919,7 @@ ${query}
 					requestToken,
 					rawSchemaJson: schema.rawSchemaJson
 				});
-				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (success) ==========`);
 			} else {
-				this.output.appendLine(`[DEBUG:CrossCluster] Schema loaded but NO rawSchemaJson!`);
 				this.postMessage({
 					type: 'crossClusterSchemaError',
 					clusterName,
@@ -4814,11 +4928,9 @@ ${query}
 					requestToken,
 					error: `Schema loaded but missing raw format required for autocomplete.`
 				});
-				this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (no raw json) ==========`);
 			}
 		} catch (error) {
 			const rawMessage = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[DEBUG:CrossCluster] ERROR: ${rawMessage}`);
 			const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 			this.postMessage({
 				type: 'crossClusterSchemaError',
@@ -4828,7 +4940,6 @@ ${query}
 				requestToken,
 				error: `Failed to load schema for ${clusterName}.${database}.\n${userMessage}`
 			});
-			this.output.appendLine(`[DEBUG:CrossCluster] ========== REQUEST END (error) ==========`);
 		}
 	}
 

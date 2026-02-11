@@ -142,6 +142,52 @@
 		</div>
 	</div>
 
+	<!-- Share Modal -->
+	<div id="shareModal" class="share-modal" onclick="__kustoCloseShareModal(event)">
+		<div class="share-modal-content" onclick="event.stopPropagation()">
+			<div class="share-modal-header">
+				<h3 id="shareModal_title">Share</h3>
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn share-modal-close" type="button" onclick="__kustoCloseShareModal()" title="Close" aria-label="Close">
+					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+						<path d="M4 4l8 8" />
+						<path d="M12 4L4 12" />
+					</svg>
+				</button>
+			</div>
+			<div class="share-modal-body">
+				<div class="share-modal-description">Select what to include when sharing. Content is formatted for Teams and other rich-text destinations.</div>
+				<label class="share-modal-option" id="shareModal_label_title">
+					<input type="checkbox" id="shareModal_chk_title" checked />
+					<div class="share-modal-option-text">
+						<span class="share-modal-option-name">Title</span>
+						<span class="share-modal-option-subtitle" id="shareModal_link_subtitle">Includes a direct link to the query (opens in Azure Data Explorer)</span>
+					</div>
+				</label>
+				<label class="share-modal-option" id="shareModal_label_query">
+					<input type="checkbox" id="shareModal_chk_query" checked />
+					<div class="share-modal-option-text">
+						<span class="share-modal-option-name">Query</span>
+						<span class="share-modal-option-subtitle">KQL code block</span>
+					</div>
+				</label>
+				<label class="share-modal-option" id="shareModal_label_results">
+					<input type="checkbox" id="shareModal_chk_results" checked />
+					<div class="share-modal-option-text">
+						<span class="share-modal-option-name">Results</span>
+						<span class="share-modal-option-subtitle" id="shareModal_results_subtitle">Formatted as a table</span>
+						<span class="share-modal-row-limit" id="shareModal_rowLimitGroup">Include
+							<input type="number" id="shareModal_rowLimit" min="1" value="10" class="share-modal-row-limit-input" onclick="event.stopPropagation();" />
+							<span id="shareModal_rowLimitTotal">of 28 rows</span>
+						</span>
+					</div>
+				</label>
+			</div>
+			<div class="share-modal-footer">
+				<button class="unified-btn-primary share-modal-copy-btn" type="button" onclick="__kustoShareCopyToClipboard()">Copy to clipboard</button>
+			</div>
+		</div>
+	</div>
+
 	<script src="{{monacoLoaderUri}}"></script>
 	<script>
 		window.__kustoQueryEditorConfig = {
