@@ -3,12 +3,16 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.5.0] - 2026-02-12
+
+* Support for creating and restoring developement notes per file. Use the command 'Show Development 
+
 ## [2.4.0] - 2026-02-12
 
 * New custom sub-agent for searching Kusto for anything.
 * New tool for the integrated Copilot Chat window that allows it to search the cached schemas for tables, columns, and functions. This should allow it to perform cross-database and cross-cluster joins using fully qualified table names, whereas before we were relying on the orchestating Kusto Workbench custom agent to take care of that scenario.
 * Bugs
-    * Timing issue where the section would flip from Run Query to Run Query (take 100) due to an internal state reload, and limit the results without the agent knowing it had happened. 
+    * Timing issue where the section would flip from Run Query to Run Query (take 100) due to an internal state reload, and limit the results without the agent knowing it had happened.
     * The tool listKustoSchemas was misbehaving and in hindsight badly designed, so swapped it over for getKustoSchema. The agent was able to get around it by just executing admin commands to figure out the schema of things.
 
 ## [2.3.0] - 2026-02-11
