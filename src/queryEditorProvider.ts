@@ -51,7 +51,7 @@ function findPreferredDefaultCopilotModel(models: vscode.LanguageModelChat[]): v
 	return preferredModel || models[0];
 }
 
-type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number };
+type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number; clusterUrl?: string; database?: string };
 
 type CacheUnit = 'minutes' | 'hours' | 'days';
 
@@ -676,11 +676,6 @@ export class QueryEditorProvider {
 			return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
 		});
 
-		// Set up the schema getter
-		toolOrchestrator.setSchemaGetter(async (clusterUrl?: string, database?: string) => {
-			return this.getCachedSchemasForTools(clusterUrl, database);
-		});
-
 		// Set up the schema refresher (force-fetches from Kusto and updates cache)
 		toolOrchestrator.setSchemaRefresher(async (clusterUrl: string) => {
 			return this.refreshSchemaForTools(clusterUrl);
@@ -691,7 +686,6 @@ export class QueryEditorProvider {
 		if (!toolOrchestrator) return;
 		toolOrchestrator.setWebviewMessagePoster(undefined);
 		toolOrchestrator.setStateGetter(undefined);
-		toolOrchestrator.setSchemaGetter(undefined);
 		toolOrchestrator.setSchemaRefresher(undefined);
 	}
 
@@ -716,48 +710,6 @@ export class QueryEditorProvider {
 			
 			this.postMessage({ type: 'requestToolState', requestId });
 		});
-	}
-
-	private async getCachedSchemasForTools(clusterUrl?: string, database?: string): Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>> {
-		const results: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
-		
-		try {
-			const cacheDir = this.getSchemaCacheDirUri();
-			const files = await vscode.workspace.fs.readDirectory(cacheDir);
-			
-			for (const [fileName] of files) {
-				if (!fileName.endsWith('.json')) continue;
-				
-				try {
-					const fileUri = vscode.Uri.joinPath(cacheDir, fileName);
-					const buf = await vscode.workspace.fs.readFile(fileUri);
-					const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as CachedSchemaEntry & { clusterUrl?: string; database?: string };
-					
-					if (!parsed?.schema) continue;
-					
-					// Try to extract cluster/database from the cache file (they're in the filename hash, so we may need to iterate)
-					// For now, just collect tables and functions from all cached schemas
-					const schema = parsed.schema;
-					const tables = schema.tables || [];
-					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
-					
-					// Note: The actual clusterUrl and database aren't stored in the cache file itself,
-					// so this is a simplified version. In practice, the webview would need to provide this mapping.
-					results.push({
-						clusterUrl: clusterUrl || 'unknown',
-						database: database || 'unknown',
-						tables,
-						functions
-					});
-				} catch {
-					// Skip invalid cache files
-				}
-			}
-		} catch {
-			// Cache directory doesn't exist or can't be read
-		}
-		
-		return results;
 	}
 
 	/**
@@ -3997,7 +3949,15 @@ ${query}
 		const dir = this.getSchemaCacheDirUri();
 		await vscode.workspace.fs.createDirectory(dir);
 		const fileUri = this.getSchemaCacheFileUri(cacheKey);
-		const json = JSON.stringify(entry);
+		// Persist clusterUrl and database in the cache file so enumeration can
+		// identify schemas without needing to reverse the SHA1 filename hash.
+		const pipeIdx = cacheKey.indexOf('|');
+		const enriched: CachedSchemaEntry = {
+			...entry,
+			clusterUrl: entry.clusterUrl ?? (pipeIdx >= 0 ? cacheKey.slice(0, pipeIdx) : undefined),
+			database: entry.database ?? (pipeIdx >= 0 ? cacheKey.slice(pipeIdx + 1) : undefined)
+		};
+		const json = JSON.stringify(enriched);
 		await vscode.workspace.fs.writeFile(fileUri, Buffer.from(json, 'utf8'));
 	}
 

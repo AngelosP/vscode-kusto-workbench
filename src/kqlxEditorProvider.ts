@@ -1131,6 +1131,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 					const edit = new vscode.WorkspaceEdit();
 					edit.replace(document.uri, fullRange, nextText);
+					// Refresh the timestamp right before the write so the onDidChangeTextDocument
+					// guard still holds even if the earlier async processing took >500ms.
+					lastWebviewPersistAt = Date.now();
 					await vscode.workspace.applyEdit(edit);
 
 					// If we just restored the file back to the exact on-disk content due to a reorder undo,

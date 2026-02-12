@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'listKustoSchemas', 'refreshKustoSchema', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
+tools: ['vscode', 'execute', 'read', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
 
 model: Claude Opus 4.6
 
@@ -22,7 +22,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#askKustoCopilot` | **PRIMARY** — Write & execute KQL queries. Section must have connection configured. |
 | `#listKustoConnections` | List configured cluster connections |
 | `#listKustoFavorites` | List favorite cluster/database pairs |
-| `#listKustoSchemas` | View database schemas (tables, functions) |
+| `#getKustoSchema` | Get database schema (tables, columns, functions) for a cluster |
 | `#refreshKustoSchema` | Force-refresh schema from Kusto cluster (bypasses cache) |
 | `#listSections` | List notebook sections with IDs and validation status |
 | `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
@@ -146,3 +146,4 @@ Example: Move a chart section to appear right after its data source:
 * **Section IDs:** Use `#listSections` when you need an ID
 * **Be proactive:** Execute, visualize, document — don't ask permission
 * **Avoid LLM tropes:** Do not use em dashes, en dashes, or hyphens. Use → or : or ; or just word it differently
+* **Use fully qualified names when joining data across databases or clusters**: The askKustoCopilot tool cannot go across databases or clusters on its own, so if you expect it to join data across databases or clusters you better give it the fully qualified names it needs.

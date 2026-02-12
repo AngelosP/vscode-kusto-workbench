@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract tool input from invocation options
@@ -36,10 +38,26 @@ export interface ListFavoritesInput {
 	// No input required
 }
 
-export interface ListSchemasInput {
-	clusterUrl?: string;
+export interface GetSchemaInput {
+	/** The Kusto cluster URL (e.g., 'https://help.kusto.windows.net'). */
+	clusterUrl: string;
+	/** Optional: a specific database name. When omitted, returns schemas for all cached databases on the cluster. */
 	database?: string;
 }
+
+import type { DatabaseSchemaIndex } from './kustoClient';
+
+/** Result from the getSchema orchestrator method. */
+export type GetSchemaResult = {
+	error?: string;
+	/** Returned when a specific database was requested. */
+	clusterUrl?: string;
+	database?: string;
+	schema?: DatabaseSchemaIndex;
+	cacheAgeMs?: number;
+	/** Returned when no database was specified — lightweight per-db summaries. */
+	databases?: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>;
+};
 
 export interface RefreshKustoSchemaInput {
 	/** The cluster URL for which to refresh the schema (e.g., 'https://help.kusto.windows.net'). */
@@ -210,8 +228,6 @@ export class KustoWorkbenchToolOrchestrator {
 	private webviewMessagePoster: ((message: unknown) => void) | undefined;
 	// Callback to get the current state from the webview
 	private stateGetter: (() => Promise<ToolSection[] | undefined>) | undefined;
-	// Callback to get cached schemas
-	private schemaGetter: ((clusterUrl?: string, database?: string) => Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>>) | undefined;
 	// Callback to force-refresh schema from Kusto and update cache
 	private schemaRefresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
 	// Pending responses from webview
@@ -236,10 +252,6 @@ export class KustoWorkbenchToolOrchestrator {
 
 	setStateGetter(getter: (() => Promise<ToolSection[] | undefined>) | undefined): void {
 		this.stateGetter = getter;
-	}
-
-	setSchemaGetter(getter: ((clusterUrl?: string, database?: string) => Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>>) | undefined): void {
-		this.schemaGetter = getter;
 	}
 
 	setSchemaRefresher(refresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined): void {
@@ -330,12 +342,79 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.schemaRefresher(clusterUrl);
 	}
 
-	async listSchemas(input: ListSchemasInput): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> }> {
-		if (!this.schemaGetter) {
-			return { schemas: [] };
+	/**
+	 * Gets the full DatabaseSchemaIndex for a given cluster + database.
+	 *
+	 * Resolution order:
+	 *  1. Disk cache (fast)
+	 *  2. Live fetch via the schema refresher callback (caches the result)
+	 *  3. Falls back to an error message if both fail
+	 *
+	 * When `database` is omitted, returns lightweight summaries for every
+	 * cached database on the cluster (no live fetch in that case).
+	 */
+	async getSchema(input: GetSchemaInput): Promise<GetSchemaResult> {
+		const clusterUrl = (input.clusterUrl || '').trim();
+		if (!clusterUrl) {
+			return { error: 'clusterUrl is required.' };
 		}
-		const schemas = await this.schemaGetter(input.clusterUrl, input.database);
-		return { schemas };
+
+		const db = (input.database || '').trim();
+
+		// ── Single database requested ─────────────────────────────────
+		if (db) {
+			const cacheKey = `${clusterUrl.replace(/\/+$/, '')}|${db}`;
+			let cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+
+			if (!cached?.schema) {
+				// Not in cache – try to fetch live
+				if (this.schemaRefresher) {
+					const refreshResult = await this.schemaRefresher(clusterUrl);
+					if (refreshResult.error && refreshResult.schemas.length === 0) {
+						return { error: refreshResult.error };
+					}
+					// Re-read from disk since the refresher persists to cache
+					cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+				}
+			}
+
+			if (!cached?.schema) {
+				return {
+					error: `No schema found for database "${db}" on cluster "${clusterUrl}". ` +
+						'Make sure the database name is correct and that you have permissions to access it. ' +
+						'You can use #refreshKustoSchema to force-fetch the latest schema from the cluster.'
+				};
+			}
+
+			return {
+				clusterUrl,
+				database: db,
+				schema: cached.schema,
+				cacheAgeMs: Math.max(0, Date.now() - cached.timestamp),
+			};
+		}
+
+		// ── No specific database – return summaries for the cluster ──
+		const schemas = await readAllCachedSchemasFromDisk(
+			this.context.globalStorageUri,
+			clusterUrl
+		);
+
+		if (schemas.length === 0 && this.schemaRefresher) {
+			// Nothing cached – try a live fetch
+			const refreshResult = await this.schemaRefresher(clusterUrl);
+			if (refreshResult.error && refreshResult.schemas.length === 0) {
+				return { error: refreshResult.error };
+			}
+			// Re-read from disk
+			const refreshed = await readAllCachedSchemasFromDisk(
+				this.context.globalStorageUri,
+				clusterUrl
+			);
+			return { databases: refreshed };
+		}
+
+		return { databases: schemas };
 	}
 
 	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; database?: string }> }> {
@@ -649,23 +728,70 @@ export class RefreshKustoSchemaTool implements vscode.LanguageModelTool<RefreshK
 	}
 }
 
-export class ListSchemasTool implements vscode.LanguageModelTool<ListSchemasInput> {
+export class GetSchemaTool implements vscode.LanguageModelTool<GetSchemaInput> {
 	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
 
 	async invoke(
-		options: vscode.LanguageModelToolInvocationOptions<ListSchemasInput>,
-		_token: vscode.CancellationToken
+		options: vscode.LanguageModelToolInvocationOptions<GetSchemaInput>,
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.listSchemas(getToolInput(options));
+			const result = await this.orchestrator.getSchema(getToolInput(options));
+
+			// If the result is an error or a multi-database summary, return as JSON
+			if (result.error || result.databases) {
+				return new vscode.LanguageModelToolResult([
+					new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+				]);
+			}
+
+			// Single-database schema: apply token budget pruning (like get_extended_schema)
+			const schema = result.schema!;
+			const db = result.database || '';
+			const tablesCount = schema.tables?.length ?? 0;
+			const columnsCount = countColumns(schema);
+			const functionsCount = schema.functions?.length ?? 0;
+			const schemaMeta = { cacheAgeMs: result.cacheAgeMs, tablesCount, columnsCount, functionsCount };
+
+			const tok = options.tokenizationOptions;
+			if (tok && typeof tok.countTokens === 'function' && typeof tok.tokenBudget === 'number' && tok.tokenBudget > 0) {
+				try {
+					const pruneResult = await formatSchemaWithTokenBudget(
+						db, schema, schemaMeta, tok.tokenBudget,
+						(text) => tok.countTokens(text, token)
+					);
+					return new vscode.LanguageModelToolResult([
+						new vscode.LanguageModelTextPart(pruneResult.text)
+					]);
+				} catch {
+					// Fall through to unpruned format
+				}
+			}
+
+			// No token budget info — return full compact text
+			const text = formatSchemaAsCompactText(db, schema, schemaMeta);
 			return new vscode.LanguageModelToolResult([
-				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+				new vscode.LanguageModelTextPart(text)
 			]);
 		} catch (err) {
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
 			]);
 		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<GetSchemaInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const cluster = input?.clusterUrl || 'unknown cluster';
+		const db = input?.database;
+		return {
+			invocationMessage: db
+				? `Getting schema for ${db} on ${cluster}…`
+				: `Getting schemas for ${cluster}…`
+		};
 	}
 }
 
@@ -930,7 +1056,7 @@ export function registerKustoWorkbenchTools(
 	context.subscriptions.push(
 		vscode.lm.registerTool('kusto-workbench_list-connections', new ListConnectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-favorites', new ListFavoritesTool(orchestrator)),
-		vscode.lm.registerTool('kusto-workbench_list-schemas', new ListSchemasTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_get-schema', new GetSchemaTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_refresh-schema', new RefreshKustoSchemaTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sections', new ListSectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),

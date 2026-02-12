@@ -2358,7 +2358,7 @@ window.addEventListener('message', async event => {
 										success: false, 
 										error: `Database "${input.database}" not found on this cluster.`,
 										availableDatabases,
-										fix: 'Use #listKustoSchemas with the clusterUrl to see available databases.'
+										fix: 'Use #getKustoSchema with the clusterUrl to see available databases.'
 									}
 								});
 								return;
@@ -2666,7 +2666,7 @@ window.addEventListener('message', async event => {
 								error: `Query section is connected to cluster${currentClusterUrl ? ` (${currentClusterUrl})` : ''} but no database is selected.`,
 								sectionId,
 								clusterUrl: currentClusterUrl || undefined,
-								fix: 'Use #configureKustoQuerySection to set the database. You can use #listKustoSchemas with the clusterUrl to see available databases.'
+								fix: 'Use #configureKustoQuerySection to set the database. You can use #getKustoSchema with the clusterUrl to see available databases.'
 							}
 						});
 						return;
@@ -2675,14 +2675,8 @@ window.addEventListener('message', async event => {
 				// Ensure the section is in 'Run Query' mode (plain) — not 'take 100' or 'sample 100'.
 				// This prevents the Copilot-generated queries from having unwanted limits appended.
 				try {
-					const currentMode = typeof getRunMode === 'function' ? getRunMode(sectionId) : '';
-					if (currentMode && currentMode !== 'plain') {
-						if (typeof __kustoBackupRunMode === 'function') {
-							__kustoBackupRunMode(sectionId);
-						}
-						if (typeof setRunMode === 'function') {
-							setRunMode(sectionId, 'plain');
-						}
+					if (typeof setRunMode === 'function') {
+						setRunMode(sectionId, 'plain');
 					}
 				} catch { /* ignore */ }
 

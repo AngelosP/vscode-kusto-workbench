@@ -379,12 +379,12 @@
         }
       },
       {
-        "name": "kusto-workbench_list-schemas",
+        "name": "kusto-workbench_get-schema",
         "tags": ["kusto", "azure", "data-explorer", "schema", "tables"],
-        "toolReferenceName": "listKustoSchemas",
-        "displayName": "List Kusto Schemas",
-        "modelDescription": "Lists cached database schemas (tables and functions) from Kusto Workbench. Optionally filter by cluster URL and/or database name. This helps understand what data is available for querying.",
-        "userDescription": "View cached database schemas (tables and functions).",
+        "toolReferenceName": "getKustoSchema",
+        "displayName": "Get Kusto Schema",
+        "modelDescription": "Gets the database schema (tables, columns with types, and functions) for a Kusto cluster. Requires a cluster URL. When a database name is provided, returns the full detailed schema for that database. When no database is specified, returns a summary of all available databases on the cluster. Automatically fetches from the cluster if the schema is not already cached. The result is automatically sized to fit the model's context window.",
+        "userDescription": "Get database schema (tables, columns, functions) for a Kusto cluster.",
         "canBeReferencedInPrompt": true,
         "icon": "$(database)",
         "inputSchema": {
@@ -392,13 +392,14 @@
           "properties": {
             "clusterUrl": {
               "type": "string",
-              "description": "Optional: Filter schemas by cluster URL"
+              "description": "The Kusto cluster URL (e.g., 'https://help.kusto.windows.net')"
             },
             "database": {
               "type": "string",
-              "description": "Optional: Filter schemas by database name"
+              "description": "Optional: a specific database name. When omitted, returns a summary of all databases on the cluster."
             }
-          }
+          },
+          "required": ["clusterUrl"]
         }
       },
       {
