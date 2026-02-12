@@ -234,6 +234,9 @@
     "chatAgents": [
       {
         "path": "./copilot-instructions/custom-agent.md"
+      },
+      {
+        "path": "./copilot-instructions/custom-subagent-search.md"
       }
     ],
     "walkthroughs": [
@@ -803,6 +806,26 @@
             }
           },
           "required": ["question"]
+        }
+      },
+      {
+        "name": "kusto-workbench_search-cached-schemas",
+        "tags": ["kusto", "azure", "data-explorer", "schema", "search", "tables", "columns", "functions"],
+        "toolReferenceName": "searchCachedSchemas",
+        "displayName": "Search Cached Schemas",
+        "modelDescription": "Searches all cached database schemas for tables, columns, functions, or docstrings matching a regex pattern. Use this to discover relevant tables or columns when you are not sure which ones to use, or to find items by partial name or description. Returns matches across all cached databases.",
+        "userDescription": "Search cached Kusto schemas for tables, columns, or functions by pattern.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "A regex pattern to search for across table names, column names, function names, and their docstrings. Case-insensitive."
+            }
+          },
+          "required": ["pattern"]
         }
       },
       {

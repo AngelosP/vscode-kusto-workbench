@@ -2700,7 +2700,7 @@
 			background: var(--vscode-button-secondaryHoverBackground);
 		}
 
-		/* Tools container - no longer needs position:relative since panel positions from input-bar */
+		/* Tools container - no longer needs position:relative since panel uses fixed positioning */
 		.kusto-copilot-tools-container {
 			position: static;
 			display: inline-flex;
@@ -2708,15 +2708,12 @@
 			flex: 0 0 auto;
 		}
 
-		/* Tools panel now opens upward from the input bar */
+		/* Tools panel uses fixed positioning so it escapes overflow:hidden ancestors */
 		.kusto-copilot-tools-panel {
-			position: absolute;
-			bottom: 100%;
-			left: 0;
+			position: fixed;
 			z-index: 1000;
 			min-width: 300px;
 			max-width: 380px;
-			margin-bottom: 4px;
 			padding: 10px;
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;

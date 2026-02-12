@@ -4,6 +4,7 @@ import * as os from 'os';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
+import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry } from './schemaCache';
 
 const VIEW_TITLE = 'Connection Manager';
 
@@ -58,7 +59,9 @@ type IncomingMessage =
 	| { type: 'leaveNoTrace.add'; clusterUrl: string }
 	| { type: 'leaveNoTrace.remove'; clusterUrl: string }
 	| { type: 'connection.importXml' }
-	| { type: 'database.openInNewFile'; clusterUrl: string; database: string };
+	| { type: 'database.openInNewFile'; clusterUrl: string; database: string }
+	| { type: 'database.refreshSchema'; clusterUrl: string; database: string }
+	| { type: 'cluster.refreshSchema'; connectionId: string };
 
 export class ConnectionManagerViewer {
 	private static current: ConnectionManagerViewer | undefined;
@@ -546,6 +549,103 @@ export class ConnectionManagerViewer {
 						connectionId,
 						database,
 						error: error instanceof Error ? error.message : String(error)
+					});
+				}
+				return;
+			}
+
+			case 'database.refreshSchema': {
+				const clusterUrl = String(msg.clusterUrl || '').trim();
+				const database = String(msg.database || '').trim();
+				if (!clusterUrl || !database) {
+					return;
+				}
+
+				// Find a connection matching this cluster URL
+				const connections = this.connectionManager.getConnections();
+				const normalizedUrl = this.normalizeFavoriteClusterUrl(clusterUrl);
+				const conn = connections.find((c) => this.normalizeFavoriteClusterUrl(c.clusterUrl) === normalizedUrl);
+				if (!conn) {
+					void vscode.window.showWarningMessage(`No connection found for cluster: ${clusterUrl}`);
+					return;
+				}
+
+				this.panel.webview.postMessage({ type: 'schemaRefreshStarted', clusterUrl, database });
+
+				try {
+					const result = await this.kustoClient.getDatabaseSchema(conn, database, true);
+
+					// Persist refreshed schema to disk so search_cached_schemas can find it
+					const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
+					const cacheKey = `${normalizedCluster}|${database}`;
+					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
+					const diskEntry: CachedSchemaEntry = {
+						schema: result.schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: normalizedCluster,
+						database
+					};
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry);
+
+					this.panel.webview.postMessage({
+						type: 'schemaRefreshCompleted',
+						clusterUrl,
+						database,
+						success: true
+					});
+					void vscode.window.setStatusBarMessage(`Schema refreshed: ${database}`, 3000);
+				} catch (error) {
+					const isAuthError = this.kustoClient.isAuthenticationError(error);
+					this.panel.webview.postMessage({
+						type: 'schemaRefreshCompleted',
+						clusterUrl,
+						database,
+						success: false,
+						error: isAuthError
+							? 'Authentication required. Please test the connection to sign in.'
+							: error instanceof Error
+								? error.message
+								: String(error)
+					});
+					void vscode.window.showErrorMessage(
+						`Failed to refresh schema for ${database}: ${isAuthError ? 'Authentication required.' : (error instanceof Error ? error.message : String(error))}`
+					);
+				}
+				return;
+			}
+
+			case 'cluster.refreshSchema': {
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) {
+					return;
+				}
+
+				const connections = this.connectionManager.getConnections();
+				const conn = connections.find((c) => c.id === connectionId);
+				if (!conn) {
+					return;
+				}
+
+				// Reuse the existing cluster.refreshDatabases logic
+				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
+				try {
+					const databases = await this.kustoClient.getDatabases(conn, true);
+					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
+					const cached = this.getCachedDatabases();
+					cached[clusterKey] = databases;
+					await this.setCachedDatabases(cached);
+					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
+				} catch (error) {
+					const isAuthError = this.kustoClient.isAuthenticationError(error);
+					this.panel.webview.postMessage({
+						type: 'databasesLoadError',
+						connectionId,
+						error: isAuthError
+							? 'Authentication required. Please test the connection to sign in.'
+							: error instanceof Error
+								? error.message
+								: String(error)
 					});
 				}
 				return;
@@ -1227,6 +1327,8 @@ export class ConnectionManagerViewer {
 		.btn-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
 		.btn-icon:active { background: var(--vscode-toolbar-activeBackground); }
 		.btn-icon svg { width: 16px; height: 16px; fill: currentColor; }
+		.btn-icon.refreshing { pointer-events: none; opacity: 0.6; }
+		.btn-icon.refreshing svg { animation: spin 1s linear infinite; }
 
 		.btn-icon.header-action {
 			width: 28px;
@@ -2891,6 +2993,7 @@ export class ConnectionManagerViewer {
 				html += '<div class="favorite-name">' + escapeHtml(displayName) + '</div>';
 				html += '<div class="favorite-actions">';
 				html += '<button class="btn-icon" data-open-db-in-new-file="' + escapeHtml(fav.database) + '" data-open-db-cluster="' + escapeHtml(fav.clusterUrl) + '" title="Open in new .kqlx file">' + ICONS.newFile + '</button>';
+				html += '<button class="btn-icon" data-refresh-db-schema="' + escapeHtml(fav.database) + '" data-refresh-db-schema-cluster="' + escapeHtml(fav.clusterUrl) + '" title="Refresh schema">' + ICONS.refresh + '</button>';
 				html += '<button class="btn-icon" data-remove-fav-cluster="' + escapeHtml(fav.clusterUrl) + '" data-remove-fav-db="' + escapeHtml(fav.database) + '" title="Remove from favorites">' + ICONS.delete + '</button>';
 				html += '</div>';
 				html += '</div>';
@@ -2936,6 +3039,7 @@ export class ConnectionManagerViewer {
 				}
 				html += '<button class="btn-icon" data-edit-conn="' + escapeHtml(conn.id) + '" title="Edit cluster">' + ICONS.edit + '</button>';
 				html += '<button class="btn-icon" data-copy-url="' + escapeHtml(conn.clusterUrl) + '" title="Copy cluster URL">' + ICONS.copy + '</button>';
+				html += '<button class="btn-icon" data-refresh-conn-schema="' + escapeHtml(conn.id) + '" title="Refresh databases">' + ICONS.refresh + '</button>';
 				html += '<button class="btn-icon" data-delete-conn="' + escapeHtml(conn.id) + '" title="Delete cluster">' + ICONS.delete + '</button>';
 				html += '</div>';
 				html += '</div>';
@@ -3593,6 +3697,25 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
+			// Refresh database schema (from favorites or explorer)
+			var refreshDbSchema = closest(target, '[data-refresh-db-schema]');
+			if (refreshDbSchema) {
+				var db = refreshDbSchema.getAttribute('data-refresh-db-schema');
+				var clusterUrl = refreshDbSchema.getAttribute('data-refresh-db-schema-cluster');
+				if (clusterUrl && db) {
+					vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: clusterUrl, database: db });
+				}
+				return;
+			}
+
+			// Refresh cluster databases (from clusters section)
+			var refreshConnSchema = closest(target, '[data-refresh-conn-schema]');
+			if (refreshConnSchema) {
+				var connId = refreshConnSchema.getAttribute('data-refresh-conn-schema');
+				vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: connId });
+				return;
+			}
+
 			// Edit connection
 			var editConn = closest(target, '[data-edit-conn]');
 			if (editConn) {
@@ -3909,6 +4032,28 @@ export class ConnectionManagerViewer {
 				case 'schemaLoadError':
 					// Could show error
 					break;
+
+				case 'schemaRefreshStarted': {
+					// Show spinning indicator on the refresh button
+					var btns = document.querySelectorAll('[data-refresh-db-schema="' + msg.database + '"][data-refresh-db-schema-cluster="' + msg.clusterUrl + '"]');
+					btns.forEach(function(btn) {
+						btn.classList.add('refreshing');
+						btn.setAttribute('disabled', 'true');
+						btn.innerHTML = ICONS.spinner;
+					});
+					break;
+				}
+
+				case 'schemaRefreshCompleted': {
+					// Restore refresh button
+					var btns = document.querySelectorAll('[data-refresh-db-schema="' + msg.database + '"][data-refresh-db-schema-cluster="' + msg.clusterUrl + '"]');
+					btns.forEach(function(btn) {
+						btn.classList.remove('refreshing');
+						btn.removeAttribute('disabled');
+						btn.innerHTML = ICONS.refresh;
+					});
+					break;
+				}
 			}
 		});
 

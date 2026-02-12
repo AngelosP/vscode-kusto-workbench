@@ -10,7 +10,7 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient, QueryExecutionError } from './kustoClient';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
-import { SCHEMA_CACHE_VERSION } from './schemaCache';
+import { SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults } from './copilotConversationUtils';
@@ -260,6 +260,12 @@ export class QueryEditorProvider {
 				enabledByDefault: true
 			},
 			{
+				name: 'search_cached_schemas',
+				label: 'Search cached schemas',
+				description: 'Searches all cached database schemas for tables, columns, functions, or docstrings matching a regex pattern.',
+				enabledByDefault: true
+			},
+			{
 				name: 'respond_to_query_performance_optimization_request',
 				label: 'Respond to query performance optimization or data comparison request',
 				description:
@@ -332,6 +338,21 @@ export class QueryEditorProvider {
 							}
 						},
 						required: ['query']
+					}
+				});
+			} else if (n === 'search_cached_schemas') {
+				tools.push({
+					name: 'search_cached_schemas',
+					description: 'Searches all cached database schemas for tables, columns, functions, or docstrings matching a regex pattern. Use this to discover relevant tables or columns when you are not sure which ones to use, or to find items by partial name or description. Returns matches across all cached databases.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							pattern: {
+								type: 'string',
+								description: 'A regex pattern to search for across table names, column names, function names, and their docstrings. Case-insensitive.'
+							}
+						},
+						required: ['pattern']
 					}
 				});
 			} else if (n === 'respond_to_query_performance_optimization_request') {
@@ -2477,6 +2498,90 @@ Completion:`;
 							hasOptionalToolCalls = true;
 							continue;
 						}
+					}
+
+					if (toolName === 'search_cached_schemas') {
+						const rawPattern = String((tc.input as any)?.pattern || '').trim();
+						if (!rawPattern) {
+							const errEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: errEntryId,
+								callId: tc.callId,
+								tool: 'search_cached_schemas',
+								args: tc.input,
+								result: 'Error: pattern argument was empty. Please provide a non-empty regex pattern.',
+								timestamp: Date.now()
+							});
+							hasOptionalToolCalls = true;
+							continue;
+						}
+
+						try {
+							const searchMatches = await searchCachedSchemas(this.context.globalStorageUri, rawPattern);
+							let resultText: string;
+							if (searchMatches.length === 0) {
+								resultText = `No matches found for pattern: ${rawPattern}`;
+							} else {
+								resultText = `Found ${searchMatches.length} match${searchMatches.length === 1 ? '' : 'es'} for pattern "${rawPattern}":\n`;
+								resultText += JSON.stringify(searchMatches, null, 2);
+							}
+
+							const label = searchMatches.length === 0
+								? `No matches for "${rawPattern}"`
+								: `${searchMatches.length} match${searchMatches.length === 1 ? '' : 'es'} for "${rawPattern}"`;
+
+							const searchEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: searchEntryId,
+								callId: tc.callId,
+								tool: 'search_cached_schemas',
+								args: { pattern: rawPattern },
+								result: resultText,
+								timestamp: Date.now()
+							});
+
+							try {
+								this.postMessage({
+									type: 'copilotWriteQueryToolResult',
+									boxId,
+									entryId: searchEntryId,
+									tool: 'search_cached_schemas',
+									label,
+									json: resultText
+								} as any);
+							} catch {
+								// ignore
+							}
+						} catch (e) {
+							const errMsg = this.getErrorMessage(e);
+							const searchErrEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call',
+								id: searchErrEntryId,
+								callId: tc.callId,
+								tool: 'search_cached_schemas',
+								args: { pattern: rawPattern },
+								result: `Search error: ${errMsg}`,
+								timestamp: Date.now()
+							});
+
+							try {
+								this.postMessage({
+									type: 'copilotWriteQueryToolResult',
+									boxId,
+									entryId: searchErrEntryId,
+									tool: 'search_cached_schemas',
+									label: `Search failed: ${errMsg}`,
+									json: `Search error: ${errMsg}`
+								} as any);
+							} catch {
+								// ignore
+							}
+						}
+						hasOptionalToolCalls = true;
+						continue;
 					}
 
 					if (toolName === 'respond_to_query_performance_optimization_request') {

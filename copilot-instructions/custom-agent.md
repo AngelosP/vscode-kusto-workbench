@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
+tools: ['vscode', 'execute', 'read', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections']
 
 model: Claude Opus 4.6
 
@@ -24,6 +24,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#listKustoFavorites` | List favorite cluster/database pairs |
 | `#getKustoSchema` | Get database schema (tables, columns, functions) for a cluster |
 | `#refreshKustoSchema` | Force-refresh schema from Kusto cluster (bypasses cache) |
+| `#searchCachedSchemas` | Search all cached schemas for tables, columns, or functions by regex pattern |
 | `#listSections` | List notebook sections with IDs and validation status |
 | `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
 | `#removeSection` | Remove a section by ID |
@@ -35,6 +36,30 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#configureTransformation` | Configure transformation (derive, summarize, pivot, distinct) |
 
 ## Workflow
+
+### 0\. Are we searching for something?
+
+When you need to find a table, column, function, docstring, or piece of data and you don't already know which cluster/database contains it, follow this exact procedure:
+
+**Step A: Fast cached search first.**
+Call `#searchCachedSchemas` with a regex pattern derived from the user's query. This searches all cached schemas in one call and returns instantly. These are **preliminary results only**. The cache only contains databases you have previously connected to, so it is never a complete picture. Present these early results to the user as a preview, but always continue to Step B.
+
+**Step B: Enumerate ALL connections.**
+Call `#listKustoFavorites` and `#listKustoConnections`. Build the complete, deduplicated list of every cluster URL + database pair. Count them. This is your checklist.
+
+**Step C: Assign ALL connections to sub-agents.**
+Spawn `Kusto Workbench Search` sub-agents via `#runSubagent`. Each sub-agent gets a specific subset of connections to search. In your prompt to each sub-agent, include:
+  * The exact list of `clusterUrl + database` pairs it is responsible for
+  * What the user is searching for
+  * That it must search every single connection assigned to it, not stop early
+
+Split connections across sub-agents (e.g. 3-5 connections per sub-agent). **Every connection from step B must be assigned to exactly one sub-agent. Do not leave any out.**
+
+**Step D: Verify completeness.**
+After all sub-agents return, count the connections they actually searched. Compare against your checklist from step B. If any connections were missed, spawn additional sub-agents for the remaining ones.
+
+**Step E: Consolidate results.**
+Merge all sub-agent results into a single answer for the user. If the user asked for an exhaustive search, make it clear you searched N out of N connections and list them.
 
 ### 1\. Ensure a file is open
 

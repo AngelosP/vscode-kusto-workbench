@@ -270,3 +270,4 @@ These tools are registered with `vscode.lm.registerTool()` and available to the 
 | Tool ID | Tool Reference Name | Purpose |
 | ------- | ------------------- | ------- |
 | `kusto-workbench_refresh-schema` | `refreshKustoSchema` | Force-refreshes schema from Kusto cluster, updates cache, returns schemas |
+| `kusto-workbench_search-cached-schemas` | `searchCachedSchemas` | Searches all cached schemas for tables, columns, functions matching a regex pattern |

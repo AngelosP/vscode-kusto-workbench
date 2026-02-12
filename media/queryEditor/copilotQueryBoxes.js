@@ -1301,6 +1301,40 @@
 
 			panel.style.display = nextVisible ? 'block' : 'none';
 			__kustoActiveCopilotToolsPanel = nextVisible ? id : null;
+
+			// Position the panel using fixed coordinates so it escapes overflow:hidden ancestors
+			if (nextVisible && btn) {
+				try {
+					const btnRect = btn.getBoundingClientRect();
+					// Reset any previous positioning so we can measure the panel's natural height
+					panel.style.left = '0px';
+					panel.style.top = '0px';
+					panel.style.bottom = 'auto';
+					const panelRect = panel.getBoundingClientRect();
+					const panelHeight = panelRect.height;
+					const panelWidth = panelRect.width;
+					const gap = 4;
+
+					// Preferred: open upward, aligned to the left edge of the button
+					let top = btnRect.top - panelHeight - gap;
+					let left = btnRect.left;
+
+					// If panel would go above the viewport, open downward instead
+					if (top < 0) {
+						top = btnRect.bottom + gap;
+					}
+
+					// If panel would overflow the right edge, shift it left
+					const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+					if (left + panelWidth > viewportWidth) {
+						left = Math.max(0, viewportWidth - panelWidth - 4);
+					}
+
+					panel.style.top = top + 'px';
+					panel.style.left = left + 'px';
+				} catch { /* ignore positioning errors; panel will still display */ }
+			}
+
 			try {
 				if (btn) {
 					btn.classList.toggle('is-active', nextVisible);

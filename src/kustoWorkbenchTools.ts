@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, SCHEMA_CACHE_VERSION } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -62,6 +62,11 @@ export type GetSchemaResult = {
 export interface RefreshKustoSchemaInput {
 	/** The cluster URL for which to refresh the schema (e.g., 'https://help.kusto.windows.net'). */
 	clusterUrl: string;
+}
+
+export interface SearchCachedSchemasInput {
+	/** A regex pattern to search for across table names, column names, function names, and their docstrings. Case-insensitive. */
+	pattern: string;
 }
 
 export interface ListSectionsInput {
@@ -417,6 +422,15 @@ export class KustoWorkbenchToolOrchestrator {
 		return { databases: schemas };
 	}
 
+	async searchCachedSchemas(input: SearchCachedSchemasInput): Promise<{ matches: unknown[]; count: number; pattern: string; error?: string }> {
+		const pattern = (input.pattern || '').trim();
+		if (!pattern) {
+			return { matches: [], count: 0, pattern: '', error: 'pattern is required and must be a non-empty string.' };
+		}
+		const matches = await searchCachedSchemas(this.context.globalStorageUri, pattern);
+		return { matches, count: matches.length, pattern };
+	}
+
 	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; database?: string }> }> {
 		if (!this.stateGetter) {
 			throw new Error('Kusto Workbench is not currently open.');
@@ -724,6 +738,37 @@ export class RefreshKustoSchemaTool implements vscode.LanguageModelTool<RefreshK
 		const clusterUrl = input?.clusterUrl || 'unknown cluster';
 		return {
 			invocationMessage: `Refreshing schema for ${clusterUrl}...`
+		};
+	}
+}
+
+export class SearchCachedSchemasTool implements vscode.LanguageModelTool<SearchCachedSchemasInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<SearchCachedSchemasInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.searchCachedSchemas(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<SearchCachedSchemasInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const pattern = input?.pattern || '';
+		return {
+			invocationMessage: `Searching cached schemas for "${pattern}"…`
 		};
 	}
 }
@@ -1058,6 +1103,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_list-favorites', new ListFavoritesTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_get-schema', new GetSchemaTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_refresh-schema', new RefreshKustoSchemaTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_search-cached-schemas', new SearchCachedSchemasTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sections', new ListSectionsTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),
