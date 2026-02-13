@@ -78,6 +78,57 @@
 		return window.__kustoCopilotChatVisibleByBoxId;
 	}
 
+	// ── Smart auto-scroll ──────────────────────────────────────────────
+	// Auto-scroll stays active while the user is at (or near) the bottom
+	// of the messages container.  When the user manually scrolls up, auto-
+	// scroll pauses.  It resumes automatically once the user scrolls back
+	// to the bottom.
+
+	const __KUSTO_AUTOSCROLL_THRESHOLD_PX = 40;
+
+	/** Returns true when the host element is scrolled to (near) the bottom. */
+	function __kustoIsNearBottom(host) {
+		try {
+			return host.scrollHeight - host.scrollTop - host.clientHeight <= __KUSTO_AUTOSCROLL_THRESHOLD_PX;
+		} catch { return true; }
+	}
+
+	/**
+	 * Scroll the messages host to the bottom, but ONLY if we haven't
+	 * detected that the user scrolled away.  Attaches the one-time
+	 * scroll listener the first time it's called for a given host.
+	 */
+	function __kustoCopilotAutoScrollToBottom(host) {
+		try {
+			if (!host) return;
+
+			// First-time setup: attach a scroll listener so we can track
+			// whether the user is at the bottom.
+			if (!host.__kustoAutoScrollInit) {
+				host.__kustoAutoScrollPinned = true; // start pinned
+				host.addEventListener('scroll', function () {
+					try {
+						// If a programmatic scroll is in progress, skip the check.
+						if (host.__kustoAutoScrollProgrammatic) return;
+						host.__kustoAutoScrollPinned = __kustoIsNearBottom(host);
+					} catch { /* ignore */ }
+				}, { passive: true });
+				host.__kustoAutoScrollInit = true;
+			}
+
+			if (host.__kustoAutoScrollPinned) {
+				host.__kustoAutoScrollProgrammatic = true;
+				host.scrollTop = host.scrollHeight;
+				// Clear the flag asynchronously so the 'scroll' listener
+				// that fires synchronously from the assignment above is
+				// still treated as programmatic.
+				requestAnimationFrame(function () {
+					try { host.__kustoAutoScrollProgrammatic = false; } catch { /* ignore */ }
+				});
+			}
+		} catch { /* ignore */ }
+	}
+
 	// Global tracker for currently visible tooltip to prevent overlaps
 	let __kustoCurrentVisibleTooltip = null;
 	let __kustoCurrentHideTimeout = null;
@@ -508,7 +559,7 @@
 				el.style.textDecoration = 'underline dotted';
 			}
 			host.appendChild(el);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
@@ -533,7 +584,7 @@
 			el.appendChild(link);
 			el.appendChild(document.createTextNode(' instead.'));
 			host.appendChild(el);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch { /* ignore */ }
 	}
 
@@ -656,7 +707,7 @@
 			__kustoSetupToolTooltip(wrapper, tooltip);
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
@@ -1259,6 +1310,8 @@
 			const messagesHost = document.getElementById(id + '_copilot_messages');
 			if (messagesHost) {
 				messagesHost.innerHTML = '';
+				// Reset auto-scroll state so new conversation starts pinned to bottom
+				messagesHost.__kustoAutoScrollPinned = true;
 			}
 		} catch { /* ignore */ }
 		try {
@@ -1538,7 +1591,7 @@
 			__kustoSetupToolTooltip(wrapper, tooltip);
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
@@ -1751,7 +1804,7 @@
 			wrapper.appendChild(questionRow);
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 
 			// Focus the input so user can respond
 			try {
@@ -1884,7 +1937,7 @@
 			__kustoSetupToolTooltip(wrapper, tooltip);
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
@@ -1983,7 +2036,7 @@
 			__kustoSetupToolTooltip(wrapper, tooltip);
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
@@ -2080,7 +2133,7 @@
 			}
 
 			host.appendChild(wrapper);
-			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+			__kustoCopilotAutoScrollToBottom(host);
 		} catch {
 			// ignore
 		}
