@@ -187,9 +187,19 @@
         "command": "kusto.openCustomAgent",
         "title": "Open Kusto Workbench Custom Agent",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.showDevelopmentNotes",
+        "title": "Show Development Notes",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "kusto.showDevelopmentNotes"
+        }
+      ],
       "view/title": [
         {
           "command": "kusto.openQueryEditor",
@@ -855,6 +865,49 @@
             }
           },
           "required": ["fileType", "filePath"]
+        }
+      },
+      {
+        "name": "kusto-workbench_manage-development-notes",
+        "tags": ["kusto", "workbench", "development", "notes", "memory", "insights"],
+        "toolReferenceName": "manageDevelopmentNotes",
+        "displayName": "Manage Development Notes",
+        "modelDescription": "Add, remove, or update development notes in the current Kusto Workbench file. Development notes capture important insights (corrections, clarifications, schema hints, gotchas) that persist across sessions. Use 'add' to save a new note, 'remove' to delete an outdated note by ID, or 'add' with 'supersedes' to replace an existing note. Use ONLY for non-obvious insights that would prevent repeating mistakes. Notes are visible via the list-sections tool.",
+        "userDescription": "Manage development notes that help AI assistants work better with this file.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(notebook)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["add", "remove"],
+              "description": "The action to perform: 'add' a new note, or 'remove' an existing one."
+            },
+            "category": {
+              "type": "string",
+              "enum": ["correction", "clarification", "schema-hint", "usage-note", "gotcha"],
+              "description": "For 'add': the category of the note."
+            },
+            "content": {
+              "type": "string",
+              "description": "For 'add': concise note content. Focus on the what and why."
+            },
+            "relatedSectionIds": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "For 'add': optional IDs of sections this note relates to."
+            },
+            "supersedes": {
+              "type": "string",
+              "description": "For 'add': optional ID of an existing note this replaces."
+            },
+            "noteId": {
+              "type": "string",
+              "description": "For 'remove': the ID of the note to remove."
+            }
+          },
+          "required": ["action"]
         }
       }
     ]

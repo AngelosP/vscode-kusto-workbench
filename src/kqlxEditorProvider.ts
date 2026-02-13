@@ -272,7 +272,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const sections = Array.isArray(state.sections) ? state.sections : [];
 		const filtered = sections.filter((s) => {
 			const t = (s as any)?.type;
-			return t === 'markdown' || t === 'url' || t === 'transformation';
+			return t === 'markdown' || t === 'url' || t === 'transformation' || t === 'devnotes';
 		});
 		return {
 			caretDocsEnabled: state.caretDocsEnabled,

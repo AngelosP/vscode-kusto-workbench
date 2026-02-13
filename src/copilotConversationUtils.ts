@@ -13,7 +13,8 @@ export type ConversationHistoryEntry =
 	| { type: 'user-message'; id: string; text: string; querySnapshot?: string; timestamp: number }
 	| { type: 'assistant-message'; id: string; text: string; toolCalls?: Array<{ callId: string; name: string; input: object }>; timestamp: number }
 	| { type: 'tool-call'; id: string; callId: string; tool: string; args?: unknown; result: string; removed?: boolean; timestamp: number }
-	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number };
+	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number }
+	| { type: 'devnotes-context'; id: string; content: string; removed?: boolean; timestamp: number };
 
 // ---------------------------------------------------------------------------
 // sanitizeConversationHistory

@@ -1889,4 +1889,200 @@
 			// ignore
 		}
 	};
+
+	// ─────────────────────────────────────────────────────────────────
+	// Development Notes — context injection card
+	// ─────────────────────────────────────────────────────────────────
+
+	window.__kustoCopilotAppendDevNotesContext = function (boxId, preview, entryId) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safePreview = String(preview || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-system';
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row: icon + label + action icons
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = 'codicon codicon-notebook';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const text = document.createElement('strong');
+			text.textContent = ' Development Notes';
+			leftSide.appendChild(text);
+
+			header.appendChild(leftSide);
+
+			// Right side: action icons
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			// Remove icon button
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Result row
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			resultRow.textContent = 'Loaded file development notes for context';
+			wrapper.appendChild(resultRow);
+
+			// Tooltip with preview of notes
+			const tooltip = document.createElement('div');
+			tooltip.className = 'kusto-copilot-tool-tooltip';
+			const tooltipLabel = document.createElement('div');
+			tooltipLabel.className = 'kusto-copilot-tool-tooltip-label';
+			tooltipLabel.textContent = 'Notes:';
+			tooltip.appendChild(tooltipLabel);
+			const tooltipContent = document.createElement('div');
+			tooltipContent.className = 'kusto-copilot-tool-tooltip-content';
+			tooltipContent.textContent = safePreview || '(no notes)';
+			tooltip.appendChild(tooltipContent);
+			document.body.appendChild(tooltip);
+
+			__kustoSetupToolTooltip(wrapper, tooltip);
+
+			host.appendChild(wrapper);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
+	};
+
+	// ─────────────────────────────────────────────────────────────────
+	// Development Notes — tool call rendering (save/remove)
+	// ─────────────────────────────────────────────────────────────────
+
+	window.__kustoCopilotAppendDevNoteToolCall = function (boxId, action, detail, result, entryId) {
+		try {
+			const id = String(boxId || '').trim();
+			if (!id) return;
+
+			const host = document.getElementById(id + '_copilot_messages');
+			if (!host) return;
+
+			const safeAction = String(action || 'save').trim();
+			const safeDetail = String(detail || '').trim();
+			const safeResult = String(result || '').trim();
+			const safeEntryId = String(entryId || '').trim();
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'kusto-copilot-chat-msg kusto-copilot-chat-msg-tool';
+			wrapper.setAttribute('data-kusto-no-editor-focus', 'true');
+			if (safeEntryId) {
+				wrapper.setAttribute('data-entry-id', safeEntryId);
+			}
+
+			// Header row
+			const header = document.createElement('div');
+			header.className = 'kusto-copilot-tool-header';
+
+			const leftSide = document.createElement('div');
+			leftSide.className = 'kusto-copilot-tool-header-left';
+
+			const icon = document.createElement('span');
+			icon.className = safeAction === 'remove' ? 'codicon codicon-notebook' : 'codicon codicon-notebook';
+			icon.setAttribute('aria-hidden', 'true');
+			leftSide.appendChild(icon);
+
+			const toolNameEl = document.createElement('strong');
+			toolNameEl.textContent = ' update_development_note' + (safeAction === 'remove' ? ' (remove)' : '');
+			leftSide.appendChild(toolNameEl);
+
+			header.appendChild(leftSide);
+
+			// Right side: remove from history
+			const rightSide = document.createElement('div');
+			rightSide.className = 'kusto-copilot-tool-header-right';
+
+			if (safeEntryId) {
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'kusto-copilot-icon-btn kusto-copilot-remove-btn';
+				removeBtn.title = 'Remove from conversation history';
+				const removeIcon = document.createElement('span');
+				removeIcon.className = 'codicon codicon-trash';
+				removeBtn.appendChild(removeIcon);
+				removeBtn.onclick = (e) => {
+					try { e.preventDefault(); } catch { /* ignore */ }
+					try {
+						wrapper.classList.add('is-removed');
+						removeBtn.style.display = 'none';
+						vscode.postMessage({
+							type: 'removeFromCopilotHistory',
+							boxId: id,
+							entryId: safeEntryId
+						});
+					} catch { /* ignore */ }
+				};
+				rightSide.appendChild(removeBtn);
+			}
+
+			header.appendChild(rightSide);
+			wrapper.appendChild(header);
+
+			// Result row
+			const resultRow = document.createElement('div');
+			resultRow.className = 'kusto-copilot-tool-result';
+			resultRow.textContent = safeResult || safeDetail || 'Done';
+			wrapper.appendChild(resultRow);
+
+			// Tooltip with detail
+			if (safeDetail) {
+				const tooltip = document.createElement('div');
+				tooltip.className = 'kusto-copilot-tool-tooltip';
+				const tooltipContent = document.createElement('div');
+				tooltipContent.className = 'kusto-copilot-tool-tooltip-content';
+				tooltipContent.textContent = safeDetail;
+				tooltip.appendChild(tooltipContent);
+				document.body.appendChild(tooltip);
+				__kustoSetupToolTooltip(wrapper, tooltip);
+			}
+
+			host.appendChild(wrapper);
+			try { host.scrollTop = host.scrollHeight; } catch { /* ignore */ }
+		} catch {
+			// ignore
+		}
+	};
 })();

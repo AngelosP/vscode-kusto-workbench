@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { createEmptyKqlxOrMdxFile, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
+import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, SCHEMA_CACHE_VERSION } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 
@@ -198,6 +198,20 @@ export interface CreateFileInput {
 	 * - For md: The initial markdown content
 	 */
 	initialContent?: string;
+}
+
+export interface ManageDevelopmentNotesInput {
+	action: 'add' | 'remove';
+	/** For 'add': the category of the note */
+	category?: 'correction' | 'clarification' | 'schema-hint' | 'usage-note' | 'gotcha';
+	/** For 'add': concise note content */
+	content?: string;
+	/** For 'add': optional section IDs this note relates to */
+	relatedSectionIds?: string[];
+	/** For 'add': optional ID of an existing note this replaces */
+	supersedes?: string;
+	/** For 'remove': the ID of the note to remove */
+	noteId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,7 +445,7 @@ export class KustoWorkbenchToolOrchestrator {
 		return { matches, count: matches.length, pattern };
 	}
 
-	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; database?: string }> }> {
+	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; database?: string; entries?: unknown[] }> }> {
 		if (!this.stateGetter) {
 			throw new Error('Kusto Workbench is not currently open.');
 		}
@@ -439,16 +453,67 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!rawSections) {
 			return { sections: [] };
 		}
-		const sections = rawSections.map((s, idx) => {
-			const id = typeof s.id === 'string' ? s.id : `section_${idx}`;
-			const type = typeof s.type === 'string' ? s.type : 'unknown';
-			const name = typeof s.name === 'string' ? s.name : (typeof s.title === 'string' ? s.title : '');
-			const expanded = s.expanded !== false;
-			const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
-			const database = typeof s.database === 'string' ? s.database : '';
-			return { id, type, name, expanded, clusterUrl, database };
-		});
+		const sections = rawSections
+			.map((s, idx) => {
+				const id = typeof s.id === 'string' ? s.id : `section_${idx}`;
+				const type = typeof s.type === 'string' ? s.type : 'unknown';
+				const name = typeof s.name === 'string' ? s.name : (typeof s.title === 'string' ? s.title : '');
+				const expanded = s.expanded !== false;
+				const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
+				const database = typeof s.database === 'string' ? s.database : '';
+				// For devnotes sections, include the entries array so the agent can read them
+				if (type === 'devnotes') {
+					const entries = Array.isArray(s.entries) ? s.entries : [];
+					return { id, type, name, expanded, clusterUrl, database, entries };
+				}
+				return { id, type, name, expanded, clusterUrl, database };
+			});
 		return { sections };
+	}
+
+	/**
+	 * Returns the current development notes from the open file, if any.
+	 */
+	async getDevNotes(): Promise<DevNoteEntry[]> {
+		if (!this.stateGetter) {
+			return [];
+		}
+		const rawSections = await this.stateGetter();
+		if (!rawSections) {
+			return [];
+		}
+		for (const s of rawSections) {
+			if (typeof s.type === 'string' && s.type === 'devnotes' && Array.isArray(s.entries)) {
+				return s.entries as DevNoteEntry[];
+			}
+		}
+		return [];
+	}
+
+	async manageDevelopmentNotes(input: ManageDevelopmentNotesInput): Promise<{ success: boolean; noteId?: string; error?: string }> {
+		if (input.action === 'add') {
+			if (!input.content || !input.category) {
+				return { success: false, error: 'Both "content" and "category" are required when adding a development note.' };
+			}
+			const noteId = `dn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			const entry: DevNoteEntry = {
+				id: noteId,
+				created: new Date().toISOString(),
+				updated: new Date().toISOString(),
+				category: input.category,
+				content: input.content,
+				source: 'agent',
+				...(input.relatedSectionIds ? { relatedSectionIds: input.relatedSectionIds } : {}),
+			};
+			const action = input.supersedes ? 'supersede' : 'add';
+			return this.sendToWebview('updateDevNotes', { action, entry, supersededId: input.supersedes });
+		} else if (input.action === 'remove') {
+			if (!input.noteId) {
+				return { success: false, error: '"noteId" is required when removing a development note.' };
+			}
+			return this.sendToWebview('updateDevNotes', { action: 'remove', noteId: input.noteId });
+		}
+		return { success: false, error: `Unknown action: ${input.action}` };
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
@@ -1086,6 +1151,40 @@ export class CreateFileTool implements vscode.LanguageModelTool<CreateFileInput>
 	}
 }
 
+export class ManageDevelopmentNotesTool implements vscode.LanguageModelTool<ManageDevelopmentNotesInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ManageDevelopmentNotesInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.manageDevelopmentNotes(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<ManageDevelopmentNotesInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const action = input?.action || 'add';
+		const message = action === 'add'
+			? `Saving development note${input?.category ? ` (${input.category})` : ''}...`
+			: `Removing development note${input?.noteId ? ` ${input.noteId}` : ''}...`;
+		return {
+			invocationMessage: message
+		};
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1114,7 +1213,8 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_configure-chart', new ConfigureChartTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-transformation', new ConfigureTransformationTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_ask-kusto-copilot', new DelegateToKustoWorkbenchCopilotTool(orchestrator)),
-		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator))
+		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator))
 	);
 
 	return orchestrator;

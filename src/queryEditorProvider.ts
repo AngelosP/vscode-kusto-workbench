@@ -236,6 +236,8 @@ export class QueryEditorProvider {
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 	// Track which boxes have already received general-query-rules.md (first message only)
 	private readonly copilotGeneralRulesSentPerBox = new Set<string>();
+	// Track which boxes have already received dev notes context (first message only)
+	private readonly copilotDevNotesSentPerBox = new Set<string>();
 	// Conversation history per box for Copilot Chat
 	private readonly copilotConversationHistoryByBoxId = new Map<string, ConversationHistoryEntry[]>();
 
@@ -284,6 +286,13 @@ export class QueryEditorProvider {
 				label: 'Ask user clarifying question',
 				description:
 					'Ask the user a clarifying question when you need more information to write the correct query.',
+				enabledByDefault: true
+			},
+			{
+				name: 'update_development_note',
+				label: 'Update development note',
+				description:
+					'Create, update, or remove a development note. Use ONLY for non-obvious corrections, gotchas, schema hints, or clarifications that would prevent repeating mistakes. To remove a note, set content to empty.',
 				enabledByDefault: true
 			}
 		];
@@ -400,6 +409,35 @@ export class QueryEditorProvider {
 						required: ['question']
 					}
 				});
+			} else if (n === 'update_development_note') {
+				tools.push({
+					name: 'update_development_note',
+					description: 'Create, update, or remove a development note. Use ONLY for non-obvious corrections, gotchas, schema hints, or clarifications that would prevent repeating mistakes. To remove an existing note, provide its noteId with empty content.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							noteId: {
+								type: 'string',
+								description: 'The ID of an existing note to update or remove. Omit when creating a new note.'
+							},
+							category: {
+								type: 'string',
+								enum: ['correction', 'clarification', 'schema-hint', 'usage-note', 'gotcha'],
+								description: 'The category of the note (required when creating or updating).'
+							},
+							content: {
+								type: 'string',
+								description: 'Concise note content. Focus on the what and why. Set to empty string to remove the note identified by noteId.'
+							},
+							relatedSectionIds: {
+								type: 'array',
+								items: { type: 'string' },
+								description: 'Optional IDs of sections this note relates to.'
+							}
+						},
+						required: ['content']
+					}
+				});
 			}
 		}
 
@@ -428,6 +466,33 @@ export class QueryEditorProvider {
 			};
 		} catch {
 			// File doesn't exist or couldn't be read
+			return undefined;
+		}
+	}
+
+	/**
+	 * Reads dev notes entries from the current document state (via webview).
+	 * Returns a formatted string if there are any entries, or undefined.
+	 */
+	private async getDevNotesContent(): Promise<string | undefined> {
+		try {
+			const sections = await this.requestSectionsFromWebview();
+			if (!sections || !Array.isArray(sections)) return undefined;
+			const devNotesSection = sections.find((s: any) => s && s.type === 'devnotes') as any;
+			if (!devNotesSection || !Array.isArray(devNotesSection.entries) || devNotesSection.entries.length === 0) {
+				return undefined;
+			}
+			const lines: string[] = [];
+			for (const entry of devNotesSection.entries) {
+				if (!entry || !entry.content) continue;
+				const parts = [`- **[${entry.category || 'note'}]**`];
+				if (entry.id) parts[0] += ` (id: ${entry.id})`;
+				if (entry.updated) parts[0] += ` (${entry.updated})`;
+				parts[0] += `: ${entry.content}`;
+				lines.push(parts[0]);
+			}
+			return lines.length > 0 ? lines.join('\n') : undefined;
+		} catch {
 			return undefined;
 		}
 	}
@@ -1976,6 +2041,16 @@ Completion:`;
 						'Workspace-specific query rules (from .github/copilot-instructions/general-query-rules.md):\n' + entry.content
 					));
 				}
+			} else if (entry.type === 'devnotes-context') {
+				if (entry.removed) {
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'[Development notes: removed from conversation history]'
+					));
+				} else {
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'Development notes for this file (insights from previous sessions — use these to avoid repeating past mistakes):\n' + entry.content
+					));
+				}
 			} else if (entry.type === 'user-message') {
 				let text = entry.text;
 				if (entry.querySnapshot) {
@@ -2224,6 +2299,33 @@ Completion:`;
 							entryId: rulesEntryId,
 							filePath: generalRules.filePath,
 							preview: generalRules.content
+						} as any);
+					} catch {
+						// ignore
+					}
+				}
+			}
+
+			// On first message for this conversation, add dev notes context
+			if (!this.copilotDevNotesSentPerBox.has(boxId)) {
+				const devNotesContent = await this.getDevNotesContent();
+				if (devNotesContent) {
+					const devNotesEntryId = this.nextHistoryEntryId(boxId);
+					history.push({
+						type: 'devnotes-context',
+						id: devNotesEntryId,
+						content: devNotesContent,
+						timestamp: Date.now()
+					});
+					this.copilotDevNotesSentPerBox.add(boxId);
+
+					// Notify webview about dev notes context injection
+					try {
+						this.postMessage({
+							type: 'copilotDevNotesContextLoaded',
+							boxId,
+							entryId: devNotesEntryId,
+							preview: devNotesContent
 						} as any);
 					} catch {
 						// ignore
@@ -2857,6 +2959,74 @@ Completion:`;
 							shouldRetryAttempt = true;
 							break;
 						}
+					}
+
+					if (toolName === 'update_development_note') {
+						const args = (tc.input && typeof tc.input === 'object') ? tc.input as any : {};
+						const content = String(args.content || '').trim();
+						const noteId = args.noteId ? String(args.noteId).trim() : '';
+						const category = String(args.category || 'usage-note').trim();
+						let toolResult: string;
+						let effectiveAction: 'save' | 'remove';
+
+						if (!content && noteId) {
+							// Empty content + noteId = remove
+							effectiveAction = 'remove';
+							this.postMessage({
+								type: 'updateDevNotes',
+								action: 'remove',
+								noteId
+							} as any);
+							toolResult = `Development note removed (id: ${noteId}).`;
+						} else if (!content) {
+							toolResult = 'Error: content is required when creating a new note. To remove an existing note, provide its noteId with empty content.';
+							effectiveAction = 'save';
+						} else {
+							// Create or update (noteId provided = supersede the old note)
+							effectiveAction = 'save';
+							const newNoteId = 'devnote_' + Date.now();
+							const now = new Date().toISOString();
+							const entry = {
+								id: newNoteId,
+								created: now,
+								updated: now,
+								category,
+								content,
+								source: 'copilot',
+								...(Array.isArray(args.relatedSectionIds) && args.relatedSectionIds.length > 0 ? { relatedSectionIds: args.relatedSectionIds } : {})
+							};
+							this.postMessage({
+								type: 'updateDevNotes',
+								action: noteId ? 'supersede' : 'add',
+								entry,
+								supersededId: noteId || undefined
+							} as any);
+							toolResult = `Development note saved (id: ${newNoteId}, category: ${category}).` +
+								(noteId ? ` Superseded note: ${noteId}.` : '');
+						}
+
+						const noteEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call',
+							id: noteEntryId,
+							callId: tc.callId,
+							tool: 'update_development_note',
+							args: { noteId, category, content },
+							result: toolResult,
+							timestamp: Date.now()
+						});
+						try {
+							this.postMessage({
+								type: 'copilotDevNoteToolCall',
+								boxId,
+								entryId: noteEntryId,
+								action: effectiveAction,
+								category,
+								content: content || noteId,
+								result: toolResult
+							} as any);
+						} catch { /* ignore */ }
+						continue;
 					}
 
 					if (toolName === 'ask_user_clarifying_question') {
@@ -4122,7 +4292,6 @@ ${query}
 
 		const favorites = this.getFavorites();
 		const leaveNoTraceClusters = this.connectionManager.getLeaveNoTraceClusters();
-
 		this.postMessage({
 			type: 'connectionsData',
 			connections,
@@ -4136,7 +4305,8 @@ ${query}
 			autoTriggerAutocompleteEnabledUserSet,
 			copilotInlineCompletionsEnabled,
 			copilotInlineCompletionsEnabledUserSet,
-			leaveNoTraceClusters
+			leaveNoTraceClusters,
+			devNotesEnabled: true
 		});
 	}
 

@@ -1000,6 +1000,15 @@ function getKqlxState() {
 		}
 	}
 
+	// Re-inject passthrough dev notes sections (hidden, no DOM elements)
+	try {
+		if (Array.isArray(window.__kustoDevNotesSections)) {
+			for (const dn of window.__kustoDevNotesSections) {
+				if (dn && dn.type === 'devnotes') sections.push(dn);
+			}
+		}
+	} catch { /* ignore */ }
+
 	return {
 		caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
 		autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
@@ -1103,6 +1112,8 @@ function __kustoClearAllSections() {
 	} catch {
 		// ignore
 	}
+	// Clear passthrough dev notes sections
+	try { window.__kustoDevNotesSections = []; } catch { /* ignore */ }
 }
 
 function applyKqlxState(state) {
@@ -1278,6 +1289,14 @@ function applyKqlxState(state) {
 		};
 		for (const section of sections) {
 			const t = section && section.type ? String(section.type) : '';
+			if (t === 'devnotes') {
+				// Dev notes are hidden — store as passthrough, no DOM element
+				try {
+					window.__kustoDevNotesSections = window.__kustoDevNotesSections || [];
+					window.__kustoDevNotesSections.push(section);
+				} catch { /* ignore */ }
+				continue;
+			}
 			if (t === 'query' || t === 'copilotQuery') {
 				const isLegacyCopilotQuerySection = t === 'copilotQuery';
 				const boxId = addQueryBox({

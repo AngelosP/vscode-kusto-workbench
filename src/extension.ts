@@ -663,6 +663,50 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.showDevelopmentNotes', async () => {
+			if (!toolOrchestrator) {
+				vscode.window.showWarningMessage('Kusto Workbench is not initialized yet.');
+				return;
+			}
+			try {
+				const notes = await toolOrchestrator.getDevNotes();
+				if (notes.length === 0) {
+					vscode.window.showInformationMessage('No development notes in the current file.');
+					return;
+				}
+				const lines: string[] = [
+					`# Development Notes (${notes.length})`,
+					'',
+				];
+				for (const note of notes) {
+					lines.push(`## [${note.category}] — ${note.source}`);
+					lines.push('');
+					lines.push(note.content);
+					lines.push('');
+					lines.push(`- **ID:** ${note.id}`);
+					lines.push(`- **Created:** ${note.created}`);
+					if (note.updated !== note.created) {
+						lines.push(`- **Updated:** ${note.updated}`);
+					}
+					if (note.relatedSectionIds && note.relatedSectionIds.length > 0) {
+						lines.push(`- **Related sections:** ${note.relatedSectionIds.join(', ')}`);
+					}
+					lines.push('');
+					lines.push('---');
+					lines.push('');
+				}
+				const doc = await vscode.workspace.openTextDocument({
+					content: lines.join('\n'),
+					language: 'markdown'
+				});
+				await vscode.window.showTextDocument(doc, { preview: true });
+			} catch (err) {
+				vscode.window.showErrorMessage(`Failed to read development notes: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		})
+	);
+
+	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.resetCopilotModelSelection', async () => {
 			// Clear extension globalState (this is the source of truth now).
 			try {

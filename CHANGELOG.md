@@ -5,7 +5,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [2.5.0] - 2026-02-12
 
-* Support for creating and restoring developement notes per file. Use the command 'Show Development 
+* Support for creating and restoring developement notes per file. Use the command 'Show Development Notes' with a file open to see what metadata the LLM has stored for itself. We'll find a better way to expose this info later on, for now it's good enough.
+* Support for VS Code's built-in memory tool.
+* Bugs
+    * Do not re-scroll the chat window automatically to show me the latest message if I've scrolled it first :)
 
 ## [2.4.0] - 2026-02-12
 

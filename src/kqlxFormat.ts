@@ -150,9 +150,26 @@ export type KqlxSectionV1 =
 			pivotMaxColumns?: number;
 		}
 	| {
+			id?: string;
+			type: 'devnotes';
+			entries?: DevNoteEntry[];
+		}
+	| {
 			type: string;
 			[key: string]: unknown;
 		};
+
+export interface DevNoteEntry {
+	id: string;
+	/** ISO 8601 timestamp */
+	created: string;
+	/** ISO 8601 timestamp, updated when content changes */
+	updated: string;
+	category: 'correction' | 'clarification' | 'schema-hint' | 'usage-note' | 'gotcha';
+	relatedSectionIds?: string[];
+	content: string;
+	source: 'user' | 'copilot' | 'agent';
+}
 
 export interface KqlxStateV1 {
 	caretDocsEnabled?: boolean;

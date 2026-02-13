@@ -973,6 +973,7 @@ window.addEventListener('message', async event => {
 			cachedDatabases = message.cachedDatabases || {};
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
+			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch { /* ignore */ }
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
@@ -1012,6 +1013,50 @@ window.addEventListener('message', async event => {
 			try { updateAutoTriggerAutocompleteToggleButtons(); } catch { /* ignore */ }
 			try { updateCopilotInlineCompletionsToggleButtons(); } catch { /* ignore */ }
 			break;
+		case 'updateDevNotes': {
+			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
+			try {
+				if (!Array.isArray(window.__kustoDevNotesSections)) {
+					window.__kustoDevNotesSections = [];
+				}
+				const action = String(message.action || '');
+				if (action === 'add') {
+					// Ensure a single devnotes section exists
+					let dn = window.__kustoDevNotesSections.find(s => s && s.type === 'devnotes');
+					if (!dn) {
+						dn = { type: 'devnotes', id: 'devnotes_' + Date.now(), entries: [] };
+						window.__kustoDevNotesSections.push(dn);
+					}
+					if (!Array.isArray(dn.entries)) dn.entries = [];
+					// If superseding an existing entry, remove it first
+					if (message.supersedes) {
+						const sid = String(message.supersedes);
+						dn.entries = dn.entries.filter(e => e && String(e.id) !== sid);
+					}
+					if (message.entry && typeof message.entry === 'object') {
+						dn.entries.push(message.entry);
+					}
+				} else if (action === 'remove') {
+					const noteId = String(message.noteId || '');
+					if (noteId) {
+						for (const dn of window.__kustoDevNotesSections) {
+							if (dn && Array.isArray(dn.entries)) {
+								dn.entries = dn.entries.filter(e => e && String(e.id) !== noteId);
+							}
+						}
+					}
+				}
+				// Persist after mutation
+				try { schedulePersist('devnotes-update'); } catch { /* ignore */ }
+			} catch { /* ignore */ }
+			// Respond to extension host if a requestId was provided
+			try {
+				if (message.requestId) {
+					vscode.postMessage({ type: 'updateDevNotesResponse', requestId: message.requestId, success: true });
+				}
+			} catch { /* ignore */ }
+			break;
+		}
 		case 'favoritesData':
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			try {
@@ -1983,6 +2028,35 @@ window.addEventListener('message', async event => {
 					window.__kustoCopilotAppendQuerySnapshot(
 						boxId,
 						message.queryText || '',
+						message.entryId || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotDevNotesContextLoaded':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendDevNotesContext === 'function') {
+					window.__kustoCopilotAppendDevNotesContext(
+						boxId,
+						message.preview || '',
+						message.entryId || ''
+					);
+				}
+			} catch { /* ignore */ }
+			break;
+		case 'copilotDevNoteToolCall':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId && typeof window.__kustoCopilotAppendDevNoteToolCall === 'function') {
+					const detail = message.action === 'save'
+						? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
+						: ('Removed note: ' + (message.noteId || '') + (message.reason ? ' — ' + message.reason : ''));
+					window.__kustoCopilotAppendDevNoteToolCall(
+						boxId,
+						message.action || 'save',
+						detail,
+						message.result || '',
 						message.entryId || ''
 					);
 				}
