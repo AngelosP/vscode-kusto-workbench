@@ -3026,16 +3026,97 @@ function displayResultForBox(result, boxId, options) {
 		'</div>';
 
 	const clientActivityId = metadata && typeof metadata.clientActivityId === 'string' ? metadata.clientActivityId : '';
-	const titleRowTooltipClass = clientActivityId ? ' results-label-tooltip-anchor' : '';
-	const resultsLabelTooltipHtml = clientActivityId
-		? '<div class="results-label-tooltip" id="' + boxId + '_activity_id_tooltip">' +
-		  '<span class="results-label-tooltip-title">Client Activity ID</span>' +
-		  '<span class="results-label-tooltip-value" id="' + boxId + '_client_activity_id">' + clientActivityId + '</span>' +
-		  '<button class="results-label-tooltip-copy" type="button" onclick="event.stopPropagation(); __kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
-		  copyIconSvg +
-		  '</button>' +
-		  '</div>'
-		: '';
+	const serverStats = (metadata && metadata.serverStats && typeof metadata.serverStats === 'object') ? metadata.serverStats : null;
+	const hasTooltipContent = !!(clientActivityId || serverStats);
+	const titleRowTooltipClass = hasTooltipContent ? ' results-label-tooltip-anchor' : '';
+
+	// Build rich tooltip HTML with activity ID + server stats
+	let resultsLabelTooltipHtml = '';
+	if (hasTooltipContent) {
+		let tooltipRows = '';
+
+		// Activity ID row
+		if (clientActivityId) {
+			tooltipRows +=
+				'<div class="results-label-tooltip-row">' +
+				'<span class="results-label-tooltip-title">Client Activity ID</span>' +
+				'<span class="results-label-tooltip-value" id="' + boxId + '_client_activity_id">' + clientActivityId + '</span>' +
+				'<button class="results-label-tooltip-copy" type="button" onclick="event.stopPropagation(); __kustoCopyClientActivityId(\'' + __kustoEscapeJsStringLiteral(boxId) + '\')" title="Copy to clipboard" aria-label="Copy Client Activity ID">' +
+				copyIconSvg +
+				'</button>' +
+				'</div>';
+		}
+
+		// Server stats rows
+		if (serverStats) {
+			const fmtCpuMs = function(ms) {
+				if (ms < 1000) { return ms.toFixed(1) + 'ms'; }
+				return (ms / 1000).toFixed(3) + 's';
+			};
+			const fmtBytes = function(bytes) {
+				if (bytes == null || !isFinite(bytes)) { return '?'; }
+				if (bytes < 1024) { return bytes + ' B'; }
+				if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
+				if (bytes < 1024 * 1024 * 1024) { return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
+				return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+			};
+			const fmtNum = function(n) { return n == null ? '?' : Number(n).toLocaleString(); };
+
+			const statRow = function(label, value) {
+				return '<div class="results-label-tooltip-row results-label-tooltip-stat-row">' +
+					'<span class="results-label-tooltip-title">' + label + '</span>' +
+					'<span class="results-label-tooltip-value">' + value + '</span>' +
+					'</div>';
+			};
+
+			tooltipRows += '<div class="results-label-tooltip-separator"></div>';
+
+			if (serverStats.cpuTimeMs != null && isFinite(serverStats.cpuTimeMs)) {
+				tooltipRows += statRow('Server CPU', fmtCpuMs(serverStats.cpuTimeMs));
+			} else if (serverStats.cpuTime) {
+				tooltipRows += statRow('Server CPU', serverStats.cpuTime);
+			}
+			if (serverStats.peakMemoryPerNode != null && isFinite(serverStats.peakMemoryPerNode)) {
+				tooltipRows += statRow('Peak memory', fmtBytes(serverStats.peakMemoryPerNode));
+			}
+			if (serverStats.extentsScanned != null) {
+				var extLabel = fmtNum(serverStats.extentsScanned);
+				if (serverStats.extentsTotal != null) {
+					extLabel += ' / ' + fmtNum(serverStats.extentsTotal);
+				}
+				tooltipRows += statRow('Extents scanned', extLabel);
+			}
+			// Cache
+			var memHits = typeof serverStats.memoryCacheHits === 'number' ? serverStats.memoryCacheHits : null;
+			var memMisses = typeof serverStats.memoryCacheMisses === 'number' ? serverStats.memoryCacheMisses : null;
+			if (memHits != null || memMisses != null) {
+				var total = (memHits || 0) + (memMisses || 0);
+				var rate = total > 0 ? ((memHits || 0) / total * 100).toFixed(1) + '%' : 'N/A';
+				tooltipRows += statRow('Memory cache', rate + ' (' + fmtNum(memHits || 0) + ' hits, ' + fmtNum(memMisses || 0) + ' misses)');
+			}
+			var diskHits = typeof serverStats.diskCacheHits === 'number' ? serverStats.diskCacheHits : null;
+			var diskMisses = typeof serverStats.diskCacheMisses === 'number' ? serverStats.diskCacheMisses : null;
+			if (diskHits != null || diskMisses != null) {
+				var dTotal = (diskHits || 0) + (diskMisses || 0);
+				var dRate = dTotal > 0 ? ((diskHits || 0) / dTotal * 100).toFixed(1) + '%' : 'N/A';
+				tooltipRows += statRow('Disk cache', dRate + ' (' + fmtNum(diskHits || 0) + ' hits, ' + fmtNum(diskMisses || 0) + ' misses)');
+			}
+			if (serverStats.shardHotHitBytes != null || serverStats.shardHotMissBytes != null) {
+				tooltipRows += statRow('Shard hot cache', fmtBytes(serverStats.shardHotHitBytes || 0) + ' hit / ' + fmtBytes(serverStats.shardHotMissBytes || 0) + ' miss');
+			}
+			if (serverStats.serverRowCount != null) {
+				tooltipRows += statRow('Server row count', fmtNum(serverStats.serverRowCount));
+			}
+			if (serverStats.serverTableSize != null) {
+				tooltipRows += statRow('Result size', fmtBytes(serverStats.serverTableSize));
+			}
+		}
+
+		resultsLabelTooltipHtml =
+			'<div class="results-label-tooltip" id="' + boxId + '_activity_id_tooltip">' +
+			tooltipRows +
+			'</div>';
+	}
 
 	const wasTruncated = !!metadata.persistedTruncated;
 	const originalTotal = (wasTruncated && typeof metadata.persistedTotalRows === 'number' && isFinite(metadata.persistedTotalRows))
@@ -5226,3 +5307,63 @@ function handleTableContextMenu(event, boxId) {
 	}, 0);
 }
 
+
+// ── Fixed-position tooltip for results title row ──
+// Uses position:fixed so the tooltip escapes any overflow:hidden ancestors.
+// A delegated mouseenter/mouseleave handler positions and shows/hides using a class.
+(function __kustoInitResultsLabelTooltipPositioning() {
+	var _hideTimer = null;
+
+	function positionAndShow(anchor) {
+		var tooltip = anchor.querySelector('.results-label-tooltip');
+		if (!tooltip) return;
+		clearTimeout(_hideTimer);
+		// Make it visible first so we can measure it
+		tooltip.classList.add('is-visible');
+		var rect = anchor.getBoundingClientRect();
+		var ttRect = tooltip.getBoundingClientRect();
+		var top = rect.bottom + 4;
+		var left = rect.left;
+		// Prevent overflowing the right edge of the viewport
+		if (left + ttRect.width > window.innerWidth - 8) {
+			left = Math.max(8, window.innerWidth - ttRect.width - 8);
+		}
+		// Prevent overflowing the bottom edge — flip above if needed
+		if (top + ttRect.height > window.innerHeight - 8) {
+			top = Math.max(8, rect.top - ttRect.height - 4);
+		}
+		tooltip.style.top = top + 'px';
+		tooltip.style.left = left + 'px';
+	}
+
+	function scheduleHide(tooltip) {
+		clearTimeout(_hideTimer);
+		_hideTimer = setTimeout(function() {
+			tooltip.classList.remove('is-visible');
+		}, 120);
+	}
+
+	document.addEventListener('mouseenter', function(e) {
+		var anchor = e.target.closest && e.target.closest('.results-label-tooltip-anchor');
+		if (anchor) {
+			positionAndShow(anchor);
+		}
+		// Keep tooltip open while hovering the tooltip itself
+		var tt = e.target.closest && e.target.closest('.results-label-tooltip');
+		if (tt && tt.classList.contains('is-visible')) {
+			clearTimeout(_hideTimer);
+		}
+	}, true);
+
+	document.addEventListener('mouseleave', function(e) {
+		var anchor = e.target.closest && e.target.closest('.results-label-tooltip-anchor');
+		if (anchor) {
+			var tooltip = anchor.querySelector('.results-label-tooltip');
+			if (tooltip) scheduleHide(tooltip);
+		}
+		var tt = e.target.closest && e.target.closest('.results-label-tooltip');
+		if (tt) {
+			scheduleHide(tt);
+		}
+	}, true);
+})();

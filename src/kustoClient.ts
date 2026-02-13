@@ -2,6 +2,44 @@ import { KustoConnection } from './connectionManager';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 
+/**
+ * Server-side resource usage statistics extracted from the Kusto response.
+ * All fields are optional because different cluster versions / configurations
+ * may omit some of them. Extraction is always best-effort.
+ */
+export interface ServerQueryStats {
+	/** Server-reported total CPU time, e.g. "00:00:00.1406250" */
+	cpuTime?: string;
+	/** Server-reported total CPU time in milliseconds (parsed from cpuTime) */
+	cpuTimeMs?: number;
+	/** Peak memory per node in bytes */
+	peakMemoryPerNode?: number;
+	/** Total extents (shards) in the input dataset */
+	extentsTotal?: number;
+	/** Number of extents actually scanned */
+	extentsScanned?: number;
+	/** Memory cache hits */
+	memoryCacheHits?: number;
+	/** Memory cache misses */
+	memoryCacheMisses?: number;
+	/** Disk cache hits */
+	diskCacheHits?: number;
+	/** Disk cache misses */
+	diskCacheMisses?: number;
+	/** Shard hot cache hit bytes */
+	shardHotHitBytes?: number;
+	/** Shard hot cache miss bytes */
+	shardHotMissBytes?: number;
+	/** Server-side execution time in seconds (from the Payload JSON) */
+	serverExecutionTimeSec?: number;
+	/** Total rows returned as reported by the server */
+	serverRowCount?: number;
+	/** Total table size in bytes as reported by the server */
+	serverTableSize?: number;
+	/** The full raw resource_usage object for advanced inspection */
+	raw?: Record<string, unknown>;
+}
+
 export interface QueryResult {
 	columns: string[];
 	rows: any[][];
@@ -10,6 +48,7 @@ export interface QueryResult {
 		database: string;
 		executionTime: string;
 		clientActivityId?: string;
+		serverStats?: ServerQueryStats;
 	};
 }
 
@@ -180,6 +219,128 @@ export class KustoQueryClient {
 				if (typeof id === 'string' && id.trim()) {
 					return id.trim();
 				}
+			}
+		} catch {
+			// Extraction is best-effort; never let it break query execution.
+		}
+		return undefined;
+	}
+
+	/**
+	 * Parses a Kusto timespan string like "00:00:01.1406250" into milliseconds.
+	 * Returns undefined if the string is not parseable.
+	 */
+	private static parseKustoTimespan(ts: string | undefined): number | undefined {
+		if (!ts || typeof ts !== 'string') {
+			return undefined;
+		}
+		// Format: [d.]hh:mm:ss[.fffffff]
+		const m = ts.match(/^(?:(\d+)\.)?(\d+):(\d+):(\d+(?:\.\d+)?)$/);
+		if (!m) {
+			return undefined;
+		}
+		const days = m[1] ? parseInt(m[1], 10) : 0;
+		const hours = parseInt(m[2], 10);
+		const minutes = parseInt(m[3], 10);
+		const seconds = parseFloat(m[4]);
+		return ((days * 86400 + hours * 3600 + minutes * 60 + seconds) * 1000);
+	}
+
+	/**
+	 * Extracts server-side resource usage statistics from the Kusto response.
+	 * Works with V2 responses where the statusTable rows have a `Payload` column
+	 * containing a JSON string with `resource_usage`, `dataset_statistics`, and
+	 * `input_dataset_statistics`.
+	 * Also handles V1 responses where the status column is `StatusDescription`.
+	 */
+	private extractServerStats(result: any): ServerQueryStats | undefined {
+		try {
+			const statusTable = result?.statusTable;
+			if (!statusTable || !statusTable._rows || statusTable._rows.length === 0) {
+				return undefined;
+			}
+
+			// Look for a row whose Payload (V2) or StatusDescription (V1) contains
+			// resource_usage information.
+			for (const row of statusTable.rows()) {
+				const payloadRaw = row?.['Payload'] ?? row?.['StatusDescription'];
+				if (!payloadRaw) {
+					continue;
+				}
+
+				let payload: any;
+				if (typeof payloadRaw === 'string') {
+					try {
+						payload = JSON.parse(payloadRaw);
+					} catch {
+						continue;
+					}
+				} else if (typeof payloadRaw === 'object') {
+					payload = payloadRaw;
+				} else {
+					continue;
+				}
+
+				const ru = payload?.resource_usage;
+				if (!ru) {
+					continue;
+				}
+
+				const stats: ServerQueryStats = {};
+
+				// CPU
+				const cpuStr = ru?.cpu?.['total cpu'] ?? ru?.cpu?.total_cpu;
+				if (typeof cpuStr === 'string') {
+					stats.cpuTime = cpuStr;
+					stats.cpuTimeMs = KustoQueryClient.parseKustoTimespan(cpuStr);
+				}
+
+				// Memory
+				const peakMem = ru?.memory?.peak_per_node;
+				if (typeof peakMem === 'number' && isFinite(peakMem)) {
+					stats.peakMemoryPerNode = peakMem;
+				}
+
+				// Cache
+				const memCache = ru?.cache?.memory;
+				if (memCache) {
+					if (typeof memCache.hits === 'number') { stats.memoryCacheHits = memCache.hits; }
+					if (typeof memCache.misses === 'number') { stats.memoryCacheMisses = memCache.misses; }
+				}
+				const diskCache = ru?.cache?.disk;
+				if (diskCache) {
+					if (typeof diskCache.hits === 'number') { stats.diskCacheHits = diskCache.hits; }
+					if (typeof diskCache.misses === 'number') { stats.diskCacheMisses = diskCache.misses; }
+				}
+				const shardHot = ru?.cache?.shards?.hot;
+				if (shardHot) {
+					if (typeof shardHot.hitbytes === 'number') { stats.shardHotHitBytes = shardHot.hitbytes; }
+					if (typeof shardHot.missbytes === 'number') { stats.shardHotMissBytes = shardHot.missbytes; }
+				}
+
+				// Extents
+				const extents = payload?.input_dataset_statistics?.extents;
+				if (extents) {
+					if (typeof extents.total === 'number') { stats.extentsTotal = extents.total; }
+					if (typeof extents.scanned === 'number') { stats.extentsScanned = extents.scanned; }
+				}
+
+				// Server execution time
+				if (typeof payload.ExecutionTime === 'number') {
+					stats.serverExecutionTimeSec = payload.ExecutionTime;
+				}
+
+				// Dataset statistics
+				const ds = payload?.dataset_statistics;
+				if (Array.isArray(ds) && ds.length > 0) {
+					if (typeof ds[0].table_row_count === 'number') { stats.serverRowCount = ds[0].table_row_count; }
+					if (typeof ds[0].table_size === 'number') { stats.serverTableSize = ds[0].table_size; }
+				}
+
+				// Keep the raw object for advanced users
+				stats.raw = ru;
+
+				return stats;
 			}
 		} catch {
 			// Extraction is best-effort; never let it break query execution.
@@ -829,6 +990,7 @@ export class KustoQueryClient {
 			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 			const clientActivityId = this.extractClientActivityId(result);
+			const serverStats = this.extractServerStats(result);
 			
 			// Get the primary result
 			const primaryResults = result.primaryResults[0];
@@ -921,7 +1083,8 @@ export class KustoQueryClient {
 					cluster: connection.clusterUrl,
 					database: database,
 					executionTime,
-					clientActivityId
+					clientActivityId,
+					serverStats
 				}
 			};
 		} catch (error) {
@@ -1009,6 +1172,7 @@ export class KustoQueryClient {
 				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 				const clientActivityId = this.extractClientActivityId(result);
+				const serverStats = this.extractServerStats(result);
 
 				const primaryResults = result.primaryResults[0];
 				const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
@@ -1075,7 +1239,8 @@ export class KustoQueryClient {
 						cluster: connection.clusterUrl,
 						database: database,
 						executionTime,
-						clientActivityId
+						clientActivityId,
+						serverStats
 					}
 				};
 			} catch (error) {

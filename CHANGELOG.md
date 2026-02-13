@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.6.0] - 2026-02-12
+
+* Support for server-side performance statistics. They are now surfaced for single queries on hover over the results label, and also automatically when it tool is doing a performance comparison in the 'How do the two queries compare?' section. It's beautiful.
+
 ## [2.5.0] - 2026-02-12
 
 * Support for creating and restoring developement notes per file. Use the command 'Show Development Notes' with a file open to see what metadata the LLM has stored for itself. We'll find a better way to expose this info later on, for now it's good enough.

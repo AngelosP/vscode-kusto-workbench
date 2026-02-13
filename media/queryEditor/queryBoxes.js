@@ -3449,6 +3449,98 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	} else if (sourceExecTime && comparisonExecTime) {
 		perfMessage = `<span style="color: #cccccc;">${sourceExecTime} \u2192 ${comparisonExecTime}</span>`;
 	}
+
+	// ─── Server-side statistics comparison ───
+	const sourceStats = (sourceState.metadata && sourceState.metadata.serverStats) || null;
+	const comparisonStats = (comparisonState.metadata && comparisonState.metadata.serverStats) || null;
+
+	// Helper: format a delta metric line.
+	// sourceVal/comparisonVal are numbers (or null/undefined to skip).
+	// options: { emoji, label, formatter, lowerIsBetter (default true), unit (for raw fallback) }
+	const formatDelta = (sourceVal, comparisonVal, opts) => {
+		const emoji = opts.emoji || '';
+		const label = opts.label || '';
+		const fmt = opts.formatter || ((v) => String(v));
+		const lowerIsBetter = opts.lowerIsBetter !== false;
+
+		if (sourceVal == null || comparisonVal == null || !isFinite(sourceVal) || !isFinite(comparisonVal)) {
+			return null; // not available
+		}
+
+		const sFormatted = fmt(sourceVal);
+		const cFormatted = fmt(comparisonVal);
+
+		if (sourceVal === 0 && comparisonVal === 0) {
+			return `<div class="comparison-metric">${emoji} ${label}: <span style="color: #cccccc;">${sFormatted} \u2192 ${cFormatted} (no change)</span></div>`;
+		}
+
+		const diff = sourceVal - comparisonVal;
+		if (diff === 0) {
+			return `<div class="comparison-metric">${emoji} ${label}: <span style="color: #cccccc;">${sFormatted} \u2192 ${cFormatted} (no change)</span></div>`;
+		}
+
+		const base = sourceVal !== 0 ? sourceVal : 1;
+		const pct = Math.abs((diff / base) * 100).toFixed(1);
+		// "improved" means lower-is-better and value went down, or higher-is-better and value went up.
+		const improved = lowerIsBetter ? (diff > 0) : (diff < 0);
+		const verb = lowerIsBetter ? (improved ? 'less' : 'more') : (improved ? 'more' : 'less');
+		const color = improved ? '#89d185' : '#f48771';
+		const icon = improved ? '\u2713' : '\u26a0';
+
+		return `<div class="comparison-metric">${emoji} ${label}: <span style="color: ${color};">${icon} ${pct}% ${verb} (${sFormatted} \u2192 ${cFormatted})</span></div>`;
+	};
+
+	// Formatters
+	const fmtCpuMs = (ms) => {
+		if (ms < 1000) { return ms.toFixed(1) + 'ms'; }
+		return (ms / 1000).toFixed(3) + 's';
+	};
+	const fmtBytes = (bytes) => {
+		if (bytes == null || !isFinite(bytes)) { return '?'; }
+		if (bytes < 1024) { return bytes + ' B'; }
+		if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
+		if (bytes < 1024 * 1024 * 1024) { return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
+		return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+	};
+	const fmtNum = (n) => {
+		if (n == null) { return '?'; }
+		return Number(n).toLocaleString();
+	};
+
+	// Build per-metric lines (only shown when server stats are available for both)
+	let cpuMessage = null;
+	let memoryMessage = null;
+	let extentsMessage = null;
+	let cacheMessage = null;
+
+	if (sourceStats && comparisonStats) {
+		cpuMessage = formatDelta(sourceStats.cpuTimeMs, comparisonStats.cpuTimeMs, {
+			emoji: '\uD83D\uDDA5\uFE0F', label: 'Server CPU', formatter: fmtCpuMs, lowerIsBetter: true
+		});
+		memoryMessage = formatDelta(sourceStats.peakMemoryPerNode, comparisonStats.peakMemoryPerNode, {
+			emoji: '\uD83D\uDCBE', label: 'Peak memory', formatter: fmtBytes, lowerIsBetter: true
+		});
+		extentsMessage = formatDelta(sourceStats.extentsScanned, comparisonStats.extentsScanned, {
+			emoji: '\uD83D\uDCCA', label: 'Extents scanned', formatter: fmtNum, lowerIsBetter: true
+		});
+
+		// Cache hit rate: compute as percentage hits/(hits+misses), compare the rates.
+		const cacheRate = (stats) => {
+			const mh = typeof stats.memoryCacheHits === 'number' ? stats.memoryCacheHits : 0;
+			const mm = typeof stats.memoryCacheMisses === 'number' ? stats.memoryCacheMisses : 0;
+			const dh = typeof stats.diskCacheHits === 'number' ? stats.diskCacheHits : 0;
+			const dm = typeof stats.diskCacheMisses === 'number' ? stats.diskCacheMisses : 0;
+			const hits = mh + dh;
+			const total = hits + mm + dm;
+			return total > 0 ? (hits / total) * 100 : null;
+		};
+		const sourceRate = cacheRate(sourceStats);
+		const comparisonRate = cacheRate(comparisonStats);
+		const fmtRate = (r) => r.toFixed(1) + '%';
+		cacheMessage = formatDelta(sourceRate, comparisonRate, {
+			emoji: '\uD83C\uDFAF', label: 'Cache hit rate', formatter: fmtRate, lowerIsBetter: false
+		});
+	}
 	
 	// Check data consistency.
 	// Data matches if:
@@ -3586,6 +3678,10 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			<strong>How do the two queries compare?</strong>
 			<div class="comparison-metrics">
 				<div class="comparison-metric">\u26a1 Execution speed: ${perfMessage}</div>
+				${cpuMessage || ''}
+				${memoryMessage || ''}
+				${extentsMessage || ''}
+				${cacheMessage || ''}
 				<div class="comparison-metric">\ud83d\udccb Data returned: ${dataMessage}</div>
 			</div>
 		</div>

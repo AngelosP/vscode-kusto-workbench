@@ -90,6 +90,12 @@ If you have an existing query that you want to improve without changing its beha
 
 ![Performance optmization of an existing query](marketplace-media/perf-optimization.png)
 
+Now with server-side stats too!
+
+![Performance optmization of an existing query using server-side stats](marketplace-media/perf-optimization-server-side-stats.png)
+
+![QUery execution with server-side stats](marketplace-media/query-execution-server-side-stats.png)
+
 ### Create Azure Data Explorer links to share
 
 It's always nice to be able to share a query using a hyperlink, and with this extension it's just a single click.
