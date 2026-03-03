@@ -3,9 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [2.7.0] - 2026-03-02
+## [2.7.0] - 2026-03-03
 
 * Changed the order in which sections are listed in the Connection Manager
+* Preview the top 100 rows through Cluster Explorer
+* Bugs
+    * Simple .kql files would ask to be saved after opening and after saving the file would be blank
 
 ## [2.6.0] - 2026-02-12
 

@@ -503,13 +503,25 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 					})();
 
+					// Normalize line endings before comparing to prevent false dirty state
+					// from EOL differences (Monaco normalizes CRLF → LF, but the TextDocument
+					// may still have CRLF). Without this, merely selecting a cluster/database
+					// on a Windows-EOL .kql file would mark the document dirty.
+					const normalizeEol = (s: string) => s.replace(/\r\n/g, '\n');
+					const textActuallyChanged = normalizeEol(nextText) !== normalizeEol(currentText);
+
+					// Safety net: never replace non-empty file content with empty text.
+					// This protects against race conditions where the webview sends empty
+					// query text (e.g., Monaco editor not yet initialized).
+					const wouldBlankFile = !nextText.trim() && !!currentText.trim();
+
 					const fullRange = new vscode.Range(
 						0,
 						0,
 						document.lineCount ? document.lineCount - 1 : 0,
 						document.lineCount ? document.lineAt(document.lineCount - 1).text.length : 0
 					);
-					if (nextText !== currentText) {
+					if (textActuallyChanged && !wouldBlankFile) {
 						const edit = new vscode.WorkspaceEdit();
 						edit.replace(document.uri, fullRange, nextText);
 						await vscode.workspace.applyEdit(edit);

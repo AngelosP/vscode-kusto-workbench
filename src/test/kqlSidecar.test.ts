@@ -416,6 +416,235 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('persistDocument with only cluster/database change should not dirty a .kql file without companion', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const appliedEdits: vscode.WorkspaceEdit[] = [];
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-'));
+		const kqlPath = path.join(tmpDir, 'test.kql');
+
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			// Track edits applied by the extension.
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				appliedEdits.push(edit);
+				return true;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+
+			fs.writeFileSync(kqlPath, 'StormEvents | take 5', 'utf8');
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (KqlCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as KqlCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(kqlPath),
+				getText: () => 'StormEvents | take 5',
+				lineCount: 1,
+				lineAt: () => ({ text: 'StormEvents | take 5' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => { posted.push(msg); return true; },
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+			assert.ok(receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			// Simulate: user picks a cluster and database, but query text is unchanged.
+			await Promise.resolve(
+				receiveHandler!({
+					type: 'persistDocument',
+					state: {
+						sections: [{
+							type: 'query',
+							query: 'StormEvents | take 5',
+							clusterUrl: 'https://example.kusto.windows.net',
+							database: 'MyDb'
+						}]
+					}
+				})
+			);
+
+			assert.strictEqual(appliedEdits.length, 0, 'no edit should be applied when only cluster/database changed');
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('persistDocument with only EOL difference should not dirty a .kql file without companion', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const appliedEdits: vscode.WorkspaceEdit[] = [];
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-'));
+		const kqlPath = path.join(tmpDir, 'test.kql');
+
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				appliedEdits.push(edit);
+				return true;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+
+			// File on disk has CRLF line endings (typical Windows).
+			fs.writeFileSync(kqlPath, 'StormEvents\r\n| take 5', 'utf8');
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (KqlCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as KqlCompatEditorProvider;
+
+			// Simulate TextDocument with CRLF.
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(kqlPath),
+				getText: () => 'StormEvents\r\n| take 5',
+				lineCount: 2,
+				lineAt: (line: number) => ({ text: line === 0 ? 'StormEvents' : '| take 5' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => { posted.push(msg); return true; },
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+			assert.ok(receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			// Monaco normalizes CRLF to LF. The persist sends LF-only text.
+			await Promise.resolve(
+				receiveHandler!({
+					type: 'persistDocument',
+					state: {
+						sections: [{
+							type: 'query',
+							query: 'StormEvents\n| take 5'  // LF only (Monaco normalization)
+						}]
+					}
+				})
+			);
+
+			assert.strictEqual(appliedEdits.length, 0, 'no edit should be applied for EOL-only difference');
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('persistDocument should never replace non-empty .kql content with empty text', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const appliedEdits: vscode.WorkspaceEdit[] = [];
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-'));
+		const kqlPath = path.join(tmpDir, 'test.kql');
+
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				appliedEdits.push(edit);
+				return true;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+
+			fs.writeFileSync(kqlPath, 'StormEvents | take 5', 'utf8');
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (KqlCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as KqlCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(kqlPath),
+				getText: () => 'StormEvents | take 5',
+				lineCount: 1,
+				lineAt: () => ({ text: 'StormEvents | take 5' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => { posted.push(msg); return true; },
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+			assert.ok(receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			// Simulate: webview sends empty query (e.g., Monaco not loaded yet, race condition).
+			await Promise.resolve(
+				receiveHandler!({
+					type: 'persistDocument',
+					state: {
+						sections: [{
+							type: 'query',
+							query: '',
+							clusterUrl: 'https://example.kusto.windows.net',
+							database: 'MyDb'
+						}]
+					}
+				})
+			);
+
+			assert.strictEqual(appliedEdits.length, 0, 'should never replace non-empty content with empty text');
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('.kqlx-format .kql.json with linkedQueryPath hydrates query text from linked file', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];

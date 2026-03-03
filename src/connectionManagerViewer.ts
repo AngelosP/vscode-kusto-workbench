@@ -61,7 +61,8 @@ type IncomingMessage =
 	| { type: 'connection.importXml' }
 	| { type: 'database.openInNewFile'; clusterUrl: string; database: string }
 	| { type: 'database.refreshSchema'; clusterUrl: string; database: string }
-	| { type: 'cluster.refreshSchema'; connectionId: string };
+	| { type: 'cluster.refreshSchema'; connectionId: string }
+	| { type: 'table.preview'; connectionId: string; database: string; tableName: string };
 
 export class ConnectionManagerViewer {
 	private static current: ConnectionManagerViewer | undefined;
@@ -766,6 +767,67 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
+			case 'table.preview': {
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				const tableName = String(msg.tableName || '').trim();
+				if (!connectionId || !database || !tableName) {
+					return;
+				}
+
+				const connections = this.connectionManager.getConnections();
+				const conn = connections.find((c) => c.id === connectionId);
+				if (!conn) {
+					this.panel.webview.postMessage({
+						type: 'tablePreviewResult',
+						connectionId,
+						database,
+						tableName,
+						success: false,
+						error: 'Connection not found.'
+					});
+					return;
+				}
+
+				this.panel.webview.postMessage({
+					type: 'tablePreviewLoading',
+					connectionId,
+					database,
+					tableName
+				});
+
+				try {
+					// Use bracket notation to safely handle table names with special characters
+					const safeTableName = `['${tableName.replace(/'/g, "''")}']`;
+					const query = `${safeTableName} | take 100`;
+					const result = await this.kustoClient.executeQuery(conn, database, query);
+					this.panel.webview.postMessage({
+						type: 'tablePreviewResult',
+						connectionId,
+						database,
+						tableName,
+						success: true,
+						columns: result.columns,
+						rows: result.rows,
+						rowCount: result.rows.length,
+						executionTime: result.metadata?.executionTime
+					});
+				} catch (error) {
+					const isAuthError = this.kustoClient.isAuthenticationError(error);
+					this.panel.webview.postMessage({
+						type: 'tablePreviewResult',
+						connectionId,
+						database,
+						tableName,
+						success: false,
+						error: isAuthError
+							? 'Authentication required. Please test the connection to sign in.'
+							: error instanceof Error ? error.message : String(error)
+					});
+				}
+				return;
+			}
+
 			default:
 				return;
 		}
@@ -924,12 +986,15 @@ export class ConnectionManagerViewer {
 	}
 
 	private buildHtml(webview: vscode.Webview): string {
-		const nonce = String(Date.now()) + Math.random().toString(16).slice(2);
+		const resultsTableJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor', 'resultsTable.js')).toString();
+		const searchControlJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor', 'searchControl.js')).toString();
+		const columnAnalysisJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor', 'columnAnalysis.js')).toString();
+		const queryEditorCssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'queryEditor.css')).toString();
 		const csp = [
 			"default-src 'none'",
 			"img-src data:",
 			`style-src 'unsafe-inline' ${webview.cspSource}`,
-			`script-src 'nonce-${nonce}' ${webview.cspSource}`
+			`script-src 'unsafe-inline' ${webview.cspSource}`
 		].join('; ');
 
 		return `<!doctype html>
@@ -939,6 +1004,7 @@ export class ConnectionManagerViewer {
 	<meta http-equiv="Content-Security-Policy" content="${csp}">
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>${VIEW_TITLE}</title>
+	<link rel="stylesheet" href="${queryEditorCssUri}" />
 	<style>
 		*, *::before, *::after { box-sizing: border-box; }
 		body.vscode-light, body.vscode-high-contrast-light { color-scheme: light; }
@@ -2008,6 +2074,112 @@ export class ConnectionManagerViewer {
 			flex-shrink: 0;
 			opacity: 0.6;
 			cursor: help;
+
+		/* Table preview */
+		}
+
+		.preview-action {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 6px 10px;
+			margin-top: 8px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 11px;
+			color: var(--vscode-textLink-foreground);
+			background: transparent;
+			border: 1px solid var(--vscode-editorWidget-border);
+			transition: background 0.15s;
+		}
+
+		.preview-action:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.preview-action.loading {
+			opacity: 0.7;
+			pointer-events: none;
+		}
+
+		.preview-action svg {
+			width: 14px;
+			height: 14px;
+			fill: currentColor;
+		}
+
+		.preview-result {
+			margin-top: 8px;
+		}
+
+		.preview-result-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			margin-bottom: 4px;
+		}
+
+		.preview-result-info {
+			font-size: 10px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.preview-result-dismiss {
+			background: none;
+			border: none;
+			cursor: pointer;
+			color: var(--vscode-descriptionForeground);
+			opacity: 0.7;
+			padding: 2px;
+		}
+
+		.preview-result-dismiss:hover {
+			opacity: 1;
+		}
+
+		.preview-result-dismiss svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		.preview-table-container {
+			max-height: 400px;
+			overflow: hidden;
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-radius: 4px;
+			display: flex;
+			flex-direction: column;
+		}
+
+		/* Override resultsTable styles for compact preview context */
+		.preview-table-container .results-header {
+			padding: 4px 8px;
+			min-height: auto;
+		}
+
+		.preview-table-container .results-title-row {
+			font-size: 11px;
+		}
+
+		.preview-table-container .results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: hidden;
+		}
+
+		.preview-table-container .table-container {
+			max-height: none;
+		}
+
+		.preview-error {
+			margin-top: 8px;
+			padding: 6px 10px;
+			font-size: 11px;
+			color: var(--vscode-errorForeground);
+			background: rgba(255, 0, 0, 0.08);
+			border-radius: 4px;
+			border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(255, 0, 0, 0.3));
 		}
 
 		.explorer-schema-col-doc svg {
@@ -2781,7 +2953,21 @@ export class ConnectionManagerViewer {
 		</div>
 	</div>
 
-	<script nonce="${nonce}">
+	<!-- Stubs for resultsTable.js dependencies not available in connection manager -->
+	<script>
+		var schedulePersist = null;
+		function toggleQueryResultsVisibility(boxId) {
+			try { if (typeof __kustoSetResultsVisible === 'function') { __kustoSetResultsVisible(boxId); } } catch {}
+		}
+		function __kustoApplyResultsVisibility() {}
+		function __kustoUpdateQueryResultsToggleButton() {}
+		function __kustoOnResultsVisibilityToggled() {}
+	</script>
+	<script src="${searchControlJsUri}"></script>
+	<script src="${resultsTableJsUri}"></script>
+	<script src="${columnAnalysisJsUri}"></script>
+
+	<script>
 		var vscode = acquireVsCodeApi();
 		var lastSnapshot = null;
 		var selectedConnectionId = null;
@@ -2790,6 +2976,7 @@ export class ConnectionManagerViewer {
 		var expandedFolders = new Set(); // Track expanded Tables/Functions folders
 		var expandedTables = new Set(); // Track expanded tables (showing details)
 		var expandedFunctions = new Set(); // Track expanded functions (showing details)
+		var tablePreviewData = {}; // In-memory preview data: { [tableKey]: { loading, columns, rows, rowCount, executionTime, error } }
 		var loadingDatabases = new Set();
 		var databaseSchemas = {};
 		// Navigation path for breadcrumb: { connectionId, database?, section?, folderPath? }
@@ -2895,7 +3082,8 @@ export class ConnectionManagerViewer {
 			back: '${this.escapeJs(this.getBackIcon())}',
 			sidebar: '${this.escapeJs(this.getSidebarIcon())}',
 			shield: '${this.escapeJs(this.getShieldIcon())}',
-			newFile: '${this.escapeJs(this.getNewFileIcon())}'
+			newFile: '${this.escapeJs(this.getNewFileIcon())}',
+			close: '${this.escapeJs(this.getCloseIcon())}'
 		};
 
 		// Helper to build header with toggle button
@@ -3387,6 +3575,39 @@ export class ConnectionManagerViewer {
 								});
 								html += '</div>';
 							}
+
+							// Preview data section
+							var previewData = tablePreviewData[tableKey];
+							if (previewData && previewData.loading) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="preview-action loading">' + ICONS.spinner + ' Loading preview\u2026</div>';
+								html += '</div>';
+							} else if (previewData && previewData.error) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="preview-error">' + escapeHtml(previewData.error) + '</div>';
+								html += '<button class="preview-action" data-preview-table="' + escapeHtml(tableKey) + '" data-preview-table-name="' + escapeHtml(table) + '">' + ICONS.table + ' Retry preview</button>';
+								html += '</div>';
+							} else if (previewData && previewData.columns) {
+								html += '<div class="explorer-detail-section">';
+								html += '<div class="preview-result">';
+								html += '<div class="preview-result-header">';
+								html += '<span class="preview-result-info">Preview</span>';
+								html += '<button class="preview-result-dismiss" data-dismiss-preview="' + escapeHtml(tableKey) + '" title="Dismiss preview">' + ICONS.close + '</button>';
+								html += '</div>';
+								if (previewData.rows.length > 0) {
+									var previewBoxId = 'preview_' + tableKey.replace(/[^a-zA-Z0-9]/g, '_');
+									html += '<div class="preview-table-container" id="' + previewBoxId + '_results"></div>';
+								} else {
+									html += '<div style="font-size: 11px; opacity: 0.7; padding: 4px 0;">Table is empty.</div>';
+								}
+								html += '</div>';
+								html += '</div>';
+							} else {
+								// Show the preview action button
+								html += '<div class="explorer-detail-section">';
+								html += '<button class="preview-action" data-preview-table="' + escapeHtml(tableKey) + '" data-preview-table-name="' + escapeHtml(table) + '">' + ICONS.table + ' Preview top 100 rows</button>';
+								html += '</div>';
+							}
 							
 							html += '</div>';
 						}
@@ -3485,6 +3706,26 @@ export class ConnectionManagerViewer {
 			
 			html += '</div>';
 			content.innerHTML = html;
+
+			// Post-render: populate any preview result containers with the tabular control
+			if (typeof displayResultForBox === 'function') {
+				Object.keys(tablePreviewData).forEach(function(key) {
+					var pd = tablePreviewData[key];
+					if (pd && pd.columns && pd.rows && pd.rows.length > 0) {
+						var previewBoxId = 'preview_' + key.replace(/[^a-zA-Z0-9]/g, '_');
+						var resultsDiv = document.getElementById(previewBoxId + '_results');
+						if (resultsDiv) {
+							try {
+								displayResultForBox(
+									{ columns: pd.columns, rows: pd.rows, metadata: { executionTime: pd.executionTime } },
+									previewBoxId,
+									{ resultsDiv: resultsDiv, label: 'Preview', showExecutionTime: true }
+								);
+							} catch (e) { /* ignore */ }
+						}
+					}
+				});
+			}
 		}
 
 		function renderAll() {
@@ -3871,6 +4112,33 @@ export class ConnectionManagerViewer {
 				return;
 			}
 
+			// Preview table data (top 100 rows)
+			var previewBtn = closest(target, '[data-preview-table]');
+			if (previewBtn) {
+				var prevTableKey = previewBtn.getAttribute('data-preview-table');
+				var prevTableName = previewBtn.getAttribute('data-preview-table-name');
+				if (prevTableKey && prevTableName && selectedConnectionId && explorerPath && explorerPath.database) {
+					vscode.postMessage({
+						type: 'table.preview',
+						connectionId: selectedConnectionId,
+						database: explorerPath.database,
+						tableName: prevTableName
+					});
+				}
+				return;
+			}
+
+			// Dismiss preview data
+			var dismissBtn = closest(target, '[data-dismiss-preview]');
+			if (dismissBtn) {
+				var dismissKey = dismissBtn.getAttribute('data-dismiss-preview');
+				if (dismissKey) {
+					delete tablePreviewData[dismissKey];
+					renderExplorer();
+				}
+				return;
+			}
+
 			// Toggle table expand/collapse (show details inline)
 			var toggleTable = closest(target, '[data-toggle-table]');
 			if (toggleTable) {
@@ -4052,6 +4320,33 @@ export class ConnectionManagerViewer {
 						btn.removeAttribute('disabled');
 						btn.innerHTML = ICONS.refresh;
 					});
+					break;
+				}
+
+				case 'tablePreviewLoading': {
+					var prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+					tablePreviewData[prevKey] = { loading: true };
+					renderExplorer();
+					break;
+				}
+
+				case 'tablePreviewResult': {
+					var prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+					if (msg.success) {
+						tablePreviewData[prevKey] = {
+							loading: false,
+							columns: msg.columns,
+							rows: msg.rows,
+							rowCount: msg.rowCount,
+							executionTime: msg.executionTime
+						};
+					} else {
+						tablePreviewData[prevKey] = {
+							loading: false,
+							error: msg.error || 'Failed to load preview.'
+						};
+					}
+					renderExplorer();
 					break;
 				}
 			}

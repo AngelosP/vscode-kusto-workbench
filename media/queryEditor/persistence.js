@@ -1017,6 +1017,10 @@ function getKqlxState() {
 }
 
 var __kustoLastPersistSignature = '';
+// In compatibility mode (no sidecar), only the query text is saved to disk.
+// Track the last query text separately so cluster/database-only changes don't
+// trigger unnecessary persistDocument messages that would dirty the file.
+var __kustoLastCompatQueryText = '';
 
 function schedulePersist(reason, immediate) {
 	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
@@ -1035,6 +1039,35 @@ function schedulePersist(reason, immediate) {
 				if (sig && sig === __kustoLastPersistSignature) {
 					return;
 				}
+
+				// In compatibility mode (.kql/.csl without companion file), the only
+				// thing we persist to disk is the query text itself. Cluster/database
+				// selection changes should NOT mark the document dirty because there is
+				// nowhere to save that metadata. Skip the persist if only metadata changed.
+				if (window.__kustoCompatibilityMode) {
+					try {
+						var compatQueryText = '';
+						var sections = (state && Array.isArray(state.sections)) ? state.sections : [];
+						var firstQ = null;
+						for (var si = 0; si < sections.length; si++) {
+							if (sections[si] && String(sections[si].type || '') === 'query') {
+								firstQ = sections[si];
+								break;
+							}
+						}
+						if (firstQ && typeof firstQ.query === 'string') {
+							compatQueryText = firstQ.query;
+						}
+						if (compatQueryText === __kustoLastCompatQueryText) {
+							// Only metadata changed (cluster, database, etc.) — skip persist.
+							// Still update the full signature so it stays in sync.
+							if (sig) { __kustoLastPersistSignature = sig; }
+							return;
+						}
+						__kustoLastCompatQueryText = compatQueryText;
+					} catch { /* ignore */ }
+				}
+
 				if (sig) {
 					__kustoLastPersistSignature = sig;
 				}
@@ -1230,6 +1263,10 @@ function applyKqlxState(state) {
 			} catch {
 				// ignore
 			}
+			// Initialize the compat query text tracker so the first schedulePersist
+			// after restore recognizes the baseline and only sends persistDocument
+			// when the user actually edits the query text (not just cluster/database).
+			try { __kustoLastCompatQueryText = singleText; } catch { /* ignore */ }
 			return;
 		}
 
