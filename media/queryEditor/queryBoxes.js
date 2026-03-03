@@ -6512,7 +6512,18 @@ function updateConnectionSelects() {
 			const currentValue = select.value;
 			const desiredClusterUrl = (select.dataset && select.dataset.desiredClusterUrl) ? String(select.dataset.desiredClusterUrl) : '';
 			let resolvedDesiredId = '';
+			let resolvedCurrentId = '';
+			let resolvedLastId = '';
 			try {
+				if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
+					for (const c of (connections || [])) {
+						if (!c) continue;
+						if (String(c.id || '') === String(currentValue)) {
+							resolvedCurrentId = String(c.id || '');
+							break;
+						}
+					}
+				}
 				if (!resolvedDesiredId && desiredClusterUrl) {
 					const target = normalizeClusterUrlKey(desiredClusterUrl);
 					for (const c of (connections || [])) {
@@ -6535,6 +6546,15 @@ function updateConnectionSelects() {
 						}
 					}
 				}
+				if (!resolvedLastId && lastConnectionId) {
+					for (const c of (connections || [])) {
+						if (!c) continue;
+						if (String(c.id || '') === String(lastConnectionId)) {
+							resolvedLastId = String(c.id || '');
+							break;
+						}
+					}
+				}
 			} catch {
 				// ignore
 			}
@@ -6552,18 +6572,23 @@ function updateConnectionSelects() {
 					.join('');
 
 			// Restore: prefer desired selection from persisted document state.
-			if (!currentValue && resolvedDesiredId) {
+			if (resolvedDesiredId) {
+				const changed = String(currentValue || '') !== String(resolvedDesiredId || '');
 				select.value = resolvedDesiredId;
-				try { delete select.dataset.desiredClusterUrl; } catch { /* ignore */ }
 				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
-				updateDatabaseField(id);
-			} else if (!currentValue && lastConnectionId) {
-				// Pre-fill with last selection if this is a new box.
-				select.value = lastConnectionId;
+				if (changed) {
+					updateDatabaseField(id);
+				}
+			} else if (resolvedCurrentId) {
+				select.value = resolvedCurrentId;
+			} else if (resolvedLastId) {
+				// Pre-fill with last selection when nothing else is available.
+				const changed = String(currentValue || '') !== String(resolvedLastId || '');
+				select.value = resolvedLastId;
 				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
-				updateDatabaseField(id);
-			} else if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
-				select.value = currentValue;
+				if (changed) {
+					updateDatabaseField(id);
+				}
 			}
 			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
 		}
@@ -6600,14 +6625,30 @@ function updateDatabaseField(boxId) {
 	}
 	if (connectionSelect) {
 		connectionSelect.dataset.prevValue = connectionId;
-		// Persist selection immediately so VS Code Problems can reflect current schema context.
+		// Keep a stable per-box desired cluster so selection can be restored even if
+		// the <select> is rebuilt while connections are temporarily out of sync.
 		try {
-			vscode.postMessage({
-				type: 'saveLastSelection',
-				connectionId: String(connectionId || ''),
-				// Connection change invalidates any prior DB selection until the DB dropdown refreshes.
-				database: ''
-			});
+			const cid = String(connectionId || '').trim();
+			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl).trim() : '';
+			if (clusterUrl && connectionSelect.dataset) {
+				connectionSelect.dataset.desiredClusterUrl = clusterUrl;
+			}
+		} catch { /* ignore */ }
+		// Persist selection immediately so VS Code Problems can reflect current schema context.
+		// Skip during document restore — the restore sets intermediate/wrong values (e.g.
+		// lastConnectionId from a different file) before the correct desiredClusterUrl is
+		// applied. Firing saveLastSelection here during restore overwrites the file-connection
+		// cache with the wrong cluster, causing the "blank on subsequent open" bug.
+		try {
+			if (!__kustoRestoreInProgress) {
+				vscode.postMessage({
+					type: 'saveLastSelection',
+					connectionId: String(connectionId || ''),
+					// Connection change invalidates any prior DB selection until the DB dropdown refreshes.
+					database: ''
+				});
+			}
 		} catch { /* ignore */ }
 	}
 	const databaseSelect = document.getElementById(boxId + '_database');

@@ -210,12 +210,30 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		// Best-effort default selection for plain `.kql/.csl` files (no embedded metadata).
-		// This is intentionally non-fatal: if we can't infer, the UI falls back to last selection.
-		let inferredSelection: { clusterUrl: string; database: string } | undefined;
+		// Priority: 1) cached file connection, 2) query-based inference.
+		// This is intentionally non-fatal: if we can't resolve, the UI falls back to last selection.
+		let cachedFileConnection: { clusterUrl: string; database: string } | undefined;
 		try {
-			inferredSelection = await queryEditor.inferClusterDatabaseForKqlQuery(document.getText());
+			if (document.uri.scheme === 'file') {
+				const cached = this.connectionManager.getFileConnection(document.uri.fsPath);
+				if (cached) {
+					cachedFileConnection = cached;
+				}
+			}
 		} catch {
-			inferredSelection = undefined;
+			cachedFileConnection = undefined;
+		}
+
+		let inferredSelection: { clusterUrl: string; database: string } | undefined;
+		if (cachedFileConnection) {
+			// Use the cached connection — skip query-based inference.
+			inferredSelection = cachedFileConnection;
+		} else {
+			try {
+				inferredSelection = await queryEditor.inferClusterDatabaseForKqlQuery(document.getText());
+			} catch {
+				inferredSelection = undefined;
+			}
 		}
 
 		// Sidecar support: if there is a sibling .kqlx file that links back to this .kql/.csl,
@@ -314,6 +332,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				type: 'documentData',
 				ok: true,
 				forceReload,
+				documentUri: document.uri.toString(),
 				compatibilityMode: !sidecarEnabled,
 				documentKind: 'kql',
 				compatibilitySingleKind: 'query',
@@ -441,7 +460,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'requestDocument':
 					// Re-send mode in response to a request (the webview is guaranteed to be listening).
 					postPersistenceMode();
-					postDocument();
+					// In Explorer single-click preview mode, VS Code can reuse the same webview
+					// panel for different files. Force reload here so documentData is always
+					// re-applied for the current document.
+					postDocument({ forceReload: true });
 					webviewInitialized = true;
 					return;
 				case 'requestUpgradeToKqlx': {
@@ -477,6 +499,32 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					} catch {
 						// ignore
 					}
+					return;
+				}
+				case 'saveLastSelection': {
+					// The user manually changed the connection (via cluster/database dropdowns
+					// or favorites picker). Cache the connection for this file immediately
+					// so it persists across sessions, completely independent of file saves.
+					try {
+						if (!sidecarFile && document.uri.scheme === 'file') {
+							const connectionId = String((message as any).connectionId || '').trim();
+							const database = String((message as any).database || '').trim();
+							if (connectionId) {
+								const conn = this.connectionManager.getConnections().find(c => c.id === connectionId);
+								const clusterUrl = conn ? String(conn.clusterUrl || '').trim() : '';
+								if (clusterUrl) {
+									await this.connectionManager.setFileConnection(document.uri.fsPath, clusterUrl, database);
+									// Keep inferredSelection in sync so postDocument() reflects
+									// the latest connection on external-change reload or re-init.
+									inferredSelection = { clusterUrl, database };
+								}
+							}
+						}
+					} catch {
+						// ignore
+					}
+					// Fall through to let QueryEditorProvider handle the global last-selection save.
+					await queryEditor.handleWebviewMessage(message as any);
 					return;
 				}
 				case 'persistDocument': {

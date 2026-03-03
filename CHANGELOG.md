@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.8.0] - 2026-03-03
+
+* Added connection caching for .kql / .cls files by path. Opening the same .kql / .cls file will now pick the same connection as you last used for that file. 
+
 ## [2.7.0] - 2026-03-03
 
 * Changed the order in which sections are listed in the Connection Manager

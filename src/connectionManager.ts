@@ -10,10 +10,28 @@ export interface KustoConnection {
 /**
  * Manages Kusto cluster connections
  */
+export interface FileConnectionEntry {
+	clusterUrl: string;
+	database: string;
+}
+
+/**
+ * Internal storage format for file connection cache entries.
+ * Includes a timestamp so entries can expire after a period of inactivity.
+ */
+interface FileConnectionCacheEntry extends FileConnectionEntry {
+	/** Epoch ms of the last read or write. Entries older than MAX_AGE are pruned. */
+	lastAccessedAt: number;
+}
+
+/** File connection cache entries expire after 30 days of inactivity. */
+const FILE_CONNECTION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 export class ConnectionManager {
 	private connections: KustoConnection[] = [];
 	private readonly storageKey = 'kusto.connections';
 	private readonly leaveNoTraceKey = 'kusto.leaveNoTraceClusters';
+	private readonly fileConnectionCacheKey = 'kusto.fileConnectionCache';
 
 	constructor(private context: vscode.ExtensionContext) {
 		this.loadConnections();
@@ -76,6 +94,95 @@ export class ConnectionManager {
 		const current = this.getLeaveNoTraceClusters();
 		const filtered = current.filter(u => u !== normalized);
 		await this.context.globalState.update(this.leaveNoTraceKey, filtered);
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// File Connection Cache API
+	// ─────────────────────────────────────────────────────────────────────────
+
+	/**
+	 * Get the cached connection (cluster + database) for a file path.
+	 * Used to remember the last connection used for .kql/.csl files without sidecars.
+	 * Returns undefined if no entry exists or the entry has expired (30 days of inactivity).
+	 * Accessing an entry refreshes its expiry timer.
+	 */
+	getFileConnection(filePath: string): FileConnectionEntry | undefined {
+		const key = this.normalizeFilePath(filePath);
+		if (!key) return undefined;
+		const cache = this.context.globalState.get<Record<string, FileConnectionCacheEntry>>(this.fileConnectionCacheKey);
+		if (!cache || typeof cache !== 'object') return undefined;
+		const entry = cache[key];
+		if (!entry || typeof entry.clusterUrl !== 'string' || typeof entry.database !== 'string') return undefined;
+		if (!entry.clusterUrl.trim()) return undefined;
+
+		// Check expiry.
+		const now = Date.now();
+		if (typeof entry.lastAccessedAt === 'number' && (now - entry.lastAccessedAt) > FILE_CONNECTION_MAX_AGE_MS) {
+			// Entry expired — remove it (and prune any other stale entries).
+			void this.pruneExpiredFileConnections(cache, now);
+			return undefined;
+		}
+
+		// NOTE: We intentionally do NOT touch lastAccessedAt on read.
+		// setFileConnection() already refreshes the timestamp on write,
+		// and fire-and-forget writes from getFileConnection() can race with
+		// awaited writes from setFileConnection(), causing data loss.
+		// The 30-day expiry window is long enough that write-only touch is sufficient.
+
+		return { clusterUrl: entry.clusterUrl, database: entry.database };
+	}
+
+	/**
+	 * Cache the connection (cluster + database) for a file path.
+	 * Used to remember the last connection used for .kql/.csl files without sidecars.
+	 * Sets the expiry timer to 30 days from now.
+	 */
+	async setFileConnection(filePath: string, clusterUrl: string, database: string): Promise<void> {
+		const key = this.normalizeFilePath(filePath);
+		if (!key) return;
+		const trimmedCluster = String(clusterUrl || '').trim();
+		const trimmedDb = String(database || '').trim();
+		if (!trimmedCluster) return;
+		const cache = this.context.globalState.get<Record<string, FileConnectionCacheEntry>>(this.fileConnectionCacheKey) || {};
+		const now = Date.now();
+		cache[key] = { clusterUrl: trimmedCluster, database: trimmedDb, lastAccessedAt: now };
+		// Opportunistically prune expired entries on write.
+		this.pruneExpiredFileConnectionsSync(cache, now);
+		await this.context.globalState.update(this.fileConnectionCacheKey, cache);
+	}
+
+	/**
+	 * Remove expired entries from the file connection cache (async, fire-and-forget).
+	 */
+	private async pruneExpiredFileConnections(cache: Record<string, FileConnectionCacheEntry>, now: number): Promise<void> {
+		this.pruneExpiredFileConnectionsSync(cache, now);
+		await this.context.globalState.update(this.fileConnectionCacheKey, cache);
+	}
+
+	/**
+	 * Remove expired entries from the cache object in-place.
+	 */
+	private pruneExpiredFileConnectionsSync(cache: Record<string, FileConnectionCacheEntry>, now: number): void {
+		for (const k of Object.keys(cache)) {
+			const e = cache[k];
+			if (!e || typeof e.lastAccessedAt !== 'number' || (now - e.lastAccessedAt) > FILE_CONNECTION_MAX_AGE_MS) {
+				delete cache[k];
+			}
+		}
+	}
+
+	/**
+	 * Normalize a file path for use as a cache key.
+	 * Uses lowercase on Windows for case-insensitive matching.
+	 */
+	private normalizeFilePath(filePath: string): string {
+		const p = String(filePath || '').trim();
+		if (!p) return '';
+		// On Windows, file paths are case-insensitive
+		if (process.platform === 'win32') {
+			return p.toLowerCase();
+		}
+		return p;
 	}
 
 	/**

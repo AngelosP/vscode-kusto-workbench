@@ -11,6 +11,7 @@ let __kustoRestoreInProgress = false;
 let __kustoPersistTimer = null;
 let __kustoDocumentDataApplyCount = 0;
 let __kustoHasAppliedDocument = false;
+let __kustoLastAppliedDocumentUri = '';
 // Set by the extension host; true for globalStorage/session.kqlx.
 window.__kustoIsSessionFile = false;
 // Set by the extension host; true for .kql/.csl files.
@@ -1731,15 +1732,26 @@ function handleDocumentDataMessage(message) {
 	// The extension host should only send documentData in response to requestDocument.
 	// If we receive it more than once, re-applying causes noticeable flicker and can leave
 	// Monaco editors in a bad interactive state due to teardown/recreate races.
-	// So by default, only apply the first documentData payload.
+	// So by default, only apply the first documentData payload, unless either:
+	// - forceReload is requested, or
+	// - the payload is for a different documentUri (preview tab reuse scenario).
 	try {
-		if (__kustoHasAppliedDocument && !(message && message.forceReload)) {
+		const incomingDocumentUri = (message && typeof message.documentUri === 'string') ? String(message.documentUri) : '';
+		const isDifferentDocument = !!incomingDocumentUri && !!__kustoLastAppliedDocumentUri && incomingDocumentUri !== __kustoLastAppliedDocumentUri;
+		if (__kustoHasAppliedDocument && !(message && message.forceReload) && !isDifferentDocument) {
 			return;
 		}
 	} catch {
 		// ignore
 	}
 	__kustoHasAppliedDocument = true;
+	try {
+		if (message && typeof message.documentUri === 'string') {
+			__kustoLastAppliedDocumentUri = String(message.documentUri);
+		}
+	} catch {
+		// ignore
+	}
 
 	// Some host-to-webview messages can arrive before the webview registers its message listener.
 	// documentData is requested by the webview after initialization, so it is a reliable place

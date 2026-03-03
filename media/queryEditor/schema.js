@@ -359,16 +359,20 @@ function onDatabaseChanged(boxId) {
 	} catch { /* ignore */ }
 	setSchemaLoadedSummary(boxId, '', '', false);
 	// Persist selection immediately so VS Code Problems can reflect current schema context.
+	// Skip during document restore to avoid overwriting the per-file connection cache
+	// with intermediate values before the correct selection is fully applied.
 	try {
-		const connectionSelect = document.getElementById(boxId + '_connection');
-		const databaseSelect = document.getElementById(boxId + '_database');
-		const connectionId = connectionSelect ? connectionSelect.value : '';
-		const database = databaseSelect ? databaseSelect.value : '';
-		vscode.postMessage({
-			type: 'saveLastSelection',
-			connectionId: String(connectionId || ''),
-			database: String(database || '')
-		});
+		if (!__kustoRestoreInProgress) {
+			const connectionSelect = document.getElementById(boxId + '_connection');
+			const databaseSelect = document.getElementById(boxId + '_database');
+			const connectionId = connectionSelect ? connectionSelect.value : '';
+			const database = databaseSelect ? databaseSelect.value : '';
+			vscode.postMessage({
+				type: 'saveLastSelection',
+				connectionId: String(connectionId || ''),
+				database: String(database || '')
+			});
+		}
 	} catch { /* ignore */ }
 	ensureSchemaForBox(boxId, false);
 	// Update monaco-kusto schema if we have a cached schema for the new database
