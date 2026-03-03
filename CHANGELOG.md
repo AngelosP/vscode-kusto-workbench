@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.7.0] - 2026-03-02
+
+* Changed the order in which sections are listed in the Connection Manager
+
 ## [2.6.0] - 2026-02-12
 
 * Support for server-side performance statistics. They are now surfaced for single queries on hover over the results label, and also automatically when it tool is doing a performance comparison in the 'How do the two queries compare?' section. It's beautiful.

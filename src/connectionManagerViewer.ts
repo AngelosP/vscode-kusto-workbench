@@ -2684,12 +2684,23 @@ export class ConnectionManagerViewer {
 					<div class="left-accordion-body" id="favoritesList"></div>
 				</div>
 
+				<!-- Leave No Trace -->
+				<div class="left-accordion-item" id="leaveNoTraceSection" data-accordion-item="leaveNoTrace" style="display: none;">
+					<div class="left-accordion-header" data-toggle-accordion="leaveNoTrace">
+						<span class="left-accordion-chevron">${this.getChevronIcon()}</span>
+						<span class="left-accordion-icon" style="color: var(--vscode-symbolIcon-eventForeground, #d19a66);">${this.getShieldIcon()}</span>
+						<span class="left-accordion-title">Leave No Trace</span>
+						<span class="left-accordion-count" id="leaveNoTraceCount">0</span>
+					</div>
+					<div class="left-accordion-body" id="leaveNoTraceList"></div>
+				</div>
+
 				<!-- Clusters -->
 				<div class="left-accordion-item expanded" id="connectionsSection" data-accordion-item="connections">
 					<div class="left-accordion-header" data-toggle-accordion="connections">
 						<span class="left-accordion-chevron expanded">${this.getChevronIcon()}</span>
 						<span class="left-accordion-icon">${this.getClusterIcon()}</span>
-						<span class="left-accordion-title">Clusters</span>
+						<span class="left-accordion-title">All Clusters</span>
 						<button class="btn-icon header-action" id="addConnectionBtn" title="Add new cluster">
 							${this.getAddIcon()}
 						</button>
@@ -2702,17 +2713,6 @@ export class ConnectionManagerViewer {
 							<div class="empty-state-text">Add a Kusto cluster to get started.</div>
 						</div>
 					</div>
-				</div>
-
-				<!-- Leave No Trace -->
-				<div class="left-accordion-item" id="leaveNoTraceSection" data-accordion-item="leaveNoTrace" style="display: none;">
-					<div class="left-accordion-header" data-toggle-accordion="leaveNoTrace">
-						<span class="left-accordion-chevron">${this.getChevronIcon()}</span>
-						<span class="left-accordion-icon" style="color: var(--vscode-symbolIcon-eventForeground, #d19a66);">${this.getShieldIcon()}</span>
-						<span class="left-accordion-title">Leave No Trace</span>
-						<span class="left-accordion-count" id="leaveNoTraceCount">0</span>
-					</div>
-					<div class="left-accordion-body" id="leaveNoTraceList"></div>
 				</div>
 			</div>
 		</div>
