@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import { KqlCompatEditorProvider } from '../kqlCompatEditorProvider';
 import { KqlxEditorProvider } from '../kqlxEditorProvider';
+import { MdCompatEditorProvider } from '../mdCompatEditorProvider';
 import { QueryEditorProvider } from '../queryEditorProvider';
 
 type DisposableLike = { dispose(): void };
@@ -1476,5 +1477,172 @@ suite('Sidecar .kql.json strategy', () => {
 		const resultB = connManager.getFileConnection('/path/b.kql');
 		assert.ok(resultB, 'file B should have the updated connection');
 		assert.strictEqual(resultB!.clusterUrl, 'https://cluster-b2.kusto.windows.net');
+	});
+});
+
+suite('.md compat persistence', () => {
+	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+	const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+
+	suiteSetup(() => {
+		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+			// no-op
+		};
+		(QueryEditorProvider as any).prototype.handleWebviewMessage = async () => {
+			// no-op
+		};
+	});
+
+	suiteTeardown(() => {
+		(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitializeWebviewPanel;
+		(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandle;
+	});
+
+	test('persistDocument with changed markdown text should dirty a .md file', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const appliedEdits: vscode.WorkspaceEdit[] = [];
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-md-persist-'));
+		const mdPath = path.join(tmpDir, 'test.md');
+
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				appliedEdits.push(edit);
+				return true;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+
+			fs.writeFileSync(mdPath, '# Hello\n\nOriginal content', 'utf8');
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (MdCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as MdCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(mdPath),
+				getText: () => '# Hello\n\nOriginal content',
+				lineCount: 3,
+				lineAt: (line: number) => ({ text: ['# Hello', '', 'Original content'][line] || '' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => { posted.push(msg); return true; },
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+			assert.ok(receiveHandler, 'expected webview message handler');
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			// Simulate: user edits the markdown text.
+			await Promise.resolve(
+				receiveHandler!({
+					type: 'persistDocument',
+					state: {
+						sections: [{
+							type: 'markdown',
+							text: '# Hello\n\nEdited content'
+						}]
+					}
+				})
+			);
+
+			assert.strictEqual(appliedEdits.length, 1, 'an edit should be applied when markdown text changed');
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('persistDocument with identical markdown text should NOT dirty a .md file', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const appliedEdits: vscode.WorkspaceEdit[] = [];
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-md-nodirty-'));
+		const mdPath = path.join(tmpDir, 'test.md');
+
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnDidChange = (vscode.workspace as any).onDidChangeTextDocument;
+		try {
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				appliedEdits.push(edit);
+				return true;
+			};
+			(vscode.workspace as any).onDidChangeTextDocument = () => ({ dispose() {} } as DisposableLike);
+
+			fs.writeFileSync(mdPath, '# Same content', 'utf8');
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (MdCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as MdCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(mdPath),
+				getText: () => '# Same content',
+				lineCount: 1,
+				lineAt: () => ({ text: '# Same content' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => { posted.push(msg); return true; },
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+			assert.ok(receiveHandler);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+
+			// Simulate: persist fires but markdown text is identical to what's on disk.
+			await Promise.resolve(
+				receiveHandler!({
+					type: 'persistDocument',
+					state: {
+						sections: [{
+							type: 'markdown',
+							text: '# Same content'
+						}]
+					}
+				})
+			);
+
+			assert.strictEqual(appliedEdits.length, 0, 'no edit should be applied when markdown text is unchanged');
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onDidChangeTextDocument = originalOnDidChange;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
 	});
 });

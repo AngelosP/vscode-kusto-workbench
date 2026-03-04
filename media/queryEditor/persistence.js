@@ -1041,23 +1041,30 @@ function schedulePersist(reason, immediate) {
 					return;
 				}
 
-				// In compatibility mode (.kql/.csl without companion file), the only
-				// thing we persist to disk is the query text itself. Cluster/database
+				// In compatibility mode (.kql/.csl/.md without companion file), the only
+				// thing we persist to disk is the section text itself. Cluster/database
 				// selection changes should NOT mark the document dirty because there is
 				// nowhere to save that metadata. Skip the persist if only metadata changed.
 				if (window.__kustoCompatibilityMode) {
 					try {
 						var compatQueryText = '';
 						var sections = (state && Array.isArray(state.sections)) ? state.sections : [];
+						var singleKind = String(window.__kustoCompatibilitySingleKind || 'query');
 						var firstQ = null;
 						for (var si = 0; si < sections.length; si++) {
-							if (sections[si] && String(sections[si].type || '') === 'query') {
+							if (sections[si] && String(sections[si].type || '') === singleKind) {
 								firstQ = sections[si];
 								break;
 							}
 						}
-						if (firstQ && typeof firstQ.query === 'string') {
-							compatQueryText = firstQ.query;
+						if (singleKind === 'markdown') {
+							if (firstQ && typeof firstQ.text === 'string') {
+								compatQueryText = firstQ.text;
+							}
+						} else {
+							if (firstQ && typeof firstQ.query === 'string') {
+								compatQueryText = firstQ.query;
+							}
 						}
 						if (compatQueryText === __kustoLastCompatQueryText) {
 							// Only metadata changed (cluster, database, etc.) — skip persist.
@@ -1214,6 +1221,10 @@ function applyKqlxState(state) {
 				// IMPORTANT: pass text via options so addMarkdownBox can stash it before
 				// initializing the TOAST UI editor (which triggers an immediate schedulePersist).
 				const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+				// Initialize the compat text tracker so the first schedulePersist
+				// after restore recognizes the baseline and only sends persistDocument
+				// when the user actually edits the text (not just unrelated metadata).
+				try { __kustoLastCompatQueryText = singleText; } catch { /* ignore */ }
 				addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
 				return;
 			}

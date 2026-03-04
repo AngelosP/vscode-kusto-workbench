@@ -5,8 +5,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [2.8.0] - 2026-03-04
 
-* Added connection caching for .kql / .cls files by path. Opening the same .kql / .cls file will now pick the same connection as you last used for that file. 
+* Added connection caching for .kql / .cls files by path. Opening the same .kql / .cls file will now pick the same connection as you last used for that file.
 * Added hint on first usage of the Copilot Chat window to let users know of the Kusto Workbench custom agent.
+* Bugs
+    * Saving .md files stopped working for some reason. I think the fix for the .kql files messed something up and the tests did not catch it, so new tests were added that should catch a regression in the future.
 
 ## [2.7.0] - 2026-03-03
 
