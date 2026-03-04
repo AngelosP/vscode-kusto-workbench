@@ -974,6 +974,7 @@ window.addEventListener('message', async event => {
 			kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
 			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch { /* ignore */ }
+			try { window.__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch { /* ignore */ }
 			caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
@@ -1642,6 +1643,21 @@ window.addEventListener('message', async event => {
 					// ignore
 				}
 				break;
+		case 'copilotChatFirstTimeResult':
+			try {
+				// Update local flag so the dialog is never shown again.
+				window.__kustoCopilotChatFirstTimeDismissed = true;
+				const action = String(message.action || '');
+				if (action === 'proceed') {
+					// User chose to use the embedded copilot chat; toggle it open.
+					const ftBoxId = String(message.boxId || '').trim();
+					if (ftBoxId && typeof window.__kustoSetCopilotChatVisible === 'function') {
+						window.__kustoSetCopilotChatVisible(ftBoxId, true);
+					}
+				}
+				// 'openedAgent' and 'dismissed': do nothing in webview (agent was opened or dialog dismissed).
+			} catch { /* ignore */ }
+			break;
 		case 'copilotAvailability':
 			try {
 				const boxId = message.boxId || '';

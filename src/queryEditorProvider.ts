@@ -28,7 +28,8 @@ const STORAGE_KEYS = {
 	copilotInlineCompletionsEnabled: 'kusto.copilotInlineCompletionsEnabled',
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
 	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
-	favorites: 'kusto.favorites'
+	favorites: 'kusto.favorites',
+	copilotChatFirstTimeDismissed: 'kusto.copilotChatFirstTimeDismissed'
 } as const;
 
 type KustoFavorite = { name: string; clusterUrl: string; database: string };
@@ -194,7 +195,8 @@ type IncomingWebviewMessage =
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	// Tool orchestrator state request (webview sends current state)
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
-	| { type: 'openCopilotAgent' };
+	| { type: 'openCopilotAgent' }
+	| { type: 'copilotChatFirstTimeCheck'; boxId: string };
 
 export class QueryEditorProvider {
 	private panel?: vscode.WebviewPanel;
@@ -1040,6 +1042,9 @@ export class QueryEditorProvider {
 				try {
 					await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
 				} catch { /* ignore */ }
+				return;
+			case 'copilotChatFirstTimeCheck':
+				await this.handleCopilotChatFirstTimeCheck(message.boxId);
 				return;
 			case 'removeFromCopilotHistory':
 				this.removeFromCopilotHistory(message.boxId, message.entryId);
@@ -2164,6 +2169,42 @@ Completion:`;
 		}
 
 		return messages;
+	}
+
+	private async handleCopilotChatFirstTimeCheck(boxId: string): Promise<void> {
+		const already = this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed);
+		if (already) {
+			// Already dismissed; tell webview to proceed with the embedded copilot chat.
+			this.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'proceed' });
+			return;
+		}
+
+		// Mark as dismissed regardless of the user's choice (they should not see this again).
+		await this.context.globalState.update(STORAGE_KEYS.copilotChatFirstTimeDismissed, true);
+
+		const openAgent = 'Open the Kusto Workbench agent';
+		const useChat = 'Use this Copilot Chat window';
+		const choice = await vscode.window.showInformationMessage(
+			'Hello there! Did you know this extension comes with a custom agent called \'Kusto Workbench\' that is available through the VS Code Copilot chat window? You should use that instead of this chat window unless you are very familiar with both and you understand the differences.',
+			{ modal: true },
+			openAgent,
+			useChat
+		);
+
+		if (choice === openAgent) {
+			// Open the VS Code chat window with the Kusto Workbench agent selected.
+			try {
+				await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
+			} catch { /* ignore */ }
+			// Tell webview to update its local flag but do NOT open the embedded chat.
+			this.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'openedAgent' });
+		} else if (choice === useChat) {
+			// Proceed with the normal embedded copilot chat.
+			this.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'proceed' });
+		} else {
+			// Dialog dismissed without a choice; update the flag but do not open anything.
+			this.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'dismissed' });
+		}
 	}
 
 	private async startCopilotWriteQuery(
@@ -4306,7 +4347,8 @@ ${query}
 			copilotInlineCompletionsEnabled,
 			copilotInlineCompletionsEnabledUserSet,
 			leaveNoTraceClusters,
-			devNotesEnabled: true
+			devNotesEnabled: true,
+			copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)
 		});
 	}
 

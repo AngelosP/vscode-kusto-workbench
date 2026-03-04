@@ -1152,6 +1152,15 @@
 	window.__kustoToggleCopilotChatForBox = function (boxId) {
 		const id = String(boxId || '').trim();
 		if (!id) return;
+
+		// First-time prompt: ask the extension to show a dialog before opening the embedded chat.
+		if (!window.__kustoCopilotChatFirstTimeDismissed) {
+			try {
+				vscode.postMessage({ type: 'copilotChatFirstTimeCheck', boxId: id });
+			} catch { /* ignore */ }
+			return;
+		}
+
 		const visible = __kustoGetCopilotChatVisible(id);
 		__kustoSetCopilotChatVisible(id, !visible);
 	};
