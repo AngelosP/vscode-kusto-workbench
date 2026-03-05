@@ -365,7 +365,12 @@
     "languageModelTools": [
       {
         "name": "kusto-workbench_list-connections",
-        "tags": ["kusto", "azure", "data-explorer", "connections"],
+        "tags": [
+          "kusto",
+          "azure",
+          "data-explorer",
+          "connections"
+        ],
         "toolReferenceName": "listKustoConnections",
         "displayName": "List Kusto Connections",
         "modelDescription": "Lists all configured Kusto cluster connections in Kusto Workbench. Returns connection details including cluster URLs and default databases.",
@@ -379,7 +384,12 @@
       },
       {
         "name": "kusto-workbench_list-favorites",
-        "tags": ["kusto", "azure", "data-explorer", "favorites"],
+        "tags": [
+          "kusto",
+          "azure",
+          "data-explorer",
+          "favorites"
+        ],
         "toolReferenceName": "listKustoFavorites",
         "displayName": "List Kusto Favorites",
         "modelDescription": "Lists all favorite cluster/database combinations saved in Kusto Workbench. These are quick-access shortcuts to commonly used databases.",
@@ -393,7 +403,13 @@
       },
       {
         "name": "kusto-workbench_get-schema",
-        "tags": ["kusto", "azure", "data-explorer", "schema", "tables"],
+        "tags": [
+          "kusto",
+          "azure",
+          "data-explorer",
+          "schema",
+          "tables"
+        ],
         "toolReferenceName": "getKustoSchema",
         "displayName": "Get Kusto Schema",
         "modelDescription": "Gets the database schema (tables, columns with types, and functions) for a Kusto cluster. Requires a cluster URL. When a database name is provided, returns the full detailed schema for that database. When no database is specified, returns a summary of all available databases on the cluster. Automatically fetches from the cluster if the schema is not already cached. The result is automatically sized to fit the model's context window.",
@@ -412,12 +428,21 @@
               "description": "Optional: a specific database name. When omitted, returns a summary of all databases on the cluster."
             }
           },
-          "required": ["clusterUrl"]
+          "required": [
+            "clusterUrl"
+          ]
         }
       },
       {
         "name": "kusto-workbench_refresh-schema",
-        "tags": ["kusto", "azure", "data-explorer", "schema", "refresh", "reload"],
+        "tags": [
+          "kusto",
+          "azure",
+          "data-explorer",
+          "schema",
+          "refresh",
+          "reload"
+        ],
         "toolReferenceName": "refreshKustoSchema",
         "displayName": "Refresh Kusto Schema",
         "modelDescription": "Force-refreshes the database schema for a given Kusto cluster by fetching it live from the cluster. This bypasses any cache, fetches the latest schema for all databases on the cluster, updates the local cache, and returns the refreshed schemas (tables and functions). Use this when the cached schema may be outdated or when the user explicitly asks to refresh or reload the schema.",
@@ -432,12 +457,19 @@
               "description": "The Kusto cluster URL to refresh schemas for (e.g., 'https://help.kusto.windows.net')"
             }
           },
-          "required": ["clusterUrl"]
+          "required": [
+            "clusterUrl"
+          ]
         }
       },
       {
         "name": "kusto-workbench_list-sections",
-        "tags": ["kusto", "workbench", "sections", "notebook"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "sections",
+          "notebook"
+        ],
         "toolReferenceName": "listSections",
         "displayName": "List Sections",
         "modelDescription": "Lists all sections in the currently open Kusto Workbench notebook. Sections can be query boxes, markdown, charts, transformations, URLs, or Python code. Returns section IDs needed for other operations.",
@@ -451,7 +483,12 @@
       },
       {
         "name": "kusto-workbench_add-section",
-        "tags": ["kusto", "workbench", "section", "create"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "section",
+          "create"
+        ],
         "toolReferenceName": "addSection",
         "displayName": "Add Section",
         "modelDescription": "Adds a new section to the Kusto Workbench notebook. Supports query, markdown, chart, transformation, url, and python section types. For query sections, you can specify the initial query text, cluster URL, and database. For charts, specify the data source and chart configuration.",
@@ -463,7 +500,14 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": ["query", "markdown", "chart", "transformation", "url", "python"],
+              "enum": [
+                "query",
+                "markdown",
+                "chart",
+                "transformation",
+                "url",
+                "python"
+              ],
               "description": "The type of section to add"
             },
             "query": {
@@ -496,7 +540,14 @@
             },
             "chartType": {
               "type": "string",
-              "enum": ["line", "area", "bar", "scatter", "pie", "funnel"],
+              "enum": [
+                "line",
+                "area",
+                "bar",
+                "scatter",
+                "pie",
+                "funnel"
+              ],
               "description": "For chart sections: the type of chart to create"
             },
             "name": {
@@ -504,12 +555,19 @@
               "description": "Optional name/title for the section"
             }
           },
-          "required": ["type"]
+          "required": [
+            "type"
+          ]
         }
       },
       {
         "name": "kusto-workbench_remove-section",
-        "tags": ["kusto", "workbench", "section", "delete"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "section",
+          "delete"
+        ],
         "toolReferenceName": "removeSection",
         "displayName": "Remove Section",
         "modelDescription": "Removes a section from the Kusto Workbench notebook by its section ID. Use list-sections first to get available section IDs.",
@@ -524,12 +582,19 @@
               "description": "The ID of the section to remove"
             }
           },
-          "required": ["sectionId"]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
         "name": "kusto-workbench_collapse-section",
-        "tags": ["kusto", "workbench", "section", "visibility"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "section",
+          "visibility"
+        ],
         "toolReferenceName": "collapseExpandSection",
         "displayName": "Collapse/Expand Section",
         "modelDescription": "Collapses or expands a section in the Kusto Workbench notebook. Collapsed sections take up less space while preserving their content.",
@@ -548,12 +613,21 @@
               "description": "True to collapse, false to expand"
             }
           },
-          "required": ["sectionId", "collapsed"]
+          "required": [
+            "sectionId",
+            "collapsed"
+          ]
         }
       },
       {
         "name": "kusto-workbench_reorder-sections",
-        "tags": ["kusto", "workbench", "section", "organize", "reorder"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "section",
+          "organize",
+          "reorder"
+        ],
         "toolReferenceName": "reorderSections",
         "displayName": "Reorder Sections",
         "modelDescription": "Reorders all sections in the Kusto Workbench notebook. Provide an array of ALL section IDs in the desired order. Use #listSections first to get the current section IDs. This is the safe way to reorganize content without accidentally losing sections.",
@@ -565,16 +639,26 @@
           "properties": {
             "sectionIds": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Array of ALL section IDs in the desired order. Must include every section ID from #listSections."
             }
           },
-          "required": ["sectionIds"]
+          "required": [
+            "sectionIds"
+          ]
         }
       },
       {
         "name": "kusto-workbench_configure-query-section",
-        "tags": ["kusto", "workbench", "query", "configure", "connection"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "query",
+          "configure",
+          "connection"
+        ],
         "toolReferenceName": "configureKustoQuerySection",
         "displayName": "Configure Kusto Query Section",
         "modelDescription": "Configures a query section in Kusto Workbench. Use this to set up the cluster connection and database before running queries with #askKustoCopilot. Can also change the query text and optionally execute the query immediately.",
@@ -609,12 +693,19 @@
               "description": "If true, execute the query after updating"
             }
           },
-          "required": ["sectionId"]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
         "name": "kusto-workbench_update-markdown-section",
-        "tags": ["kusto", "workbench", "markdown", "documentation"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "markdown",
+          "documentation"
+        ],
         "toolReferenceName": "updateMarkdownSection",
         "displayName": "Update Markdown Section",
         "modelDescription": "Updates a markdown section in Kusto Workbench. Can change the text content and the display mode (preview, raw markdown, or WYSIWYG editor).",
@@ -642,16 +733,27 @@
             },
             "mode": {
               "type": "string",
-              "enum": ["preview", "markdown", "wysiwyg"],
+              "enum": [
+                "preview",
+                "markdown",
+                "wysiwyg"
+              ],
               "description": "The display mode: preview (rendered), markdown (raw), or wysiwyg (rich editor)"
             }
           },
-          "required": ["sectionId"]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
         "name": "kusto-workbench_configure-chart",
-        "tags": ["kusto", "workbench", "chart", "visualization"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "chart",
+          "visualization"
+        ],
         "toolReferenceName": "configureChart",
         "displayName": "Configure Chart",
         "modelDescription": "Configures a chart section in Kusto Workbench. Set the data source (a query section), chart type, axis columns, legend settings, and more. Charts visualize query results.",
@@ -675,7 +777,14 @@
             },
             "chartType": {
               "type": "string",
-              "enum": ["line", "area", "bar", "scatter", "pie", "funnel"],
+              "enum": [
+                "line",
+                "area",
+                "bar",
+                "scatter",
+                "pie",
+                "funnel"
+              ],
               "description": "The type of chart"
             },
             "xColumn": {
@@ -684,7 +793,9 @@
             },
             "yColumns": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "The columns to use for Y axis values"
             },
             "legendColumn": {
@@ -693,7 +804,12 @@
             },
             "legendPosition": {
               "type": "string",
-              "enum": ["left", "right", "top", "bottom"],
+              "enum": [
+                "left",
+                "right",
+                "top",
+                "bottom"
+              ],
               "description": "Position of the legend"
             },
             "showDataLabels": {
@@ -701,12 +817,19 @@
               "description": "Whether to show data labels on the chart"
             }
           },
-          "required": ["sectionId"]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
         "name": "kusto-workbench_configure-transformation",
-        "tags": ["kusto", "workbench", "transformation", "data"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "transformation",
+          "data"
+        ],
         "toolReferenceName": "configureTransformation",
         "displayName": "Configure Transformation",
         "modelDescription": "Configures a transformation section in Kusto Workbench. Transformations process query results to derive new columns, summarize data, get distinct values, or pivot data.",
@@ -730,7 +853,12 @@
             },
             "transformationType": {
               "type": "string",
-              "enum": ["derive", "summarize", "distinct", "pivot"],
+              "enum": [
+                "derive",
+                "summarize",
+                "distinct",
+                "pivot"
+              ],
               "description": "The type of transformation"
             },
             "distinctColumn": {
@@ -739,7 +867,9 @@
             },
             "groupByColumns": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "For summarize: columns to group by"
             },
             "aggregations": {
@@ -747,9 +877,23 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "name": { "type": "string" },
-                  "column": { "type": "string" },
-                  "function": { "type": "string", "enum": ["sum", "avg", "count", "min", "max", "distinct"] }
+                  "name": {
+                    "type": "string"
+                  },
+                  "column": {
+                    "type": "string"
+                  },
+                  "function": {
+                    "type": "string",
+                    "enum": [
+                      "sum",
+                      "avg",
+                      "count",
+                      "min",
+                      "max",
+                      "distinct"
+                    ]
+                  }
                 }
               },
               "description": "For summarize: aggregation definitions"
@@ -759,8 +903,12 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "name": { "type": "string" },
-                  "expression": { "type": "string" }
+                  "name": {
+                    "type": "string"
+                  },
+                  "expression": {
+                    "type": "string"
+                  }
                 }
               },
               "description": "For derive: calculated column definitions"
@@ -779,16 +927,31 @@
             },
             "pivotAggregation": {
               "type": "string",
-              "enum": ["sum", "avg", "count", "first"],
+              "enum": [
+                "sum",
+                "avg",
+                "count",
+                "first"
+              ],
               "description": "For pivot: the aggregation function"
             }
           },
-          "required": ["sectionId"]
+          "required": [
+            "sectionId"
+          ]
         }
       },
       {
         "name": "kusto-workbench_ask-kusto-copilot",
-        "tags": ["kusto", "copilot", "ai", "query", "assistant", "execute", "results"],
+        "tags": [
+          "kusto",
+          "copilot",
+          "ai",
+          "query",
+          "assistant",
+          "execute",
+          "results"
+        ],
         "toolReferenceName": "askKustoCopilot",
         "displayName": "Ask Kusto Workbench Copilot",
         "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool will write the appropriate KQL query, execute it against the specified cluster/database, and return the actual query results (rows, columns, and data). Use this for any data questions, KQL queries, or data exploration. Returns success/failure status, the generated query, row count, column names, and actual result data (up to 100 rows).",
@@ -815,12 +978,23 @@
               "description": "Optional: Database name to use. If not provided, uses the current database."
             }
           },
-          "required": ["question"]
+          "required": [
+            "question"
+          ]
         }
       },
       {
         "name": "kusto-workbench_search-cached-schemas",
-        "tags": ["kusto", "azure", "data-explorer", "schema", "search", "tables", "columns", "functions"],
+        "tags": [
+          "kusto",
+          "azure",
+          "data-explorer",
+          "schema",
+          "search",
+          "tables",
+          "columns",
+          "functions"
+        ],
         "toolReferenceName": "searchCachedSchemas",
         "displayName": "Search Cached Schemas",
         "modelDescription": "Searches all cached database schemas for tables, columns, functions, or docstrings matching a regex pattern. Use this to discover relevant tables or columns when you are not sure which ones to use, or to find items by partial name or description. Returns matches across all cached databases.",
@@ -835,12 +1009,24 @@
               "description": "A regex pattern to search for across table names, column names, function names, and their docstrings. Case-insensitive."
             }
           },
-          "required": ["pattern"]
+          "required": [
+            "pattern"
+          ]
         }
       },
       {
         "name": "kusto-workbench_create-file",
-        "tags": ["kusto", "file", "create", "notebook", "kqlx", "kql", "csl", "mdx", "markdown"],
+        "tags": [
+          "kusto",
+          "file",
+          "create",
+          "notebook",
+          "kqlx",
+          "kql",
+          "csl",
+          "mdx",
+          "markdown"
+        ],
         "toolReferenceName": "createKustoFile",
         "displayName": "Create Kusto File",
         "modelDescription": "Creates a new file for Kusto Workbench. Supports multiple file types: kqlx (Kusto notebook with multiple sections), mdx (markdown-focused notebook), kql/csl (plain Kusto query files), md (markdown files), and kql-sidecar/csl-sidecar (query files with companion .json sidecar files for storing results and metadata). Use this tool when the user wants to start a new file or when no file is currently open. The file will be created and opened in the appropriate Kusto Workbench editor.",
@@ -852,7 +1038,15 @@
           "properties": {
             "fileType": {
               "type": "string",
-              "enum": ["kqlx", "mdx", "kql", "csl", "md", "kql-sidecar", "csl-sidecar"],
+              "enum": [
+                "kqlx",
+                "mdx",
+                "kql",
+                "csl",
+                "md",
+                "kql-sidecar",
+                "csl-sidecar"
+              ],
               "description": "The type of file to create: kqlx (Kusto notebook), mdx (markdown notebook), kql (plain query), csl (plain script), md (markdown), kql-sidecar (query + sidecar), csl-sidecar (script + sidecar)"
             },
             "filePath": {
@@ -864,12 +1058,22 @@
               "description": "Optional: Initial content for the file (query text for kql/csl, markdown for md/mdx)"
             }
           },
-          "required": ["fileType", "filePath"]
+          "required": [
+            "fileType",
+            "filePath"
+          ]
         }
       },
       {
         "name": "kusto-workbench_manage-development-notes",
-        "tags": ["kusto", "workbench", "development", "notes", "memory", "insights"],
+        "tags": [
+          "kusto",
+          "workbench",
+          "development",
+          "notes",
+          "memory",
+          "insights"
+        ],
         "toolReferenceName": "manageDevelopmentNotes",
         "displayName": "Manage Development Notes",
         "modelDescription": "Add, remove, or update development notes in the current Kusto Workbench file. Development notes capture important insights (corrections, clarifications, schema hints, gotchas) that persist across sessions. Use 'add' to save a new note, 'remove' to delete an outdated note by ID, or 'add' with 'supersedes' to replace an existing note. Use ONLY for non-obvious insights that would prevent repeating mistakes. Notes are visible via the list-sections tool.",
@@ -881,12 +1085,21 @@
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["add", "remove"],
+              "enum": [
+                "add",
+                "remove"
+              ],
               "description": "The action to perform: 'add' a new note, or 'remove' an existing one."
             },
             "category": {
               "type": "string",
-              "enum": ["correction", "clarification", "schema-hint", "usage-note", "gotcha"],
+              "enum": [
+                "correction",
+                "clarification",
+                "schema-hint",
+                "usage-note",
+                "gotcha"
+              ],
               "description": "For 'add': the category of the note."
             },
             "content": {
@@ -895,7 +1108,9 @@
             },
             "relatedSectionIds": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "For 'add': optional IDs of sections this note relates to."
             },
             "supersedes": {
@@ -907,7 +1122,9 @@
               "description": "For 'remove': the ID of the note to remove."
             }
           },
-          "required": ["action"]
+          "required": [
+            "action"
+          ]
         }
       }
     ]
@@ -920,25 +1137,30 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
     "vsix": "npm run package && node scripts/package-vsix.mjs",
-    "compile-tests": "node -e \"require('fs').rmSync('out/test',{recursive:true,force:true})\" && tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
+    "compile-tests": "node -e \"require('fs').rmSync('out/tests',{recursive:true,force:true})\" && tsc -p tests/integration/tsconfig.json",
+    "watch-tests": "tsc -p tests/integration/tsconfig.json -w",
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "compile-e2e": "tsc -p tests/e2e/tsconfig.json",
+    "test:e2e": "npm run compile && npm run compile-e2e && node out/e2e/runner.js"
   },
   "devDependencies": {
+    "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/vscode": "^1.107.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "chai": "^4.5.0",
     "esbuild": "^0.27.1",
     "eslint": "^9.39.1",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.48.1"
+    "typescript-eslint": "^8.48.1",
+    "vscode-extension-tester": "^8.22.1"
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",

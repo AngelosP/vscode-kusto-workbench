@@ -2,6 +2,7 @@ out
 dist
 node_modules
 .vscode-test/
+.vscode-e2e/
 *.vsix
 dev-backlog.md
 browser-ext/dist/

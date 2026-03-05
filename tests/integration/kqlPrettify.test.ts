@@ -146,8 +146,8 @@ function extractFunction(source: string, funcName: string): string {
 
 suite('KQL prettify', () => {
 	const createPrettify = () => {
-		// When compiled, this test runs from `out/test`, so repo root is two levels up.
-		const repoRoot = path.resolve(__dirname, '..', '..');
+		// When compiled, this test runs from `out/tests/integration`, so repo root is three levels up.
+		const repoRoot = path.resolve(__dirname, '..', '..', '..');
 		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
 		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
 

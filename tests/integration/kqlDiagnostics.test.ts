@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 
-import { KqlLanguageService, _splitTopLevelStatements } from '../kqlLanguageService/service';
+import { KqlLanguageService, _splitTopLevelStatements } from '../../src/kqlLanguageService/service';
 
 
 suite('KQL diagnostics', () => {

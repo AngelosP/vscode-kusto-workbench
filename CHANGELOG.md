@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [2.9.0] - Unreleased
+
+* Added end-to-end tests that drive the UI interactively.
+
 ## [2.8.0] - 2026-03-04
 
 * Added connection caching for .kql / .cls files by path. Opening the same .kql / .cls file will now pick the same connection as you last used for that file.

@@ -150,7 +150,10 @@ KustoConnection {
 
 ## Testing
 
-Tests are in `src/test/`. Run with `npm test`.
+Tests are organized under `tests/`:
+
+* **Integration tests** (`tests/integration/`): Run inside VS Code's extension host with full API access. Run with `npm test`.
+* **E2E tests** (`tests/e2e/`): UI automation tests using `vscode-extension-tester` (Selenium). Run with `npm run test:e2e`.
 
 | Test File | Coverage |
 | --------- | -------- |

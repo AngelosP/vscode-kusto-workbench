@@ -204,7 +204,7 @@ class FakeModel {
 
 suite('KQL completions - columns inside function args', () => {
 	const createCompletionProvider = () => {
-		const repoRoot = path.resolve(__dirname, '..', '..');
+		const repoRoot = path.resolve(__dirname, '..', '..', '..');
 		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
 		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
 		const providerSrc = extractConstObjectAssignment(monacoSource, '__kustoCompletionProvider');

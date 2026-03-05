@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-import { KqlCompatEditorProvider } from '../kqlCompatEditorProvider';
-import { QueryEditorProvider } from '../queryEditorProvider';
+import { KqlCompatEditorProvider } from '../../src/kqlCompatEditorProvider';
+import { QueryEditorProvider } from '../../src/queryEditorProvider';
 
 type DisposableLike = { dispose(): void };
 
