@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { CachedValuesViewerV2 } from './cachedValuesViewerV2';
 import { ConnectionManagerViewer } from './connectionManagerViewer';
+import { ConnectionManagerViewerV2 } from './connectionManagerViewerV2';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
@@ -597,6 +598,13 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.manageConnections', () => {
 			ConnectionManagerViewer.open(context, context.extensionUri, connectionManager);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.compareConnectionManagers', () => {
+			ConnectionManagerViewer.open(context, context.extensionUri, connectionManager);
+			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, vscode.ViewColumn.Beside);
 		})
 	);
 
