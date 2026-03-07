@@ -120,6 +120,32 @@ async function main() {
 		console.warn('[watch] failed to bundle ECharts:', e && e.message ? e.message : e);
 	}
 
+	// Webview Lit components bundle (browser target, ESM → IIFE for <script> usage).
+	try {
+		const webviewCtx = await esbuild.context({
+			entryPoints: ['media/queryEditor/src/index.ts'],
+			bundle: true,
+			format: 'iife',
+			platform: 'browser',
+			target: 'es2022',
+			minify: production,
+			sourcemap: !production,
+			sourcesContent: false,
+			outfile: 'dist/webview/webview.bundle.js',
+			tsconfig: 'tsconfig.webview.json',
+			logLevel: 'silent',
+			plugins: [esbuildProblemMatcherPlugin],
+		});
+		if (watch) {
+			await webviewCtx.watch();
+		} else {
+			await webviewCtx.rebuild();
+			await webviewCtx.dispose();
+		}
+	} catch (e) {
+		console.warn('[watch] failed to bundle webview Lit components:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'

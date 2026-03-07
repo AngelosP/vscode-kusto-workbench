@@ -1,0 +1,16 @@
+{
+	"compilerOptions": {
+		"module": "ESNext",
+		"target": "ES2022",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"moduleResolution": "bundler",
+		"sourceMap": true,
+		"rootDir": ".",
+		"strict": true,
+		"experimentalDecorators": true,
+		"useDefineForClassFields": false,
+		"skipLibCheck": true,
+		"outDir": "dist/webview-tsc-out"
+	},
+	"include": ["media/queryEditor/src"]
+}

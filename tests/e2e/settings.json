@@ -1,9 +1,0 @@
-{
-	"editor.fontSize": 14,
-	"extensions.autoUpdate": false,
-	"extensions.autoCheckUpdates": false,
-	"update.mode": "none",
-	"workbench.startupEditor": "none",
-	"telemetry.telemetryLevel": "off",
-	"security.workspace.trust.enabled": false
-}

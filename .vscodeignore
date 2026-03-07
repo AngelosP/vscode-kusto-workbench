@@ -1,9 +1,12 @@
 .vscode/**
 .vscode-test/**
 .vscode-e2e/**
+.env
 out/**
 node_modules/**
 src/**
+media/queryEditor/src/**
+dist/webview-tsc-out/**
 tests/**
 .github/**
 .gitignore
@@ -16,6 +19,7 @@ browser-ext/**
 **/*.vsix
 media/queryEditor/vendor/toastui-editor/toastui-editor.webview.js
 **/tsconfig.json
+**/tsconfig.webview.json
 **/eslint.config.mjs
 **/*.map
 **/*.ts

@@ -59,6 +59,31 @@
 				"npm: watch-tests"
 			],
 			"problemMatcher": []
-		}
+		},
+    {
+      "label": "vscode-ext-test: run",
+      "type": "shell",
+      "command": "vscode-ext-test",
+      "args": [
+        "run",
+        "--wait-for-devhost"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(FAIL|ERROR):\\s+(.*)$",
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^Running \\d+ feature",
+          "endsPattern": "^Waiting for Extension Development Host"
+        }
+      }
+    }
 	]
 }

@@ -2,7 +2,7 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { CachedValuesViewer } from './cachedValuesViewer';
+import { CachedValuesViewerV2 } from './cachedValuesViewerV2';
 import { ConnectionManagerViewer } from './connectionManagerViewer';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
@@ -658,7 +658,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.seeCachedValues', async () => {
-			CachedValuesViewer.open(context, context.extensionUri, connectionManager);
+			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager);
 		})
 	);
 
