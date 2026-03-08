@@ -903,61 +903,13 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('markdown_')) {
-			const title = (document.getElementById(id + '_name') || {}).value || '';
-			let text = '';
-			try {
-				text = markdownEditors && markdownEditors[id] ? (markdownEditors[id].getValue() || '') : '';
-			} catch { /* ignore */ }
-			// If the editor hasn't initialized yet (e.g. TOAST UI still loading), don't lose content:
-			// use the pending restore buffer.
-			if (!text) {
+			// Lit component: delegate to its serialize() method.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
 				try {
-					const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[id];
-					if (typeof pending === 'string' && pending) {
-						text = pending;
-					}
+					sections.push(el.serialize());
 				} catch { /* ignore */ }
 			}
-			let mode = '';
-			try {
-				const m = (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object')
-					? String(window.__kustoMarkdownModeByBoxId[id] || '').toLowerCase()
-					: '';
-				if (m === 'preview' || m === 'markdown' || m === 'wysiwyg') {
-					mode = m;
-				}
-			} catch { /* ignore */ }
-			const tab = (mode === 'preview') ? 'preview' : 'edit';
-			let expanded = true;
-			try {
-				expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[id] === false);
-			} catch { /* ignore */ }
-			let editorHeightPx = __kustoGetWrapperHeightPx(id, '_md_editor');
-			// If we're currently in Preview we may temporarily clear inline height; keep the last px height if present.
-			if (typeof editorHeightPx === 'undefined') {
-				try {
-					const host = document.getElementById(id + '_md_editor');
-					const wrapper = host && host.closest ? host.closest('.query-editor-wrapper') : null;
-					const prev = (wrapper && wrapper.dataset && wrapper.dataset.kustoPrevHeightMd) ? String(wrapper.dataset.kustoPrevHeightMd || '').trim() : '';
-					const m = prev.match(/^([0-9]+)px$/i);
-					if (m) {
-						const px = parseInt(m[1], 10);
-						if (Number.isFinite(px)) {
-							editorHeightPx = Math.max(0, px);
-						}
-					}
-				} catch { /* ignore */ }
-			}
-			sections.push({
-				id,
-				type: 'markdown',
-				title,
-				text,
-				tab,
-				...(mode ? { mode } : {}),
-				expanded,
-				editorHeightPx
-			});
 			continue;
 		}
 
@@ -1633,18 +1585,14 @@ function applyKqlxState(state) {
 					editorHeightPx: section.editorHeightPx,
 					...(mode ? { mode } : {})
 				});
+				// Apply title and expanded state on the Lit element.
 				try {
-					const titleEl = document.getElementById(boxId + '_name');
-					if (titleEl) titleEl.value = String(section.title || '');
-				} catch { /* ignore */ }
-				try {
-					if (!window.__kustoMarkdownExpandedByBoxId || typeof window.__kustoMarkdownExpandedByBoxId !== 'object') {
-						window.__kustoMarkdownExpandedByBoxId = {};
+					const el = document.getElementById(boxId);
+					if (el && typeof el.setTitle === 'function') {
+						el.setTitle(String(section.title || ''));
+						el.setExpanded(section.expanded !== false);
 					}
-					window.__kustoMarkdownExpandedByBoxId[boxId] = (section.expanded !== false);
 				} catch { /* ignore */ }
-				try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch { /* ignore */ }
-				try { __kustoApplyMarkdownBoxVisibility(boxId); } catch { /* ignore */ }
 				continue;
 			}
 

@@ -6106,93 +6106,56 @@ function addMarkdownBox(options) {
 		return;
 	}
 
-	const closeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M4 4l8 8"/>' +
-		'<path d="M12 4L4 12"/>' +
-		'</svg>';
+	const litEl = document.createElement('kw-markdown-section');
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
 
-	const previewIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
-		'<circle cx="8" cy="8" r="2.1" />' +
-		'</svg>';
-
-	const maximizeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 6V3h3" />' +
-		'<path d="M13 10v3h-3" />' +
-		'<path d="M3 3l4 4" />' +
-		'<path d="M13 13l-4-4" />' +
-		'</svg>';
-
-	const boxHtml =
-		'<div class="query-box" id="' + id + '">' +
-		'<div class="query-header">' +
-		'<div class="query-header-row query-header-row-top">' +
-		'<div class="query-name-group">' +
-		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<input type="text" class="query-name" placeholder="Section Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
-		'</div>' +
-		'<div class="section-actions">' +
-		'<div class="md-tabs" role="tablist" aria-label="Markdown visibility">' +
-		'<div class="md-mode-dropdown" id="' + id + '_md_mode_dropdown">' +
-		'<button class="unified-btn-secondary md-tab md-mode-dropdown-btn" id="' + id + '_md_mode_dropdown_btn" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="__kustoToggleMdModeDropdown(\'' + id + '\', event)" title="Editor mode" aria-label="Editor mode">' +
-		'<span class="md-mode-dropdown-text" id="' + id + '_md_mode_dropdown_text">WYSIWYG</span>' +
-		'<svg class="md-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>' +
-		'</button>' +
-		'<div class="md-mode-dropdown-menu" id="' + id + '_md_mode_dropdown_menu" role="listbox" style="display:none;">' +
-		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\'); __kustoCloseMdModeDropdown(\'' + id + '\');">WYSIWYG</div>' +
-		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\'); __kustoCloseMdModeDropdown(\'' + id + '\');">Markdown</div>' +
-		'<div class="md-mode-dropdown-item" role="option" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\'); __kustoCloseMdModeDropdown(\'' + id + '\');">Preview</div>' +
-		'</div>' +
-		'</div>' +
-		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_wysiwyg" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'wysiwyg\')" title="WYSIWYG" aria-label="WYSIWYG">WYSIWYG</button>' +
-		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_markdown" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'markdown\')" title="Markdown" aria-label="Markdown">Markdown</button>' +
-		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_md_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetMarkdownMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
-		'<span class="md-tabs-divider" aria-hidden="true"></span>' +
-		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_md_max" type="button" onclick="__kustoMaximizeMarkdownBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleMarkdownBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
-		'</div>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeMarkdownBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-editor-wrapper">' +
-		'<div class="query-editor kusto-markdown-editor" id="' + id + '_md_editor"></div>' +
-		'<div class="markdown-viewer" id="' + id + '_md_viewer" style="display:none;"></div>' +
-		'<div class="query-editor-resizer" id="' + id + '_md_resizer" title="Drag to resize\nDouble-click to fit to contents"></div>' +
-		'</div>' +
-		'</div>';
-
-	container.insertAdjacentHTML('beforeend', boxHtml);
-	// Do not auto-assign a name; section names are user-defined.
-
-	// Apply any persisted height before initializing the editor/mode.
-	try {
-		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
-		// For plain .md files we use a fixed viewport layout (internal editor scrolling),
-		// so ignore any persisted wrapper height.
-		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
-		if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
-			const editorEl = document.getElementById(id + '_md_editor');
-			const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
-			if (wrapper) {
-				wrapper.style.height = Math.round(h) + 'px';
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			}
-		}
-	} catch {
-		// ignore
+	// Pass initial text if available.
+	const pendingText = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[id];
+	if (typeof pendingText === 'string') {
+		litEl.setAttribute('initial-text', pendingText);
 	}
 
-	initMarkdownEditor(id);
-	try { __kustoApplyMarkdownEditorMode(id); } catch { /* ignore */ }
-	try { __kustoUpdateMarkdownVisibilityToggleButton(id); } catch { /* ignore */ }
-	try { __kustoApplyMarkdownBoxVisibility(id); } catch { /* ignore */ }
-	try { __kustoSetupMdModeResizeObserver(id); } catch { /* ignore */ }
-	// Plain .md files: do not auto-expand the box to content; keep the toolbar visible and
-	// scroll inside the editor surface instead.
+	// Create light-DOM containers that TOAST UI will render into (via <slot>).
+	const editorDiv = document.createElement('div');
+	editorDiv.className = 'kusto-markdown-editor';
+	editorDiv.id = id + '_md_editor';
+	editorDiv.slot = 'editor';
+	litEl.appendChild(editorDiv);
+
+	const viewerDiv = document.createElement('div');
+	viewerDiv.className = 'markdown-viewer';
+	viewerDiv.id = id + '_md_viewer';
+	viewerDiv.slot = 'viewer';
+	viewerDiv.style.display = 'none';
+	litEl.appendChild(viewerDiv);
+
+	// Handle remove event from the Lit component.
+	litEl.addEventListener('section-remove', function (e) {
+		try { removeMarkdownBox(e.detail.boxId); } catch { /* ignore */ }
+	});
+
+	container.appendChild(litEl);
+
+	// Apply persisted height.
+	try {
+		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+		if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
+			litEl.setAttribute('editor-height-px', String(h));
+		}
+	} catch { /* ignore */ }
+
+	// Apply persisted mode.
+	try {
+		const rawMode = options && typeof options.mode !== 'undefined' ? String(options.mode || '').toLowerCase() : '';
+		if (rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg') {
+			if (typeof litEl.setMarkdownMode === 'function') {
+				litEl.setMarkdownMode(rawMode);
+			}
+		}
+	} catch { /* ignore */ }
+
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
