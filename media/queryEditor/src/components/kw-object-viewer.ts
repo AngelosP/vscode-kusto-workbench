@@ -134,14 +134,14 @@ export class KwObjectViewer extends LitElement {
 
 	// ── Public API ────────────────────────────────────────────────────────────
 
-	show(title: string, jsonText: string): void {
+	show(title: string, jsonText: string, options?: { searchQuery?: string; searchMode?: SearchMode }): void {
 		this.title = title;
 		this.jsonText = jsonText;
 		const rootValue = parseMaybeJson(jsonText);
 		this._stack = [{ label: title, value: rootValue }];
 		this._rawVisible = true;
-		this._searchQuery = '';
-		this._searchMode = 'wildcard';
+		this._searchQuery = options?.searchQuery ?? '';
+		this._searchMode = options?.searchMode ?? 'wildcard';
 		this._currentMatchIndex = 0;
 		this._matchCount = 0;
 		this.open = true;
@@ -476,7 +476,7 @@ export class KwObjectViewer extends LitElement {
 		.modal-content {
 			background: var(--vscode-editor-background);
 			border: 1px solid var(--vscode-panel-border);
-			border-radius: 4px; width: 80%; max-width: 1200px; height: 80%;
+			border-radius: 4px; width: 80%; max-width: 1200px; max-height: 80%;
 			display: flex; flex-direction: column;
 			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 		}

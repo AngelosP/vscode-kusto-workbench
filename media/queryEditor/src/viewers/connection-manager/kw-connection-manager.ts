@@ -106,9 +106,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _databaseSchemas: Record<string, DatabaseSchema> = {};
 	@state() private _tablePreviewData: Record<string, TablePreview> = {};
 	@state() private _loadingDatabases = new Set<string>();
-	@state() private _expandedAccordion: 'favorites' | 'leaveNoTrace' | 'connections' = 'connections';
-	@state() private _sidebarCollapsed = false;
-	@state() private _sidebarWidth = 280;
+	@state() private _filterFavorites = false;
+	@state() private _filterLnt = false;
 
 	// Modal state
 	@state() private _modalVisible = false;
@@ -219,234 +218,169 @@ export class KwConnectionManager extends LitElement {
 	// ── Render ────────────────────────────────────────────────────────────────
 
 	protected render(): TemplateResult {
+		const connections = this._snapshot?.connections ?? [];
+		const favorites = this._snapshot?.favorites ?? [];
+		const lntClusters = this._snapshot?.leaveNoTraceClusters ?? [];
+		const hasFavs = favorites.length > 0;
+		const hasLnt = lntClusters.length > 0;
+		const favClusterUrls = new Set(favorites.map(f => normalizeClusterUrl(f.clusterUrl)));
+
+		// Apply filters
+		let visibleConnections = connections;
+		if (this._filterFavorites) {
+			visibleConnections = connections.filter(c => favClusterUrls.has(normalizeClusterUrl(c.clusterUrl)));
+		}
+		if (this._filterLnt) {
+			const lntUrls = new Set(lntClusters.map(u => normalizeClusterUrl(u)));
+			visibleConnections = visibleConnections.filter(c => lntUrls.has(normalizeClusterUrl(c.clusterUrl)));
+		}
+
 		return html`
-			<h1>Connection Manager</h1>
-			<div class="title-actions">
-				<button class="btn primary" @click=${() => this._openModal('add')}>
-					${ICONS.add} Add new connection
-				</button>
-				<button class="btn" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
-					${ICONS.importIcon} Import connections
-				</button>
-			</div>
-
-			<div class="main-container">
-				<!-- Left Panel -->
-				<div class="left-panel ${this._sidebarCollapsed ? 'collapsed' : ''}" style="width: ${this._sidebarWidth}px">
-					${this._renderFavoritesAccordion()}
-					${this._renderLeaveNoTraceAccordion()}
-					${this._renderConnectionsAccordion()}
-				</div>
-
-				<!-- Splitter -->
-				<div class="splitter">
-					<button class="splitter-collapse-btn" type="button" title="Toggle sidebar" @click=${() => this._sidebarCollapsed = !this._sidebarCollapsed}>
-						${ICONS.sidebar}
+			<div class="page-header">
+				<h1>Connection Manager</h1>
+				<div class="title-actions">
+					<button class="header-btn primary" @click=${() => this._openModal('add')}>
+						${ICONS.add} Add connection
+					</button>
+					<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
+						${ICONS.importIcon} Import
+					</button>
+					<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
+						${ICONS.save} Export
 					</button>
 				</div>
-
-				<!-- Right Panel -->
-				<div class="right-panel">
-					<div class="right-panel-header">
-						<button class="btn-icon" title="Toggle sidebar" @click=${() => this._sidebarCollapsed = !this._sidebarCollapsed}>
-							${ICONS.sidebar}
-						</button>
-						<span class="right-panel-title">Cluster Explorer</span>
-					</div>
-					${this._renderExplorer()}
-				</div>
 			</div>
 
-			${this._sidebarCollapsed ? html`
-				<button class="panel-toggle" type="button" title="Show sidebar" @click=${() => this._sidebarCollapsed = false}>
-					${ICONS.sidebar}
-				</button>
-			` : nothing}
+			<div class="explorer-panel">
+				<!-- Filter tabs -->
+				${hasFavs || hasLnt ? html`
+				<div class="filter-bar">
+					<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.cluster} <span class="filter-label">All</span> <span class="filter-count">${connections.length}</span></button>
+					${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
+					${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
+				</div>
+				` : nothing}
+
+				<!-- Breadcrumb (when drilled in) -->
+				${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
+
+				<!-- Explorer content -->
+				<div class="explorer-content">
+					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
+				</div>
+			</div>
 
 			${this._modalVisible ? this._renderModal() : nothing}
 		`;
 	}
 
-	// ── Left Panel: Favorites Accordion ───────────────────────────────────────
+	// ── Cluster list (root level — flat, click to drill in) ──────────────────
 
-	private _renderFavoritesAccordion(): TemplateResult | typeof nothing {
-		const snap = this._snapshot;
-		const dbFavorites = (snap?.favorites ?? []).filter(f => f.database && f.clusterUrl);
-		if (dbFavorites.length === 0) return nothing;
-
-		const isExpanded = this._expandedAccordion === 'favorites';
-		const connectionsByUrl: Record<string, KustoConnection> = {};
-		for (const c of snap?.connections ?? []) {
-			const key = normalizeClusterUrl(c.clusterUrl);
-			if (key && !connectionsByUrl[key]) connectionsByUrl[key] = c;
+	private _renderClusterList(connections: KustoConnection[], favClusterUrls: Set<string>, lntClusters: string[]): TemplateResult {
+		if (connections.length === 0) {
+			const hasFilter = this._filterFavorites || this._filterLnt;
+			return html`<div class="empty-state">
+				<div class="empty-state-icon">${ICONS.cluster}</div>
+				<div class="empty-state-title">${hasFilter ? 'No matching clusters' : 'No clusters yet'}</div>
+				<div class="empty-state-text">${hasFilter ? 'Try removing the filter.' : 'Add a Kusto cluster to get started.'}</div>
+			</div>`;
 		}
 
-		return html`
-			<div class="left-accordion-item ${isExpanded ? 'expanded' : ''}">
-				<div class="left-accordion-header" @click=${() => this._toggleAccordion('favorites')}>
-					<span class="left-accordion-chevron">${ICONS.chevron}</span>
-					<span class="left-accordion-icon fav-icon">${ICONS.starFilled}</span>
-					<span class="left-accordion-title">FAVORITES</span>
-					<span class="left-accordion-count">${dbFavorites.length}</span>
-				</div>
-				${isExpanded ? html`
-					<div class="left-accordion-body">
-						${dbFavorites.map(fav => {
-							const conn = connectionsByUrl[normalizeClusterUrl(fav.clusterUrl)];
-							const displayName = fav.name || conn?.name || shortClusterName(fav.clusterUrl);
-							const detail = shortClusterName(fav.clusterUrl) + '.' + fav.database;
-							return html`
-								<div class="favorite-item" title="${displayName} — ${detail}"
-									@click=${() => this._selectFavorite(fav, conn)}>
-									<div class="favorite-row">
-										<div class="favorite-name">${displayName}</div>
-										<div class="favorite-actions">
-											<button class="btn-icon" title="Open in new .kqlx file"
-												@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.openInNewFile', clusterUrl: fav.clusterUrl, database: fav.database }); }}>${ICONS.newFile}</button>
-											<button class="btn-icon" title="Refresh schema"
-												@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: fav.clusterUrl, database: fav.database }); }}>${ICONS.refresh}</button>
-											<button class="btn-icon" title="Remove from favorites"
-												@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'favorite.remove', clusterUrl: fav.clusterUrl, database: fav.database }); this._vscode.postMessage({ type: 'requestSnapshot' }); }}>${ICONS.delete}</button>
-										</div>
-									</div>
-									<div class="favorite-detail">${detail}</div>
-								</div>`;
-						})}
-					</div>
-				` : nothing}
-			</div>
-		`;
-	}
+		const lntUrls = new Set(lntClusters.map(u => normalizeClusterUrl(u)));
 
-	// ── Left Panel: Leave No Trace Accordion ──────────────────────────────────
+		return html`${connections.map(conn => {
+			const hasFav = favClusterUrls.has(normalizeClusterUrl(conn.clusterUrl));
+			const isLnt = lntUrls.has(normalizeClusterUrl(conn.clusterUrl));
+			const clusterKey = getClusterCacheKey(conn.clusterUrl);
+			const dbCount = this._snapshot?.cachedDatabases?.[clusterKey]?.length ?? 0;
+			const fullUrl = /^https?:\/\//i.test(conn.clusterUrl) ? conn.clusterUrl : 'https://' + conn.clusterUrl;
 
-	private _renderLeaveNoTraceAccordion(): TemplateResult | typeof nothing {
-		const lntClusters = this._snapshot?.leaveNoTraceClusters ?? [];
-		if (lntClusters.length === 0) return nothing;
-
-		const isExpanded = this._expandedAccordion === 'leaveNoTrace';
-
-		return html`
-			<div class="left-accordion-item ${isExpanded ? 'expanded' : ''}">
-				<div class="left-accordion-header" @click=${() => this._toggleAccordion('leaveNoTrace')}>
-					<span class="left-accordion-chevron">${ICONS.chevron}</span>
-					<span class="left-accordion-icon lnt-icon">${ICONS.shield}</span>
-					<span class="left-accordion-title">LEAVE NO TRACE</span>
-					<span class="left-accordion-count">${lntClusters.length}</span>
-				</div>
-				${isExpanded ? html`
-					<div class="left-accordion-body">
-						${lntClusters.map(lntUrl => {
-							const connName = this._snapshot?.connections?.find(c => normalizeClusterUrl(c.clusterUrl) === normalizeClusterUrl(lntUrl))?.name || shortClusterName(lntUrl);
-							return html`
-								<div class="favorite-item">
-									<div class="favorite-row">
-								<span class="lnt-icon">${ICONS.shield}</span>
-								<span class="favorite-name">${connName}</span>
-								<div class="favorite-actions">
-									<button class="btn-icon" title="Remove from Leave No Trace"
-										@click=${() => { this._vscode.postMessage({ type: 'leaveNoTrace.remove', clusterUrl: lntUrl }); }}>${ICONS.delete}</button>
-										</div>
-									</div>
-									<div class="favorite-detail">${lntUrl}</div>
-								</div>`;
-						})}
-					</div>
-				` : nothing}
-			</div>
-		`;
-	}
-
-	// ── Left Panel: Connections Accordion ──────────────────────────────────────
-
-	private _renderConnectionsAccordion(): TemplateResult {
-		const connections = this._snapshot?.connections ?? [];
-		const isExpanded = this._expandedAccordion === 'connections';
-
-		return html`
-			<div class="left-accordion-item ${isExpanded ? 'expanded' : ''}">
-				<div class="left-accordion-header" @click=${() => this._toggleAccordion('connections')}>
-					<span class="left-accordion-chevron">${ICONS.chevron}</span>
-					<span class="left-accordion-icon">${ICONS.cluster}</span>
-					<span class="left-accordion-title">ALL CLUSTERS</span>
-					<button class="btn-icon add-btn" title="Add connection" @click=${(e: Event) => { e.stopPropagation(); this._openModal('add'); }}>${ICONS.add}</button>
-					<span class="left-accordion-count">${connections.length}</span>
-				</div>
-				${isExpanded ? html`
-					<div class="left-accordion-body">
-						${connections.length === 0 ? html`
-							<div class="empty-state">
-								<div class="empty-state-title">No clusters yet</div>
-								<div class="empty-state-text">Add a Kusto cluster to get started.</div>
-							</div>
-						` : html`
-							<ul class="connection-list">
-								${connections.map(conn => {
-									const isSelected = conn.id === this._selectedConnectionId;
-									const fullUrl = /^https?:\/\//i.test(conn.clusterUrl) ? conn.clusterUrl : 'https://' + conn.clusterUrl;
-									const isLnt = this._isLeaveNoTrace(conn.clusterUrl);
-									return html`
-										<li class="connection-item ${isSelected ? 'selected' : ''}"
-											@click=${() => this._selectConnection(conn.id)}>
-											<div class="connection-row">
-												<div class="connection-name">${conn.name}</div>
-												<div class="connection-actions">
-													${isLnt
-														? html`<button class="btn-icon lnt-active" title="Remove from Leave No Trace" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'leaveNoTrace.remove', clusterUrl: conn.clusterUrl }); }}>${ICONS.shield}</button>`
-														: html`<button class="btn-icon" title="Mark as Leave No Trace" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'leaveNoTrace.add', clusterUrl: conn.clusterUrl }); }}>${ICONS.shield}</button>`
-													}
-													<button class="btn-icon" title="Edit" @click=${(e: Event) => { e.stopPropagation(); this._openModal('edit', conn.id); }}>${ICONS.edit}</button>
-													<button class="btn-icon" title="Copy URL" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'copyToClipboard', text: conn.clusterUrl }); }}>${ICONS.copy}</button>
-													<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
-													<button class="btn-icon" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'connection.delete', id: conn.id }); }}>${ICONS.delete}</button>
-												</div>
-											</div>
-											<div class="connection-url mono">${fullUrl}</div>
-										</li>`;
-								})}
-							</ul>
-						`}
-					</div>
-				` : nothing}
-			</div>
-		`;
-	}
-
-	// ── Right Panel: Explorer ─────────────────────────────────────────────────
-
-	private _renderExplorer(): TemplateResult {
-		const conn = this._getSelectedConnection();
-		if (!conn || !this._snapshot) {
 			return html`
-				<div class="right-panel-content">
-					<div class="empty-state">
-						<div class="empty-state-icon">${ICONS.database}</div>
-						<div class="empty-state-title">Select a cluster</div>
-						<div class="empty-state-text">Click on a cluster to explore its databases, tables, and functions.</div>
+				<div class="explorer-list-item" @click=${() => this._drillIntoCluster(conn.id)}>
+					<span class="explorer-list-item-icon">${ICONS.cluster}</span>
+					<span class="explorer-list-item-name">${conn.name || shortClusterName(conn.clusterUrl)}</span>
+					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
+					${isLnt ? html`<span class="conn-badge lnt-badge" title="Leave No Trace">${ICONS.shield}</span>` : nothing}
+					<span class="item-sep">·</span>
+					<span class="explorer-list-item-url">${fullUrl}</span>
+					<span class="item-sep">·</span>
+					<span class="explorer-list-item-meta">${dbCount > 0 ? `${dbCount} database${dbCount !== 1 ? 's' : ''}` : 'click to explore'}</span>
+					<div class="explorer-list-item-actions">
+						<button class="btn-icon" title="Edit" @click=${(e: Event) => { e.stopPropagation(); this._openModal('edit', conn.id); }}>${ICONS.edit}</button>
+						<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
+						<button class="btn-icon" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'connection.delete', id: conn.id }); }}>${ICONS.delete}</button>
 					</div>
-				</div>
-			`;
-		}
+				</div>`;
+		})}`;
+	}
 
+	private _drillIntoCluster(connId: string): void {
+		this._selectedConnectionId = connId;
+		this._explorerPath = { connectionId: connId } as any;
+		this._vscode.postMessage({ type: 'cluster.expand', connectionId: connId });
+	}
+
+	/** Trim breadcrumb depth so it stays valid when a filter changes. */
+	private _validateBreadcrumb(): void {
+		const ep = this._explorerPath;
+		if (!ep?.connectionId) return;
+
+		const connections = this._snapshot?.connections ?? [];
+		const conn = connections.find(c => c.id === ep.connectionId);
+		if (!conn) { this._explorerPath = null; return; }
+
+		// Check if the cluster is visible under current filter
+		if (this._filterFavorites) {
+			const favUrls = new Set((this._snapshot?.favorites ?? []).map(f => normalizeClusterUrl(f.clusterUrl)));
+			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
+			// If drilled into a database, check if it's a favorite
+			if (ep.database) {
+				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
+				if (!favDbs.has(ep.database)) { this._explorerPath = { connectionId: ep.connectionId } as any; return; }
+			}
+		}
+		if (this._filterLnt) {
+			const lntUrls = new Set((this._snapshot?.leaveNoTraceClusters ?? []).map(u => normalizeClusterUrl(u)));
+			if (!lntUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
+		}
+		// Path is valid — keep it as-is
+	}
+
+	// ── Breadcrumb bar ───────────────────────────────────────────────────────
+
+	private _renderBreadcrumbBar(): TemplateResult {
+		const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId);
+		if (!conn) return html``;
+		return this._renderBreadcrumb(conn);
+	}
+
+	// ── Drilled content (databases → tables/functions) ────────────────────────
+
+	private _renderDrilledContent(): TemplateResult {
+		const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId);
+		if (!conn) return html`<div class="empty-state"><div class="empty-state-text">Connection not found.</div></div>`;
 		const clusterKey = getClusterCacheKey(conn.clusterUrl);
-		const databases = this._snapshot.cachedDatabases[clusterKey] ?? [];
+		const databases = this._snapshot?.cachedDatabases?.[clusterKey] ?? [];
 		const isLoading = this._loadingDatabases.has(conn.id);
 
 		return html`
-			${this._renderBreadcrumb(conn)}
-			<div class="right-panel-content">
-				<div class="explorer-list">
-					${this._renderExplorerContent(conn, databases, isLoading)}
-				</div>
+			<div class="explorer-list">
+				${this._renderExplorerContent(conn, databases, isLoading)}
 			</div>
 		`;
 	}
 
 	private _renderBreadcrumb(conn: KustoConnection): TemplateResult {
 		const ep = this._explorerPath;
+		const rootLabel = this._filterFavorites ? 'Favorites' : this._filterLnt ? 'Leave No Trace' : 'All';
+		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.cluster;
 		return html`
 			<div class="explorer-breadcrumb">
-				<span class="breadcrumb-item ${!ep?.database ? 'current' : ''}" @click=${() => { this._explorerPath = null; }}>
+				<span class="breadcrumb-item" @click=${() => { this._explorerPath = null; }}>
+					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
+				</span>
+				<span class="breadcrumb-separator">/</span>
+				<span class="breadcrumb-item ${!ep?.database ? 'current' : ''}" @click=${() => { this._explorerPath = { connectionId: conn.id, database: undefined } as any; }}>
 					<span class="breadcrumb-icon">${ICONS.cluster}</span>${conn.name}
 				</span>
 				${ep?.database ? html`
@@ -478,13 +412,21 @@ export class KwConnectionManager extends LitElement {
 		// Level 1: databases
 		if (!ep?.database) {
 			if (isLoading) return html`<div class="loading-state">${ICONS.spinner} Loading databases...</div>`;
-			if (databases.length === 0) return html`
+
+			// Filter databases when Favorites filter is active
+			let visibleDbs = databases;
+			if (this._filterFavorites) {
+				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
+				visibleDbs = databases.filter(db => favDbs.has(db));
+			}
+
+			if (visibleDbs.length === 0) return html`
 				<div class="empty-state">
-					<div class="empty-state-text">No databases found.</div>
-					<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>
+					<div class="empty-state-text">${this._filterFavorites ? 'No favorite databases in this cluster.' : 'No databases found.'}</div>
+					${!this._filterFavorites ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
 				</div>`;
 
-			return html`${databases.map(db => {
+			return html`${visibleDbs.map(db => {
 				const isFav = this._isFavorite(conn.clusterUrl, db);
 				return html`
 					<div class="explorer-list-item" @click=${() => this._navigateToDatabase(conn, db)}>
@@ -547,12 +489,15 @@ export class KwConnectionManager extends LitElement {
 		const dbKey = conn.id + '|' + ep.database;
 
 		return html`
-			${folders.map(f => html`
+			${folders.map(f => {
+				const childCount = this._countTreeItems(currentNode[f]);
+				return html`
 				<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, folderPath: [...(ep.folderPath ?? []), f] }; }}>
 					<span class="explorer-list-item-icon folder">${ICONS.folder}</span>
 					<span class="explorer-list-item-name">${f}</span>
-				</div>
-			`)}
+					<span class="explorer-list-item-meta">${childCount} item${childCount !== 1 ? 's' : ''}</span>
+				</div>`;
+			})}
 			${tables.map(table => {
 				const cols = schema.columnTypesByTable?.[table] ?? {};
 				const colNames = Object.keys(cols).sort();
@@ -602,18 +547,21 @@ export class KwConnectionManager extends LitElement {
 		const dbKey = (this._explorerPath?.connectionId ?? '') + '|' + ep.database;
 
 		return html`
-			${folders.map(f => html`
+			${folders.map(f => {
+				const childCount = this._countTreeItems(currentNode[f]);
+				return html`
 				<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, folderPath: [...(ep.folderPath ?? []), f] }; }}>
 					<span class="explorer-list-item-icon folder">${ICONS.folder}</span>
 					<span class="explorer-list-item-name">${f}</span>
-				</div>
-			`)}
+					<span class="explorer-list-item-meta">${childCount} item${childCount !== 1 ? 's' : ''}</span>
+				</div>`;
+			})}
 			${functions.map(fn => {
 				const fnKey = dbKey + '|fn|' + fn.name;
 				const isExpanded = this._expandedFunctions.has(fnKey);
 				return html`
 					<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
-						<div class="explorer-list-item" @click=${() => this._toggleFunction(fnKey)} title="${fn.name}${fn.parametersText ? '(' + fn.parametersText + ')' : ''}">
+						<div class="explorer-list-item" @click=${() => this._toggleFunction(fnKey)} title="${fn.name}${fn.parametersText ? '(' + fn.parametersText + ')' : ' (no parameters)'}">
 							<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>
 							<span class="explorer-list-item-icon function">${ICONS.function}</span>
 							<span class="explorer-list-item-name">${fn.name}</span>
@@ -622,8 +570,8 @@ export class KwConnectionManager extends LitElement {
 						${isExpanded ? html`
 							<div class="explorer-item-details">
 								${fn.docString ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Description</div><div class="explorer-detail-docstring">${fn.docString}</div></div>` : nothing}
-								<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${fn.name}${fn.parametersText || '()'}</div></div>
-								${fn.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${fn.body}</pre></div>` : nothing}
+								<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${fn.name}(${fn.parametersText || ''})</div></div>
+								${fn.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${this._trimFnBody(fn.body)}</pre></div>` : nothing}
 							</div>
 						` : nothing}
 					</div>`;
@@ -633,27 +581,29 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderTablePreview(tableKey: string, tableName: string, data: TablePreview | undefined, conn: KustoConnection, ep: ExplorerPath): TemplateResult {
-		if (data?.loading) return html`<div class="explorer-detail-section"><div class="preview-action loading">⏳ Loading preview…</div></div>`;
+		if (data?.loading) return html`<div class="explorer-detail-section"><div class="preview-action loading">${ICONS.spinner} Loading preview…</div></div>`;
 		if (data?.error) return html`
 			<div class="explorer-detail-section">
 				<div class="preview-error">${data.error}</div>
-				<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>📊 Retry preview</button>
+				<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.table} Retry preview</button>
 			</div>`;
 		if (data?.columns && data?.rows) {
 			if (data.rows.length === 0) return html`<div class="explorer-detail-section"><div style="font-size: 11px; opacity: 0.7; padding: 4px 0;">Table is empty.</div></div>`;
-			// Simple table rendering (without resultsTable.js for now)
+			const dtColumns = data.columns.map((c: any) => ({ name: typeof c === 'string' ? c : c.name ?? '', type: typeof c === 'object' ? c.type : undefined }));
 			return html`
 				<div class="explorer-detail-section">
 					<div class="preview-result">
 						<div class="preview-result-header">
-							<span class="preview-result-info">${data.rowCount} rows${data.executionTime ? ' · ' + data.executionTime : ''}</span>
-							<button class="preview-result-dismiss" title="Dismiss" @click=${() => { const next = { ...this._tablePreviewData }; delete next[tableKey]; this._tablePreviewData = next; }}>✕</button>
+							<span class="preview-result-info">PREVIEW TOP 100 ROWS</span>
+							<button class="preview-result-dismiss" title="Dismiss" @click=${() => { const next = { ...this._tablePreviewData }; delete next[tableKey]; this._tablePreviewData = next; }}>${ICONS.close}</button>
 						</div>
 						<div class="preview-table-container">
-							<table class="preview-table">
-								<thead><tr>${data.columns.map(c => html`<th>${c.name ?? c}</th>`)}</tr></thead>
-								<tbody>${data.rows.slice(0, 50).map(row => html`<tr>${(row as unknown[]).map(cell => html`<td>${cell != null ? String(cell) : ''}</td>`)}</tr>`)}</tbody>
-							</table>
+							<kw-data-table style="height:500px"
+								.columns=${dtColumns}
+								.rows=${data.rows as any}
+								.options=${{ compact: true, showExecutionTime: true, executionTime: data.executionTime }}
+								@save=${(e: CustomEvent) => { this._vscode.postMessage({ type: 'saveResultsCsv', csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName }); }}
+							></kw-data-table>
 						</div>
 					</div>
 				</div>`;
@@ -703,9 +653,7 @@ export class KwConnectionManager extends LitElement {
 
 	// ── Actions ───────────────────────────────────────────────────────────────
 
-	private _toggleAccordion(section: 'favorites' | 'leaveNoTrace' | 'connections'): void {
-		this._expandedAccordion = this._expandedAccordion === section ? 'connections' : section;
-	}
+	// ── Splitter removed — single panel layout ───────────────────────────────
 
 	private _selectConnection(connId: string): void {
 		this._selectedConnectionId = connId;
@@ -799,6 +747,25 @@ export class KwConnectionManager extends LitElement {
 		if (e.key === 'Escape') { this._closeModal(); e.preventDefault(); }
 	};
 
+	private _trimFnBody(body: string): string {
+		let s = body.trim();
+		if (s.startsWith('{')) s = s.slice(1);
+		if (s.endsWith('}')) s = s.slice(0, -1);
+		// Remove common leading whitespace (dedent)
+		const lines = s.split('\n');
+		// Find minimum indentation of non-empty lines
+		let minIndent = Infinity;
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+			if (indent < minIndent) minIndent = indent;
+		}
+		if (minIndent > 0 && minIndent < Infinity) {
+			return lines.map(l => l.slice(minIndent)).join('\n').trim();
+		}
+		return s.trim();
+	}
+
 	// ── Folder tree helpers ───────────────────────────────────────────────────
 
 	private _buildFolderTree(items: any[], getFolderFn: (item: any) => string | undefined): any {
@@ -828,22 +795,36 @@ export class KwConnectionManager extends LitElement {
 		return node;
 	}
 
+	private _countTreeItems(node: any): number {
+		if (!node || typeof node !== 'object') return 0;
+		let count = Array.isArray(node.__items) ? node.__items.length : 0;
+		for (const key of Object.keys(node)) {
+			if (key === '__items') continue;
+			count += this._countTreeItems(node[key]);
+		}
+		return count;
+	}
+
 	// ── Styles ────────────────────────────────────────────────────────────────
 
 	static styles = css`
 		*, *::before, *::after { box-sizing: border-box; }
 
 		:host {
-			display: block;
+			display: flex;
+			flex-direction: column;
 			font-family: var(--vscode-font-family);
 			font-size: var(--vscode-font-size);
 			color: var(--vscode-editor-foreground);
 			background: var(--vscode-editor-background);
 			padding: 16px;
 			margin: 0;
+			height: 100vh;
+			box-sizing: border-box;
+			overflow: hidden;
 		}
 
-		h1 { font-size: 18px; margin: 0 0 8px 0; font-weight: 600; }
+		h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
 		h2 { font-size: 14px; margin: 0; font-weight: 600; }
 		.mono { font-family: var(--vscode-editor-font-family); }
 
@@ -866,17 +847,41 @@ export class KwConnectionManager extends LitElement {
 		.btn-icon.is-favorite svg { fill: #f5c518; }
 		.btn-icon.lnt-active { color: var(--vscode-symbolIcon-eventForeground, #d19a66); }
 
-		.title-actions { display: flex; gap: 8px; margin-bottom: 16px; }
+		.title-actions { display: flex; gap: 6px; flex-shrink: 0; }
+		.page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+		.header-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 12px; border-radius: 3px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: pointer; font-family: inherit; white-space: nowrap; height: 28px; box-sizing: border-box; }
+		.header-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+		.header-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+		.header-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
+		.header-btn svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
 		.add-btn { width: 28px; height: 28px; }
 		.add-btn svg { width: 18px; height: 18px; }
 
-		/* Main layout */
-		.main-container { display: flex; height: calc(100vh - 80px); position: relative; }
-		.left-panel { width: 280px; min-width: 200px; max-width: 500px; height: 100%; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; margin-right: 8px; transition: width 0.15s ease, min-width 0.15s ease, opacity 0.15s ease; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; }
-		.left-panel.collapsed { width: 0 !important; min-width: 0 !important; opacity: 0; pointer-events: none; margin-right: 0; }
-		.splitter { width: 6px; cursor: col-resize; background: transparent; position: relative; flex-shrink: 0; margin-right: 8px; }
-		.splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background 0.1s; }
-		.splitter:hover::after { background: var(--vscode-focusBorder); }
+		/* Main layout — single panel */
+		.explorer-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; background: var(--vscode-editorWidget-background); overflow: hidden; }
+
+		/* Filter tabs */
+		.filter-bar { display: flex; gap: 0; border-bottom: 1px solid var(--vscode-editorWidget-border); flex-shrink: 0; container-type: inline-size; }
+		.filter-tab { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; font-size: 13px; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; font-family: inherit; white-space: nowrap; transition: all 0.15s; }
+		.filter-tab:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+		.filter-tab.active { color: var(--vscode-foreground); border-bottom-color: var(--vscode-focusBorder); font-weight: 500; }
+		.filter-tab svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
+		.fav-tab svg { fill: #f5c518; }
+		.lnt-tab svg { fill: var(--vscode-charts-orange, #d18616); }
+		.filter-label { }
+		.filter-count { font-size: 11px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 10px; min-width: 16px; text-align: center; }
+		@container (max-width: 400px) { .filter-label { display: none; } .filter-tab { padding: 10px 10px; gap: 4px; } }
+
+		/* Explorer content */
+		.explorer-content { flex: 1; overflow-y: auto; min-height: 0; }
+
+		/* Badges on cluster items */
+		.conn-badge { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; align-items: center; }
+		.conn-badge svg { width: 14px; height: 14px; fill: currentColor; }
+		.lnt-badge { color: var(--vscode-charts-orange, #d18616); }
+		.fav-badge { color: #f5c518; }
+		.loading-inline,.empty-inline { padding: 8px 12px 8px 44px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+		.link-btn { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; font-size: inherit; font-family: inherit; padding: 0; text-decoration: underline; }
 		.splitter-collapse-btn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 18px; height: 32px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--vscode-foreground); opacity: 0; transition: opacity 0.15s; z-index: 1; padding: 0; }
 		.splitter:hover .splitter-collapse-btn { opacity: 1; }
 		.splitter-collapse-btn svg { width: 12px; height: 12px; }
@@ -884,60 +889,8 @@ export class KwConnectionManager extends LitElement {
 		.panel-toggle { position: fixed; top: 80px; left: 16px; z-index: 100; width: 28px; height: 28px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--vscode-foreground); padding: 0; }
 		.panel-toggle svg { width: 16px; height: 16px; }
 
-		/* Right panel header */
-		.right-panel-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; height: 42px; box-sizing: border-box; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorGroupHeader-tabsBackground); flex-shrink: 0; }
-		.right-panel-header svg { width: 16px; height: 16px; }
-		.right-panel-title { font-weight: 600; font-size: 13px; }
-		.right-panel-content { flex: 1; overflow-y: auto; }
-
-		/* Accordion */
-		.left-accordion-item { display: flex; flex-direction: column; flex-shrink: 0; }
-		.left-accordion-item:not(:last-child) { border-bottom: 1px solid var(--vscode-editorWidget-border); }
-		.left-accordion-item.expanded { flex-shrink: 1; min-height: 0; overflow: hidden; }
-		.left-accordion-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; height: 42px; box-sizing: border-box; cursor: pointer; user-select: none; background: var(--vscode-editorGroupHeader-tabsBackground); transition: background 0.1s; flex-shrink: 0; }
-		.left-accordion-header:hover { background: var(--vscode-list-hoverBackground); }
-		.left-accordion-chevron { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.15s ease; opacity: 0.7; }
-		.left-accordion-chevron svg { width: 14px; height: 14px; fill: currentColor; }
-		.left-accordion-header:hover .left-accordion-chevron { opacity: 1; }
-		.left-accordion-item.expanded .left-accordion-chevron { transform: rotate(90deg); }
-		.left-accordion-icon { width: 16px; height: 16px; flex-shrink: 0; display: flex; align-items: center; }
-		.left-accordion-icon svg { width: 16px; height: 16px; fill: currentColor; }
-		.fav-icon { color: #f5c518; }
-		.fav-icon svg { fill: #f5c518; }
-		.left-accordion-title { flex: 1; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-		.left-accordion-count { font-size: 11px; font-weight: 500; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 10px; min-width: 18px; text-align: center; }
-		.left-accordion-body { overflow-y: auto; min-height: 0; }
-
-		/* Connection list */
-		.connection-list { list-style: none; margin: 0; padding: 0; }
-		.connection-item { display: flex; flex-direction: column; padding: 6px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); cursor: pointer; transition: background 0.1s; }
-		.connection-item:last-child { border-bottom: none; }
-		.connection-item:hover { background: var(--vscode-list-hoverBackground); }
-		.connection-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-		.connection-row { display: flex; align-items: center; gap: 0; }
-		.connection-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; flex-shrink: 1; min-width: 0; }
-		.connection-url { font-size: 11px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-		.connection-actions { display: flex; gap: 2px; flex-shrink: 0; }
-		.connection-actions .btn-icon { opacity: 0; transition: opacity 0.1s; }
-		.connection-item:hover .connection-actions .btn-icon { opacity: 1; }
-		.connection-actions .btn-icon.lnt-active { opacity: 1; }
-
-		/* Leave No Trace */
-		.lnt-icon { color: var(--vscode-symbolIcon-eventForeground, #d19a66); display: flex; align-items: center; flex-shrink: 0; margin-right: 6px; }
-		.lnt-icon svg { width: 14px; height: 14px; fill: currentColor; }
-
-		/* Favorites section */
-		.favorite-item { display: flex; flex-direction: column; padding: 6px 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); cursor: pointer; transition: background 0.1s; }
-		.favorite-item:last-child { border-bottom: none; }
-		.favorite-item:hover { background: var(--vscode-list-hoverBackground); }
-		.favorite-row { display: flex; align-items: center; gap: 0; }
-		.favorite-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; flex-shrink: 1; min-width: 0; }
-		.favorite-detail { font-size: 11px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-		.favorite-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; flex-shrink: 0; }
-		.favorite-item:hover .favorite-actions { opacity: 1; }
-
 		/* Explorer breadcrumb */
-		.explorer-breadcrumb { display: flex; align-items: center; gap: 4px; padding: 8px 12px; font-size: 12px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-sideBar-background); flex-wrap: wrap; flex-shrink: 0; }
+		.explorer-breadcrumb { display: flex; align-items: center; gap: 4px; padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-sideBar-background); flex-wrap: wrap; flex-shrink: 0; min-height: 38px; box-sizing: border-box; }
 		.breadcrumb-item { display: flex; align-items: center; gap: 4px; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 2px 4px; border-radius: 3px; transition: background 0.1s; }
 		.breadcrumb-item:hover { background: var(--vscode-list-hoverBackground); text-decoration: underline; }
 		.breadcrumb-item.current { color: var(--vscode-foreground); cursor: default; font-weight: 500; }
@@ -948,7 +901,7 @@ export class KwConnectionManager extends LitElement {
 
 		/* Explorer list */
 		.explorer-list { flex: 1; overflow-y: auto; }
-		.explorer-list-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; transition: background 0.1s; border-bottom: 1px solid var(--vscode-editorWidget-border); }
+		.explorer-list-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; transition: background 0.1s; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorWidget-background); }
 		.explorer-list-item:last-child { border-bottom: none; }
 		.explorer-list-item:hover { background: var(--vscode-list-hoverBackground); }
 		.explorer-list-item-icon { width: 16px; height: 16px; flex-shrink: 0; display: flex; align-items: center; }
@@ -961,8 +914,10 @@ export class KwConnectionManager extends LitElement {
 		.explorer-list-item-icon.function svg { fill: var(--vscode-symbolIcon-methodForeground, #b180d7); }
 		.explorer-list-item-icon.folder { color: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
 		.explorer-list-item-icon.folder svg { fill: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
-		.explorer-list-item-name { flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-		.explorer-list-item-meta { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+		.explorer-list-item-name { flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; font-weight: 500; }
+		.explorer-list-item-url { font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.7; flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); }
+		.explorer-list-item-meta { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; white-space: nowrap; }
+		.item-sep { color: var(--vscode-descriptionForeground); opacity: 0.4; flex-shrink: 0; font-size: 12px; }
 		.explorer-list-item-params { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; opacity: 0; transition: opacity 0.15s; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 		.explorer-list-item:hover .explorer-list-item-params { opacity: 1; }
 		.explorer-list-item:hover .explorer-list-item-name { flex-shrink: 0; max-width: 60%; }
@@ -973,14 +928,16 @@ export class KwConnectionManager extends LitElement {
 		.explorer-list-item-chevron { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.15s ease; opacity: 0.7; display: flex; align-items: center; }
 		.explorer-list-item-chevron svg { width: 14px; height: 14px; fill: currentColor; }
 		.explorer-list-item-chevron.expanded { transform: rotate(90deg); }
-		.explorer-list-item-wrapper { }
+		.explorer-list-item-wrapper { border-bottom: 1px solid var(--vscode-editorWidget-border); }
+		.explorer-list-item-wrapper > .explorer-list-item { border-bottom: none; }
+		.explorer-list-item-wrapper.expanded > .explorer-list-item { background: var(--vscode-list-hoverBackground); }
 		.explorer-item-details { padding: 8px 12px 12px 44px; background: var(--vscode-editorWidget-background); border-top: 1px solid var(--vscode-editorWidget-border); }
 		.explorer-detail-section { margin-bottom: 12px; }
 		.explorer-detail-section:last-child { margin-bottom: 0; }
 		.explorer-detail-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
 		.explorer-detail-docstring { font-size: 12px; color: var(--vscode-editor-foreground); line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; }
 		.explorer-detail-code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; color: var(--vscode-symbolIcon-methodForeground, #b180d7); padding: 4px 8px; background: rgba(0, 0, 0, 0.1); border-radius: 4px; }
-		.explorer-detail-body { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.4; color: var(--vscode-editor-foreground); background: rgba(0, 0, 0, 0.15); border-radius: 4px; padding: 8px 10px; margin: 0; white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; }
+		.explorer-detail-body { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.4; color: var(--vscode-editor-foreground); background: rgba(0, 0, 0, 0.15); border-radius: 4px; padding: 8px 10px; margin: 0; white-space: pre-wrap; word-wrap: break-word; overflow: hidden; }
 		.explorer-detail-schema { display: flex; flex-direction: column; gap: 2px; }
 		.explorer-schema-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; background: rgba(0, 0, 0, 0.08); border-radius: 3px; }
 		.explorer-schema-row:hover { background: rgba(0, 0, 0, 0.15); }
@@ -999,7 +956,7 @@ export class KwConnectionManager extends LitElement {
 		.preview-result-dismiss { background: none; border: none; cursor: pointer; color: var(--vscode-descriptionForeground); opacity: 0.7; padding: 2px; }
 		.preview-result-dismiss:hover { opacity: 1; }
 		.preview-result-dismiss svg { width: 12px; height: 12px; fill: currentColor; }
-		.preview-table-container { max-height: 300px; overflow: auto; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; }
+		.preview-table-container { }
 		.preview-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--vscode-editor-font-family); }
 		.preview-table th { padding: 4px 8px; text-align: left; font-weight: 600; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorGroupHeader-tabsBackground); position: sticky; top: 0; z-index: 1; }
 		.preview-table td { padding: 4px 8px; border-bottom: 1px solid var(--vscode-editorWidget-border); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

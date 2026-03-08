@@ -45,10 +45,12 @@ type IncomingMessage =
 	| { type: 'leaveNoTrace.add'; clusterUrl: string }
 	| { type: 'leaveNoTrace.remove'; clusterUrl: string }
 	| { type: 'connection.importXml' }
+	| { type: 'connection.exportXml' }
 	| { type: 'database.openInNewFile'; clusterUrl: string; database: string }
 	| { type: 'database.refreshSchema'; clusterUrl: string; database: string }
 	| { type: 'cluster.refreshSchema'; connectionId: string }
-	| { type: 'table.preview'; connectionId: string; database: string; tableName: string };
+	| { type: 'table.preview'; connectionId: string; database: string; tableName: string }
+	| { type: 'saveResultsCsv'; csv: string; suggestedFileName?: string };
 
 // Re-export the original class so existing imports keep working
 export { ConnectionManagerViewer } from './connectionManagerViewer';
@@ -86,7 +88,7 @@ export class ConnectionManagerViewerV2 {
 		this.kustoClient = new KustoQueryClient(this.context);
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.connectionManagerV2',
-			VIEW_TITLE + ' (v2)',
+			VIEW_TITLE,
 			{ viewColumn, preserveFocus: false },
 			{
 				enableScripts: true,
@@ -453,6 +455,10 @@ export class ConnectionManagerViewerV2 {
 				await this.handleImportConnectionsXml();
 				return;
 			}
+			case 'connection.exportXml': {
+				await this.handleExportConnectionsXml();
+				return;
+			}
 			case 'table.preview': {
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
@@ -471,6 +477,14 @@ export class ConnectionManagerViewerV2 {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
 					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
 				}
+				return;
+			}
+			case 'saveResultsCsv': {
+				const csv = String(msg.csv || '');
+				if (!csv.trim()) { void vscode.window.showInformationMessage('No results to save.'); return; }
+				const suggestedName = String(msg.suggestedFileName || 'results.csv');
+				const uri = await vscode.window.showSaveDialog({ filters: { 'CSV': ['csv'] }, saveLabel: 'Save', title: 'Save results as CSV', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, suggestedName) : undefined });
+				if (uri) { await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(csv)); void vscode.window.setStatusBarMessage(`Results saved to ${uri.fsPath}`, 3000); }
 				return;
 			}
 			default: return;
@@ -506,6 +520,28 @@ export class ConnectionManagerViewerV2 {
 			const snapshot = await this.buildSnapshot();
 			this.panel.webview.postMessage({ type: 'snapshot', snapshot });
 		} catch (e: any) { void vscode.window.showErrorMessage(`Failed to import connections: ${e instanceof Error ? e.message : String(e)}`); }
+	}
+
+	private async handleExportConnectionsXml(): Promise<void> {
+		try {
+			const connections = this.connectionManager.getConnections();
+			if (connections.length === 0) { void vscode.window.showInformationMessage('No connections to export.'); return; }
+			const xmlBlocks = connections.map(c => {
+				const url = /^https?:\/\//i.test(c.clusterUrl) ? c.clusterUrl : 'https://' + c.clusterUrl;
+				const dbPart = c.database ? `Initial Catalog=${this.escapeXml(c.database)};` : '';
+				return `  <ServerDescriptionBase>\n    <Name>${this.escapeXml(c.name || c.clusterUrl)}</Name>\n    <Details>${this.escapeXml(url)}</Details>\n    <ConnectionString>Data Source=${this.escapeXml(url)};${dbPart}AAD Federated Security=True</ConnectionString>\n  </ServerDescriptionBase>`;
+			});
+			const xml = `<?xml version="1.0" encoding="utf-8"?>\n<ArrayOfServerDescriptionBase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n${xmlBlocks.join('\n')}\n</ArrayOfServerDescriptionBase>\n`;
+			const uri = await vscode.window.showSaveDialog({ filters: { 'XML files': ['xml'] }, saveLabel: 'Export', title: 'Export connections', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'connections.xml') : undefined });
+			if (uri) {
+				await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(xml));
+				void vscode.window.setStatusBarMessage(`Exported ${connections.length} connection${connections.length !== 1 ? 's' : ''} to ${uri.fsPath}`, 3000);
+			}
+		} catch (e: any) { void vscode.window.showErrorMessage(`Failed to export connections: ${e instanceof Error ? e.message : String(e)}`); }
+	}
+
+	private escapeXml(s: string): string {
+		return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 	}
 
 	private parseKustoExplorerConnectionsXml(xmlText: string): Array<{ name: string; clusterUrl: string; database?: string }> {

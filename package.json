@@ -159,11 +159,6 @@
         "category": "Kusto Workbench"
       },
       {
-        "command": "kusto.compareConnectionManagers",
-        "title": "Compare Connection Managers (Old vs New)",
-        "category": "Kusto Workbench"
-      },
-      {
         "command": "kusto.deleteAllConnections",
         "title": "Delete All Connections",
         "category": "Kusto Workbench"
@@ -1167,6 +1162,8 @@
   "dependencies": {
     "@azure/identity": "^4.13.0",
     "@kusto/monaco-kusto": "^14.1.0",
+    "@tanstack/table-core": "^8.21.3",
+    "@tanstack/virtual-core": "^3.13.21",
     "@toast-ui/editor": "^3.2.2",
     "@toast-ui/editor-plugin-color-syntax": "^3.1.0",
     "azure-kusto-data": "^7.0.3",
