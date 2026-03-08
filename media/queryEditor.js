@@ -95,6 +95,7 @@
 		'queryEditor/objectViewer.js',
 		'queryEditor/cellViewer.js',
 		'queryEditor/columnAnalysis.js',
+		'dist/webview/webview.bundle.js',
 		'queryEditor/main.js'
 	];
 

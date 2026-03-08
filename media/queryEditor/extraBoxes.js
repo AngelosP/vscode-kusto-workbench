@@ -7137,44 +7137,30 @@ function addPythonBox(options) {
 		return;
 	}
 
-	const closeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M4 4l8 8"/>' +
-		'<path d="M12 4L4 12"/>' +
-		'</svg>';
+	const litEl = document.createElement('kw-python-section');
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
 
-	const maximizeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 6V3h3" />' +
-		'<path d="M13 10v3h-3" />' +
-		'<path d="M3 3l4 4" />' +
-		'<path d="M13 13l-4-4" />' +
-		'</svg>';
+	// Pass initial code if available.
+	const pendingCode = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[id];
+	if (typeof pendingCode === 'string') {
+		litEl.setAttribute('initial-code', pendingCode);
+	}
 
-	const boxHtml =
-		'<div class="query-box" id="' + id + '">' +
-		'<div class="section-header-row">' +
-		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<div class="section-title">Python</div>' +
-		'<div class="section-actions">' +
-		'<div class="md-tabs" role="tablist" aria-label="Python controls">' +
-		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizePythonBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'</div>' +
-		'<button class="section-btn" type="button" onclick="runPythonBox(\'' + id + '\')" title="Run Python">▶ Run</button>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only section-btn" type="button" onclick="removePythonBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-editor-wrapper">' +
-		'<div class="query-editor" id="' + id + '_py_editor"></div>' +
-		'<div class="query-editor-resizer" id="' + id + '_py_resizer" title="Drag to resize editor\nDouble-click to fit to contents"></div>' +
-		'</div>' +
-		'<div class="python-output" id="' + id + '_py_output" aria-label="Python output"></div>' +
-		'</div>';
+	// Create the light-DOM editor container that Monaco will render into.
+	const editorDiv = document.createElement('div');
+	editorDiv.className = 'query-editor';
+	editorDiv.id = id + '_py_editor';
+	editorDiv.slot = 'editor';
+	litEl.appendChild(editorDiv);
 
-	container.insertAdjacentHTML('beforeend', boxHtml);
-	// Do not auto-assign a name; this section type does not use names.
-	initPythonEditor(id);
-	setPythonOutput(id, '');
+	// Handle remove event from the Lit component.
+	litEl.addEventListener('section-remove', function (e) {
+		try { removePythonBox(e.detail.boxId); } catch { /* ignore */ }
+	});
+
+	container.appendChild(litEl);
+
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
@@ -7188,6 +7174,7 @@ function addPythonBox(options) {
 }
 
 function removePythonBox(boxId) {
+	// Legacy editor cleanup (for any old-style boxes still in DOM).
 	if (pythonEditors[boxId]) {
 		try { pythonEditors[boxId].dispose(); } catch { /* ignore */ }
 		delete pythonEditors[boxId];

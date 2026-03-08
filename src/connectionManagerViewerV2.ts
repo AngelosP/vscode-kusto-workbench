@@ -52,9 +52,6 @@ type IncomingMessage =
 	| { type: 'table.preview'; connectionId: string; database: string; tableName: string }
 	| { type: 'saveResultsCsv'; csv: string; suggestedFileName?: string };
 
-// Re-export the original class so existing imports keep working
-export { ConnectionManagerViewer } from './connectionManagerViewer';
-
 export class ConnectionManagerViewerV2 {
 	private static current: ConnectionManagerViewerV2 | undefined;
 

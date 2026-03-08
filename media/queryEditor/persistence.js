@@ -962,9 +962,16 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('python_')) {
+			// Lit component: delegate to its serialize() method.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
+				try {
+					sections.push(el.serialize());
+					continue;
+				} catch { /* fall through to legacy path */ }
+			}
+			// Legacy fallback (for old-style boxes still in DOM during transition).
 			let code = pythonEditors && pythonEditors[id] ? (pythonEditors[id].getValue() || '') : '';
-			// If the editor hasn't initialized yet (e.g. Monaco still loading on a slow machine),
-			// don't lose content: use the pending restore buffer.
 			if (!code) {
 				try {
 					const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[id];
@@ -1642,13 +1649,22 @@ function applyKqlxState(state) {
 			}
 
 			if (t === 'python') {
-				const boxId = addPythonBox({ id: (section.id ? String(section.id) : undefined) });
-				// Monaco editor may not exist yet; store pending python code for initPythonEditor.
+				// Store pending code so the Lit component can pick it up during Monaco init.
+				const pendingId = section.id ? String(section.id) : ('python_' + Date.now());
 				try {
-					window.__kustoPendingPythonCodeByBoxId[boxId] = String(section.code || '');
+					window.__kustoPendingPythonCodeByBoxId[pendingId] = String(section.code || '');
 				} catch { /* ignore */ }
-				try { setPythonOutput(boxId, String(section.output || '')); } catch { /* ignore */ }
-				try { __kustoSetWrapperHeightPx(boxId, '_py_editor', section.editorHeightPx); } catch { /* ignore */ }
+				const boxId = addPythonBox({ id: pendingId });
+				// Set output and height on the Lit element.
+				try {
+					const el = document.getElementById(boxId);
+					if (el && typeof el.setOutput === 'function') {
+						el.setOutput(String(section.output || ''));
+					}
+					if (el && section.editorHeightPx) {
+						el.setAttribute('editor-height-px', String(section.editorHeightPx));
+					}
+				} catch { /* ignore */ }
 				continue;
 			}
 
