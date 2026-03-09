@@ -1721,46 +1721,6 @@ function __kustoApplyResultsVisibility(boxId) {
 				__kustoHideResultsTools(boxId);
 			}
 		} catch { /* ignore */ }
-		// URL (table results): preserve the outer URL section height when hiding/showing results.
-		// Height changes should only happen via explicit user resize or explicit "Fit to contents".
-		try {
-			const urlWrapper = document.getElementById(boxId + '_wrapper');
-			const urlContent = document.getElementById(boxId + '_content');
-			let hasTable = false;
-			try {
-				hasTable = !!(urlContent && urlContent.querySelector && urlContent.querySelector('.table-container'));
-			} catch { /* ignore */ }
-			if (urlWrapper && urlContent && hasTable) {
-				// If the user explicitly resized the URL section, remember that height and restore it
-				// when results are shown again.
-				const userResized = !!(urlWrapper.dataset && urlWrapper.dataset.kustoUserResized === 'true');
-				if (!visible) {
-					try {
-						if (userResized) {
-							const inlineHeight = (urlWrapper.style && typeof urlWrapper.style.height === 'string')
-								? urlWrapper.style.height.trim()
-								: '';
-							if (inlineHeight && inlineHeight !== 'auto') {
-								urlWrapper.dataset.kustoPrevHeight = inlineHeight;
-							} else {
-								// Best-effort: capture the rendered height.
-								urlWrapper.dataset.kustoPrevHeight = Math.max(0, Math.ceil(urlWrapper.getBoundingClientRect().height)) + 'px';
-							}
-						}
-					} catch { /* ignore */ }
-				} else {
-					// Showing results: restore prior user height if present. Otherwise keep as-is.
-					try {
-						if (userResized) {
-							const prev = (urlWrapper.dataset && urlWrapper.dataset.kustoPrevHeight) ? String(urlWrapper.dataset.kustoPrevHeight) : '';
-							if (prev && prev !== 'auto') {
-								urlWrapper.style.height = prev;
-							}
-						}
-					} catch { /* ignore */ }
-				}
-			}
-		} catch { /* ignore */ }
 		return;
 	}
 	let visible = true;

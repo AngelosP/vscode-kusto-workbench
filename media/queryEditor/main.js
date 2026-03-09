@@ -1382,10 +1382,10 @@ window.addEventListener('message', async event => {
 			try { if (typeof onPythonError === 'function') onPythonError(message); } catch { /* ignore */ }
 			break;
 		case 'urlContent':
-			try { if (typeof onUrlContent === 'function') onUrlContent(message); } catch { /* ignore */ }
+			// Handled by <kw-url-section> Lit component via window message listener.
 			break;
 		case 'urlError':
-			try { if (typeof onUrlError === 'function') onUrlError(message); } catch { /* ignore */ }
+			// Handled by <kw-url-section> Lit component via window message listener.
 			break;
 		case 'schemaData':
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
@@ -2149,6 +2149,13 @@ window.addEventListener('message', async event => {
 				// Helper to set section name
 				const setSectionName = (id, name) => {
 					if (id && name) {
+						// Lit sections expose setName() for shadow DOM.
+						const el = document.getElementById(id);
+						if (el && typeof el.setName === 'function') {
+							el.setName(String(name));
+							return;
+						}
+						// Legacy sections use light DOM inputs.
 						const nameInput = document.getElementById(id + '_name');
 						if (nameInput) {
 							nameInput.value = String(name);

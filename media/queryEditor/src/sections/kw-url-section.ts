@@ -1114,8 +1114,6 @@ export class KwUrlSection extends LitElement {
 			}
 			st.content = st.body || '';
 			this._fetchState = st;
-			// Also register with global urlStateByBoxId so legacy code stays in sync.
-			try { (window as any).urlStateByBoxId[this.boxId] = st; } catch { /* ignore */ }
 		}
 
 		if (msg.type === 'urlError' && msg.boxId === this.boxId) {
@@ -1125,8 +1123,6 @@ export class KwUrlSection extends LitElement {
 			st.content = '';
 			st.error = String(msg.error || 'Failed to load URL.');
 			this._fetchState = st;
-			// Keep global state in sync.
-			try { (window as any).urlStateByBoxId[this.boxId] = st; } catch { /* ignore */ }
 		}
 	};
 

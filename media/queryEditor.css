@@ -3146,43 +3146,6 @@
 			align-items: center;
 		}
 
-		/* URL header: URL input + view toggle + close on one line */
-		.section-header-row.url-section-header {
-			justify-content: flex-start;
-			gap: 8px;
-		}
-
-		.section-header-row.url-section-header .url-name {
-			/* Keep the URL name tight to the drag handle (remove the flex gap just for this pair). */
-			margin-left: -8px;
-			flex: 1 1 auto;
-			max-width: 150px;
-			min-width: 0; /* Allow complete collapse when space is tight */
-		}
-
-		.section-header-row.url-section-header .url-input {
-			flex: 1 1 auto;
-			min-width: 0; /* Allow complete collapse when space is tight */
-		}
-
-		/* Ensure buttons have priority over textboxes and don't shrink */
-		.section-header-row.url-section-header .section-actions {
-			flex-shrink: 0;
-		}
-
-		/* URL sections: enable container queries for responsive hiding */
-		.query-box.url-box {
-			container-type: inline-size;
-			container-name: url-section;
-		}
-
-		/* Hide the URL textbox when the section is 150px or narrower */
-		@container url-section (max-width: 150px) {
-			.section-header-row.url-section-header .url-input {
-				display: none;
-			}
-		}
-
 		.section-title-edit {
 			display: inline-flex;
 			gap: 2px;
@@ -3532,11 +3495,6 @@
 			padding-bottom: 3px;
 		}
 
-		/* Collapsed URL sections: hide the fit-to-contents button. */
-		.query-box.is-url-collapsed .md-max-btn {
-			display: none !important;
-		}
-
 		.markdown-viewer {
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 4px;
@@ -3819,72 +3777,6 @@
 			max-height: 320px;
 		}
 
-		.url-output {
-			border: none;
-			border-radius: 0;
-			background: transparent;
-			padding: 0;
-			font-family: var(--vscode-editor-font-family);
-			font-size: 12px;
-			overflow: auto;
-			max-height: none;
-			flex: 1 1 auto;
-			min-height: 0;
-			display: flex;
-			flex-direction: column;
-			min-width: 0;
-		}
-
-		.url-output-wrapper {
-			position: relative;
-			width: 100%;
-			min-height: 120px;
-			height: 120px;
-			margin: 8px 0 0;
-			overflow: hidden;
-			display: flex;
-			flex-direction: column;
-			background: transparent;
-		}
-
-		/* URL boxes: no extra gap below the resize grip. */
-		.query-box.url-box {
-			padding-bottom: 0;
-		}
-
-		/* When the URL section is hidden/collapsed, give it a bit more breathing room. */
-		.query-box.url-box.is-url-collapsed {
-			margin-bottom: 26px;
-		}
-
-		.url-row {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			flex-wrap: wrap;
-			margin-bottom: 8px;
-		}
-
-		.url-input {
-			flex: 1 1 420px;
-			min-width: 220px;
-			background: var(--vscode-input-background);
-			color: var(--vscode-input-foreground);
-			border: 1px solid var(--vscode-input-border);
-			border-radius: 4px;
-			padding: 6px 8px;
-			font-size: 12px;
-		}
-
-		.url-input:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-
-		.url-collapsed {
-			display: none;
-		}
-
 		.query-box {
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 0;
@@ -3893,6 +3785,14 @@
 			background: var(--vscode-editor-background);
 			/* Uniform lift on all edges. */
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+		}
+
+		/* Lit section custom elements: override the global * { margin: 0 } reset
+		   so :host margin-bottom takes effect in light DOM. */
+		kw-python-section,
+		kw-markdown-section,
+		kw-url-section {
+			margin-bottom: 16px;
 		}
 
 		/* Let the results resize bar sit flush to the section bottom. */
@@ -5966,18 +5866,6 @@
 		.table-container:focus {
 			outline: 1px solid var(--vscode-focusBorder);
 		}
-
-		/* URL CSV previews: avoid nested scrollbars (outer .url-output should scroll). */
-		.url-table-container {
-			overflow: visible;
-			max-width: none;
-			max-height: none;
-			border: none;
-			border-radius: 0;
-		}
-
-		/* (Removed URL/CSV-specific layout rules.)
-		   The reusable tabular control now defines a scrollable layout everywhere it is used. */
 
 		table {
 			width: max-content;

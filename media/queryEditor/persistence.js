@@ -407,68 +407,6 @@ function __kustoSetWrapperHeightPx(boxId, suffix, heightPx) {
 	}
 }
 
-function __kustoGetUrlOutputHeightPx(boxId) {
-	try {
-		const wrapper = document.getElementById(boxId + '_wrapper');
-		if (!wrapper) return undefined;
-		// Only persist heights that came from an explicit user resize (or a restored persisted height).
-		// Auto/default layout can vary and should not mark the document dirty.
-		try {
-			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') {
-				return undefined;
-			}
-		} catch {
-			return undefined;
-		}
-		let inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
-		// When URL CSV results are hidden we may collapse the wrapper to height:auto, but we still
-		// want to persist the user's last explicit height.
-		if (!inlineHeight || inlineHeight === 'auto') {
-			try {
-				const prev = (wrapper.dataset && wrapper.dataset.kustoPrevHeight) ? String(wrapper.dataset.kustoPrevHeight).trim() : '';
-				if (prev) {
-					inlineHeight = prev;
-				}
-			} catch {
-				// ignore
-			}
-		}
-		if (!inlineHeight || inlineHeight === 'auto') return undefined;
-		const m = inlineHeight.match(/^([0-9]+)px$/i);
-		if (!m) return undefined;
-		const px = parseInt(m[1], 10);
-		return Number.isFinite(px) ? Math.max(0, px) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function __kustoSetUrlOutputHeightPx(boxId, heightPx) {
-	try {
-		const wrapper = document.getElementById(boxId + '_wrapper');
-		if (!wrapper) return;
-		const h = Number(heightPx);
-		if (!Number.isFinite(h) || h <= 0) return;
-		// Keep within the same bounds as the URL drag-resize affordance.
-		const clamped = Math.max(120, Math.min(900, Math.round(h)));
-		wrapper.style.height = clamped + 'px';
-		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-		// If the persisted height is larger than a rendered table's contents, clamp it once
-		// the DOM has finished laying out.
-		try {
-			setTimeout(() => {
-				try {
-					if (typeof window.__kustoClampUrlCsvWrapperHeight === 'function') {
-						window.__kustoClampUrlCsvWrapperHeight(boxId);
-					}
-				} catch { /* ignore */ }
-			}, 0);
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
-}
-
 function __kustoGetQueryResultsOutputHeightPx(boxId) {
 	try {
 		const wrapper = document.getElementById(boxId + '_results_wrapper');
@@ -944,18 +882,13 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('url_')) {
-			const st = (urlStateByBoxId && urlStateByBoxId[id]) ? urlStateByBoxId[id] : null;
-			const name = (document.getElementById(id + '_name') || {}).value || '';
-			const url = st ? (String(st.url || '')) : ((document.getElementById(id + '_input') || {}).value || '');
-			const expanded = !!(st && st.expanded);
-			sections.push({
-				id,
-				type: 'url',
-				name,
-				url,
-				expanded,
-				outputHeightPx: __kustoGetUrlOutputHeightPx(id)
-			});
+			// Lit component: delegate to its serialize() method.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
+				try {
+					sections.push(el.serialize());
+				} catch { /* ignore */ }
+			}
 			continue;
 		}
 	}
@@ -1622,62 +1555,17 @@ function applyKqlxState(state) {
 					name: String(section.name || ''),
 					url: String(section.url || ''),
 					expanded: !!section.expanded,
-					outputHeightPx: section.outputHeightPx
+					outputHeightPx: section.outputHeightPx,
+					imageSizeMode: section.imageSizeMode,
+					imageAlign: section.imageAlign,
+					imageOverflow: section.imageOverflow
 				});
+				// The Lit element handles its own state; just trigger fetch if expanded.
 				try {
-					const name = String(section.name || '');
-					const nameInput = document.getElementById(boxId + '_name');
-					if (nameInput) nameInput.value = name;
-					try {
-						if (typeof onUrlNameInput === 'function') {
-							onUrlNameInput(boxId);
-						}
-					} catch { /* ignore */ }
-				} catch { /* ignore */ }
-				try {
-					const url = String(section.url || '');
-					const expanded = !!section.expanded;
-					const input = document.getElementById(boxId + '_input');
-					if (input) input.value = url;
-					if (!urlStateByBoxId[boxId]) {
-						urlStateByBoxId[boxId] = { url: '', expanded: false, loading: false, loaded: false, content: '', error: '', kind: '', contentType: '', status: null, dataUri: '', body: '', truncated: false };
+					const el = document.getElementById(boxId);
+					if (el && typeof el.triggerFetch === 'function') {
+						el.triggerFetch();
 					}
-					urlStateByBoxId[boxId].url = url;
-					urlStateByBoxId[boxId].expanded = expanded;
-					urlStateByBoxId[boxId].loaded = false;
-					urlStateByBoxId[boxId].content = '';
-					urlStateByBoxId[boxId].error = '';
-					urlStateByBoxId[boxId].kind = '';
-					urlStateByBoxId[boxId].contentType = '';
-					urlStateByBoxId[boxId].status = null;
-					urlStateByBoxId[boxId].dataUri = '';
-					urlStateByBoxId[boxId].body = '';
-					urlStateByBoxId[boxId].truncated = false;
-					try { __kustoSetUrlOutputHeightPx(boxId, section.outputHeightPx); } catch { /* ignore */ }
-					try {
-						if (typeof __kustoUpdateUrlToggleButton === 'function') {
-							__kustoUpdateUrlToggleButton(boxId);
-						}
-					} catch { /* ignore */ }
-					updateUrlContent(boxId);
-					// Sync the Lit element state for side-by-side.
-					try {
-						const litEl = document.getElementById('lit_' + boxId);
-						if (litEl && typeof litEl.setName === 'function') {
-							litEl.setName(String(section.name || ''));
-							litEl.setUrl(url);
-							litEl.setExpanded(expanded);
-							if (section.outputHeightPx) {
-								litEl.setOutputHeightPx(section.outputHeightPx);
-							}
-						}
-					} catch { /* ignore */ }
-					// On open/restore: if the section is visible, automatically fetch its content.
-					try {
-						if (expanded && url && typeof requestUrlContent === 'function') {
-							requestUrlContent(boxId);
-						}
-					} catch { /* ignore */ }
 				} catch { /* ignore */ }
 				continue;
 			}
