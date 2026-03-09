@@ -6,3 +6,4 @@ import './viewers/cached-values/kw-cached-values.js';
 import './viewers/connection-manager/kw-connection-manager.js';
 import './sections/kw-python-section.js';
 import './sections/kw-markdown-section.js';
+import './sections/kw-url-section.js';

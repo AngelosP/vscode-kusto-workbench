@@ -7558,6 +7558,36 @@ function addUrlBox(options) {
 	} catch {
 		// ignore
 	}
+
+	// ── Side-by-side: also create Lit <kw-url-section> for visual comparison ──
+	try {
+		const litEl = document.createElement('kw-url-section');
+		litEl.id = 'lit_' + id;
+		litEl.setAttribute('box-id', id);
+		// Sync initial state.
+		if (options && typeof options.name === 'string') {
+			litEl.setName(options.name);
+		}
+		if (options && typeof options.url === 'string') {
+			litEl.setUrl(options.url);
+		}
+		if (options && typeof options.expanded === 'boolean') {
+			litEl.setExpanded(options.expanded);
+		}
+		if (options && typeof options.outputHeightPx === 'number') {
+			litEl.setAttribute('output-height-px', String(options.outputHeightPx));
+		}
+		// Handle remove event (removes both legacy and Lit).
+		litEl.addEventListener('section-remove', function (e) {
+			try { removeUrlBox(e.detail.boxId); } catch { /* ignore */ }
+		});
+		// Insert right after the legacy box.
+		const legacyBox = document.getElementById(id);
+		if (legacyBox && legacyBox.parentNode) {
+			legacyBox.parentNode.insertBefore(litEl, legacyBox.nextSibling);
+		}
+	} catch { /* ignore */ }
+
 	return id;
 }
 
@@ -7568,6 +7598,13 @@ function removeUrlBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	// Also remove the side-by-side Lit element if present.
+	try {
+		const litBox = document.getElementById('lit_' + boxId);
+		if (litBox && litBox.parentNode) {
+			litBox.parentNode.removeChild(litBox);
+		}
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

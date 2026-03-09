@@ -1617,7 +1617,13 @@ function applyKqlxState(state) {
 			}
 
 			if (t === 'url') {
-				const boxId = addUrlBox({ id: (section.id ? String(section.id) : undefined) });
+				const boxId = addUrlBox({
+					id: (section.id ? String(section.id) : undefined),
+					name: String(section.name || ''),
+					url: String(section.url || ''),
+					expanded: !!section.expanded,
+					outputHeightPx: section.outputHeightPx
+				});
 				try {
 					const name = String(section.name || '');
 					const nameInput = document.getElementById(boxId + '_name');
@@ -1654,6 +1660,18 @@ function applyKqlxState(state) {
 						}
 					} catch { /* ignore */ }
 					updateUrlContent(boxId);
+					// Sync the Lit element state for side-by-side.
+					try {
+						const litEl = document.getElementById('lit_' + boxId);
+						if (litEl && typeof litEl.setName === 'function') {
+							litEl.setName(String(section.name || ''));
+							litEl.setUrl(url);
+							litEl.setExpanded(expanded);
+							if (section.outputHeightPx) {
+								litEl.setOutputHeightPx(section.outputHeightPx);
+							}
+						}
+					} catch { /* ignore */ }
 					// On open/restore: if the section is visible, automatically fetch its content.
 					try {
 						if (expanded && url && typeof requestUrlContent === 'function') {

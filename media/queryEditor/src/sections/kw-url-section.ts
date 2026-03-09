@@ -1,0 +1,1136 @@
+import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+/** Serialized shape for .kqlx persistence — must match KqlxSectionV1 url variant. */
+export interface UrlSectionData {
+	id: string;
+	type: 'url';
+	name: string;
+	url: string;
+	expanded: boolean;
+	outputHeightPx?: number;
+}
+
+/** Internal URL fetch state. */
+interface UrlFetchState {
+	url: string;
+	expanded: boolean;
+	loading: boolean;
+	loaded: boolean;
+	content: string;
+	error: string;
+	kind: string;
+	contentType: string;
+	status: number | null;
+	dataUri: string;
+	body: string;
+	truncated: boolean;
+	__hasFetchedOnce?: boolean;
+	__autoSizeImagePending?: boolean;
+	__autoSizedImageOnce?: boolean;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+/**
+ * `<kw-url-section>` — Lit web component for a URL section in the
+ * Kusto Workbench notebook. Fetches and renders URL content as images,
+ * CSV tables (via `<kw-data-table>`), HTML (sandboxed iframe), or plain text.
+ */
+@customElement('kw-url-section')
+export class KwUrlSection extends LitElement {
+
+	// ── Public properties ─────────────────────────────────────────────────────
+
+	/** Unique section identifier (e.g. "url_1709876543210"). */
+	@property({ type: String, reflect: true, attribute: 'box-id' })
+	boxId = '';
+
+	/** Output wrapper height in pixels (from persisted state). */
+	@property({ type: Number, attribute: 'output-height-px' })
+	outputHeightPx: number | undefined = undefined;
+
+	// ── Internal state ────────────────────────────────────────────────────────
+
+	@state() private _name = '';
+	@state() private _url = '';
+	@state() private _fetchState: UrlFetchState = KwUrlSection._newFetchState();
+	@state() private _csvColumns: DataTableColumn[] = [];
+	@state() private _csvRows: string[][] = [];
+	@state() private _csvActive = false;
+	@state() private _csvTableHeight = 500;
+	private _lastCsvVisibleRows: number | null = null;
+
+	private _userResized = false;
+	private _csvResizeObs: ResizeObserver | null = null;
+
+	// ── Lifecycle ─────────────────────────────────────────────────────────────
+
+	override connectedCallback(): void {
+		super.connectedCallback();
+		window.addEventListener('message', this._onMessage);
+	}
+
+	override disconnectedCallback(): void {
+		super.disconnectedCallback();
+		window.removeEventListener('message', this._onMessage);
+		this._csvResizeObs?.disconnect();
+		this._csvResizeObs = null;
+	}
+
+	override firstUpdated(_changedProperties: PropertyValues): void {
+		super.firstUpdated(_changedProperties);
+
+		// Apply persisted height.
+		if (this.outputHeightPx && this.outputHeightPx > 0) {
+			const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+			if (wrapper) {
+				const clamped = Math.max(120, Math.min(900, Math.round(this.outputHeightPx)));
+				wrapper.style.height = clamped + 'px';
+				this._userResized = true;
+			}
+		}
+
+		this._updateToggleClasses();
+		this._renderUrlContent();
+		this._autoSizeNameInput();
+	}
+
+	override updated(changed: PropertyValues): void {
+		super.updated(changed);
+		if (changed.has('_fetchState')) {
+			this._renderUrlContent();
+		}
+	}
+
+	// ── Styles ────────────────────────────────────────────────────────────────
+
+	static override styles = css`
+		*, *::before, *::after {
+			box-sizing: border-box;
+		}
+
+		:host {
+			display: block;
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+			border-radius: 0;
+			margin-bottom: 16px;
+			background: var(--vscode-editor-background);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+			padding-bottom: 0;
+		}
+
+		:host(.is-url-collapsed) {
+			margin-bottom: 26px;
+		}
+		:host(.is-url-collapsed) .section-root {
+			padding-bottom: 3px;
+		}
+		:host(.is-url-collapsed) .output-wrapper {
+			display: none !important;
+		}
+		:host(.is-url-collapsed) .md-max-btn {
+			display: none !important;
+		}
+
+		.section-root {
+			padding: 12px;
+			padding-bottom: 0;
+		}
+
+		.section-header-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			justify-content: space-between;
+			margin-bottom: 8px;
+		}
+
+		.query-name-group {
+			display: inline-flex;
+			align-items: center;
+			gap: 0;
+			min-width: 0;
+			flex: 0 1 auto;
+		}
+
+		.section-drag-handle {
+			opacity: 1;
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-descriptionForeground);
+			border-radius: 4px;
+			margin: 0;
+			width: 12px;
+			height: 24px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			cursor: grab;
+			flex: 0 0 auto;
+		}
+		.section-drag-handle:hover {
+			background: var(--vscode-list-hoverBackground);
+			border-color: var(--vscode-input-border);
+			color: var(--vscode-foreground);
+		}
+		.section-drag-handle:active { cursor: grabbing; }
+		.section-drag-handle:focus-visible {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+		.section-drag-handle-glyph {
+			font-size: 14px;
+			line-height: 1;
+			letter-spacing: -1px;
+		}
+
+		.query-name {
+			font-size: 12px;
+			color: var(--vscode-foreground);
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 2px 6px;
+			outline: none;
+			min-width: 0;
+			flex: 0 1 auto;
+			font-family: inherit;
+		}
+		.query-name::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+		.query-name:hover {
+			border-color: var(--vscode-input-border);
+		}
+		.query-name:focus {
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.url-input {
+			flex: 1 1 420px;
+			min-width: 25px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+			font-family: inherit;
+			outline: none;
+		}
+		.url-input:focus {
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.section-actions {
+			display: inline-flex;
+			gap: 2px;
+			align-items: center;
+			flex: 0 0 auto;
+		}
+
+		.md-tabs {
+			display: inline-flex;
+			gap: 2px;
+			align-items: center;
+			border: none;
+			border-radius: 0;
+			overflow: visible;
+			margin: 0;
+			background: transparent;
+		}
+
+		.unified-btn-secondary {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 4px 8px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			white-space: nowrap;
+			line-height: 1.4;
+		}
+		.unified-btn-secondary:hover:not(:disabled) {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.unified-btn-icon-only {
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			padding: 0;
+		}
+		.unified-btn-icon-only svg {
+			display: block;
+		}
+
+		.md-tab {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+		}
+		.md-tab svg {
+			display: block;
+		}
+		.md-tab:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.md-tab.md-max-btn {
+			margin-right: 6px;
+		}
+		.md-tab.is-active {
+			background: var(--vscode-list-hoverBackground);
+			border-color: var(--vscode-input-border);
+		}
+
+		.close-btn {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			border-radius: 4px;
+			cursor: pointer;
+		}
+		.close-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		/* Output wrapper — contains the URL content and the resize handle */
+		.output-wrapper {
+			position: relative;
+			width: 100%;
+			min-height: 120px;
+			height: 120px;
+			margin: 8px 0 0;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			background: transparent;
+		}
+
+		.url-output {
+			border: none;
+			border-radius: 0;
+			background: transparent;
+			padding: 0;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			overflow: hidden auto;
+			max-height: none;
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			min-width: 0;
+			scrollbar-width: thin;
+		}
+
+		.resizer {
+			flex: 0 0 12px;
+			height: 12px;
+			cursor: ns-resize;
+			border-top: none;
+			background: var(--vscode-editor-background);
+			position: relative;
+			touch-action: none;
+		}
+		.resizer::after {
+			content: '';
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 34px;
+			height: 4px;
+			transform: translate(-50%, -50%);
+			border-radius: 2px;
+			opacity: 0.55;
+			background-image: repeating-linear-gradient(
+				0deg,
+				var(--vscode-input-placeholderForeground),
+				var(--vscode-input-placeholderForeground) 1px,
+				transparent 1px,
+				transparent 3px
+			);
+		}
+		.resizer:hover { background: var(--vscode-list-hoverBackground); }
+		.resizer:hover::after { opacity: 0.85; }
+		.resizer.is-dragging { background: var(--vscode-list-hoverBackground); }
+	`;
+
+	// ── Render ─────────────────────────────────────────────────────────────────
+
+	override render() {
+		return html`
+			<div class="section-root">
+				<div class="section-header-row url-section-header">
+					<div class="query-name-group">
+						<button type="button" class="section-drag-handle" draggable="true"
+							title="Drag to reorder" aria-label="Reorder section"
+							@dragstart=${this._onDragStart}>
+							<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
+						</button>
+						<input type="text" class="query-name url-name"
+						placeholder="URL name (optional)"
+						.value=${this._name}
+							@input=${this._onNameInput} />
+					</div>
+					<input type="text" class="url-input"
+						placeholder="https://example.com"
+						.value=${this._url}
+						@input=${this._onUrlInput} />
+					<div class="section-actions">
+						<div class="md-tabs" role="tablist" aria-label="URL visibility">
+							<button class="unified-btn-secondary md-tab md-max-btn"
+								type="button" @click=${this._fitToContents}
+								title="Fit to contents" aria-label="Fit to contents">
+								${KwUrlSection._maximizeIcon}
+							</button>
+							<button class="unified-btn-secondary md-tab ${this._fetchState.expanded ? 'is-active' : ''}"
+								type="button" role="tab"
+								aria-selected=${this._fetchState.expanded ? 'true' : 'false'}
+								@click=${this._toggleVisibility}
+								title=${this._fetchState.expanded ? 'Hide' : 'Show'}
+								aria-label=${this._fetchState.expanded ? 'Hide' : 'Show'}>
+								${KwUrlSection._previewIcon}
+							</button>
+						</div>
+						<button class="unified-btn-secondary unified-btn-icon-only close-btn"
+							type="button" @click=${this._requestRemove}
+							title="Remove" aria-label="Remove">
+							${KwUrlSection._closeIcon}
+						</button>
+					</div>
+				</div>
+				<div class="output-wrapper" id="output-wrapper" data-kusto-no-editor-focus="true">
+					<div class="url-output" id="url-content" aria-label="URL content"
+						style="display:${this._csvActive ? 'none' : ''}"></div>
+					${this._csvActive ? html`
+						<kw-data-table
+							style="height:${this._csvTableHeight}px"
+							.columns=${this._csvColumns}
+							.rows=${this._csvRows}
+							.options=${{ label: 'CSV', showExecutionTime: false, compact: true } as DataTableOptions}
+							@visible-row-count-change=${this._onCsvVisibleRowCountChange}
+							@save=${(e: CustomEvent) => {
+								const vscode = (window as any).vscode;
+								if (vscode && typeof vscode.postMessage === 'function') {
+									vscode.postMessage({
+										type: 'saveResultsCsv',
+										csv: e.detail.csv,
+										suggestedFileName: e.detail.suggestedFileName,
+									});
+								}
+							}}
+						></kw-data-table>
+					` : nothing}
+					<div class="resizer"
+						title="Drag to resize"
+						@mousedown=${this._onResizerMouseDown}
+						@dblclick=${this._fitToContents}></div>
+				</div>
+			</div>
+		`;
+	}
+
+	// ── SVG Icons (static) ────────────────────────────────────────────────────
+
+	private static _closeIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M4 4l8 8"/><path d="M12 4L4 12"/>
+		</svg>`;
+
+	private static _previewIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
+			<circle cx="8" cy="8" r="2.1" />
+		</svg>`;
+
+	private static _maximizeIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M3 6V3h3"/><path d="M13 10v3h-3"/>
+			<path d="M3 3l4 4"/><path d="M13 13l-4-4"/>
+		</svg>`;
+
+	// ── URL Content Rendering ─────────────────────────────────────────────────
+
+	/** Render URL content into the shadow DOM content element. */
+	private _renderUrlContent(): void {
+		const contentEl = this.shadowRoot?.getElementById('url-content');
+		if (!contentEl) return;
+
+		const st = this._fetchState;
+
+		if (!st.expanded) return;
+
+		// Clear previous content.
+		while (contentEl.firstChild) contentEl.removeChild(contentEl.firstChild);
+		this._csvActive = false;
+		this._lastCsvVisibleRows = null;
+		this._csvResizeObs?.disconnect();
+		this._csvResizeObs = null;
+
+		// Reset styles.
+		contentEl.style.whiteSpace = 'normal';
+		contentEl.style.overflow = '';
+		contentEl.style.display = '';
+		contentEl.style.flexDirection = '';
+
+		if (st.loading) {
+			contentEl.style.whiteSpace = 'pre-wrap';
+			contentEl.textContent = 'Loading…';
+			return;
+		}
+
+		if (st.error) {
+			contentEl.style.whiteSpace = 'pre-wrap';
+			contentEl.textContent = st.error;
+			return;
+		}
+
+		if (st.loaded) {
+			this._renderLoadedContent(contentEl, st);
+			return;
+		}
+
+		contentEl.style.whiteSpace = 'pre-wrap';
+		contentEl.textContent = st.url ? 'Ready to load.' : 'Enter a URL above.';
+	}
+
+	/** Render different content types (image, csv, html, text). */
+	private _renderLoadedContent(contentEl: HTMLElement, st: UrlFetchState): void {
+		const kind = st.kind.toLowerCase();
+
+		if (kind === 'image' && st.dataUri) {
+			this._renderImage(contentEl, st);
+			return;
+		}
+
+		if (kind === 'csv' && typeof st.body === 'string') {
+			this._renderCsv(contentEl, st);
+			return;
+		}
+
+		if (kind === 'html' && typeof st.body === 'string') {
+			this._renderHtml(contentEl, st);
+			return;
+		}
+
+		// Default: show as text.
+		contentEl.style.whiteSpace = 'pre-wrap';
+		const pre = document.createElement('pre');
+		pre.style.whiteSpace = 'pre-wrap';
+		pre.style.margin = '0';
+		pre.textContent = st.body || st.content || '';
+		contentEl.appendChild(pre);
+	}
+
+	private _renderImage(contentEl: HTMLElement, st: UrlFetchState): void {
+		const img = document.createElement('img');
+
+		// Auto-size the wrapper to fit the image on first fetch.
+		if (st.__autoSizeImagePending && !st.__autoSizedImageOnce) {
+			img.addEventListener('load', () => {
+				const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+				if (!wrapper) return;
+
+				let currentH = 0;
+				try { currentH = wrapper.getBoundingClientRect().height; } catch { /* ignore */ }
+				const minH = 120;
+				if (currentH && currentH > (minH + 1)) {
+					st.__autoSizeImagePending = false;
+					st.__autoSizedImageOnce = true;
+					return;
+				}
+
+				setTimeout(() => {
+					const resizer = this.shadowRoot?.querySelector('.resizer');
+					const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+					const imgH = img.getBoundingClientRect().height;
+					if (!imgH || !isFinite(imgH)) return;
+					const maxH = 3000;
+					const nextH = Math.max(minH, Math.min(maxH, Math.ceil(imgH + resizerH)));
+					wrapper.style.height = nextH + 'px';
+					this._userResized = true;
+					st.__autoSizeImagePending = false;
+					st.__autoSizedImageOnce = true;
+					this._schedulePersist();
+				}, 0);
+			}, { once: true });
+		}
+
+		img.src = st.dataUri;
+		img.alt = 'Image';
+		img.style.maxWidth = '100%';
+		img.style.height = 'auto';
+		img.style.display = 'block';
+		contentEl.appendChild(img);
+	}
+
+	private _renderCsv(contentEl: HTMLElement, st: UrlFetchState): void {
+		// Defensive: some endpoints return HTML even when URL ends with .csv.
+		if (KwUrlSection._looksLikeHtmlText(st.body)) {
+			contentEl.style.whiteSpace = 'pre-wrap';
+			const pre = document.createElement('pre');
+			pre.style.whiteSpace = 'pre-wrap';
+			pre.style.margin = '0';
+			pre.textContent = 'This URL returned HTML instead of CSV. Try using a raw download link.\n\n' + st.body.slice(0, 2000);
+			contentEl.appendChild(pre);
+			return;
+		}
+
+		const csvRows = KwUrlSection._parseCsv(st.body);
+		const maxSaneCols = 2000;
+		if (csvRows && csvRows[0] && csvRows[0].length > maxSaneCols) {
+			contentEl.style.whiteSpace = 'pre-wrap';
+			const pre = document.createElement('pre');
+			pre.style.whiteSpace = 'pre-wrap';
+			pre.style.margin = '0';
+			pre.textContent = `This doesn't look like a normal CSV (detected ${csvRows[0].length} columns). Showing as text instead.\n\n` + st.body.slice(0, 2000);
+			contentEl.appendChild(pre);
+			return;
+		}
+
+		let columns: string[] = [];
+		let dataRows: string[][] = [];
+		if (csvRows.length > 0) {
+			columns = csvRows[0].map((c: string) => String(c ?? ''));
+			dataRows = csvRows.slice(1);
+		}
+
+		// Normalize ragged rows.
+		let maxCols = columns.length;
+		for (const r of dataRows) {
+			if (r.length > maxCols) maxCols = r.length;
+		}
+		for (let i = columns.length; i < maxCols; i++) {
+			columns.push('Column ' + (i + 1));
+		}
+		dataRows = dataRows.map((r: string[]) => {
+			const out = new Array(maxCols);
+			for (let i = 0; i < maxCols; i++) {
+				out[i] = String(r[i] ?? '');
+			}
+			return out;
+		});
+
+		// Set CSV state — kw-data-table is rendered declaratively in the template.
+		this._csvColumns = columns.map((name: string): DataTableColumn => ({ name }));
+		this._csvRows = dataRows;
+		this._lastCsvVisibleRows = dataRows.length;
+		// Compute height from wrapper (default 120px minus 12px resizer).
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (wrapper) {
+			const wH = wrapper.clientHeight || wrapper.getBoundingClientRect().height || 120;
+			this._csvTableHeight = Math.max(60, Math.floor(wH - 12));
+		}
+		this._csvActive = true;
+		// Watch wrapper resizes to keep the table height in sync.
+		this._startCsvResizeObserver();
+	}
+
+	private _onCsvVisibleRowCountChange = (e: CustomEvent): void => {
+		if (!this._csvActive) return;
+		const visibleRows = Number((e as CustomEvent)?.detail?.visibleRows);
+		if (!Number.isFinite(visibleRows)) return;
+		if (this._lastCsvVisibleRows === visibleRows) return;
+		this._lastCsvVisibleRows = visibleRows;
+		this._fitToContents();
+	};
+
+	/** Watch the output wrapper and update the kw-data-table height on resize. */
+	private _startCsvResizeObserver(): void {
+		this._csvResizeObs?.disconnect();
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (!wrapper) return;
+		this._csvResizeObs = new ResizeObserver(() => {
+			const wH = wrapper.clientHeight || wrapper.getBoundingClientRect().height;
+			const h = Math.max(60, Math.floor(wH - 12));
+			if (h !== this._csvTableHeight) {
+				this._csvTableHeight = h;
+			}
+		});
+		this._csvResizeObs.observe(wrapper);
+	}
+
+	private _renderHtml(contentEl: HTMLElement, st: UrlFetchState): void {
+		let htmlContent = st.body;
+		// Inject <base> tag for relative URLs.
+		if (st.url) {
+			const escapedUrl = st.url.replace(/"/g, '&quot;');
+			htmlContent = `<base href="${escapedUrl}">` + htmlContent;
+		}
+		// Sanitize with DOMPurify if available.
+		const DOMPurify = (window as any).DOMPurify;
+		if (DOMPurify && typeof DOMPurify.sanitize === 'function') {
+			htmlContent = DOMPurify.sanitize(htmlContent, {
+				ADD_TAGS: ['base'],
+				ADD_ATTR: ['href', 'target', 'rel']
+			});
+		}
+		const iframe = document.createElement('iframe');
+		iframe.style.width = '100%';
+		iframe.style.height = '300px';
+		iframe.style.border = 'none';
+		iframe.setAttribute('sandbox', '');
+		iframe.setAttribute('referrerpolicy', 'no-referrer');
+		iframe.srcdoc = htmlContent;
+		contentEl.appendChild(iframe);
+	}
+
+	// ── CSV Parser (minimal RFC 4180-ish) ─────────────────────────────────────
+
+	static _parseCsv(text: string): string[][] {
+		const rows: string[][] = [];
+		let row: string[] = [];
+		let field = '';
+		let inQuotes = false;
+		for (let i = 0; i < text.length; i++) {
+			const ch = text[i];
+			const next = text[i + 1];
+			if (inQuotes) {
+				if (ch === '"' && next === '"') {
+					field += '"';
+					i++;
+					continue;
+				}
+				if (ch === '"') {
+					inQuotes = false;
+					continue;
+				}
+				field += ch;
+				continue;
+			}
+			if (ch === '"') {
+				inQuotes = true;
+				continue;
+			}
+			if (ch === ',') {
+				row.push(field);
+				field = '';
+				continue;
+			}
+			if (ch === '\r') {
+				if (next === '\n') i++;
+				row.push(field);
+				rows.push(row);
+				row = [];
+				field = '';
+				continue;
+			}
+			if (ch === '\n' || ch === '\u2028' || ch === '\u2029') {
+				row.push(field);
+				rows.push(row);
+				row = [];
+				field = '';
+				continue;
+			}
+			field += ch;
+		}
+		row.push(field);
+		rows.push(row);
+		return rows;
+	}
+
+	static _looksLikeHtmlText(text: string): boolean {
+		const s = (text || '').slice(0, 4096).trimStart().toLowerCase();
+		return s.startsWith('<!doctype html') || s.startsWith('<html') || s.startsWith('<head') || s.startsWith('<body');
+	}
+
+	// ── Actions ───────────────────────────────────────────────────────────────
+
+	private _onNameInput(e: Event): void {
+		const input = e.target as HTMLInputElement;
+		this._name = input.value;
+		this._autoSizeNameInput();
+		this._schedulePersist();
+		// Refresh Data dropdowns in Chart/Transformation sections.
+		try {
+			if (typeof (window as any).__kustoRefreshAllDataSourceDropdowns === 'function') {
+				(window as any).__kustoRefreshAllDataSourceDropdowns();
+			}
+		} catch { /* ignore */ }
+	}
+
+	private _onUrlInput(e: Event): void {
+		const input = e.target as HTMLInputElement;
+		const url = input.value.trim();
+		this._url = input.value; // Keep raw value for display
+		const st = this._fetchState;
+		st.url = url;
+		st.loaded = false;
+		st.content = '';
+		st.error = '';
+		st.kind = '';
+		st.contentType = '';
+		st.status = null;
+		st.dataUri = '';
+		st.body = '';
+		st.truncated = false;
+		st.__hasFetchedOnce = false;
+		st.__autoSizeImagePending = false;
+		st.__autoSizedImageOnce = false;
+		this._fetchState = { ...st };
+		this._renderUrlContent();
+		if (st.expanded && url) {
+			this._requestFetch();
+		}
+		this._schedulePersist();
+	}
+
+	private _toggleVisibility(): void {
+		const st = { ...this._fetchState };
+		st.expanded = !st.expanded;
+		this._fetchState = st;
+		this._updateToggleClasses();
+		this._renderUrlContent();
+		if (st.expanded && st.url) {
+			this._requestFetch();
+		}
+		this._schedulePersist();
+	}
+
+	private _requestRemove(): void {
+		this.dispatchEvent(new CustomEvent('section-remove', {
+			detail: { boxId: this.boxId },
+			bubbles: true,
+			composed: true
+		}));
+	}
+
+	private _onDragStart(e: DragEvent): void {
+		if (e.dataTransfer) {
+			e.dataTransfer.setData('text/plain', this.boxId);
+			e.dataTransfer.effectAllowed = 'move';
+		}
+		this.dispatchEvent(new CustomEvent('section-drag-start', {
+			detail: { boxId: this.boxId },
+			bubbles: true,
+			composed: true
+		}));
+	}
+
+	private _updateToggleClasses(): void {
+		this.classList.toggle('is-url-collapsed', !this._fetchState.expanded);
+	}
+
+	private _autoSizeNameInput(): void {
+		const input = this.shadowRoot?.querySelector('.query-name') as HTMLInputElement | null;
+		if (!input) return;
+		const v = this._name.trim();
+		const minPx = v ? 25 : 140;
+		input.style.width = '1px';
+		const pad = 2;
+		const w = Math.max(minPx, Math.min(250, (input.scrollWidth || 0) + pad));
+		input.style.width = w + 'px';
+	}
+
+	// ── Fetch URL Content ─────────────────────────────────────────────────────
+
+	private _requestFetch(): void {
+		const st = this._fetchState;
+		if (st.loading || st.loaded) return;
+		const url = st.url.trim();
+		if (!url) return;
+		this._fetchState = { ...st, loading: true, error: '' };
+		this._renderUrlContent();
+		try {
+			const vscode = (window as any).vscode;
+			if (vscode && typeof vscode.postMessage === 'function') {
+				vscode.postMessage({ type: 'fetchUrl', boxId: this.boxId, url });
+			}
+		} catch {
+			this._fetchState = { ...st, loading: false, error: 'Failed to request URL.' };
+			this._renderUrlContent();
+		}
+	}
+
+	// ── Message handling ──────────────────────────────────────────────────────
+
+	private _onMessage = (e: MessageEvent): void => {
+		const msg = e.data;
+		if (!msg || typeof msg !== 'object') return;
+
+		if (msg.type === 'urlContent' && msg.boxId === this.boxId) {
+			const st = { ...this._fetchState };
+			st.loading = false;
+			st.loaded = true;
+			st.error = '';
+			st.url = String(msg.url || st.url || '');
+			st.contentType = String(msg.contentType || st.contentType || '');
+			st.status = (typeof msg.status === 'number') ? msg.status : (st.status ?? null);
+			st.kind = String(msg.kind || '').toLowerCase();
+			st.truncated = !!msg.truncated;
+			st.dataUri = String(msg.dataUri || '');
+			st.body = (typeof msg.body === 'string') ? msg.body : '';
+			if (!st.__hasFetchedOnce) {
+				st.__hasFetchedOnce = true;
+				if (st.kind === 'image') {
+					st.__autoSizeImagePending = true;
+				}
+			}
+			st.content = st.body || '';
+			this._fetchState = st;
+			// Also register with global urlStateByBoxId so legacy code stays in sync.
+			try { (window as any).urlStateByBoxId[this.boxId] = st; } catch { /* ignore */ }
+		}
+
+		if (msg.type === 'urlError' && msg.boxId === this.boxId) {
+			const st = { ...this._fetchState };
+			st.loading = false;
+			st.loaded = false;
+			st.content = '';
+			st.error = String(msg.error || 'Failed to load URL.');
+			this._fetchState = st;
+			// Keep global state in sync.
+			try { (window as any).urlStateByBoxId[this.boxId] = st; } catch { /* ignore */ }
+		}
+	};
+
+	// ── Fit to contents ───────────────────────────────────────────────────────
+
+	/** Compute the ideal wrapper height to show all content.
+	 *  For CSV: cap at 750px. For images/text/html: use natural height (cap at 3000px).
+	 */
+	private _computeFitToContentsHeight(): number {
+		const RESIZER_HEIGHT = 12;
+
+		// For CSV tables: compute from row count, capped at 750px.
+		if (this._csvActive && this._csvRows.length > 0) {
+			const tableEl = this.shadowRoot?.querySelector('kw-data-table') as { getVisibleRowCount?: () => number } | null;
+			const visibleRows = (tableEl && typeof tableEl.getVisibleRowCount === 'function')
+				? Math.max(0, tableEl.getVisibleRowCount())
+				: this._csvRows.length;
+			const tableShadow = (tableEl as unknown as { shadowRoot?: ShadowRoot | null })?.shadowRoot ?? null;
+			const hbarH = (tableShadow?.querySelector('.hbar') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+			const headH = (tableShadow?.querySelector('.dtable-head-wrap') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+			const rowSample = (tableShadow?.querySelector('#dt-body tbody tr td') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+			const rowH = rowSample > 0 ? rowSample : 24;
+			const EXTRA_PAD = 16;
+			const contentH = hbarH + headH + (visibleRows * rowH) + RESIZER_HEIGHT;
+			const baseH = Math.max(120, Math.min(750, Math.ceil(contentH)));
+			return Math.min(750, baseH + EXTRA_PAD);
+		}
+
+		// For other content (images, text, html): measure actual content, cap at 3000px.
+		const contentEl = this.shadowRoot?.getElementById('url-content');
+		if (!contentEl) return 120;
+
+		let contentH = 0;
+		const children = Array.from(contentEl.children);
+		if (children.length) {
+			for (const child of children) {
+				try {
+					const cs = getComputedStyle(child);
+					if (cs.display === 'none') continue;
+					const h = child.getBoundingClientRect().height || 0;
+					const margin = (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
+					contentH += Math.ceil(h + margin);
+				} catch { /* ignore */ }
+			}
+		} else {
+			contentH = contentEl.scrollHeight || 0;
+		}
+
+		return Math.max(120, Math.min(3000, Math.ceil(contentH + RESIZER_HEIGHT)));
+	}
+
+	private _fitToContents(): void {
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (!wrapper) return;
+		const desiredPx = this._computeFitToContentsHeight();
+		wrapper.style.height = desiredPx + 'px';
+		wrapper.style.minHeight = '0';
+		this._userResized = true;
+		this._schedulePersist();
+	}
+
+	// ── Resize handle ─────────────────────────────────────────────────────────
+
+	private _onResizerMouseDown(e: MouseEvent): void {
+		e.preventDefault();
+		e.stopPropagation();
+
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (!wrapper) return;
+
+		this._userResized = true;
+		const resizer = e.currentTarget as HTMLElement;
+		resizer.classList.add('is-dragging');
+
+		const prevCursor = document.body.style.cursor;
+		const prevSelect = document.body.style.userSelect;
+		document.body.style.cursor = 'ns-resize';
+		document.body.style.userSelect = 'none';
+
+		const getScrollY = typeof (window as any).__kustoGetScrollY === 'function'
+			? (window as any).__kustoGetScrollY as () => number
+			: () => 0;
+
+		const startPageY = e.clientY + getScrollY();
+		const startHeight = wrapper.getBoundingClientRect().height;
+		wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
+
+		const minH = 120;
+		const maxH = this._computeFitToContentsHeight() || 20000;
+
+		const onMove = (moveEvent: MouseEvent) => {
+			try {
+				if (typeof (window as any).__kustoMaybeAutoScrollWhileDragging === 'function') {
+					(window as any).__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+				}
+			} catch { /* ignore */ }
+			const pageY = moveEvent.clientY + getScrollY();
+			const delta = pageY - startPageY;
+			const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
+			wrapper.style.height = nextHeight + 'px';
+		};
+
+		const onUp = () => {
+			document.removeEventListener('mousemove', onMove, true);
+			document.removeEventListener('mouseup', onUp, true);
+			resizer.classList.remove('is-dragging');
+			document.body.style.cursor = prevCursor;
+			document.body.style.userSelect = prevSelect;
+			this._schedulePersist();
+		};
+
+		document.addEventListener('mousemove', onMove, true);
+		document.addEventListener('mouseup', onUp, true);
+	}
+
+	// ── Persistence ───────────────────────────────────────────────────────────
+
+	private _schedulePersist(): void {
+		try {
+			const sp = (window as any).schedulePersist;
+			if (typeof sp === 'function') sp();
+		} catch { /* ignore */ }
+	}
+
+	/**
+	 * Serialize to the .kqlx JSON format.
+	 * Output is identical to the original persistence.js URL section shape.
+	 */
+	public serialize(): UrlSectionData {
+		const data: UrlSectionData = {
+			id: this.boxId,
+			type: 'url',
+			name: this._name,
+			url: this._fetchState.url || this._url.trim(),
+			expanded: this._fetchState.expanded,
+		};
+
+		const heightPx = this._getOutputHeightPx();
+		if (heightPx !== undefined) {
+			data.outputHeightPx = heightPx;
+		}
+
+		return data;
+	}
+
+	/** Get the output wrapper height if user explicitly resized. */
+	private _getOutputHeightPx(): number | undefined {
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (!wrapper) return undefined;
+
+		if (!this._userResized) return undefined;
+
+		let inlineHeight = wrapper.style.height?.trim();
+		if (!inlineHeight || inlineHeight === 'auto') return undefined;
+
+		const m = inlineHeight.match(/^(\d+)px$/i);
+		if (!m) return undefined;
+
+		const px = parseInt(m[1], 10);
+		return Number.isFinite(px) ? Math.max(0, px) : undefined;
+	}
+
+	// ── Public API (for legacy integration) ───────────────────────────────────
+
+	/** Set name programmatically (e.g. from restore). */
+	public setName(name: string): void {
+		this._name = name;
+		this.updateComplete.then(() => this._autoSizeNameInput());
+	}
+
+	/** Set URL programmatically (e.g. from restore). */
+	public setUrl(url: string): void {
+		this._url = url;
+		this._fetchState = { ...this._fetchState, url };
+	}
+
+	/** Set expanded state. */
+	public setExpanded(expanded: boolean): void {
+		this._fetchState = { ...this._fetchState, expanded };
+		this._updateToggleClasses();
+		this._renderUrlContent();
+	}
+
+	/** Set the output height. */
+	public setOutputHeightPx(heightPx: number): void {
+		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+		if (!wrapper) return;
+		const h = Number(heightPx);
+		if (!Number.isFinite(h) || h <= 0) return;
+		const clamped = Math.max(120, Math.min(900, Math.round(h)));
+		wrapper.style.height = clamped + 'px';
+		this._userResized = true;
+	}
+
+	/** Get the fetch state (for legacy code compatibility). */
+	public getFetchState(): UrlFetchState {
+		return this._fetchState;
+	}
+
+	/** Trigger a content fetch if expanded and URL is set. */
+	public triggerFetch(): void {
+		if (this._fetchState.expanded && this._fetchState.url) {
+			this._requestFetch();
+		}
+	}
+
+	// ── Helpers ───────────────────────────────────────────────────────────────
+
+	private static _newFetchState(): UrlFetchState {
+		return {
+			url: '',
+			expanded: false,
+			loading: false,
+			loaded: false,
+			content: '',
+			error: '',
+			kind: '',
+			contentType: '',
+			status: null,
+			dataUri: '',
+			body: '',
+			truncated: false,
+		};
+	}
+}
+
+declare global {
+	interface HTMLElementTagNameMap {
+		'kw-url-section': KwUrlSection;
+	}
+}
