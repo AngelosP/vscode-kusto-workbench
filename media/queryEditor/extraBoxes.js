@@ -7577,6 +7577,9 @@ function addUrlBox(options) {
 		if (options && typeof options.outputHeightPx === 'number') {
 			litEl.setAttribute('output-height-px', String(options.outputHeightPx));
 		}
+		if (options) {
+			litEl.setImageDisplayMode(options.imageSizeMode, options.imageAlign, options.imageOverflow);
+		}
 		// Handle remove event (removes both legacy and Lit).
 		litEl.addEventListener('section-remove', function (e) {
 			try { removeUrlBox(e.detail.boxId); } catch { /* ignore */ }

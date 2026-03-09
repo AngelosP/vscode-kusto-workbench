@@ -1,8 +1,15 @@
-import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
+import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+/** Image sizing strategy. */
+export type ImageSizeMode = 'fill' | 'natural';
+/** Image horizontal alignment (only used when sizeMode is 'natural'). */
+export type ImageAlign = 'left' | 'center' | 'right';
+/** How to handle images larger than the container (only used when sizeMode is 'natural'). */
+export type ImageOverflow = 'shrink' | 'scroll';
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 url variant. */
 export interface UrlSectionData {
@@ -12,6 +19,9 @@ export interface UrlSectionData {
 	url: string;
 	expanded: boolean;
 	outputHeightPx?: number;
+	imageSizeMode?: ImageSizeMode;
+	imageAlign?: ImageAlign;
+	imageOverflow?: ImageOverflow;
 }
 
 /** Internal URL fetch state. */
@@ -63,6 +73,12 @@ export class KwUrlSection extends LitElement {
 	@state() private _csvActive = false;
 	@state() private _csvTableHeight = 500;
 	private _lastCsvVisibleRows: number | null = null;
+
+	// Image display mode
+	@state() private _imageSizeMode: ImageSizeMode = 'fill';
+	@state() private _imageAlign: ImageAlign = 'left';
+	@state() private _imageOverflow: ImageOverflow = 'shrink';
+	@state() private _imageMenuOpen = false;
 
 	private _userResized = false;
 	private _csvResizeObs: ResizeObserver | null = null;
@@ -372,6 +388,90 @@ export class KwUrlSection extends LitElement {
 		.resizer:hover { background: var(--vscode-list-hoverBackground); }
 		.resizer:hover::after { opacity: 0.85; }
 		.resizer.is-dragging { background: var(--vscode-list-hoverBackground); }
+
+		/* Image display mode dropdown */
+		.img-menu-anchor { position: relative; }
+		.img-menu {
+			position: absolute;
+			top: 100%;
+			right: 0;
+			z-index: 100;
+			min-width: 210px;
+			background: var(--vscode-menu-background, var(--vscode-editor-background));
+			color: var(--vscode-menu-foreground, var(--vscode-foreground));
+			border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+			border-radius: 4px;
+			padding: 4px 0;
+			box-shadow: 0 4px 12px rgba(0,0,0,.35);
+			font-size: 12px;
+		}
+		.img-menu-label {
+			padding: 4px 12px 2px;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			user-select: none;
+		}
+		.img-menu-item {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 4px 12px;
+			cursor: pointer;
+			white-space: nowrap;
+		}
+		.img-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.img-menu-check {
+			width: 16px;
+			text-align: center;
+			flex: 0 0 16px;
+			font-size: 12px;
+		}
+		.img-menu-sep {
+			height: 1px;
+			background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+			margin: 4px 0;
+		}
+
+		/* Image render modes */
+
+		/* Mode A: Original size — raw image, container scrolls */
+		.url-output.img-fill {
+			overflow: auto;
+		}
+		.url-output.img-fill img {
+			max-width: none;
+			width: auto;
+			height: auto;
+			flex: 0 0 auto;
+		}
+
+		/* Mode B: Fill section — image adapts to container */
+		.url-output.img-natural img {
+			width: auto;
+			height: auto;
+			flex: 0 0 auto;
+		}
+		/* Mode B + Shrink to fit (default) — image shrinks proportionally */
+		.url-output.img-natural.img-shrink img {
+			max-width: 100%;
+			max-height: 100%;
+			object-fit: contain;
+		}
+		/* Mode B + Show scrollbar — image stays at natural size, container scrolls */
+		.url-output.img-natural.img-scroll {
+			overflow: auto;
+		}
+		.url-output.img-natural.img-scroll img {
+			max-width: none;
+			max-height: none;
+		}
+
+		/* Alignment (Mode B only) */
+		.url-output.img-align-left { align-items: flex-start; }
+		.url-output.img-align-center { align-items: center; }
+		.url-output.img-align-right { align-items: flex-end; }
 	`;
 
 	// ── Render ─────────────────────────────────────────────────────────────────
@@ -397,6 +497,16 @@ export class KwUrlSection extends LitElement {
 						@input=${this._onUrlInput} />
 					<div class="section-actions">
 						<div class="md-tabs" role="tablist" aria-label="URL visibility">
+							${this._fetchState.expanded && this._isImageContent() ? html`
+							<div class="img-menu-anchor">
+								<button class="unified-btn-secondary md-tab"
+									type="button" @click=${this._toggleImageMenu}
+									title="Image display" aria-label="Image display">
+									${KwUrlSection._imageIcon}
+								</button>
+								${this._imageMenuOpen ? this._renderImageMenu() : nothing}
+							</div>
+							` : nothing}
 							<button class="unified-btn-secondary md-tab md-max-btn"
 								type="button" @click=${this._fitToContents}
 								title="Fit to contents" aria-label="Fit to contents">
@@ -419,7 +529,7 @@ export class KwUrlSection extends LitElement {
 					</div>
 				</div>
 				<div class="output-wrapper" id="output-wrapper" data-kusto-no-editor-focus="true">
-					<div class="url-output" id="url-content" aria-label="URL content"
+					<div class="url-output ${this._imageOutputClasses()}" id="url-content" aria-label="URL content"
 						style="display:${this._csvActive ? 'none' : ''}"></div>
 					${this._csvActive ? html`
 						<kw-data-table
@@ -462,6 +572,14 @@ export class KwUrlSection extends LitElement {
 			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
 			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
 			<circle cx="8" cy="8" r="2.1" />
+		</svg>`;
+
+	private static _imageIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<rect x="2" y="3" width="12" height="10" rx="1.5"/>
+			<circle cx="5.5" cy="6.5" r="1.2"/>
+			<path d="M2 10.5l3-3 2.5 2.5 2-1.5L14 12"/>
 		</svg>`;
 
 	private static _maximizeIcon = html`
@@ -580,8 +698,6 @@ export class KwUrlSection extends LitElement {
 
 		img.src = st.dataUri;
 		img.alt = 'Image';
-		img.style.maxWidth = '100%';
-		img.style.height = 'auto';
 		img.style.display = 'block';
 		contentEl.appendChild(img);
 	}
@@ -754,6 +870,114 @@ export class KwUrlSection extends LitElement {
 	static _looksLikeHtmlText(text: string): boolean {
 		const s = (text || '').slice(0, 4096).trimStart().toLowerCase();
 		return s.startsWith('<!doctype html') || s.startsWith('<html') || s.startsWith('<head') || s.startsWith('<body');
+	}
+
+	// ── Image display mode ────────────────────────────────────────────────────
+
+	private _isImageContent(): boolean {
+		return this._fetchState.loaded && this._fetchState.kind.toLowerCase() === 'image' && !!this._fetchState.dataUri;
+	}
+
+	private _imageOutputClasses(): string {
+		if (!this._isImageContent()) return '';
+		const parts: string[] = [];
+		if (this._imageSizeMode === 'fill') {
+			// Mode A: Original size — raw display
+			parts.push('img-fill');
+		} else {
+			// Mode B: Fill section — with overflow + alignment sub-options
+			parts.push('img-natural');
+			parts.push(this._imageOverflow === 'scroll' ? 'img-scroll' : 'img-shrink');
+			parts.push(`img-align-${this._imageAlign}`);
+		}
+		return parts.join(' ');
+	}
+
+	private _toggleImageMenu = (): void => {
+		this._imageMenuOpen = !this._imageMenuOpen;
+		if (this._imageMenuOpen) {
+			requestAnimationFrame(() => document.addEventListener('mousedown', this._closeImageMenuOnOutside, true));
+		} else {
+			document.removeEventListener('mousedown', this._closeImageMenuOnOutside, true);
+		}
+	};
+
+	private _closeImageMenuOnOutside = (e: MouseEvent): void => {
+		const path = e.composedPath();
+		const menu = this.shadowRoot?.querySelector('.img-menu');
+		const anchor = this.shadowRoot?.querySelector('.img-menu-anchor');
+		if (menu && (path.includes(menu) || (anchor && path.includes(anchor)))) return;
+		this._imageMenuOpen = false;
+		document.removeEventListener('mousedown', this._closeImageMenuOnOutside, true);
+	};
+
+	private _setImageSizeMode(mode: ImageSizeMode): void {
+		this._imageSizeMode = mode;
+		this._imageMenuOpen = true; // keep menu open so sub-options appear
+		this._applyImageClasses();
+		this._schedulePersist();
+	}
+
+	private _setImageAlign(align: ImageAlign): void {
+		this._imageAlign = align;
+		this._applyImageClasses();
+		this._schedulePersist();
+	}
+
+	private _setImageOverflow(overflow: ImageOverflow): void {
+		this._imageOverflow = overflow;
+		this._applyImageClasses();
+		this._schedulePersist();
+	}
+
+	private _applyImageClasses(): void {
+		const el = this.shadowRoot?.getElementById('url-content');
+		if (!el) return;
+		// Strip all image mode classes and reapply.
+		el.classList.remove('img-fill', 'img-natural', 'img-shrink', 'img-scroll', 'img-align-left', 'img-align-center', 'img-align-right');
+		const cls = this._imageOutputClasses();
+		if (cls) cls.split(' ').forEach(c => el.classList.add(c));
+	}
+
+	private _renderImageMenu(): TemplateResult {
+		const check = '\u2713';
+		return html`<div class="img-menu" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="img-menu-label">Sizing</div>
+			<div class="img-menu-item" @click=${() => this._setImageSizeMode('fill')}>
+				<span class="img-menu-check">${this._imageSizeMode === 'fill' ? check : ''}</span>
+				Fill section
+			</div>
+			<div class="img-menu-item" @click=${() => this._setImageSizeMode('natural')}>
+				<span class="img-menu-check">${this._imageSizeMode === 'natural' ? check : ''}</span>
+				Original size
+			</div>
+			${this._imageSizeMode === 'natural' ? html`
+				<div class="img-menu-sep"></div>
+				<div class="img-menu-label">Overflow</div>
+				<div class="img-menu-item" @click=${() => this._setImageOverflow('shrink')}>
+					<span class="img-menu-check">${this._imageOverflow === 'shrink' ? check : ''}</span>
+					Shrink to fit
+				</div>
+				<div class="img-menu-item" @click=${() => this._setImageOverflow('scroll')}>
+					<span class="img-menu-check">${this._imageOverflow === 'scroll' ? check : ''}</span>
+					Show scrollbar
+				</div>
+				<div class="img-menu-sep"></div>
+				<div class="img-menu-label">Alignment</div>
+				<div class="img-menu-item" @click=${() => this._setImageAlign('left')}>
+					<span class="img-menu-check">${this._imageAlign === 'left' ? check : ''}</span>
+					Left
+				</div>
+				<div class="img-menu-item" @click=${() => this._setImageAlign('center')}>
+					<span class="img-menu-check">${this._imageAlign === 'center' ? check : ''}</span>
+					Center
+				</div>
+				<div class="img-menu-item" @click=${() => this._setImageAlign('right')}>
+					<span class="img-menu-check">${this._imageAlign === 'right' ? check : ''}</span>
+					Right
+				</div>
+			` : nothing}
+		</div>`;
 	}
 
 	// ── Actions ───────────────────────────────────────────────────────────────
@@ -957,6 +1181,20 @@ export class KwUrlSection extends LitElement {
 	private _fitToContents(): void {
 		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
 		if (!wrapper) return;
+
+		// In Mode B (Fill section), cap to image natural height so there's no blank space.
+		if (this._imageSizeMode === 'natural' && this._isImageContent()) {
+			const imgEl = this.shadowRoot?.querySelector('#url-content img') as HTMLImageElement | null;
+			if (imgEl && imgEl.naturalHeight > 0) {
+				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 12;
+				const maxH = Math.ceil(imgEl.naturalHeight + resizerH);
+				wrapper.style.height = Math.max(120, maxH) + 'px';
+				this._userResized = true;
+				this._schedulePersist();
+				return;
+			}
+		}
+
 		const desiredPx = this._computeFitToContentsHeight();
 		wrapper.style.height = desiredPx + 'px';
 		wrapper.style.minHeight = '0';
@@ -991,7 +1229,17 @@ export class KwUrlSection extends LitElement {
 		wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
 
 		const minH = 120;
-		const maxH = this._computeFitToContentsHeight() || 20000;
+		let maxH = this._computeFitToContentsHeight() || 20000;
+
+		// In Mode B (Fill section) for images, cap max height to image natural height
+		// so there's no blank space below the image.
+		if (this._imageSizeMode === 'natural' && this._isImageContent()) {
+			const imgEl = this.shadowRoot?.querySelector('#url-content img') as HTMLImageElement | null;
+			if (imgEl && imgEl.naturalHeight > 0) {
+				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 12;
+				maxH = Math.max(minH, Math.ceil(imgEl.naturalHeight + resizerH));
+			}
+		}
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
@@ -1045,6 +1293,10 @@ export class KwUrlSection extends LitElement {
 			data.outputHeightPx = heightPx;
 		}
 
+		if (this._imageSizeMode !== 'fill') data.imageSizeMode = this._imageSizeMode;
+		if (this._imageAlign !== 'left') data.imageAlign = this._imageAlign;
+		if (this._imageOverflow !== 'shrink') data.imageOverflow = this._imageOverflow;
+
 		return data;
 	}
 
@@ -1095,6 +1347,13 @@ export class KwUrlSection extends LitElement {
 		const clamped = Math.max(120, Math.min(900, Math.round(h)));
 		wrapper.style.height = clamped + 'px';
 		this._userResized = true;
+	}
+
+	/** Restore image display settings (from persistence). */
+	public setImageDisplayMode(sizeMode?: ImageSizeMode, align?: ImageAlign, overflow?: ImageOverflow): void {
+		if (sizeMode === 'fill' || sizeMode === 'natural') this._imageSizeMode = sizeMode;
+		if (align === 'left' || align === 'center' || align === 'right') this._imageAlign = align;
+		if (overflow === 'shrink' || overflow === 'scroll') this._imageOverflow = overflow;
 	}
 
 	/** Get the fetch state (for legacy code compatibility). */
