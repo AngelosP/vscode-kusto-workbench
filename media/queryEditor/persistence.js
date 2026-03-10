@@ -676,87 +676,13 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('transformation_')) {
-			const name = (document.getElementById(id + '_name') || {}).value || '';
-			let mode = 'edit';
-			let expanded = true;
-			let dataSourceId = '';
-			let transformationType = '';
-			let distinctColumn = '';
-			let deriveColumns = [];
-			let deriveColumnName = '';
-			let deriveExpression = '';
-			let groupByColumns = [];
-			let aggregations = [];
-			let pivotRowKeyColumn = '';
-			let pivotColumnKeyColumn = '';
-			let pivotValueColumn = '';
-			let pivotAggregation = '';
-			let pivotMaxColumns;
-			try {
-				const st = (typeof transformationStateByBoxId === 'object' && transformationStateByBoxId && transformationStateByBoxId[id]) ? transformationStateByBoxId[id] : null;
-				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
-				if (m === 'preview' || m === 'edit') {
-					mode = m;
-				}
-				expanded = (st && typeof st.expanded === 'boolean') ? !!st.expanded : true;
-				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
-				transformationType = (st && typeof st.transformationType === 'string') ? String(st.transformationType) : '';
-				distinctColumn = (st && typeof st.distinctColumn === 'string') ? String(st.distinctColumn) : '';
-				deriveColumns = (st && Array.isArray(st.deriveColumns))
-					? st.deriveColumns
-						.filter(c => c && typeof c === 'object')
-						.map(c => ({
-							name: (typeof c.name === 'string') ? c.name : String((c.name ?? '') || ''),
-							expression: (typeof c.expression === 'string') ? c.expression : String((c.expression ?? '') || '')
-						}))
-					: [];
-				// Back-compat: older in-memory state may still use single fields.
-				deriveColumnName = (st && typeof st.deriveColumnName === 'string') ? String(st.deriveColumnName) : '';
-				deriveExpression = (st && typeof st.deriveExpression === 'string') ? String(st.deriveExpression) : '';
-				groupByColumns = (st && Array.isArray(st.groupByColumns)) ? st.groupByColumns.filter(c => c) : [];
-				aggregations = (st && Array.isArray(st.aggregations))
-					? st.aggregations
-						.filter(a => a && typeof a === 'object')
-						.map(a => ({
-							name: (typeof a.name === 'string') ? a.name : String((a.name ?? '') || ''),
-							function: (typeof a.function === 'string') ? a.function : String((a.function ?? '') || ''),
-							column: (typeof a.column === 'string') ? a.column : String((a.column ?? '') || '')
-						}))
-					: [];
-				pivotRowKeyColumn = (st && typeof st.pivotRowKeyColumn === 'string') ? String(st.pivotRowKeyColumn) : '';
-				pivotColumnKeyColumn = (st && typeof st.pivotColumnKeyColumn === 'string') ? String(st.pivotColumnKeyColumn) : '';
-				pivotValueColumn = (st && typeof st.pivotValueColumn === 'string') ? String(st.pivotValueColumn) : '';
-				pivotAggregation = (st && typeof st.pivotAggregation === 'string') ? String(st.pivotAggregation) : '';
-				if (st && typeof st.pivotMaxColumns === 'number' && Number.isFinite(st.pivotMaxColumns)) {
-					pivotMaxColumns = st.pivotMaxColumns;
-				}
-			} catch { /* ignore */ }
-			// If deriveColumns is missing but legacy single-field derive data exists, serialize it.
-			try {
-				if ((!deriveColumns || !Array.isArray(deriveColumns) || deriveColumns.length === 0) && (deriveColumnName || deriveExpression)) {
-					deriveColumns = [{ name: deriveColumnName || 'derived', expression: deriveExpression || '' }];
-				}
-			} catch { /* ignore */ }
-
-			sections.push({
-				id,
-				type: 'transformation',
-				name,
-				mode,
-				expanded,
-				...(dataSourceId ? { dataSourceId } : {}),
-				...(transformationType ? { transformationType } : {}),
-				...(distinctColumn ? { distinctColumn } : {}),
-				...(Array.isArray(deriveColumns) && deriveColumns.length ? { deriveColumns } : {}),
-				...(groupByColumns.length ? { groupByColumns } : {}),
-				...(aggregations.length ? { aggregations } : {}),
-				...(pivotRowKeyColumn ? { pivotRowKeyColumn } : {}),
-				...(pivotColumnKeyColumn ? { pivotColumnKeyColumn } : {}),
-				...(pivotValueColumn ? { pivotValueColumn } : {}),
-				...(pivotAggregation ? { pivotAggregation } : {}),
-				...(typeof pivotMaxColumns === 'number' ? { pivotMaxColumns } : {}),
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_tf_wrapper')
-			});
+			// Lit component: delegate to its serialize() method.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
+				try {
+					sections.push(el.serialize());
+				} catch { /* ignore */ }
+			}
 			continue;
 		}
 
@@ -1404,14 +1330,6 @@ function applyKqlxState(state) {
 					pivotAggregation: (typeof section.pivotAggregation === 'string') ? section.pivotAggregation : undefined,
 					pivotMaxColumns: (typeof section.pivotMaxColumns === 'number') ? section.pivotMaxColumns : undefined
 				});
-				try {
-					if (typeof __kustoApplyTransformationMode === 'function') {
-						__kustoApplyTransformationMode(boxId);
-					}
-					if (typeof __kustoApplyTransformationBoxVisibility === 'function') {
-						__kustoApplyTransformationBoxVisibility(boxId);
-					}
-				} catch { /* ignore */ }
 				continue;
 			}
 

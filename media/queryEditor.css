@@ -3792,7 +3792,8 @@
 		kw-python-section,
 		kw-markdown-section,
 		kw-url-section,
-		kw-chart-section {
+		kw-chart-section,
+		kw-transformation-section {
 			margin-bottom: 16px;
 		}
 

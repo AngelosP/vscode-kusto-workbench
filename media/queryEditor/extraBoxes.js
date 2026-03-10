@@ -1443,6 +1443,14 @@ function __kustoConfigureTransformationFromTool(boxId, config) {
 		const id = String(boxId || '');
 		if (!id) return false;
 		if (!config || typeof config !== 'object') return false;
+
+		// Lit element: delegate to its configure() method.
+		try {
+			const el = document.getElementById(id);
+			if (el && typeof el.configure === 'function') {
+				return el.configure(config);
+			}
+		} catch { /* ignore */ }
 		
 		// Ensure state object exists
 		const st = __kustoGetTransformationState(id);
@@ -8460,6 +8468,13 @@ function __kustoToggleGroupByColumn(boxId, columnName) {
 function __kustoUpdateTransformationBuilderUI(boxId) {
 	const id = String(boxId || '');
 	if (!id) return;
+
+	// Lit elements handle their own UI — skip legacy DOM updates.
+	try {
+		const el = document.getElementById(id);
+		if (el && typeof el.refresh === 'function') return;
+	} catch { /* ignore */ }
+
 	const st = __kustoGetTransformationState(id);
 
 	// Type picker
@@ -9862,6 +9877,16 @@ function __kustoRenderTransformationError(boxId, message) {
 function __kustoRenderTransformation(boxId) {
 	const id = String(boxId || '');
 	if (!id) return;
+
+	// If this is a Lit element, delegate to its refresh() method.
+	try {
+		const el = document.getElementById(id);
+		if (el && typeof el.refresh === 'function') {
+			el.refresh();
+			return;
+		}
+	} catch { /* ignore */ }
+
 	const st = __kustoGetTransformationState(id);
 	if (st && st.expanded === false) return;
 
@@ -10290,258 +10315,26 @@ function addTransformationBox(options) {
 		return;
 	}
 
-	const closeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M4 4l8 8"/>' +
-		'<path d="M12 4L4 12"/>' +
-		'</svg>';
+	// ── Create Lit element as primary ──
+	const litEl = document.createElement('kw-transformation-section');
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
 
-	const previewIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
-		'<circle cx="8" cy="8" r="2.1" />' +
-		'</svg>';
+	// Apply options to the Lit element
+	if (typeof litEl.applyOptions === 'function') {
+		litEl.applyOptions(options || {});
+	}
 
-	const maximizeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 6V3h3" />' +
-		'<path d="M13 10v3h-3" />' +
-		'<path d="M3 3l4 4" />' +
-		'<path d="M13 13l-4-4" />' +
-		'</svg>';
+	// Listen for section-remove event
+	litEl.addEventListener('section-remove', (e) => {
+		try {
+			const detail = e && e.detail ? e.detail : {};
+			const removeId = detail.boxId || id;
+			removeTransformationBox(removeId);
+		} catch { /* ignore */ }
+	});
 
-	const boxHtml =
-		'<div class="query-box transformation-box" id="' + id + '">' +
-		'<div class="query-header">' +
-		'<div class="query-header-row query-header-row-top">' +
-		'<div class="query-name-group">' +
-		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<input type="text" class="query-name" placeholder="Transformation name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{}" />' +
-		'</div>' +
-		'<div class="section-actions">' +
-		'<div class="md-tabs" role="tablist" aria-label="Transformation tools">' +
-		'<div class="section-mode-dropdown" id="' + id + '_tf_mode_dropdown">' +
-		'<button class="unified-btn-secondary md-tab section-mode-dropdown-btn" id="' + id + '_tf_mode_dropdown_btn" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="__kustoToggleSectionModeDropdown(\'' + id + '\', \'tf\', event)" title="View mode" aria-label="View mode">' +
-		'<span class="section-mode-dropdown-text" id="' + id + '_tf_mode_dropdown_text">Edit</span>' +
-		'<svg class="section-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>' +
-		'</button>' +
-		'<div class="section-mode-dropdown-menu" id="' + id + '_tf_mode_dropdown_menu" role="listbox" style="display:none;">' +
-		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'tf\');">Edit</div>' +
-		'<div class="section-mode-dropdown-item" role="option" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\'); __kustoCloseSectionModeDropdown(\'' + id + '\', \'tf\');">Preview</div>' +
-		'</div>' +
-		'</div>' +
-		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_edit" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'edit\')" title="Edit" aria-label="Edit">Edit</button>' +
-		'<button class="unified-btn-secondary md-tab md-mode-btn" id="' + id + '_tf_mode_preview" type="button" role="tab" aria-selected="false" onclick="__kustoSetTransformationMode(\'' + id + '\', \'preview\')" title="Preview" aria-label="Preview">Preview</button>' +
-		'<span class="md-tabs-divider" id="' + id + '_tf_mode_divider" aria-hidden="true"></span>' +
-		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_tf_max" type="button" onclick="__kustoMaximizeTransformationBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="unified-btn-secondary md-tab" id="' + id + '_tf_toggle" type="button" role="tab" aria-selected="false" onclick="toggleTransformationBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
-		'</div>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" type="button" onclick="removeTransformationBox(\'' + id + '\')" title="Remove" aria-label="Remove">' + closeIconSvg + '</button>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-editor-wrapper" id="' + id + '_tf_wrapper">' +
-			'<div class="query-editor" id="' + id + '_tf_editor" data-kusto-no-editor-focus="true">' +
-				'<div class="kusto-chart-builder" data-kusto-no-editor-focus="true">' +
-					'<div class="kusto-chart-controls" id="' + id + '_tf_controls" data-kusto-no-editor-focus="true">' +
-						'<div class="kusto-chart-controls-scroll" data-kusto-no-editor-focus="true">' +
-							'<div class="kusto-chart-controls-scroll-content" data-kusto-no-editor-focus="true">' +
-						'<div class="kusto-chart-row kusto-chart-row-type" data-kusto-no-editor-focus="true">' +
-							'<label>Type</label>' +
-							'<div class="kusto-chart-type-picker" id="' + id + '_tf_type_picker" data-kusto-no-editor-focus="true">' +
-								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="derive" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'derive\')}catch{}" title="Calc. Column" aria-label="Calc. Column">' + __kustoTransformationTypeIcons.derive + '<span>Calc. Column</span></button>' +
-								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="summarize" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'summarize\')}catch{}" title="Summarize" aria-label="Summarize">' + __kustoTransformationTypeIcons.summarize + '<span>Summarize</span></button>' +
-								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="distinct" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'distinct\')}catch{}" title="Distinct" aria-label="Distinct">' + __kustoTransformationTypeIcons.distinct + '<span>Distinct</span></button>' +
-								'<button type="button" class="unified-btn-secondary kusto-chart-type-btn" data-type="pivot" onclick="try{__kustoSetTransformationType(\'' + id + '\',\'pivot\')}catch{}" title="Pivot" aria-label="Pivot">' + __kustoTransformationTypeIcons.pivot + '<span>Pivot</span></button>' +
-							'</div>' +
-						'</div>' +
-						'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
-							'<label>Data</label>' +
-							'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_ds_wrapper">' +
-								'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_ds" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationDataSourceChanged(\'' + id + '\')}catch{}"></select>' +
-								'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_ds_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_ds\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-									'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_ds_text">(select)</span>' +
-									'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-								'</button>' +
-								'<div class="kusto-dropdown-menu" id="' + id + '_tf_ds_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-							'</div>' +
-						'</div>' +
-						'<div id="' + id + '_tf_cfg_derive" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
-							'<div class="kusto-transform-derive-stack" data-kusto-no-editor-focus="true">' +
-								'<label>Calc.</label>' +
-								'<div class="kusto-transform-derive-body" data-kusto-no-editor-focus="true">' +
-									'<div id="' + id + '_tf_derive_rows" class="kusto-transform-derive-rows" data-kusto-no-editor-focus="true"></div>' +
-								'</div>' +
-							'</div>' +
-						'</div>' +
-						'<div id="' + id + '_tf_cfg_summarize" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
-							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
-								'<div class="kusto-transform-summarize-stack" data-kusto-no-editor-focus="true">' +
-									'<div class="kusto-transform-summarize-row kusto-transform-summarize-row-summarize" data-kusto-no-editor-focus="true">' +
-										'<label>Calc.</label>' +
-										'<div class="kusto-transform-summarize-aggs" data-kusto-no-editor-focus="true">' +
-											'<div id="' + id + '_tf_aggs" class="kusto-transform-agg-rows" data-kusto-no-editor-focus="true"></div>' +
-										'</div>' +
-									'</div>' +
-									'<div class="kusto-transform-summarize-row kusto-transform-summarize-row-by" data-kusto-no-editor-focus="true">' +
-										'<label>By</label>' +
-										'<div class="kusto-transform-groupby-body" data-kusto-no-editor-focus="true">' +
-											'<div id="' + id + '_tf_groupby_rows" class="kusto-transform-groupby-rows" data-kusto-no-editor-focus="true"></div>' +
-										'</div>' +
-									'</div>' +
-								'</div>' +
-							'</div>' +
-						'</div>' +
-						'<div id="' + id + '_tf_cfg_distinct" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
-							'<div class="kusto-chart-mapping-row" data-kusto-no-editor-focus="true" style="gap:10px;">' +
-								'<span class="kusto-chart-field-group">' +
-									'<label>Column</label>' +
-									'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_distinct_col_wrapper">' +
-										'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_distinct_col" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationDistinctChanged(\'' + id + '\')}catch{}"></select>' +
-										'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_distinct_col_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_distinct_col\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-											'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_distinct_col_text">(select)</span>' +
-											'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-										'</button>' +
-										'<div class="kusto-dropdown-menu" id="' + id + '_tf_distinct_col_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-									'</div>' +
-								'</span>' +
-							'</div>' +
-						'</div>' +
-						'<div id="' + id + '_tf_cfg_pivot" class="kusto-chart-mapping" data-kusto-no-editor-focus="true" style="display:none;">' +
-							'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
-								'<label>Rows</label>' +
-								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_row_wrapper">' +
-									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_row" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_row_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_row\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_row_text">(select)</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-									'</button>' +
-									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_row_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-								'</div>' +
-								'<label class="kusto-pivot-label-spaced">Columns</label>' +
-								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_col_wrapper">' +
-									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_col" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_col_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_col\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_col_text">(select)</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-									'</button>' +
-									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_col_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-								'</div>' +
-							'</div>' +
-							'<div class="kusto-chart-row" data-kusto-no-editor-focus="true">' +
-								'<label>Value</label>' +
-								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_val_wrapper">' +
-									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_val" onfocus="try{__kustoUpdateTransformationBuilderUI(\'' + id + '\')}catch{}" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}"></select>' +
-									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_val_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_val\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_val_text">(select)</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-									'</button>' +
-									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_val_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-								'</div>' +
-								'<label class="kusto-pivot-label-spaced">Aggregation</label>' +
-								'<div class="select-wrapper kusto-dropdown-wrapper kusto-single-select-dropdown" id="' + id + '_tf_pivot_agg_wrapper">' +
-									'<select class="kusto-dropdown-hidden-select" id="' + id + '_tf_pivot_agg" onchange="try{__kustoOnTransformationPivotChanged(\'' + id + '\')}catch{}">' +
-										'<option value="sum">sum</option>' +
-										'<option value="avg">avg</option>' +
-										'<option value="count">count</option>' +
-										'<option value="first">first</option>' +
-									'</select>' +
-									'<button type="button" class="kusto-dropdown-btn" id="' + id + '_tf_pivot_agg_btn" onclick="try{window.__kustoDropdown.toggleSelectMenu(\'' + id + '_tf_pivot_agg\')}catch{}; event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-										'<span class="kusto-dropdown-btn-text" id="' + id + '_tf_pivot_agg_text">sum</span>' +
-										'<span class="kusto-dropdown-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-									'</button>' +
-									'<div class="kusto-dropdown-menu" id="' + id + '_tf_pivot_agg_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-								'</div>' +
-							'</div>' +
-						'</div>' +
-							'</div>' +
-						'</div>' +
-					'</div>' +
-				'</div>' +
-				'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: ;" data-kusto-no-editor-focus="true">' +
-					'<div class="results" id="' + id + '_results"></div>' +
-				'</div>' +
-			'</div>' +
-			'<div class="query-editor-resizer" id="' + id + '_tf_resizer" title="Drag to resize"></div>' +
-		'</div>' +
-		'</div>';
-
-	container.insertAdjacentHTML('beforeend', boxHtml);
-
-	try {
-		const name = (options && typeof options.name === 'string') ? String(options.name) : '';
-		const nameEl = document.getElementById(id + '_name');
-		if (nameEl) nameEl.value = name;
-	} catch { /* ignore */ }
-
-	// Apply persisted height if present.
-	try {
-		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
-		if (typeof h === 'number' && Number.isFinite(h) && h > 0) {
-			const wrapper = document.getElementById(id + '_tf_wrapper');
-			if (wrapper) {
-				wrapper.style.height = Math.round(h) + 'px';
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			}
-		}
-	} catch { /* ignore */ }
-
-	// Drag handle resize for transformation wrapper.
-	try {
-		const wrapper = document.getElementById(id + '_tf_wrapper');
-		const resizer = document.getElementById(id + '_tf_resizer');
-		if (wrapper && resizer) {
-			resizer.addEventListener('mousedown', (e) => {
-				try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-				try { wrapper.dataset.kustoAutoFitActive = 'false'; } catch { /* ignore */ }
-				resizer.classList.add('is-dragging');
-				const previousCursor = document.body.style.cursor;
-				const previousUserSelect = document.body.style.userSelect;
-				document.body.style.cursor = 'ns-resize';
-				document.body.style.userSelect = 'none';
-				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
-				const startHeight = wrapper.getBoundingClientRect().height;
-				try { wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
-				// Compute minimum height dynamically based on controls panel + results area
-				const minH = typeof __kustoGetTransformationMinResizeHeight === 'function'
-					? __kustoGetTransformationMinResizeHeight(id)
-					: 80;
-				const maxH = 900;
-				const onMove = (moveEvent) => {
-					try {
-						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
-							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-						}
-					} catch { /* ignore */ }
-					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
-					const delta = pageY - startPageY;
-					// Recompute min height in case mode changed during drag
-					const currentMinH = typeof __kustoGetTransformationMinResizeHeight === 'function'
-						? __kustoGetTransformationMinResizeHeight(id)
-						: 80;
-					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
-					try { wrapper.style.height = Math.ceil(nextHeight) + 'px'; } catch { /* ignore */ }
-				};
-				const onUp = () => {
-					resizer.classList.remove('is-dragging');
-					document.body.style.cursor = previousCursor;
-					document.body.style.userSelect = previousUserSelect;
-					document.removeEventListener('mousemove', onMove);
-					document.removeEventListener('mouseup', onUp);
-					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-				};
-				document.addEventListener('mousemove', onMove);
-				document.addEventListener('mouseup', onUp);
-			});
-		}
-	} catch { /* ignore */ }
-
-	// Initialize UI
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoApplyTransformationMode(id); } catch { /* ignore */ }
-	try { __kustoApplyTransformationBoxVisibility(id); } catch { /* ignore */ }
-	try { __kustoSetupSectionModeResizeObserver(id); } catch { /* ignore */ }
+	container.insertAdjacentElement('beforeend', litEl);
 
 	return id;
 }

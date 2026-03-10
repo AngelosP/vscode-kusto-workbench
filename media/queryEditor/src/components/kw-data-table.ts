@@ -8,6 +8,8 @@ export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
 	label?: string; showExecutionTime?: boolean; executionTime?: string;
 	compact?: boolean; showToolbar?: boolean;
+	/** Hide the top border of the table container. */
+	hideTopBorder?: boolean;
 	/** Show save button — fires 'save' CustomEvent when clicked. */
 	showSave?: boolean;
 	/** Show visibility toggle — fires 'visibility-toggle' CustomEvent. */
@@ -66,9 +68,51 @@ function getCellSortValue(cell: CellValue): string | number | boolean | null {
 	return getCellDisplayValue(cell);
 }
 function fmtNum(val: number): string { try { return val.toLocaleString(undefined, { maximumFractionDigits: 20 }); } catch { return String(val); } }
+function fmtDateStr(s: string): string | null {
+	// ISO 8601 date-time → "YYYY-MM-DD HH:MM:SS"
+	if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(s)) {
+		if (!Number.isFinite(Date.parse(s))) return null;
+		return s.replace('T', ' ').replace(/\.\d+Z?$/, '').replace(/Z$/, '');
+	}
+	// Already in target format
+	if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return s;
+	// Verbose Date.toString() format: "Sat Mar 07 2026 18:00:00 GMT-0600 (...)"
+	const verbosePattern = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i;
+	if (verbosePattern.test(s)) {
+		const parsed = Date.parse(s);
+		if (Number.isFinite(parsed)) {
+			const d = new Date(parsed);
+			const formatted = d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+			return formatted;
+		}
+	}
+	return null;
+}
+function fmtStr(s: string): string {
+	const t = s.trim();
+	// Numeric strings (up to 15 chars to avoid precision loss)
+	if (t.length > 0 && t.length <= 15 && /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)$/.test(t)) {
+		const n = parseFloat(t);
+		if (Number.isFinite(n)) return fmtNum(n);
+	}
+	// Date strings
+	const d = fmtDateStr(t);
+	if (d !== null) return d;
+	return s;
+}
 function fmtCell(cell: CellValue): string {
 	if (typeof cell === 'number') return fmtNum(cell);
-	if (typeof cell === 'object' && cell !== null && 'full' in cell && typeof cell.full === 'number') return fmtNum(cell.full);
+	if (typeof cell === 'string') return fmtStr(cell);
+	if (typeof cell === 'object' && cell !== null) {
+		if ('display' in cell && cell.display !== undefined) {
+			const d = String(cell.display);
+			return fmtStr(d);
+		}
+		if ('full' in cell) {
+			if (typeof cell.full === 'number') return fmtNum(cell.full);
+			if (typeof cell.full === 'string') return fmtStr(cell.full);
+		}
+	}
 	return getCellDisplayValue(cell);
 }
 function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -1033,6 +1077,7 @@ export class KwDataTable extends LitElement {
 		if (!this._table || !this.columns.length) return html`<div class="empty">No data</div>`;
 		const table = this._table, allRows = table.getRowModel().rows, totalRows = allRows.length;
 		const compact = this.options.compact ?? false, showToolbar = this.options.showToolbar !== false;
+		const hideTopBorder = this.options.hideTopBorder ?? false;
 		const layout = this._layoutColumns();
 		const colWidths = layout.widths;
 		const tableWidth = layout.tableWidth;
@@ -1054,7 +1099,7 @@ export class KwDataTable extends LitElement {
 		}
 
 		return html`
-		<div class="dt ${compact ? 'compact' : ''}">
+		<div class="dt ${compact ? 'compact' : ''} ${hideTopBorder ? 'no-top-border' : ''}">
 			${this._renderHeader(totalRows, showToolbar)}
 			${this._searchVisible ? this._renderSearch() : nothing}
 			${this._rowJumpVisible ? this._renderRowJump(totalRows) : nothing}
@@ -1720,6 +1765,7 @@ export class KwDataTable extends LitElement {
 		*,*::before,*::after{box-sizing:border-box}
 		:host{display:block;min-height:60px;position:relative}
 		.dt{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;border-top:1px solid var(--vscode-panel-border)}
+		.dt.no-top-border{border-top:none}
 
 		/* Header bar */
 		.hbar{display:flex;align-items:center;justify-content:space-between;padding:8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
