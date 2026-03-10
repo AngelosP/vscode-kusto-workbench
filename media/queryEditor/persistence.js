@@ -665,93 +665,13 @@ function getKqlxState() {
 		}
 
 		if (id.startsWith('chart_')) {
-			const name = (document.getElementById(id + '_name') || {}).value || '';
-			let mode = 'edit';
-			let expanded = true;
-			let dataSourceId = '';
-			let chartType = '';
-			let xColumn = '';
-			let yColumn = '';
-			let yColumns = [];
-			let tooltipColumns = [];
-			let legendColumn = '';
-			let legendPosition = '';
-			let labelColumn = '';
-			let valueColumn = '';
-			let showDataLabels = false;
-			let labelMode = 'auto';
-			let labelDensity = 50;
-			let sortColumn = '';
-			let sortDirection = '';
-			let xAxisSettings = null;
-			let yAxisSettings = null;
-			try {
-				const st = (typeof window.chartStateByBoxId === 'object' && window.chartStateByBoxId && window.chartStateByBoxId[id]) ? window.chartStateByBoxId[id] : null;
-				const m = st && st.mode ? String(st.mode).toLowerCase() : 'edit';
-				if (m === 'preview' || m === 'edit') {
-					mode = m;
-				}
-				expanded = (st && typeof st.expanded === 'boolean') ? !!st.expanded : true;
-				dataSourceId = (st && typeof st.dataSourceId === 'string') ? String(st.dataSourceId) : '';
-				chartType = (st && typeof st.chartType === 'string') ? String(st.chartType) : '';
-				xColumn = (st && typeof st.xColumn === 'string') ? String(st.xColumn) : '';
-				yColumn = (st && typeof st.yColumn === 'string') ? String(st.yColumn) : '';
-				yColumns = (st && Array.isArray(st.yColumns)) ? st.yColumns.filter(c => c) : [];
-				tooltipColumns = (st && Array.isArray(st.tooltipColumns)) ? st.tooltipColumns.filter(c => c) : [];
-				legendColumn = (st && typeof st.legendColumn === 'string') ? String(st.legendColumn) : '';
-				legendPosition = (st && typeof st.legendPosition === 'string') ? String(st.legendPosition) : '';
-				labelColumn = (st && typeof st.labelColumn === 'string') ? String(st.labelColumn) : '';
-				valueColumn = (st && typeof st.valueColumn === 'string') ? String(st.valueColumn) : '';
-				showDataLabels = (st && typeof st.showDataLabels === 'boolean') ? !!st.showDataLabels : false;
-				labelMode = (st && typeof st.labelMode === 'string') ? String(st.labelMode) : 'auto';
-				labelDensity = (st && typeof st.labelDensity === 'number') ? st.labelDensity : 50;
-				sortColumn = (st && typeof st.sortColumn === 'string') ? String(st.sortColumn) : '';
-				sortDirection = (st && typeof st.sortDirection === 'string') ? String(st.sortDirection) : '';
-				// X-axis settings - copy directly from state like other chart properties
-				if (st && st.xAxisSettings && typeof st.xAxisSettings === 'object') {
-					xAxisSettings = { ...st.xAxisSettings };
-				}
-				// Y-axis settings - copy directly from state like other chart properties
-				if (st && st.yAxisSettings && typeof st.yAxisSettings === 'object') {
-					yAxisSettings = { ...st.yAxisSettings };
-				}
-			} catch { /* ignore */ }
-			
-			// Get validation status for tools
-			let validationStatus = null;
-			try {
-				if (typeof window.__kustoGetChartValidationStatus === 'function') {
-					validationStatus = window.__kustoGetChartValidationStatus(id);
-				}
-			} catch { /* ignore */ }
-			
-			const chartSection = {
-				id,
-				type: 'chart',
-				name,
-				mode,
-				expanded,
-				...(dataSourceId ? { dataSourceId } : {}),
-				...(chartType ? { chartType } : {}),
-				...(xColumn ? { xColumn } : {}),
-				...(yColumn ? { yColumn } : {}),
-				...(yColumns.length ? { yColumns } : {}),
-				...(tooltipColumns.length ? { tooltipColumns } : {}),
-				...(legendColumn ? { legendColumn } : {}),
-				...(legendPosition && legendPosition !== 'top' ? { legendPosition } : {}),
-				...(labelColumn ? { labelColumn } : {}),
-				...(valueColumn ? { valueColumn } : {}),
-				...(showDataLabels ? { showDataLabels } : {}),
-				...(labelMode && labelMode !== 'auto' ? { labelMode } : {}),
-				...(typeof labelDensity === 'number' && labelDensity !== 50 ? { labelDensity } : {}),
-				...(sortColumn ? { sortColumn } : {}),
-				...(sortDirection ? { sortDirection } : {}),
-				...(xAxisSettings && Object.keys(xAxisSettings).length ? { xAxisSettings } : {}),
-				...(yAxisSettings && Object.keys(yAxisSettings).length ? { yAxisSettings } : {}),
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_chart_wrapper'),
-				...(validationStatus ? { validation: validationStatus } : {})
-			};
-			sections.push(chartSection);
+			// Lit component: delegate to its serialize() method.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
+				try {
+					sections.push(el.serialize());
+				} catch { /* ignore */ }
+			}
 			continue;
 		}
 

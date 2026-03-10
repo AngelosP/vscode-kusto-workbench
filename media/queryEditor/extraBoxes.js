@@ -3501,8 +3501,8 @@ function __kustoRenderChart(boxId) {
 			try {
 				const wrapper = document.getElementById(id + '_chart_wrapper');
 				if (wrapper && !wrapper.dataset.kustoUserResized) {
-					// Set a nice default height for viewing the chart (600px is good for visibility)
-					const defaultChartHeight = 600;
+					// Set a nice default height for viewing the chart (360px is good for visibility)
+					const defaultChartHeight = 360;
 					wrapper.style.height = defaultChartHeight + 'px';
 					
 					// Force the outer section box to recalculate its layout
@@ -3684,7 +3684,7 @@ function __kustoMaximizeChartBox(boxId) {
 		// Otherwise, use the minimum height for showing the placeholder/error message
 		const isChartRendered = st && st.__echarts && st.__echarts.instance && st.__wasRendering;
 		const targetHeight = isChartRendered 
-			? 600  // Same as the default height when first rendering a chart
+			? 360  // Same as the default height when first rendering a chart
 			: (typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(boxId) : 80);
 		
 		// Apply the calculated height
@@ -3761,13 +3761,158 @@ function addChartBox(options) {
 	st.mode = (options && typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
 	st.expanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
 	st.dataSourceId = (options && typeof options.dataSourceId === 'string') ? String(options.dataSourceId) : (st.dataSourceId || '');
-	// Default chart type to 'area' (first alphabetically) if not specified.
 	st.chartType = (options && typeof options.chartType === 'string') ? String(options.chartType) : (st.chartType || 'area');
 	st.xColumn = (options && typeof options.xColumn === 'string') ? String(options.xColumn) : (st.xColumn || '');
 	st.yColumn = (options && typeof options.yColumn === 'string') ? String(options.yColumn) : (st.yColumn || '');
 	st.yColumns = (options && Array.isArray(options.yColumns)) ? options.yColumns.filter(c => c) : (st.yColumns || (st.yColumn ? [st.yColumn] : []));
 	st.legendColumn = (options && typeof options.legendColumn === 'string') ? String(options.legendColumn) : (st.legendColumn || '');
 	st.legendPosition = (options && typeof options.legendPosition === 'string') ? String(options.legendPosition) : (st.legendPosition || 'top');
+	st.labelColumn = (options && typeof options.labelColumn === 'string') ? String(options.labelColumn) : (st.labelColumn || '');
+	st.valueColumn = (options && typeof options.valueColumn === 'string') ? String(options.valueColumn) : (st.valueColumn || '');
+	st.showDataLabels = (options && typeof options.showDataLabels === 'boolean') ? !!options.showDataLabels : (st.showDataLabels || false);
+	st.labelMode = (options && typeof options.labelMode === 'string') ? String(options.labelMode) : (st.labelMode || 'auto');
+	st.labelDensity = (options && typeof options.labelDensity === 'number') ? options.labelDensity : (typeof st.labelDensity === 'number' ? st.labelDensity : 50);
+	st.tooltipColumns = (options && Array.isArray(options.tooltipColumns)) ? options.tooltipColumns.filter(c => c) : (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
+	st.sortColumn = (options && typeof options.sortColumn === 'string') ? String(options.sortColumn) : (st.sortColumn || '');
+	st.sortDirection = (options && typeof options.sortDirection === 'string') ? String(options.sortDirection) : (st.sortDirection || '');
+	if (options && options.xAxisSettings && typeof options.xAxisSettings === 'object') {
+		st.xAxisSettings = { ...__kustoGetDefaultAxisSettings(), ...st.xAxisSettings, ...options.xAxisSettings };
+	}
+	if (options && options.yAxisSettings && typeof options.yAxisSettings === 'object') {
+		st.yAxisSettings = { ...__kustoGetDefaultYAxisSettings(), ...st.yAxisSettings, ...options.yAxisSettings };
+	}
+
+	const container = document.getElementById('queries-container');
+	if (!container) return;
+
+	// ── Create Lit element as primary ──
+	const litEl = document.createElement('kw-chart-section');
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
+	if (options && typeof options.editorHeightPx === 'number') {
+		litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
+	}
+
+	// Create light-DOM wrapper + canvas elements for ECharts (cannot render in shadow DOM).
+	// The wrapper must have `id = id + '_chart_wrapper'` so __kustoRenderChart can find it.
+	const chartWrapper = document.createElement('div');
+	chartWrapper.id = id + '_chart_wrapper';
+	chartWrapper.className = 'query-editor-wrapper';
+	chartWrapper.setAttribute('slot', 'chart-content');
+	chartWrapper.style.border = 'none';
+	chartWrapper.style.overflow = 'visible';
+	chartWrapper.style.height = 'auto';
+	chartWrapper.style.minHeight = '0';
+
+	const editContainer = document.createElement('div');
+	editContainer.id = id + '_chart_edit';
+	editContainer.style.display = 'flex';
+	editContainer.style.flexDirection = 'column';
+	editContainer.style.height = '100%';
+	editContainer.style.minHeight = '0';
+
+	const canvasEdit = document.createElement('div');
+	canvasEdit.className = 'kusto-chart-canvas';
+	canvasEdit.id = id + '_chart_canvas_edit';
+	canvasEdit.style.minHeight = '140px';
+	canvasEdit.style.flex = '1 1 auto';
+	editContainer.appendChild(canvasEdit);
+	chartWrapper.appendChild(editContainer);
+
+	const previewContainer = document.createElement('div');
+	previewContainer.id = id + '_chart_preview';
+	previewContainer.style.display = 'none';
+	previewContainer.style.flexDirection = 'column';
+	previewContainer.style.height = '100%';
+	previewContainer.style.minHeight = '0';
+
+	const canvasPreview = document.createElement('div');
+	canvasPreview.className = 'kusto-chart-canvas';
+	canvasPreview.id = id + '_chart_canvas_preview';
+	canvasPreview.style.minHeight = '140px';
+	canvasPreview.style.flex = '1 1 auto';
+	previewContainer.appendChild(canvasPreview);
+	chartWrapper.appendChild(previewContainer);
+
+	const resizerEl = document.createElement('div');
+	resizerEl.id = id + '_chart_resizer';
+	resizerEl.className = 'query-editor-resizer';
+	resizerEl.title = 'Drag to resize';
+	chartWrapper.appendChild(resizerEl);
+
+	litEl.appendChild(chartWrapper);
+
+	// Apply options to the Lit element
+	if (typeof litEl.applyOptions === 'function') {
+		litEl.applyOptions(options || {});
+	}
+
+	// Listen for section-remove event
+	litEl.addEventListener('section-remove', (e) => {
+		try {
+			const detail = e && e.detail ? e.detail : {};
+			const removeId = detail.boxId || id;
+			removeChartBox(removeId);
+		} catch { /* ignore */ }
+	});
+
+	container.insertAdjacentElement('beforeend', litEl);
+
+	// Set up drag-resize on the light-DOM resizer
+	try {
+		if (chartWrapper && resizerEl) {
+			resizerEl.addEventListener('mousedown', (e) => {
+				try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+				try { chartWrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				resizerEl.classList.add('is-dragging');
+				const prevCursor = document.body.style.cursor;
+				const prevUserSelect = document.body.style.userSelect;
+				document.body.style.cursor = 'ns-resize';
+				document.body.style.userSelect = 'none';
+				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startHeight = chartWrapper.getBoundingClientRect().height;
+				try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
+				const minH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
+				const maxH = 900;
+				const onMove = (moveEvent) => {
+					try {
+						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
+							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						}
+					} catch { /* ignore */ }
+					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const delta = pageY - startPageY;
+					const currentMinH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
+					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
+					chartWrapper.style.height = nextHeight + 'px';
+					try { __kustoRenderChart(id); } catch { /* ignore */ }
+				};
+				const onUp = () => {
+					document.removeEventListener('mousemove', onMove, true);
+					document.removeEventListener('mouseup', onUp, true);
+					resizerEl.classList.remove('is-dragging');
+					document.body.style.cursor = prevCursor;
+					document.body.style.userSelect = prevUserSelect;
+					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { __kustoRenderChart(id); } catch { /* ignore */ }
+				};
+				document.addEventListener('mousemove', onMove, true);
+				document.addEventListener('mouseup', onUp, true);
+			});
+		}
+	} catch { /* ignore */ }
+
+	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try {
+		const controls = document.querySelector('.add-controls');
+		if (controls && typeof controls.scrollIntoView === 'function') {
+			controls.scrollIntoView({ block: 'end' });
+		}
+	} catch { /* ignore */ }
+	return id;
+}
+
+function __kustoOnChartDataSourceChanged(boxId) {
 	st.labelColumn = (options && typeof options.labelColumn === 'string') ? String(options.labelColumn) : (st.labelColumn || '');
 	st.valueColumn = (options && typeof options.valueColumn === 'string') ? String(options.valueColumn) : (st.valueColumn || '');
 	st.showDataLabels = (options && typeof options.showDataLabels === 'boolean') ? !!options.showDataLabels : (st.showDataLabels || false);
@@ -4683,15 +4828,6 @@ function removeChartBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	// Remove side-by-side Lit element if present
-	try {
-		const litId = 'lit_' + boxId;
-		try { __kustoDisposeChartEcharts(litId); } catch { /* ignore */ }
-		try { delete chartStateByBoxId[litId]; } catch { /* ignore */ }
-		chartBoxes = (chartBoxes || []).filter(cid => cid !== litId);
-		const litBox = document.getElementById(litId);
-		if (litBox && litBox.parentNode) litBox.parentNode.removeChild(litBox);
-	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

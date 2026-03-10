@@ -3791,7 +3791,8 @@
 		   so :host margin-bottom takes effect in light DOM. */
 		kw-python-section,
 		kw-markdown-section,
-		kw-url-section {
+		kw-url-section,
+		kw-chart-section {
 			margin-bottom: 16px;
 		}
 
