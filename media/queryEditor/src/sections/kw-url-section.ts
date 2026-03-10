@@ -400,7 +400,7 @@ export class KwUrlSection extends LitElement {
 			background: var(--vscode-menu-background, var(--vscode-editor-background));
 			color: var(--vscode-menu-foreground, var(--vscode-foreground));
 			border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
-			border-radius: 4px;
+			border-radius: 0;
 			padding: 4px 0;
 			box-shadow: 0 4px 12px rgba(0,0,0,.35);
 			font-size: 12px;

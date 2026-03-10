@@ -360,7 +360,7 @@ export class KwMarkdownSection extends LitElement {
 			cursor: pointer;
 			padding: 0 8px;
 			height: 28px;
-			border-radius: 4px;
+			border-radius: 0;
 			font-size: 12px;
 			line-height: 1;
 			width: auto;
@@ -385,7 +385,7 @@ export class KwMarkdownSection extends LitElement {
 			min-width: 100px;
 			background: var(--vscode-dropdown-background, var(--vscode-menu-background));
 			border: 1px solid var(--vscode-dropdown-border, var(--vscode-menu-border, var(--vscode-widget-border)));
-			border-radius: 4px;
+			border-radius: 0;
 			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 			margin-top: 2px;
 		}
@@ -399,10 +399,10 @@ export class KwMarkdownSection extends LitElement {
 			background: var(--vscode-list-hoverBackground);
 		}
 		.md-mode-dropdown-item:first-child {
-			border-radius: 3px 3px 0 0;
+			border-radius: 0;
 		}
 		.md-mode-dropdown-item:last-child {
-			border-radius: 0 0 3px 3px;
+			border-radius: 0;
 		}
 
 		/* Editor wrapper — slotted TOAST UI content lives in light DOM */

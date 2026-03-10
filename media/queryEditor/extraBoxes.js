@@ -4259,6 +4259,137 @@ function addChartBox(options) {
 	try { __kustoUpdateAxisLabelIndicator(id, 'y'); } catch { /* ignore */ }
 	try { __kustoRenderChart(id); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+
+	// ── Side-by-side Lit component (migration comparison) ──
+	try {
+		if (typeof customElements !== 'undefined' && customElements.get('kw-chart-section')) {
+			const litId = 'lit_' + id;
+			const litEl = document.createElement('kw-chart-section');
+			litEl.id = litId;
+			litEl.setAttribute('box-id', litId);
+			if (options && typeof options.editorHeightPx === 'number') {
+				litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
+			}
+			// Create light-DOM wrapper + canvas elements for ECharts (cannot render in shadow DOM).
+			// The wrapper must have `id = litId + '_chart_wrapper'` so __kustoRenderChart can find it
+			// via document.getElementById for height management, auto-expand, and ResizeObserver.
+			const chartWrapper = document.createElement('div');
+			chartWrapper.id = litId + '_chart_wrapper';
+			chartWrapper.className = 'query-editor-wrapper';
+			chartWrapper.setAttribute('slot', 'chart-content');
+			chartWrapper.style.border = 'none';
+			chartWrapper.style.overflow = 'visible';
+			chartWrapper.style.height = 'auto';
+			chartWrapper.style.minHeight = '0';
+
+			const editContainer = document.createElement('div');
+			editContainer.id = litId + '_chart_edit';
+			editContainer.style.display = 'flex';
+			editContainer.style.flexDirection = 'column';
+			editContainer.style.height = '100%';
+			editContainer.style.minHeight = '0';
+
+			const canvasEdit = document.createElement('div');
+			canvasEdit.className = 'kusto-chart-canvas';
+			canvasEdit.id = litId + '_chart_canvas_edit';
+			canvasEdit.style.minHeight = '140px';
+			canvasEdit.style.flex = '1 1 auto';
+			editContainer.appendChild(canvasEdit);
+			chartWrapper.appendChild(editContainer);
+
+			const previewContainer = document.createElement('div');
+			previewContainer.id = litId + '_chart_preview';
+			previewContainer.style.display = 'none';
+			previewContainer.style.flexDirection = 'column';
+			previewContainer.style.height = '100%';
+			previewContainer.style.minHeight = '0';
+
+			const canvasPreview = document.createElement('div');
+			canvasPreview.className = 'kusto-chart-canvas';
+			canvasPreview.id = litId + '_chart_canvas_preview';
+			canvasPreview.style.minHeight = '140px';
+			canvasPreview.style.flex = '1 1 auto';
+			previewContainer.appendChild(canvasPreview);
+			chartWrapper.appendChild(previewContainer);
+
+			const resizerEl = document.createElement('div');
+			resizerEl.id = litId + '_chart_resizer';
+			resizerEl.className = 'query-editor-resizer';
+			resizerEl.title = 'Drag to resize';
+			chartWrapper.appendChild(resizerEl);
+
+			litEl.appendChild(chartWrapper);
+
+			// Apply options to the Lit element
+			if (typeof litEl.applyOptions === 'function') {
+				litEl.applyOptions(options || {});
+			}
+
+			// Listen for section-remove event
+			litEl.addEventListener('section-remove', (e) => {
+				try {
+					const detail = e && e.detail ? e.detail : {};
+					const removeId = detail.boxId || litId;
+					try { if (window.chartStateByBoxId) delete window.chartStateByBoxId[removeId]; } catch { /* ignore */ }
+					// Remove from chartBoxes so theme observer stops tracking it
+					chartBoxes = (chartBoxes || []).filter(cid => cid !== removeId);
+					const litBox = document.getElementById(removeId);
+					if (litBox && litBox.parentNode) litBox.parentNode.removeChild(litBox);
+				} catch { /* ignore */ }
+			});
+
+			// Register litId in chartBoxes for theme observer support
+			chartBoxes.push(litId);
+
+			// Insert the Lit element after the legacy chart box
+			const legacyBox = document.getElementById(id);
+			if (legacyBox && legacyBox.parentNode) {
+				legacyBox.parentNode.insertBefore(litEl, legacyBox.nextSibling);
+			}
+
+			// Set up drag-resize on the light-DOM resizer for the Lit chart wrapper
+			try {
+				if (chartWrapper && resizerEl) {
+					resizerEl.addEventListener('mousedown', (e) => {
+						try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+						try { chartWrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+						resizerEl.classList.add('is-dragging');
+						const prevCursor = document.body.style.cursor;
+						const prevUserSelect = document.body.style.userSelect;
+						document.body.style.cursor = 'ns-resize';
+						document.body.style.userSelect = 'none';
+						const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+						const startHeight = chartWrapper.getBoundingClientRect().height;
+						try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
+						const minH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(litId) : 80;
+						const maxH = 900;
+						const onMove = (moveEvent) => {
+							const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+							const delta = pageY - startPageY;
+							const currentMinH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(litId) : 80;
+							const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
+							chartWrapper.style.height = nextHeight + 'px';
+							try { __kustoRenderChart(litId); } catch { /* ignore */ }
+						};
+						const onUp = () => {
+							document.removeEventListener('mousemove', onMove, true);
+							document.removeEventListener('mouseup', onUp, true);
+							resizerEl.classList.remove('is-dragging');
+							document.body.style.cursor = prevCursor;
+							document.body.style.userSelect = prevUserSelect;
+							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+							try { __kustoRenderChart(litId); } catch { /* ignore */ }
+						};
+						document.addEventListener('mousemove', onMove, true);
+						document.addEventListener('mouseup', onUp, true);
+					});
+				}
+			} catch { /* ignore */ }
+		}
+	} catch (err) {
+		console.warn('[Kusto] Failed to create Lit chart section:', err);
+	}
+
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -4552,6 +4683,15 @@ function removeChartBox(boxId) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
+	// Remove side-by-side Lit element if present
+	try {
+		const litId = 'lit_' + boxId;
+		try { __kustoDisposeChartEcharts(litId); } catch { /* ignore */ }
+		try { delete chartStateByBoxId[litId]; } catch { /* ignore */ }
+		chartBoxes = (chartBoxes || []).filter(cid => cid !== litId);
+		const litBox = document.getElementById(litId);
+		if (litBox && litBox.parentNode) litBox.parentNode.removeChild(litBox);
+	} catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 

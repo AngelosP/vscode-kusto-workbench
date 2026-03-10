@@ -1781,7 +1781,7 @@ export class KwDataTable extends LitElement {
 		.obj-cell{text-align:center}
 
 		/* Column menu */
-		.cm{position:fixed;z-index:10000;background:var(--vscode-menu-background,var(--vscode-editor-background));border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:4px;padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translateX(-100%)}
+		.cm{position:fixed;z-index:10000;background:var(--vscode-menu-background,var(--vscode-editor-background));border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:0;padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translateX(-100%)}
 		.cmi{padding:4px 12px;font-size:12px;cursor:pointer;white-space:nowrap}.cmi:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground))}
 		.cms{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:4px 0}
 
@@ -1812,7 +1812,7 @@ export class KwDataTable extends LitElement {
 		.sr:hover{background:var(--vscode-list-hoverBackground)}
 		.sr-ord{text-align:right;font-size:11px;color:var(--vscode-descriptionForeground)}
 		.sr-rm{padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:2px;color:var(--vscode-errorForeground);cursor:pointer}.sr-rm:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:var(--vscode-input-border)}
-		.sr-col,.sr-dir{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:2px;padding:4px 6px;font-size:12px;font-family:inherit}
+		.sr-col,.sr-dir{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:0;padding:4px 6px;font-size:12px;font-family:inherit}
 		.sr-add{display:grid;grid-template-columns:1fr 1fr 140px 32px;gap:8px;align-items:center;padding:8px 4px 4px;border-top:1px solid var(--vscode-panel-border);margin-top:6px}
 		.sr-add-label{font-size:11px;color:var(--vscode-descriptionForeground)}
 		.sr-add-btn{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-button-border,transparent);border-radius:4px;width:32px;height:28px;cursor:pointer;font-size:16px;line-height:1;padding:0}.sr-add-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}

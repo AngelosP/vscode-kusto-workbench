@@ -7,3 +7,4 @@ import './viewers/connection-manager/kw-connection-manager.js';
 import './sections/kw-python-section.js';
 import './sections/kw-markdown-section.js';
 import './sections/kw-url-section.js';
+import './sections/kw-chart-section.js';
