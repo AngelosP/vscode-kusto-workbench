@@ -26,15 +26,68 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
+	// ── Copy webview runtime assets from src/webview/ to dist/webview/ ──
+	// Source files live under src/ (excluded from VSIX). The build copies them
+	// to dist/ so they ship at runtime.
+	const webviewSrcDir = path.join(__dirname, 'src', 'webview');
+	const webviewDistDir = path.join(__dirname, 'dist', 'webview');
+	try {
+		// Legacy JS scripts
+		const legacySrc = path.join(webviewSrcDir, 'legacy');
+		const legacyDest = path.join(webviewDistDir, 'legacy');
+		await fs.promises.mkdir(legacyDest, { recursive: true });
+		if (fs.promises.cp) {
+			await fs.promises.cp(legacySrc, legacyDest, { recursive: true, force: true });
+		}
+
+		// CSS
+		const stylesSrc = path.join(webviewSrcDir, 'styles');
+		const stylesDest = path.join(webviewDistDir, 'styles');
+		await fs.promises.mkdir(stylesDest, { recursive: true });
+		if (fs.promises.cp) {
+			await fs.promises.cp(stylesSrc, stylesDest, { recursive: true, force: true });
+		}
+
+		// Vendor libs (marked, purify, toastui CSS — skip dead toastui-editor.js UMD build)
+		const vendorSrc = path.join(webviewSrcDir, 'vendor');
+		const vendorDest = path.join(webviewDistDir, 'vendor');
+		await fs.promises.mkdir(vendorDest, { recursive: true });
+		if (fs.promises.cp) {
+			await fs.promises.cp(vendorSrc, vendorDest, {
+				recursive: true,
+				force: true,
+				filter: (src) => path.basename(src) !== 'toastui-editor.js'
+			});
+		}
+
+		// HTML template + bootstrap loader
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'queryEditor.html'),
+			path.join(webviewDistDir, 'queryEditor.html')
+		);
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'queryEditor.js'),
+			path.join(webviewDistDir, 'queryEditor.js')
+		);
+	} catch (e) {
+		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
+	}
+
 	// Monaco assets are used directly by the webview (not bundled into extension.js).
 	// Copy them into dist so they are included in the VSIX (node_modules is excluded).
+	// Skip unused language workers (css, html, json, ts) — only editor.worker is needed for KQL.
 	const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs');
 	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
+	const unusedWorkerPattern = /^(css|html|json|ts)\.worker\.[0-9a-f]+\.js$/i;
 	try {
 		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
-		// Node 16+ supports fs.promises.cp
+		// Node 16+ supports fs.promises.cp with a filter
 		if (fs.promises.cp) {
-			await fs.promises.cp(monacoSrc, monacoDest, { recursive: true, force: true });
+			await fs.promises.cp(monacoSrc, monacoDest, {
+				recursive: true,
+				force: true,
+				filter: (src) => !unusedWorkerPattern.test(path.basename(src))
+			});
 		} else {
 			console.warn('[watch] fs.promises.cp not available; Monaco assets may be missing');
 		}
@@ -58,9 +111,10 @@ async function main() {
 	}
 
 	// TOAST UI Editor assets are used directly by the webview.
-	// Copy/bundle them into media so they are included in the VSIX (node_modules is excluded).
+	// Copy CSS to src/webview/vendor/ (source, will be copied to dist/ by the webview asset step above).
+	// Bundle JS to dist/ directly.
 	const toastuiSrcDir = path.join(__dirname, 'node_modules', '@toast-ui', 'editor', 'dist');
-	const toastuiDestDir = path.join(__dirname, 'media', 'queryEditor', 'vendor', 'toastui-editor');
+	const toastuiDestDir = path.join(__dirname, 'src', 'webview', 'vendor', 'toastui-editor');
 	const toastuiWebviewJsDestDir = path.join(__dirname, 'dist', 'queryEditor', 'vendor', 'toastui-editor');
 	try {
 		await fs.promises.mkdir(toastuiDestDir, { recursive: true });
@@ -123,7 +177,7 @@ async function main() {
 	// Webview Lit components bundle (browser target, ESM → IIFE for <script> usage).
 	try {
 		const webviewCtx = await esbuild.context({
-			entryPoints: ['media/queryEditor/src/index.ts'],
+			entryPoints: ['src/webview/index.ts'],
 			bundle: true,
 			format: 'iife',
 			platform: 'browser',
@@ -148,7 +202,7 @@ async function main() {
 
 	const ctx = await esbuild.context({
 		entryPoints: [
-			'src/extension.ts'
+			'src/host/extension.ts'
 		],
 		bundle: true,
 		format: 'cjs',

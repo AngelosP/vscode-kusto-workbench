@@ -5,10 +5,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { KqlCompatEditorProvider } from '../../src/kqlCompatEditorProvider';
-import { KqlxEditorProvider } from '../../src/kqlxEditorProvider';
-import { MdCompatEditorProvider } from '../../src/mdCompatEditorProvider';
-import { QueryEditorProvider } from '../../src/queryEditorProvider';
+import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
+import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
+import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
+import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 
 type DisposableLike = { dispose(): void };
 
@@ -740,7 +740,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			// Add a connection so saveLastSelection can resolve the connectionId.
 			await connManager.addConnection({ name: 'MyCluster', clusterUrl: 'https://mycluster.kusto.windows.net' });
@@ -827,7 +827,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			await connManager.setFileConnection(kqlPath, 'https://cluster-a.kusto.windows.net', 'DBA');
 			await connManager.addConnection({ name: 'ClusterC', clusterUrl: 'https://cluster-c.kusto.windows.net' });
@@ -906,7 +906,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 
 			const provider = new (KqlCompatEditorProvider as any)(
@@ -980,7 +980,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			await connManager.setFileConnection(kqlPath, 'https://cached-cluster.kusto.windows.net', 'CachedDB');
 
@@ -1072,7 +1072,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			// No cached connection set — inference should be used.
 
@@ -1157,7 +1157,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			await connManager.addConnection({ name: 'ClusterA', clusterUrl: 'https://cluster-a.kusto.windows.net' });
 			await connManager.addConnection({ name: 'ClusterB', clusterUrl: 'https://cluster-b.kusto.windows.net' });
@@ -1249,7 +1249,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any
 			} as any;
 
-			const { ConnectionManager } = await import('../../src/connectionManager.js');
+			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			// Pre-populate with connection A.
 			await connManager.setFileConnection(kqlPath, 'https://cluster-a.kusto.windows.net', 'DBA');
@@ -1332,7 +1332,7 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any
 		} as any;
 
-		const { ConnectionManager } = await import('../../src/connectionManager.js');
+		const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 		const connManager = new ConnectionManager(fakeContext);
 
 		// Initially empty.
@@ -1371,7 +1371,7 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any
 		} as any;
 
-		const { ConnectionManager } = await import('../../src/connectionManager.js');
+		const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 		const connManager = new ConnectionManager(fakeContext);
 
 		// Write an entry.
@@ -1417,7 +1417,7 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any
 		} as any;
 
-		const { ConnectionManager } = await import('../../src/connectionManager.js');
+		const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 		const connManager = new ConnectionManager(fakeContext);
 
 		await connManager.setFileConnection('/path/active.kql', 'https://cluster.kusto.windows.net', 'DB1');
@@ -1455,7 +1455,7 @@ suite('Sidecar .kql.json strategy', () => {
 			} as any
 		} as any;
 
-		const { ConnectionManager } = await import('../../src/connectionManager.js');
+		const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 		const connManager = new ConnectionManager(fakeContext);
 
 		// Pre-populate two files.

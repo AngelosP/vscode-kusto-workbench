@@ -12,5 +12,5 @@
 		"skipLibCheck": true,
 		"outDir": "dist/webview-tsc-out"
 	},
-	"include": ["media/queryEditor/src"]
+	"include": ["src/webview"]
 }

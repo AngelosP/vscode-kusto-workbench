@@ -63,40 +63,40 @@
 	};
 
 	const baseUrl = getBaseUrl();
-	// `queryEditor.js` is loaded from `media/`, so baseUrl typically points at `.../media/`.
-	// Assets under `dist/` are siblings of `media/`, so resolve those from the extension root.
+	// `queryEditor.js` is loaded from `dist/webview/`, so baseUrl typically points at `.../dist/webview/`.
+	// Assets under `dist/` (at the same level or parent) are resolved via extensionRootUrl.
 	const extensionRootUrl = (() => {
 		try {
-			return new URL('..', baseUrl);
+			return new URL('../..', baseUrl);
 		} catch {
 			return baseUrl;
 		}
 	})();
 	const scriptPaths = [
-		'queryEditor/vscode.js',
-		'queryEditor/state.js',
-		'queryEditor/persistence.js',
-		'queryEditor/utils.js',
-		'queryEditor/searchControl.js',
-		'queryEditor/dropdown.js',
-		'queryEditor/vendor/marked.min.js',
-		'queryEditor/vendor/purify.min.js',
+		'legacy/vscode.js',
+		'legacy/state.js',
+		'legacy/persistence.js',
+		'legacy/utils.js',
+		'legacy/searchControl.js',
+		'legacy/dropdown.js',
+		'vendor/marked.min.js',
+		'vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'dist/queryEditor/vendor/echarts/echarts.webview.js',
-		'queryEditor/controlCommands.generated.js',
-		'queryEditor/functions.generated.js',
-		'queryEditor/schema.js',
-		'queryEditor/monaco.js',
-		'queryEditor/queryBoxes.js',
-		'queryEditor/copilotQueryBoxes.js',
-		'queryEditor/extraBoxes.js',
-		'queryEditor/resultsTable.js',
-		'queryEditor/diffView.js',
-		'queryEditor/objectViewer.js',
-		'queryEditor/cellViewer.js',
-		'queryEditor/columnAnalysis.js',
+		'legacy/controlCommands.generated.js',
+		'legacy/functions.generated.js',
+		'legacy/schema.js',
+		'legacy/monaco.js',
+		'legacy/queryBoxes.js',
+		'legacy/copilotQueryBoxes.js',
+		'legacy/extraBoxes.js',
+		'legacy/resultsTable.js',
+		'legacy/diffView.js',
+		'legacy/objectViewer.js',
+		'legacy/cellViewer.js',
+		'legacy/columnAnalysis.js',
 		'dist/webview/webview.bundle.js',
-		'queryEditor/main.js'
+		'legacy/main.js'
 	];
 
 	const getCacheBuster = () => {
@@ -125,7 +125,7 @@
 			// - Our markdown editor expects `window.toastui.Editor`.
 			// For these scripts, temporarily disable AMD/CommonJS detection so they take the
 			// globals path.
-			const isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
+			const isVendorLib = /(^|\/)(vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
 				|| /(^|\/)(dist\/queryEditor\/vendor\/toastui-editor\/toastui-editor\.webview\.js)$/i.test(relativePath);
 			let restore = null;
 			if (isVendorLib) {

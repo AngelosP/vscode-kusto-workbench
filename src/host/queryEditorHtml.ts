@@ -6,7 +6,7 @@ export async function getQueryEditorHtml(
 	context: vscode.ExtensionContext,
 	options?: { hideFooterControls?: boolean }
 ): Promise<string> {
-	const templateUri = vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.html');
+	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
 	const templateBytes = await vscode.workspace.fs.readFile(templateUri);
 	let template = new TextDecoder('utf-8').decode(templateBytes);
 
@@ -26,15 +26,15 @@ export async function getQueryEditorHtml(
 	};
 
 	const queryEditorCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.css')).toString()
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.css')).toString()
 	);
 	const toastUiEditorCssUri = withCacheBuster(
 		webview
 			.asWebviewUri(
 				vscode.Uri.joinPath(
 					extensionUri,
-					'media',
-					'queryEditor',
+					'dist',
+					'webview',
 					'vendor',
 					'toastui-editor',
 					'toastui-editor.css'
@@ -47,8 +47,8 @@ export async function getQueryEditorHtml(
 			.asWebviewUri(
 				vscode.Uri.joinPath(
 					extensionUri,
-					'media',
-					'queryEditor',
+					'dist',
+					'webview',
 					'vendor',
 					'toastui-editor',
 					'toastui-editor-dark.css'
@@ -61,8 +61,8 @@ export async function getQueryEditorHtml(
 			.asWebviewUri(
 				vscode.Uri.joinPath(
 					extensionUri,
-					'media',
-					'queryEditor',
+					'dist',
+					'webview',
 					'vendor',
 					'toastui-editor',
 					'toastui-editor-plugin-color-syntax.css'
@@ -75,8 +75,8 @@ export async function getQueryEditorHtml(
 			.asWebviewUri(
 				vscode.Uri.joinPath(
 					extensionUri,
-					'media',
-					'queryEditor',
+					'dist',
+					'webview',
 					'vendor',
 					'toastui-editor',
 					'tui-color-picker.css'
@@ -85,7 +85,7 @@ export async function getQueryEditorHtml(
 			.toString()
 	);
 	const queryEditorJsUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'queryEditor.js')).toString()
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.js')).toString()
 	);
 
 	const copilotLogoUri = withCacheBuster(
@@ -112,7 +112,7 @@ export async function getQueryEditorHtml(
 			if (!name.endsWith('.js')) {
 				continue;
 			}
-			const m = name.match(/^(css|editor|html|json|ts)\.worker\.[0-9a-f]+\.js$/i);
+			const m = name.match(/^(editor)\.worker\.[0-9a-f]+\.js$/i);
 			if (!m) {
 				continue;
 			}

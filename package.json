@@ -260,7 +260,7 @@
             "title": "Add a Kusto connection",
             "description": "Connect to a Kusto cluster and database to start querying your data.\n\n[Manage Connections](command:kusto.manageConnections)",
             "media": {
-              "markdown": "media/walkthrough/agent-01-add-connection.md"
+              "markdown": "media/walkthroughs/agent-01-add-connection.md"
             },
             "completionEvents": [
               "onContext:kusto.hasConnections"
@@ -271,7 +271,7 @@
             "title": "Ask the agent for your first chart",
             "description": "Open the VS Code Copilot Chat and ask for your first query and chart, something like:\n\n\"Give me the active user count for the past 30 days and chart it as a line graph\"\n\nThe agent will create a Kusto section, execute it, and configure a chart. Pay attention as this agent orchestrates the end-to-end, yet delegates out the task of creating new Kusto queries to a sub-agent inside of the file itself in an integrated chat window. More on that later.\n\n[Open Kusto Workbench Agent](command:workbench.action.chat.open?%7B%22mode%22%3A%22Kusto%20Workbench%22%7D)",
             "media": {
-              "markdown": "media/walkthrough/agent-02-first-chart.md"
+              "markdown": "media/walkthroughs/agent-02-first-chart.md"
             }
           },
           {
@@ -279,7 +279,7 @@
             "title": "Refine with follow-up requests",
             "description": "Now ask the agent to iterate on the result:\n\n*\"Change this to a rolling 7-day average and go back 90 days\"*\n\nThe agent sees the open file and updates the existing query and chart in place. You can always come back to a file without resume the same chat session, the file itself is enough context.",
             "media": {
-              "markdown": "media/walkthrough/agent-03-refine-query.md"
+              "markdown": "media/walkthroughs/agent-03-refine-query.md"
             }
           },
           {
@@ -287,7 +287,7 @@
             "title": "Explore and tweak your report",
             "description": "Take a closer look at what the agent built. Edit the query directly, adjust chart axes, change chart types, and explore the results table. All the building blocks are yours to customize.",
             "media": {
-              "markdown": "media/walkthrough/agent-04-explore-report.md"
+              "markdown": "media/walkthroughs/agent-04-explore-report.md"
             }
           }
         ]
@@ -302,7 +302,7 @@
             "title": "Add a Kusto Connection",
             "description": "Connect to a Kusto cluster and database to start querying your data.\n\n[Manage Connections](command:kusto.manageConnections)",
             "media": {
-              "markdown": "media/walkthrough/editor-01-add-connection.md"
+              "markdown": "media/walkthroughs/editor-01-add-connection.md"
             },
             "completionEvents": [
               "onContext:kusto.hasConnections"
@@ -313,7 +313,7 @@
             "title": "Run your first query",
             "description": "Open the query editor, which will use a scratchpad file (nothing saved to your local workspace, persists across VS Code sessions). \n\n Alternatively you can just create a new .kqlx file in your workspace and open that, then keep following along. \n\n[Open Query Editor](command:kusto.openQueryEditor)\n\nType a KQL query in the editor and press **Shift+Enter** to execute it. Start with something simple like `StormEvents | take 10` and see the results appear inline.",
             "media": {
-              "markdown": "media/walkthrough/editor-02-first-query.md"
+              "markdown": "media/walkthroughs/editor-02-first-query.md"
             },
             "completionEvents": [
               "onCommand:kusto.openQueryEditor"
@@ -324,7 +324,7 @@
             "title": "Caching & Run modes",
             "description": "Learn how **Take 100**, **Sample 100**, and **Run Query** modes help you iterate faster and how result caching lets you save and share data without re-running queries.",
             "media": {
-              "markdown": "media/walkthrough/editor-03-caching-run-modes.md"
+              "markdown": "media/walkthroughs/editor-03-caching-run-modes.md"
             }
           },
           {
@@ -332,7 +332,7 @@
             "title": "Table tools",
             "description": "Right-click column headers to sort, filter, see statistics, and view distinct values. \n\n Click rows to expand complex values with the interactive tree viewer. \n\nAdd **Transformation** sections for derived columns, aggregations, distinct values, and pivot tables.",
             "media": {
-              "markdown": "media/walkthrough/editor-04-table-tools.md"
+              "markdown": "media/walkthroughs/editor-04-table-tools.md"
             }
           },
           {
@@ -340,7 +340,7 @@
             "title": "Build a chart",
             "description": "Click the **+** button below a query section and select **Chart** to visualize your results. \n\n Pick a chart type, configure axes, and watch the chart update live when you re-run your query.",
             "media": {
-              "markdown": "media/walkthrough/editor-05-build-chart.md"
+              "markdown": "media/walkthroughs/editor-05-build-chart.md"
             }
           },
           {
@@ -348,7 +348,7 @@
             "title": "Copilot Chat: AI-Assisted Editing",
             "description": "Click the **Copilot button** (logo icon) in the query toolbar to open the integrated Copilot Chat. \n\n Describe what you want in plain English and Copilot will write or refine the KQL for you, it knows the schema of the selected database and can execute queries to validate its suggestions.",
             "media": {
-              "markdown": "media/walkthrough/editor-06-copilot-chat.md"
+              "markdown": "media/walkthroughs/editor-06-copilot-chat.md"
             }
           },
           {
@@ -356,7 +356,7 @@
             "title": "The custom agent",
             "description": "For full-notebook orchestration, creating multiple sections, configuring charts, adding markdown, going across multiple clusters and doing grand things, use the **VS Code Copilot Chat** panel. \n\n The Kusto Workbench custom agent builds entire reports in one go while the in-editor Copilot Chat focuses on individual queries. \n\n[Open Kusto Workbench Agent](command:workbench.action.chat.open?%7B%22mode%22%3A%22Kusto%20Workbench%22%7D)",
             "media": {
-              "markdown": "media/walkthrough/editor-07-agent.md"
+              "markdown": "media/walkthroughs/editor-07-agent.md"
             }
           }
         ]
@@ -1142,7 +1142,7 @@
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
+    "lint": "eslint src/host",
     "test": "vscode-test"
   },
   "devDependencies": {

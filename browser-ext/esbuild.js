@@ -118,30 +118,7 @@ copyFileSync(
 	path.join(DIST, 'read-only-overrides.css')
 );
 
-// ---- 3. Copy shared media assets ----
-
-console.log('Copying media/queryEditor/...');
-copyDirSync(
-	path.join(ROOT, 'media', 'queryEditor'),
-	path.join(DIST, 'media', 'queryEditor')
-);
-
-console.log('Copying media/queryEditor.css...');
-copyIfExists(
-	path.join(ROOT, 'media', 'queryEditor.css'),
-	path.join(DIST, 'media', 'queryEditor.css')
-);
-
-// We don't need queryEditor.js or queryEditor.html from media/ —
-// we have our own loader (queryEditor-loader.js) and viewer.html
-
-console.log('Copying media/images/...');
-copyDirSync(
-	path.join(ROOT, 'media', 'images'),
-	path.join(DIST, 'media', 'images')
-);
-
-// ---- 4. Copy built dist assets (Monaco, ECharts, TOAST UI) ----
+// ---- 3. Copy shared webview assets ----
 
 // These must be built first via `npm run package` at the repo root.
 const rootDist = path.join(ROOT, 'dist');
@@ -151,6 +128,21 @@ if (!fs.existsSync(rootDist)) {
 	console.error('*** Run `npm ci && npm run package` at the repo root first.\n');
 	process.exit(1);
 }
+
+console.log('Copying dist/webview/...');
+copyDirSync(
+	path.join(rootDist, 'webview'),
+	path.join(DIST, 'dist', 'webview'),
+	(name) => !name.endsWith('.map')
+);
+
+console.log('Copying media/images/...');
+copyDirSync(
+	path.join(ROOT, 'media', 'images'),
+	path.join(DIST, 'media', 'images')
+);
+
+// ---- 4. Copy built dist assets (Monaco, ECharts, TOAST UI) ----
 
 console.log('Copying dist/monaco/...');
 copyDirSync(
@@ -169,12 +161,12 @@ copyDirSync(
 
 // ---- 5. Replace vscode.js with the shim ----
 
-// The queryEditor-loader.js loads queryEditor/vscode.js first.
+// The queryEditor-loader.js loads legacy/vscode.js first.
 // We need to replace it with our shim so the webview code gets the stub.
-console.log('Replacing media/queryEditor/vscode.js with vscode-shim.js...');
+console.log('Replacing dist/webview/legacy/vscode.js with vscode-shim.js...');
 copyIfExists(
-	path.join(ROOT, 'web', 'vscode-shim.js'),
-	path.join(DIST, 'media', 'queryEditor', 'vscode.js')
+	path.join(__dirname, 'vscode-shim.js'),
+	path.join(DIST, 'dist', 'webview', 'legacy', 'vscode.js')
 );
 
 // ---- Done ----

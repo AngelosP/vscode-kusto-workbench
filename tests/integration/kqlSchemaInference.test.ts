@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 
-import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from '../../src/kqlSchemaInference';
-import type { DatabaseSchemaIndex } from '../../src/kustoClient';
-import { formatSchemaAsCompactText, formatSchemaWithOptions, formatSchemaWithTokenBudget, PRUNE_PHASE_DESCRIPTIONS } from '../../src/schemaIndexUtils';
-import type { SchemaPrunePhase } from '../../src/schemaIndexUtils';
+import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from '../../src/host/kqlSchemaInference';
+import type { DatabaseSchemaIndex } from '../../src/host/kustoClient';
+import { formatSchemaAsCompactText, formatSchemaWithOptions, formatSchemaWithTokenBudget, PRUNE_PHASE_DESCRIPTIONS } from '../../src/host/schemaIndexUtils';
+import type { SchemaPrunePhase } from '../../src/host/schemaIndexUtils';
 
 suite('kqlSchemaInference', () => {
 	test('extracts table references and function calls (best-effort)', () => {

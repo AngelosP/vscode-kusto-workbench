@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readAllCachedSchemasFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION } from '../../src/schemaCache';
+import { readAllCachedSchemasFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION } from '../../src/host/schemaCache';
 
 suite('readAllCachedSchemasFromDisk', () => {
 	let tmpDir: string;

@@ -27,11 +27,11 @@ It is not really possible to cover every single feature here with a screenshot a
 
 Click the icon in the Activity Bar for a bunch of helpful shortcuts.
 
-![Activity bar](marketplace-media/activity-bar.png)
+![Activity bar](media/marketplace/activity-bar.png)
 
 All of this is also available through the VS Code command palette, so if you prefer a more minimal look, you can turn off the Activity Bar icon in the extension's settings.
 
-![Settings](marketplace-media/settings.png)
+![Settings](media/marketplace/settings.png)
 
 ### Import connections
 
@@ -40,13 +40,13 @@ Don't manually add every single Kusto cluster and database you work with. If you
 1. In Kusto Explorer, export your saved connections as an XML file (commonly named `connections.xml`).
 2. In VS Code, open the query editor and choose `Import from .xml file…` in the connection picker.
 
-![Import connections for Kusto for desktop or web](marketplace-media/import-connections.png)
+![Import connections for Kusto for desktop or web](media/marketplace/import-connections.png)
 
 ### Save connections to favorites
 
 Save frequently used connections to favorites, with a friendly name so you can remind yourself what the connection is used for.
 
-![Add combos of cluster + database to your favorites with a friendly name](marketplace-media/add-to-favorites.png)
+![Add combos of cluster + database to your favorites with a friendly name](media/marketplace/add-to-favorites.png)
 
 ### VS Code custom agent that actually works
 
@@ -61,7 +61,7 @@ The agent can:
 * Orchestrate multi-section reports end to end
 * Use a dedicated sub-agent for deep Kusto data searches
 
-![VS Code custom agent that actually works called Kusto Workbench](marketplace-media/vscode-custom-agent.png)
+![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 
 ### Integrated Copilot Chat (per section)
 
@@ -71,31 +71,31 @@ Each Kusto query section has its own Copilot Chat window built right in. Click t
 
 Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
 
-![Kusto query editor](./marketplace-media/kusto-query-editor.png)
+![Kusto query editor](./media/marketplace/kusto-query-editor.png)
 
 ### Load .csv data directly from the internet
 
 If you have a URL, then you can load it.
 
-![Load .csv data directly from the internet](./marketplace-media/csv.png)
+![Load .csv data directly from the internet](./media/marketplace/csv.png)
 
 ### Transform data
 
 You can transform Kusto query results without changing the query itself. Derive new columns, summarize and aggregate, get distinct values, or pivot your data and all without writing another line of KQL. Transformations also work on .csv files loaded via a URL section.
 
-![Using data transformation to add a calculated column](marketplace-media/transformation.png)
+![Using data transformation to add a calculated column](media/marketplace/transformation.png)
 
 ### Chart data
 
 Create charts from Kusto query results or .csv data. Supports line, area, bar, scatter, pie, and funnel chart types. Configure axes, legends, data labels, and more. Charts update live when you re-run your query.
 
-![Creating a bar chart from a Kusto query](marketplace-media/chart.png)
+![Creating a bar chart from a Kusto query](media/marketplace/chart.png)
 
 ### Prettify query
 
 Use the query toolbar "Prettify" action to apply Kusto-aware formatting rules (for example, improving layout around common operators such as `where` and `summarize`).
 
-![Prettify a Kusto query](marketplace-media/prettify.png)
+![Prettify a Kusto query](media/marketplace/prettify.png)
 
 ### Diagnostics and debugging
 
@@ -105,49 +105,49 @@ When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics
 * Highlighting of important terms to focus your attention with red squiggles
 * Hints in the scrollbar
 
-![Debugging a Kusto query with syntax errors](marketplace-media/diagnostics.png)
+![Debugging a Kusto query with syntax errors](media/marketplace/diagnostics.png)
 
 ### Query comparison and performance optimization
 
 If you have an existing query that you want to improve without changing its behavior and the results it returns, you can use the built-in functionality to compare its performance and to guarantee that the data returned is identical, even if the rows and columns might be out of order.
 
-![Performance optimization of an existing query](marketplace-media/perf-optimization.png)
+![Performance optimization of an existing query](media/marketplace/perf-optimization.png)
 
 Now with server-side stats too! Performance statistics from the Kusto cluster itself are surfaced on hover over the results label, and automatically when comparing queries.
 
-![Performance optimization of an existing query using server-side stats](marketplace-media/perf-optimization-server-side-stats.png)
+![Performance optimization of an existing query using server-side stats](media/marketplace/perf-optimization-server-side-stats.png)
 
-![Query execution with server-side stats](marketplace-media/query-execution-server-side-stats.png)
+![Query execution with server-side stats](media/marketplace/query-execution-server-side-stats.png)
 
 ### Share to Teams and Azure Data Explorer
 
 Share a query as an Azure Data Explorer link with a single click. When sharing entire sections, the content pastes nicely into Teams and other rich editors.
 
-![Share your queries as Azure Data Explorer links](marketplace-media/share.png)
+![Share your queries as Azure Data Explorer links](media/marketplace/share.png)
 
 ### Multi-account support
 
 Sometimes we need to authenticate to different Kusto clusters with different identities, and this extension not only supports this scenario, but allows it even within a single file.
 
-![Multi-account support](marketplace-media/multi-account.png)
+![Multi-account support](media/marketplace/multi-account.png)
 
 ### Connection Manager and Cluster Explorer
 
 Explore the Kusto clusters you have added connections to with ease. Browse the tables, functions and their definitions. Create new `.kqlx` files with the connection details for a database already prefilled, ready to go.
 
-![Connection Manager and Cluster Explorer](marketplace-media/connection-manager.png)
+![Connection Manager and Cluster Explorer](media/marketplace/connection-manager.png)
 
 ### Leave No Trace
 
 Are you connecting to a Kusto cluster for which you should never export data or save data locally due to access restrictions, legal requirements, etc? Just flag the cluster and the extension will never save any of its data to disk, or even in temporary files. It will still allow you to save the queries and the chart settings, but the data itself will have to be retrieved each time you connect to the cluster.
 
-![Leave No Trace](marketplace-media/cluster-explorer.png)
+![Leave No Trace](media/marketplace/cluster-explorer.png)
 
 ### Markdown sections
 
 Full WYSIWYG and raw markdown editing powered by TOAST UI Editor. Add narrative text, documentation, and headings around your queries and charts to build complete reports.
 
-![Markdown editing](marketplace-media/markdown.png)
+![Markdown editing](media/marketplace/markdown.png)
 
 ### Cell Value Viewer
 

@@ -41,33 +41,34 @@
 	// In the browser extension, the sandboxed page (viewer.html) is at the extension
 	// root, so all paths are relative to the page's origin. No chrome.runtime.getURL()
 	// needed because we're inside the extension's own page.
-	var baseUrl = new URL('media/', window.location.href);
+	var baseUrl = new URL('dist/webview/', window.location.href);
 	var extensionRootUrl = new URL('.', window.location.href);
 
 	var scriptPaths = [
-		'queryEditor/vscode.js',
-		'queryEditor/state.js',
-		'queryEditor/persistence.js',
-		'queryEditor/utils.js',
-		'queryEditor/searchControl.js',
-		'queryEditor/dropdown.js',
-		'queryEditor/vendor/marked.min.js',
-		'queryEditor/vendor/purify.min.js',
+		'legacy/vscode.js',
+		'legacy/state.js',
+		'legacy/persistence.js',
+		'legacy/utils.js',
+		'legacy/searchControl.js',
+		'legacy/dropdown.js',
+		'vendor/marked.min.js',
+		'vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'dist/queryEditor/vendor/echarts/echarts.webview.js',
-		'queryEditor/controlCommands.generated.js',
-		'queryEditor/functions.generated.js',
-		'queryEditor/schema.js',
-		'queryEditor/monaco.js',
-		'queryEditor/queryBoxes.js',
-		'queryEditor/copilotQueryBoxes.js',
-		'queryEditor/extraBoxes.js',
-		'queryEditor/resultsTable.js',
-		'queryEditor/diffView.js',
-		'queryEditor/objectViewer.js',
-		'queryEditor/cellViewer.js',
-		'queryEditor/columnAnalysis.js',
-		'queryEditor/main.js'
+		'legacy/controlCommands.generated.js',
+		'legacy/functions.generated.js',
+		'legacy/schema.js',
+		'legacy/monaco.js',
+		'legacy/queryBoxes.js',
+		'legacy/copilotQueryBoxes.js',
+		'legacy/extraBoxes.js',
+		'legacy/resultsTable.js',
+		'legacy/diffView.js',
+		'legacy/objectViewer.js',
+		'legacy/cellViewer.js',
+		'legacy/columnAnalysis.js',
+		'dist/webview/webview.bundle.js',
+		'legacy/main.js'
 	];
 
 	var loadScript = function(relativePath) {
@@ -78,7 +79,7 @@
 
 			// For vendor UMD bundles, temporarily disable AMD/CommonJS detection
 			// so they expose globals instead of registering as AMD modules
-			var isVendorLib = /(^|\/)(queryEditor\/vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
+			var isVendorLib = /(^|\/)(vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
 				|| /(^|\/)(dist\/queryEditor\/vendor\/toastui-editor\/toastui-editor\.webview\.js)$/i.test(relativePath);
 			var restore = null;
 			if (isVendorLib) {

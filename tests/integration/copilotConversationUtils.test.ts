@@ -4,7 +4,7 @@ import {
 	ConversationHistoryEntry,
 	sanitizeConversationHistory,
 	insertMissingToolCallResults
-} from '../../src/copilotConversationUtils';
+} from '../../src/host/copilotConversationUtils';
 
 // ---------------------------------------------------------------------------
 // Helpers

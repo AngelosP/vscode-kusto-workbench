@@ -448,12 +448,12 @@ export class QueryEditorProvider {
 
 	private async readOptimizeQueryRules(): Promise<string> {
 		try {
-			const uri = vscode.Uri.joinPath(this.context.extensionUri, 'optimize-query-rules.md');
+			const uri = vscode.Uri.joinPath(this.context.extensionUri, 'copilot-instructions', 'optimize-query-rules.md');
 			const bytes = await vscode.workspace.fs.readFile(uri);
 			return new TextDecoder('utf-8').decode(bytes);
 		} catch (e) {
 			const msg = this.getErrorMessage(e);
-			return `Failed to read optimize-query-rules.md: ${msg}`;
+			return `Failed to read copilot-instructions/optimize-query-rules.md: ${msg}`;
 		}
 	}
 
