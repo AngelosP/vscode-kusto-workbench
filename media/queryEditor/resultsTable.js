@@ -2960,6 +2960,32 @@ function __kustoSetResultsState(boxId, state) {
 
 function displayResultForBox(result, boxId, options) {
 	if (!boxId) { return; }
+
+	// If the section is a <kw-query-section> Lit element, delegate to displayResult().
+	if (!(options && options.resultsDiv)) {
+		try {
+			const sectionEl = document.getElementById(boxId);
+			if (sectionEl && typeof sectionEl.displayResult === 'function') {
+				sectionEl.displayResult(result, options);
+				// Still update global results state for cross-section dependencies.
+				const cols = Array.isArray(result && result.columns) ? result.columns : [];
+				const rws = Array.isArray(result && result.rows) ? result.rows : [];
+				const meta = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
+				__kustoSetResultsState(boxId, {
+					boxId, columns: cols, rows: rws, metadata: meta,
+					selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
+					selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
+					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
+					displayRowIndices: null, rowIndexToDisplayIndex: null
+				});
+				try { __kustoEnsureDisplayRowIndexMaps(__kustoGetResultsState(boxId)); } catch { /* ignore */ }
+				try { __kustoTryStoreQueryResult(boxId, result); } catch { /* ignore */ }
+				try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
+				return;
+			}
+		} catch { /* ignore — fall through to legacy rendering */ }
+	}
+
 	const resultsDiv = (options && options.resultsDiv) ? options.resultsDiv : document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
 

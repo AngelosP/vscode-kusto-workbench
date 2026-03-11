@@ -3252,6 +3252,10 @@
 			margin-right: 6px;
 		}
 
+		.md-tab.md-share-btn {
+			margin-right: 6px;
+		}
+
 		.md-tab.md-mode-btn {
 			width: auto;
 			padding: 0 10px;
@@ -3793,13 +3797,14 @@
 		kw-markdown-section,
 		kw-url-section,
 		kw-chart-section,
-		kw-transformation-section {
+		kw-transformation-section,
+		kw-query-section {
 			margin-bottom: 16px;
 		}
 
-		/* Let the results resize bar sit flush to the section bottom. */
+		/* Small gap between the results resize bar and the section bottom border. */
 		.query-box {
-			padding-bottom: 0;
+			padding-bottom: 5px;
 		}
 
 		.query-box.is-optimized-comparison {
@@ -3821,7 +3826,7 @@
 			position: relative;
 			width: 100%;
 			min-height: 0;
-			margin: 8px 0 0;
+			margin: 0;
 			overflow: hidden;
 			display: flex;
 			flex-direction: column;
@@ -3887,37 +3892,6 @@
 			flex-wrap: nowrap;
 		}
 
-		/*
-			The bottom header row (cluster/database/favorites + icon buttons) should prefer
-			squeezing controls rather than wrapping them onto multiple lines, so width-based
-			shrinking behaves smoothly.
-		*/
-		.query-header-row-bottom {
-			flex-wrap: nowrap;
-			min-width: 0;
-			/* Enable container queries for responsive layout */
-			container-type: inline-size;
-		}
-
-		.query-name {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			padding: 4px 8px;
-			font-size: 12px;
-			flex: 1 1 150px;
-			min-width: 0;
-		}
-
-		.query-name:hover {
-			border-color: var(--vscode-input-border);
-		}
-
-		.query-name:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-
 		.select-wrapper {
 			position: relative;
 			flex: 1 1 200px;
@@ -3963,38 +3937,6 @@
 			clip: rect(0, 0, 0, 0);
 			overflow: hidden;
 			white-space: nowrap;
-		}
-
-		.select-wrapper.half-width {
-			flex: 1 1 210px;
-			width: auto;
-			max-width: 210px;
-			min-width: 150px;
-		}
-
-		/* Favorites dropdown replaces: cluster (210) + database (210) + refresh (28) = 448px */
-		.select-wrapper.kusto-favorites-combo {
-			/*
-				Prefer the full-size layout (~448px), but allow this control to shrink smoothly
-				as the available header width decreases. CSS container queries handle switching
-				to minimal mode when the container gets narrow (see @container rules below).
-			*/
-			flex: 1 1 448px;
-			width: auto;
-			max-width: 448px;
-			min-width: 40px;
-		}
-
-		/* Hide icon in favorites dropdown in normal (non-minimal) mode */
-		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon,
-		.select-wrapper.kusto-favorites-combo .kusto-favorites-btn .select-icon {
-			display: none;
-		}
-
-		/* In normal mode, remove left padding since icon is hidden */
-		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn,
-		.select-wrapper.kusto-favorites-combo .kusto-favorites-btn {
-			padding-left: 8px;
 		}
 
 		/*
@@ -4430,33 +4372,6 @@
 			border: none;
 		}
 
-		.refresh-btn.favorite-btn {
-			color: var(--vscode-descriptionForeground);
-		}
-
-		.refresh-btn.favorite-btn svg {
-			fill: none;
-		}
-
-		/* Favorite toggle uses .is-active (standardized from .is-favorite) */
-		.refresh-btn.favorite-btn.is-favorite,
-		.refresh-btn.favorite-btn.is-active {
-			color: var(--vscode-charts-yellow);
-		}
-
-		.refresh-btn.favorite-btn.is-favorite svg,
-		.refresh-btn.favorite-btn.is-active svg {
-			fill: currentColor;
-		}
-
-		.schema-area {
-			margin-left: auto;
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			text-align: right;
-		}
-
 		/* Cancel button: reuse icon-button sizing but show an error-colored glyph */
 		.refresh-btn.cancel-btn {
 			border: none;
@@ -4479,215 +4394,6 @@
 		.select-wrapper.icon-only select option {
 			text-indent: 0;
 			color: var(--vscode-dropdown-foreground);
-		}
-
-		/*
-		 * =======================================================================
-		 * RESPONSIVE TOOLBAR LAYOUT (CSS Container Queries)
-		 * =======================================================================
-		 * The query header toolbar adapts to available width using container queries.
-		 * This is more reliable than JS-based measurement which can race with layout.
-		 *
-		 * Layout tiers (based on .query-header-row-bottom container width):
-		 *   > 420px : Full layout - dropdowns show text + icon
-		 *   <= 420px: Minimal dropdowns - cluster/database show icon only (32px each)
-		 *   <= 200px: Ultra-compact - also hide refresh, favorite, and schema buttons
-		 *
-		 * Calculation for 420px breakpoint:
-		 *   - 2 half-width dropdowns at min-width 150px each = 300px
-		 *   - 3 buttons (refresh, favorite, schema) at ~32px each = 96px
-		 *   - Gaps (8px * 4) = 32px
-		 *   - Total: ~428px, rounded down to 420px for some breathing room
-		 *
-		 * Calculation for 200px breakpoint:
-		 *   - 2 minimal dropdowns at 32px each = 64px
-		 *   - 3 buttons at 32px each = 96px
-		 *   - Gaps = 32px
-		 *   - Total: ~192px, rounded up to 200px
-		 * =======================================================================
-		 */
-
-		/* Minimal mode styles for cluster/database dropdowns */
-		@container (max-width: 420px) {
-			.select-wrapper.half-width {
-				flex: 0 0 32px;
-				width: 32px;
-				min-width: 32px;
-				max-width: 32px;
-			}
-
-			.select-wrapper.half-width select {
-				padding-left: 8px;
-				padding-right: 8px;
-				text-indent: -9999px;
-				color: transparent;
-			}
-
-			.select-wrapper.half-width.has-icon select {
-				padding-left: 8px;
-			}
-
-			.select-wrapper.half-width select option {
-				text-indent: 0;
-				color: var(--vscode-dropdown-foreground);
-			}
-
-			.select-wrapper.half-width.has-icon .select-icon {
-				left: 50%;
-				transform: translate(-50%, -50%);
-			}
-
-			/* Hide text in cluster/database dropdown buttons, show only icon */
-			.select-wrapper.half-width .kusto-dropdown-btn-text {
-				display: none;
-			}
-
-			.select-wrapper.half-width .kusto-dropdown-btn-caret {
-				display: none;
-			}
-
-			.select-wrapper.half-width .kusto-dropdown-btn {
-				padding: 4px;
-				justify-content: center;
-			}
-
-			.select-wrapper.half-width.has-icon .kusto-dropdown-btn {
-				padding: 4px;
-			}
-
-			/* Favorites dropdown also goes minimal */
-			.select-wrapper.kusto-favorites-combo {
-				flex: 0 0 32px;
-				width: 32px;
-				min-width: 32px;
-				max-width: 32px;
-			}
-
-			/* Show icon inside favorites button in minimal mode */
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon,
-			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn .select-icon {
-				display: inline-flex;
-			}
-
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-text,
-			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn-text {
-				display: none;
-			}
-
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-caret,
-			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn-caret {
-				display: none;
-			}
-
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn,
-			.select-wrapper.kusto-favorites-combo .kusto-favorites-btn {
-				padding: 4px;
-				justify-content: center;
-			}
-		}
-
-		/* Ultra-compact mode: hide extra buttons when space is extremely tight */
-		@container (max-width: 200px) {
-			button.refresh-btn[id$="_refresh"] {
-				display: none !important;
-			}
-
-			button.favorite-btn {
-				display: none !important;
-			}
-
-			.schema-info-wrapper {
-				display: none !important;
-			}
-		}
-
-		/*
-		 * Legacy class-based selectors (kept for backwards compatibility with any
-		 * code that might still add these classes manually)
-		 */
-		.query-header .select-wrapper.half-width.is-minimal {
-			flex: 0 0 32px;
-			width: 32px;
-			min-width: 32px;
-			max-width: 32px;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal select {
-			padding-left: 8px;
-			padding-right: 8px;
-			text-indent: -9999px;
-			color: transparent;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal.has-icon select {
-			padding-left: 8px;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal select option {
-			text-indent: 0;
-			color: var(--vscode-dropdown-foreground);
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal.has-icon .select-icon {
-			left: 50%;
-			transform: translate(-50%, -50%);
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn-text {
-			display: none;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn-caret {
-			display: none;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal .kusto-dropdown-btn {
-			padding: 4px;
-			justify-content: center;
-		}
-
-		.query-header .select-wrapper.half-width.is-minimal.has-icon .kusto-dropdown-btn {
-			padding: 4px;
-		}
-
-		.query-header-row-bottom.is-ultra-compact > button.refresh-btn[id$="_refresh"] {
-			display: none !important;
-		}
-
-		.query-header-row-bottom.is-ultra-compact > button.favorite-btn {
-			display: none !important;
-		}
-
-		.query-header-row-bottom.is-ultra-compact > .schema-info-wrapper {
-			display: none !important;
-		}
-
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal {
-			flex: 0 0 32px;
-			width: 32px;
-			min-width: 32px;
-			max-width: 32px;
-		}
-
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn .select-icon,
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn .select-icon {
-			display: inline-flex;
-		}
-
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn-text,
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn-text {
-			display: none;
-		}
-
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn-caret,
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn-caret {
-			display: none;
-		}
-
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-dropdown-btn,
-		.query-header .select-wrapper.kusto-favorites-combo.is-minimal .kusto-favorites-btn {
-			padding: 4px;
-			justify-content: center;
 		}
 
 		.query-editor-wrapper {
@@ -8091,182 +7797,6 @@
 		.cache-info {
 			color: var(--vscode-descriptionForeground);
 			font-size: 11px;
-		}
-
-		/* ========================================
-		   Schema Info Icon and Popover
-		   ======================================== */
-		.schema-info-wrapper {
-			position: relative;
-			flex: 0 0 auto;
-			margin-left: auto;
-		}
-
-		.schema-info-btn {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			color: var(--vscode-descriptionForeground);
-			cursor: pointer;
-			padding: 4px;
-			width: 28px;
-			height: 28px;
-			position: relative;
-		}
-
-		.schema-info-btn:hover {
-			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-			color: var(--vscode-foreground);
-		}
-
-		.schema-info-btn:focus {
-			outline: none;
-		}
-
-		.schema-info-btn:focus-visible {
-			border-color: var(--vscode-focusBorder);
-		}
-
-		.schema-info-btn:focus:not(:focus-visible) {
-			border-color: transparent;
-		}
-
-		/* Active/open state when popover is visible */
-		.schema-info-btn.is-open {
-			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
-			color: var(--vscode-foreground);
-		}
-
-		.schema-info-btn.is-open:hover {
-			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
-		}
-
-		.schema-info-btn svg {
-			width: 18px;
-			height: 18px;
-			height: 16px;
-		}
-
-		/* Loading state for schema info button - hide the icon and show spinner styling on the button itself */
-		.schema-info-btn.is-loading svg {
-			display: none;
-		}
-
-		.schema-info-btn.is-loading::after {
-			content: '';
-			display: block;
-			width: 14px;
-			height: 14px;
-			box-sizing: border-box;
-			border-radius: 50%;
-			border: 2px solid var(--vscode-editorWidget-border);
-			border-top-color: var(--vscode-progressBar-background);
-			animation: query-spinner-spin 0.9s linear infinite;
-		}
-
-		/* Hidden - no longer used, kept for backwards compatibility */
-		.schema-info-spinner {
-			display: none !important;
-		}
-
-		/* Visual feedback when schema is loaded */
-		.schema-info-btn.has-schema {
-			color: var(--vscode-descriptionForeground);
-		}
-
-		.schema-info-btn.is-error {
-			color: var(--vscode-errorForeground, #f48771);
-		}
-
-		.schema-info-btn.is-cached {
-			color: var(--vscode-descriptionForeground);
-		}
-
-		/* Schema info popover */
-		.schema-info-popover {
-			position: fixed;
-			z-index: 10000;
-			min-width: 180px;
-			max-width: 250px;
-			background: var(--vscode-editorHoverWidget-background, #252526);
-			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
-			border-radius: 4px;
-			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-			padding: 0;
-		}
-
-		.schema-info-popover-content {
-			padding: 10px 12px;
-		}
-
-		.schema-info-row {
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			gap: 8px;
-			font-size: 12px;
-			padding: 3px 0;
-		}
-
-		.schema-info-label {
-			color: var(--vscode-descriptionForeground);
-			flex: 0 0 auto;
-		}
-
-		.schema-info-value,
-		.schema-info-status {
-			color: var(--vscode-foreground);
-			font-weight: 500;
-		}
-
-		.schema-info-status.is-error {
-			color: var(--vscode-errorForeground, #f48771);
-		}
-
-		.schema-info-cached-link {
-			color: var(--vscode-charts-blue, #4fc1ff);
-			text-decoration: underline;
-			cursor: pointer;
-		}
-
-		.schema-info-cached-link:hover {
-			color: var(--vscode-textLink-activeForeground, #3794ff);
-		}
-
-		.schema-info-actions {
-			margin-top: 8px;
-		}
-
-		.schema-info-refresh-btn {
-			display: inline-flex;
-			align-items: center;
-			gap: 6px;
-			background: transparent;
-			border: 1px solid var(--vscode-button-border, transparent);
-			border-radius: 4px;
-			color: var(--vscode-foreground);
-			cursor: pointer;
-			padding: 4px 8px;
-			font-size: 12px;
-			width: 100%;
-			justify-content: center;
-		}
-
-		.schema-info-refresh-btn:hover {
-			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-		}
-
-		.schema-info-refresh-btn:disabled {
-			opacity: 0.5;
-			cursor: not-allowed;
-		}
-
-		.schema-info-refresh-btn svg {
-			width: 14px;
-			height: 14px;
 		}
 
 		/* ============================================

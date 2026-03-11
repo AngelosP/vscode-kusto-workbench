@@ -968,6 +968,7 @@ window.addEventListener('message', async event => {
 			break;
 		case 'connectionsData':
 			connections = message.connections;
+			try { window.connections = connections; } catch { /* ignore */ }
 			lastConnectionId = message.lastConnectionId;
 			lastDatabase = message.lastDatabase;
 			cachedDatabases = message.cachedDatabases || {};
@@ -1616,6 +1617,7 @@ window.addEventListener('message', async event => {
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {
 					connections = message.connections;
+					try { window.connections = connections; } catch { /* ignore */ }
 				}
 				if (message.lastConnectionId) {
 					lastConnectionId = message.lastConnectionId;
@@ -1632,11 +1634,13 @@ window.addEventListener('message', async event => {
 				try {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {
-						const sel = document.getElementById(boxId + '_connection');
-						if (sel) {
-							sel.value = message.connectionId;
-							sel.dataset.prevValue = message.connectionId;
-							updateDatabaseField(boxId);
+						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+						if (kwEl && typeof kwEl.setConnectionId === 'function') {
+							kwEl.setConnectionId(message.connectionId);
+							kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+								detail: { boxId: boxId, connectionId: message.connectionId },
+								bubbles: true, composed: true,
+							}));
 						}
 					}
 				} catch {
@@ -1881,27 +1885,22 @@ window.addEventListener('message', async event => {
 				} catch { /* ignore */ }
 				
 				// Set connection and database to match source
-				const comparisonConnSelect = document.getElementById(comparisonBoxId + '_connection');
-				const comparisonDbSelect = document.getElementById(comparisonBoxId + '_database');
-				if (comparisonConnSelect) {
-					comparisonConnSelect.value = connectionId;
-					comparisonConnSelect.dataset.prevValue = connectionId;
-					updateDatabaseField(comparisonBoxId);
-					
-					// After database field updates, set the database value
+				const compKwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(comparisonBoxId) : null;
+				if (compKwEl) {
+					if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
+					if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
+					compKwEl.dispatchEvent(new CustomEvent('connection-changed', {
+						detail: { boxId: comparisonBoxId, connectionId: connectionId },
+						bubbles: true, composed: true,
+					}));
 					setTimeout(() => {
-						if (comparisonDbSelect) {
-							comparisonDbSelect.value = database;
-						}
+						if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
 					}, 100);
 				}
 				
 				// Set the query name
-				const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
-				if (comparisonNameInput) {
-					if (desiredOptimizedName) {
-						comparisonNameInput.value = desiredOptimizedName;
-					}
+				if (desiredOptimizedName) {
+					setSectionName(comparisonBoxId, desiredOptimizedName);
 				}
 				
 				// Execute both queries for comparison
@@ -2181,18 +2180,24 @@ window.addEventListener('message', async event => {
 								// Find connection by cluster URL
 								const conn = (connections || []).find(c => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 								if (conn) {
-									const select = document.getElementById(sectionId + '_connection');
-									if (select) {
-										select.value = conn.id;
-										select.dispatchEvent(new Event('change'));
+									const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+									if (kwEl && typeof kwEl.setConnectionId === 'function') {
+										kwEl.setConnectionId(conn.id);
+										kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+											detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
+											bubbles: true, composed: true,
+										}));
 									}
 								}
 							}
 							if (sectionId && input.database) {
-								const dbSelect = document.getElementById(sectionId + '_database');
-								if (dbSelect) {
-									dbSelect.value = input.database;
-									dbSelect.dispatchEvent(new Event('change'));
+								const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+								if (kwEl && typeof kwEl.setDatabase === 'function') {
+									kwEl.setDatabase(input.database);
+									kwEl.dispatchEvent(new CustomEvent('database-changed', {
+										detail: { boxId: sectionId, database: input.database },
+										bubbles: true, composed: true,
+									}));
 								}
 							}
 						}
@@ -2400,10 +2405,13 @@ window.addEventListener('message', async event => {
 					if (input.clusterUrl) {
 						const conn = (connections || []).find(c => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 						if (conn) {
-							const select = document.getElementById(sectionId + '_connection');
-							if (select) {
-								select.value = conn.id;
-								select.dispatchEvent(new Event('change'));
+							const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+							if (kwEl && typeof kwEl.setConnectionId === 'function') {
+								kwEl.setConnectionId(conn.id);
+								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+									detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
+									bubbles: true, composed: true,
+								}));
 								success = true;
 							}
 						} else {
@@ -2428,38 +2436,14 @@ window.addEventListener('message', async event => {
 						if (input.clusterUrl) {
 							await new Promise(r => setTimeout(r, 500));
 						}
-						const dbSelect = document.getElementById(sectionId + '_database');
-						if (dbSelect) {
-							// Check if database exists in the dropdown
-							let found = false;
-							for (let i = 0; i < dbSelect.options.length; i++) {
-								if (dbSelect.options[i].value === input.database) {
-									found = true;
-									break;
-								}
-							}
-							if (found) {
-								dbSelect.value = input.database;
-								dbSelect.dispatchEvent(new Event('change'));
-								success = true;
-							} else {
-								// Database not found - return available databases
-								const availableDatabases = [];
-								for (let i = 0; i < dbSelect.options.length; i++) {
-									if (dbSelect.options[i].value) availableDatabases.push(dbSelect.options[i].value);
-								}
-								vscode.postMessage({ 
-									type: 'toolResponse', 
-									requestId, 
-									result: { 
-										success: false, 
-										error: `Database "${input.database}" not found on this cluster.`,
-										availableDatabases,
-										fix: 'Use #getKustoSchema with the clusterUrl to see available databases.'
-									}
-								});
-								return;
-							}
+						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+						if (kwEl && typeof kwEl.setDatabase === 'function') {
+							kwEl.setDatabase(input.database);
+							kwEl.dispatchEvent(new CustomEvent('database-changed', {
+								detail: { boxId: sectionId, database: input.database },
+								bubbles: true, composed: true,
+							}));
+							success = true;
 						}
 					}
 					
@@ -2726,10 +2710,8 @@ window.addEventListener('message', async event => {
 					}
 					
 					// VALIDATE: Check that connection and database are configured on this section
-					const connectionDropdown = document.getElementById(sectionId + '_connection');
-					const databaseDropdown = document.getElementById(sectionId + '_database');
-					const currentConnectionId = connectionDropdown ? String(connectionDropdown.value || '') : '';
-					const currentDatabase = databaseDropdown ? String(databaseDropdown.value || '') : '';
+					const currentConnectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(sectionId) : '';
+					const currentDatabase = window.__kustoGetDatabase ? window.__kustoGetDatabase(sectionId) : '';
 					
 					// Get cluster URL for context
 					let currentClusterUrl = '';
@@ -3149,11 +3131,37 @@ try { vscode.postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
 				// ignore
 			}
 
-			const handle = e && e.target && e.target.closest ? e.target.closest('.section-drag-handle') : null;
+			// Check composedPath() first for shadow DOM drag handles, then fallback to e.target.closest.
+			let handle = null;
+			try {
+				const path = e.composedPath ? e.composedPath() : [];
+				for (const el of path) {
+					if (el && el.classList && el.classList.contains('section-drag-handle')) {
+						handle = el;
+						break;
+					}
+				}
+			} catch { /* ignore */ }
+			if (!handle) {
+				handle = e && e.target && e.target.closest ? e.target.closest('.section-drag-handle') : null;
+			}
 			if (!handle) {
 				return;
 			}
-			const box = handle.closest ? handle.closest('.query-box') : null;
+			// Find the query-box host: walk composedPath for shadow DOM, fallback to closest.
+			let box = null;
+			try {
+				const path = e.composedPath ? e.composedPath() : [];
+				for (const el of path) {
+					if (el && el.classList && el.classList.contains('query-box')) {
+						box = el;
+						break;
+					}
+				}
+			} catch { /* ignore */ }
+			if (!box) {
+				box = handle.closest ? handle.closest('.query-box') : null;
+			}
 			if (!box || !box.id) {
 				return;
 			}

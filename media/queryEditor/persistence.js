@@ -526,16 +526,14 @@ function getKqlxState() {
 				if (firstQueryBoxId) {
 					// Selection (clusterUrl + database)
 					try {
-						const connSel = document.getElementById(firstQueryBoxId + '_connection');
-						const connectionId = connSel ? String(connSel.value || '') : '';
+						const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(firstQueryBoxId) : '';
 						if (connectionId && Array.isArray(connections)) {
 							const conn = (connections || []).find(c => c && String(c.id || '') === String(connectionId));
 							clusterUrl = conn ? String(conn.clusterUrl || '') : '';
 						}
 					} catch { /* ignore */ }
 					try {
-						const dbSel = document.getElementById(firstQueryBoxId + '_database');
-						database = dbSel ? String(dbSel.value || '') : '';
+						database = window.__kustoGetDatabase ? window.__kustoGetDatabase(firstQueryBoxId) : '';
 					} catch { /* ignore */ }
 					// Persisted results (in-memory)
 					try {
@@ -579,9 +577,16 @@ function getKqlxState() {
 		if (!id) continue;
 
 		if (id.startsWith('query_')) {
+			// Lit component: delegate to its serialize() method if available.
+			const el = document.getElementById(id);
+			if (el && typeof el.serialize === 'function') {
+				try { sections.push(el.serialize()); } catch { /* ignore */ }
+				continue;
+			}
+			// Legacy fallback.
 			const querySectionType = 'query';
-			const name = (document.getElementById(id + '_name') || {}).value || '';
-			const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
+			const name = window.__kustoGetSectionName ? window.__kustoGetSectionName(id) : '';
+			const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(id) : '';
 			let favoritesMode;
 			try {
 				if (typeof favoritesModeByBoxId === 'object' && favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
@@ -605,7 +610,7 @@ function getKqlxState() {
 			} catch {
 				// ignore
 			}
-			const database = (document.getElementById(id + '_database') || {}).value || '';
+			const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(id) : '';
 			let query = queryEditors && queryEditors[id] ? (queryEditors[id].getValue() || '') : '';
 			// If the editor hasn't initialized yet (e.g. Monaco still loading on a slow machine),
 			// don't lose content: use the pending restore buffer.
@@ -971,26 +976,14 @@ function applyKqlxState(state) {
 			try {
 				const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
 				const db = String(suggestedDatabase || '').trim();
-				const connEl = document.getElementById(boxId + '_connection');
-				const dbEl = document.getElementById(boxId + '_database');
-				if (desiredClusterUrl && connEl && connEl.dataset) {
-					connEl.dataset.desiredClusterUrl = desiredClusterUrl;
-					// addQueryBox() calls updateConnectionSelects() immediately and may have
-					// auto-filled lastConnectionId already. Clear it so the desired selection
-					// can win on the next updateConnectionSelects() run.
-					try { connEl.value = ''; } catch { /* ignore */ }
-					try { delete connEl.dataset.prevValue; } catch { /* ignore */ }
-				}
-				if (db && dbEl && dbEl.dataset) {
-					dbEl.dataset.desired = db;
-					// Optimistic prefill (matches .kqlx restore behavior) so the user sees the intended DB immediately.
-					try {
-						const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
-						dbEl.innerHTML =
-							'<option value="" disabled hidden>Select Database...</option>' +
-							'<option value="' + esc + '">' + esc + '</option>';
-						dbEl.value = db;
-					} catch { /* ignore */ }
+				const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl) {
+					if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
+						kwEl.setDesiredClusterUrl(desiredClusterUrl);
+					}
+					if (db && typeof kwEl.setDesiredDatabase === 'function') {
+						kwEl.setDesiredDatabase(db);
+					}
 				}
 				// If this suggested selection exists in favorites, switch to Favorites mode by default.
 				try {
@@ -1091,43 +1084,35 @@ function applyKqlxState(state) {
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true
 				});
 				try {
-					const nameEl = document.getElementById(boxId + '_name');
-					if (nameEl) nameEl.value = String(section.name || '');
+					if (window.__kustoSetSectionName) window.__kustoSetSectionName(boxId, String(section.name || ''));
 				} catch { /* ignore */ }
 				try {
 					const desiredClusterUrl = String(section.clusterUrl || '');
 					const resolvedConnectionId = desiredClusterUrl ? findConnectionIdByClusterUrl(desiredClusterUrl) : '';
 					const db = String(section.database || '');
-					const connEl = document.getElementById(boxId + '_connection');
-					const dbEl = document.getElementById(boxId + '_database');
+					const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
 					// If this saved selection exists in favorites, switch to Favorites mode by default.
 					try {
 						if (desiredClusterUrl && db && typeof window.__kustoSetAutoEnterFavoritesForBox === 'function') {
 							window.__kustoSetAutoEnterFavoritesForBox(boxId, desiredClusterUrl, db);
 						}
 					} catch { /* ignore */ }
-					if (dbEl) {
-						dbEl.dataset.desired = db;
-						// Optimistic restore: show the persisted DB immediately, even before the DB list loads.
-						if (db) {
-							const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
-							dbEl.innerHTML =
-								'<option value="" disabled hidden>Select Database...</option>' +
-								'<option value="' + esc + '">' + esc + '</option>';
-							dbEl.value = db;
+					if (kwEl) {
+						if (db && typeof kwEl.setDesiredDatabase === 'function') {
+							kwEl.setDesiredDatabase(db);
 						}
-					}
-					if (connEl) {
-						// Stash desired selection so updateConnectionSelects can apply it once
-						// connections are populated (connections may arrive after document restore).
-						if (desiredClusterUrl) {
-							connEl.dataset.desiredClusterUrl = desiredClusterUrl;
+						if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
+							kwEl.setDesiredClusterUrl(desiredClusterUrl);
 						}
-
-						if (resolvedConnectionId) {
-							connEl.value = resolvedConnectionId;
-							connEl.dataset.prevValue = resolvedConnectionId;
-							updateDatabaseField(boxId);
+						if (resolvedConnectionId && typeof kwEl.setConnectionId === 'function') {
+							kwEl.setConnectionId(resolvedConnectionId);
+							// Trigger database field load for this connection.
+							try {
+								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+									detail: { boxId: boxId, connectionId: resolvedConnectionId, clusterUrl: desiredClusterUrl },
+									bubbles: true, composed: true,
+								}));
+							} catch { /* ignore */ }
 						} else {
 							// Try again after connections are populated.
 							try { updateConnectionSelects(); } catch { /* ignore */ }

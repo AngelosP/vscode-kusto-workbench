@@ -224,6 +224,26 @@ export class KwDataTable extends LitElement {
 		return this._table?.getRowModel().rows.length ?? this.rows.length;
 	}
 
+	/**
+	 * Compute the height needed to display all visible rows without scrolling.
+	 * Includes the header bar, column thead, all rows, and internal chrome.
+	 */
+	public getContentHeight(): number {
+		const sr = this.shadowRoot;
+		if (!sr) return 200;
+		const hbarEl = sr.querySelector('.hbar') as HTMLElement | null;
+		const headEl = sr.querySelector('.dtable-head-wrap') as HTMLElement | null;
+		const hbarH = hbarEl ? hbarEl.getBoundingClientRect().height : 36;
+		const headH = headEl ? headEl.getBoundingClientRect().height : 28;
+		// Measure actual rendered row height (includes padding + border-bottom).
+		const rowSample = sr.querySelector('#dt-body tbody tr:not(.vspacer)') as HTMLElement | null;
+		const rowH = rowSample ? rowSample.getBoundingClientRect().height : this._estimatedRowHeight();
+		const totalRows = this.getVisibleRowCount();
+		const allRowsH = totalRows * (rowH + 1);
+		const searchBarH = this._searchVisible ? ((sr.querySelector('.sbar') as HTMLElement | null)?.getBoundingClientRect().height ?? 0) : 0;
+		return Math.ceil(hbarH + headH + searchBarH + allRowsH + 25);
+	}
+
 	// ── Lifecycle ──
 
 	protected willUpdate(changed: PropertyValues): void {
@@ -244,6 +264,9 @@ export class KwDataTable extends LitElement {
 	}
 	protected updated(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) this._initVirtualizer();
+		// When body becomes visible again after being hidden, the scroll container
+		// was removed and re-created — the virtualizer needs re-initialization.
+		if (changed.has('_bodyVisible') && this._bodyVisible) this._initVirtualizer();
 		this._installViewportResizeWatcher();
 		this._syncHeaderScroll();
 	}
@@ -1151,7 +1174,7 @@ export class KwDataTable extends LitElement {
 				</table>
 				</div>
 				${totalRows === 0 ? html`<div class="empty-body">No matching rows</div>` : nothing}
-			</div>` : html`<div class="hidden-msg">Results hidden</div>`}
+			</div>` : nothing}
 			${this._sortDialogOpen ? this._renderSortDialog() : nothing}
 			${this._filterDialogOpen ? this._renderFilterDialog() : nothing}
 			${this._columnMenuOpen !== null ? this._renderColumnMenu() : nothing}
@@ -1166,9 +1189,8 @@ export class KwDataTable extends LitElement {
 			? `${totalRows} of ${this.rows.length} rows (filtered)`
 			: `${totalRows} row${totalRows !== 1 ? 's' : ''}`;
 		return html`<div class="hbar">
-			<span class="hinfo">${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}</span>
-			${showVis ? html`<button class="tbtn ${!this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>` : nothing}
-			${showToolbar ? html`<div class="tb">
+			<span class="hinfo">${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn ${!this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>` : nothing}</span>
+			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchVisible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpVisible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
@@ -1768,7 +1790,7 @@ export class KwDataTable extends LitElement {
 		.dt.no-top-border{border-top:none}
 
 		/* Header bar */
-		.hbar{display:flex;align-items:center;justify-content:space-between;padding:8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
+		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
 		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.et{opacity:.7}
 		.tb{display:flex;gap:2px;align-items:center;flex-shrink:0}
 		.sep{width:1px;height:14px;background:var(--vscode-panel-border);margin:0 3px}

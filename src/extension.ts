@@ -2,8 +2,8 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { CachedValuesViewerV2 } from './cachedValuesViewerV2';
-import { ConnectionManagerViewerV2 } from './connectionManagerViewerV2';
+import { CachedValuesViewerV2 } from './cachedValuesViewer';
+import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';

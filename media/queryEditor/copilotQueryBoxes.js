@@ -1199,8 +1199,8 @@
 		}
 
 		// Gather context.
-		const connectionId = (document.getElementById(id + '_connection') || {}).value || '';
-		const database = (document.getElementById(id + '_database') || {}).value || '';
+		const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(id) : '';
+		const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(id) : '';
 		if (!connectionId) {
 			__kustoAppendChatMessage(id, 'notification', 'Select a cluster connection first.');
 			return;

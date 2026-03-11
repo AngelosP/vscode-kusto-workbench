@@ -5458,10 +5458,8 @@ function ensureMonaco() {
 								}
 							} catch { /* ignore */ }
 							
-							const connectionSelect = document.getElementById(ownerId + '_connection');
-							const databaseSelect = document.getElementById(ownerId + '_database');
-							const connectionId = connectionSelect ? connectionSelect.value : '';
-							const database = databaseSelect ? databaseSelect.value : '';
+							const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(ownerId) : '';
+							const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(ownerId) : '';
 							
 							// Only enable markers (red squiggles) if both cluster and database are selected.
 							// Without a full connection context, diagnostics would show false positives.
@@ -10709,8 +10707,8 @@ function initQueryEditor(boxId) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-					if (typeof __kustoMaximizeQueryBox === 'function') {
-						__kustoMaximizeQueryBox(boxId);
+					if (typeof __kustoAutoSizeEditor === 'function') {
+						__kustoAutoSizeEditor(boxId);
 					}
 				} catch { /* ignore */ }
 			});

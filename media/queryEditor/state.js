@@ -1,4 +1,5 @@
 let connections = [];
+try { window.connections = connections; } catch { /* ignore */ }
 let queryBoxes = [];
 let lastConnectionId = null;
 let lastDatabase = null;
@@ -6,8 +7,11 @@ let cachedDatabases = {};
 let kustoFavorites = [];
 let leaveNoTraceClusters = [];
 let favoritesModeByBoxId = {};
+try { window.favoritesModeByBoxId = favoritesModeByBoxId; } catch { /* ignore */ }
 let pendingFavoriteSelectionByBoxId = {};
 let queryEditors = {};
+// Expose queryEditors on window so the Lit component (runs in module scope) can access it.
+try { window.queryEditors = queryEditors; } catch { /* ignore */ }
 let queryEditorResizeObservers = {};
 let queryEditorVisibilityObservers = {};
 let queryEditorVisibilityMutationObservers = {};
@@ -47,6 +51,7 @@ let activeMonacoEditor = null;
 
 let queryExecutionTimers = {};
 let runModesByBoxId = {};
+try { window.runModesByBoxId = runModesByBoxId; } catch { /* ignore */ }
 
 // Caret docs (custom tooltip) toggle
 let caretDocsEnabled = true;

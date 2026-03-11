@@ -18,20 +18,29 @@ function __kustoIndexToAlphaName(index) {
 function __kustoGetUsedSectionNamesUpper(excludeBoxId) {
 	const used = new Set();
 	try {
-		const excludeId = excludeBoxId ? (String(excludeBoxId) + '_name') : '';
-		const inputs = document.querySelectorAll ? document.querySelectorAll('input.query-name') : [];
-		for (const el of inputs) {
-			try {
-				if (!el) continue;
-				if (excludeId && el.id === excludeId) continue;
-				const v = String(el.value || '').trim();
-				if (!v) continue;
-				used.add(v.toUpperCase());
-			} catch { /* ignore */ }
+		const container = document.getElementById('queries-container');
+		if (container) {
+			const children = Array.from(container.children || []);
+			for (const child of children) {
+				try {
+					if (!child || !child.id) continue;
+					if (excludeBoxId && child.id === excludeBoxId) continue;
+					// Try Lit element first.
+					if (typeof child.getName === 'function') {
+						const v = String(child.getName() || '').trim();
+						if (v) used.add(v.toUpperCase());
+						continue;
+					}
+					// Legacy fallback: look for input.query-name inside.
+					const input = child.querySelector ? child.querySelector('input.query-name') : null;
+					if (input) {
+						const v = String(input.value || '').trim();
+						if (v) used.add(v.toUpperCase());
+					}
+				} catch { /* ignore */ }
+			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch { /* ignore */ }
 	return used;
 }
 
@@ -54,12 +63,10 @@ function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
 	try {
 		const id = String(boxId || '');
 		if (!id) return '';
-		const input = document.getElementById(id + '_name');
-		if (!input) return '';
-		const current = String(input.value || '').trim();
+		const current = __kustoGetSectionName(id);
 		if (current) return current;
 		const next = __kustoPickNextAvailableSectionLetterName(id);
-		input.value = next;
+		__kustoSetSectionName(id, next);
 		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 		return next;
 	} catch {
@@ -71,6 +78,70 @@ function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
 try {
 	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
 	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
+} catch { /* ignore */ }
+
+// ── Global accessor helpers for query section connection/database ──────────
+// These functions abstract access to the connection/database state,
+// working with both the Lit <kw-query-section> element's public API.
+// Use these instead of document.getElementById(boxId + '_connection').
+function __kustoGetConnectionId(boxId) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.getConnectionId === 'function') return el.getConnectionId();
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoGetDatabase(boxId) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.getDatabase === 'function') return el.getDatabase();
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoGetClusterUrl(boxId) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.getClusterUrl === 'function') return el.getClusterUrl();
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoGetQuerySectionElement(boxId) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.getConnectionId === 'function') return el;
+	} catch { /* ignore */ }
+	return null;
+}
+
+// Expose globally for other modules (main.js, monaco.js, schema.js, copilotQueryBoxes.js).
+try {
+	window.__kustoGetConnectionId = __kustoGetConnectionId;
+	window.__kustoGetDatabase = __kustoGetDatabase;
+	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
+	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
+} catch { /* ignore */ }
+
+function __kustoGetSectionName(boxId) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.getName === 'function') return el.getName();
+	} catch { /* ignore */ }
+	return '';
+}
+
+function __kustoSetSectionName(boxId, name) {
+	try {
+		const el = document.getElementById(boxId);
+		if (el && typeof el.setName === 'function') { el.setName(String(name || '')); return; }
+	} catch { /* ignore */ }
+}
+
+try {
+	window.__kustoGetSectionName = __kustoGetSectionName;
+	window.__kustoSetSectionName = __kustoSetSectionName;
 } catch { /* ignore */ }
 
 function addQueryBox(options) {
@@ -85,56 +156,9 @@ function addQueryBox(options) {
 
 	const container = document.getElementById('queries-container');
 
-	const clusterIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M5 3.5h6"/>' +
-		'<path d="M4 6h8"/>' +
-		'<path d="M3.5 8.5h9"/>' +
-		'<path d="M4 11h8"/>' +
-		'<path d="M5 13.5h6"/>' +
-		'</svg>';
-
-	const databaseIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<ellipse cx="8" cy="4" rx="5" ry="2"/>' +
-		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4"/>' +
-		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>' +
-		'<path d="M3 12c0 1.1 2.2 2 5 2s5-.9 5-2"/>' +
-		'</svg>';
-
-	const refreshIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3.5 8a4.5 4.5 0 0 1 7.8-3.1"/>' +
-		'<polyline points="11.3 2.7 11.3 5.4 8.6 5.4"/>' +
-		'<path d="M12.5 8a4.5 4.5 0 0 1-7.8 3.1"/>' +
-		'<polyline points="4.7 13.3 4.7 10.6 7.4 10.6"/>' +
-		'</svg>';
-
-	const favoriteStarIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3.8 4.6L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
-		'</svg>';
-
-	const favoritesListIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
-		'<line x1="10" y1="10.5" x2="14.5" y2="10.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'<line x1="10" y1="12.5" x2="14.5" y2="12.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'<line x1="10" y1="14.5" x2="14.5" y2="14.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'</svg>';
-
-	const clusterPickerIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<ellipse cx="8" cy="4" rx="5" ry="2" />' +
-		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4" />' +
-		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />' +
-		'</svg>';
-
-	const closeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M4 4l8 8"/>' +
-		'<path d="M12 4L4 12"/>' +
-		'</svg>';
+	// ── SVG icons used by toolbar buttons (light DOM) ──
+	// Header/connection row icons (cluster, database, refresh, favorites, schema, close,
+	// maximize, share) are now in kw-query-section.ts shadow DOM and deleted from here.
 
 	const caretDocsIconSvg =
 		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -159,57 +183,6 @@ function addQueryBox(options) {
 		'<path d="M8 1C5.2 1 3 3.2 3 6v6c0 .3.1.6.4.8.2.2.5.2.8.1l1.3-.7 1.3.7c.3.2.7.2 1 0L8 12.2l.2.7c.3.2.7.2 1 0l1.3-.7 1.3.7c.3.1.6.1.8-.1.3-.2.4-.5.4-.8V6c0-2.8-2.2-5-5-5zm-2 6.5c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1zm4 0c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"/>' +
 		'</svg>';
 
-	const singleLineIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M2 8h12"/>' +
-		'</svg>';
-
-	const qualifyTablesIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/>' +
-		'</svg>';
-
-	const doubleToSingleIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 3h4v4H3V3zm6 6h4v4H9V9z"/>' +
-		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
-		'</svg>';
-
-	const singleToDoubleIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/>' +
-		'<path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/>' +
-		'</svg>';
-
-	const previewIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />' +
-		'<circle cx="8" cy="8" r="2.1" />' +
-		'</svg>';
-
-	const maximizeIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 6V3h3" />' +
-		'<path d="M13 10v3h-3" />' +
-		'<path d="M3 3l4 4" />' +
-		'<path d="M13 13l-4-4" />' +
-		'</svg>';
-
-	const shareIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M12 3a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 3zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
-		'<path d="M4 6a2 2 0 1 1-.001 4.001A2 2 0 0 1 4 6zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
-		'<path d="M12 9a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 9zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/>' +
-		'<path d="M5.5 7.5l5-2.5M5.5 8.5l5 2.5" stroke="currentColor" stroke-width="1" fill="none"/>' +
-		'</svg>';
-
-	const summaryIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<rect x="2" y="10" width="3" height="4"/>' +
-		'<rect x="6" y="6" width="3" height="8"/>' +
-		'<rect x="10" y="3" width="3" height="11"/>' +
-		'</svg>';
-
 	// Compare queries icon: two panels with left-right arrows showing comparison
 	// Simple bold design that reads well at small sizes
 	const diffIconSvg =
@@ -221,12 +194,6 @@ function addQueryBox(options) {
 		// Comparison arrows in center: arrows pointing toward each other
 		'<path d="M7 6l1.5 1.5L7 9" />' +
 		'<path d="M9 6l-1.5 1.5L9 9" />' +
-		'</svg>';
-
-	// Info icon (i) for schema info tooltip
-	const schemaInfoIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 12.5c-3.04 0-5.5-2.46-5.5-5.5S4.96 2.5 8 2.5s5.5 2.46 5.5 5.5-2.46 5.5-5.5 5.5zM7.25 5h1.5v1.5h-1.5V5zm0 2.5h1.5v4h-1.5v-4z"/>' +
 		'</svg>';
 
 	const copilotLogoUri = (() => {
@@ -338,148 +305,12 @@ function addQueryBox(options) {
 		'</span>' +
 		'</div>';
 
-	// Reusable dropdown markup helpers (loaded via media/queryEditor/dropdown.js)
-	const __kustoRenderSelect = (opts) => {
-		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.renderSelectHtml === 'function') {
-				return window.__kustoDropdown.renderSelectHtml(opts);
-			}
-		} catch { /* ignore */ }
-		return '';
-	};
-	const __kustoRenderMenuDropdown = (opts) => {
-		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuDropdownHtml === 'function') {
-				return window.__kustoDropdown.renderMenuDropdownHtml(opts);
-			}
-		} catch { /* ignore */ }
-		return '';
-	};
-
-	const favoritesDropdownHtml = __kustoRenderMenuDropdown({
-		wrapperClass: 'kusto-favorites-combo',
-		wrapperId: id + '_favorites_wrapper',
-		wrapperStyle: 'display:none;',
-		title: 'Favorites',
-		iconSvg: favoritesListIconSvg,
-		buttonId: id + '_favorites_btn',
-		buttonTextId: id + '_favorites_btn_text',
-		menuId: id + '_favorites_menu',
-		placeholder: 'Select favorite...',
-		onToggle: "toggleFavoritesDropdown('" + id + "')"
-	});
-
-	// IMPORTANT: Use a single dropdown implementation everywhere (button+menu), even when
-	// other code paths still expect a <select>. We keep a hidden backing <select> with the
-	// same id so existing selection/persistence code continues to work.
-	const clusterSelectHtml = __kustoRenderMenuDropdown({
-		wrapperClass: 'half-width',
-		title: 'Kusto Cluster',
-		iconSvg: clusterIconSvg,
-		includeHiddenSelect: true,
-		selectId: id + '_connection',
-		onChange: "updateDatabaseField('" + id + "'); try{schedulePersist&&schedulePersist()}catch{}",
-		buttonId: id + '_connection_btn',
-		buttonTextId: id + '_connection_btn_text',
-		menuId: id + '_connection_menu',
-		placeholder: 'Select Cluster...',
-		onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + id + "_connection')}catch{}"
-	});
-
-	const databaseSelectHtml = __kustoRenderMenuDropdown({
-		wrapperClass: 'half-width',
-		title: 'Kusto Database',
-		iconSvg: databaseIconSvg,
-		includeHiddenSelect: true,
-		selectId: id + '_database',
-		onChange: "onDatabaseChanged('" + id + "'); try{schedulePersist&&schedulePersist()}catch{}",
-		buttonId: id + '_database_btn',
-		buttonTextId: id + '_database_btn_text',
-		menuId: id + '_database_menu',
-		placeholder: 'Select Database...',
-		onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + id + "_database')}catch{}"
-	});
+	// ── Connection row is now rendered by <kw-query-section> shadow DOM ──
+	// No dropdown HTML generation needed — the Lit component handles cluster,
+	// database, favorites, refresh, favorite toggle, schema info popover.
 
 	const boxHtml =
-		'<div class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '">' +
-		'<div class="query-header">' +
-		'<div class="query-header-row query-header-row-top">' +
-		'<div class="query-name-group">' +
-		'<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section"><span class="section-drag-handle-glyph" aria-hidden="true">⋮</span></button>' +
-		'<input type="text" class="query-name" placeholder="Query Name (optional)" id="' + id + '_name" oninput="try{schedulePersist&&schedulePersist()}catch{};try{window.__kustoRefreshAllDataSourceDropdowns&&window.__kustoRefreshAllDataSourceDropdowns()}catch{}" />' +
-		'</div>' +
-		'<div class="section-actions">' +
-		'<div class="md-tabs" role="tablist" aria-label="Query visibility">' +
-		'<button class="unified-btn-secondary md-tab md-share-btn" id="' + id + '_share" type="button" onclick="__kustoOpenShareModal(\'' + id + '\')" title="Share" aria-label="Share">' + shareIconSvg + '</button>' +
-		'<button class="unified-btn-secondary md-tab md-max-btn" id="' + id + '_max" type="button" onclick="__kustoMaximizeQueryBox(\'' + id + '\')" title="Fit to contents" aria-label="Fit to contents">' + maximizeIconSvg + '</button>' +
-		'<button class="unified-btn-secondary md-tab" id="' + id + '_toggle" type="button" role="tab" aria-selected="false" onclick="toggleQueryBoxVisibility(\'' + id + '\')" title="Hide" aria-label="Hide">' + previewIconSvg + '</button>' +
-		'</div>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn" onclick="removeQueryBox(\'' + id + '\')" title="Remove query box" aria-label="Remove query box">' + closeIconSvg + '</button>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-header-row query-header-row-bottom">' +
-		(favoritesDropdownHtml ||
-			('<div class="kusto-favorites-combo select-wrapper" id="' + id + '_favorites_wrapper" style="display:none;" title="Favorites">' +
-			'<button type="button" class="kusto-favorites-btn" id="' + id + '_favorites_btn" onclick="toggleFavoritesDropdown(\'' + id + '\'); event.stopPropagation();" aria-haspopup="listbox" aria-expanded="false">' +
-			'<span class="kusto-favorites-btn-text" id="' + id + '_favorites_btn_text">Select favorite...</span>' +
-			'<span class="kusto-favorites-btn-caret" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></span>' +
-			'</button>' +
-			'<div class="kusto-favorites-menu" id="' + id + '_favorites_menu" role="listbox" style="display:none;"></div>' +
-			'</div>')) +
-		(clusterSelectHtml ||
-			('<div class="select-wrapper has-icon half-width" title="Kusto Cluster">' +
-			'<span class="select-icon" aria-hidden="true">' + clusterIconSvg + '</span>' +
-			'<select id="' + id + '_connection" onchange="updateDatabaseField(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
-			'<option value="" disabled selected hidden>Select Cluster...</option>' +
-			'</select>' +
-			'</div>')) +
-		(databaseSelectHtml ||
-			('<div class="select-wrapper has-icon half-width" title="Kusto Database">' +
-			'<span class="select-icon" aria-hidden="true">' + databaseIconSvg + '</span>' +
-			'<select id="' + id + '_database" onchange="onDatabaseChanged(\'' + id + '\'); try{schedulePersist&&schedulePersist()}catch{}">' +
-			'<option value="" disabled selected hidden>Select Database...</option>' +
-			'</select>' +
-			'</div>')) +
-		'<button class="unified-btn-secondary unified-btn-icon-only unified-btn-bordered refresh-btn" onclick="refreshDatabases(\'' + id + '\')" id="' + id + '_refresh" title="Refresh database list" aria-label="Refresh database list">' + refreshIconSvg + '</button>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorite-btn" onclick="toggleFavoriteForBox(\'' + id + '\')" id="' + id + '_favorite_toggle" title="Add to favorites" aria-label="Add to favorites">' + favoriteStarIconSvg + '</button>' +
-		'<button class="unified-btn-secondary unified-btn-icon-only refresh-btn favorites-show-btn" onclick="toggleFavoritesMode(\'' + id + '\')" id="' + id + '_favorites_show" title="Show favorites" aria-label="Show favorites" style="display:none;">' + favoritesListIconSvg + '</button>' +
-		'<div class="schema-info-wrapper" id="' + id + '_schema_info_wrapper">' +
-		'<button class="schema-info-btn" id="' + id + '_schema_info_btn" onclick="toggleSchemaInfoPopover(\'' + id + '\'); event.stopPropagation();" title="Schema info" aria-label="Schema info" aria-haspopup="true" aria-expanded="false">' +
-		schemaInfoIconSvg +
-		'</button>' +
-		'<div class="schema-info-popover" id="' + id + '_schema_info_popover" role="tooltip" style="display:none;">' +
-		'<div class="schema-info-popover-content">' +
-		'<div class="schema-info-row schema-info-status-row">' +
-		'<span class="schema-info-label">Status:</span>' +
-		'<span class="schema-info-status" id="' + id + '_schema_info_status">Not loaded</span>' +
-		'</div>' +
-		'<div class="schema-info-row" id="' + id + '_schema_info_tables_row" style="display:none;">' +
-		'<span class="schema-info-label">Tables:</span>' +
-		'<span class="schema-info-value" id="' + id + '_schema_info_tables">-</span>' +
-		'</div>' +
-		'<div class="schema-info-row" id="' + id + '_schema_info_cols_row" style="display:none;">' +
-		'<span class="schema-info-label">Columns:</span>' +
-		'<span class="schema-info-value" id="' + id + '_schema_info_cols">-</span>' +
-		'</div>' +
-		'<div class="schema-info-row" id="' + id + '_schema_info_funcs_row" style="display:none;">' +
-		'<span class="schema-info-label">Functions:</span>' +
-		'<span class="schema-info-value" id="' + id + '_schema_info_funcs">-</span>' +
-		'</div>' +
-		'<div class="schema-info-row schema-info-cached-row" id="' + id + '_schema_info_cached_row" style="display:none;">' +
-		'<span class="schema-info-label">Source:</span>' +
-		'<a href="#" class="schema-info-cached-link" id="' + id + '_schema_info_cached_link" onclick="event.preventDefault(); event.stopPropagation(); try{vscode.postMessage({type:\'seeCachedValues\'})}catch{}">Cached</a>' +
-		'</div>' +
-		'<div class="schema-info-actions">' +
-		'<button class="schema-info-refresh-btn" id="' + id + '_schema_info_refresh_btn" onclick="refreshSchema(\'' + id + '\'); event.stopPropagation();">' +
-		refreshIconSvg +
-		'<span>Refresh Schema</span>' +
-		'</button>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
+		'<kw-query-section class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '" box-id="' + id + '">' +
 		'<div class="query-editor-wrapper">' +
 		toolbarHtml +
 		'<div class="qe-editor-clip">' +
@@ -542,14 +373,113 @@ function addQueryBox(options) {
 		'</div>' +
 		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">' +
 		'<div class="results" id="' + id + '_results"></div>' +
-		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results"></div>' +
+		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results\nDouble-click to fit to contents"></div>' +
 		'</div>' +
-		'</div>';
+		'</kw-query-section>';
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
 	try { updateCaretDocsToggleButtons(); } catch { /* ignore */ }
 	setRunMode(id, 'take100');
+
+	// ── Wire up <kw-query-section> event listeners ──
+	const kwEl = document.getElementById(id);
+	if (kwEl) {
+		kwEl.addEventListener('connection-changed', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			// Clear schema so it doesn't mismatch.
+			try { delete schemaByBoxId[boxId]; } catch { /* ignore */ }
+			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
+			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch { /* ignore */ }
+			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
+			try { if (typeof setSchemaLoading === 'function') setSchemaLoading(boxId, false); } catch { /* ignore */ }
+			// Persist selection.
+			try {
+				if (!__kustoRestoreInProgress) {
+					vscode.postMessage({
+						type: 'saveLastSelection',
+						connectionId: String(detail.connectionId || ''),
+						database: ''
+					});
+				}
+			} catch { /* ignore */ }
+			// Load database list.
+			if (detail.connectionId) {
+				try {
+					const cid = String(detail.connectionId || '').trim();
+					const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+					const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+					let clusterKey = '';
+					if (clusterUrl) {
+						let u = clusterUrl;
+						if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+						try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
+					}
+					const cached = (cachedDatabases && cachedDatabases[clusterKey]) || cachedDatabases[detail.connectionId];
+					if (cached && cached.length > 0) {
+						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
+						// Background refresh
+						vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch { /* ignore */ }
+					} else {
+						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
+						vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+					}
+				} catch { /* ignore */ }
+			}
+			try { __kustoUpdateFavoritesUiForBox(boxId); } catch { /* ignore */ }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('database-changed', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try { onDatabaseChanged(boxId); } catch { /* ignore */ }
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('refresh-databases', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try { refreshDatabases(boxId); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('favorite-toggle', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try { toggleFavoriteForBox(boxId); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('favorites-mode-changed', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try {
+				if (typeof favoritesModeByBoxId === 'object') {
+					favoritesModeByBoxId[boxId] = !!detail.favoritesMode;
+				}
+			} catch { /* ignore */ }
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('favorite-selected', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try {
+				// Connection changed — load databases and select the favorite's database.
+				if (detail.connectionId) {
+					vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+				}
+			} catch { /* ignore */ }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('favorite-removed', (e) => {
+			const detail = e.detail || {};
+			try { removeFavorite(detail.clusterUrl, detail.database); } catch { /* ignore */ }
+		});
+		kwEl.addEventListener('schema-refresh', (e) => {
+			const detail = e.detail || {};
+			const boxId = detail.boxId || id;
+			try { refreshSchema(boxId); } catch { /* ignore */ }
+		});
+	}
 
 	// Default the connection to the query box above this one (if any).
 	// This provides a better UX when adding multiple queries against the same cluster/database.
@@ -561,36 +491,27 @@ function addQueryBox(options) {
 			for (let i = children.length - 1; i >= 0; i--) {
 				const child = children[i];
 				const childId = child && child.id ? String(child.id) : '';
-				if (childId === id) continue; // Skip the box we just added.
+				if (childId === id) continue;
 				if (childId.startsWith('query_')) {
 					prevQueryBoxId = childId;
 					break;
 				}
 			}
 			if (prevQueryBoxId) {
-				// Get the connection and database from the previous query box.
-				const prevConnSel = document.getElementById(prevQueryBoxId + '_connection');
-				const prevDbSel = document.getElementById(prevQueryBoxId + '_database');
-				const prevConnectionId = prevConnSel ? String(prevConnSel.value || '') : '';
-				const prevDatabase = prevDbSel ? String(prevDbSel.value || '') : '';
-				if (prevConnectionId && prevConnectionId !== '__enter_new__' && prevConnectionId !== '__import_xml__') {
-					// Find the cluster URL for this connection ID.
+				const prevEl = document.getElementById(prevQueryBoxId);
+				const prevConnId = prevEl && typeof prevEl.getConnectionId === 'function' ? prevEl.getConnectionId() : '';
+				const prevDb = prevEl && typeof prevEl.getDatabase === 'function' ? prevEl.getDatabase() : '';
+				if (prevConnId) {
 					let prevClusterUrl = '';
 					try {
-						const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === prevConnectionId) : null;
+						const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === prevConnId) : null;
 						prevClusterUrl = conn ? String(conn.clusterUrl || '') : '';
 					} catch { /* ignore */ }
-					if (prevClusterUrl) {
-						const newConnSel = document.getElementById(id + '_connection');
-						if (newConnSel && newConnSel.dataset) {
-							newConnSel.dataset.desiredClusterUrl = prevClusterUrl;
-						}
+					if (prevClusterUrl && kwEl && typeof kwEl.setDesiredClusterUrl === 'function') {
+						kwEl.setDesiredClusterUrl(prevClusterUrl);
 					}
-					if (prevDatabase) {
-						const newDbSel = document.getElementById(id + '_database');
-						if (newDbSel && newDbSel.dataset) {
-							newDbSel.dataset.desired = prevDatabase;
-						}
+					if (prevDb && kwEl && typeof kwEl.setDesiredDatabase === 'function') {
+						kwEl.setDesiredDatabase(prevDb);
 					}
 				}
 			}
@@ -652,8 +573,28 @@ function addQueryBox(options) {
 				let maxHeight = 900;
 				try {
 					const resultsEl = document.getElementById(id + '_results');
-					const hasTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
-					if (hasTable || !resultsEl) {
+					// Detect table content: legacy .table-container OR <kw-data-table> element.
+					const hasLegacyTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
+					const dataTableEl = resultsEl && resultsEl.querySelector ? resultsEl.querySelector('kw-data-table') : null;
+					if (hasLegacyTable) {
+						return { minHeight, maxHeight };
+					}
+					// <kw-data-table>: cap maxHeight to fit all rows (no blank space below).
+					if (dataTableEl) {
+						try {
+							if (typeof dataTableEl.getContentHeight === 'function') {
+								const contentH = dataTableEl.getContentHeight();
+								if (contentH > 0) {
+									// Add wrapper chrome: resizer + border-top.
+									const resizerEl = document.getElementById(id + '_results_resizer');
+									const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
+									maxHeight = Math.max(minHeight, Math.min(900, contentH + resizerH + 1));
+								}
+							}
+						} catch { /* ignore */ }
+						return { minHeight, maxHeight };
+					}
+					if (!resultsEl) {
 						return { minHeight, maxHeight };
 					}
 
@@ -738,6 +679,13 @@ function addQueryBox(options) {
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
 			});
+
+			// Double-click on the results resizer: auto-size results to fit contents.
+			resizer.addEventListener('dblclick', () => {
+				try {
+					__kustoAutoSizeResults(id);
+				} catch { /* ignore */ }
+			});
 		}
 	} catch {
 		// ignore
@@ -755,8 +703,8 @@ function addQueryBox(options) {
 					const w = document.getElementById(bid + '_results_wrapper');
 					const resultsEl = document.getElementById(bid + '_results');
 					if (!w || !resultsEl) return;
-					// If we have a table container, results are intentionally scrollable; don't clamp.
-					if (resultsEl.querySelector && resultsEl.querySelector('.table-container')) return;
+					// If we have a table container (legacy or kw-data-table), results are intentionally scrollable; don't clamp.
+					if (resultsEl.querySelector && (resultsEl.querySelector('.table-container') || resultsEl.querySelector('kw-data-table'))) return;
 
 					const wrapperH = Math.max(0, Math.ceil(w.getBoundingClientRect().height || 0));
 					const resultsClientH = Math.max(0, (resultsEl.clientHeight || 0));
@@ -829,20 +777,17 @@ function addQueryBox(options) {
 	return id;
 }
 
-function __kustoMaximizeQueryBox(boxId) {
+function __kustoAutoSizeEditor(boxId) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const editorEl = document.getElementById(id + '_query_editor');
 	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
 	const FIT_SLACK_PX = 5;
-	const applyFitToContent = () => {
+	const apply = () => {
 		try {
 			const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
 			if (!ed) return;
-
-			// IMPORTANT: use content height, not scroll height.
-			// Monaco's getScrollHeight is often >= the viewport height, which prevents shrinking.
 			let contentHeight = 0;
 			try {
 				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
@@ -853,51 +798,32 @@ function __kustoMaximizeQueryBox(boxId) {
 			const addVisibleRectHeight = (el) => {
 				try {
 					if (!el) return 0;
-					try {
-						const cs = getComputedStyle(el);
-						if (cs && cs.display === 'none') return 0;
-						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
-						let margin = 0;
-						try {
-							margin += parseFloat(cs.marginTop || '0') || 0;
-							margin += parseFloat(cs.marginBottom || '0') || 0;
-						} catch { /* ignore */ }
-						return Math.max(0, Math.ceil(h + margin));
-					} catch { /* ignore */ }
+					const cs = getComputedStyle(el);
+					if (cs && cs.display === 'none') return 0;
 					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
-					return Math.max(0, Math.ceil(h));
-				} catch {
-					return 0;
-				}
+					let margin = 0;
+					try { margin += parseFloat(cs.marginTop || '0') || 0; margin += parseFloat(cs.marginBottom || '0') || 0; } catch { /* ignore */ }
+					return Math.max(0, Math.ceil(h + margin));
+				} catch { return 0; }
 			};
 
-			// IMPORTANT: do NOT include the editor clip container height in "chrome".
-			// The clip grows/shrinks with the wrapper height; counting it creates a feedback
-			// loop where each click increases height further.
 			let chrome = 0;
-			try {
-				const toolbarEl = wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null;
-				chrome += addVisibleRectHeight(toolbarEl);
-			} catch { /* ignore */ }
+			try { chrome += addVisibleRectHeight(wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null); } catch { /* ignore */ }
 			try {
 				const csw = getComputedStyle(wrapper);
 				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
 			} catch { /* ignore */ }
 
-			// Extra elements inside the clip area that also take vertical space (banners, resizer, etc.)
 			let clipExtras = 0;
 			try {
-				const clip = (editorEl && editorEl.closest) ? editorEl.closest('.qe-editor-clip') : null;
+				const clip = editorEl.closest ? editorEl.closest('.qe-editor-clip') : null;
 				if (clip && clip.children) {
 					for (const child of Array.from(clip.children)) {
 						if (!child || child === editorEl) continue;
 						clipExtras += addVisibleRectHeight(child);
 					}
 				}
-			} catch { /* ignore */ }
-			try {
-				const clip = (editorEl && editorEl.closest) ? editorEl.closest('.qe-editor-clip') : null;
 				if (clip) {
 					const csc = getComputedStyle(clip);
 					clipExtras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
@@ -906,223 +832,108 @@ function __kustoMaximizeQueryBox(boxId) {
 			} catch { /* ignore */ }
 
 			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
-			try {
-				wrapper.style.height = desired + 'px';
-				wrapper.style.minHeight = '0';
-			} catch { /* ignore */ }
+			wrapper.style.height = desired + 'px';
+			wrapper.style.minHeight = '0';
 			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			try {
-				if (typeof ed.layout === 'function') {
-					ed.layout();
-				}
-			} catch { /* ignore */ }
+			try { if (typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 	};
+	try { apply(); setTimeout(apply, 50); setTimeout(apply, 150); } catch { /* ignore */ }
+}
 
-	// Fit the KQL editor height to the exact visible content (no inner scrollbar).
-	try {
-		applyFitToContent();
-		setTimeout(applyFitToContent, 50);
-		setTimeout(applyFitToContent, 150);
-	} catch { /* ignore */ }
+function __kustoAutoSizeResults(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const w = document.getElementById(id + '_results_wrapper');
+	const resultsEl = document.getElementById(id + '_results');
+	if (!w || !resultsEl) return;
+	try { if (getComputedStyle(w).display === 'none') return; } catch { /* ignore */ }
 
-	// Fit results to their visible contents (tables + non-tables).
-	// This removes vertical scrollbars (by giving the table container enough height)
-	// and removes blank slack above the resize grip.
-	const applyResultsFitToContent = () => {
-		try {
-			const w = document.getElementById(id + '_results_wrapper');
-			const resultsEl = document.getElementById(id + '_results');
-			if (!w || !resultsEl) return;
-			try {
-				const csw = getComputedStyle(w);
-				if (csw && csw.display === 'none') return;
-			} catch { /* ignore */ }
-			try {
-				const csr = getComputedStyle(resultsEl);
-				if (csr && csr.display === 'none') return;
-			} catch { /* ignore */ }
-
-			// If results are hidden (toggle is off), collapse the wrapper and skip calculations.
-			// This avoids adding extra blank space when the tabular results are toggled off.
-			let resultsVisible = true;
-			try {
-				resultsVisible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
-			} catch { /* ignore */ }
-			if (!resultsVisible) {
-				try {
-					w.style.height = 'auto';
-					w.style.minHeight = '0';
-				} catch { /* ignore */ }
-				return;
-			}
-
-			// Wrapper chrome: resizer + wrapper padding/borders.
-			let chrome = 0;
-			try {
-				for (const child of Array.from(w.children || [])) {
-					if (!child || child === resultsEl) continue;
-					try {
-						const cs = getComputedStyle(child);
-						if (cs && cs.display === 'none') continue;
-					} catch { /* ignore */ }
-					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
-				}
-			} catch { /* ignore */ }
-			try {
-				const csw = getComputedStyle(w);
-				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
-				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-			} catch { /* ignore */ }
-
-			// Results content: header + tools/search + table (natural content height).
-			let resultsContent = 0;
-			let hasTable = false;
-			try {
-				const csr = getComputedStyle(resultsEl);
-				resultsContent += (parseFloat(csr.paddingTop || '0') || 0) + (parseFloat(csr.paddingBottom || '0') || 0);
-				resultsContent += (parseFloat(csr.borderTopWidth || '0') || 0) + (parseFloat(csr.borderBottomWidth || '0') || 0);
-			} catch { /* ignore */ }
-
-			const addVisibleRectHeight = (el) => {
-				try {
-					if (!el) return 0;
-					try {
-						const cs = getComputedStyle(el);
-						if (cs && cs.display === 'none') return 0;
-						const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
-						let margin = 0;
-						try {
-							margin += parseFloat(cs.marginTop || '0') || 0;
-							margin += parseFloat(cs.marginBottom || '0') || 0;
-						} catch { /* ignore */ }
-						return Math.max(0, Math.ceil(h + margin));
-					} catch { /* ignore */ }
-					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
-					return Math.max(0, Math.ceil(h));
-				} catch {
-					return 0;
-				}
-			};
-
-			const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
-			resultsContent += addVisibleRectHeight(headerEl);
-
-			const bodyEl = resultsEl.querySelector ? resultsEl.querySelector('.results-body') : null;
-			if (bodyEl) {
-				try {
-					const csb = getComputedStyle(bodyEl);
-					resultsContent += (parseFloat(csb.paddingTop || '0') || 0) + (parseFloat(csb.paddingBottom || '0') || 0);
-					resultsContent += (parseFloat(csb.borderTopWidth || '0') || 0) + (parseFloat(csb.borderBottomWidth || '0') || 0);
-				} catch { /* ignore */ }
-
-				// Use simple selectors (avoid ':scope' compatibility issues).
-				const dataSearch = bodyEl.querySelector ? bodyEl.querySelector('.data-search') : null;
-				const colSearch = bodyEl.querySelector ? bodyEl.querySelector('.column-search') : null;
-				resultsContent += addVisibleRectHeight(dataSearch);
-				resultsContent += addVisibleRectHeight(colSearch);
-
-				const tableContainer = bodyEl.querySelector ? bodyEl.querySelector('.table-container') : null;
-				if (tableContainer) {
-					hasTable = true;
-					let tableH = 0;
-					// IMPORTANT: use the table element's natural height. The scroll container's
-					// scrollHeight is >= clientHeight, which prevents shrinking when oversized.
-					try {
-						const tableEl = tableContainer.querySelector ? tableContainer.querySelector('table') : null;
-						if (tableEl) {
-							const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
-							if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
-							const rh = (tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0);
-							if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
-						}
-					} catch { /* ignore */ }
-					// Fallback: if we can't find the table, use the container's scrollHeight.
-					if (!tableH) {
-						try {
-							const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
-							if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
-						} catch { /* ignore */ }
-					}
-					// Last resort: rendered container height.
-					if (!tableH) {
-						tableH = addVisibleRectHeight(tableContainer);
-					}
-					resultsContent += Math.max(0, Math.ceil(tableH));
-				} else {
-					// Non-table results (errors, messages): sum the body's children heights.
-					try {
-						for (const child of Array.from(bodyEl.children || [])) {
-							resultsContent += addVisibleRectHeight(child);
-						}
-					} catch { /* ignore */ }
-				}
-			} else {
-				// Fallback: approximate by summing visible direct children.
-				try {
-					for (const child of Array.from(resultsEl.children || [])) {
-						resultsContent += addVisibleRectHeight(child);
-					}
-				} catch { /* ignore */ }
-			}
-
-			if (!resultsContent || !Number.isFinite(resultsContent) || resultsContent <= 0) return;
-
-			// Extra padding: tabular results need a touch more so the last row isn't clipped.
-			const extraPad = hasTable ? 28 : 8;
-			// NOTE: For large tables, "Fit to contents" must not expand to thousands of rows.
-			// Keep a reasonable max so the table remains scrollable and virtualization can work.
-			const maxDesiredPx = hasTable ? 900 : 200000;
-			const desiredPx = Math.max(24, Math.min(maxDesiredPx, Math.ceil(chrome + resultsContent + extraPad)));
-			try {
-				w.style.height = desiredPx + 'px';
-				w.style.minHeight = '0';
-			} catch { /* ignore */ }
+	const dataTableEl = resultsEl.querySelector ? resultsEl.querySelector('kw-data-table') : null;
+	if (dataTableEl && typeof dataTableEl.getContentHeight === 'function') {
+		const contentH = dataTableEl.getContentHeight();
+		if (contentH > 0) {
+			// Wrapper chrome: resizer + border-top.
+			const resizerEl = document.getElementById(id + '_results_resizer');
+			const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
+			const wrapperBorder = 1;
+			const desiredPx = contentH + resizerH + wrapperBorder;
+			// Cap: heightNeededToShowAllRows or 750px, whichever is smaller.
+			w.style.height = Math.max(120, Math.min(750, Math.ceil(desiredPx))) + 'px';
+			w.style.minHeight = '0';
 			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			try {
-				if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
-					window.__kustoClampResultsWrapperHeight(id);
-				}
-			} catch { /* ignore */ }
-		} catch { /* ignore */ }
-	};
+		}
+		return;
+	}
 
+	// Legacy fallback for non-kw-data-table results (errors, old table-container, etc.)
 	try {
-		applyResultsFitToContent();
-		setTimeout(applyResultsFitToContent, 50);
-		setTimeout(applyResultsFitToContent, 150);
+		let chrome = 0;
+		try {
+			for (const child of Array.from(w.children || [])) {
+				if (!child || child === resultsEl) continue;
+				try { if (getComputedStyle(child).display === 'none') continue; } catch { /* ignore */ }
+				chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
+			}
+		} catch { /* ignore */ }
+		try {
+			const csw = getComputedStyle(w);
+			chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+			chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+		} catch { /* ignore */ }
+
+		let contentH = 0;
+		try {
+			for (const child of Array.from(resultsEl.children || [])) {
+				try {
+					const cs = getComputedStyle(child);
+					if (cs && cs.display === 'none') continue;
+					const h = child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0;
+					const margin = (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
+					contentH += Math.ceil(h + margin);
+				} catch { /* ignore */ }
+			}
+		} catch { /* ignore */ }
+
+		if (contentH > 0) {
+			const desiredPx = Math.max(24, Math.min(900, Math.ceil(chrome + contentH + 8)));
+			w.style.height = desiredPx + 'px';
+			w.style.minHeight = '0';
+			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+		}
 	} catch { /* ignore */ }
+}
+
+function __kustoMaximizeQueryBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+
+	// 1. Auto-size the Monaco editor.
+	__kustoAutoSizeEditor(id);
+
+	// 2. Auto-size the tabular results.
+	__kustoAutoSizeResults(id);
+	setTimeout(() => __kustoAutoSizeResults(id), 50);
+	setTimeout(() => __kustoAutoSizeResults(id), 150);
 
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoUpdateQueryVisibilityToggleButton(boxId) {
-	const btn = document.getElementById(boxId + '_toggle');
-	if (!btn) {
-		return;
-	}
-	let expanded = true;
-	try {
-		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
-	} catch { /* ignore */ }
-	btn.classList.toggle('is-active', expanded);
-	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
-	btn.title = expanded ? 'Hide' : 'Show';
-	btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
+	// Toggle button is now in shadow DOM — the Lit element handles its own rendering
+	// based on the _expanded state. Nothing to do here.
 }
 
 function __kustoApplyQueryBoxVisibility(boxId) {
-	const box = document.getElementById(boxId);
-	if (!box) {
-		return;
-	}
+	const kwEl = __kustoGetQuerySectionElement(boxId);
+	if (!kwEl) return;
 	let expanded = true;
 	try {
 		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
 	} catch { /* ignore */ }
-	try {
-		box.classList.toggle('is-collapsed', !expanded);
-	} catch { /* ignore */ }
+	if (typeof kwEl.setExpanded === 'function') {
+		kwEl.setExpanded(expanded);
+	}
 	// Monaco often needs a layout pass after being hidden/shown.
 	if (expanded) {
 		try {
@@ -1132,9 +943,6 @@ function __kustoApplyQueryBoxVisibility(boxId) {
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-					// Update monaco-kusto schema when the section is shown
-					// This ensures the correct schema is loaded for autocomplete
-					// Pass false for enableMarkers since the box isn't focused, just visible
 					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
 						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
@@ -1152,7 +960,6 @@ function toggleQueryBoxVisibility(boxId) {
 		const current = !(window.__kustoQueryExpandedByBoxId[boxId] === false);
 		window.__kustoQueryExpandedByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
-	try { __kustoUpdateQueryVisibilityToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyQueryBoxVisibility(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 }
@@ -1732,8 +1539,21 @@ function __kustoApplyResultsVisibility(boxId) {
 	const hasContent = !!(resultsDiv && String(resultsDiv.innerHTML || '').trim());
 	let hasTable = false;
 	try {
-		hasTable = !!(resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('.table-container'));
+		hasTable = !!(resultsDiv && resultsDiv.querySelector && (resultsDiv.querySelector('.table-container') || resultsDiv.querySelector('kw-data-table')));
 	} catch { /* ignore */ }
+
+	// <kw-data-table> manages its own show/hide internally.
+	// Just ensure the wrapper and resizer are visible; don't apply legacy collapse/expand.
+	if (resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('kw-data-table')) {
+		wrapper.style.display = 'flex';
+		const resizer = document.getElementById(boxId + '_results_resizer');
+		if (resizer) resizer.style.display = '';
+		if (!wrapper.style.height || wrapper.style.height === 'auto') {
+			wrapper.style.height = '300px';
+		}
+		return;
+	}
+
 	wrapper.style.display = hasContent ? 'flex' : 'none';
 	if (hasContent) {
 		const body = document.getElementById(boxId + '_results_body');
@@ -2341,12 +2161,8 @@ function copyQueryAsAdeLink(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	let connectionId = ''
-	let database = '';
-	try {
-		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
-		database = String((document.getElementById(boxId + '_database') || {}).value || '');
-	} catch { /* ignore */ }
+	let connectionId = __kustoGetConnectionId(boxId);
+	let database = __kustoGetDatabase(boxId);
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
@@ -2354,14 +2170,10 @@ function copyQueryAsAdeLink(boxId) {
 			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = String(meta.sourceBoxId || '');
-				const sourceConn = document.getElementById(sourceBoxId + '_connection');
-				const sourceDb = document.getElementById(sourceBoxId + '_database');
-				if (sourceConn && sourceConn.value) {
-					connectionId = sourceConn.value;
-				}
-				if (sourceDb && sourceDb.value) {
-					database = sourceDb.value;
-				}
+				const srcConnId = __kustoGetConnectionId(sourceBoxId);
+				const srcDb = __kustoGetDatabase(sourceBoxId);
+				if (srcConnId) connectionId = srcConnId;
+				if (srcDb) database = srcDb;
 			}
 		}
 	} catch { /* ignore */ }
@@ -2406,9 +2218,10 @@ function __kustoOpenShareModal(boxId) {
 	modal.dataset.boxId = boxId;
 
 	// Pre-populate the section name.
-	const nameInput = document.getElementById(boxId + '_name');
+	const nameInput = null;
+	const sectionName = __kustoGetSectionName(boxId);
 	const titleEl = document.getElementById('shareModal_title');
-	if (titleEl) titleEl.textContent = (nameInput && nameInput.value) ? nameInput.value : 'Kusto Query';
+	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
 
 	// Determine whether results are available.
 	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
@@ -2448,8 +2261,8 @@ function __kustoOpenShareModal(boxId) {
 	let connectionId = '';
 	let database = '';
 	try {
-		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
-		database = String((document.getElementById(boxId + '_database') || {}).value || '');
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
 	} catch { /* ignore */ }
 
 	// Inherit from source box if this is a comparison section.
@@ -2458,10 +2271,10 @@ function __kustoOpenShareModal(boxId) {
 			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
-				const sc = document.getElementById(src + '_connection');
-				const sd = document.getElementById(src + '_database');
-				if (sc && sc.value) connectionId = sc.value;
-				if (sd && sd.value) database = sd.value;
+				const srcConnId = __kustoGetConnectionId(src);
+				const srcDb = __kustoGetDatabase(src);
+				if (srcConnId) connectionId = srcConnId;
+				if (srcDb) database = srcDb;
 			}
 		}
 	} catch { /* ignore */ }
@@ -2528,18 +2341,18 @@ function __kustoShareCopyToClipboard() {
 	let connectionId = '';
 	let database = '';
 	try {
-		connectionId = String((document.getElementById(boxId + '_connection') || {}).value || '');
-		database = String((document.getElementById(boxId + '_database') || {}).value || '');
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
 	} catch { /* ignore */ }
 	try {
 		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
 			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
-				const sc = document.getElementById(src + '_connection');
-				const sd = document.getElementById(src + '_database');
-				if (sc && sc.value) connectionId = sc.value;
-				if (sd && sd.value) database = sd.value;
+				const srcConnId = __kustoGetConnectionId(src);
+				const srcDb = __kustoGetDatabase(src);
+				if (srcConnId) connectionId = srcConnId;
+				if (srcDb) database = srcDb;
 			}
 		}
 	} catch { /* ignore */ }
@@ -2589,8 +2402,7 @@ function __kustoShareCopyToClipboard() {
 	// Get section name.
 	let sectionName = '';
 	try {
-		const nameInput = document.getElementById(boxId + '_name');
-		sectionName = nameInput ? (nameInput.value || '') : '';
+		sectionName = __kustoGetSectionName(boxId);
 	} catch { /* ignore */ }
 
 	// Send to extension to build ADE link and copy to clipboard.
@@ -3273,8 +3085,8 @@ async function exportQueryToPowerBI(boxId) {
 			}
 		}
 	} catch { /* ignore */ }
-	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
-	const database = (document.getElementById(boxId + '_database') || {}).value || '';
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
 		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
@@ -3362,8 +3174,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	};
 	const getBoxLabel = (boxId) => {
 		try {
-			const el = document.getElementById(String(boxId || '') + '_name');
-			const name = el ? String(el.value || '').trim() : '';
+			const name = __kustoGetSectionName(boxId);
 			return name || String(boxId || '').trim() || 'Dataset';
 		} catch {
 			return String(boxId || '').trim() || 'Dataset';
@@ -3918,17 +3729,14 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	// - If the source section has no name, assign the next available letter (A, B, C, ...)
 	// - The optimized section will then use "<source name> (optimized)"
 	try {
-		const nameEl = document.getElementById(boxId + '_name');
-		if (nameEl) {
-			let sourceName = String(nameEl.value || '').trim();
-			if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-				sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
-				nameEl.value = sourceName;
-				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-			}
-			if (sourceName) {
-				req.queryName = sourceName;
-			}
+		let sourceName = __kustoGetSectionName(boxId);
+		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
+			__kustoSetSectionName(boxId, sourceName);
+			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		}
+		if (sourceName) {
+			req.queryName = sourceName;
 		}
 	} catch { /* ignore */ }
 
@@ -4031,14 +3839,12 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	let desiredOptimizedName = '';
 	if (isOptimizeScenario) {
 		try {
-			const nameInput = document.getElementById(boxId + '_name');
-			sourceNameForOptimize = nameInput ? String(nameInput.value || '').trim() : '';
+			const nameInput = null;
+			sourceNameForOptimize = __kustoGetSectionName(boxId);
 			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
-				if (nameInput) {
-					nameInput.value = sourceNameForOptimize;
-					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-				}
+				__kustoSetSectionName(boxId, sourceNameForOptimize);
+				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 			}
 			if (sourceNameForOptimize) {
 				desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
@@ -4046,8 +3852,8 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 		} catch { /* ignore */ }
 	}
 	
-	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
-	const database = (document.getElementById(boxId + '_database') || {}).value || '';
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
 		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return '';
@@ -4091,26 +3897,21 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 				} catch { /* ignore */ }
 				// Set the comparison box name.
 				try {
-					const nameEl = document.getElementById(existingComparisonBoxId + '_name');
-					if (nameEl) {
-						if (desiredOptimizedName) {
-							nameEl.value = desiredOptimizedName;
+					if (desiredOptimizedName) {
+						__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
+						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					} else {
+						const currentName = __kustoGetSectionName(existingComparisonBoxId);
+						let shouldReplace = !currentName;
+						if (!shouldReplace) {
+							const upper = currentName.toUpperCase();
+							if (upper.endsWith(' (COMPARISON)') || upper.endsWith(' (OPTIMIZED)')) {
+								shouldReplace = true;
+							}
+						}
+						if (shouldReplace) {
+							__kustoSetSectionName(existingComparisonBoxId, __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
 							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-						} else {
-							// If the comparison box name is missing (or still using the legacy suffix naming),
-							// set it to the next available letter.
-							const currentName = String(nameEl.value || '').trim();
-							let shouldReplace = !currentName;
-							if (!shouldReplace) {
-								const upper = currentName.toUpperCase();
-								if (upper.endsWith(' (COMPARISON)') || upper.endsWith(' (OPTIMIZED)')) {
-									shouldReplace = true;
-								}
-							}
-							if (shouldReplace) {
-								nameEl.value = __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId);
-								try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-							}
 						}
 					}
 				} catch { /* ignore */ }
@@ -4142,8 +3943,7 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	// Do not auto-name the source section for plain comparisons.
 	// For optimization scenarios, we already ensured a name above.
-	const nameInput = document.getElementById(boxId + '_name');
-	let queryName = sourceNameForOptimize || (nameInput ? String(nameInput.value || '').trim() : '');
+	let queryName = sourceNameForOptimize || __kustoGetSectionName(boxId);
 	if (!desiredOptimizedName && isOptimizeScenario && queryName) {
 		desiredOptimizedName = queryName + ' (optimized)';
 	}
@@ -4209,37 +4009,30 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	// Set connection and database to match source.
 	try {
-		const comparisonConnSelect = document.getElementById(comparisonBoxId + '_connection');
-		const comparisonDbSelect = document.getElementById(comparisonBoxId + '_database');
-		if (comparisonConnSelect) {
-			comparisonConnSelect.value = connectionId;
-			comparisonConnSelect.dataset.prevValue = connectionId;
-			updateDatabaseField(comparisonBoxId);
+		const compKwEl = __kustoGetQuerySectionElement(comparisonBoxId);
+		if (compKwEl) {
+			if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
+			if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
+			compKwEl.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: { boxId: comparisonBoxId, connectionId: connectionId },
+				bubbles: true, composed: true,
+			}));
 			setTimeout(() => {
 				try {
-					const dbEl = document.getElementById(comparisonBoxId + '_database');
-					if (dbEl) {
-						dbEl.value = database;
-					}
+					if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
 				} catch { /* ignore */ }
 			}, 100);
-		} else if (comparisonDbSelect) {
-			comparisonDbSelect.value = database;
 		}
 	} catch { /* ignore */ }
 
 	// Set the query name.
 	try {
-		const comparisonNameInput = document.getElementById(comparisonBoxId + '_name');
-		if (comparisonNameInput) {
-			if (desiredOptimizedName) {
-				comparisonNameInput.value = desiredOptimizedName;
-			} else {
-				const existing = String(comparisonNameInput.value || '').trim();
-				if (!existing) {
-					// Use the next available letter name (A, B, C, ...) instead of suffix-based naming.
-					comparisonNameInput.value = __kustoPickNextAvailableSectionLetterName(comparisonBoxId);
-				}
+		if (desiredOptimizedName) {
+			__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
+		} else {
+			const existing = __kustoGetSectionName(comparisonBoxId);
+			if (!existing) {
+				__kustoSetSectionName(comparisonBoxId, __kustoPickNextAvailableSectionLetterName(comparisonBoxId));
 			}
 		}
 	} catch { /* ignore */ }
@@ -4266,8 +4059,8 @@ async function fullyQualifyTablesInEditor(boxId) {
 	if (!model) {
 		return;
 	}
-	const connectionId = (document.getElementById(boxId + '_connection') || {}).value || '';
-	const database = (document.getElementById(boxId + '_database') || {}).value || '';
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
 		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
@@ -5198,24 +4991,11 @@ function __kustoFavoriteKey(clusterUrl, database) {
 }
 
 function __kustoGetCurrentClusterUrlForBox(boxId) {
-	try {
-		const sel = document.getElementById(boxId + '_connection');
-		const cid = sel ? String(sel.value || '').trim() : '';
-		if (!cid) return '';
-		const conn = (connections || []).find(c => c && String(c.id || '') === cid);
-		return conn ? String(conn.clusterUrl || '').trim() : '';
-	} catch {
-		return '';
-	}
+	return __kustoGetClusterUrl(boxId);
 }
 
 function __kustoGetCurrentDatabaseForBox(boxId) {
-	try {
-		const sel = document.getElementById(boxId + '_database');
-		return sel ? String(sel.value || '').trim() : '';
-	} catch {
-		return '';
-	}
+	return __kustoGetDatabase(boxId);
 }
 
 function __kustoFindFavorite(clusterUrl, database) {
@@ -5383,16 +5163,11 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 				desiredDb = pending.database || '';
 			}
 			if (!desiredCluster) {
-				const connEl = document.getElementById(id + '_connection');
-				if (connEl && connEl.dataset && connEl.dataset.desiredClusterUrl) {
-					desiredCluster = String(connEl.dataset.desiredClusterUrl).trim();
-				}
+				const kwEl = __kustoGetQuerySectionElement(id);
+				desiredCluster = kwEl ? __kustoGetClusterUrl(id) : '';
 			}
 			if (!desiredDb) {
-				const dbEl = document.getElementById(id + '_database');
-				if (dbEl && dbEl.dataset && dbEl.dataset.desired) {
-					desiredDb = String(dbEl.dataset.desired).trim();
-				}
+				desiredDb = __kustoGetDatabase(id);
 			}
 			if (desiredCluster && desiredDb) {
 				const fav = __kustoFindFavorite(desiredCluster, desiredDb);
@@ -5496,29 +5271,22 @@ function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
 	const applyToBox = (targetBoxId) => {
 		const tid = String(targetBoxId || '').trim();
 		if (!tid) return;
-		const connSel = document.getElementById(tid + '_connection');
-		const dbSel = document.getElementById(tid + '_database');
+		const kwEl = __kustoGetQuerySectionElement(tid);
+		if (!kwEl) return;
 		try {
-			if (connSel && connSel.dataset) {
-				connSel.dataset.desiredClusterUrl = clusterUrl;
-			}
-			if (dbSel && dbSel.dataset) {
-				dbSel.dataset.desired = database;
-			}
+			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(clusterUrl);
+			if (typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(database);
 		} catch { /* ignore */ }
 		try {
-			if (connSel) {
-				connSel.value = connectionId;
+			if (connectionId && typeof kwEl.setConnectionId === 'function') {
+				kwEl.setConnectionId(connectionId);
 			}
-			// Keep the unified dropdown button text in sync when selection is applied programmatically.
-			try {
-				if (window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
-					window.__kustoDropdown.syncSelectBackedDropdown(tid + '_connection');
-				}
-			} catch { /* ignore */ }
-			updateDatabaseField(tid);
+			// Trigger database loading.
+			kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: { boxId: tid, connectionId: connectionId, clusterUrl: clusterUrl },
+				bubbles: true, composed: true,
+			}));
 		} catch { /* ignore */ }
-		try { if (connSel && connSel.dataset) delete connSel.dataset.desiredClusterUrl; } catch { /* ignore */ }
 	};
 
 	applyToBox(ownerId);
@@ -5541,67 +5309,12 @@ function __kustoSetElementDisplay(el, display) {
 function __kustoApplyFavoritesMode(boxId, enabled) {
 	favoritesModeByBoxId = favoritesModeByBoxId || {};
 	favoritesModeByBoxId[boxId] = !!enabled;
-	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
-	const favToggleBtn = document.getElementById(boxId + '_favorite_toggle');
-	const favShowBtn = document.getElementById(boxId + '_favorites_show');
-	const clusterWrap = document.getElementById(boxId + '_connection')
-		? document.getElementById(boxId + '_connection').closest('.select-wrapper')
-		: null;
-	const dbWrap = document.getElementById(boxId + '_database')
-		? document.getElementById(boxId + '_database').closest('.select-wrapper')
-		: null;
-	const refreshBtn = document.getElementById(boxId + '_refresh');
 
-	// Icons for toggle button state
-	const favoritesListIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" />' +
-		'<line x1="10" y1="10.5" x2="14.5" y2="10.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'<line x1="10" y1="12.5" x2="14.5" y2="12.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'<line x1="10" y1="14.5" x2="14.5" y2="14.5" stroke-width="1.4" stroke-linecap="round" />' +
-		'</svg>';
-	const clusterPickerIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<ellipse cx="8" cy="4" rx="5" ry="2" />' +
-		'<path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4" />' +
-		'<path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />' +
-		'</svg>';
-
-	if (enabled) {
-		__kustoSetElementDisplay(clusterWrap, 'none');
-		__kustoSetElementDisplay(dbWrap, 'none');
-		__kustoSetElementDisplay(refreshBtn, 'none');
-		// In favorites mode, hide the "add/remove favorite" star button (applies only when selecting cluster+db).
-		__kustoSetElementDisplay(favToggleBtn, 'none');
-		__kustoSetElementDisplay(favWrap, 'flex');
-		// Update the show button to now show "cluster picker" option
-		if (favShowBtn) {
-			favShowBtn.title = 'Show cluster and database picker';
-			favShowBtn.setAttribute('aria-label', 'Show cluster and database picker');
-			favShowBtn.innerHTML = clusterPickerIconSvg;
-		}
-		try { renderFavoritesMenuForBox(boxId); } catch { /* ignore */ }
-	} else {
-		__kustoSetElementDisplay(favWrap, 'none');
-		__kustoSetElementDisplay(clusterWrap, 'flex');
-		__kustoSetElementDisplay(dbWrap, 'flex');
-		__kustoSetElementDisplay(refreshBtn, 'flex');
-		__kustoSetElementDisplay(favToggleBtn, 'flex');
-		// Update the show button back to "show favorites"
-		if (favShowBtn) {
-			favShowBtn.title = 'Show favorites';
-			favShowBtn.setAttribute('aria-label', 'Show favorites');
-			favShowBtn.innerHTML = favoritesListIconSvg;
-		}
-		// When switching from favorites -> cluster/database view, the selection may have been set
-		// programmatically; ensure the unified dropdown buttons reflect the current hidden <select> values.
-		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.syncSelectBackedDropdown === 'function') {
-				window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_connection');
-				window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database');
-			}
-		} catch { /* ignore */ }
-		try { closeFavoritesDropdown(boxId); } catch { /* ignore */ }
+	// Delegate to the Lit element — it handles showing/hiding favorites vs cluster/database
+	// dropdowns in its shadow DOM render.
+	const kwEl = __kustoGetQuerySectionElement(boxId);
+	if (kwEl && typeof kwEl.setFavoritesMode === 'function') {
+		kwEl.setFavoritesMode(!!enabled);
 	}
 }
 
@@ -5654,103 +5367,6 @@ function __kustoFormatFavoriteDisplayHtml(fav) {
 	const name = (typeof escapeHtml === 'function') ? escapeHtml(displayNameRaw) : displayNameRaw;
 	const clusterDb = (typeof escapeHtml === 'function') ? escapeHtml(clusterDbRaw) : clusterDbRaw;
 	return '<span class="kusto-favorites-primary">' + name + '</span>' + (showSuffix ? (' <span class="kusto-favorites-secondary">(' + clusterDb + ')</span>') : '');
-}
-
-function __kustoSetActiveFavoriteMenuItem(boxId, el) {
-	const menu = document.getElementById(boxId + '_favorites_menu');
-	if (!menu) return;
-	const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
-	for (const it of items) {
-		const active = (it === el);
-		it.classList.toggle('is-active', active);
-		try { it.setAttribute('aria-selected', active ? 'true' : 'false'); } catch { /* ignore */ }
-		try {
-			if (active && it.id) {
-				menu.setAttribute('aria-activedescendant', it.id);
-			}
-		} catch { /* ignore */ }
-	}
-}
-
-function __kustoMoveActiveFavoriteMenuItem(boxId, delta) {
-	const menu = document.getElementById(boxId + '_favorites_menu');
-	if (!menu) return;
-	const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
-	if (!items.length) return;
-	let idx = items.findIndex(it => it.classList.contains('is-active'));
-	let next;
-	if (idx < 0) {
-		next = (delta >= 0) ? 0 : (items.length - 1);
-	} else {
-		next = idx + delta;
-		if (next < 0) next = items.length - 1;
-		if (next >= items.length) next = 0;
-	}
-	const el = items[next];
-	__kustoSetActiveFavoriteMenuItem(boxId, el);
-	try { el.focus(); } catch { /* ignore */ }
-}
-
-function __kustoWireFavoritesMenuInteractions(boxId) {
-	const menu = document.getElementById(boxId + '_favorites_menu');
-	if (!menu) return;
-	// Avoid double-wiring the same menu element.
-	try {
-		if (menu.dataset && menu.dataset.kustoWired === '1') {
-			return;
-		}
-		if (menu.dataset) {
-			menu.dataset.kustoWired = '1';
-		}
-	} catch { /* ignore */ }
-
-	// Make the menu itself focusable so we can capture arrow keys without focusing an item.
-	try {
-		if (!menu.hasAttribute('tabindex')) {
-			menu.setAttribute('tabindex', '0');
-		}
-	} catch { /* ignore */ }
-
-	menu.addEventListener('keydown', (e) => {
-		const key = e && e.key ? String(e.key) : '';
-		if (key === 'ArrowDown') {
-			e.preventDefault();
-			__kustoMoveActiveFavoriteMenuItem(boxId, +1);
-			return;
-		}
-		if (key === 'ArrowUp') {
-			e.preventDefault();
-			__kustoMoveActiveFavoriteMenuItem(boxId, -1);
-			return;
-		}
-		if (key === 'Escape') {
-			e.preventDefault();
-			try { closeFavoritesDropdown(boxId); } catch { /* ignore */ }
-			try {
-				const btn = document.getElementById(boxId + '_favorites_btn');
-				btn && btn.focus && btn.focus();
-			} catch { /* ignore */ }
-			return;
-		}
-		if (key === 'Enter') {
-			// If focus is on the trash button, let it handle Enter.
-			try {
-				const t = e && e.target ? e.target : null;
-				if (t && t.classList && (t.classList.contains('kusto-dropdown-trash') || t.classList.contains('kusto-favorites-trash'))) {
-					return;
-				}
-			} catch { /* ignore */ }
-			e.preventDefault();
-			const active = menu.querySelector('.kusto-dropdown-item.is-active, .kusto-favorites-item.is-active');
-			if (active && active.dataset) {
-				const k = String(active.dataset.kustoKey || active.dataset.favKey || '');
-				if (k) {
-					selectFavoriteForBox(boxId, k);
-				}
-			}
-			return;
-		}
-	});
 }
 
 function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
@@ -5917,77 +5533,21 @@ function removeFavoriteFromFavoritesMenu(ev, boxId, encodedKey) {
 }
 
 function __kustoUpdateFavoritesUiForBox(boxId) {
-	const favBtn = document.getElementById(boxId + '_favorite_toggle');
-	const showBtn = document.getElementById(boxId + '_favorites_show');
-	const favWrap = document.getElementById(boxId + '_favorites_wrapper');
-	const btnText = document.getElementById(boxId + '_favorites_btn_text');
-	const favDropdownBtn = document.getElementById(boxId + '_favorites_btn');
+	const kwEl = __kustoGetQuerySectionElement(boxId);
+	if (!kwEl) return;
 
-	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
-	__kustoSetElementDisplay(showBtn, hasAny ? 'flex' : 'none');
+	const favorites = Array.isArray(kustoFavorites) ? kustoFavorites : [];
+
+	// Pass the full favorites list to the Lit element.
+	if (typeof kwEl.setFavorites === 'function') {
+		kwEl.setFavorites(favorites);
+	}
 
 	// If we have no favorites anymore, force exit favorites mode.
 	try {
 		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[boxId]);
-		if (enabled && !hasAny) {
+		if (enabled && !favorites.length) {
 			__kustoApplyFavoritesMode(boxId, false);
-		}
-	} catch { /* ignore */ }
-
-	// Star state for current selection.
-	const clusterUrl = __kustoGetCurrentClusterUrlForBox(boxId);
-	const db = __kustoGetCurrentDatabaseForBox(boxId);
-	const fav = (clusterUrl && db) ? __kustoFindFavorite(clusterUrl, db) : null;
-	if (favBtn) {
-		const isFav = !!fav;
-		favBtn.classList.toggle('is-favorite', isFav);
-		favBtn.title = isFav ? 'Remove from favorites' : 'Add to favorites';
-		favBtn.setAttribute('aria-label', favBtn.title);
-	}
-
-	// Favorites dropdown current label and tooltip.
-	let selectedTooltip = 'Select favorite...';
-	if (fav) {
-		// Build tooltip text from the favorite selection: <Name> (<cluster>.<database>)
-		try {
-			const name = fav.name ? String(fav.name).trim() : '';
-			const clusterDisplay = formatClusterShortName(fav.clusterUrl) || '';
-			const dbDisplay = String(fav.database || '').trim();
-			const connPart = (clusterDisplay && dbDisplay) ? (clusterDisplay + '.' + dbDisplay) : (clusterDisplay || dbDisplay);
-			if (name && connPart) {
-				selectedTooltip = name + ' (' + connPart + ')';
-			} else if (name) {
-				selectedTooltip = name;
-			} else if (connPart) {
-				selectedTooltip = connPart;
-			} else {
-				selectedTooltip = 'Selected favorite';
-			}
-		} catch { selectedTooltip = 'Selected favorite'; }
-	}
-	if (btnText) {
-		if (fav) {
-			btnText.innerHTML = __kustoFormatFavoriteDisplayHtml(fav);
-		} else {
-			btnText.textContent = 'Select favorite...';
-		}
-	}
-	// Update button tooltip to show selected value (useful in minimal/icon-only mode)
-	if (favDropdownBtn) {
-		favDropdownBtn.title = selectedTooltip;
-		favDropdownBtn.setAttribute('aria-label', selectedTooltip);
-	}
-	// Also update the wrapper's title so tooltip shows when hovering anywhere on the control
-	if (favWrap) {
-		favWrap.title = selectedTooltip;
-	}
-
-	// Keep wrapper hidden unless favorites mode is enabled.
-	try {
-		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[boxId]);
-		if (favWrap && favWrap.style.display !== (enabled ? 'flex' : 'none')) {
-			// Don't stomp if a restore is in progress; only adjust when explicitly toggled.
-			// (The row gets rebuilt on restore anyway.)
 		}
 	} catch { /* ignore */ }
 }
@@ -6058,18 +5618,12 @@ try {
 			try {
 				let clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
 				let db = __kustoGetCurrentDatabaseForBox(id);
-				// During restore the dropdowns may not be populated yet; check dataset stashes.
+				// During restore the dropdowns may not be populated yet; check Lit element state.
 				if (!clusterUrl) {
-					const connEl = document.getElementById(id + '_connection');
-					if (connEl && connEl.dataset && connEl.dataset.desiredClusterUrl) {
-						clusterUrl = String(connEl.dataset.desiredClusterUrl).trim();
-					}
+					clusterUrl = __kustoGetClusterUrl(id);
 				}
 				if (!db) {
-					const dbEl = document.getElementById(id + '_database');
-					if (dbEl && dbEl.dataset && dbEl.dataset.desired) {
-						db = String(dbEl.dataset.desired).trim();
-					}
+					db = __kustoGetDatabase(id);
 				}
 				if (clusterUrl && db) {
 					const fav = __kustoFindFavorite(clusterUrl, db);
@@ -6096,284 +5650,15 @@ try {
 } catch { /* ignore */ }
 
 function closeFavoritesDropdown(boxId) {
-	const menu = document.getElementById(boxId + '_favorites_menu');
-	const btn = document.getElementById(boxId + '_favorites_btn');
-	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
-			window.__kustoDropdown.closeMenuDropdown(boxId + '_favorites_btn', boxId + '_favorites_menu');
-			return;
-		}
-	} catch { /* ignore */ }
-	if (menu) menu.style.display = 'none';
-	if (btn) btn.setAttribute('aria-expanded', 'false');
+	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
 }
 
 function closeAllFavoritesDropdowns() {
-	try {
-		for (const id of (queryBoxes || [])) {
-			closeFavoritesDropdown(id);
-		}
-	} catch { /* ignore */ }
-}
-
-// Close all schema info popovers
-function closeAllSchemaInfoPopovers() {
-	try {
-		for (const id of (queryBoxes || [])) {
-			closeSchemaInfoPopover(id);
-		}
-	} catch { /* ignore */ }
-}
-
-function closeSchemaInfoPopover(boxId) {
-	const popover = document.getElementById(boxId + '_schema_info_popover');
-	const btn = document.getElementById(boxId + '_schema_info_btn');
-	if (popover) popover.style.display = 'none';
-	if (btn) {
-		btn.setAttribute('aria-expanded', 'false');
-		btn.classList.remove('is-open');
-	}
-}
-
-function toggleSchemaInfoPopover(boxId) {
-	const id = String(boxId || '').trim();
-	const popover = document.getElementById(id + '_schema_info_popover');
-	const btn = document.getElementById(id + '_schema_info_btn');
-	if (!popover || !btn) return;
-
-	const wasOpen = popover.style.display === 'block';
-
-	// Close all other dropdowns/popovers first
-	try { closeAllRunMenus(); } catch { /* ignore */ }
-	try { closeAllFavoritesDropdowns(); } catch { /* ignore */ }
-	try { closeAllSchemaInfoPopovers(); } catch { /* ignore */ }
-	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
-
-	if (wasOpen) {
-		return;
-	}
-
-	// Position the popover below the button
-	try {
-		const rect = btn.getBoundingClientRect();
-		popover.style.position = 'fixed';
-		popover.style.top = (rect.bottom + 4) + 'px';
-		
-		// Reset left position and show temporarily to measure width accurately
-		popover.style.left = '0px';
-		popover.style.visibility = 'hidden';
-		popover.style.display = 'block';
-		const popoverRect = popover.getBoundingClientRect();
-		// Position so right edge aligns with button's right edge
-		popover.style.left = Math.max(0, rect.right - popoverRect.width) + 'px';
-		popover.style.visibility = '';
-		
-		// Adjust if it would go off the right edge
-		const vw = window.innerWidth || 0;
-		const vh = window.innerHeight || 0;
-		if (vw > 0 && rect.right > vw) {
-			popover.style.left = Math.max(0, vw - popoverRect.width - 8) + 'px';
-		}
-		// Adjust if it would go off the bottom edge
-		if (vh > 0 && popoverRect.bottom > vh) {
-			popover.style.top = Math.max(0, rect.top - popoverRect.height - 4) + 'px';
-		}
-	} catch { /* ignore */ }
-
-	popover.style.display = 'block';
-	btn.setAttribute('aria-expanded', 'true');
-	btn.classList.add('is-open');
-
-	// Wire close on click outside
-	try {
-		const closeOnClickOutside = (e) => {
-			try {
-				const wrapper = document.getElementById(id + '_schema_info_wrapper');
-				if (wrapper && wrapper.contains(e.target)) return;
-				closeSchemaInfoPopover(id);
-				document.removeEventListener('click', closeOnClickOutside, true);
-			} catch { /* ignore */ }
-		};
-		setTimeout(() => {
-			document.addEventListener('click', closeOnClickOutside, true);
-		}, 0);
-	} catch { /* ignore */ }
-}
-
-function toggleFavoritesDropdown(boxId) {
-	const id = String(boxId || '').trim();
-	const menu = document.getElementById(id + '_favorites_menu');
-	const btn = document.getElementById(id + '_favorites_btn');
-	if (!menu || !btn) return;
-	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
-			window.__kustoDropdown.toggleMenuDropdown({
-				buttonId: id + '_favorites_btn',
-				menuId: id + '_favorites_menu',
-				beforeOpen: () => {
-					try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
-				},
-				afterOpen: () => {
-					// Shared dropdown helper wires keyboard navigation for all menus.
-				}
-			});
-			return;
-		}
-	} catch { /* ignore */ }
-	// Fallback (legacy behavior)
-	const next = menu.style.display === 'block' ? 'none' : 'block';
-	closeAllRunMenus();
-	closeAllFavoritesDropdowns();
-	if (next === 'block') {
-		try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
-	}
-	menu.style.display = next;
-	btn.setAttribute('aria-expanded', next === 'block' ? 'true' : 'false');
-	if (next === 'block') {
-		try { __kustoWireFavoritesMenuInteractions(id); } catch { /* ignore */ }
-		try { menu.focus(); } catch { /* ignore */ }
-	}
+	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
 }
 
 function renderFavoritesMenuForBox(boxId) {
-	const menu = document.getElementById(boxId + '_favorites_menu');
-	if (!menu) return;
-	let selectedKeyEnc = '';
-	try {
-		let ownerId = String(boxId || '').trim();
-		try {
-			ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
-				? (String(window.__kustoGetSelectionOwnerBoxId(ownerId) || ownerId))
-				: ownerId;
-		} catch { /* ignore */ }
-		const currentClusterUrl = __kustoGetCurrentClusterUrlForBox(ownerId);
-		const currentDb = __kustoGetCurrentDatabaseForBox(ownerId);
-		if (currentClusterUrl && currentDb) {
-			selectedKeyEnc = encodeURIComponent(__kustoFavoriteKey(currentClusterUrl, currentDb));
-		}
-	} catch { /* ignore */ }
-	let list = [];
-	try {
-		list = __kustoGetFavoritesSorted();
-	} catch {
-		list = [];
-	}
-	// Guard against malformed items so one bad entry can't break the whole menu.
-	const safe = [];
-	try {
-		for (const f of (Array.isArray(list) ? list : [])) {
-			if (!f) continue;
-			const clusterUrl = String(f.clusterUrl || '').trim();
-			const database = String(f.database || '').trim();
-			if (!clusterUrl || !database) continue;
-			safe.push(f);
-		}
-	} catch { /* ignore */ }
-	if (!safe.length) {
-		menu.innerHTML = '<div class="kusto-dropdown-empty">No favorites yet.</div>';
-		return;
-	}
-	const useSharedDropdown = !!(window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function');
-	// Prefer shared dropdown renderer (enables optional delete buttons).
-	try {
-		if (useSharedDropdown) {
-			const items = safe.map((f) => {
-				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
-				return {
-					key,
-					html: __kustoFormatFavoriteDisplayHtml(f),
-					ariaLabel: 'Select favorite',
-					selected: !!(selectedKeyEnc && key === selectedKeyEnc),
-					// Favorites explicitly opts into delete.
-					enableDelete: true
-				};
-			});
-
-			const otherRowHtml =
-				'<div class="kusto-dropdown-item" id="' + boxId + '_favorites_opt_other" role="option" tabindex="-1" aria-selected="false" data-kusto-key="__other__" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
-					'<div class="kusto-dropdown-item-main"><span class="kusto-favorites-primary">Other...</span></div>' +
-				'</div>';
-
-			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
-				dropdownId: boxId + '_favorites',
-				emptyHtml: '<div class="kusto-dropdown-empty">No favorites yet.</div>',
-				onSelectJs: (keyEnc) => "selectFavoriteForBox('" + boxId + "', '" + keyEnc + "')",
-				onDeleteJs: (keyEnc) => "removeFavoriteFromFavoritesMenu(event, '" + boxId + "', '" + keyEnc + "')",
-				includeOtherRowHtml: otherRowHtml
-			});
-		} else {
-			throw new Error('dropdown helper not available');
-		}
-	} catch {
-		// Fallback to legacy renderer.
-		const trashSvg = __kustoGetTrashIconSvg();
-		const rows = [];
-		for (let idx = 0; idx < safe.length; idx++) {
-			const f = safe[idx];
-			try {
-				const key = encodeURIComponent(__kustoFavoriteKey(f.clusterUrl, f.database));
-				const itemId = boxId + '_favorites_opt_' + idx;
-				const isSelected = !!(selectedKeyEnc && key === selectedKeyEnc);
-				rows.push(
-					'<div class="kusto-favorites-item' + (isSelected ? ' is-active' : '') + '" id="' + itemId + '" role="option" tabindex="-1" aria-selected="' + (isSelected ? 'true' : 'false') + '" data-fav-key="' + key + '" onclick="selectFavoriteForBox(\'' + boxId + '\', \'' + key + '\');">' +
-						'<div class="kusto-favorites-item-main">' +
-							__kustoFormatFavoriteDisplayHtml(f) +
-						'</div>' +
-						'<button type="button" class="kusto-favorites-trash" tabindex="-1" title="Remove from favorites" aria-label="Remove from favorites" data-fav-key="' + key + '">' +
-							trashSvg +
-						'</button>' +
-					'</div>'
-				);
-			} catch { /* ignore */ }
-		}
-		rows.push(
-			'<div class="kusto-favorites-item" id="' + boxId + '_favorites_opt_other" role="option" tabindex="-1" aria-selected="false" data-fav-key="__other__" onclick="selectFavoriteForBox(\'' + boxId + '\', \'__other__\');">' +
-			'<div class="kusto-favorites-item-main"><span class="kusto-favorites-primary">Other...</span></div>' +
-			'</div>'
-		);
-		menu.innerHTML = rows.join('');
-	}
-
-	// Wire behavior for the freshly rendered items.
-	try {
-		if (useSharedDropdown && window.__kustoDropdown && typeof window.__kustoDropdown.wireMenuInteractions === 'function') {
-			window.__kustoDropdown.wireMenuInteractions(menu);
-			// In shared-dropdown mode, aria-selected represents the current selection.
-			// Do not attach the legacy handlers that repurpose aria-selected for "active".
-		} else {
-			const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
-			for (const it of items) {
-				it.addEventListener('mouseenter', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
-				it.addEventListener('focus', () => { __kustoSetActiveFavoriteMenuItem(boxId, it); });
-			}
-			// Default the initial active item to the current selection if possible.
-			try {
-				const selectedEl = selectedKeyEnc
-					? (menu.querySelector('[data-fav-key="' + selectedKeyEnc + '"], [data-kusto-key="' + selectedKeyEnc + '"]'))
-					: null;
-				if (selectedEl) {
-					__kustoSetActiveFavoriteMenuItem(boxId, selectedEl);
-				} else if (items.length) {
-					__kustoSetActiveFavoriteMenuItem(boxId, items[0]);
-				}
-			} catch { /* ignore */ }
-
-			const trashButtons = Array.from(menu.querySelectorAll('.kusto-dropdown-trash, .kusto-favorites-trash'));
-			for (const btn of trashButtons) {
-				// Reusable dropdown delete buttons already have inline onclick.
-				try {
-					if (btn && btn.getAttribute && btn.getAttribute('onclick')) {
-						continue;
-					}
-				} catch { /* ignore */ }
-				btn.addEventListener('click', (ev) => {
-					let k = '';
-					try { k = btn && btn.dataset ? String(btn.dataset.kustoKey || btn.dataset.favKey || '') : ''; } catch { k = ''; }
-					removeFavoriteFromFavoritesMenu(ev, boxId, k);
-				});
-			}
-		}
-	} catch { /* ignore */ }
+	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
 }
 
 function __kustoLog(boxId, event, message, data, level) {
@@ -6412,9 +5697,9 @@ function addMissingClusterConnections(boxId) {
 	// If this query box has no cluster selected, auto-select the first newly-added cluster
 	// once connections refresh.
 	try {
-		const sel = document.getElementById(id + '_connection');
-		const hasSelection = !!(sel && String(sel.value || '').trim());
-		if (sel && !hasSelection) {
+		const hasSelection = !!__kustoGetConnectionId(id);
+		const kwEl = __kustoGetQuerySectionElement(id);
+		if (kwEl && !hasSelection) {
 			const hints = suggestedDatabaseByClusterKeyByBoxId && suggestedDatabaseByClusterKeyByBoxId[id]
 				? suggestedDatabaseByClusterKeyByBoxId[id]
 				: {};
@@ -6434,22 +5719,8 @@ function addMissingClusterConnections(boxId) {
 				const key0 = clusterShortNameKey(chosenClusterUrl);
 				chosenDb = key0 && hints ? String(hints[key0] || '') : '';
 			}
-			sel.dataset.desiredClusterUrl = chosenClusterUrl;
-
-			// If we detected a database for that same fully-qualified reference, stage it too.
-			if (chosenDb) {
-				const dbEl = document.getElementById(id + '_database');
-				if (dbEl) {
-					dbEl.dataset.desired = chosenDb;
-					// Optimistic restore: show the persisted DB immediately, even before the DB list loads.
-					const esc = (typeof escapeHtml === 'function') ? escapeHtml(chosenDb) : chosenDb;
-					dbEl.innerHTML =
-						'<option value="" disabled hidden>Select Database...</option>' +
-						'<option value="' + esc + '">' + esc + '</option>';
-					dbEl.value = chosenDb;
-						try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_database'); } catch { /* ignore */ }
-				}
-			}
+			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(chosenClusterUrl);
+			if (chosenDb && typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(chosenDb);
 		}
 	} catch {
 		// ignore
@@ -6467,90 +5738,10 @@ function addMissingClusterConnections(boxId) {
 
 function updateConnectionSelects() {
 	queryBoxes.forEach(id => {
-		const select = document.getElementById(id + '_connection');
-		if (select) {
-			const currentValue = select.value;
-			const desiredClusterUrl = (select.dataset && select.dataset.desiredClusterUrl) ? String(select.dataset.desiredClusterUrl) : '';
-			let resolvedDesiredId = '';
-			let resolvedCurrentId = '';
-			let resolvedLastId = '';
-			try {
-				if (currentValue && currentValue !== '__import_xml__' && currentValue !== '__enter_new__') {
-					for (const c of (connections || [])) {
-						if (!c) continue;
-						if (String(c.id || '') === String(currentValue)) {
-							resolvedCurrentId = String(c.id || '');
-							break;
-						}
-					}
-				}
-				if (!resolvedDesiredId && desiredClusterUrl) {
-					const target = normalizeClusterUrlKey(desiredClusterUrl);
-					for (const c of (connections || [])) {
-						if (!c) continue;
-						if (normalizeClusterUrlKey(c.clusterUrl || '') === target) {
-							resolvedDesiredId = String(c.id || '');
-							break;
-						}
-					}
-				}
-				// Fallback: match by short-name key (case-insensitive). Useful when persisted
-				// state stores only a short cluster name.
-				if (!resolvedDesiredId && desiredClusterUrl) {
-					const targetShort = clusterShortNameKey(desiredClusterUrl);
-					for (const c of (connections || [])) {
-						if (!c) continue;
-						if (clusterShortNameKey(c.clusterUrl || '') === targetShort) {
-							resolvedDesiredId = String(c.id || '');
-							break;
-						}
-					}
-				}
-				if (!resolvedLastId && lastConnectionId) {
-					for (const c of (connections || [])) {
-						if (!c) continue;
-						if (String(c.id || '') === String(lastConnectionId)) {
-							resolvedLastId = String(c.id || '');
-							break;
-						}
-					}
-				}
-			} catch {
-				// ignore
-			}
-			const sortedConnections = (connections || []).slice().sort((a, b) => {
-				const an = String(formatClusterDisplayName(a) || '').toLowerCase();
-				const bn = String(formatClusterDisplayName(b) || '').toLowerCase();
-				return an.localeCompare(bn);
-			});
-			select.innerHTML =
-				'<option value="" disabled ' + (currentValue ? '' : 'selected ') + 'hidden>Select Cluster...</option>' +
-				'<option value="__enter_new__">Enter new cluster…</option>' +
-				'<option value="__import_xml__">Import from .xml file…</option>' +
-				sortedConnections
-					.map(c => '<option value="' + c.id + '">' + escapeHtml(formatClusterDisplayName(c)) + '</option>')
-					.join('');
-
-			// Restore: prefer desired selection from persisted document state.
-			if (resolvedDesiredId) {
-				const changed = String(currentValue || '') !== String(resolvedDesiredId || '');
-				select.value = resolvedDesiredId;
-				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
-				if (changed) {
-					updateDatabaseField(id);
-				}
-			} else if (resolvedCurrentId) {
-				select.value = resolvedCurrentId;
-			} else if (resolvedLastId) {
-				// Pre-fill with last selection when nothing else is available.
-				const changed = String(currentValue || '') !== String(resolvedLastId || '');
-				select.value = resolvedLastId;
-				try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
-				if (changed) {
-					updateDatabaseField(id);
-				}
-			}
-			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(id + '_connection'); } catch { /* ignore */ }
+		const el = __kustoGetQuerySectionElement(id);
+		if (el && typeof el.setConnections === 'function') {
+			// Delegate to the Lit element — it handles desired/current/last resolution internally.
+			el.setConnections(connections || [], { lastConnectionId: lastConnectionId || '' });
 		}
 	});
 	try {
@@ -6569,182 +5760,21 @@ function updateDatabaseField(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	const connectionSelect = document.getElementById(boxId + '_connection');
-	const connectionId = connectionSelect ? connectionSelect.value : '';
-	if (connectionSelect && connectionId === '__enter_new__') {
-		const prev = connectionSelect.dataset.prevValue || '';
-		connectionSelect.value = prev;
-		promptAddConnectionFromDropdown(boxId);
-		return;
-	}
-	if (connectionSelect && connectionId === '__import_xml__') {
-		const prev = connectionSelect.dataset.prevValue || '';
-		connectionSelect.value = prev;
-		importConnectionsFromXmlFile(boxId);
-		return;
-	}
-	if (connectionSelect) {
-		connectionSelect.dataset.prevValue = connectionId;
-		// Keep a stable per-box desired cluster so selection can be restored even if
-		// the <select> is rebuilt while connections are temporarily out of sync.
-		try {
-			const cid = String(connectionId || '').trim();
-			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
-			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl).trim() : '';
-			if (clusterUrl && connectionSelect.dataset) {
-				connectionSelect.dataset.desiredClusterUrl = clusterUrl;
-			}
-		} catch { /* ignore */ }
-		// Persist selection immediately so VS Code Problems can reflect current schema context.
-		// Skip during document restore — the restore sets intermediate/wrong values (e.g.
-		// lastConnectionId from a different file) before the correct desiredClusterUrl is
-		// applied. Firing saveLastSelection here during restore overwrites the file-connection
-		// cache with the wrong cluster, causing the "blank on subsequent open" bug.
-		try {
-			if (!__kustoRestoreInProgress) {
-				vscode.postMessage({
-					type: 'saveLastSelection',
-					connectionId: String(connectionId || ''),
-					// Connection change invalidates any prior DB selection until the DB dropdown refreshes.
-					database: ''
-				});
-			}
-		} catch { /* ignore */ }
-	}
-	const databaseSelect = document.getElementById(boxId + '_database');
-	const refreshBtn = document.getElementById(boxId + '_refresh');
-	// Connection changed: clear schema so it doesn't mismatch.
-	delete schemaByBoxId[boxId];
-	// Also clear in-flight/throttle state so a new schema request can start immediately.
-	try {
-		if (schemaFetchInFlightByBoxId) {
-			schemaFetchInFlightByBoxId[boxId] = false;
-		}
-		if (lastSchemaRequestAtByBoxId) {
-			lastSchemaRequestAtByBoxId[boxId] = 0;
-		}
-		if (window && window.__kustoSchemaRequestTokenByBoxId) {
-			delete window.__kustoSchemaRequestTokenByBoxId[boxId];
-		}
-		if (databaseSelect && databaseSelect.dataset) {
-			delete databaseSelect.dataset.kustoDesiredRefreshAttempted;
-		}
-		if (typeof setSchemaLoading === 'function') {
-			setSchemaLoading(boxId, false);
-		}
-	} catch { /* ignore */ }
+	const connectionId = __kustoGetConnectionId(boxId);
+	if (!connectionId) return;
 
-	if (connectionId && databaseSelect) {
-		// Check if we have cached databases for this cluster
-		let clusterKey = '';
-		try {
-			const cid = String(connectionId || '').trim();
-			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
-			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-			if (clusterUrl) {
-				let u = clusterUrl;
-				if (!/^https?:\/\//i.test(u)) {
-					u = 'https://' + u;
-				}
-				try {
-					clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
-				} catch {
-					clusterKey = String(clusterUrl || '').trim().toLowerCase();
-				}
-			}
-		} catch { /* ignore */ }
-
-		const cached = (cachedDatabases && cachedDatabases[String(clusterKey || '').trim()]) || cachedDatabases[connectionId];
-
-		if (cached && cached.length > 0) {
-			// Use cached databases immediately
-			updateDatabaseSelect(boxId, cached);
-			// If we already have a selected DB (restore/last), start schema fetch right away.
-			try {
-				if (typeof ensureSchemaForBox === 'function') {
-					ensureSchemaForBox(boxId, false);
-				}
-			} catch {
-				// ignore
-			}
-			// Update monaco-kusto schema if we have a cached schema for the new selection
-			try {
-				if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-					window.__kustoUpdateSchemaForFocusedBox(boxId);
-				}
-			} catch { /* ignore */ }
-			
-			// Still trigger a background refresh to get the latest database list.
-			// Show spinner in the refresh button while refreshing.
-			if (refreshBtn) {
-				try {
-					if (!(refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1'))) {
-						if (refreshBtn.dataset) {
-							refreshBtn.dataset.kustoAutoDbInFlight = '1';
-							refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
-						}
-						refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
-						refreshBtn.setAttribute('aria-busy', 'true');
-					}
-				} catch { /* ignore */ }
-				// Keep refresh button enabled so user can click it if the background refresh is slow
-				refreshBtn.disabled = false;
-			}
-			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
-			
-			// Request a background refresh of databases from the extension
-			vscode.postMessage({
-				type: 'getDatabases',
-				connectionId: connectionId,
-				boxId: boxId
-			});
-		} else {
-			// No cache, need to load from server
-			// Keep the dropdown in a loading state and do not replace its contents with a synthetic
-			// single-option list. If `dataset.desired` is set, updateDatabaseSelect will apply it
-			// once the real database list arrives.
-			// Note: Don't disable the dropdown - the "Loading databases..." text is sufficient feedback.
-			databaseSelect.innerHTML = '<option value="">Loading databases...</option>';
-			databaseSelect.disabled = false;
-			if (refreshBtn) {
-				// While auto-loading databases after a cluster change, show a spinner in the refresh button.
-				try {
-					if (!(refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1'))) {
-						if (refreshBtn.dataset) {
-							refreshBtn.dataset.kustoAutoDbInFlight = '1';
-							refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
-						}
-						refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
-						refreshBtn.setAttribute('aria-busy', 'true');
-					}
-				} catch { /* ignore */ }
-				refreshBtn.disabled = true;
-			}
-			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
-
-			// Request databases from the extension
-			vscode.postMessage({
-				type: 'getDatabases',
-				connectionId: connectionId,
-				boxId: boxId
-			});
-		}
-	} else if (databaseSelect) {
-		databaseSelect.innerHTML = '<option value="" disabled selected hidden>Select Database...</option>';
-		databaseSelect.disabled = false;
-		if (refreshBtn) {
-			refreshBtn.disabled = true;
-		}
-		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
+	// For Lit elements, connection-changed events already handle database loading.
+	// This function is only called as a manual trigger from legacy code paths.
+	// All query sections are <kw-query-section> Lit elements.
+	// The connection-changed event handler (wired in addQueryBox) handles
+	// database loading, schema clearing, and persistence.
+	const kwEl = __kustoGetQuerySectionElement(boxId);
+	if (kwEl) {
+		kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+			detail: { boxId: boxId, connectionId: connectionId, clusterUrl: __kustoGetClusterUrl(boxId) },
+			bubbles: true, composed: true,
+		}));
 	}
-	try {
-		__kustoUpdateFavoritesUiForBox(boxId);
-	} catch { /* ignore */ }
-	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
-		}
-	} catch { /* ignore */ }
 }
 
 function __kustoClearDatabaseLoadError(boxId) {
@@ -6905,36 +5935,13 @@ function parseKustoConnectionString(cs) {
 }
 
 function refreshDatabases(boxId) {
-	const connectionId = document.getElementById(boxId + '_connection').value;
-	if (!connectionId) {
-		return;
-	}
+	const connectionId = __kustoGetConnectionId(boxId);
+	if (!connectionId) return;
 
-	const databaseSelect = document.getElementById(boxId + '_database');
-	const refreshBtn = document.getElementById(boxId + '_refresh');
-
-	if (databaseSelect) {
-		try {
-			databaseSelect.dataset.kustoPrevHtml = String(databaseSelect.innerHTML || '');
-			databaseSelect.dataset.kustoPrevValue = String(databaseSelect.value || '');
-			databaseSelect.dataset.kustoRefreshInFlight = 'true';
-		} catch { /* ignore */ }
-		databaseSelect.disabled = true;
-		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
-	}
-	if (refreshBtn) {
-		try {
-			if (refreshBtn.dataset && refreshBtn.dataset.kustoRefreshDbInFlight === '1') {
-				return;
-			}
-			if (refreshBtn.dataset) {
-				refreshBtn.dataset.kustoRefreshDbInFlight = '1';
-				refreshBtn.dataset.kustoPrevHtml = String(refreshBtn.innerHTML || '');
-			}
-			refreshBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
-			refreshBtn.setAttribute('aria-busy', 'true');
-		} catch { /* ignore */ }
-		refreshBtn.disabled = true;
+	const kwEl = __kustoGetQuerySectionElement(boxId);
+	if (kwEl && typeof kwEl.setRefreshLoading === 'function') {
+		kwEl.setRefreshLoading(true);
+		kwEl.setDatabasesLoading(true);
 	}
 
 	vscode.postMessage({
@@ -6952,8 +5959,7 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 	// This prevents stale error responses (from a slow request for a previous cluster) from affecting
 	// the dropdown when the user has already switched to a different cluster.
 	if (responseConnectionId) {
-		const connectionSelect = document.getElementById(boxId + '_connection');
-		const currentConnectionId = connectionSelect ? String(connectionSelect.value || '').trim() : '';
+		const currentConnectionId = __kustoGetConnectionId(boxId);
 		const responseConnId = String(responseConnectionId || '').trim();
 		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
 			// Response is for a different connection than currently selected - ignore it.
@@ -7047,157 +6053,48 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 }
 
 function updateDatabaseSelect(boxId, databases, responseConnectionId) {
-	const databaseSelect = document.getElementById(boxId + '_database');
-	const refreshBtn = document.getElementById(boxId + '_refresh');
+	const kwEl = __kustoGetQuerySectionElement(boxId);
 
 	// If the response includes a connectionId, verify it matches the currently selected connection.
-	// This prevents stale responses (from a slow request for a previous cluster) from overwriting
-	// the dropdown when the user has already switched to a different cluster.
 	if (responseConnectionId) {
-		const connectionSelect = document.getElementById(boxId + '_connection');
-		const currentConnectionId = connectionSelect ? String(connectionSelect.value || '').trim() : '';
+		const currentConnectionId = __kustoGetConnectionId(boxId);
 		const responseConnId = String(responseConnectionId || '').trim();
 		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
-			// Response is for a different connection than currently selected - ignore it.
-			// Still stop any spinner that might be running.
-			if (refreshBtn) {
-				try {
-					if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
-						const prev = refreshBtn.dataset.kustoPrevHtml;
-						if (typeof prev === 'string' && prev) {
-							refreshBtn.innerHTML = prev;
-						}
-						try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
-						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
-					}
-					refreshBtn.removeAttribute('aria-busy');
-					refreshBtn.disabled = false;
-				} catch { /* ignore */ }
-			}
+			// Response is for a different connection — ignore it, stop spinner.
+			if (kwEl && typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(false);
 			return;
 		}
 	}
 
-	if (databaseSelect) {
-		const prevValue = String(databaseSelect.value || '');
-		const list = (Array.isArray(databases) ? databases : [])
-			.map(d => String(d || '').trim())
-			.filter(Boolean)
-			.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+	const list = (Array.isArray(databases) ? databases : [])
+		.map(d => String(d || '').trim())
+		.filter(Boolean)
+		.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
-		databaseSelect.innerHTML = '<option value="" disabled ' + ((prevValue && list.includes(prevValue)) ? 'hidden' : 'selected hidden') + '>Select Database...</option>' +
-			list.map(db => {
-				const esc = (typeof escapeHtml === 'function') ? escapeHtml(db) : db;
-				return '<option value="' + esc + '">' + esc + '</option>';
-			}).join('');
-		databaseSelect.disabled = false;
-		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
-
-		// Update local cache with new databases
-		const connectionId = document.getElementById(boxId + '_connection').value;
-		if (connectionId) {
-			let clusterKey = '';
-			try {
-				const cid = String(connectionId || '').trim();
-				const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
-				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-				if (clusterUrl) {
-					let u = clusterUrl;
-					if (!/^https?:\/\//i.test(u)) {
-						u = 'https://' + u;
-					}
-					try {
-						clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
-					} catch {
-						clusterKey = String(clusterUrl || '').trim().toLowerCase();
-					}
-				}
-			} catch { /* ignore */ }
-			cachedDatabases[String(clusterKey || '').trim()] = list;
-		}
-
-		// Prefer per-box desired selection (restore), else keep existing, else last selection.
-		let desired = '';
+	// Update local cache.
+	const connectionId = __kustoGetConnectionId(boxId);
+	if (connectionId) {
+		let clusterKey = '';
 		try {
-			desired = (databaseSelect.dataset && databaseSelect.dataset.desired)
-				? String(databaseSelect.dataset.desired || '')
-				: '';
-		} catch { /* ignore */ }
-
-		const desiredInList = !!(desired && list.includes(desired));
-		let target = '';
-		if (desired) {
-			// When a favorite/restore is trying to pick a specific DB, never silently fall back
-			// to a previous/last DB (that can cause runs to hit the wrong database/cluster).
-			if (desiredInList) {
-				target = desired;
-			} else {
-				target = '';
-			}
-		} else {
-			// Normal behavior for manual selection.
-			target = (prevValue && list.includes(prevValue))
-				? prevValue
-				: (lastDatabase && list.includes(lastDatabase))
-					? lastDatabase
-					: '';
-		}
-
-		if (target) {
-			databaseSelect.value = target;
-		}
-		try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
-		__kustoLog(boxId, 'db.select', 'Resolved database selection', {
-			connectionId: document.getElementById(boxId + '_connection') ? document.getElementById(boxId + '_connection').value : '',
-			desired,
-			desiredInList,
-			prevValue,
-			target,
-			listCount: list.length
-		});
-		// If we successfully applied the desired selection, clear the desired marker and refresh-attempt flag.
-		try {
-			if (desired && target === desired) {
-				delete databaseSelect.dataset.desired;
-				delete databaseSelect.dataset.kustoDesiredRefreshAttempted;
+			const cid = String(connectionId || '').trim();
+			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+			if (clusterUrl) {
+				let u = clusterUrl;
+				if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+				try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
 			}
 		} catch { /* ignore */ }
-
-		// If we couldn't find the desired DB, auto-refresh the DB list once.
-		try {
-			if (desired && !desiredInList && databaseSelect.dataset) {
-				const attempted = databaseSelect.dataset.kustoDesiredRefreshAttempted === '1';
-				if (!attempted) {
-					databaseSelect.dataset.kustoDesiredRefreshAttempted = '1';
-					// Kick a refresh; keep selection empty until the real list arrives.
-					__kustoLog(boxId, 'db.refresh', 'Desired DB missing; auto-refreshing databases once', { desired, connectionId: document.getElementById(boxId + '_connection') ? document.getElementById(boxId + '_connection').value : '' }, 'warn');
-					try { refreshDatabases(boxId); } catch { /* ignore */ }
-				}
-			}
-		} catch { /* ignore */ }
-
-		// Only trigger schema refresh if the selected DB actually changed.
-		try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
-		if (target && target !== prevValue) {
-			onDatabaseChanged(boxId);
-		}
+		cachedDatabases[String(clusterKey || '').trim()] = list;
 	}
-	if (refreshBtn) {
-		try {
-			if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
-				const prev = refreshBtn.dataset.kustoPrevHtml;
-				if (typeof prev === 'string' && prev) {
-					refreshBtn.innerHTML = prev;
-				}
-				try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-				try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
-				try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
-			}
-			refreshBtn.removeAttribute('aria-busy');
-		} catch { /* ignore */ }
-		refreshBtn.disabled = false;
+
+	// Delegate to the Lit element.
+	if (kwEl && typeof kwEl.setDatabases === 'function') {
+		kwEl.setDatabases(list, lastDatabase || '');
+		kwEl.setRefreshLoading(false);
 	}
+
+	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
 	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
@@ -7239,10 +6136,8 @@ function __kustoIsRunSelectionReady(boxId) {
 		}
 	} catch { /* ignore */ }
 
-	const connEl = document.getElementById(ownerId + '_connection');
-	const dbEl = document.getElementById(ownerId + '_database');
-	const connectionId = connEl ? String(connEl.value || '').trim() : '';
-	const database = dbEl ? String(dbEl.value || '').trim() : '';
+	const connectionId = __kustoGetConnectionId(ownerId);
+	const database = __kustoGetDatabase(ownerId);
 
 	if (!__kustoIsValidConnectionIdForRun(connectionId)) return false;
 	if (!database) return false;
@@ -7281,17 +6176,8 @@ function __kustoClearSchemaSummaryIfNoSelection(boxId) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const ownerId = __kustoGetEffectiveSelectionOwnerIdForRun(id);
-	let connectionId = '';
-	let database = '';
-	try {
-		const connEl = document.getElementById(ownerId + '_connection');
-		connectionId = connEl ? String(connEl.value || '').trim() : '';
-		const dbEl = document.getElementById(ownerId + '_database');
-		database = dbEl ? String(dbEl.value || '').trim() : '';
-	} catch {
-		connectionId = '';
-		database = '';
-	}
+	let connectionId = __kustoGetConnectionId(ownerId);
+	let database = __kustoGetDatabase(ownerId);
 
 	// If neither a database nor a favorite is selected, blank the schema summary to avoid stale counts.
 	const hasValidCluster = typeof __kustoIsValidConnectionIdForRun === 'function'
@@ -7708,8 +6594,8 @@ function executeQuery(boxId, mode) {
 			}
 		}
 	} catch { /* ignore */ }
-	let connectionId = document.getElementById(boxId + '_connection').value;
-	let database = document.getElementById(boxId + '_database').value;
+	let connectionId = __kustoGetConnectionId(boxId);
+	let database = __kustoGetDatabase(boxId);
 	let cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
 	const cacheValue = parseInt(document.getElementById(boxId + '_cache_value').value) || 1;
 	const cacheUnit = document.getElementById(boxId + '_cache_unit').value;
@@ -7725,13 +6611,13 @@ function executeQuery(boxId, mode) {
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
 				sourceBoxIdForComparison = String(sourceBoxId || '');
-				const sourceConn = document.getElementById(sourceBoxId + '_connection');
-				const sourceDb = document.getElementById(sourceBoxId + '_database');
-				if (sourceConn && sourceConn.value) {
-					connectionId = sourceConn.value;
+				const srcConnId = __kustoGetConnectionId(sourceBoxId);
+				const srcDb = __kustoGetDatabase(sourceBoxId);
+				if (srcConnId) {
+					connectionId = srcConnId;
 				}
-				if (sourceDb && sourceDb.value) {
-					database = sourceDb.value;
+				if (srcDb) {
+					database = srcDb;
 				}
 			}
 			// While linked optimization exists, always disable caching for benchmark runs.

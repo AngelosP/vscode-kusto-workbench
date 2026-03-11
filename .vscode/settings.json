@@ -18,6 +18,10 @@
         "/^node esbuild\\.js$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^node -c media/queryEditor/queryBoxes\\.js 2>&1 \\| Select-Object -First 5$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
