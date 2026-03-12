@@ -159,7 +159,7 @@ export class KwChartSection extends LitElement {
 	@state() private _name = '';
 	@state() private _mode: ChartMode = 'edit';
 	@state() private _expanded = true;
-	@state() private _chartType: ChartType = '';
+	@state() private _chartType: ChartType = 'area';
 	@state() private _dataSourceId = '';
 	@state() private _xColumn = '';
 	@state() private _yColumns: string[] = [];
@@ -191,6 +191,16 @@ export class KwChartSection extends LitElement {
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
 	private _themeObserver: MutationObserver | null = null;
 	private _lastThemeDark: boolean | null = null;
+
+	// Per-data-source column memory: remembers column selections so switching
+	// away and back restores the previous configuration.
+	private _columnMemory = new Map<string, {
+		xColumn: string; yColumns: string[]; legendColumn: string;
+		labelColumn: string; valueColumn: string;
+		tooltipColumns: string[]; sortColumn: string;
+		wrapperHeight: string;
+		xAxisSettings: XAxisSettings; yAxisSettings: YAxisSettings;
+	}>();
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -839,8 +849,52 @@ export class KwChartSection extends LitElement {
 	}
 
 	private _onDataSourceChanged(e: Event): void {
-		this._dataSourceId = (e.target as HTMLSelectElement).value;
+		const oldId = this._dataSourceId;
+		const newId = (e.target as HTMLSelectElement).value;
+		// Save current column config + wrapper height for the old data source before switching.
+		if (oldId) {
+			const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
+			const h = wrapper?.style.height?.trim() || '';
+			this._columnMemory.set(oldId, {
+				xColumn: this._xColumn,
+				yColumns: [...this._yColumns],
+				legendColumn: this._legendColumn,
+				labelColumn: this._labelColumn,
+				valueColumn: this._valueColumn,
+				tooltipColumns: [...this._tooltipColumns],
+				sortColumn: this._sortColumn,
+				wrapperHeight: h,
+				xAxisSettings: { ...this._xAxisSettings },
+				yAxisSettings: { ...this._yAxisSettings },
+			});
+		}
+		this._dataSourceId = newId;
 		this._refreshDatasets();
+		// Try to restore saved column config for the new data source.
+		const saved = this._columnMemory.get(newId);
+		if (saved) {
+			const cols = new Set(this._getColumnNames());
+			if (saved.xColumn && cols.has(saved.xColumn)) this._xColumn = saved.xColumn;
+			const restoredY = saved.yColumns.filter(c => cols.has(c));
+			if (restoredY.length) this._yColumns = restoredY;
+			if (saved.legendColumn && cols.has(saved.legendColumn)) this._legendColumn = saved.legendColumn;
+			if (saved.labelColumn && cols.has(saved.labelColumn)) this._labelColumn = saved.labelColumn;
+			if (saved.valueColumn && cols.has(saved.valueColumn)) this._valueColumn = saved.valueColumn;
+			const restoredTooltip = saved.tooltipColumns.filter(c => cols.has(c));
+			if (restoredTooltip.length) this._tooltipColumns = restoredTooltip;
+			if (saved.sortColumn && cols.has(saved.sortColumn)) this._sortColumn = saved.sortColumn;
+			// Restore axis settings.
+			if (saved.xAxisSettings) this._xAxisSettings = { ...saved.xAxisSettings };
+			if (saved.yAxisSettings) this._yAxisSettings = { ...saved.yAxisSettings };
+			// Restore wrapper height.
+			if (saved.wrapperHeight) {
+				const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
+				if (wrapper) {
+					wrapper.style.height = saved.wrapperHeight;
+					wrapper.dataset.kustoUserResized = 'true';
+				}
+			}
+		}
 		this._schedulePersist();
 	}
 
@@ -1035,6 +1089,14 @@ export class KwChartSection extends LitElement {
 	// ── Global state bridge ────────────────────────────────────────────────────
 
 	/**
+	 * Read state from the global chartStateByBoxId into Lit properties.
+	 * Public so column rename propagation can push updated names into this component.
+	 */
+	public syncFromGlobalState(): void {
+		this._syncGlobalChartState();
+	}
+
+	/**
 	 * Read initial state from the global chartStateByBoxId, if present.
 	 * This is how persisted state flows into the Lit component from addChartBox.
 	 */
@@ -1107,16 +1169,47 @@ export class KwChartSection extends LitElement {
 	// ── Data helpers ───────────────────────────────────────────────────────────
 
 	/**
-	 * Refresh the list of available data sources from the DOM.
-	 * Delegates to the existing global function if available.
+	 * Public refresh — called by __kustoRefreshAllDataSourceDropdowns and
+	 * __kustoRefreshDependentExtraBoxes to update datasets and re-render.
 	 */
-	private _refreshDatasets(): void {
+	public refresh(): void {
+		this._refreshDatasets();
+		this._renderChart();
+	}
+
+	/**
+	 * Refresh the list of available data sources from the DOM.
+	 * Public so __kustoUpdateChartBuilderUI can call it for Lit elements.
+	 */
+	public refreshDatasets(): void {
 		try {
 			const fn = (window as any).__kustoGetChartDatasetsInDomOrder;
 			if (typeof fn === 'function') {
 				this._datasets = fn() || [];
 			}
 		} catch { /* ignore */ }
+		// Prune stale column references that no longer exist in the current dataset.
+		this._pruneStaleColumns();
+	}
+
+	/** Remove column selections that don't exist in the current dataset columns. */
+	private _pruneStaleColumns(): void {
+		const cols = new Set(this._getColumnNames());
+		if (!cols.size) return; // no dataset selected or empty — don't clear
+		const prunedY = this._yColumns.filter(c => cols.has(c));
+		if (prunedY.length !== this._yColumns.length) this._yColumns = prunedY;
+		const prunedTooltip = this._tooltipColumns.filter(c => cols.has(c));
+		if (prunedTooltip.length !== this._tooltipColumns.length) this._tooltipColumns = prunedTooltip;
+		if (this._xColumn && !cols.has(this._xColumn)) this._xColumn = '';
+		if (this._legendColumn && !cols.has(this._legendColumn)) this._legendColumn = '';
+		if (this._labelColumn && !cols.has(this._labelColumn)) this._labelColumn = '';
+		if (this._valueColumn && !cols.has(this._valueColumn)) this._valueColumn = '';
+		if (this._sortColumn && !cols.has(this._sortColumn)) this._sortColumn = '';
+	}
+
+	/** Shorthand used internally. */
+	private _refreshDatasets(): void {
+		this.refreshDatasets();
 	}
 
 	/** Get column names from the currently selected dataset. */

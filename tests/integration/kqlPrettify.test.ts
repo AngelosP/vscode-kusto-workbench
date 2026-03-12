@@ -148,7 +148,7 @@ suite('KQL prettify', () => {
 	const createPrettify = () => {
 		// When compiled, this test runs from `out/tests/integration`, so repo root is three levels up.
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-prettify.ts');
 		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
 		// Strip TypeScript annotations so the source can run in a JS VM sandbox
 		monacoSource = monacoSource

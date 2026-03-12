@@ -96,8 +96,8 @@ export async function getQueryEditorHtml(
 	const monacoLoaderUri = webview
 		.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'loader.js'))
 		.toString();
-	// Monaco 0.5x ships a single style.css under vs/ (editor/editor.main.css may not exist).
-	const monacoCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'style.css')).toString();
+	// Monaco 0.52 ships CSS under vs/editor/editor.main.css.
+	const monacoCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'editor', 'editor.main.css')).toString();
 
 	// Monaco workers are version-hashed files in vs/assets. Discover them at runtime and pass
 	// their webview URIs into the page so the worker bootstrap is always correct.

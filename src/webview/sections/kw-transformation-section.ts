@@ -849,11 +849,17 @@ export class KwTransformationSection extends LitElement {
 	private _onDeriveColumnChanged(index: number, field: 'name' | 'expression', value: string): void {
 		const cols = [...this._deriveColumns];
 		if (!cols[index]) cols[index] = { name: '', expression: '' };
+		const oldName = field === 'name' ? cols[index].name : '';
 		cols[index] = { ...cols[index], [field]: value };
 		this._deriveColumns = cols;
 		this._writeToGlobalState();
 		this._computeTransformation();
 		this._schedulePersist();
+
+		// Propagate column rename to downstream sections.
+		if (field === 'name' && oldName && value && oldName !== value) {
+			this._propagateColumnRename(oldName, value);
+		}
 	}
 
 	private _addDeriveColumn(afterIndex: number): void {
@@ -920,6 +926,90 @@ export class KwTransformationSection extends LitElement {
 	private _onDeriveDragEnd(): void {
 		this._deriveDragState = null;
 		this.requestUpdate();
+	}
+
+	/**
+	 * Propagate a column rename to all downstream sections (charts & transformations)
+	 * that use this transformation as their data source.
+	 */
+	private _propagateColumnRename(oldName: string, newName: string): void {
+		try {
+			const myId = this.boxId || this.id;
+			if (!myId) return;
+			const container = document.getElementById('queries-container') as HTMLElement | null;
+			if (!container) return;
+
+			for (const child of Array.from(container.children)) {
+				const el = child as any;
+				const id = el.id ? String(el.id) : '';
+				if (!id || id === myId) continue;
+
+				// Charts that reference this transformation.
+				if (id.startsWith('chart_')) {
+					const w = window as any;
+					const st = typeof w.__kustoGetChartState === 'function' ? w.__kustoGetChartState(id) : null;
+					if (!st || String(st.dataSourceId || '') !== myId) continue;
+
+					let changed = false;
+					if (st.xColumn === oldName) { st.xColumn = newName; changed = true; }
+					if (st.legendColumn === oldName) { st.legendColumn = newName; changed = true; }
+					if (st.labelColumn === oldName) { st.labelColumn = newName; changed = true; }
+					if (st.valueColumn === oldName) { st.valueColumn = newName; changed = true; }
+					if (st.sortColumn === oldName) { st.sortColumn = newName; changed = true; }
+					if (Array.isArray(st.yColumns)) {
+						const idx = st.yColumns.indexOf(oldName);
+						if (idx >= 0) { st.yColumns[idx] = newName; changed = true; }
+					}
+					if (Array.isArray(st.tooltipColumns)) {
+						const idx = st.tooltipColumns.indexOf(oldName);
+						if (idx >= 0) { st.tooltipColumns[idx] = newName; changed = true; }
+					}
+
+					if (changed) {
+						// Sync Lit chart component state.
+						if (typeof el.syncFromGlobalState === 'function') {
+							el.syncFromGlobalState();
+						}
+						// Refresh legacy UI.
+						try { w.__kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+						try { w.__kustoRenderChart(id); } catch { /* ignore */ }
+					}
+					continue;
+				}
+
+				// Downstream transformations that reference this transformation.
+				if (id.startsWith('transformation_')) {
+					const w = window as any;
+					const stMap = w.transformationStateByBoxId;
+					const st = stMap ? stMap[id] : null;
+					if (!st || String(st.dataSourceId || '') !== myId) continue;
+
+					let changed = false;
+					if (st.distinctColumn === oldName) { st.distinctColumn = newName; changed = true; }
+					if (st.pivotRowKeyColumn === oldName) { st.pivotRowKeyColumn = newName; changed = true; }
+					if (st.pivotColumnKeyColumn === oldName) { st.pivotColumnKeyColumn = newName; changed = true; }
+					if (st.pivotValueColumn === oldName) { st.pivotValueColumn = newName; changed = true; }
+					if (Array.isArray(st.groupByColumns)) {
+						const idx = st.groupByColumns.indexOf(oldName);
+						if (idx >= 0) { st.groupByColumns[idx] = newName; changed = true; }
+					}
+					if (Array.isArray(st.aggregations)) {
+						for (const agg of st.aggregations) {
+							if (agg && agg.column === oldName) { agg.column = newName; changed = true; }
+						}
+					}
+
+					if (changed) {
+						// Sync Lit transformation component state.
+						if (typeof el.syncFromGlobalState === 'function') {
+							el.syncFromGlobalState();
+						}
+						try { w.__kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+						try { w.__kustoRenderTransformation(id); } catch { /* ignore */ }
+					}
+				}
+			}
+		} catch { /* ignore */ }
 	}
 
 	// ── Aggregation handlers ──────────────────────────────────────────────────
@@ -1118,6 +1208,14 @@ export class KwTransformationSection extends LitElement {
 
 	// ── Global state bridge ───────────────────────────────────────────────────
 
+	/**
+	 * Read state from the global transformationStateByBoxId into Lit properties.
+	 * Public so column rename propagation can push updated names into this component.
+	 */
+	public syncFromGlobalState(): void {
+		this._syncGlobalState();
+	}
+
 	private _syncGlobalState(): void {
 		const w = window as any;
 		const stateMap = w.transformationStateByBoxId;
@@ -1175,7 +1273,9 @@ export class KwTransformationSection extends LitElement {
 		try {
 			const fn = (window as any).__kustoGetChartDatasetsInDomOrder;
 			if (typeof fn === 'function') {
-				this._datasets = fn() || [];
+				// Filter out this transformation's own ID to prevent circular dependency.
+				const all = fn() || [];
+				this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
 			}
 		} catch { /* ignore */ }
 	}
@@ -1195,6 +1295,37 @@ export class KwTransformationSection extends LitElement {
 
 	private _computeTransformation(): void {
 		if (!this._expanded) return;
+
+		this._computeTransformationImpl();
+
+		// Sync results to the global results-state map so other sections
+		// (charts, other transformations) can use this transformation as a data source.
+		this._syncResultsToGlobal();
+	}
+
+	private _syncResultsToGlobal(): void {
+		try {
+			const w = window as any;
+			const cols = this._resultColumns.map(c => c.name);
+			const rows = this._resultRows;
+			// Register results directly in the global state map so other sections
+			// (charts, other transformations) can use this transformation as a data source.
+			if (typeof w.__kustoSetResultsState === 'function') {
+				w.__kustoSetResultsState(this.boxId, {
+					boxId: this.boxId,
+					columns: cols,
+					rows: rows,
+					metadata: { transformationType: this._transformationType },
+					selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
+					selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
+					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
+					displayRowIndices: null, rowIndexToDisplayIndex: null
+				});
+			}
+		} catch { /* ignore */ }
+	}
+
+	private _computeTransformationImpl(): void {
 
 		this._refreshDatasets();
 		const ds = this._datasets.find(d => d.id === this._dataSourceId);

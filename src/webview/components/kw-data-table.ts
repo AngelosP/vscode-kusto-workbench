@@ -39,6 +39,79 @@ function getCellSortValue(cell: CellValue): string | number | boolean | null {
 	if (typeof cell === 'object' && 'full' in cell) { const f = cell.full; if (typeof f === 'number' || typeof f === 'string' || typeof f === 'boolean') return f; }
 	return getCellDisplayValue(cell);
 }
+
+// ── Column type inference for sorting ──
+
+type ColumnSortType = 'string' | 'number' | 'date' | 'boolean';
+
+const _numRx = /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/;
+
+function tryParseNum(raw: unknown): number | null {
+	if (raw === null || raw === undefined) return null;
+	if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+	if (typeof raw === 'boolean') return null;
+	const s = String(raw).trim();
+	if (s === '' || !_numRx.test(s)) return null;
+	const n = Number(s);
+	return Number.isFinite(n) ? n : null;
+}
+
+const _isoDateRx = /^\d{4}-\d{2}-\d{2}[T ]/;
+const _verboseDateRx = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i;
+
+function tryParseDateMs(raw: unknown): number | null {
+	if (raw === null || raw === undefined) return null;
+	if (typeof raw === 'number' || typeof raw === 'boolean') return null;
+	const s = String(raw).trim();
+	if (s.length < 8) return null;
+	// Only attempt parse for strings that look like dates, not arbitrary text
+	if (!_isoDateRx.test(s) && !_verboseDateRx.test(s)) return null;
+	const t = Date.parse(s);
+	return Number.isFinite(t) ? t : null;
+}
+
+function kustoTypeToSortType(kustoType: string | undefined): ColumnSortType | null {
+	if (!kustoType) return null;
+	const t = kustoType.toLowerCase().replace(/^system\./, '');
+	switch (t) {
+		case 'int': case 'long': case 'real': case 'decimal':
+		case 'int32': case 'int64': case 'double': case 'float': return 'number';
+		case 'datetime': case 'date': return 'date';
+		case 'bool': case 'boolean': return 'boolean';
+		case 'string': case 'guid': return 'string';
+		default: return null;
+	}
+}
+
+function inferColumnTypes(columns: DataTableColumn[], rows: CellValue[][]): ColumnSortType[] {
+	return columns.map((col, i) => {
+		// 1. Column metadata from Kusto (most reliable)
+		const fromMeta = kustoTypeToSortType(col.type);
+		if (fromMeta) return fromMeta;
+
+		// 2. Heuristic: sample first non-null values
+		let numHits = 0, dateHits = 0, boolHits = 0, sample = 0;
+		const limit = Math.min(rows.length, 100);
+		for (let r = 0; r < limit; r++) {
+			const row = rows[r];
+			if (!row) continue;
+			const cell = row[i];
+			const raw = (typeof cell === 'object' && cell !== null && 'full' in cell) ? cell.full : cell;
+			if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) continue;
+			sample++;
+			if (typeof raw === 'boolean') { boolHits++; continue; }
+			if (tryParseNum(raw) !== null) numHits++;
+			if (tryParseDateMs(raw) !== null) dateHits++;
+		}
+		if (sample === 0) return 'string';
+		const threshold = Math.max(1, Math.floor(sample * 0.6));
+		if (boolHits >= threshold) return 'boolean';
+		if (numHits >= threshold) return 'number';
+		// Only infer date if not also parseable as numbers
+		if (dateHits >= threshold && numHits < threshold) return 'date';
+		return 'string';
+	});
+}
 function fmtNum(val: number): string { try { return val.toLocaleString(undefined, { maximumFractionDigits: 20 }); } catch { return String(val); } }
 function fmtDateStr(s: string): string | null {
 	// ISO 8601 date-time → "YYYY-MM-DD HH:MM:SS"
@@ -253,9 +326,13 @@ export class KwDataTable extends LitElement {
 
 	// ── TanStack Table ──
 
+	private _columnTypes: ColumnSortType[] = [];
+
 	private _initTable(): void {
-		if (!this.columns.length) { this._table = null; return; }
+		if (!this.columns.length) { this._table = null; this._columnTypes = []; return; }
 		this._columnWidths = this._computeColumnWidths();
+		this._columnTypes = inferColumnTypes(this.columns, this.rows);
+		const colTypes = this._columnTypes;
 		const defs: ColumnDef<CellValue[]>[] = this.columns.map((col, i) => ({
 			id: String(i), header: col.name, accessorFn: (row: CellValue[]) => row[i],
 			cell: (info: CellContext<CellValue[], unknown>) => info.getValue(),
@@ -263,6 +340,24 @@ export class KwDataTable extends LitElement {
 			sortingFn: (rA: Row<CellValue[]>, rB: Row<CellValue[]>) => {
 				const a = getCellSortValue(rA.original[i]), b = getCellSortValue(rB.original[i]);
 				if (a === null && b === null) return 0; if (a === null) return 1; if (b === null) return -1;
+				const ct = colTypes[i];
+				if (ct === 'number') {
+					const na = typeof a === 'number' ? a : tryParseNum(a);
+					const nb = typeof b === 'number' ? b : tryParseNum(b);
+					if (na !== null && nb !== null) return na - nb;
+					if (na !== null) return -1;
+					if (nb !== null) return 1;
+				} else if (ct === 'date') {
+					const da = tryParseDateMs(a), db = tryParseDateMs(b);
+					if (da !== null && db !== null) return da - db;
+					if (da !== null) return -1;
+					if (db !== null) return 1;
+				} else if (ct === 'boolean') {
+					const ba = typeof a === 'boolean' ? a : String(a).toLowerCase() === 'true';
+					const bb = typeof b === 'boolean' ? b : String(b).toLowerCase() === 'true';
+					return ba === bb ? 0 : ba ? -1 : 1;
+				}
+				// Fallback: native numbers or string compare
 				if (typeof a === 'number' && typeof b === 'number') return a - b;
 				return String(a).localeCompare(String(b));
 			},

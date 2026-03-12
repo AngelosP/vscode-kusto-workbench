@@ -41,7 +41,7 @@ export interface ServerQueryStats {
 }
 
 export interface QueryResult {
-	columns: string[];
+	columns: Array<string | { name: string; type: string }>;
 	rows: any[][];
 	metadata: {
 		cluster: string;
@@ -995,8 +995,12 @@ export class KustoQueryClient {
 			// Get the primary result
 			const primaryResults = result.primaryResults[0];
 			
-			// Extract column names
-			const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
+			// Extract column names and types
+			const columns = primaryResults.columns.map((col: any) => {
+				const name = col.name || col.type || 'Unknown';
+				const type = typeof col.type === 'string' ? col.type : '';
+				return type ? { name, type } : name;
+			});
 			
 			// Helper function to format cell values
 			const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
@@ -1175,7 +1179,11 @@ export class KustoQueryClient {
 				const serverStats = this.extractServerStats(result);
 
 				const primaryResults = result.primaryResults[0];
-				const columns = primaryResults.columns.map((col: any) => col.name || col.type || 'Unknown');
+				const columns = primaryResults.columns.map((col: any) => {
+					const name = col.name || col.type || 'Unknown';
+					const type = typeof col.type === 'string' ? col.type : '';
+					return type ? { name, type } : name;
+				});
 
 				const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
 					if (cell === null || cell === undefined) {
