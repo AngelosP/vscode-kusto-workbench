@@ -343,7 +343,8 @@ export class CachedValuesViewerV2 {
 			"default-src 'none'",
 			"img-src data:",
 			`style-src 'unsafe-inline' ${webview.cspSource}`,
-			`script-src 'nonce-${nonce}' ${webview.cspSource}`
+			`script-src 'nonce-${nonce}' ${webview.cspSource}`,
+			`connect-src ${webview.cspSource}`
 		].join('; ');
 
 		return `<!doctype html>

@@ -184,6 +184,8 @@ export class KwQuerySection extends LitElement {
 
 	// Bound handler for close-on-outside-click
 	private _closeAllBound = this._closeAllDropdowns.bind(this);
+	// Bound handler for close-on-scroll
+	private _closeOnScrollBound = this._closeOnScroll.bind(this);
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
@@ -194,11 +196,13 @@ export class KwQuerySection extends LitElement {
 	override connectedCallback(): void {
 		super.connectedCallback();
 		document.addEventListener('mousedown', this._closeAllBound);
+		document.addEventListener('scroll', this._closeOnScrollBound, true);
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		document.removeEventListener('mousedown', this._closeAllBound);
+		document.removeEventListener('scroll', this._closeOnScrollBound, true);
 	}
 
 	// ── Render ─────────────────────────────────────────────────────────────────
@@ -601,6 +605,18 @@ export class KwQuerySection extends LitElement {
 			this._clusterMenuOpen = false;
 			this._databaseMenuOpen = false;
 			this._favoritesMenuOpen = false;
+			this._schemaPopoverOpen = false;
+		}
+	}
+
+	private _closeOnScroll(e: Event): void {
+		// Don't dismiss if scrolling inside the popover itself.
+		if (this._schemaPopoverOpen) {
+			const target = e.target as Element | null;
+			if (target && this.shadowRoot) {
+				const popover = this.shadowRoot.querySelector('.schema-info-popover');
+				if (popover && popover.contains(target)) return;
+			}
 			this._schemaPopoverOpen = false;
 		}
 	}

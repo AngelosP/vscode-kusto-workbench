@@ -1,4 +1,14 @@
-function __kustoIndexToAlphaName(index) {
+// Query boxes module — converted from legacy/queryBoxes.js
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, any>;
+
+// Diagnostics logging — no-op (was removed from original source, callers remain).
+function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }
+(window as any).__kustoLog = __kustoLog;
+
+function __kustoIndexToAlphaName( index: any) {
 	// Excel-like column naming: 0->A, 25->Z, 26->AA, ...
 	try {
 		let n = Math.max(0, Math.floor(Number(index) || 0));
@@ -15,13 +25,13 @@ function __kustoIndexToAlphaName(index) {
 	}
 }
 
-function __kustoGetUsedSectionNamesUpper(excludeBoxId) {
+function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
 	const used = new Set();
 	try {
-		const container = document.getElementById('queries-container');
+		const container = document.getElementById('queries-container') as any;
 		if (container) {
 			const children = Array.from(container.children || []);
-			for (const child of children) {
+			for (const child of children as any[]) {
 				try {
 					if (!child || !child.id) continue;
 					if (excludeBoxId && child.id === excludeBoxId) continue;
@@ -44,7 +54,7 @@ function __kustoGetUsedSectionNamesUpper(excludeBoxId) {
 	return used;
 }
 
-function __kustoPickNextAvailableSectionLetterName(excludeBoxId) {
+function __kustoPickNextAvailableSectionLetterName( excludeBoxId: any) {
 	try {
 		const used = __kustoGetUsedSectionNamesUpper(excludeBoxId);
 		for (let i = 0; i < 5000; i++) {
@@ -59,7 +69,7 @@ function __kustoPickNextAvailableSectionLetterName(excludeBoxId) {
 	return 'A';
 }
 
-function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
+function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 	try {
 		const id = String(boxId || '');
 		if (!id) return '';
@@ -67,7 +77,7 @@ function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
 		if (current) return current;
 		const next = __kustoPickNextAvailableSectionLetterName(id);
 		__kustoSetSectionName(id, next);
-		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		return next;
 	} catch {
 		return '';
@@ -76,41 +86,41 @@ function __kustoEnsureSectionHasDefaultNameIfMissing(boxId) {
 
 // Expose for persistence + extra box types.
 try {
-	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
-	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
+	(window as any).__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
+	(window as any).__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
 } catch { /* ignore */ }
 
 // ── Global accessor helpers for query section connection/database ──────────
 // These functions abstract access to the connection/database state,
 // working with both the Lit <kw-query-section> element's public API.
 // Use these instead of document.getElementById(boxId + '_connection').
-function __kustoGetConnectionId(boxId) {
+function __kustoGetConnectionId( boxId: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el.getConnectionId();
 	} catch { /* ignore */ }
 	return '';
 }
 
-function __kustoGetDatabase(boxId) {
+function __kustoGetDatabase( boxId: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getDatabase === 'function') return el.getDatabase();
 	} catch { /* ignore */ }
 	return '';
 }
 
-function __kustoGetClusterUrl(boxId) {
+function __kustoGetClusterUrl( boxId: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getClusterUrl === 'function') return el.getClusterUrl();
 	} catch { /* ignore */ }
 	return '';
 }
 
-function __kustoGetQuerySectionElement(boxId) {
+function __kustoGetQuerySectionElement( boxId: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el;
 	} catch { /* ignore */ }
 	return null;
@@ -118,43 +128,43 @@ function __kustoGetQuerySectionElement(boxId) {
 
 // Expose globally for other modules (main.js, monaco.js, schema.js, copilotQueryBoxes.js).
 try {
-	window.__kustoGetConnectionId = __kustoGetConnectionId;
-	window.__kustoGetDatabase = __kustoGetDatabase;
-	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
-	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
+	(window as any).__kustoGetConnectionId = __kustoGetConnectionId;
+	(window as any).__kustoGetDatabase = __kustoGetDatabase;
+	(window as any).__kustoGetClusterUrl = __kustoGetClusterUrl;
+	(window as any).__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
 } catch { /* ignore */ }
 
-function __kustoGetSectionName(boxId) {
+function __kustoGetSectionName( boxId: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getName === 'function') return el.getName();
 	} catch { /* ignore */ }
 	return '';
 }
 
-function __kustoSetSectionName(boxId, name) {
+function __kustoSetSectionName( boxId: any, name: any) {
 	try {
-		const el = document.getElementById(boxId);
+		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.setName === 'function') { el.setName(String(name || '')); return; }
 	} catch { /* ignore */ }
 }
 
 try {
-	window.__kustoGetSectionName = __kustoGetSectionName;
-	window.__kustoSetSectionName = __kustoSetSectionName;
+	(window as any).__kustoGetSectionName = __kustoGetSectionName;
+	(window as any).__kustoSetSectionName = __kustoSetSectionName;
 } catch { /* ignore */ }
 
-function addQueryBox(options) {
-	const isFirstBox = !(Array.isArray(queryBoxes) && queryBoxes.length > 0);
+function addQueryBox( options: any) {
+	const isFirstBox = !(Array.isArray(_win.queryBoxes) && _win.queryBoxes.length > 0);
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
 	const isComparison = !!(options && options.isComparison);
 	const defaultResultsVisible = (options && typeof options.defaultResultsVisible === 'boolean') ? !!options.defaultResultsVisible : true;
 	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
 	const defaultExpanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
-	queryBoxes.push(id);
+	_win.queryBoxes.push(id);
 
-	const container = document.getElementById('queries-container');
+	const container = document.getElementById('queries-container') as any;
 
 	// ── SVG icons used by toolbar buttons (light DOM) ──
 	// Header/connection row icons (cluster, database, refresh, favorites, schema, close,
@@ -198,8 +208,8 @@ function addQueryBox(options) {
 
 	const copilotLogoUri = (() => {
 		try {
-			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
-				? String(window.__kustoQueryEditorConfig.copilotLogoUri)
+			return ((window as any).__kustoQueryEditorConfig && (window as any).__kustoQueryEditorConfig.copilotLogoUri)
+				? String((window as any).__kustoQueryEditorConfig.copilotLogoUri)
 				: '';
 		} catch {
 			return '';
@@ -273,13 +283,13 @@ function addQueryBox(options) {
 		'</span>' +
 		'</button>' +
 		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Auto-completions as you type" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger schema-based completions dropdown as you type\nShortcut for manual trigger: CTRL + SPACE" aria-pressed="' + (autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger schema-based completions dropdown as you type">' +
+		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Auto-completions as you type" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (_win.autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger schema-based completions dropdown as you type\nShortcut for manual trigger: CTRL + SPACE" aria-pressed="' + (_win.autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger schema-based completions dropdown as you type">' +
 		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_copilot_inline_toggle" data-qe-overflow-action="copilotInline" data-qe-overflow-label="Copilot inline suggestions" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-copilot-inline-toggle' + (copilotInlineCompletionsEnabled ? ' is-active' : '') + '" onclick="toggleCopilotInlineCompletionsEnabled()" title="Automatically trigger Copilot inline completions (ghost text) as you type\nShortcut for manual trigger: SHIFT + SPACE" aria-pressed="' + (copilotInlineCompletionsEnabled ? 'true' : 'false') + '" aria-label="Copilot inline suggestions">' +
+		'<button type="button" id="' + id + '_copilot_inline_toggle" data-qe-overflow-action="copilotInline" data-qe-overflow-label="Copilot inline suggestions" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-copilot-inline-toggle' + (_win.copilotInlineCompletionsEnabled ? ' is-active' : '') + '" onclick="toggleCopilotInlineCompletionsEnabled()" title="Automatically trigger Copilot inline completions (ghost text) as you type\nShortcut for manual trigger: SHIFT + SPACE" aria-pressed="' + (_win.copilotInlineCompletionsEnabled ? 'true' : 'false') + '" aria-label="Copilot inline suggestions">' +
 		'<span class="qe-icon" aria-hidden="true">' + ghostIconSvg + '</span>' +
 		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation based on cursor placement (not on mouse hover; on actual cursor placement inside the editor)" aria-pressed="' + (caretDocsEnabled ? 'true' : 'false') + '">' +
+		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (_win.caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation based on cursor placement (not on mouse hover; on actual cursor placement inside the editor)" aria-pressed="' + (_win.caretDocsEnabled ? 'true' : 'false') + '">' +
 		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
 		'</button>' +
 		'<button type="button" id="' + id + '_copilot_chat_toggle" data-qe-overflow-action="copilotChat" data-qe-overflow-label="Copilot chat" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
@@ -383,21 +393,21 @@ function addQueryBox(options) {
 	setRunMode(id, 'take100');
 
 	// ── Wire up <kw-query-section> event listeners ──
-	const kwEl = document.getElementById(id);
+	const kwEl = document.getElementById(id) as any;
 	if (kwEl) {
-		kwEl.addEventListener('connection-changed', (e) => {
+		kwEl.addEventListener('connection-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			// Clear schema so it doesn't mismatch.
-			try { delete schemaByBoxId[boxId]; } catch { /* ignore */ }
-			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
-			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch { /* ignore */ }
-			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
-			try { if (typeof setSchemaLoading === 'function') setSchemaLoading(boxId, false); } catch { /* ignore */ }
+			try { delete _win.schemaByBoxId[boxId]; } catch { /* ignore */ }
+			try { if (_win.schemaFetchInFlightByBoxId) _win.schemaFetchInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
+			try { if (_win.lastSchemaRequestAtByBoxId) _win.lastSchemaRequestAtByBoxId[boxId] = 0; } catch { /* ignore */ }
+			try { if ((window as any).__kustoSchemaRequestTokenByBoxId) delete (window as any).__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
+			try { if (typeof _win.setSchemaLoading === 'function') _win.setSchemaLoading(boxId, false); } catch { /* ignore */ }
 			// Persist selection.
 			try {
-				if (!__kustoRestoreInProgress) {
-					vscode.postMessage({
+				if (!_win.__kustoRestoreInProgress) {
+					(_win.vscode as any).postMessage({
 						type: 'saveLastSelection',
 						connectionId: String(detail.connectionId || ''),
 						database: ''
@@ -408,7 +418,7 @@ function addQueryBox(options) {
 			if (detail.connectionId) {
 				try {
 					const cid = String(detail.connectionId || '').trim();
-					const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+					const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 					const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 					let clusterKey = '';
 					if (clusterUrl) {
@@ -416,68 +426,68 @@ function addQueryBox(options) {
 						if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
 						try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
 					}
-					const cached = (cachedDatabases && cachedDatabases[clusterKey]) || cachedDatabases[detail.connectionId];
+					const cached = (_win.cachedDatabases && _win.cachedDatabases[clusterKey]) || _win.cachedDatabases[detail.connectionId];
 					if (cached && cached.length > 0) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
 						// Background refresh
-						vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch { /* ignore */ }
 					} else {
 						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
-						vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 					}
 				} catch { /* ignore */ }
 			}
 			try { __kustoUpdateFavoritesUiForBox(boxId); } catch { /* ignore */ }
-			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') (window as any).__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('database-changed', (e) => {
+		kwEl.addEventListener('database-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { onDatabaseChanged(boxId); } catch { /* ignore */ }
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { _win.onDatabaseChanged(boxId); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('refresh-databases', (e) => {
+		kwEl.addEventListener('refresh-databases', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			try { refreshDatabases(boxId); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('favorite-toggle', (e) => {
+		kwEl.addEventListener('favorite-toggle', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			try { toggleFavoriteForBox(boxId); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('favorites-mode-changed', (e) => {
+		kwEl.addEventListener('favorites-mode-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			try {
-				if (typeof favoritesModeByBoxId === 'object') {
-					favoritesModeByBoxId[boxId] = !!detail.favoritesMode;
+				if (typeof _win.favoritesModeByBoxId === 'object') {
+					_win.favoritesModeByBoxId[boxId] = !!detail.favoritesMode;
 				}
 			} catch { /* ignore */ }
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('favorite-selected', (e) => {
+		kwEl.addEventListener('favorite-selected', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			try {
 				// Connection changed — load databases and select the favorite's database.
 				if (detail.connectionId) {
-					vscode.postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+					(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 				}
 			} catch { /* ignore */ }
-			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') (window as any).__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('favorite-removed', (e) => {
+		kwEl.addEventListener('favorite-removed', (e: any) => {
 			const detail = e.detail || {};
 			try { removeFavorite(detail.clusterUrl, detail.database); } catch { /* ignore */ }
 		});
-		kwEl.addEventListener('schema-refresh', (e) => {
+		kwEl.addEventListener('schema-refresh', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { refreshSchema(boxId); } catch { /* ignore */ }
+			try { _win.refreshSchema(boxId); } catch { /* ignore */ }
 		});
 	}
 
@@ -486,7 +496,7 @@ function addQueryBox(options) {
 	try {
 		if (!options || (!options.clusterUrl && !options.database)) {
 			// Find the previous query box in the DOM (by iterating container children).
-			const children = container ? Array.from(container.children || []) : [];
+			const children = container ? Array.from(container.children || []) as any[] : [];
 			let prevQueryBoxId = null;
 			for (let i = children.length - 1; i >= 0; i--) {
 				const child = children[i];
@@ -498,13 +508,13 @@ function addQueryBox(options) {
 				}
 			}
 			if (prevQueryBoxId) {
-				const prevEl = document.getElementById(prevQueryBoxId);
+				const prevEl = document.getElementById(prevQueryBoxId) as any;
 				const prevConnId = prevEl && typeof prevEl.getConnectionId === 'function' ? prevEl.getConnectionId() : '';
 				const prevDb = prevEl && typeof prevEl.getDatabase === 'function' ? prevEl.getDatabase() : '';
 				if (prevConnId) {
 					let prevClusterUrl = '';
 					try {
-						const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === prevConnId) : null;
+						const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '') === prevConnId) : null;
 						prevClusterUrl = conn ? String(conn.clusterUrl || '') : '';
 					} catch { /* ignore */ }
 					if (prevClusterUrl && kwEl && typeof kwEl.setDesiredClusterUrl === 'function') {
@@ -530,31 +540,31 @@ function addQueryBox(options) {
 	// If this is the first section and the user has favorites, default to Favorites mode.
 	// (Otherwise, keep the normal cluster+database dropdowns visible.)
 	try {
-		if (isFirstBox && typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-			window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
+		if (isFirstBox && typeof (window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+			(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode();
 		}
 	} catch { /* ignore */ }
-	initQueryEditor(id);
+	_win.initQueryEditor(id);
 
 	// Default visibility state (results + comparison summary)
 	try {
-		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
-			window.__kustoResultsVisibleByBoxId = {};
+		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
+			(window as any).__kustoResultsVisibleByBoxId = {};
 		}
-		window.__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
+		(window as any).__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
 	} catch { /* ignore */ }
 	// Default section visibility state (expanded/collapsed)
 	try {
-		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
-			window.__kustoQueryExpandedByBoxId = {};
+		if (!(window as any).__kustoQueryExpandedByBoxId || typeof (window as any).__kustoQueryExpandedByBoxId !== 'object') {
+			(window as any).__kustoQueryExpandedByBoxId = {};
 		}
-		window.__kustoQueryExpandedByBoxId[id] = defaultExpanded;
+		(window as any).__kustoQueryExpandedByBoxId[id] = defaultExpanded;
 	} catch { /* ignore */ }
 	try {
-		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
-			window.__kustoComparisonSummaryVisibleByBoxId = {};
+		if (!(window as any).__kustoComparisonSummaryVisibleByBoxId || typeof (window as any).__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			(window as any).__kustoComparisonSummaryVisibleByBoxId = {};
 		}
-		window.__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
+		(window as any).__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyQueryBoxVisibility(id); } catch { /* ignore */ }
@@ -565,14 +575,14 @@ function addQueryBox(options) {
 
 	// Drag handle resize for results output.
 	try {
-		const wrapper = document.getElementById(id + '_results_wrapper');
-		const resizer = document.getElementById(id + '_results_resizer');
+		const wrapper = document.getElementById(id + '_results_wrapper') as any;
+		const resizer = document.getElementById(id + '_results_resizer') as any;
 		if (wrapper && resizer) {
 			const computeResizeBounds = () => {
 				let minHeight = 120;
 				let maxHeight = 900;
 				try {
-					const resultsEl = document.getElementById(id + '_results');
+					const resultsEl = document.getElementById(id + '_results') as any;
 					// Detect table content: legacy .table-container OR <kw-data-table> element.
 					const hasLegacyTable = !!(resultsEl && resultsEl.querySelector && resultsEl.querySelector('.table-container'));
 					const dataTableEl = resultsEl && resultsEl.querySelector ? resultsEl.querySelector('kw-data-table') : null;
@@ -586,7 +596,7 @@ function addQueryBox(options) {
 								const contentH = dataTableEl.getContentHeight();
 								if (contentH > 0) {
 									// Add wrapper chrome: resizer + border-top.
-									const resizerEl = document.getElementById(id + '_results_resizer');
+									const resizerEl = document.getElementById(id + '_results_resizer') as any;
 									const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
 									maxHeight = Math.max(minHeight, Math.min(900, contentH + resizerH + 1));
 								}
@@ -605,7 +615,7 @@ function addQueryBox(options) {
 					let contentPx = 0;
 					const children = resultsEl.children ? Array.from(resultsEl.children) : [];
 					if (children.length) {
-						for (const child of children) {
+						for (const child of children as any[]) {
 							try {
 								const rectH = Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
 								let margin = 0;
@@ -629,7 +639,7 @@ function addQueryBox(options) {
 				return { minHeight, maxHeight };
 			};
 
-			resizer.addEventListener('mousedown', (e) => {
+			resizer.addEventListener('mousedown', (e: any) => {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
@@ -644,16 +654,16 @@ function addQueryBox(options) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 				const startHeight = wrapper.getBoundingClientRect().height;
 
-				const onMove = (moveEvent) => {
+				const onMove = (moveEvent: any) => {
 					try {
-						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
-							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
+							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 						}
 					} catch { /* ignore */ }
-					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					const bounds = computeResizeBounds();
 					const minHeight = (bounds && typeof bounds.minHeight === 'number') ? bounds.minHeight : 24;
@@ -669,11 +679,11 @@ function addQueryBox(options) {
 					document.body.style.userSelect = previousUserSelect;
 					try {
 						// Ensure we never leave slack after a drag on error-only content.
-						if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
-							window.__kustoClampResultsWrapperHeight(id);
+						if (typeof (window as any).__kustoClampResultsWrapperHeight === 'function') {
+							(window as any).__kustoClampResultsWrapperHeight(id);
 						}
 					} catch { /* ignore */ }
-					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -695,13 +705,13 @@ function addQueryBox(options) {
 	// This avoids blank slack below short error messages while still allowing the user to
 	// resize smaller than contents (scrolling).
 	try {
-		if (typeof window.__kustoClampResultsWrapperHeight !== 'function') {
-			window.__kustoClampResultsWrapperHeight = function (boxId) {
+		if (typeof (window as any).__kustoClampResultsWrapperHeight !== 'function') {
+			(window as any).__kustoClampResultsWrapperHeight = function (boxId: any) {
 				try {
 					const bid = String(boxId || '').trim();
 					if (!bid) return;
-					const w = document.getElementById(bid + '_results_wrapper');
-					const resultsEl = document.getElementById(bid + '_results');
+					const w = document.getElementById(bid + '_results_wrapper') as any;
+					const resultsEl = document.getElementById(bid + '_results') as any;
 					if (!w || !resultsEl) return;
 					// If we have a table container (legacy or kw-data-table), results are intentionally scrollable; don't clamp.
 					if (resultsEl.querySelector && (resultsEl.querySelector('.table-container') || resultsEl.querySelector('kw-data-table'))) return;
@@ -713,7 +723,7 @@ function addQueryBox(options) {
 					let contentPx = 0;
 					const children = resultsEl.children ? Array.from(resultsEl.children) : [];
 					if (children.length) {
-						for (const child of children) {
+						for (const child of children as any[]) {
 							try {
 								const rectH = Math.max(0, Math.ceil(child.getBoundingClientRect().height || 0));
 								let margin = 0;
@@ -752,20 +762,20 @@ function addQueryBox(options) {
 	// picks it up reliably during async initialization (instead of a fragile setTimeout).
 	if (initialQuery) {
 		try {
-			window.__kustoPendingQueryTextByBoxId = window.__kustoPendingQueryTextByBoxId || {};
-			window.__kustoPendingQueryTextByBoxId[id] = initialQuery;
+			(window as any).__kustoPendingQueryTextByBoxId = (window as any).__kustoPendingQueryTextByBoxId || {};
+			(window as any).__kustoPendingQueryTextByBoxId[id] = initialQuery;
 		} catch { /* ignore */ }
 	}
 	
 	// Check Copilot availability for this box
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'checkCopilotAvailability',
 			boxId: id
 		});
 	} catch { /* ignore */ }
 	
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -777,16 +787,16 @@ function addQueryBox(options) {
 	return id;
 }
 
-function __kustoAutoSizeEditor(boxId) {
+function __kustoAutoSizeEditor( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const editorEl = document.getElementById(id + '_query_editor');
+	const editorEl = document.getElementById(id + '_query_editor') as any;
 	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
 	if (!wrapper) return;
 	const FIT_SLACK_PX = 5;
 	const apply = () => {
 		try {
-			const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
+			const ed = (typeof _win.queryEditors === 'object' && _win.queryEditors) ? _win.queryEditors[id] : null;
 			if (!ed) return;
 			let contentHeight = 0;
 			try {
@@ -795,7 +805,7 @@ function __kustoAutoSizeEditor(boxId) {
 			} catch { /* ignore */ }
 			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
 
-			const addVisibleRectHeight = (el) => {
+			const addVisibleRectHeight = (el: any) => {
 				try {
 					if (!el) return 0;
 					const cs = getComputedStyle(el);
@@ -841,11 +851,11 @@ function __kustoAutoSizeEditor(boxId) {
 	try { apply(); setTimeout(apply, 50); setTimeout(apply, 150); } catch { /* ignore */ }
 }
 
-function __kustoAutoSizeResults(boxId) {
+function __kustoAutoSizeResults( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const w = document.getElementById(id + '_results_wrapper');
-	const resultsEl = document.getElementById(id + '_results');
+	const w = document.getElementById(id + '_results_wrapper') as any;
+	const resultsEl = document.getElementById(id + '_results') as any;
 	if (!w || !resultsEl) return;
 	try { if (getComputedStyle(w).display === 'none') return; } catch { /* ignore */ }
 
@@ -854,7 +864,7 @@ function __kustoAutoSizeResults(boxId) {
 		const contentH = dataTableEl.getContentHeight();
 		if (contentH > 0) {
 			// Wrapper chrome: resizer + border-top.
-			const resizerEl = document.getElementById(id + '_results_resizer');
+			const resizerEl = document.getElementById(id + '_results_resizer') as any;
 			const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
 			const wrapperBorder = 1;
 			const desiredPx = contentH + resizerH + wrapperBorder;
@@ -870,7 +880,7 @@ function __kustoAutoSizeResults(boxId) {
 	try {
 		let chrome = 0;
 		try {
-			for (const child of Array.from(w.children || [])) {
+			for (const child of Array.from(w.children || []) as any[]) {
 				if (!child || child === resultsEl) continue;
 				try { if (getComputedStyle(child).display === 'none') continue; } catch { /* ignore */ }
 				chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
@@ -884,7 +894,7 @@ function __kustoAutoSizeResults(boxId) {
 
 		let contentH = 0;
 		try {
-			for (const child of Array.from(resultsEl.children || [])) {
+			for (const child of Array.from(resultsEl.children || []) as any[]) {
 				try {
 					const cs = getComputedStyle(child);
 					if (cs && cs.display === 'none') continue;
@@ -904,7 +914,7 @@ function __kustoAutoSizeResults(boxId) {
 	} catch { /* ignore */ }
 }
 
-function __kustoMaximizeQueryBox(boxId) {
+function __kustoMaximizeQueryBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 
@@ -916,20 +926,20 @@ function __kustoMaximizeQueryBox(boxId) {
 	setTimeout(() => __kustoAutoSizeResults(id), 50);
 	setTimeout(() => __kustoAutoSizeResults(id), 150);
 
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function __kustoUpdateQueryVisibilityToggleButton(boxId) {
+function __kustoUpdateQueryVisibilityToggleButton( boxId: any) {
 	// Toggle button is now in shadow DOM — the Lit element handles its own rendering
 	// based on the _expanded state. Nothing to do here.
 }
 
-function __kustoApplyQueryBoxVisibility(boxId) {
+function __kustoApplyQueryBoxVisibility( boxId: any) {
 	const kwEl = __kustoGetQuerySectionElement(boxId);
 	if (!kwEl) return;
 	let expanded = true;
 	try {
-		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
+		expanded = !((window as any).__kustoQueryExpandedByBoxId && (window as any).__kustoQueryExpandedByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	if (typeof kwEl.setExpanded === 'function') {
 		kwEl.setExpanded(expanded);
@@ -939,12 +949,12 @@ function __kustoApplyQueryBoxVisibility(boxId) {
 		try {
 			setTimeout(() => {
 				try {
-					const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[boxId] : null;
+					const ed = (typeof _win.queryEditors === 'object' && _win.queryEditors) ? _win.queryEditors[boxId] : null;
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
+					if (typeof (window as any).__kustoUpdateSchemaForFocusedBox === 'function') {
+						(window as any).__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
 				} catch { /* ignore */ }
 			}, 0);
@@ -952,35 +962,35 @@ function __kustoApplyQueryBoxVisibility(boxId) {
 	}
 }
 
-function toggleQueryBoxVisibility(boxId) {
+function toggleQueryBoxVisibility( boxId: any) {
 	try {
-		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
-			window.__kustoQueryExpandedByBoxId = {};
+		if (!(window as any).__kustoQueryExpandedByBoxId || typeof (window as any).__kustoQueryExpandedByBoxId !== 'object') {
+			(window as any).__kustoQueryExpandedByBoxId = {};
 		}
-		const current = !(window.__kustoQueryExpandedByBoxId[boxId] === false);
-		window.__kustoQueryExpandedByBoxId[boxId] = !current;
+		const current = !((window as any).__kustoQueryExpandedByBoxId[boxId] === false);
+		(window as any).__kustoQueryExpandedByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoApplyQueryBoxVisibility(boxId); } catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function __kustoSetResultsVisible(boxId, visible) {
+function __kustoSetResultsVisible( boxId: any, visible: any) {
 	try {
-		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
-			window.__kustoResultsVisibleByBoxId = {};
+		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
+			(window as any).__kustoResultsVisibleByBoxId = {};
 		}
-		window.__kustoResultsVisibleByBoxId[boxId] = !!visible;
+		(window as any).__kustoResultsVisibleByBoxId[boxId] = !!visible;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
 }
 
-function __kustoLockCacheForBenchmark(boxId) {
+function __kustoLockCacheForBenchmark( boxId: any) {
 	const msg = 'When doing performance benchmarks we cannot use caching.';
 	try {
-		const checkbox = document.getElementById(boxId + '_cache_enabled');
-		const valueInput = document.getElementById(boxId + '_cache_value');
-		const unitSelect = document.getElementById(boxId + '_cache_unit');
+		const checkbox = document.getElementById(boxId + '_cache_enabled') as any;
+		const valueInput = document.getElementById(boxId + '_cache_value') as any;
+		const unitSelect = document.getElementById(boxId + '_cache_unit') as any;
 		if (checkbox) {
 			checkbox.checked = false;
 			checkbox.disabled = true;
@@ -1001,21 +1011,21 @@ function __kustoLockCacheForBenchmark(boxId) {
 			unitSelect.title = msg;
 		}
 		try { toggleCacheControls(boxId); } catch { /* ignore */ }
-		try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	} catch {
 		// ignore
 	}
 }
 
-function __kustoNormalizeCellForComparison(cell) {
-	const stripNumericGrouping = (s) => {
+function __kustoNormalizeCellForComparison( cell: any) {
+	const stripNumericGrouping = (s: any) => {
 		try {
 			return String(s).trim().replace(/[, _]/g, '');
 		} catch {
 			return '';
 		}
 	};
-	const isNumericString = (s) => {
+	const isNumericString = (s: any) => {
 		try {
 			const t = stripNumericGrouping(s);
 			if (!t) return false;
@@ -1024,7 +1034,7 @@ function __kustoNormalizeCellForComparison(cell) {
 			return false;
 		}
 	};
-	const tryParseDateMs = (v) => {
+	const tryParseDateMs = (v: any) => {
 		try {
 			if (v instanceof Date) {
 				const t = v.getTime();
@@ -1054,9 +1064,9 @@ function __kustoNormalizeCellForComparison(cell) {
 			return null;
 		}
 	};
-	const stableStringify = (obj) => {
+	const stableStringify = (obj: any) => {
 		const seen = new Set();
-		const walk = (v) => {
+		const walk = (v: any): any => {
 			if (v === null || v === undefined) return v;
 			const t = typeof v;
 			if (t === 'string' || t === 'number' || t === 'boolean') return v;
@@ -1070,7 +1080,7 @@ function __kustoNormalizeCellForComparison(cell) {
 			if (Array.isArray(v)) {
 				return v.map(walk);
 			}
-			const out = {};
+			const out: any = {};
 			for (const k of Object.keys(v).sort()) {
 				try {
 					out[k] = walk(v[k]);
@@ -1087,7 +1097,7 @@ function __kustoNormalizeCellForComparison(cell) {
 			try { return String(obj); } catch { return '[unstringifiable]'; }
 		}
 	};
-	const normalize = (v) => {
+	const normalize = (v: any) => {
 		try {
 			if (v === null || v === undefined) return ['n', null];
 			const t = typeof v;
@@ -1130,7 +1140,7 @@ function __kustoNormalizeCellForComparison(cell) {
 	}
 }
 
-function __kustoRowKeyForComparison(row) {
+function __kustoRowKeyForComparison( row: any) {
 	try {
 		const r = Array.isArray(row) ? row : [];
 		const norm = r.map(__kustoNormalizeCellForComparison);
@@ -1140,7 +1150,7 @@ function __kustoRowKeyForComparison(row) {
 	}
 }
 
-function __kustoNormalizeColumnNameForComparison(name) {
+function __kustoNormalizeColumnNameForComparison( name: any) {
 	try {
 		return String(name == null ? '' : name).trim().toLowerCase();
 	} catch {
@@ -1148,7 +1158,7 @@ function __kustoNormalizeColumnNameForComparison(name) {
 	}
 }
 
-function __kustoGetNormalizedColumnNameList(state) {
+function __kustoGetNormalizedColumnNameList( state: any) {
 	try {
 		const cols = Array.isArray(state && state.columns) ? state.columns : [];
 		return cols.map(__kustoNormalizeColumnNameForComparison);
@@ -1157,7 +1167,7 @@ function __kustoGetNormalizedColumnNameList(state) {
 	}
 }
 
-function __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState) {
+function __kustoDoColumnHeaderNamesMatch( sourceState: any, comparisonState: any) {
 	try {
 		const a = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
 		const b = __kustoGetNormalizedColumnNameList(comparisonState).slice().sort();
@@ -1171,7 +1181,7 @@ function __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState) {
 	}
 }
 
-function __kustoGetColumnDifferences(sourceState, comparisonState) {
+function __kustoGetColumnDifferences( sourceState: any, comparisonState: any) {
 	// Returns { onlyInA: string[], onlyInB: string[] } with original (non-normalized) column names.
 	try {
 		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
@@ -1198,7 +1208,7 @@ function __kustoGetColumnDifferences(sourceState, comparisonState) {
 	}
 }
 
-function __kustoDoColumnOrderMatch(sourceState, comparisonState) {
+function __kustoDoColumnOrderMatch( sourceState: any, comparisonState: any) {
 	try {
 		const a = __kustoGetNormalizedColumnNameList(sourceState);
 		const b = __kustoGetNormalizedColumnNameList(comparisonState);
@@ -1212,7 +1222,7 @@ function __kustoDoColumnOrderMatch(sourceState, comparisonState) {
 	}
 }
 
-function __kustoDoRowOrderMatch(sourceState, comparisonState) {
+function __kustoDoRowOrderMatch( sourceState: any, comparisonState: any) {
 	try {
 		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
 		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
@@ -1223,8 +1233,8 @@ function __kustoDoRowOrderMatch(sourceState, comparisonState) {
 		const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
 		const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
 		const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
-		const rowKeyForA = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
-		const rowKeyForB = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
+		const rowKeyForA = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
+		const rowKeyForB = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
 		for (let i = 0; i < aRows.length; i++) {
 			if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
 				return false;
@@ -1236,7 +1246,7 @@ function __kustoDoRowOrderMatch(sourceState, comparisonState) {
 	}
 }
 
-function __kustoBuildColumnIndexMapForNames(state) {
+function __kustoBuildColumnIndexMapForNames( state: any) {
 	const cols = Array.isArray(state && state.columns) ? state.columns : [];
 	const map = new Map();
 	for (let i = 0; i < cols.length; i++) {
@@ -1249,7 +1259,7 @@ function __kustoBuildColumnIndexMapForNames(state) {
 	return map;
 }
 
-function __kustoBuildNameBasedColumnMapping(state, canonicalNames) {
+function __kustoBuildNameBasedColumnMapping( state: any, canonicalNames: any) {
 	try {
 		const map = __kustoBuildColumnIndexMapForNames(state);
 		const mapping = [];
@@ -1264,20 +1274,20 @@ function __kustoBuildNameBasedColumnMapping(state, canonicalNames) {
 	}
 }
 
-function __kustoRowKeyForComparisonWithColumnMapping(row, mapping) {
+function __kustoRowKeyForComparisonWithColumnMapping( row: any, mapping: any) {
 	try {
 		const r = Array.isArray(row) ? row : [];
-		const norm = (mapping || []).map((idx) => __kustoNormalizeCellForComparison(idx >= 0 ? r[idx] : undefined));
+		const norm = (mapping || []).map((idx: any) => __kustoNormalizeCellForComparison(idx >= 0 ? r[idx] : undefined));
 		return JSON.stringify(norm);
 	} catch {
 		try { return String(row); } catch { return '[uncomparable-row]'; }
 	}
 }
 
-function __kustoRowKeyForComparisonIgnoringColumnOrder(row) {
+function __kustoRowKeyForComparisonIgnoringColumnOrder( row: any) {
 	try {
 		const r = Array.isArray(row) ? row : [];
-		const parts = r.map(__kustoNormalizeCellForComparison).map((c) => {
+		const parts = r.map(__kustoNormalizeCellForComparison).map((c: any) => {
 			try { return JSON.stringify(c); } catch { return String(c); }
 		});
 		parts.sort();
@@ -1287,7 +1297,7 @@ function __kustoRowKeyForComparisonIgnoringColumnOrder(row) {
 	}
 }
 
-function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
+function __kustoAreResultsEquivalentWithDetails( sourceState: any, comparisonState: any) {
 	try {
 		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
 		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
@@ -1333,8 +1343,8 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 			const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
 			const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
 			const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
-			rowKeyForA = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
-			rowKeyForB = (row) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
+			rowKeyForA = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
+			rowKeyForB = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
 			// Row order matches means: after aligning columns by name, each row matches in sequence.
 			rowOrderMatches = true;
 			for (let i = 0; i < aRows.length; i++) {
@@ -1407,7 +1417,7 @@ function __kustoAreResultsEquivalentWithDetails(sourceState, comparisonState) {
 	}
 }
 
-function __kustoAreResultsEquivalent(sourceState, comparisonState) {
+function __kustoAreResultsEquivalent( sourceState: any, comparisonState: any) {
 	try {
 		return !!__kustoAreResultsEquivalentWithDetails(sourceState, comparisonState).dataMatches;
 	} catch {
@@ -1415,7 +1425,7 @@ function __kustoAreResultsEquivalent(sourceState, comparisonState) {
 	}
 }
 
-function __kustoDoResultHeadersMatch(sourceState, comparisonState) {
+function __kustoDoResultHeadersMatch( sourceState: any, comparisonState: any) {
 	try {
 		// Historical name: keep behavior for any callers that expect strict header equality.
 		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
@@ -1430,8 +1440,8 @@ function __kustoDoResultHeadersMatch(sourceState, comparisonState) {
 	}
 }
 
-function __kustoUpdateAcceptOptimizationsButton(comparisonBoxId, enabled, tooltip) {
-	const btn = document.getElementById(comparisonBoxId + '_accept_btn');
+function __kustoUpdateAcceptOptimizationsButton( comparisonBoxId: any, enabled: any, tooltip: any) {
+	const btn = document.getElementById(comparisonBoxId + '_accept_btn') as any;
 	if (!btn) {
 		return;
 	}
@@ -1440,43 +1450,43 @@ function __kustoUpdateAcceptOptimizationsButton(comparisonBoxId, enabled, toolti
 	btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 }
 
-function acceptOptimizations(comparisonBoxId) {
+function acceptOptimizations( comparisonBoxId: any) {
 	try {
-		const meta = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) ? optimizationMetadataByBoxId[comparisonBoxId] : null;
+		const meta = (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) ? _win.optimizationMetadataByBoxId[comparisonBoxId] : null;
 		const sourceBoxId = meta && meta.sourceBoxId ? meta.sourceBoxId : '';
 		const optimizedQuery = meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '';
 		if (!sourceBoxId || !optimizedQuery) {
 			return;
 		}
-		if (queryEditors[sourceBoxId] && typeof queryEditors[sourceBoxId].setValue === 'function') {
-			queryEditors[sourceBoxId].setValue(optimizedQuery);
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+		if (_win.queryEditors[sourceBoxId] && typeof _win.queryEditors[sourceBoxId].setValue === 'function') {
+			_win.queryEditors[sourceBoxId].setValue(optimizedQuery);
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch { /* ignore */ }
 		// Remove comparison box and clear metadata links.
 		try { removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
 		try {
-			if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-				delete optimizationMetadataByBoxId[comparisonBoxId];
-				if (optimizationMetadataByBoxId[sourceBoxId]) {
-					delete optimizationMetadataByBoxId[sourceBoxId];
+			if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+				delete _win.optimizationMetadataByBoxId[comparisonBoxId];
+				if (_win.optimizationMetadataByBoxId[sourceBoxId]) {
+					delete _win.optimizationMetadataByBoxId[sourceBoxId];
 				}
 			}
 		} catch { /* ignore */ }
-		try { vscode.postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch { /* ignore */ }
 	} catch {
 		// ignore
 	}
 }
 
-function __kustoUpdateQueryResultsToggleButton(boxId) {
-	const btn = document.getElementById(boxId + '_results_toggle');
+function __kustoUpdateQueryResultsToggleButton( boxId: any) {
+	const btn = document.getElementById(boxId + '_results_toggle') as any;
 	if (!btn) {
 		return;
 	}
 	let visible = true;
 	try {
-		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
@@ -1484,14 +1494,14 @@ function __kustoUpdateQueryResultsToggleButton(boxId) {
 	btn.setAttribute('aria-label', visible ? 'Hide results' : 'Show results');
 }
 
-function __kustoUpdateComparisonSummaryToggleButton(boxId) {
-	const btn = document.getElementById(boxId + '_summary_toggle');
+function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
+	const btn = document.getElementById(boxId + '_summary_toggle') as any;
 	if (!btn) {
 		return;
 	}
 	let visible = true;
 	try {
-		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		visible = !((window as any).__kustoComparisonSummaryVisibleByBoxId && (window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
@@ -1499,43 +1509,43 @@ function __kustoUpdateComparisonSummaryToggleButton(boxId) {
 	btn.setAttribute('aria-label', visible ? 'Hide comparison summary' : 'Show comparison summary');
 }
 
-function __kustoApplyResultsVisibility(boxId) {
-	const wrapper = document.getElementById(boxId + '_results_wrapper');
+function __kustoApplyResultsVisibility( boxId: any) {
+	const wrapper = document.getElementById(boxId + '_results_wrapper') as any;
 	if (!wrapper) {
 		// Support non-query-box results (e.g. URL CSV preview) that render a results block
 		// without the surrounding *_results_wrapper.
 		let visible = true;
 		try {
-			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+			visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
 		} catch { /* ignore */ }
 		try {
-			const body = document.getElementById(boxId + '_results_body');
+			const body = document.getElementById(boxId + '_results_body') as any;
 			if (body) {
 				body.style.display = visible ? '' : 'none';
 			}
 		} catch { /* ignore */ }
 		try {
-			const resultsDiv = document.getElementById(boxId + '_results');
+			const resultsDiv = document.getElementById(boxId + '_results') as any;
 			if (resultsDiv && resultsDiv.classList) {
 				resultsDiv.classList.toggle('is-results-hidden', !visible);
 			}
 		} catch { /* ignore */ }
 		try {
-			if (typeof __kustoSetResultsToolsVisible === 'function') {
-				__kustoSetResultsToolsVisible(boxId, visible);
+			if (typeof _win.__kustoSetResultsToolsVisible === 'function') {
+				_win.__kustoSetResultsToolsVisible(boxId, visible);
 			}
-			if (!visible && typeof __kustoHideResultsTools === 'function') {
-				__kustoHideResultsTools(boxId);
+			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
+				_win.__kustoHideResultsTools(boxId);
 			}
 		} catch { /* ignore */ }
 		return;
 	}
 	let visible = true;
 	try {
-		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	// Only show wrapper when there's content.
-	const resultsDiv = document.getElementById(boxId + '_results');
+	const resultsDiv = document.getElementById(boxId + '_results') as any;
 	const hasContent = !!(resultsDiv && String(resultsDiv.innerHTML || '').trim());
 	let hasTable = false;
 	try {
@@ -1546,7 +1556,7 @@ function __kustoApplyResultsVisibility(boxId) {
 	// Just ensure the wrapper and resizer are visible; don't apply legacy collapse/expand.
 	if (resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('kw-data-table')) {
 		wrapper.style.display = 'flex';
-		const resizer = document.getElementById(boxId + '_results_resizer');
+		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		if (resizer) resizer.style.display = '';
 		if (!wrapper.style.height || wrapper.style.height === 'auto') {
 			wrapper.style.height = '300px';
@@ -1556,19 +1566,19 @@ function __kustoApplyResultsVisibility(boxId) {
 
 	wrapper.style.display = hasContent ? 'flex' : 'none';
 	if (hasContent) {
-		const body = document.getElementById(boxId + '_results_body');
+		const body = document.getElementById(boxId + '_results_body') as any;
 		if (body) {
 			body.style.display = visible ? '' : 'none';
 		}
 		try {
-			if (typeof __kustoSetResultsToolsVisible === 'function') {
-				__kustoSetResultsToolsVisible(boxId, visible);
+			if (typeof _win.__kustoSetResultsToolsVisible === 'function') {
+				_win.__kustoSetResultsToolsVisible(boxId, visible);
 			}
-			if (!visible && typeof __kustoHideResultsTools === 'function') {
-				__kustoHideResultsTools(boxId);
+			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
+				_win.__kustoHideResultsTools(boxId);
 			}
 		} catch { /* ignore */ }
-		const resizer = document.getElementById(boxId + '_results_resizer');
+		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		if (resizer) {
 			// Cleaner UI: only show the resize handle when a successful results table is rendered.
 			resizer.style.display = (visible && hasTable) ? '' : 'none';
@@ -1622,8 +1632,8 @@ function __kustoApplyResultsVisibility(boxId) {
 	}
 }
 
-function __kustoApplyComparisonSummaryVisibility(boxId) {
-	const box = document.getElementById(boxId);
+function __kustoApplyComparisonSummaryVisibility( boxId: any) {
+	const box = document.getElementById(boxId) as any;
 	if (!box) {
 		return;
 	}
@@ -1632,63 +1642,63 @@ function __kustoApplyComparisonSummaryVisibility(boxId) {
 		return;
 	}
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].isComparison) {
 			banner.style.display = '';
 			return;
 		}
 	} catch { /* ignore */ }
 	let visible = true;
 	try {
-		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		visible = !((window as any).__kustoComparisonSummaryVisibleByBoxId && (window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	banner.style.display = visible ? '' : 'none';
 }
 
-function toggleQueryResultsVisibility(boxId) {
+function toggleQueryResultsVisibility( boxId: any) {
 	try {
-		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
-			window.__kustoResultsVisibleByBoxId = {};
+		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
+			(window as any).__kustoResultsVisibleByBoxId = {};
 		}
-		const current = !(window.__kustoResultsVisibleByBoxId[boxId] === false);
-		window.__kustoResultsVisibleByBoxId[boxId] = !current;
+		const current = !((window as any).__kustoResultsVisibleByBoxId[boxId] === false);
+		(window as any).__kustoResultsVisibleByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
 	try {
-		if (typeof window.__kustoOnResultsVisibilityToggled === 'function') {
-			window.__kustoOnResultsVisibilityToggled(boxId);
+		if (typeof (window as any).__kustoOnResultsVisibilityToggled === 'function') {
+			(window as any).__kustoOnResultsVisibilityToggled(boxId);
 		}
 	} catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function toggleComparisonSummaryVisibility(boxId) {
+function toggleComparisonSummaryVisibility( boxId: any) {
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].isComparison) {
 			// Optimized sections always show summary.
 			return;
 		}
 	} catch { /* ignore */ }
 	try {
-		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
-			window.__kustoComparisonSummaryVisibleByBoxId = {};
+		if (!(window as any).__kustoComparisonSummaryVisibleByBoxId || typeof (window as any).__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			(window as any).__kustoComparisonSummaryVisibleByBoxId = {};
 		}
-		const current = !(window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
-		window.__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
+		const current = !((window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		(window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoEnsureCacheBackupMap() {
-	if (!window.__kustoCacheBackupByBoxId || typeof window.__kustoCacheBackupByBoxId !== 'object') {
-		window.__kustoCacheBackupByBoxId = {};
+	if (!(window as any).__kustoCacheBackupByBoxId || typeof (window as any).__kustoCacheBackupByBoxId !== 'object') {
+		(window as any).__kustoCacheBackupByBoxId = {};
 	}
-	return window.__kustoCacheBackupByBoxId;
+	return (window as any).__kustoCacheBackupByBoxId;
 }
 
-function __kustoBackupCacheSettings(boxId) {
+function __kustoBackupCacheSettings( boxId: any) {
 	if (!boxId) {
 		return;
 	}
@@ -1697,9 +1707,9 @@ function __kustoBackupCacheSettings(boxId) {
 		return;
 	}
 	try {
-		const enabledEl = document.getElementById(boxId + '_cache_enabled');
-		const valueEl = document.getElementById(boxId + '_cache_value');
-		const unitEl = document.getElementById(boxId + '_cache_unit');
+		const enabledEl = document.getElementById(boxId + '_cache_enabled') as any;
+		const valueEl = document.getElementById(boxId + '_cache_value') as any;
+		const unitEl = document.getElementById(boxId + '_cache_unit') as any;
 		map[boxId] = {
 			enabled: enabledEl ? !!enabledEl.checked : true,
 			value: valueEl ? (parseInt(valueEl.value) || 1) : 1,
@@ -1710,7 +1720,7 @@ function __kustoBackupCacheSettings(boxId) {
 	}
 }
 
-function __kustoRestoreCacheSettings(boxId) {
+function __kustoRestoreCacheSettings( boxId: any) {
 	if (!boxId) {
 		return;
 	}
@@ -1719,9 +1729,9 @@ function __kustoRestoreCacheSettings(boxId) {
 	if (!backup) {
 		// Ensure controls are re-enabled if we had disabled them.
 		try {
-			const enabledEl = document.getElementById(boxId + '_cache_enabled');
-			const valueEl = document.getElementById(boxId + '_cache_value');
-			const unitEl = document.getElementById(boxId + '_cache_unit');
+			const enabledEl = document.getElementById(boxId + '_cache_enabled') as any;
+			const valueEl = document.getElementById(boxId + '_cache_value') as any;
+			const unitEl = document.getElementById(boxId + '_cache_unit') as any;
 			if (enabledEl) { enabledEl.disabled = false; enabledEl.title = ''; }
 			if (valueEl) { valueEl.disabled = false; valueEl.title = ''; }
 			if (unitEl) { unitEl.disabled = false; unitEl.title = ''; }
@@ -1730,9 +1740,9 @@ function __kustoRestoreCacheSettings(boxId) {
 		return;
 	}
 	try {
-		const enabledEl = document.getElementById(boxId + '_cache_enabled');
-		const valueEl = document.getElementById(boxId + '_cache_value');
-		const unitEl = document.getElementById(boxId + '_cache_unit');
+		const enabledEl = document.getElementById(boxId + '_cache_enabled') as any;
+		const valueEl = document.getElementById(boxId + '_cache_value') as any;
+		const unitEl = document.getElementById(boxId + '_cache_unit') as any;
 		if (enabledEl) {
 			enabledEl.checked = !!backup.enabled;
 			enabledEl.disabled = false;
@@ -1757,17 +1767,17 @@ function __kustoRestoreCacheSettings(boxId) {
 		// ignore
 	}
 	try { delete map[boxId]; } catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoEnsureRunModeBackupMap() {
-	if (!window.__kustoRunModeBackupByBoxId || typeof window.__kustoRunModeBackupByBoxId !== 'object') {
-		window.__kustoRunModeBackupByBoxId = {};
+	if (!(window as any).__kustoRunModeBackupByBoxId || typeof (window as any).__kustoRunModeBackupByBoxId !== 'object') {
+		(window as any).__kustoRunModeBackupByBoxId = {};
 	}
-	return window.__kustoRunModeBackupByBoxId;
+	return (window as any).__kustoRunModeBackupByBoxId;
 }
 
-function __kustoBackupRunMode(boxId) {
+function __kustoBackupRunMode( boxId: any) {
 	if (!boxId) return;
 	const map = __kustoEnsureRunModeBackupMap();
 	// Only back up once per optimization session.
@@ -1781,7 +1791,7 @@ function __kustoBackupRunMode(boxId) {
 	}
 }
 
-function __kustoRestoreRunMode(boxId) {
+function __kustoRestoreRunMode( boxId: any) {
 	if (!boxId) return;
 	const map = __kustoEnsureRunModeBackupMap();
 	const backup = map[boxId];
@@ -1794,10 +1804,10 @@ function __kustoRestoreRunMode(boxId) {
 	try { delete map[boxId]; } catch { /* ignore */ }
 }
 
-function __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, active) {
+function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: any, active: any) {
 	const ids = [String(sourceBoxId || '').trim(), String(comparisonBoxId || '').trim()].filter(Boolean);
 	for (const id of ids) {
-		const el = document.getElementById(id);
+		const el = document.getElementById(id) as any;
 		if (!el) continue;
 		if (active) {
 			try { __kustoBackupCacheSettings(id); } catch { /* ignore */ }
@@ -1813,80 +1823,80 @@ function __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, active) 
 }
 
 function updateCaretDocsToggleButtons() {
-	for (const boxId of queryBoxes) {
-		const btn = document.getElementById(boxId + '_caret_docs_toggle');
+	for (const boxId of _win.queryBoxes) {
+		const btn = document.getElementById(boxId + '_caret_docs_toggle') as any;
 		if (!btn) {
 			continue;
 		}
-		btn.setAttribute('aria-pressed', caretDocsEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!caretDocsEnabled);
+		btn.setAttribute('aria-pressed', _win.caretDocsEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!_win.caretDocsEnabled);
 	}
 }
 
 function updateAutoTriggerAutocompleteToggleButtons() {
-	for (const boxId of queryBoxes) {
-		const btn = document.getElementById(boxId + '_auto_autocomplete_toggle');
+	for (const boxId of _win.queryBoxes) {
+		const btn = document.getElementById(boxId + '_auto_autocomplete_toggle') as any;
 		if (!btn) {
 			continue;
 		}
-		btn.setAttribute('aria-pressed', autoTriggerAutocompleteEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!autoTriggerAutocompleteEnabled);
+		btn.setAttribute('aria-pressed', _win.autoTriggerAutocompleteEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!_win.autoTriggerAutocompleteEnabled);
 	}
 }
 
 function toggleAutoTriggerAutocompleteEnabled() {
-	autoTriggerAutocompleteEnabled = !autoTriggerAutocompleteEnabled;
-	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch { /* ignore */ }
+	_win.autoTriggerAutocompleteEnabled = !_win.autoTriggerAutocompleteEnabled;
+	try { (window as any).__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch { /* ignore */ }
 	updateAutoTriggerAutocompleteToggleButtons();
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		vscode.postMessage({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!autoTriggerAutocompleteEnabled });
+		(_win.vscode as any).postMessage({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!_win.autoTriggerAutocompleteEnabled });
 	} catch {
 		// ignore
 	}
 
 	// When enabling, kick once for the currently focused editor (matches ADX feel).
-	if (autoTriggerAutocompleteEnabled) {
+	if (_win.autoTriggerAutocompleteEnabled) {
 		try {
-			const boxId = (typeof activeQueryEditorBoxId === 'string') ? activeQueryEditorBoxId : null;
-			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
-				window.__kustoTriggerAutocompleteForBoxId(boxId);
+			const boxId = (typeof _win.activeQueryEditorBoxId === 'string') ? _win.activeQueryEditorBoxId : null;
+			if (boxId && typeof (window as any).__kustoTriggerAutocompleteForBoxId === 'function') {
+				(window as any).__kustoTriggerAutocompleteForBoxId(boxId);
 			}
 		} catch { /* ignore */ }
 	}
 }
 
 function updateCopilotInlineCompletionsToggleButtons() {
-	for (const boxId of queryBoxes) {
-		const btn = document.getElementById(boxId + '_copilot_inline_toggle');
+	for (const boxId of _win.queryBoxes) {
+		const btn = document.getElementById(boxId + '_copilot_inline_toggle') as any;
 		if (!btn) {
 			continue;
 		}
-		btn.setAttribute('aria-pressed', copilotInlineCompletionsEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!copilotInlineCompletionsEnabled);
+		btn.setAttribute('aria-pressed', _win.copilotInlineCompletionsEnabled ? 'true' : 'false');
+		btn.classList.toggle('is-active', !!_win.copilotInlineCompletionsEnabled);
 	}
 }
 
 function toggleCopilotInlineCompletionsEnabled() {
-	copilotInlineCompletionsEnabled = !copilotInlineCompletionsEnabled;
-	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch { /* ignore */ }
+	_win.copilotInlineCompletionsEnabled = !_win.copilotInlineCompletionsEnabled;
+	try { (window as any).__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch { /* ignore */ }
 	updateCopilotInlineCompletionsToggleButtons();
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		vscode.postMessage({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!copilotInlineCompletionsEnabled });
+		(_win.vscode as any).postMessage({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!_win.copilotInlineCompletionsEnabled });
 	} catch {
 		// ignore
 	}
 }
 
 function toggleCaretDocsEnabled() {
-	caretDocsEnabled = !caretDocsEnabled;
+	_win.caretDocsEnabled = !_win.caretDocsEnabled;
 	updateCaretDocsToggleButtons();
 	// Hide existing overlays immediately when turning off.
-	if (!caretDocsEnabled) {
+	if (!_win.caretDocsEnabled) {
 		try {
-			for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
-				const overlay = caretDocOverlaysByBoxId[key];
+			for (const key of Object.keys(_win.caretDocOverlaysByBoxId || {})) {
+				const overlay = _win.caretDocOverlaysByBoxId[key];
 				if (overlay && typeof overlay.hide === 'function') {
 					overlay.hide();
 				}
@@ -1899,9 +1909,9 @@ function toggleCaretDocsEnabled() {
 		try {
 			const watermarkTitle = 'Smart documentation';
 			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
-			for (const boxId of queryBoxes) {
+			for (const boxId of _win.queryBoxes) {
 				try {
-					const banner = document.getElementById(boxId + '_caret_docs');
+					const banner = document.getElementById(boxId + '_caret_docs') as any;
 					const text = document.getElementById(boxId + '_caret_docs_text') || banner;
 					if (banner) {
 						banner.style.display = 'flex';
@@ -1924,7 +1934,7 @@ function toggleCaretDocsEnabled() {
 
 		// Then refresh any Monaco-driven overlays so real docs content replaces the watermark.
 		try {
-			const overlays = (typeof caretDocOverlaysByBoxId !== 'undefined') ? caretDocOverlaysByBoxId : null;
+			const overlays = (typeof _win.caretDocOverlaysByBoxId !== 'undefined') ? _win.caretDocOverlaysByBoxId : null;
 			if (overlays && typeof overlays === 'object') {
 				for (const key of Object.keys(overlays)) {
 					try {
@@ -1938,19 +1948,19 @@ function toggleCaretDocsEnabled() {
 		} catch { /* ignore */ }
 	}
 	try {
-		vscode.postMessage({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled });
+		(_win.vscode as any).postMessage({ type: 'setCaretDocsEnabled', enabled: !!_win.caretDocsEnabled });
 	} catch {
 		// ignore
 	}
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function onQueryEditorToolbarAction(boxId, action) {
+function onQueryEditorToolbarAction( boxId: any, action: any) {
 	// Focus the editor so Monaco widgets (find/replace) attach correctly.
 	try {
-		activeQueryEditorBoxId = boxId;
-		if (queryEditors[boxId]) {
-			queryEditors[boxId].focus();
+		_win.activeQueryEditorBoxId = boxId;
+		if (_win.queryEditors[boxId]) {
+			_win.queryEditors[boxId].focus();
 		}
 	} catch {
 		// ignore
@@ -1958,7 +1968,7 @@ function onQueryEditorToolbarAction(boxId, action) {
 
 	if (action === 'undo') {
 		try {
-			const editor = queryEditors[boxId];
+			const editor = _win.queryEditors[boxId];
 			if (editor) {
 				editor.trigger('toolbar', 'undo', null);
 			}
@@ -1967,7 +1977,7 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'redo') {
 		try {
-			const editor = queryEditors[boxId];
+			const editor = _win.queryEditors[boxId];
 			if (editor) {
 				editor.trigger('toolbar', 'redo', null);
 			}
@@ -1982,8 +1992,8 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'prettify') {
 		try {
-			if (typeof window.__kustoPrettifyQueryForBoxId === 'function') {
-				window.__kustoPrettifyQueryForBoxId(boxId);
+			if (typeof (window as any).__kustoPrettifyQueryForBoxId === 'function') {
+				(window as any).__kustoPrettifyQueryForBoxId(boxId);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -1992,8 +2002,8 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'singleLine') {
 		try {
-			if (typeof window.__kustoCopySingleLineQueryForBoxId === 'function') {
-				window.__kustoCopySingleLineQueryForBoxId(boxId);
+			if (typeof (window as any).__kustoCopySingleLineQueryForBoxId === 'function') {
+				(window as any).__kustoCopySingleLineQueryForBoxId(boxId);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -2001,8 +2011,8 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'autocomplete') {
 		try {
-			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
-				window.__kustoTriggerAutocompleteForBoxId(boxId);
+			if (typeof (window as any).__kustoTriggerAutocompleteForBoxId === 'function') {
+				(window as any).__kustoTriggerAutocompleteForBoxId(boxId);
 				return;
 			}
 		} catch {
@@ -2024,17 +2034,17 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 	if (action === 'qualifyTables') {
 		try {
-			if (qualifyTablesInFlightByBoxId && qualifyTablesInFlightByBoxId[boxId]) {
+			if (_win.qualifyTablesInFlightByBoxId && _win.qualifyTablesInFlightByBoxId[boxId]) {
 				return;
 			}
 		} catch { /* ignore */ }
-		try { qualifyTablesInFlightByBoxId[boxId] = true; } catch { /* ignore */ }
+		try { _win.qualifyTablesInFlightByBoxId[boxId] = true; } catch { /* ignore */ }
 		try { setToolbarActionBusy(boxId, 'qualifyTables', true); } catch { /* ignore */ }
 		(async () => {
 			try {
 				await fullyQualifyTablesInEditor(boxId);
 			} finally {
-				try { qualifyTablesInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
+				try { _win.qualifyTablesInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
 				try { setToolbarActionBusy(boxId, 'qualifyTables', false); } catch { /* ignore */ }
 			}
 		})();
@@ -2042,11 +2052,11 @@ function onQueryEditorToolbarAction(boxId, action) {
 	}
 }
 
-function copyQueryAsAdeLink(boxId) {
-	const __kustoExtractStatementAtCursor = (editor) => {
+function copyQueryAsAdeLink( boxId: any) {
+	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try {
-			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
-				return window.__kustoExtractStatementTextAtCursor(editor);
+			if (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function') {
+				return (window as any).__kustoExtractStatementTextAtCursor(editor);
 			}
 		} catch { /* ignore */ }
 		try {
@@ -2106,7 +2116,7 @@ function copyQueryAsAdeLink(boxId) {
 				blocks.push({ startLine, endLine: lineCount });
 			}
 
-			const block = blocks.find(b => cursorLine >= b.startLine && cursorLine <= b.endLine);
+			const block = blocks.find((b: any) => cursorLine >= b.startLine && cursorLine <= b.endLine);
 			if (!block) {
 				// Cursor is on a blank separator line (or the editor is empty).
 				return null;
@@ -2134,14 +2144,14 @@ function copyQueryAsAdeLink(boxId) {
 		}
 	};
 
-	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+	const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
 	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
 		if (editor) {
 			const model = editor.getModel && editor.getModel();
-			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
-				? window.__kustoGetStatementBlocksFromModel(model)
+			const blocks = (model && typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
+				? (window as any).__kustoGetStatementBlocksFromModel(model)
 				: [];
 			const hasMultipleStatements = blocks && blocks.length > 1;
 			if (hasMultipleStatements) {
@@ -2150,7 +2160,7 @@ function copyQueryAsAdeLink(boxId) {
 					query = statement;
 				} else {
 					try {
-						vscode.postMessage({
+						(_win.vscode as any).postMessage({
 							type: 'showInfo',
 							message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
 						});
@@ -2166,8 +2176,8 @@ function copyQueryAsAdeLink(boxId) {
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[boxId];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(sourceBoxId);
@@ -2179,20 +2189,20 @@ function copyQueryAsAdeLink(boxId) {
 	} catch { /* ignore */ }
 
 	if (!String(query || '').trim()) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'There is no query text to share.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'There is no query text to share.' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!String(connectionId || '').trim()) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!String(database || '').trim()) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Select a database first.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select a database first.' }); } catch { /* ignore */ }
 		return;
 	}
 
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'copyAdeLink',
 			query,
 			connectionId,
@@ -2208,10 +2218,10 @@ function copyQueryAsAdeLink(boxId) {
  * Opens the Share modal for a query section, allowing users to copy
  * title, query, and results to clipboard formatted for Teams.
  */
-function __kustoOpenShareModal(boxId) {
+function __kustoOpenShareModal( boxId: any) {
 	if (!boxId) return;
 
-	const modal = document.getElementById('shareModal');
+	const modal = document.getElementById('shareModal') as any;
 	if (!modal) return;
 
 	// Store the active box id on the modal.
@@ -2220,39 +2230,39 @@ function __kustoOpenShareModal(boxId) {
 	// Pre-populate the section name.
 	const nameInput = null;
 	const sectionName = __kustoGetSectionName(boxId);
-	const titleEl = document.getElementById('shareModal_title');
+	const titleEl = document.getElementById('shareModal_title') as any;
 	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
 
 	// Determine whether results are available.
-	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+	const state = (typeof _win.__kustoGetResultsState === 'function') ? _win.__kustoGetResultsState(boxId) : null;
 	const hasResults = !!(state && Array.isArray(state.columns) && state.columns.length > 0 && Array.isArray(state.rows) && state.rows.length > 0);
 	const totalRows = hasResults ? state.rows.length : 0;
-	const resultsCheck = document.getElementById('shareModal_chk_results');
+	const resultsCheck = document.getElementById('shareModal_chk_results') as any;
 	if (resultsCheck) {
 		resultsCheck.checked = hasResults;
 		resultsCheck.disabled = !hasResults;
 	}
-	const resultsLabel = document.getElementById('shareModal_label_results');
+	const resultsLabel = document.getElementById('shareModal_label_results') as any;
 	if (resultsLabel) {
 		resultsLabel.classList.toggle('share-modal-option-disabled', !hasResults);
 	}
 
 	// Set up row limit input with total row count.
-	const rowLimitInput = document.getElementById('shareModal_rowLimit');
+	const rowLimitInput = document.getElementById('shareModal_rowLimit') as any;
 	if (rowLimitInput) {
 		rowLimitInput.max = String(totalRows || 200);
 		rowLimitInput.value = String(Math.min(totalRows || 10, 10));
 		rowLimitInput.disabled = !hasResults;
 	}
-	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup');
+	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup') as any;
 	if (rowLimitGroup) {
 		rowLimitGroup.style.display = hasResults ? '' : 'none';
 	}
-	const resultsSubtitle = document.getElementById('shareModal_results_subtitle');
+	const resultsSubtitle = document.getElementById('shareModal_results_subtitle') as any;
 	if (resultsSubtitle) {
 		resultsSubtitle.textContent = 'Formatted as a table';
 	}
-	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal');
+	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal') as any;
 	if (rowLimitTotal) {
 		rowLimitTotal.textContent = 'of ' + totalRows.toLocaleString() + ' rows';
 	}
@@ -2267,8 +2277,8 @@ function __kustoOpenShareModal(boxId) {
 
 	// Inherit from source box if this is a comparison section.
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[boxId];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(src);
@@ -2280,26 +2290,26 @@ function __kustoOpenShareModal(boxId) {
 	} catch { /* ignore */ }
 
 	const hasLink = !!(String(connectionId || '').trim() && String(database || '').trim());
-	const linkCheck = document.getElementById('shareModal_chk_title');
+	const linkCheck = document.getElementById('shareModal_chk_title') as any;
 	if (linkCheck) {
 		linkCheck.checked = hasLink;
 		linkCheck.disabled = !hasLink;
 	}
-	const linkLabel = document.getElementById('shareModal_label_title');
+	const linkLabel = document.getElementById('shareModal_label_title') as any;
 	if (linkLabel) {
 		linkLabel.classList.toggle('share-modal-option-disabled', !hasLink);
 	}
 
 	// Also update the link subtitle with a preview of what we'll generate.
-	const linkSubtitle = document.getElementById('shareModal_link_subtitle');
+	const linkSubtitle = document.getElementById('shareModal_link_subtitle') as any;
 	if (linkSubtitle) {
 		linkSubtitle.textContent = hasLink ? 'Includes a Direct link to query (Azure Data Explorer)' : 'Select a cluster and database to include a link';
 	}
 
 	// Reset the query checkbox.
-	const queryCheck = document.getElementById('shareModal_chk_query');
+	const queryCheck = document.getElementById('shareModal_chk_query') as any;
 	if (queryCheck) {
-		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 		const hasQuery = !!(editor && String(editor.getValue() || '').trim());
 		queryCheck.checked = hasQuery;
 		queryCheck.disabled = !hasQuery;
@@ -2309,31 +2319,31 @@ function __kustoOpenShareModal(boxId) {
 	modal.classList.add('visible');
 }
 
-function __kustoCloseShareModal(event) {
+function __kustoCloseShareModal( event?: any) {
 	if (event && event.target && event.target.id !== 'shareModal') return;
-	const modal = document.getElementById('shareModal');
+	const modal = document.getElementById('shareModal') as any;
 	if (modal) modal.classList.remove('visible');
 }
 
 function __kustoShareCopyToClipboard() {
-	const modal = document.getElementById('shareModal');
+	const modal = document.getElementById('shareModal') as any;
 	if (!modal) return;
 	const boxId = modal.dataset.boxId;
 	if (!boxId) return;
 
-	const includeTitle = !!(document.getElementById('shareModal_chk_title') || {}).checked;
-	const includeQuery = !!(document.getElementById('shareModal_chk_query') || {}).checked;
-	const includeResults = !!(document.getElementById('shareModal_chk_results') || {}).checked;
+	const includeTitle = !!(document.getElementById('shareModal_chk_title') as any || {}).checked;
+	const includeQuery = !!(document.getElementById('shareModal_chk_query') as any || {}).checked;
+	const includeResults = !!(document.getElementById('shareModal_chk_results') as any || {}).checked;
 
 	if (!includeTitle && !includeQuery && !includeResults) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch { /* ignore */ }
 		return;
 	}
 
 	// Gather query text.
 	let queryText = '';
 	try {
-		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 		queryText = editor ? (editor.getValue() || '') : '';
 	} catch { /* ignore */ }
 
@@ -2345,8 +2355,8 @@ function __kustoShareCopyToClipboard() {
 		database = __kustoGetDatabase(boxId);
 	} catch { /* ignore */ }
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[boxId];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(src);
@@ -2363,15 +2373,15 @@ function __kustoShareCopyToClipboard() {
 	let totalRows = 0;
 	if (includeResults) {
 		try {
-			const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
+			const state = (typeof _win.__kustoGetResultsState === 'function') ? _win.__kustoGetResultsState(boxId) : null;
 			if (state && Array.isArray(state.columns) && Array.isArray(state.rows)) {
 				// columns are plain strings in state.columns.
-				columns = state.columns.map(c => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
+				columns = state.columns.map((c: any) => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
 				totalRows = state.rows.length;
 				// Read the user-configured row limit from the Share modal input.
 				let rowLimit = 10;
 				try {
-					const rlInput = document.getElementById('shareModal_rowLimit');
+					const rlInput = document.getElementById('shareModal_rowLimit') as any;
 					if (rlInput) {
 						const parsed = parseInt(rlInput.value, 10);
 						if (parsed > 0) rowLimit = parsed;
@@ -2388,8 +2398,8 @@ function __kustoShareCopyToClipboard() {
 						// numbers have commas, dates are formatted, etc.
 						const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 						const displayValue = hasHover ? cell.display : cell;
-						const formatted = (typeof __kustoFormatCellDisplayValueForTable === 'function')
-							? __kustoFormatCellDisplayValueForTable(displayValue)
+						const formatted = (typeof _win.__kustoFormatCellDisplayValueForTable === 'function')
+							? _win.__kustoFormatCellDisplayValueForTable(displayValue)
 							: String(displayValue ?? '');
 						vals.push(String(formatted ?? ''));
 					}
@@ -2407,7 +2417,7 @@ function __kustoShareCopyToClipboard() {
 
 	// Send to extension to build ADE link and copy to clipboard.
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'shareToClipboard',
 			boxId,
 			includeTitle,
@@ -2427,9 +2437,9 @@ function __kustoShareCopyToClipboard() {
 	__kustoCloseShareModal();
 }
 
-function setToolbarActionBusy(boxId, action, busy) {
+function setToolbarActionBusy( boxId: any, action: any, busy: any) {
 	try {
-		const root = document.getElementById(boxId);
+		const root = document.getElementById(boxId) as any;
 		if (!root) return;
 		const btn = root.querySelector('.query-editor-toolbar-btn[data-qe-action="' + action + '"]');
 		if (btn) {
@@ -2453,7 +2463,7 @@ function setToolbarActionBusy(boxId, action, busy) {
 		// If the action button is not present (because it lives inside a dropdown menu),
 		// reflect the busy state on the tools dropdown button.
 		if (!btn && action === 'qualifyTables') {
-			const toolsBtn = document.getElementById(boxId + '_tools_btn');
+			const toolsBtn = document.getElementById(boxId + '_tools_btn') as any;
 			if (!toolsBtn) return;
 			try {
 				const icon = toolsBtn.querySelector('.qe-tools-icon');
@@ -2479,21 +2489,21 @@ function setToolbarActionBusy(boxId, action, busy) {
 	}
 }
 
-function closeToolsDropdown(boxId) {
+function closeToolsDropdown( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
-			window.__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
+		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.closeMenuDropdown === 'function') {
+			(window as any).__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
 			return;
 		}
 	} catch { /* ignore */ }
 	try {
-		const menu = document.getElementById(id + '_tools_menu');
+		const menu = document.getElementById(id + '_tools_menu') as any;
 		if (menu) menu.style.display = 'none';
 	} catch { /* ignore */ }
 	try {
-		const btn = document.getElementById(id + '_tools_btn');
+		const btn = document.getElementById(id + '_tools_btn') as any;
 		if (btn) {
 			btn.setAttribute('aria-expanded', 'false');
 			try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
@@ -2503,18 +2513,18 @@ function closeToolsDropdown(boxId) {
 
 // --- Toolbar overflow handling ---
 // Track ResizeObservers per toolbar
-const __kustoToolbarResizeObservers = {};
+const __kustoToolbarResizeObservers: any = {};
 // Track ResizeObservers for run button responsiveness
-const __kustoRunBtnResizeObservers = {};
+const __kustoRunBtnResizeObservers: any = {};
 
 /**
  * Initialize toolbar overflow detection for a query box.
  * Uses ResizeObserver to detect when buttons overflow and shows a "..." menu.
  */
-function initToolbarOverflow(boxId) {
+function initToolbarOverflow( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const toolbar = document.getElementById(id + '_toolbar');
+	const toolbar = document.getElementById(id + '_toolbar') as any;
 	if (!toolbar) return;
 
 	// Clean up any existing observer
@@ -2542,10 +2552,10 @@ function initToolbarOverflow(boxId) {
  * Initialize responsive behavior for the Run button.
  * When the query box is narrow, hide the label and show only the play icon.
  */
-function initRunButtonResponsive(boxId) {
+function initRunButtonResponsive( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const queryBox = document.getElementById(id);
+	const queryBox = document.getElementById(id) as any;
 	if (!queryBox) return;
 
 	// Clean up any existing observer
@@ -2569,14 +2579,14 @@ function initRunButtonResponsive(boxId) {
 /**
  * Update run button compact/expanded state based on available width.
  */
-function updateRunButtonResponsive(boxId) {
+function updateRunButtonResponsive( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const runBtn = document.getElementById(id + '_run_btn');
+	const runBtn = document.getElementById(id + '_run_btn') as any;
 	if (!runBtn) return;
 
 	// Get the query box width
-	const queryBox = document.getElementById(id);
+	const queryBox = document.getElementById(id) as any;
 	if (!queryBox) return;
 	const boxWidth = queryBox.offsetWidth;
 
@@ -2592,20 +2602,20 @@ function updateRunButtonResponsive(boxId) {
 /**
  * Update overflow state for a toolbar - hide overflowing items and show overflow menu
  */
-function updateToolbarOverflow(boxId) {
+function updateToolbarOverflow( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const toolbar = document.getElementById(id + '_toolbar');
+	const toolbar = document.getElementById(id + '_toolbar') as any;
 	const itemsContainer = toolbar && toolbar.querySelector('.qe-toolbar-items');
-	const overflowWrapper = document.getElementById(id + '_toolbar_overflow_wrapper');
+	const overflowWrapper = document.getElementById(id + '_toolbar_overflow_wrapper') as any;
 	if (!toolbar || !itemsContainer || !overflowWrapper) return;
 
 	// Get all toolbar items (buttons, separators, wrappers)
-	const items = Array.from(itemsContainer.children);
+	const items = Array.from(itemsContainer.children) as any[];
 	if (!items.length) return;
 
 	// First, make all items visible to measure properly
-	items.forEach(item => item.classList.remove('qe-in-overflow'));
+	items.forEach((item: any) => item.classList.remove('qe-in-overflow'));
 	overflowWrapper.classList.remove('is-visible');
 
 	// Get available width (toolbar width minus padding and overflow button width)
@@ -2656,11 +2666,11 @@ function updateToolbarOverflow(boxId) {
 /**
  * Toggle the toolbar overflow menu
  */
-function toggleToolbarOverflow(boxId) {
+function toggleToolbarOverflow( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const menu = document.getElementById(id + '_toolbar_overflow_menu');
-	const btn = document.getElementById(id + '_toolbar_overflow_btn');
+	const menu = document.getElementById(id + '_toolbar_overflow_menu') as any;
+	const btn = document.getElementById(id + '_toolbar_overflow_btn') as any;
 	if (!menu || !btn) return;
 
 	const isOpen = menu.style.display === 'block';
@@ -2703,14 +2713,14 @@ function toggleToolbarOverflow(boxId) {
 		} catch { /* ignore */ }
 
 		// Wire keyboard nav if available
-		try { window.__kustoDropdown && window.__kustoDropdown.wireMenuInteractions && window.__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.wireMenuInteractions && (window as any).__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
 	}
 }
 
 /**
  * Toggle overflow submenu (accordion style)
  */
-function toggleOverflowSubmenu(element, event) {
+function toggleOverflowSubmenu( element: any, event: any) {
 	if (event) {
 		event.stopPropagation();
 	}
@@ -2733,11 +2743,11 @@ function toggleOverflowSubmenu(element, event) {
 /**
  * Close the toolbar overflow menu
  */
-function closeToolbarOverflow(boxId) {
+function closeToolbarOverflow( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const menu = document.getElementById(id + '_toolbar_overflow_menu');
-	const btn = document.getElementById(id + '_toolbar_overflow_btn');
+	const menu = document.getElementById(id + '_toolbar_overflow_menu') as any;
+	const btn = document.getElementById(id + '_toolbar_overflow_btn') as any;
 	if (menu) menu.style.display = 'none';
 	if (btn) {
 		btn.setAttribute('aria-expanded', 'false');
@@ -2749,10 +2759,10 @@ function closeToolbarOverflow(boxId) {
  * Close all toolbar overflow menus
  */
 function closeAllToolbarOverflowMenus() {
-	document.querySelectorAll('.qe-toolbar-overflow-menu').forEach(menu => {
+	document.querySelectorAll('.qe-toolbar-overflow-menu').forEach((menu: any) =>  {
 		menu.style.display = 'none';
 	});
-	document.querySelectorAll('.qe-toolbar-overflow-btn').forEach(btn => {
+	document.querySelectorAll('.qe-toolbar-overflow-btn').forEach((btn: any) =>  {
 		btn.setAttribute('aria-expanded', 'false');
 		btn.classList.remove('is-active');
 	});
@@ -2761,11 +2771,11 @@ function closeAllToolbarOverflowMenus() {
 /**
  * Render the overflow menu items based on which buttons are hidden
  */
-function renderToolbarOverflowMenu(boxId) {
+function renderToolbarOverflowMenu( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const toolbar = document.getElementById(id + '_toolbar');
-	const menu = document.getElementById(id + '_toolbar_overflow_menu');
+	const toolbar = document.getElementById(id + '_toolbar') as any;
+	const menu = document.getElementById(id + '_toolbar_overflow_menu') as any;
 	if (!toolbar || !menu) return;
 
 	const itemsContainer = toolbar.querySelector('.qe-toolbar-items');
@@ -2808,13 +2818,13 @@ function renderToolbarOverflowMenu(boxId) {
 	let hasAnyToggleItem = false;
 
 	// First pass: check if there are any toggle items so we know if we need the checkmark column
-	hiddenItems.forEach(item => {
+	hiddenItems.forEach((item: any) =>  {
 		if (item.classList.contains('query-editor-toolbar-toggle')) {
 			hasAnyToggleItem = true;
 		}
 	});
 
-	hiddenItems.forEach(item => {
+	hiddenItems.forEach((item: any) =>  {
 		if (item.classList.contains('query-editor-toolbar-sep')) {
 			// Add separator in menu (but avoid consecutive separators)
 			if (!prevWasSep && menuHtml) {
@@ -2897,16 +2907,16 @@ function renderToolbarOverflowMenu(boxId) {
 	menu.innerHTML = menuHtml || '<div class="qe-toolbar-overflow-item" style="opacity:0.6;cursor:default;">No additional actions</div>';
 }
 
-function toggleToolsDropdown(boxId) {
+function toggleToolsDropdown( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const menu = document.getElementById(id + '_tools_menu');
-	const btn = document.getElementById(id + '_tools_btn');
+	const menu = document.getElementById(id + '_tools_menu') as any;
+	const btn = document.getElementById(id + '_tools_btn') as any;
 	if (!menu || !btn) return;
 
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
-			window.__kustoDropdown.toggleMenuDropdown({
+		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.toggleMenuDropdown === 'function') {
+			(window as any).__kustoDropdown.toggleMenuDropdown({
 				buttonId: id + '_tools_btn',
 				menuId: id + '_tools_menu',
 				beforeOpen: () => {
@@ -2937,15 +2947,15 @@ function toggleToolsDropdown(boxId) {
 		}
 	} catch { /* ignore */ }
 	if (next === 'block') {
-		try { window.__kustoDropdown && window.__kustoDropdown.wireMenuInteractions && window.__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.wireMenuInteractions && (window as any).__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
 		try { menu.focus(); } catch { /* ignore */ }
 	}
 }
 
-function renderToolsMenuForBox(boxId) {
+function renderToolsMenuForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const menu = document.getElementById(id + '_tools_menu');
+	const menu = document.getElementById(id + '_tools_menu') as any;
 	if (!menu) return;
 
 	// IMPORTANT: keep icons local here.
@@ -2973,7 +2983,7 @@ function renderToolsMenuForBox(boxId) {
 		'<path d="M2 8h12"/>' +
 		'</svg>';
 
-	const toolsItemHtml = (iconSvg, labelText) => {
+	const toolsItemHtml = (iconSvg: any, labelText: any) => {
 		return (
 			'<span class="qe-icon" aria-hidden="true">' + String(iconSvg || '') + '</span>' +
 			'<span class="qe-toolbar-menu-label">' + String(labelText || '') + '</span>'
@@ -2988,10 +2998,10 @@ function renderToolsMenuForBox(boxId) {
 	];
 
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
-			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
+		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.renderMenuItemsHtml === 'function') {
+			menu.innerHTML = (window as any).__kustoDropdown.renderMenuItemsHtml(items, {
 				dropdownId: id + '_tools',
-				onSelectJs: (keyEnc) => {
+				onSelectJs: (keyEnc: any) => {
 					return (
 						"onQueryEditorToolbarAction('" + id + "', '" + keyEnc + "');" +
 						" try{window.__kustoDropdown&&window.__kustoDropdown.closeMenuDropdown&&window.__kustoDropdown.closeMenuDropdown('" + id + "_tools_btn','" + id + "_tools_menu')}catch{}"
@@ -3011,8 +3021,8 @@ function renderToolsMenuForBox(boxId) {
 	].join('');
 }
 
-function runMonacoAction(boxId, actionId) {
-	const editor = queryEditors[boxId];
+function runMonacoAction( boxId: any, actionId: any) {
+	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -3027,8 +3037,8 @@ function runMonacoAction(boxId, actionId) {
 	}
 }
 
-function replaceAllInEditor(boxId, from, to) {
-	const editor = queryEditors[boxId];
+function replaceAllInEditor( boxId: any, from: any, to: any) {
+	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -3052,8 +3062,8 @@ function replaceAllInEditor(boxId, from, to) {
 	}
 }
 
-async function exportQueryToPowerBI(boxId) {
-	const editor = queryEditors[boxId];
+async function exportQueryToPowerBI( boxId: any) {
+	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -3064,19 +3074,19 @@ async function exportQueryToPowerBI(boxId) {
 	let query = model.getValue() || '';
 	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
-		const blocks = (typeof window.__kustoGetStatementBlocksFromModel === 'function')
-			? window.__kustoGetStatementBlocksFromModel(model)
+		const blocks = (typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
+			? (window as any).__kustoGetStatementBlocksFromModel(model)
 			: [];
 		const hasMultipleStatements = blocks && blocks.length > 1;
 		if (hasMultipleStatements) {
-			const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
-				? window.__kustoExtractStatementTextAtCursor(editor)
+			const statement = (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function')
+				? (window as any).__kustoExtractStatementTextAtCursor(editor)
 				: null;
 			if (statement) {
 				query = statement;
 			} else {
 				try {
-					vscode.postMessage({
+					(_win.vscode as any).postMessage({
 						type: 'showInfo',
 						message: 'Place the cursor inside a query statement (not on a separator) to export that statement to Power BI.'
 					});
@@ -3088,24 +3098,24 @@ async function exportQueryToPowerBI(boxId) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
-	const conn = (connections || []).find(c => c && c.id === connectionId);
+	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
 		return;
 	}
 
 	const normalizedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-	const escapeMString = (s) => String(s).replace(/"/g, '""');
+	const escapeMString = (s: any) => String(s).replace(/"/g, '""');
 	// Escape and indent each line of the query for readability inside the M string
-	const indentedQuery = normalizedQuery.split('\n').map(l => '        ' + escapeMString(l)).join('\n');
+	const indentedQuery = normalizedQuery.split('\n').map((l: any) => '        ' + escapeMString(l)).join('\n');
 	const m =
 		'let\n' +
 		'    Query = Text.Combine({"\n' +
@@ -3120,7 +3130,7 @@ async function exportQueryToPowerBI(boxId) {
 		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
 			await navigator.clipboard.writeText(m);
 			try {
-				vscode.postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+				(_win.vscode as any).postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
 			} catch {
 				// ignore
 			}
@@ -3147,24 +3157,24 @@ async function exportQueryToPowerBI(boxId) {
 			throw new Error('copy failed');
 		}
 		try {
-			vscode.postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+			(_win.vscode as any).postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
 		} catch {
 			// ignore
 		}
 	} catch {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch { /* ignore */ }
 	}
 }
 
-function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
-	const sourceState = __kustoGetResultsState(sourceBoxId);
-	const comparisonState = __kustoGetResultsState(comparisonBoxId);
+function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
+	const sourceState = _win.__kustoGetResultsState(sourceBoxId);
+	const comparisonState = _win.__kustoGetResultsState(comparisonBoxId);
 	
 	if (!sourceState || !comparisonState) {
 		return;
 	}
 
-	const escapeHtml = (s) => {
+	const escapeHtml = (s: any) => {
 		return String(s ?? '')
 			.replace(/&/g, '&amp;')
 			.replace(/</g, '&lt;')
@@ -3172,7 +3182,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			.replace(/"/g, '&quot;')
 			.replace(/'/g, '&#39;');
 	};
-	const getBoxLabel = (boxId) => {
+	const getBoxLabel = (boxId: any) => {
 		try {
 			const name = __kustoGetSectionName(boxId);
 			return name || String(boxId || '').trim() || 'Dataset';
@@ -3182,7 +3192,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	};
 	const sourceLabel = getBoxLabel(sourceBoxId);
 	const comparisonLabel = getBoxLabel(comparisonBoxId);
-	const pluralRows = (n) => (Number(n) === 1 ? 'row' : 'rows');
+	const pluralRows = (n: any) => (Number(n) === 1 ? 'row' : 'rows');
 	
 	const sourceRows = sourceState.rows ? sourceState.rows.length : 0;
 	const comparisonRows = comparisonState.rows ? comparisonState.rows.length : 0;
@@ -3194,7 +3204,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	const comparisonExecTime = comparisonState.metadata && comparisonState.metadata.executionTime || '';
 	
 	// Parse execution times (e.g., "123ms" or "1.23s")
-	const parseExecTime = (timeStr) => {
+	const parseExecTime = (timeStr: any) => {
 		if (!timeStr) return null;
 		const match = timeStr.match(/([\d.]+)\s*(ms|s)/);
 		if (!match) return null;
@@ -3213,7 +3223,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 		if (diff > 0) {
 			perfMessage = `<span style="color: #89d185;">\u2713 ${percentChange}% faster (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
 		} else if (diff < 0) {
-			perfMessage = `<span style="color: #f48771;">\u26a0 ${Math.abs(percentChange)}% slower (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
+			perfMessage = `<span style="color: #f48771;">\u26a0 ${Math.abs(Number(percentChange))}% slower (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
 		} else {
 			perfMessage = `<span style="color: #cccccc;">\u2248 Same performance (${sourceExecTime})</span>`;
 		}
@@ -3228,10 +3238,10 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	// Helper: format a delta metric line.
 	// sourceVal/comparisonVal are numbers (or null/undefined to skip).
 	// options: { emoji, label, formatter, lowerIsBetter (default true), unit (for raw fallback) }
-	const formatDelta = (sourceVal, comparisonVal, opts) => {
+	const formatDelta = (sourceVal: any, comparisonVal: any, opts: any) => {
 		const emoji = opts.emoji || '';
 		const label = opts.label || '';
-		const fmt = opts.formatter || ((v) => String(v));
+		const fmt = opts.formatter || ((v: any) => String(v));
 		const lowerIsBetter = opts.lowerIsBetter !== false;
 
 		if (sourceVal == null || comparisonVal == null || !isFinite(sourceVal) || !isFinite(comparisonVal)) {
@@ -3262,18 +3272,18 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	};
 
 	// Formatters
-	const fmtCpuMs = (ms) => {
+	const fmtCpuMs = (ms: any) => {
 		if (ms < 1000) { return ms.toFixed(1) + 'ms'; }
 		return (ms / 1000).toFixed(3) + 's';
 	};
-	const fmtBytes = (bytes) => {
+	const fmtBytes = (bytes: any) => {
 		if (bytes == null || !isFinite(bytes)) { return '?'; }
 		if (bytes < 1024) { return bytes + ' B'; }
 		if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
 		if (bytes < 1024 * 1024 * 1024) { return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
 		return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 	};
-	const fmtNum = (n) => {
+	const fmtNum = (n: any) => {
 		if (n == null) { return '?'; }
 		return Number(n).toLocaleString();
 	};
@@ -3296,7 +3306,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 		});
 
 		// Cache hit rate: compute as percentage hits/(hits+misses), compare the rates.
-		const cacheRate = (stats) => {
+		const cacheRate = (stats: any) => {
 			const mh = typeof stats.memoryCacheHits === 'number' ? stats.memoryCacheHits : 0;
 			const mm = typeof stats.memoryCacheMisses === 'number' ? stats.memoryCacheMisses : 0;
 			const dh = typeof stats.diskCacheHits === 'number' ? stats.diskCacheHits : 0;
@@ -3307,7 +3317,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 		};
 		const sourceRate = cacheRate(sourceStats);
 		const comparisonRate = cacheRate(comparisonStats);
-		const fmtRate = (r) => r.toFixed(1) + '%';
+		const fmtRate = (r: any) => r.toFixed(1) + '%';
 		cacheMessage = formatDelta(sourceRate, comparisonRate, {
 			emoji: '\uD83C\uDFAF', label: 'Cache hit rate', formatter: fmtRate, lowerIsBetter: false
 		});
@@ -3325,7 +3335,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	let onlyBCount = 0;
 	let countsLabel = '';
 	try {
-		const dv = (window && window.__kustoDiffView) ? window.__kustoDiffView : null;
+		const dv = (window && (window as any).__kustoDiffView) ? (window as any).__kustoDiffView : null;
 		if (dv && typeof dv.buildModelFromResultsStates === 'function') {
 			const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
 			const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
@@ -3336,9 +3346,9 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 				' (' +
 				String(commonCount) + ' matching ' + pluralRows(commonCount) +
 				', ' +
-				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + _win.escapeHtml(sourceLabel) +
 				', ' +
-				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + _win.escapeHtml(comparisonLabel) +
 				')';
 			rowsMatch = (onlyACount === 0 && onlyBCount === 0);
 		}
@@ -3352,7 +3362,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	const columnOrderMatches = __kustoDoColumnOrderMatch(sourceState, comparisonState);
 	const warningNeeded = dataMatches && !(rowOrderMatches && columnOrderMatches);
 
-	const yesNo = (v) => (v ? 'yes' : 'no');
+	const yesNo = (v: any) => (v ? 'yes' : 'no');
 	const warningTitle =
 		'Order of rows matches: ' + yesNo(rowOrderMatches) + '\n' +
 		'Order of columns matches: ' + yesNo(columnOrderMatches) + '\n' +
@@ -3377,10 +3387,10 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			// Only column differences
 			const parts = [];
 			if (columnDiff.onlyInA.length > 0) {
-				parts.push(String(columnDiff.onlyInA.length) + ' missing ' + (columnDiff.onlyInA.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
+				parts.push(String(columnDiff.onlyInA.length) + ' missing ' + (columnDiff.onlyInA.length === 1 ? 'column' : 'columns') + ' in ' + _win.escapeHtml(comparisonLabel));
 			}
 			if (columnDiff.onlyInB.length > 0) {
-				parts.push(String(columnDiff.onlyInB.length) + ' extra ' + (columnDiff.onlyInB.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
+				parts.push(String(columnDiff.onlyInB.length) + ' extra ' + (columnDiff.onlyInB.length === 1 ? 'column' : 'columns') + ' in ' + _win.escapeHtml(comparisonLabel));
 			}
 			diffLabel = ' (' + parts.join(', ') + ')';
 			const titleParts = ['View diff'];
@@ -3396,9 +3406,9 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 			diffLabel = ' (' +
 				String(commonCount) + ' matching ' + pluralRows(commonCount) +
 				', ' +
-				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + _win.escapeHtml(sourceLabel) +
 				', ' +
-				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + _win.escapeHtml(comparisonLabel) +
 				')';
 			diffTitle = 'View diff\nUnmatched rows: ' + String(onlyACount) + ' in ' + sourceLabel + ', ' + String(onlyBCount) + ' in ' + comparisonLabel;
 		} else if (hasColumnDiff && hasRowDiff) {
@@ -3427,7 +3437,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 	}
 	
 	// Create or update comparison summary banner
-	const comparisonBox = document.getElementById(comparisonBoxId);
+	const comparisonBox = document.getElementById(comparisonBoxId) as any;
 	if (!comparisonBox) {
 		return;
 	}
@@ -3469,7 +3479,7 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 
 	// Notify the extension backend so it can coordinate validation retries.
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'comparisonSummary',
 			sourceBoxId: String(sourceBoxId || ''),
 			comparisonBoxId: String(comparisonBoxId || ''),
@@ -3483,17 +3493,17 @@ function displayComparisonSummary(sourceBoxId, comparisonBoxId) {
 
 function __kustoEnsureOptimizePrepByBoxId() {
 	try {
-		if (!window.__kustoOptimizePrepByBoxId || typeof window.__kustoOptimizePrepByBoxId !== 'object') {
-			window.__kustoOptimizePrepByBoxId = {};
+		if (!(window as any).__kustoOptimizePrepByBoxId || typeof (window as any).__kustoOptimizePrepByBoxId !== 'object') {
+			(window as any).__kustoOptimizePrepByBoxId = {};
 		}
-		return window.__kustoOptimizePrepByBoxId;
+		return (window as any).__kustoOptimizePrepByBoxId;
 	} catch {
 		return {};
 	}
 }
 
-function __kustoHideOptimizePromptForBox(boxId) {
-	const host = document.getElementById(boxId + '_optimize_config');
+function __kustoHideOptimizePromptForBox( boxId: any) {
+	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (host) {
 		host.style.display = 'none';
 		host.innerHTML = '';
@@ -3504,7 +3514,7 @@ function __kustoHideOptimizePromptForBox(boxId) {
 	} catch { /* ignore */ }
 
 	try {
-		const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+		const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 		if (optimizeBtn) {
 			optimizeBtn.disabled = false;
 			if (optimizeBtn.dataset && optimizeBtn.dataset.originalContent) {
@@ -3518,17 +3528,17 @@ function __kustoHideOptimizePromptForBox(boxId) {
 		__kustoSetOptimizeInProgress(boxId, false, '');
 	} catch { /* ignore */ }
 	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
+			(window as any).__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 }
 
-function __kustoSetOptimizeInProgress(boxId, inProgress, statusText) {
+function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: any) {
 	try {
-		const statusEl = document.getElementById(boxId + '_optimize_status');
-		const cancelBtn = document.getElementById(boxId + '_optimize_cancel');
-		const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+		const statusEl = document.getElementById(boxId + '_optimize_status') as any;
+		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
+		const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 		if (!statusEl || !cancelBtn) {
 			return;
 		}
@@ -3579,32 +3589,32 @@ function __kustoSetOptimizeInProgress(boxId, inProgress, statusText) {
 	}
 }
 
-function __kustoUpdateOptimizeStatus(boxId, statusText) {
+function __kustoUpdateOptimizeStatus( boxId: any, statusText: any) {
 	try {
-		const statusEl = document.getElementById(boxId + '_optimize_status');
+		const statusEl = document.getElementById(boxId + '_optimize_status') as any;
 		if (!statusEl) return;
 		statusEl.textContent = String(statusText || '');
 	} catch { /* ignore */ }
 }
 
-function __kustoCancelOptimizeQuery(boxId) {
+function __kustoCancelOptimizeQuery( boxId: any) {
 	try {
 		__kustoUpdateOptimizeStatus(boxId, 'Canceling…');
-		const cancelBtn = document.getElementById(boxId + '_optimize_cancel');
+		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
 		if (cancelBtn) {
 			cancelBtn.disabled = true;
 		}
 	} catch { /* ignore */ }
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'cancelOptimizeQuery',
 			boxId: String(boxId || '')
 		});
 	} catch { /* ignore */ }
 }
 
-function __kustoShowOptimizePromptLoading(boxId) {
-	const host = document.getElementById(boxId + '_optimize_config');
+function __kustoShowOptimizePromptLoading( boxId: any) {
+	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (!host) {
 		return;
 	}
@@ -3622,7 +3632,7 @@ const __kustoOptimizeModelStorageKey = 'kusto.optimize.lastModelId';
 
 function __kustoGetLastOptimizeModelId() {
 	try {
-		const state = (typeof vscode !== 'undefined' && vscode && vscode.getState) ? (vscode.getState() || {}) : {};
+		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
 		if (state && state.lastOptimizeModelId) {
 			return String(state.lastOptimizeModelId);
 		}
@@ -3633,13 +3643,13 @@ function __kustoGetLastOptimizeModelId() {
 	return '';
 }
 
-function __kustoSetLastOptimizeModelId(modelId) {
+function __kustoSetLastOptimizeModelId( modelId: any) {
 	const id = String(modelId || '');
 	try {
-		const state = (typeof vscode !== 'undefined' && vscode && vscode.getState) ? (vscode.getState() || {}) : {};
+		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
 		state.lastOptimizeModelId = id;
-		if (typeof vscode !== 'undefined' && vscode && vscode.setState) {
-			vscode.setState(state);
+		if (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).setState) {
+			(_win.vscode as any).setState(state);
 		}
 	} catch { /* ignore */ }
 	try {
@@ -3649,8 +3659,8 @@ function __kustoSetLastOptimizeModelId(modelId) {
 	} catch { /* ignore */ }
 }
 
-function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText) {
-	const host = document.getElementById(boxId + '_optimize_config');
+function __kustoApplyOptimizeQueryOptions( boxId: any, models: any, selectedModelId: any, promptText: any) {
+	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (!host) {
 		return;
 	}
@@ -3673,7 +3683,7 @@ function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, prompt
 		'</div>' +
 		'</div>';
 
-	const selectEl = document.getElementById(boxId + '_optimize_model');
+	const selectEl = document.getElementById(boxId + '_optimize_model') as any;
 	if (selectEl) {
 		selectEl.innerHTML = '';
 		for (const m of safeModels) {
@@ -3710,17 +3720,17 @@ function __kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, prompt
 		}
 	}
 
-	const promptEl = document.getElementById(boxId + '_optimize_prompt');
+	const promptEl = document.getElementById(boxId + '_optimize_prompt') as any;
 	if (promptEl) {
 		promptEl.value = String(promptText || '');
 	}
 }
 
-function __kustoRunOptimizeQueryWithOverrides(boxId) {
+function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	const pending = __kustoEnsureOptimizePrepByBoxId();
 	const req = pending[boxId];
 	if (!req) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch { /* ignore */ }
 		__kustoHideOptimizePromptForBox(boxId);
 		return;
 	}
@@ -3730,32 +3740,32 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	// - The optimized section will then use "<source name> (optimized)"
 	try {
 		let sourceName = __kustoGetSectionName(boxId);
-		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
+		if (!sourceName && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
+			sourceName = (window as any).__kustoPickNextAvailableSectionLetterName(boxId);
 			__kustoSetSectionName(boxId, sourceName);
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		}
 		if (sourceName) {
 			req.queryName = sourceName;
 		}
 	} catch { /* ignore */ }
 
-	const modelId = (document.getElementById(boxId + '_optimize_model') || {}).value || '';
-	const promptText = (document.getElementById(boxId + '_optimize_prompt') || {}).value || '';
+	const modelId = (document.getElementById(boxId + '_optimize_model') as any || {}).value || '';
+	const promptText = (document.getElementById(boxId + '_optimize_prompt') as any || {}).value || '';
 	try {
 		__kustoSetLastOptimizeModelId(modelId);
 	} catch { /* ignore */ }
 
 	// Close prompt UI and show spinner on the main optimize button
 	try {
-		const host = document.getElementById(boxId + '_optimize_config');
+		const host = document.getElementById(boxId + '_optimize_config') as any;
 		if (host) {
 			host.style.display = 'none';
 			host.innerHTML = '';
 		}
 	} catch { /* ignore */ }
 
-	const optimizeBtn = document.getElementById(boxId + '_optimize_btn');
+	const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 	if (optimizeBtn) {
 		optimizeBtn.disabled = true;
 		const originalContent = optimizeBtn.innerHTML;
@@ -3766,7 +3776,7 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	} catch { /* ignore */ }
 
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'optimizeQuery',
 			query: String(req.query || ''),
 			connectionId: String(req.connectionId || ''),
@@ -3777,9 +3787,9 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 			promptText: String(promptText || '')
 		});
 		delete pending[boxId];
-	} catch (err) {
+	} catch (err: any) {
 		console.error('Error sending optimization request:', err);
-		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch { /* ignore */ }
 		// Restore button state
 		if (optimizeBtn) {
 			optimizeBtn.disabled = false;
@@ -3792,8 +3802,8 @@ function __kustoRunOptimizeQueryWithOverrides(boxId) {
 	}
 }
 
-async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options) {
-	const editor = queryEditors[boxId];
+async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: any, options: any) {
+	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return '';
 	}
@@ -3818,12 +3828,12 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	const query = model.getValue() || '';
 	if (!query.trim()) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch { /* ignore */ }
 		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch { /* ignore */ }
 		return '';
 	}
 	// Optimization naming rule (applies when we are creating an "optimized" comparison section):
@@ -3841,10 +3851,10 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 		try {
 			const nameInput = null;
 			sourceNameForOptimize = __kustoGetSectionName(boxId);
-			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
+			if (!sourceNameForOptimize && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
+				sourceNameForOptimize = (window as any).__kustoPickNextAvailableSectionLetterName(boxId);
 				__kustoSetSectionName(boxId, sourceNameForOptimize);
-				try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 			}
 			if (sourceNameForOptimize) {
 				desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
@@ -3855,39 +3865,39 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return '';
 	}
 	if (!database) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return '';
 	}
 
 	// If a comparison already exists for this source, reuse it.
 	try {
-		const existingComparisonBoxId = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId])
-			? optimizationMetadataByBoxId[boxId].comparisonBoxId
+		const existingComparisonBoxId = (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId])
+			? _win.optimizationMetadataByBoxId[boxId].comparisonBoxId
 			: '';
 		if (existingComparisonBoxId) {
-			const comparisonBoxEl = document.getElementById(existingComparisonBoxId);
-			const comparisonEditor = queryEditors && queryEditors[existingComparisonBoxId];
+			const comparisonBoxEl = document.getElementById(existingComparisonBoxId) as any;
+			const comparisonEditor = _win.queryEditors && _win.queryEditors[existingComparisonBoxId];
 			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try {
-					if (typeof window.__kustoPrettifyKustoText === 'function') {
-						nextComparisonQuery = window.__kustoPrettifyKustoText(nextComparisonQuery);
+					if (typeof (window as any).__kustoPrettifyKustoText === 'function') {
+						nextComparisonQuery = (window as any).__kustoPrettifyKustoText(nextComparisonQuery);
 					}
 				} catch { /* ignore */ }
 				try { comparisonEditor.setValue(nextComparisonQuery); } catch { /* ignore */ }
 				try {
-					if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-						optimizationMetadataByBoxId[existingComparisonBoxId] = optimizationMetadataByBoxId[existingComparisonBoxId] || {};
-						optimizationMetadataByBoxId[existingComparisonBoxId].sourceBoxId = boxId;
-						optimizationMetadataByBoxId[existingComparisonBoxId].isComparison = true;
-						optimizationMetadataByBoxId[existingComparisonBoxId].originalQuery = queryEditors[boxId] ? queryEditors[boxId].getValue() : query;
-						optimizationMetadataByBoxId[existingComparisonBoxId].optimizedQuery = nextComparisonQuery;
-						optimizationMetadataByBoxId[boxId] = optimizationMetadataByBoxId[boxId] || {};
-						optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
+					if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+						_win.optimizationMetadataByBoxId[existingComparisonBoxId] = _win.optimizationMetadataByBoxId[existingComparisonBoxId] || {};
+						_win.optimizationMetadataByBoxId[existingComparisonBoxId].sourceBoxId = boxId;
+						_win.optimizationMetadataByBoxId[existingComparisonBoxId].isComparison = true;
+						_win.optimizationMetadataByBoxId[existingComparisonBoxId].originalQuery = _win.queryEditors[boxId] ? _win.queryEditors[boxId].getValue() : query;
+						_win.optimizationMetadataByBoxId[existingComparisonBoxId].optimizedQuery = nextComparisonQuery;
+						_win.optimizationMetadataByBoxId[boxId] = _win.optimizationMetadataByBoxId[boxId] || {};
+						_win.optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
 					}
 				} catch { /* ignore */ }
 				try {
@@ -3899,7 +3909,7 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 				try {
 					if (desiredOptimizedName) {
 						__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
-						try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+						try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 					} else {
 						const currentName = __kustoGetSectionName(existingComparisonBoxId);
 						let shouldReplace = !currentName;
@@ -3911,7 +3921,7 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 						}
 						if (shouldReplace) {
 							__kustoSetSectionName(existingComparisonBoxId, __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
-							try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+							try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 						}
 					}
 				} catch { /* ignore */ }
@@ -3933,9 +3943,9 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 			}
 			// Stale mapping: comparison was removed; clear and fall back to creating a new one.
 			try {
-				if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-					delete optimizationMetadataByBoxId[boxId];
-					delete optimizationMetadataByBoxId[existingComparisonBoxId];
+				if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+					delete _win.optimizationMetadataByBoxId[boxId];
+					delete _win.optimizationMetadataByBoxId[existingComparisonBoxId];
 				}
 			} catch { /* ignore */ }
 		}
@@ -3952,8 +3962,8 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	// If a query override is provided, compare source query vs the provided query.
 	let comparisonQuery = overrideText.trim() ? overrideText : query;
 	try {
-		if (typeof window.__kustoPrettifyKustoText === 'function') {
-			comparisonQuery = window.__kustoPrettifyKustoText(comparisonQuery);
+		if (typeof (window as any).__kustoPrettifyKustoText === 'function') {
+			comparisonQuery = (window as any).__kustoPrettifyKustoText(comparisonQuery);
 		}
 	} catch { /* ignore */ }
 
@@ -3965,9 +3975,9 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 			isComparison: true,
 			defaultResultsVisible: false
 		});
-	} catch (err) {
+	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
-		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch { /* ignore */ }
 		return '';
 	}
 
@@ -3985,14 +3995,14 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	// Store comparison metadata (reuses the existing optimization comparison flow).
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			optimizationMetadataByBoxId[comparisonBoxId] = {
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			_win.optimizationMetadataByBoxId[comparisonBoxId] = {
 				sourceBoxId: boxId,
 				isComparison: true,
-				originalQuery: queryEditors[boxId] ? queryEditors[boxId].getValue() : query,
+				originalQuery: _win.queryEditors[boxId] ? _win.queryEditors[boxId].getValue() : query,
 				optimizedQuery: comparisonQuery
 			};
-			optimizationMetadataByBoxId[boxId] = {
+			_win.optimizationMetadataByBoxId[boxId] = {
 				comparisonBoxId: comparisonBoxId
 			};
 		}
@@ -4000,8 +4010,8 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 
 	// Position the comparison box right after the source box.
 	try {
-		const sourceBox = document.getElementById(boxId);
-		const comparisonBox = document.getElementById(comparisonBoxId);
+		const sourceBox = document.getElementById(boxId) as any;
+		const comparisonBox = document.getElementById(comparisonBoxId) as any;
 		if (sourceBox && comparisonBox && sourceBox.parentNode) {
 			sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
 		}
@@ -4050,8 +4060,8 @@ async function optimizeQueryWithCopilot(boxId, comparisonQueryOverride, options)
 	return comparisonBoxId;
 }
 
-async function fullyQualifyTablesInEditor(boxId) {
-	const editor = queryEditors[boxId];
+async function fullyQualifyTablesInEditor( boxId: any) {
+	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -4062,26 +4072,26 @@ async function fullyQualifyTablesInEditor(boxId) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
-	const conn = (connections || []).find(c => c && c.id === connectionId);
+	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
 		return;
 	}
 
-	const currentSchema = schemaByBoxId ? schemaByBoxId[boxId] : null;
+	const currentSchema = _win.schemaByBoxId ? _win.schemaByBoxId[boxId] : null;
 	const currentTables = currentSchema && Array.isArray(currentSchema.tables) ? currentSchema.tables : null;
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
-		try { ensureSchemaForBox(boxId); } catch { /* ignore */ }
-		try { vscode.postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch { /* ignore */ }
+		try { _win.ensureSchemaForBox(boxId); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch { /* ignore */ }
 		return;
 	}
 
@@ -4104,8 +4114,8 @@ async function fullyQualifyTablesInEditor(boxId) {
 	}
 }
 
-async function qualifyTablesInTextPriority(text, opts) {
-	const normalizeClusterForKusto = (clusterUrl) => {
+async function qualifyTablesInTextPriority( text: any, opts: any) {
+	const normalizeClusterForKusto = (clusterUrl: any) => {
 		let s = String(clusterUrl || '')
 			.trim()
 			.replace(/^https?:\/\//i, '')
@@ -4116,14 +4126,14 @@ async function qualifyTablesInTextPriority(text, opts) {
 		return s;
 	};
 
-	const currentTables = (opts.currentTables || []).map(t => String(t));
-	const currentTableLower = new Set(currentTables.map(t => t.toLowerCase()));
+	const currentTables = (opts.currentTables || []).map((t: any) => String(t));
+	const currentTableLower = new Set(currentTables.map((t: any) => t.toLowerCase()));
 
 	// Prefer language service to find true table-reference ranges (instead of regex/lexer guessing).
 	let candidates = [];
 	try {
-		if (typeof window.__kustoRequestKqlTableReferences === 'function') {
-			const res = await window.__kustoRequestKqlTableReferences({
+		if (typeof (window as any).__kustoRequestKqlTableReferences === 'function') {
+			const res = await (window as any).__kustoRequestKqlTableReferences({
 				text,
 				connectionId: opts.connectionId,
 				database: opts.currentDatabase,
@@ -4132,8 +4142,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 			const refs = res && Array.isArray(res.references) ? res.references : null;
 			if (refs && refs.length) {
 				candidates = refs
-					.map(r => ({ value: String(r.name || ''), start: Number(r.startOffset), end: Number(r.endOffset) }))
-					.filter(r => r.value && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
+					.map((r: any) => ({ value: String(r.name || ''), start: Number(r.startOffset), end: Number(r.endOffset) }))
+					.filter((r: any) => r.value && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
 			}
 		}
 	} catch {
@@ -4142,7 +4152,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 
 	// Fallback: previous best-effort lexer (kept for resilience).
 	if (!candidates.length) {
-		const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
+		const isIdentChar = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
 		const skipNames = new Set();
 		const tokens = [];
 		{
@@ -4245,12 +4255,12 @@ async function qualifyTablesInTextPriority(text, opts) {
 		unresolvedLower.add(String(c.value).toLowerCase());
 	}
 	const resolvedLocationByLower = new Map();
-	const fq = (clusterUrl, database, table) => {
+	const fq = (clusterUrl: any, database: any, table: any) => {
 		const c = normalizeClusterForKusto(clusterUrl);
 		return "cluster('" + c + "').database('" + database + "')." + table;
 	};
 
-	const markResolved = (lowerName, clusterUrl, database) => {
+	const markResolved = (lowerName: any, clusterUrl: any, database: any) => {
 		if (!lowerName || resolvedLocationByLower.has(lowerName)) {
 			return;
 		}
@@ -4268,15 +4278,15 @@ async function qualifyTablesInTextPriority(text, opts) {
 		}
 	}
 
-	const requestSchema = async (connectionId, database) => {
+	const requestSchema = async (connectionId: any, database: any) => {
 		try {
-			if (typeof window.__kustoRequestSchema === 'function') {
-				const sch = await window.__kustoRequestSchema(connectionId, database, false);
+			if (typeof (window as any).__kustoRequestSchema === 'function') {
+				const sch = await (window as any).__kustoRequestSchema(connectionId, database, false);
 				try {
 					const cid = String(connectionId || '').trim();
 					const db = String(database || '').trim();
 					if (cid && db && sch) {
-						schemaByConnDb[cid + '|' + db] = sch;
+						_win.schemaByConnDb[cid + '|' + db] = sch;
 					}
 				} catch { /* ignore */ }
 				return sch;
@@ -4287,10 +4297,10 @@ async function qualifyTablesInTextPriority(text, opts) {
 		return null;
 	};
 
-	const requestDatabases = async (connectionId, forceRefresh) => {
+	const requestDatabases = async (connectionId: any, forceRefresh: any) => {
 		try {
-			if (typeof window.__kustoRequestDatabases === 'function') {
-				return await window.__kustoRequestDatabases(connectionId, !!forceRefresh);
+			if (typeof (window as any).__kustoRequestDatabases === 'function') {
+				return await (window as any).__kustoRequestDatabases(connectionId, !!forceRefresh);
 			}
 		} catch {
 			// ignore
@@ -4299,7 +4309,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 			const cid = String(connectionId || '').trim();
 			let clusterKey = '';
 			try {
-				const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+				const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 				if (clusterUrl) {
 					let u = clusterUrl;
@@ -4313,7 +4323,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 					}
 				}
 			} catch { /* ignore */ }
-			const cached = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
+			const cached = _win.cachedDatabases && _win.cachedDatabases[String(clusterKey || '').trim()];
 			return Array.isArray(cached) ? cached : [];
 		} catch {
 			return [];
@@ -4321,13 +4331,13 @@ async function qualifyTablesInTextPriority(text, opts) {
 	};
 
 	const schemaTablesLowerCache = new WeakMap();
-	const getSchemaTableLowerSet = (schema) => {
+	const getSchemaTableLowerSet = (schema: any) => {
 		if (!schema || typeof schema !== 'object') return null;
 		try {
 			const cached = schemaTablesLowerCache.get(schema);
 			if (cached) return cached;
 			const tables = Array.isArray(schema.tables) ? schema.tables : [];
-			const setLower = new Set(tables.map(t => String(t).toLowerCase()));
+			const setLower = new Set(tables.map((t: any) => String(t).toLowerCase()));
 			schemaTablesLowerCache.set(schema, setLower);
 			return setLower;
 		} catch {
@@ -4335,7 +4345,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 		}
 	};
 
-	const tryResolveFromSchema = (schema, clusterUrl, dbName) => {
+	const tryResolveFromSchema = (schema: any, clusterUrl: any, dbName: any) => {
 		if (!schema || !dbName || unresolvedLower.size === 0) {
 			return;
 		}
@@ -4350,7 +4360,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 		}
 	};
 
-	const scanCachedSchemasForMatches = (schemas, clusterUrl) => {
+	const scanCachedSchemasForMatches = (schemas: any, clusterUrl: any) => {
 		for (const entry of schemas) {
 			if (!entry) continue;
 			const dbName = String(entry.database || '').trim();
@@ -4361,20 +4371,20 @@ async function qualifyTablesInTextPriority(text, opts) {
 		}
 	};
 
-	const getCachedSchemasForConnection = (connectionId) => {
+	const getCachedSchemasForConnection = (connectionId: any) => {
 		const cid = String(connectionId || '').trim();
 		if (!cid) return [];
 		const prefix = cid + '|';
 		const list = [];
 		try {
-			for (const key of Object.keys(schemaByConnDb || {})) {
+			for (const key of Object.keys(_win.schemaByConnDb || {})) {
 				if (!key || !key.startsWith(prefix)) continue;
 				const dbName = key.slice(prefix.length);
 				if (!dbName) continue;
-				list.push({ database: dbName, schema: schemaByConnDb[key] });
+				list.push({ database: dbName, schema: _win.schemaByConnDb[key] });
 			}
 		} catch { /* ignore */ }
-		list.sort((a, b) => String(a.database).toLowerCase().localeCompare(String(b.database).toLowerCase()));
+		list.sort((a: any, b: any) => String(a.database).toLowerCase().localeCompare(String(b.database).toLowerCase()));
 		return list;
 	};
 
@@ -4382,7 +4392,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 	// Priority 2: current cluster (cached).
 	if (unresolvedLower.size > 0) {
 		const cachedCurrentConn = getCachedSchemasForConnection(opts.connectionId)
-			.filter(e => String(e.database) !== String(opts.currentDatabase));
+			.filter((e: any) => String(e.database) !== String(opts.currentDatabase));
 		scanCachedSchemasForMatches(cachedCurrentConn, opts.currentClusterUrl);
 	}
 
@@ -4390,7 +4400,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 	if (unresolvedLower.size > 0) {
 		const connById = new Map();
 		try {
-			for (const c of (connections || [])) {
+			for (const c of (_win.connections || [])) {
 				if (c && c.id) {
 					connById.set(String(c.id), c);
 				}
@@ -4401,8 +4411,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 		const otherConns = Array.from(connById.entries())
 			.filter(([cid]) => cid !== String(opts.connectionId || '').trim())
 			.map(([cid, c]) => ({ cid, clusterUrl: String((c && c.clusterUrl) || '').trim() }))
-			.filter(x => !!x.clusterUrl)
-			.sort((a, b) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
+			.filter((x: any) => !!x.clusterUrl)
+			.sort((a: any, b: any) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
 
 		for (const c of otherConns) {
 			if (unresolvedLower.size === 0) break;
@@ -4421,7 +4431,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 			const dbName = String(db || '').trim();
 			if (!dbName || dbName === String(opts.currentDatabase)) continue;
 			const key = cid + '|' + dbName;
-			if (schemaByConnDb && schemaByConnDb[key]) continue;
+			if (_win.schemaByConnDb && _win.schemaByConnDb[key]) continue;
 			const sch = await requestSchema(cid, dbName);
 			tryResolveFromSchema(sch, opts.currentClusterUrl, dbName);
 		}
@@ -4429,7 +4439,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 		// Re-scan cached current cluster after fetch.
 		if (unresolvedLower.size > 0) {
 			const cachedCurrentConn = getCachedSchemasForConnection(cid)
-				.filter(e => String(e.database) !== String(opts.currentDatabase));
+				.filter((e: any) => String(e.database) !== String(opts.currentDatabase));
 			scanCachedSchemasForMatches(cachedCurrentConn, opts.currentClusterUrl);
 		}
 	}
@@ -4438,7 +4448,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 		// Fetch missing schemas for other connections.
 		const connById = new Map();
 		try {
-			for (const c of (connections || [])) {
+			for (const c of (_win.connections || [])) {
 				if (c && c.id) {
 					connById.set(String(c.id), c);
 				}
@@ -4447,8 +4457,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 		const otherConns = Array.from(connById.entries())
 			.filter(([id]) => id !== String(opts.connectionId || '').trim())
 			.map(([id, c]) => ({ cid: id, clusterUrl: String((c && c.clusterUrl) || '').trim() }))
-			.filter(x => !!x.clusterUrl)
-			.sort((a, b) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
+			.filter((x: any) => !!x.clusterUrl)
+			.sort((a: any, b: any) => normalizeClusterForKusto(a.clusterUrl).toLowerCase().localeCompare(normalizeClusterForKusto(b.clusterUrl).toLowerCase()));
 
 		for (const c of otherConns) {
 			if (unresolvedLower.size === 0) break;
@@ -4458,7 +4468,7 @@ async function qualifyTablesInTextPriority(text, opts) {
 				const dbName = String(db || '').trim();
 				if (!dbName) continue;
 				const key = c.cid + '|' + dbName;
-				if (schemaByConnDb && schemaByConnDb[key]) continue;
+				if (_win.schemaByConnDb && _win.schemaByConnDb[key]) continue;
 				const sch = await requestSchema(c.cid, dbName);
 				tryResolveFromSchema(sch, c.clusterUrl, dbName);
 			}
@@ -4491,8 +4501,8 @@ async function qualifyTablesInTextPriority(text, opts) {
 	return out;
 }
 
-function qualifyTablesInText(text, tables, clusterUrl, database) {
-	const normalizeClusterForKusto = (value) => {
+function qualifyTablesInText( text: any, tables: any, clusterUrl: any, database: any) {
+	const normalizeClusterForKusto = (value: any) => {
 		let s = String(value || '')
 			.trim()
 			.replace(/^https?:\/\//i, '')
@@ -4502,8 +4512,8 @@ function qualifyTablesInText(text, tables, clusterUrl, database) {
 		return s;
 	};
 
-	const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
-	const set = new Set((tables || []).map(t => String(t)));
+	const isIdentChar = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
+	const set = new Set((tables || []).map((t: any) => String(t)));
 	const skipNames = new Set();
 
 	// Very small lexer to detect let bindings and skip qualifying those names.
@@ -4616,122 +4626,122 @@ function qualifyTablesInText(text, tables, clusterUrl, database) {
 	return out;
 }
 
-function removeQueryBox(boxId) {
+function removeQueryBox( boxId: any) {
 	// Dispose Copilot chat state for this query box (if present).
 	try {
-		if (typeof window.__kustoDisposeCopilotQueryBox === 'function') {
-			window.__kustoDisposeCopilotQueryBox(boxId);
+		if (typeof (window as any).__kustoDisposeCopilotQueryBox === 'function') {
+			(window as any).__kustoDisposeCopilotQueryBox(boxId);
 		}
 	} catch { /* ignore */ }
 
 	// If removing a linked optimized box, exit linked optimization mode and restore cache settings.
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[boxId];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = meta.sourceBoxId;
 				try { __kustoSetLinkedOptimizationMode(sourceBoxId, boxId, false); } catch { /* ignore */ }
-				try { delete optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
-				try { delete optimizationMetadataByBoxId[sourceBoxId]; } catch { /* ignore */ }
+				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete _win.optimizationMetadataByBoxId[sourceBoxId]; } catch { /* ignore */ }
 			} else if (meta && meta.comparisonBoxId) {
 				// If removing the source box, remove the comparison box too.
 				const comparisonBoxId = meta.comparisonBoxId;
 				try { __kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, false); } catch { /* ignore */ }
 				try { removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
-				try { delete optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		}
 	} catch { /* ignore */ }
 
 	// Stop any running timer/spinner for this box
 	setQueryExecuting(boxId, false);
-	delete runModesByBoxId[boxId];
+	delete _win.runModesByBoxId[boxId];
 	try {
-		if (window.__kustoQueryResultJsonByBoxId) {
-			delete window.__kustoQueryResultJsonByBoxId[boxId];
+		if ((window as any).__kustoQueryResultJsonByBoxId) {
+			delete (window as any).__kustoQueryResultJsonByBoxId[boxId];
 		}
 	} catch {
 		// ignore
 	}
 
 	// Disconnect any resize observer
-	if (queryEditorResizeObservers[boxId]) {
+	if (_win.queryEditorResizeObservers[boxId]) {
 		try {
-			queryEditorResizeObservers[boxId].disconnect();
+			_win.queryEditorResizeObservers[boxId].disconnect();
 		} catch {
 			// ignore
 		}
-		delete queryEditorResizeObservers[boxId];
+		delete _win.queryEditorResizeObservers[boxId];
 	}
 
 	// Disconnect any visibility observers
 	try {
-		if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers && queryEditorVisibilityObservers[boxId]) {
-			try { queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
-			delete queryEditorVisibilityObservers[boxId];
+		if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers && _win.queryEditorVisibilityObservers[boxId]) {
+			try { _win.queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
+			delete _win.queryEditorVisibilityObservers[boxId];
 		}
 	} catch { /* ignore */ }
 	try {
-		if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers && queryEditorVisibilityMutationObservers[boxId]) {
-			try { queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
-			delete queryEditorVisibilityMutationObservers[boxId];
+		if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers && _win.queryEditorVisibilityMutationObservers[boxId]) {
+			try { _win.queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
+			delete _win.queryEditorVisibilityMutationObservers[boxId];
 		}
 	} catch { /* ignore */ }
 
 	// Dispose editor if present
-	if (queryEditors[boxId]) {
+	if (_win.queryEditors[boxId]) {
 		try {
-			queryEditors[boxId].dispose();
+			_win.queryEditors[boxId].dispose();
 		} catch {
 			// ignore
 		}
-		delete queryEditors[boxId];
+		delete _win.queryEditors[boxId];
 	}
 
 	// Remove from tracked list
-	queryBoxes = queryBoxes.filter(id => id !== boxId);
-	try { delete lastQueryTextByBoxId[boxId]; } catch { /* ignore */ }
-	try { delete missingClusterUrlsByBoxId[boxId]; } catch { /* ignore */ }
+	_win.queryBoxes = _win.queryBoxes.filter((id: any) => id !== boxId);
+	try { delete _win.lastQueryTextByBoxId[boxId]; } catch { /* ignore */ }
+	try { delete _win.missingClusterUrlsByBoxId[boxId]; } catch { /* ignore */ }
 	try {
-		if (missingClusterDetectTimersByBoxId && missingClusterDetectTimersByBoxId[boxId]) {
-			clearTimeout(missingClusterDetectTimersByBoxId[boxId]);
-			delete missingClusterDetectTimersByBoxId[boxId];
+		if (_win.missingClusterDetectTimersByBoxId && _win.missingClusterDetectTimersByBoxId[boxId]) {
+			clearTimeout(_win.missingClusterDetectTimersByBoxId[boxId]);
+			delete _win.missingClusterDetectTimersByBoxId[boxId];
 		}
 	} catch { /* ignore */ }
 
 	// Clear any global pointers if they reference this box
-	if (window.lastExecutedBox === boxId) {
-		window.lastExecutedBox = null;
+	if ((window as any).lastExecutedBox === boxId) {
+		(window as any).lastExecutedBox = null;
 	}
-	if (window.currentResult && window.currentResult.boxId === boxId) {
-		window.currentResult = null;
+	if ((window as any).currentResult && (window as any).currentResult.boxId === boxId) {
+		(window as any).currentResult = null;
 	}
 
 	// Remove DOM node
-	const box = document.getElementById(boxId);
+	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function toggleCachePill(boxId) {
-	const checkbox = document.getElementById(boxId + '_cache_enabled');
-	const label = document.getElementById(boxId + '_cache_label');
+function toggleCachePill( boxId: any) {
+	const checkbox = document.getElementById(boxId + '_cache_enabled') as any;
+	const label = document.getElementById(boxId + '_cache_label') as any;
 	if (label) {
 		label.classList.toggle('disabled', !checkbox.checked);
 	}
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function toggleCachePopup(boxId) {
-	const popup = document.getElementById(boxId + '_cache_popup');
+function toggleCachePopup( boxId: any) {
+	const popup = document.getElementById(boxId + '_cache_popup') as any;
 	if (!popup) return;
 	
 	const isOpen = popup.classList.contains('open');
 	
 	// Close all other popups first
-	document.querySelectorAll('.cache-popup.open').forEach(p => {
+	document.querySelectorAll('.cache-popup.open').forEach((p: any) =>  {
 		if (p !== popup) p.classList.remove('open');
 	});
 	
@@ -4740,7 +4750,7 @@ function toggleCachePopup(boxId) {
 	if (!isOpen) {
 		// Add click-outside listener
 		setTimeout(() => {
-			const closeHandler = (e) => {
+			const closeHandler = (e: any) => {
 				if (!popup.contains(e.target) && !e.target.closest('#' + boxId + '_cache_label')) {
 					popup.classList.remove('open');
 					document.removeEventListener('click', closeHandler);
@@ -4752,11 +4762,11 @@ function toggleCachePopup(boxId) {
 }
 
 // Keep for backward compatibility
-function toggleCacheControls(boxId) {
+function toggleCacheControls( boxId: any) {
 	toggleCachePill(boxId);
 }
 
-function formatClusterDisplayName(connection) {
+function formatClusterDisplayName( connection: any) {
 	if (!connection) {
 		return '';
 	}
@@ -4777,7 +4787,7 @@ function formatClusterDisplayName(connection) {
 	return String(connection.name || connection.clusterUrl || '').trim();
 }
 
-function normalizeClusterUrlKey(url) {
+function normalizeClusterUrlKey( url: any) {
 	try {
 		const raw = String(url || '').trim();
 		if (!raw) return '';
@@ -4789,7 +4799,7 @@ function normalizeClusterUrlKey(url) {
 	}
 }
 
-function formatClusterShortName(clusterUrl) {
+function formatClusterShortName( clusterUrl: any) {
 	const raw = String(clusterUrl || '').trim();
 	if (!raw) {
 		return '';
@@ -4813,7 +4823,7 @@ function formatClusterShortName(clusterUrl) {
 	}
 }
 
-function clusterShortNameKey(clusterUrl) {
+function clusterShortNameKey( clusterUrl: any) {
 	try {
 		return String(formatClusterShortName(clusterUrl) || '').trim().toLowerCase();
 	} catch {
@@ -4821,7 +4831,7 @@ function clusterShortNameKey(clusterUrl) {
 	}
 }
 
-function extractClusterUrlsFromQueryText(queryText) {
+function extractClusterUrlsFromQueryText( queryText: any) {
 	const text = String(queryText || '');
 	if (!text) {
 		return [];
@@ -4850,9 +4860,9 @@ function extractClusterUrlsFromQueryText(queryText) {
 	return out;
 }
 
-function extractClusterDatabaseHintsFromQueryText(queryText) {
+function extractClusterDatabaseHintsFromQueryText( queryText: any) {
 	const text = String(queryText || '');
-	const map = {};
+	const map: any = {};
 	if (!text) {
 		return map;
 	}
@@ -4876,14 +4886,14 @@ function extractClusterDatabaseHintsFromQueryText(queryText) {
 	return map;
 }
 
-function computeMissingClusterUrls(detectedClusterUrls) {
+function computeMissingClusterUrls( detectedClusterUrls: any) {
 	const detected = Array.isArray(detectedClusterUrls) ? detectedClusterUrls : [];
 	if (!detected.length) {
 		return [];
 	}
 	const existingKeys = new Set();
 	try {
-		for (const c of (connections || [])) {
+		for (const c of (_win.connections || [])) {
 			if (!c) continue;
 			const key = clusterShortNameKey(c.clusterUrl || '');
 			if (key) existingKeys.add(key);
@@ -4902,9 +4912,9 @@ function computeMissingClusterUrls(detectedClusterUrls) {
 	return missing;
 }
 
-function renderMissingClustersBanner(boxId, missingClusterUrls) {
-	const banner = document.getElementById(boxId + '_missing_clusters');
-	const textEl = document.getElementById(boxId + '_missing_clusters_text');
+function renderMissingClustersBanner( boxId: any, missingClusterUrls: any) {
+	const banner = document.getElementById(boxId + '_missing_clusters') as any;
+	const textEl = document.getElementById(boxId + '_missing_clusters_text') as any;
 	if (!banner || !textEl) {
 		return;
 	}
@@ -4915,41 +4925,41 @@ function renderMissingClustersBanner(boxId, missingClusterUrls) {
 		return;
 	}
 	const shortNames = missing
-		.map(u => formatClusterShortName(u))
+		.map((u: any) => formatClusterShortName(u))
 		.filter(Boolean);
 	const label = shortNames.length
-		? ('Detected clusters not in your connections: <strong>' + escapeHtml(shortNames.join(', ')) + '</strong>.')
+		? ('Detected clusters not in your connections: <strong>' + _win.escapeHtml(shortNames.join(', ')) + '</strong>.')
 		: 'Detected clusters not in your connections.';
 	textEl.innerHTML = label + ' Add them with one click.';
 	banner.style.display = 'flex';
 }
 
-function updateMissingClustersForBox(boxId, queryText) {
+function updateMissingClustersForBox( boxId: any, queryText: any) {
 	try {
-		lastQueryTextByBoxId[boxId] = String(queryText || '');
+		_win.lastQueryTextByBoxId[boxId] = String(queryText || '');
 	} catch { /* ignore */ }
 	try {
-		suggestedDatabaseByClusterKeyByBoxId[boxId] = extractClusterDatabaseHintsFromQueryText(queryText);
+		_win.suggestedDatabaseByClusterKeyByBoxId[boxId] = extractClusterDatabaseHintsFromQueryText(queryText);
 	} catch { /* ignore */ }
 	const detected = extractClusterUrlsFromQueryText(queryText);
 	const missing = computeMissingClusterUrls(detected);
-	try { missingClusterUrlsByBoxId[boxId] = missing; } catch { /* ignore */ }
+	try { _win.missingClusterUrlsByBoxId[boxId] = missing; } catch { /* ignore */ }
 	renderMissingClustersBanner(boxId, missing);
 }
 
 // Called by Monaco (media/queryEditor/monaco.js) on content changes.
-window.__kustoOnQueryValueChanged = function (boxId, queryText) {
+(window as any).__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
 	const id = String(boxId || '').trim();
 	if (!id) {
 		return;
 	}
-	try { lastQueryTextByBoxId[id] = String(queryText || ''); } catch { /* ignore */ }
+	try { _win.lastQueryTextByBoxId[id] = String(queryText || ''); } catch { /* ignore */ }
 	try {
-		if (missingClusterDetectTimersByBoxId[id]) {
-			clearTimeout(missingClusterDetectTimersByBoxId[id]);
+		if (_win.missingClusterDetectTimersByBoxId[id]) {
+			clearTimeout(_win.missingClusterDetectTimersByBoxId[id]);
 		}
-		missingClusterDetectTimersByBoxId[id] = setTimeout(() => {
-			try { updateMissingClustersForBox(id, lastQueryTextByBoxId[id] || ''); } catch { /* ignore */ }
+		_win.missingClusterDetectTimersByBoxId[id] = setTimeout(() => {
+			try { updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || ''); } catch { /* ignore */ }
 		}, 260);
 	} catch {
 		// ignore
@@ -4957,19 +4967,19 @@ window.__kustoOnQueryValueChanged = function (boxId, queryText) {
 };
 
 // Called by main.js when the connections list changes.
-window.__kustoOnConnectionsUpdated = function () {
+(window as any).__kustoOnConnectionsUpdated = function () {
 	try {
-		for (const id of (queryBoxes || [])) {
-			updateMissingClustersForBox(id, lastQueryTextByBoxId[id] || '');
+		for (const id of (_win.queryBoxes || [])) {
+			updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || '');
 		}
 	} catch {
 		// ignore
 	}
 	// Apply any pending favorite selections now that connections may exist.
 	try {
-		for (const id of (queryBoxes || [])) {
+		for (const id of (_win.queryBoxes || [])) {
 			try {
-				if (pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]) {
+				if (_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]) {
 					__kustoTryApplyPendingFavoriteSelectionForBox(id);
 				}
 			} catch { /* ignore */ }
@@ -4978,29 +4988,29 @@ window.__kustoOnConnectionsUpdated = function () {
 		// ignore
 	}
 	try {
-		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-			window.__kustoUpdateFavoritesUiForAllBoxes();
+		if (typeof (window as any).__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+			(window as any).__kustoUpdateFavoritesUiForAllBoxes();
 		}
 	} catch { /* ignore */ }
 };
 
-function __kustoFavoriteKey(clusterUrl, database) {
+function __kustoFavoriteKey( clusterUrl: any, database: any) {
 	const c = normalizeClusterUrlKey(String(clusterUrl || '').trim());
 	const d = String(database || '').trim().toLowerCase();
 	return c + '|' + d;
 }
 
-function __kustoGetCurrentClusterUrlForBox(boxId) {
+function __kustoGetCurrentClusterUrlForBox( boxId: any) {
 	return __kustoGetClusterUrl(boxId);
 }
 
-function __kustoGetCurrentDatabaseForBox(boxId) {
+function __kustoGetCurrentDatabaseForBox( boxId: any) {
 	return __kustoGetDatabase(boxId);
 }
 
-function __kustoFindFavorite(clusterUrl, database) {
+function __kustoFindFavorite( clusterUrl: any, database: any) {
 	const key = __kustoFavoriteKey(clusterUrl, database);
-	const list = Array.isArray(kustoFavorites) ? kustoFavorites : [];
+	const list = Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : [];
 	for (const f of list) {
 		if (!f) continue;
 		const fk = __kustoFavoriteKey(f.clusterUrl, f.database);
@@ -5010,8 +5020,8 @@ function __kustoFindFavorite(clusterUrl, database) {
 }
 
 function __kustoGetFavoritesSorted() {
-	const list = (Array.isArray(kustoFavorites) ? kustoFavorites : []).slice();
-	list.sort((a, b) => {
+	const list = (Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []).slice();
+	list.sort((a: any, b: any) => {
 		const an = String((a && a.name) || '').toLowerCase();
 		const bn = String((b && b.name) || '').toLowerCase();
 		return an.localeCompare(bn);
@@ -5027,12 +5037,12 @@ let __kustoAutoEnterFavoritesByBoxId = Object.create(null);
 // favorite, switch that box into Favorites mode.
 let __kustoAutoEnterFavoritesForNewBoxByBoxId = Object.create(null);
 
-function __kustoMarkNewBoxForFavoritesAutoEnter(boxId) {
+function __kustoMarkNewBoxForFavoritesAutoEnter( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
 		// Never treat restore-created boxes as "new".
-		if (typeof __kustoRestoreInProgress === 'boolean' && __kustoRestoreInProgress) {
+		if (typeof _win.__kustoRestoreInProgress === 'boolean' && _win.__kustoRestoreInProgress) {
 			return;
 		}
 	} catch { /* ignore */ }
@@ -5042,7 +5052,7 @@ function __kustoMarkNewBoxForFavoritesAutoEnter(boxId) {
 	} catch { /* ignore */ }
 }
 
-function __kustoTryAutoEnterFavoritesModeForNewBox(boxId) {
+function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	let pending = false;
@@ -5053,14 +5063,14 @@ function __kustoTryAutoEnterFavoritesModeForNewBox(boxId) {
 
 	// Don't override an explicit choice for this box.
 	try {
-		if (favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+		if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
 			try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
 			return;
 		}
 	} catch { /* ignore */ }
 
 	// Wait until favorites are available.
-	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+	const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
 	if (!hasAny) return;
 
 	const clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
@@ -5078,7 +5088,7 @@ function __kustoTryAutoEnterFavoritesModeForNewBox(boxId) {
 	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
 }
 
-window.__kustoSetAutoEnterFavoritesForBox = function (boxId, clusterUrl, database) {
+(window as any).__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: any, database: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const c = String(clusterUrl || '').trim();
@@ -5090,7 +5100,7 @@ window.__kustoSetAutoEnterFavoritesForBox = function (boxId, clusterUrl, databas
 	} catch { /* ignore */ }
 };
 
-function __kustoTryAutoEnterFavoritesModeForBox(boxId) {
+function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	let desired = null;
@@ -5102,7 +5112,7 @@ function __kustoTryAutoEnterFavoritesModeForBox(boxId) {
 	if (!desired) return;
 
 	// Wait until favorites are available.
-	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+	const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
 	if (!hasAny) return;
 
 	const fav = __kustoFindFavorite(desired.clusterUrl, desired.database);
@@ -5110,7 +5120,7 @@ function __kustoTryAutoEnterFavoritesModeForBox(boxId) {
 		// No matching favorite — ensure we're NOT in favorites mode so the
 		// cluster/database dropdowns are visible and the user can see the connection.
 		try {
-			const isInFavMode = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
+			const isInFavMode = !!(_win.favoritesModeByBoxId && _win.favoritesModeByBoxId[id]);
 			if (isInFavMode) {
 				__kustoApplyFavoritesMode(id, false);
 			}
@@ -5123,9 +5133,9 @@ function __kustoTryAutoEnterFavoritesModeForBox(boxId) {
 	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
 }
 
-window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
+(window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 	try {
-		for (const id of (queryBoxes || [])) {
+		for (const id of (_win.queryBoxes || [])) {
 			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch { /* ignore */ }
 			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch { /* ignore */ }
 		}
@@ -5136,18 +5146,18 @@ window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 // section in Favorites mode. If they have no favorites, keep the normal cluster/db selects.
 let __kustoDidDefaultFirstBoxToFavorites = false;
 
-window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
+(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 	try {
 		if (__kustoDidDefaultFirstBoxToFavorites) return;
-		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
 		if (!hasAny) return;
-		if (!Array.isArray(queryBoxes) || queryBoxes.length !== 1) return;
-		const id = String(queryBoxes[0] || '').trim();
+		if (!Array.isArray(_win.queryBoxes) || _win.queryBoxes.length !== 1) return;
+		const id = String(_win.queryBoxes[0] || '').trim();
 		if (!id) return;
 
 		// Don't override an explicit/restored setting for this box.
 		try {
-			if (favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(favoritesModeByBoxId, id)) {
+			if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
 				return;
 			}
 		} catch { /* ignore */ }
@@ -5189,7 +5199,7 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 // Route confirmation via the extension host so we can use VS Code's native modal.
 let __kustoConfirmRemoveFavoriteCallbacksById = Object.create(null);
 
-window.__kustoOnConfirmRemoveFavoriteResult = function (message) {
+(window as any).__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
 	try {
 		const m = (message && typeof message === 'object') ? message : {};
 		const requestId = String(m.requestId || '');
@@ -5205,11 +5215,11 @@ window.__kustoOnConfirmRemoveFavoriteResult = function (message) {
 	}
 };
 
-function __kustoFindConnectionIdForClusterUrl(clusterUrl) {
+function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
 	try {
 		const key = normalizeClusterUrlKey(String(clusterUrl || '').trim());
 		if (!key) return '';
-		for (const c of (connections || [])) {
+		for (const c of (_win.connections || [])) {
 			if (!c) continue;
 			if (normalizeClusterUrlKey(c.clusterUrl || '') === key) {
 				return String(c.id || '').trim();
@@ -5223,12 +5233,12 @@ function __kustoFindConnectionIdForClusterUrl(clusterUrl) {
 
 // For optimized/comparison boxes, execution inherits cluster/db from the source box.
 // Expose this so schema/autocomplete and favorites selection can follow the same path.
-window.__kustoGetSelectionOwnerBoxId = function (boxId) {
+(window as any).__kustoGetSelectionOwnerBoxId = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return '';
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[id];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[id];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				return String(meta.sourceBoxId || '').trim() || id;
 			}
@@ -5237,13 +5247,13 @@ window.__kustoGetSelectionOwnerBoxId = function (boxId) {
 	return id;
 };
 
-function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
+function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return false;
 	let pending = null;
 	try {
-		pending = pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]
-			? pendingFavoriteSelectionByBoxId[id]
+		pending = _win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]
+			? _win.pendingFavoriteSelectionByBoxId[id]
 			: null;
 	} catch { /* ignore */ }
 	if (!pending) return false;
@@ -5251,7 +5261,7 @@ function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
 	const clusterUrl = String(pending.clusterUrl || '').trim();
 	const database = String(pending.database || '').trim();
 	if (!clusterUrl || !database) {
-		try { delete pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+		try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
 		return false;
 	}
 
@@ -5263,12 +5273,12 @@ function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
 	// Apply to the effective selection owner (matches execution behavior).
 	let ownerId = id;
 	try {
-		ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
-			? (window.__kustoGetSelectionOwnerBoxId(id) || id)
+		ownerId = (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function')
+			? ((window as any).__kustoGetSelectionOwnerBoxId(id) || id)
 			: id;
 	} catch { ownerId = id; }
 
-	const applyToBox = (targetBoxId) => {
+	const applyToBox = (targetBoxId: any) => {
 		const tid = String(targetBoxId || '').trim();
 		if (!tid) return;
 		const kwEl = __kustoGetQuerySectionElement(tid);
@@ -5295,29 +5305,29 @@ function __kustoTryApplyPendingFavoriteSelectionForBox(boxId) {
 		applyToBox(id);
 	}
 
-	try { delete pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+	try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
 	return true;
 }
 
-function __kustoSetElementDisplay(el, display) {
+function __kustoSetElementDisplay( el: any, display: any) {
 	try {
 		if (!el) return;
 		el.style.display = display;
 	} catch { /* ignore */ }
 }
 
-function __kustoUpdateFavoritesUiForBox(boxId) {
+function __kustoUpdateFavoritesUiForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const kwEl = __kustoGetQuerySectionElement(id);
 	if (kwEl && typeof kwEl.setFavorites === 'function') {
-		kwEl.setFavorites(Array.isArray(kustoFavorites) ? kustoFavorites : []);
+		kwEl.setFavorites(Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
 	}
 }
 
-window.__kustoUpdateFavoritesUiForAllBoxes = function () {
+(window as any).__kustoUpdateFavoritesUiForAllBoxes = function () {
 	try {
-		queryBoxes.forEach(id => {
+		_win.queryBoxes.forEach((id: any) =>  {
 			try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
 		});
 	} catch { /* ignore */ }
@@ -5325,7 +5335,7 @@ window.__kustoUpdateFavoritesUiForAllBoxes = function () {
 
 // Toggle the current cluster+database as a favorite for a given query box.
 // Sends a message to the extension host which handles add/remove + persistence.
-function toggleFavoriteForBox(boxId) {
+function toggleFavoriteForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const clusterUrl = __kustoGetClusterUrl(id);
@@ -5335,19 +5345,19 @@ function toggleFavoriteForBox(boxId) {
 	const existing = __kustoFindFavorite(clusterUrl, database);
 	if (existing) {
 		// Already a favorite — remove it.
-		vscode.postMessage({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+		(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
 	} else {
 		// Not a favorite yet — request add (extension host shows input box for name).
-		vscode.postMessage({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+		(_win.vscode as any).postMessage({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
 	}
 }
 
 // Remove a specific favorite by cluster+database.
-function removeFavorite(clusterUrl, database) {
+function removeFavorite( clusterUrl: any, database: any) {
 	const c = String(clusterUrl || '').trim();
 	const d = String(database || '').trim();
 	if (!c || !d) return;
-	vscode.postMessage({ type: 'removeFavorite', clusterUrl: c, database: d });
+	(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: c, database: d });
 }
 
 // Favorites dropdowns are now managed by the Lit component's shadow DOM.
@@ -5357,9 +5367,9 @@ function closeAllFavoritesDropdowns() {
 	// no-op — Lit component handles its own dropdown lifecycle.
 }
 
-function __kustoApplyFavoritesMode(boxId, enabled) {
-	favoritesModeByBoxId = favoritesModeByBoxId || {};
-	favoritesModeByBoxId[boxId] = !!enabled;
+function __kustoApplyFavoritesMode( boxId: any, enabled: any) {
+	_win.favoritesModeByBoxId = _win.favoritesModeByBoxId || {};
+	_win.favoritesModeByBoxId[boxId] = !!enabled;
 
 	// Delegate to the Lit element — it handles showing/hiding favorites vs cluster/database
 	// dropdowns in its shadow DOM render.
@@ -5370,11 +5380,11 @@ function __kustoApplyFavoritesMode(boxId, enabled) {
 }
 
 // Called by main.js when a favorite was just added from a specific query box.
-window.__kustoEnterFavoritesModeForBox = function (boxId) {
+(window as any).__kustoEnterFavoritesModeForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
-		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
+		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
 		if (!hasAny) return;
 		__kustoApplyFavoritesMode(id, true);
 		__kustoUpdateFavoritesUiForBox(id);
@@ -5394,12 +5404,12 @@ function __kustoGetTrashIconSvg() {
 }
 
 
-function addMissingClusterConnections(boxId) {
+function addMissingClusterConnections( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) {
 		return;
 	}
-	const missing = missingClusterUrlsByBoxId[id];
+	const missing = _win.missingClusterUrlsByBoxId[id];
 	const clusters = Array.isArray(missing) ? missing.slice() : [];
 	if (!clusters.length) {
 		return;
@@ -5410,8 +5420,8 @@ function addMissingClusterConnections(boxId) {
 		const hasSelection = !!__kustoGetConnectionId(id);
 		const kwEl = __kustoGetQuerySectionElement(id);
 		if (kwEl && !hasSelection) {
-			const hints = suggestedDatabaseByClusterKeyByBoxId && suggestedDatabaseByClusterKeyByBoxId[id]
-				? suggestedDatabaseByClusterKeyByBoxId[id]
+			const hints = _win.suggestedDatabaseByClusterKeyByBoxId && _win.suggestedDatabaseByClusterKeyByBoxId[id]
+				? _win.suggestedDatabaseByClusterKeyByBoxId[id]
 				: {};
 			let chosenClusterUrl = '';
 			let chosenDb = '';
@@ -5436,7 +5446,7 @@ function addMissingClusterConnections(boxId) {
 		// ignore
 	}
 	try {
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'addConnectionsForClusters',
 			boxId: id,
 			clusterUrls: clusters
@@ -5447,22 +5457,22 @@ function addMissingClusterConnections(boxId) {
 }
 
 function updateConnectionSelects() {
-	queryBoxes.forEach(id => {
+	_win.queryBoxes.forEach((id: any) =>  {
 		const el = __kustoGetQuerySectionElement(id);
 		if (el && typeof el.setConnections === 'function') {
 			// Delegate to the Lit element — it handles desired/current/last resolution internally.
-			el.setConnections(connections || [], { lastConnectionId: lastConnectionId || '' });
+			el.setConnections(_win.connections || [], { lastConnectionId: _win.lastConnectionId || '' });
 		}
 		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
 	});
 	try {
-		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {
-			window.__kustoUpdateRunEnabledForAllBoxes();
+		if (typeof (window as any).__kustoUpdateRunEnabledForAllBoxes === 'function') {
+			(window as any).__kustoUpdateRunEnabledForAllBoxes();
 		}
 	} catch { /* ignore */ }
 }
 
-function updateDatabaseField(boxId) {
+function updateDatabaseField( boxId: any) {
 	// If a previous database-load attempt rendered an error into the results area,
 	// clear it as soon as the user changes clusters so the UI doesn't look stuck.
 	try {
@@ -5488,10 +5498,10 @@ function updateDatabaseField(boxId) {
 	}
 }
 
-function __kustoClearDatabaseLoadError(boxId) {
+function __kustoClearDatabaseLoadError( boxId: any) {
 	const bid = String(boxId || '').trim();
 	if (!bid) return;
-	const resultsDiv = document.getElementById(bid + '_results');
+	const resultsDiv = document.getElementById(bid + '_results') as any;
 	if (!resultsDiv || !resultsDiv.dataset) return;
 
 	try {
@@ -5510,8 +5520,8 @@ function __kustoClearDatabaseLoadError(boxId) {
 					__kustoSetResultsVisible(bid, desiredVisible);
 				} else {
 					try {
-						if (window.__kustoResultsVisibleByBoxId) {
-							window.__kustoResultsVisibleByBoxId[bid] = desiredVisible;
+						if ((window as any).__kustoResultsVisibleByBoxId) {
+							(window as any).__kustoResultsVisibleByBoxId[bid] = desiredVisible;
 						}
 						if (typeof __kustoApplyResultsVisibility === 'function') {
 							__kustoApplyResultsVisibility(bid);
@@ -5529,24 +5539,24 @@ function __kustoClearDatabaseLoadError(boxId) {
 	}
 }
 
-function promptAddConnectionFromDropdown(boxId) {
+function promptAddConnectionFromDropdown( boxId: any) {
 	try {
-		vscode.postMessage({ type: 'promptAddConnection', boxId: boxId });
+		(_win.vscode as any).postMessage({ type: 'promptAddConnection', boxId: boxId });
 	} catch {
 		// ignore
 	}
 }
 
-function importConnectionsFromXmlFile(boxId) {
+function importConnectionsFromXmlFile( boxId: any) {
 	try {
 		// Use the extension host's file picker so we can default to the user's Kusto Explorer folder.
-		vscode.postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
-	} catch (e) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
+		(_win.vscode as any).postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
+	} catch (e: any) {
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
 	}
 }
 
-function parseKustoExplorerConnectionsXml(xmlText) {
+function parseKustoExplorerConnectionsXml( xmlText: any) {
 	const text = String(xmlText || '');
 	if (!text.trim()) {
 		return [];
@@ -5610,11 +5620,11 @@ function parseKustoExplorerConnectionsXml(xmlText) {
 	return deduped;
 }
 
-function getChildText(node, localName) {
+function getChildText( node: any, localName: any) {
 	if (!node || !node.childNodes) {
 		return '';
 	}
-	for (const child of Array.from(node.childNodes)) {
+	for (const child of Array.from(node.childNodes) as any[]) {
 		if (!child || child.nodeType !== 1) {
 			continue;
 		}
@@ -5626,10 +5636,10 @@ function getChildText(node, localName) {
 	return '';
 }
 
-function parseKustoConnectionString(cs) {
+function parseKustoConnectionString( cs: any) {
 	const raw = String(cs || '');
-	const parts = raw.split(';').map(p => p.trim()).filter(Boolean);
-	const map = {};
+	const parts = raw.split(';').map((p: any) => p.trim()).filter(Boolean);
+	const map: any = {};
 	for (const part of parts) {
 		const idx = part.indexOf('=');
 		if (idx <= 0) {
@@ -5645,7 +5655,7 @@ function parseKustoConnectionString(cs) {
 	};
 }
 
-function refreshDatabases(boxId) {
+function refreshDatabases( boxId: any) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	if (!connectionId) return;
 
@@ -5655,14 +5665,14 @@ function refreshDatabases(boxId) {
 		kwEl.setDatabasesLoading(true);
 	}
 
-	vscode.postMessage({
+	(_win.vscode as any).postMessage({
 		type: 'refreshDatabases',
 		connectionId: connectionId,
 		boxId: boxId
 	});
 }
 
-function onDatabasesError(boxId, error, responseConnectionId) {
+function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 	const errText = String(error || '');
 	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
 
@@ -5675,7 +5685,7 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
 			// Response is for a different connection than currently selected - ignore it.
 			// Still stop any spinner that might be running.
-			const refreshBtn = document.getElementById(boxId + '_refresh');
+			const refreshBtn = document.getElementById(boxId + '_refresh') as any;
 			if (refreshBtn) {
 				try {
 					if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
@@ -5696,8 +5706,8 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 	}
 
 	try {
-		const databaseSelect = document.getElementById(boxId + '_database');
-		const refreshBtn = document.getElementById(boxId + '_refresh');
+		const databaseSelect = document.getElementById(boxId + '_database') as any;
+		const refreshBtn = document.getElementById(boxId + '_refresh') as any;
 		if (databaseSelect) {
 			// Check if we have previous content to restore (from a manual refresh)
 			const hadPreviousContent = databaseSelect.dataset && 
@@ -5727,7 +5737,7 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 				try { databaseSelect.value = ''; } catch { /* ignore */ }
 			}
 			databaseSelect.disabled = false;
-			try { window.__kustoDropdown && window.__kustoDropdown.syncSelectBackedDropdown && window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
+			try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.syncSelectBackedDropdown && (window as any).__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
 			try {
 				if (databaseSelect.dataset) {
 					delete databaseSelect.dataset.kustoRefreshInFlight;
@@ -5755,15 +5765,15 @@ function onDatabasesError(boxId, error, responseConnectionId) {
 		// ignore
 	}
 	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
+			(window as any).__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 	// Note: We no longer show inline errors in the results section for database load failures.
 	// The extension now uses VS Code notifications instead for a consistent experience.
 }
 
-function updateDatabaseSelect(boxId, databases, responseConnectionId) {
+function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId: any) {
 	const kwEl = __kustoGetQuerySectionElement(boxId);
 
 	// If the response includes a connectionId, verify it matches the currently selected connection.
@@ -5778,9 +5788,9 @@ function updateDatabaseSelect(boxId, databases, responseConnectionId) {
 	}
 
 	const list = (Array.isArray(databases) ? databases : [])
-		.map(d => String(d || '').trim())
+		.map((d: any) => String(d || '').trim())
 		.filter(Boolean)
-		.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+		.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
 	// Update local cache.
 	const connectionId = __kustoGetConnectionId(boxId);
@@ -5788,7 +5798,7 @@ function updateDatabaseSelect(boxId, databases, responseConnectionId) {
 		let clusterKey = '';
 		try {
 			const cid = String(connectionId || '').trim();
-			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 			if (clusterUrl) {
 				let u = clusterUrl;
@@ -5796,43 +5806,43 @@ function updateDatabaseSelect(boxId, databases, responseConnectionId) {
 				try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
 			}
 		} catch { /* ignore */ }
-		cachedDatabases[String(clusterKey || '').trim()] = list;
+		_win.cachedDatabases[String(clusterKey || '').trim()] = list;
 	}
 
 	// Delegate to the Lit element.
 	if (kwEl && typeof kwEl.setDatabases === 'function') {
-		kwEl.setDatabases(list, lastDatabase || '');
+		kwEl.setDatabases(list, _win.lastDatabase || '');
 		kwEl.setRefreshLoading(false);
 	}
 
 	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
+			(window as any).__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 }
 
-function __kustoIsValidConnectionIdForRun(connectionId) {
+function __kustoIsValidConnectionIdForRun( connectionId: any) {
 	const cid = String(connectionId || '').trim();
 	if (!cid) return false;
 	if (cid === '__enter_new__' || cid === '__import_xml__') return false;
 	return true;
 }
 
-function __kustoGetEffectiveSelectionOwnerIdForRun(boxId) {
+function __kustoGetEffectiveSelectionOwnerIdForRun( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return '';
 	try {
-		if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
-			return String(window.__kustoGetSelectionOwnerBoxId(id) || id).trim();
+		if (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function') {
+			return String((window as any).__kustoGetSelectionOwnerBoxId(id) || id).trim();
 		}
 	} catch { /* ignore */ }
 	return id;
 }
 
-function __kustoIsRunSelectionReady(boxId) {
+function __kustoIsRunSelectionReady( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return false;
 
@@ -5840,8 +5850,8 @@ function __kustoIsRunSelectionReady(boxId) {
 
 	// If a favorites selection is still staging/applying, don't allow Run.
 	try {
-		const pending1 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]);
-		const pending2 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[ownerId]);
+		const pending1 = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]);
+		const pending2 = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[ownerId]);
 		if (pending1 || pending2) {
 			return false;
 		}
@@ -5855,17 +5865,18 @@ function __kustoIsRunSelectionReady(boxId) {
 
 	// If DB selection is still being resolved (favorites/restore), block Run.
 	try {
+		const dbEl: any = null; // Legacy: never defined, kept for safety
 		const desiredPending = !!(dbEl && dbEl.dataset && String(dbEl.dataset.desired || '').trim());
 		if (desiredPending) return false;
 	} catch { /* ignore */ }
 	try {
-		if (dbEl && dbEl.disabled) return false;
+		if (false) return false; // Legacy: dbEl was never defined in this function
 	} catch { /* ignore */ }
 
 	return true;
 }
 
-function __kustoHasValidFavoriteSelection(ownerBoxId) {
+function __kustoHasValidFavoriteSelection( ownerBoxId: any) {
 	try {
 		const id = String(ownerBoxId || '').trim();
 		if (!id) return false;
@@ -5883,7 +5894,7 @@ function __kustoHasValidFavoriteSelection(ownerBoxId) {
 	}
 }
 
-function __kustoClearSchemaSummaryIfNoSelection(boxId) {
+function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const ownerId = __kustoGetEffectiveSelectionOwnerIdForRun(id);
@@ -5898,7 +5909,7 @@ function __kustoClearSchemaSummaryIfNoSelection(boxId) {
 
 	// Keep the schema refresh button in sync: hide it when selection isn't valid.
 	try {
-		const btn = document.getElementById(id + '_schema_refresh');
+		const btn = document.getElementById(id + '_schema_refresh') as any;
 		if (btn) {
 			btn.style.display = shouldClear ? 'none' : '';
 		}
@@ -5906,28 +5917,28 @@ function __kustoClearSchemaSummaryIfNoSelection(boxId) {
 
 	if (shouldClear) {
 		try {
-			if (schemaByBoxId) {
-				delete schemaByBoxId[id];
+			if (_win.schemaByBoxId) {
+				delete _win.schemaByBoxId[id];
 			}
 		} catch { /* ignore */ }
 		try {
-			if (typeof setSchemaLoadedSummary === 'function') {
-				setSchemaLoadedSummary(id, '', '', false);
+			if (typeof _win.setSchemaLoadedSummary === 'function') {
+				_win.setSchemaLoadedSummary(id, '', '', false);
 			}
 		} catch { /* ignore */ }
 	}
 }
 
-window.__kustoUpdateRunEnabledForBox = function (boxId) {
+(window as any).__kustoUpdateRunEnabledForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const runBtn = document.getElementById(id + '_run_btn');
-	const runToggle = document.getElementById(id + '_run_toggle');
+	const runBtn = document.getElementById(id + '_run_btn') as any;
+	const runToggle = document.getElementById(id + '_run_toggle') as any;
 	const disabledTooltip = 'Select a cluster and database first (or select a favorite)';
 
 	// If a query is currently executing for this box, keep disabled.
 	try {
-		if (queryExecutionTimers && queryExecutionTimers[id]) {
+		if (_win.queryExecutionTimers && _win.queryExecutionTimers[id]) {
 			if (runBtn) runBtn.disabled = true;
 			if (runToggle) runToggle.disabled = true;
 			return;
@@ -5952,15 +5963,15 @@ window.__kustoUpdateRunEnabledForBox = function (boxId) {
 	if (runToggle) runToggle.disabled = false;
 };
 
-window.__kustoUpdateRunEnabledForAllBoxes = function () {
+(window as any).__kustoUpdateRunEnabledForAllBoxes = function () {
 	try {
-		for (const id of (queryBoxes || [])) {
-			try { window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
+		for (const id of (_win.queryBoxes || [])) {
+			try { (window as any).__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 };
 
-function __kustoApplyRunModeFromMenu(boxId, mode) {
+function __kustoApplyRunModeFromMenu( boxId: any, mode: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	setRunMode(id, mode);
@@ -5973,11 +5984,11 @@ function __kustoApplyRunModeFromMenu(boxId, mode) {
 	try { closeRunMenu(id); } catch { /* ignore */ }
 }
 
-function getRunMode(boxId) {
-	return runModesByBoxId[boxId] || 'take100';
+function getRunMode( boxId: any) {
+	return _win.runModesByBoxId[boxId] || 'take100';
 }
 
-function getRunModeLabelText(mode) {
+function getRunModeLabelText( mode: any) {
 	switch ((mode || '').toLowerCase()) {
 		case 'plain':
 			return 'Run Query';
@@ -5989,12 +6000,12 @@ function getRunModeLabelText(mode) {
 	}
 }
 
-function setRunMode(boxId, mode) {
-	runModesByBoxId[boxId] = (mode || 'take100');
-	const runBtn = document.getElementById(boxId + '_run_btn');
+function setRunMode( boxId: any, mode: any) {
+	_win.runModesByBoxId[boxId] = (mode || 'take100');
+	const runBtn = document.getElementById(boxId + '_run_btn') as any;
 	if (runBtn) {
 		const labelSpan = runBtn.querySelector('.run-btn-label');
-		const labelText = getRunModeLabelText(runModesByBoxId[boxId]);
+		const labelText = getRunModeLabelText(_win.runModesByBoxId[boxId]);
 		if (labelSpan) {
 			labelSpan.textContent = ' ' + labelText;
 		}
@@ -6002,22 +6013,23 @@ function setRunMode(boxId, mode) {
 		const isEnabled = !runBtn.disabled;
 		runBtn.title = labelText + (isEnabled ? '' : '\nSelect a cluster and database first (or select a favorite)');
 	}
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
-function closeRunMenu(boxId) {
-	const menu = document.getElementById(boxId + '_run_menu');
+function closeRunMenu( boxId: any) {
+	const menu = document.getElementById(boxId + '_run_menu') as any;
 	if (menu) {
 		menu.style.display = 'none';
 	}
 }
 
 function closeAllRunMenus() {
-	queryBoxes.forEach(id => closeRunMenu(id));
+	if (!_win.queryBoxes) return;
+	_win.queryBoxes.forEach((id: any) => closeRunMenu(id));
 }
 
-function toggleRunMenu(boxId) {
-	const menu = document.getElementById(boxId + '_run_menu');
+function toggleRunMenu( boxId: any) {
+	const menu = document.getElementById(boxId + '_run_menu') as any;
 	if (!menu) {
 		return;
 	}
@@ -6026,7 +6038,7 @@ function toggleRunMenu(boxId) {
 	menu.style.display = next;
 }
 
-const __kustoEventIsInsideDropdownUi = (ev) => {
+const __kustoEventIsInsideDropdownUi = (ev: any) => {
 	try {
 		const t = ev && ev.target ? ev.target : null;
 		if (!t || !t.closest) return false;
@@ -6045,16 +6057,16 @@ const __kustoEventIsInsideDropdownUi = (ev) => {
 	}
 };
 
-document.addEventListener('click', (ev) => {
+document.addEventListener('click', (ev: any) => {
 	// Clicking inside a dropdown should not dismiss it.
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
-	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 });
 
 // Close dropdowns on scroll/wheel so they don't float detached from their buttons.
-document.addEventListener('scroll', (ev) => {
+document.addEventListener('scroll', (ev: any) => {
 	// The dropdown menus themselves are scrollable; do not dismiss on internal menu scroll.
 	try {
 		const target = ev && ev.target ? ev.target : null;
@@ -6064,34 +6076,34 @@ document.addEventListener('scroll', (ev) => {
 	} catch { /* ignore */ }
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
-	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 }, true); // Use capture to catch scroll events on nested scrollable elements
 
-document.addEventListener('wheel', (ev) => {
+document.addEventListener('wheel', (ev: any) => {
 	// Allow scrolling inside dropdown menus without dismissing them.
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	closeAllFavoritesDropdowns();
-	try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 }, { passive: true });
 
-function formatElapsed(ms) {
+function formatElapsed( ms: any) {
 	const totalSeconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
 	return minutes + ':' + seconds.toString().padStart(2, '0');
 }
 
-function setQueryExecuting(boxId, executing) {
-	const runBtn = document.getElementById(boxId + '_run_btn');
-	const runToggle = document.getElementById(boxId + '_run_toggle');
-	const status = document.getElementById(boxId + '_exec_status');
-	const elapsed = document.getElementById(boxId + '_exec_elapsed');
-	const cancelBtn = document.getElementById(boxId + '_cancel_btn');
+function setQueryExecuting( boxId: any, executing: any) {
+	const runBtn = document.getElementById(boxId + '_run_btn') as any;
+	const runToggle = document.getElementById(boxId + '_run_toggle') as any;
+	const status = document.getElementById(boxId + '_exec_status') as any;
+	const elapsed = document.getElementById(boxId + '_exec_elapsed') as any;
+	const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 
-	if (queryExecutionTimers[boxId]) {
-		clearInterval(queryExecutionTimers[boxId]);
-		delete queryExecutionTimers[boxId];
+	if (_win.queryExecutionTimers[boxId]) {
+		clearInterval(_win.queryExecutionTimers[boxId]);
+		delete _win.queryExecutionTimers[boxId];
 	}
 
 	if (executing) {
@@ -6116,7 +6128,7 @@ function setQueryExecuting(boxId, executing) {
 		// Clear stale results/errors from the previous query so the user
 		// doesn't see an old error while a new query is running.
 		try {
-			const resultsDiv = document.getElementById(boxId + '_results');
+			const resultsDiv = document.getElementById(boxId + '_results') as any;
 			if (resultsDiv) {
 				resultsDiv.innerHTML = '';
 				resultsDiv.classList.remove('visible');
@@ -6124,7 +6136,7 @@ function setQueryExecuting(boxId, executing) {
 		} catch { /* ignore */ }
 
 		const start = performance.now();
-		queryExecutionTimers[boxId] = setInterval(() => {
+		_win.queryExecutionTimers[boxId] = setInterval(() => {
 			if (elapsed) {
 				elapsed.textContent = formatElapsed(performance.now() - start);
 			}
@@ -6133,8 +6145,8 @@ function setQueryExecuting(boxId, executing) {
 	}
 
 	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
+			(window as any).__kustoUpdateRunEnabledForBox(boxId);
 		} else {
 			if (runBtn) {
 				runBtn.disabled = false;
@@ -6160,9 +6172,9 @@ function setQueryExecuting(boxId, executing) {
 	}
 }
 
-function cancelQuery(boxId) {
+function cancelQuery( boxId: any) {
 	try {
-		const cancelBtn = document.getElementById(boxId + '_cancel_btn');
+		const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 		if (cancelBtn) {
 			cancelBtn.disabled = true;
 		}
@@ -6170,23 +6182,23 @@ function cancelQuery(boxId) {
 		// ignore
 	}
 	try {
-		vscode.postMessage({ type: 'cancelQuery', boxId: boxId });
+		(_win.vscode as any).postMessage({ type: 'cancelQuery', boxId: boxId });
 	} catch {
 		// ignore
 	}
 }
 
-function executeQuery(boxId, mode) {
+function executeQuery( boxId: any, mode?: any) {
 	const effectiveMode = mode || getRunMode(boxId);
 	try {
-		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {
-			window.__kustoClearAutoFindInQueryEditor(boxId);
+		if (typeof (window as any).__kustoClearAutoFindInQueryEditor === 'function') {
+			(window as any).__kustoClearAutoFindInQueryEditor(boxId);
 		}
 	} catch { /* ignore */ }
-	const __kustoExtractStatementAtCursor = (editor) => {
+	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try {
-			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
-				return window.__kustoExtractStatementTextAtCursor(editor);
+			if (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function') {
+				return (window as any).__kustoExtractStatementTextAtCursor(editor);
 			}
 		} catch { /* ignore */ }
 		try {
@@ -6246,7 +6258,7 @@ function executeQuery(boxId, mode) {
 				blocks.push({ startLine, endLine: lineCount });
 			}
 
-			const block = blocks.find(b => cursorLine >= b.startLine && cursorLine <= b.endLine);
+			const block = blocks.find((b: any) => cursorLine >= b.startLine && cursorLine <= b.endLine);
 			if (!block) {
 				// Cursor is on a blank separator line (or the editor is empty).
 				return null;
@@ -6274,7 +6286,7 @@ function executeQuery(boxId, mode) {
 		}
 	};
 
-	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+	const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
 	// If the editor has multiple statements (blank-line separated), run only the statement at cursor.
 	// IMPORTANT: Do NOT add checks for hasTextFocus or activeQueryEditorBoxId here!
@@ -6284,8 +6296,8 @@ function executeQuery(boxId, mode) {
 	try {
 		if (editor) {
 			const model = editor.getModel && editor.getModel();
-			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
-				? window.__kustoGetStatementBlocksFromModel(model)
+			const blocks = (model && typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
+				? (window as any).__kustoGetStatementBlocksFromModel(model)
 				: [];
 			const hasMultipleStatements = blocks && blocks.length > 1;
 			if (hasMultipleStatements) {
@@ -6295,7 +6307,7 @@ function executeQuery(boxId, mode) {
 				} else {
 					// Cursor is on a separator line between statements.
 					try {
-						vscode.postMessage({
+						(_win.vscode as any).postMessage({
 							type: 'showInfo',
 							message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
 						});
@@ -6307,17 +6319,17 @@ function executeQuery(boxId, mode) {
 	} catch { /* ignore */ }
 	let connectionId = __kustoGetConnectionId(boxId);
 	let database = __kustoGetDatabase(boxId);
-	let cacheEnabled = document.getElementById(boxId + '_cache_enabled').checked;
-	const cacheValue = parseInt(document.getElementById(boxId + '_cache_value').value) || 1;
-	const cacheUnit = document.getElementById(boxId + '_cache_unit').value;
+	let cacheEnabled = (document.getElementById(boxId + '_cache_enabled') as any).checked;
+	const cacheValue = parseInt((document.getElementById(boxId + '_cache_value') as any).value) || 1;
+	const cacheUnit = (document.getElementById(boxId + '_cache_unit') as any).value;
 
 	let sourceBoxIdForComparison = '';
 	let isComparisonBox = false;
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
-		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
-			const meta = optimizationMetadataByBoxId[boxId];
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
@@ -6333,7 +6345,7 @@ function executeQuery(boxId, mode) {
 			}
 			// While linked optimization exists, always disable caching for benchmark runs.
 			const hasLinkedOptimization = !!(meta && meta.isComparison)
-				|| !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
+				|| !!(_win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].comparisonBoxId);
 			if (hasLinkedOptimization) {
 				cacheEnabled = false;
 			}
@@ -6346,17 +6358,17 @@ function executeQuery(boxId, mode) {
 	// false mismatches when queries are otherwise unchanged.
 	try {
 		if (isComparisonBox && sourceBoxIdForComparison) {
-			const cacheMap = window.__kustoLastRunCacheEnabledByBoxId;
+			const cacheMap = (window as any).__kustoLastRunCacheEnabledByBoxId;
 			const sourceLastRunUsedCaching = !!(cacheMap && typeof cacheMap === 'object' && cacheMap[sourceBoxIdForComparison]);
 			if (sourceLastRunUsedCaching) {
 				// Prevent transient comparisons against stale cached source results.
 				try {
-					if (window.__kustoResultsByBoxId && typeof window.__kustoResultsByBoxId === 'object') {
-						delete window.__kustoResultsByBoxId[sourceBoxIdForComparison];
+					if ((window as any).__kustoResultsByBoxId && typeof (window as any).__kustoResultsByBoxId === 'object') {
+						delete (window as any).__kustoResultsByBoxId[sourceBoxIdForComparison];
 					}
 				} catch { /* ignore */ }
 				try {
-					__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
+					_win.__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
 						sourceBoxId: sourceBoxIdForComparison
 					});
 				} catch { /* ignore */ }
@@ -6370,19 +6382,19 @@ function executeQuery(boxId, mode) {
 
 	// Safety: if a favorites switch is still pending/applying, do not run.
 	try {
-		const pending = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[boxId]);
-		const dbEl = document.getElementById(boxId + '_database');
+		const pending = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[boxId]);
+		const dbEl = document.getElementById(boxId + '_database') as any;
 		const desiredPending = !!(dbEl && dbEl.dataset && dbEl.dataset.desired);
 		const dbDisabled = !!(dbEl && dbEl.disabled);
 		if (pending || desiredPending || dbDisabled) {
-			__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', {
+			_win.__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', {
 				pending,
 				desiredPending,
 				dbDisabled,
 				connectionId,
 				database
 			}, 'warn');
-			try { vscode.postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch { /* ignore */ }
+			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch { /* ignore */ }
 			return;
 		}
 	} catch { /* ignore */ }
@@ -6392,14 +6404,14 @@ function executeQuery(boxId, mode) {
 	}
 
 	if (!connectionId) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
 		return;
 	}
 	if (!database) {
-		try { vscode.postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
 		return;
 	}
-	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
+	_win.__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
 
 	setQueryExecuting(boxId, true);
 	closeRunMenu(boxId);
@@ -6408,16 +6420,16 @@ function executeQuery(boxId, mode) {
 	// When caching is enabled, the extension injects an extra (hidden) first line,
 	// so error line numbers need to be adjusted for the visible editor.
 	try {
-		if (!window.__kustoLastRunCacheEnabledByBoxId || typeof window.__kustoLastRunCacheEnabledByBoxId !== 'object') {
-			window.__kustoLastRunCacheEnabledByBoxId = {};
+		if (!(window as any).__kustoLastRunCacheEnabledByBoxId || typeof (window as any).__kustoLastRunCacheEnabledByBoxId !== 'object') {
+			(window as any).__kustoLastRunCacheEnabledByBoxId = {};
 		}
-		window.__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
+		(window as any).__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
 	} catch { /* ignore */ }
 
 	// Store the last executed box for result display
-	window.lastExecutedBox = boxId;
+	(window as any).lastExecutedBox = boxId;
 
-	vscode.postMessage({
+	(_win.vscode as any).postMessage({
 		type: 'executeQuery',
 		query,
 		queryMode: effectiveMode,
@@ -6429,3 +6441,146 @@ function executeQuery(boxId, mode) {
 		cacheUnit
 	});
 }
+
+// ── Window bridges for remaining legacy callers ──
+(window as any).optimizeQueryWithCopilot = optimizeQueryWithCopilot;
+(window as any).exportQueryToPowerBI = exportQueryToPowerBI;
+(window as any).fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
+(window as any).qualifyTablesInTextPriority = qualifyTablesInTextPriority;
+(window as any).__kustoIndexToAlphaName = __kustoIndexToAlphaName;
+(window as any).__kustoGetUsedSectionNamesUpper = __kustoGetUsedSectionNamesUpper;
+(window as any).addQueryBox = addQueryBox;
+(window as any).__kustoAutoSizeEditor = __kustoAutoSizeEditor;
+(window as any).__kustoAutoSizeResults = __kustoAutoSizeResults;
+(window as any).__kustoMaximizeQueryBox = __kustoMaximizeQueryBox;
+(window as any).__kustoUpdateQueryVisibilityToggleButton = __kustoUpdateQueryVisibilityToggleButton;
+(window as any).__kustoApplyQueryBoxVisibility = __kustoApplyQueryBoxVisibility;
+(window as any).toggleQueryBoxVisibility = toggleQueryBoxVisibility;
+(window as any).__kustoSetResultsVisible = __kustoSetResultsVisible;
+(window as any).__kustoLockCacheForBenchmark = __kustoLockCacheForBenchmark;
+(window as any).__kustoNormalizeCellForComparison = __kustoNormalizeCellForComparison;
+(window as any).__kustoRowKeyForComparison = __kustoRowKeyForComparison;
+(window as any).__kustoNormalizeColumnNameForComparison = __kustoNormalizeColumnNameForComparison;
+(window as any).__kustoGetNormalizedColumnNameList = __kustoGetNormalizedColumnNameList;
+(window as any).__kustoDoColumnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch;
+(window as any).__kustoGetColumnDifferences = __kustoGetColumnDifferences;
+(window as any).__kustoDoColumnOrderMatch = __kustoDoColumnOrderMatch;
+(window as any).__kustoDoRowOrderMatch = __kustoDoRowOrderMatch;
+(window as any).__kustoBuildColumnIndexMapForNames = __kustoBuildColumnIndexMapForNames;
+(window as any).__kustoBuildNameBasedColumnMapping = __kustoBuildNameBasedColumnMapping;
+(window as any).__kustoRowKeyForComparisonWithColumnMapping = __kustoRowKeyForComparisonWithColumnMapping;
+(window as any).__kustoRowKeyForComparisonIgnoringColumnOrder = __kustoRowKeyForComparisonIgnoringColumnOrder;
+(window as any).__kustoAreResultsEquivalentWithDetails = __kustoAreResultsEquivalentWithDetails;
+(window as any).__kustoAreResultsEquivalent = __kustoAreResultsEquivalent;
+(window as any).__kustoDoResultHeadersMatch = __kustoDoResultHeadersMatch;
+(window as any).__kustoUpdateAcceptOptimizationsButton = __kustoUpdateAcceptOptimizationsButton;
+(window as any).acceptOptimizations = acceptOptimizations;
+(window as any).__kustoUpdateQueryResultsToggleButton = __kustoUpdateQueryResultsToggleButton;
+(window as any).__kustoUpdateComparisonSummaryToggleButton = __kustoUpdateComparisonSummaryToggleButton;
+(window as any).__kustoApplyResultsVisibility = __kustoApplyResultsVisibility;
+(window as any).__kustoApplyComparisonSummaryVisibility = __kustoApplyComparisonSummaryVisibility;
+(window as any).toggleQueryResultsVisibility = toggleQueryResultsVisibility;
+(window as any).toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;
+(window as any).__kustoEnsureCacheBackupMap = __kustoEnsureCacheBackupMap;
+(window as any).__kustoBackupCacheSettings = __kustoBackupCacheSettings;
+(window as any).__kustoRestoreCacheSettings = __kustoRestoreCacheSettings;
+(window as any).__kustoEnsureRunModeBackupMap = __kustoEnsureRunModeBackupMap;
+(window as any).__kustoBackupRunMode = __kustoBackupRunMode;
+(window as any).__kustoRestoreRunMode = __kustoRestoreRunMode;
+(window as any).__kustoSetLinkedOptimizationMode = __kustoSetLinkedOptimizationMode;
+(window as any).updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
+(window as any).updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;
+(window as any).toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabled;
+(window as any).updateCopilotInlineCompletionsToggleButtons = updateCopilotInlineCompletionsToggleButtons;
+(window as any).toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
+(window as any).toggleCaretDocsEnabled = toggleCaretDocsEnabled;
+(window as any).onQueryEditorToolbarAction = onQueryEditorToolbarAction;
+(window as any).copyQueryAsAdeLink = copyQueryAsAdeLink;
+(window as any).__kustoOpenShareModal = __kustoOpenShareModal;
+(window as any).__kustoCloseShareModal = __kustoCloseShareModal;
+(window as any).__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
+(window as any).setToolbarActionBusy = setToolbarActionBusy;
+(window as any).closeToolsDropdown = closeToolsDropdown;
+(window as any).initToolbarOverflow = initToolbarOverflow;
+(window as any).initRunButtonResponsive = initRunButtonResponsive;
+(window as any).updateRunButtonResponsive = updateRunButtonResponsive;
+(window as any).updateToolbarOverflow = updateToolbarOverflow;
+(window as any).toggleToolbarOverflow = toggleToolbarOverflow;
+(window as any).toggleOverflowSubmenu = toggleOverflowSubmenu;
+(window as any).closeToolbarOverflow = closeToolbarOverflow;
+(window as any).closeAllToolbarOverflowMenus = closeAllToolbarOverflowMenus;
+(window as any).renderToolbarOverflowMenu = renderToolbarOverflowMenu;
+(window as any).toggleToolsDropdown = toggleToolsDropdown;
+(window as any).renderToolsMenuForBox = renderToolsMenuForBox;
+(window as any).runMonacoAction = runMonacoAction;
+(window as any).replaceAllInEditor = replaceAllInEditor;
+(window as any).displayComparisonSummary = displayComparisonSummary;
+(window as any).__kustoEnsureOptimizePrepByBoxId = __kustoEnsureOptimizePrepByBoxId;
+(window as any).__kustoHideOptimizePromptForBox = __kustoHideOptimizePromptForBox;
+(window as any).__kustoSetOptimizeInProgress = __kustoSetOptimizeInProgress;
+(window as any).__kustoUpdateOptimizeStatus = __kustoUpdateOptimizeStatus;
+(window as any).__kustoCancelOptimizeQuery = __kustoCancelOptimizeQuery;
+(window as any).__kustoShowOptimizePromptLoading = __kustoShowOptimizePromptLoading;
+(window as any).__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
+(window as any).__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
+(window as any).__kustoApplyOptimizeQueryOptions = __kustoApplyOptimizeQueryOptions;
+(window as any).__kustoRunOptimizeQueryWithOverrides = __kustoRunOptimizeQueryWithOverrides;
+(window as any).qualifyTablesInText = qualifyTablesInText;
+(window as any).removeQueryBox = removeQueryBox;
+(window as any).toggleCachePill = toggleCachePill;
+(window as any).toggleCachePopup = toggleCachePopup;
+(window as any).toggleCacheControls = toggleCacheControls;
+(window as any).formatClusterDisplayName = formatClusterDisplayName;
+(window as any).normalizeClusterUrlKey = normalizeClusterUrlKey;
+(window as any).formatClusterShortName = formatClusterShortName;
+(window as any).clusterShortNameKey = clusterShortNameKey;
+(window as any).extractClusterUrlsFromQueryText = extractClusterUrlsFromQueryText;
+(window as any).extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFromQueryText;
+(window as any).computeMissingClusterUrls = computeMissingClusterUrls;
+(window as any).renderMissingClustersBanner = renderMissingClustersBanner;
+(window as any).updateMissingClustersForBox = updateMissingClustersForBox;
+(window as any).__kustoFavoriteKey = __kustoFavoriteKey;
+(window as any).__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
+(window as any).__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
+(window as any).__kustoFindFavorite = __kustoFindFavorite;
+(window as any).__kustoGetFavoritesSorted = __kustoGetFavoritesSorted;
+(window as any).__kustoMarkNewBoxForFavoritesAutoEnter = __kustoMarkNewBoxForFavoritesAutoEnter;
+(window as any).__kustoTryAutoEnterFavoritesModeForNewBox = __kustoTryAutoEnterFavoritesModeForNewBox;
+(window as any).__kustoTryAutoEnterFavoritesModeForBox = __kustoTryAutoEnterFavoritesModeForBox;
+(window as any).__kustoFindConnectionIdForClusterUrl = __kustoFindConnectionIdForClusterUrl;
+(window as any).__kustoTryApplyPendingFavoriteSelectionForBox = __kustoTryApplyPendingFavoriteSelectionForBox;
+(window as any).__kustoSetElementDisplay = __kustoSetElementDisplay;
+(window as any).__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
+(window as any).toggleFavoriteForBox = toggleFavoriteForBox;
+(window as any).removeFavorite = removeFavorite;
+(window as any).closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
+(window as any).__kustoApplyFavoritesMode = __kustoApplyFavoritesMode;
+(window as any).__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
+(window as any).addMissingClusterConnections = addMissingClusterConnections;
+(window as any).updateConnectionSelects = updateConnectionSelects;
+(window as any).updateDatabaseField = updateDatabaseField;
+(window as any).__kustoClearDatabaseLoadError = __kustoClearDatabaseLoadError;
+(window as any).promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
+(window as any).importConnectionsFromXmlFile = importConnectionsFromXmlFile;
+(window as any).parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;
+(window as any).getChildText = getChildText;
+(window as any).parseKustoConnectionString = parseKustoConnectionString;
+(window as any).refreshDatabases = refreshDatabases;
+(window as any).onDatabasesError = onDatabasesError;
+(window as any).updateDatabaseSelect = updateDatabaseSelect;
+(window as any).__kustoIsValidConnectionIdForRun = __kustoIsValidConnectionIdForRun;
+(window as any).__kustoGetEffectiveSelectionOwnerIdForRun = __kustoGetEffectiveSelectionOwnerIdForRun;
+(window as any).__kustoIsRunSelectionReady = __kustoIsRunSelectionReady;
+(window as any).__kustoHasValidFavoriteSelection = __kustoHasValidFavoriteSelection;
+(window as any).__kustoClearSchemaSummaryIfNoSelection = __kustoClearSchemaSummaryIfNoSelection;
+(window as any).__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
+(window as any).getRunMode = getRunMode;
+(window as any).getRunModeLabelText = getRunModeLabelText;
+(window as any).setRunMode = setRunMode;
+(window as any).closeRunMenu = closeRunMenu;
+(window as any).closeAllRunMenus = closeAllRunMenus;
+(window as any).toggleRunMenu = toggleRunMenu;
+(window as any).formatElapsed = formatElapsed;
+(window as any).setQueryExecuting = setQueryExecuting;
+(window as any).cancelQuery = cancelQuery;
+(window as any).executeQuery = executeQuery;

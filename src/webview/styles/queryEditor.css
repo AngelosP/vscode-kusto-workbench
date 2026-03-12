@@ -4015,6 +4015,7 @@
 			border: 1px solid var(--vscode-dropdown-border);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 			box-sizing: border-box;
+			outline: none;
 		}
 
 		.kusto-dropdown-item,

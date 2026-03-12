@@ -5863,7 +5863,7 @@ function ensureMonaco() {
 
 								// Check if automatic inline completions are enabled
 								// The toggle only controls automatic triggers - manual triggers (SHIFT+SPACE) always work
-								if (!isManualTrigger && typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
+								if (!isManualTrigger && typeof window.copilotInlineCompletionsEnabled !== 'undefined' && !window.copilotInlineCompletionsEnabled) {
 									console.log('[Kusto] Automatic inline completions disabled, returning empty');
 									return { items: [] };
 								}
@@ -9526,7 +9526,7 @@ function initQueryEditor(boxId) {
 		const __kustoMaybeAutoTriggerAutocomplete = (ed, boxId, changeEvent) => {
 			try {
 				if (!ed) return;
-				if (typeof autoTriggerAutocompleteEnabled !== 'boolean' || !autoTriggerAutocompleteEnabled) return;
+				if (typeof window.autoTriggerAutocompleteEnabled !== 'boolean' || !window.autoTriggerAutocompleteEnabled) return;
 				// Only auto-trigger for the currently focused query editor.
 				try {
 					if (typeof activeQueryEditorBoxId === 'string' && activeQueryEditorBoxId !== boxId) {
@@ -9911,7 +9911,7 @@ function initQueryEditor(boxId) {
 					lastHtml = cached;
 					// If caret-docs are enabled, paint the cached docs immediately so we don't flash watermark.
 					try {
-						if (typeof caretDocsEnabled === 'undefined' || caretDocsEnabled !== false) {
+						if (typeof window.caretDocsEnabled === 'undefined' || window.caretDocsEnabled !== false) {
 							if (banner) banner.style.display = 'flex';
 							if (text) {
 								if (text.classList) text.classList.remove('is-watermark');
@@ -10018,7 +10018,7 @@ function initQueryEditor(boxId) {
 				try {
 					// Default to enabled if the global toggle hasn't been initialized yet.
 					try {
-						if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+						if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
 							hide();
 							return;
 						}
@@ -10242,7 +10242,7 @@ function initQueryEditor(boxId) {
 							window.__kustoCaretDocsViewportListenersInstalled = true;
 							const refreshActive = () => {
 								try {
-									if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+									if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
 										return;
 									}
 									const overlays = typeof caretDocOverlaysByBoxId !== 'undefined' ? caretDocOverlaysByBoxId : null;
@@ -10281,7 +10281,7 @@ function initQueryEditor(boxId) {
 					// monaco.KeyCode.Escape === 9
 					if (e.keyCode === monaco.KeyCode.Escape) {
 						try {
-							if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+							if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
 								docOverlay.hide();
 							} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
 								docOverlay.showWatermark();
@@ -10363,7 +10363,9 @@ function initQueryEditor(boxId) {
 		});
 		editor.onDidFocusEditorText(() => {
 			activeQueryEditorBoxId = boxId;
+			try { window.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
 			try { activeMonacoEditor = editor; } catch { /* ignore */ }
+			try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
 			try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			syncPlaceholder();
@@ -10395,7 +10397,9 @@ function initQueryEditor(boxId) {
 		try {
 			editor.onDidFocusEditorWidget(() => {
 				activeQueryEditorBoxId = boxId;
+				try { window.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
 				try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
 				try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 				syncPlaceholder();
@@ -10409,12 +10413,13 @@ function initQueryEditor(boxId) {
 						const stillFocused = isEditorFocused();
 						if (!stillFocused) {
 							try {
-								if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
+								if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
 									docOverlay.hide();
 								}
 							} catch { /* ignore */ }
 							if (activeQueryEditorBoxId === boxId) {
 								activeQueryEditorBoxId = null;
+								try { window.activeQueryEditorBoxId = null; } catch { /* ignore */ }
 							}
 							syncPlaceholder();
 							// Keep existing docs banner content visible while unfocused.

@@ -1,4 +1,10 @@
-function __kustoCopyClientActivityId(boxId) {
+// Results table module — converted from legacy/resultsTable.js
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, unknown>;
+
+function __kustoCopyClientActivityId(boxId: any) {
 	try {
 		const el = document.getElementById(boxId + '_client_activity_id');
 		const text = el ? el.textContent : '';
@@ -56,7 +62,7 @@ function __kustoGetSaveIconSvg() {
 	);
 }
 
-function __kustoGetFilterIconSvg(size) {
+function __kustoGetFilterIconSvg(size: any) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 12;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -76,16 +82,16 @@ function __kustoGetResultsVisibilityIconSvg() {
 	);
 }
 
-function __kustoEnsureResultsShownForTool(boxId) {
+function __kustoEnsureResultsShownForTool(boxId: any) {
 	try {
-		if (window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false) {
-			if (typeof __kustoSetResultsVisible === 'function') {
-				__kustoSetResultsVisible(boxId, true);
+		if ((_win.__kustoResultsVisibleByBoxId as any) && (_win.__kustoResultsVisibleByBoxId as any)[boxId] === false) {
+			if (typeof (_win.__kustoSetResultsVisible) === 'function') {
+				(_win.__kustoSetResultsVisible as any)(boxId, true);
 			} else {
-				window.__kustoResultsVisibleByBoxId[boxId] = true;
+				(_win.__kustoResultsVisibleByBoxId as any)[boxId] = true;
 				try {
-					if (typeof __kustoApplyResultsVisibility === 'function') {
-						__kustoApplyResultsVisibility(boxId);
+					if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
+						(_win.__kustoApplyResultsVisibility as any)(boxId);
 					}
 				} catch { /* ignore */ }
 			}
@@ -99,19 +105,19 @@ function __kustoEnsureResultsShownForTool(boxId) {
 // Note: DOM focus can be flaky in VS Code webviews when coming from external apps.
 // Instead of fighting focus with timers, we track the last interaction and handle Ctrl+C
 // globally (see __kustoEnsureResultsCopyKeyHandlerInstalled).
-function __kustoFocusTableContainer(container, boxId) {
+function __kustoFocusTableContainer(container: any, boxId: any) {
 	if (!container) return;
 	try {
-		window.__kustoLastActiveResultsBoxId = boxId;
-		window.__kustoLastActiveResultsInteractionAt = Date.now();
+		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
+		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
 	} catch { /* ignore */ }
 	try { container.focus(); } catch { /* ignore */ }
 }
 
 function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 	try {
-		if (window.__kustoResultsCopyKeyHandlerInstalled) return;
-		window.__kustoResultsCopyKeyHandlerInstalled = true;
+		if ((_win.__kustoResultsCopyKeyHandlerInstalled as any)) return;
+		(_win.__kustoResultsCopyKeyHandlerInstalled as any) = true;
 	} catch { /* ignore */ }
 
 	document.addEventListener('keydown', (event) => {
@@ -124,7 +130,7 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 			// If the user is focused in a real text-editing surface, let native copy win.
 			// (Unless it's inside the results table container.)
 			try {
-				const t = event.target;
+				const t = event.target as any;
 				if (t && t.closest) {
 					const inResultsTable = !!t.closest('.table-container');
 					const inTextSurface = !!t.closest('input, textarea, [contenteditable="true"]');
@@ -134,12 +140,12 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 				}
 			} catch { /* ignore */ }
 
-			const boxId = (typeof window.__kustoLastActiveResultsBoxId === 'string') ? window.__kustoLastActiveResultsBoxId : '';
+			const boxId = (typeof (_win.__kustoLastActiveResultsBoxId as any) === 'string') ? (_win.__kustoLastActiveResultsBoxId as any) : '';
 			if (!boxId) return;
 
 			// Only override Ctrl+C if the last interaction was with results more recently than Monaco.
-			const lastResultsAt = Number(window.__kustoLastActiveResultsInteractionAt || 0);
-			const lastMonacoAt = Number(window.__kustoLastMonacoInteractionAt || 0);
+			const lastResultsAt = Number((_win.__kustoLastActiveResultsInteractionAt as any) || 0);
+			const lastMonacoAt = Number((_win.__kustoLastMonacoInteractionAt as any) || 0);
 			if (lastResultsAt <= lastMonacoAt) return;
 
 			const state = typeof __kustoGetResultsState === 'function' ? __kustoGetResultsState(boxId) : null;
@@ -159,7 +165,7 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 
 try { __kustoEnsureResultsCopyKeyHandlerInstalled(); } catch { /* ignore */ }
 
-function __kustoSetResultsToolsVisible(boxId, visible) {
+function __kustoSetResultsToolsVisible(boxId: any, visible: any) {
 	const searchBtn = document.getElementById(boxId + '_results_search_btn');
 	const columnBtn = document.getElementById(boxId + '_results_column_btn');
 	const sortBtn = document.getElementById(boxId + '_results_sort_btn');
@@ -199,7 +205,7 @@ function __kustoSetResultsToolsVisible(boxId, visible) {
 	try { if (sep2) { sep2.style.display = display; } } catch { /* ignore */ }
 }
 
-function __kustoHideResultsTools(boxId) {
+function __kustoHideResultsTools(boxId: any) {
 	try {
 		const searchContainer = document.getElementById(boxId + '_data_search_container');
 		if (searchContainer) {
@@ -249,7 +255,7 @@ function __kustoGetSortIconSvg() {
 	);
 }
 
-function __kustoGetTrashIconSvg(size) {
+function __kustoGetTrashIconSvg(size: any) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 14;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -262,7 +268,7 @@ function __kustoGetTrashIconSvg(size) {
 	);
 }
 
-function __kustoGetSelectAllIconSvg(size) {
+function __kustoGetSelectAllIconSvg(size: any) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 14;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -272,7 +278,7 @@ function __kustoGetSelectAllIconSvg(size) {
 	);
 }
 
-function __kustoGetDeselectAllIconSvg(size) {
+function __kustoGetDeselectAllIconSvg(size: any) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 14;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -283,7 +289,7 @@ function __kustoGetDeselectAllIconSvg(size) {
 
 const __KUSTO_NULL_EMPTY_KEY = '__kusto_null_empty__';
 
-function __kustoGetCloseIconSvg(size) {
+function __kustoGetCloseIconSvg(size: any) {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 14;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -293,11 +299,11 @@ function __kustoGetCloseIconSvg(size) {
 	);
 }
 
-function __kustoNormalizeSortDirection(dir) {
+function __kustoNormalizeSortDirection(dir: any) {
 	return (dir === 'desc') ? 'desc' : 'asc';
 }
 
-function __kustoNormalizeSortSpec(spec, columnCount) {
+function __kustoNormalizeSortSpec(spec: any, columnCount: any) {
 	const out = [];
 	const seen = new Set();
 	const list = Array.isArray(spec) ? spec : [];
@@ -312,7 +318,7 @@ function __kustoNormalizeSortSpec(spec, columnCount) {
 	return out;
 }
 
-function __kustoGetCellSortValue(cell) {
+function __kustoGetCellSortValue(cell: any) {
 	// Prefer underlying values over truncated display values.
 	try {
 			if (cell === null || cell === undefined) {
@@ -360,7 +366,7 @@ function __kustoGetCellSortValue(cell) {
 	}
 }
 
-function __kustoCompareSortValues(a, b) {
+function __kustoCompareSortValues(a: any, b: any) {
 	// Nulls always last.
 	if (a.kind === 'null' && b.kind === 'null') return 0;
 	if (a.kind === 'null') return 1;
@@ -387,7 +393,7 @@ function __kustoCompareSortValues(a, b) {
 	}
 }
 
-function __kustoFormatNumberForDisplay(val) {
+function __kustoFormatNumberForDisplay(val: any) {
 	try {
 		if (val === null || val === undefined) return '';
 		const n = (typeof val === 'number') ? val : null;
@@ -403,7 +409,7 @@ function __kustoFormatNumberForDisplay(val) {
 	}
 }
 
-function __kustoFormatDateForDisplay(dateStr) {
+function __kustoFormatDateForDisplay(dateStr: any) {
 	// Convert date strings to a clean format like "2025-01-24 15:30:45".
 	// This matches the formatting applied by the Kusto client backend.
 	// Handles:
@@ -450,7 +456,7 @@ function __kustoFormatDateForDisplay(dateStr) {
 	}
 }
 
-function __kustoFormatCellDisplayValueForTable(cell) {
+function __kustoFormatCellDisplayValueForTable(cell: any) {
 	try {
 		if (cell === null || cell === undefined) return '';
 		if (typeof cell === 'number') {
@@ -478,7 +484,7 @@ function __kustoFormatCellDisplayValueForTable(cell) {
 	}
 }
 
-function __kustoComputeSortedRowIndices(rows, sortSpec, baseIndices) {
+function __kustoComputeSortedRowIndices(rows: any, sortSpec: any, baseIndices: any) {
 	const count = Array.isArray(rows) ? rows.length : 0;
 	const spec = Array.isArray(sortSpec) ? sortSpec : [];
 	const input = Array.isArray(baseIndices) ? baseIndices : null;
@@ -492,7 +498,7 @@ function __kustoComputeSortedRowIndices(rows, sortSpec, baseIndices) {
 	}
 	// Stable sort: tie-break by original position in the input list.
 	const decorated = indices.map((rowIndex, pos) => ({ rowIndex, pos }));
-	decorated.sort((a, b) => {
+	decorated.sort((a: any, b: any) => {
 		for (const rule of spec) {
 			const colIndex = rule.colIndex;
 			const dir = rule.dir === 'desc' ? -1 : 1;
@@ -508,7 +514,7 @@ function __kustoComputeSortedRowIndices(rows, sortSpec, baseIndices) {
 	return decorated.map(d => d.rowIndex);
 }
 
-function __kustoEnsureDisplayRowIndexMaps(state) {
+function __kustoEnsureDisplayRowIndexMaps(state: any) {
 	if (!state) return;
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const sortSpec = Array.isArray(state.sortSpec) ? state.sortSpec : [];
@@ -522,7 +528,7 @@ function __kustoEnsureDisplayRowIndexMaps(state) {
 	state.rowIndexToDisplayIndex = inv;
 }
 
-function __kustoEnsureColumnFiltersMap(state) {
+function __kustoEnsureColumnFiltersMap(state: any) {
 	if (!state) return {};
 	if (!state.columnFilters || typeof state.columnFilters !== 'object') {
 		state.columnFilters = {};
@@ -530,7 +536,7 @@ function __kustoEnsureColumnFiltersMap(state) {
 	return state.columnFilters;
 }
 
-function __kustoGetRawCellValue(cell) {
+function __kustoGetRawCellValue(cell: any) {
 	try {
 		if (cell === null || cell === undefined) return null;
 		if (typeof cell === 'object') {
@@ -548,7 +554,7 @@ function __kustoGetRawCellValue(cell) {
 	}
 }
 
-function __kustoIsNullOrEmpty(val) {
+function __kustoIsNullOrEmpty(val: any) {
 	try {
 		if (val === null || val === undefined) return true;
 		if (typeof val === 'string') return val.trim().length === 0;
@@ -558,7 +564,7 @@ function __kustoIsNullOrEmpty(val) {
 	}
 }
 
-function __kustoTryParseNumber(val) {
+function __kustoTryParseNumber(val: any) {
 	if (val === null || val === undefined) return null;
 	if (typeof val === 'number') return isFinite(val) ? val : null;
 	if (typeof val === 'boolean') return val ? 1 : 0;
@@ -569,7 +575,7 @@ function __kustoTryParseNumber(val) {
 	return isFinite(n) ? n : null;
 }
 
-function __kustoTryParseDateMs(val) {
+function __kustoTryParseDateMs(val: any) {
 	if (val === null || val === undefined) return null;
 	if (val instanceof Date) {
 		const t = val.getTime();
@@ -583,12 +589,12 @@ function __kustoTryParseDateMs(val) {
 	return isFinite(t) ? t : null;
 }
 
-function __kustoInferColumnType(state, colIndex, rowIndicesForInference) {
+function __kustoInferColumnType(state: any, colIndex: any, rowIndicesForInference: any) {
 	try {
 		const rows = Array.isArray(state && state.rows) ? state.rows : [];
 		const indices = Array.isArray(rowIndicesForInference)
 			? rowIndicesForInference
-			: (Array.isArray(state && state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i));
+			: (Array.isArray(state && state.displayRowIndices) ? state.displayRowIndices : rows.map((_: any, i: any) => i));
 		let seen = 0;
 		let objCount = 0;
 		let numCount = 0;
@@ -620,7 +626,7 @@ function __kustoInferColumnType(state, colIndex, rowIndicesForInference) {
 	}
 }
 
-function __kustoGetRowIndicesExcludingColumnFilter(state, excludeColIndex) {
+function __kustoGetRowIndicesExcludingColumnFilter(state: any, excludeColIndex: any) {
 	const rows = Array.isArray(state && state.rows) ? state.rows : [];
 	let indices = [];
 	for (let i = 0; i < rows.length; i++) indices.push(i);
@@ -636,7 +642,7 @@ function __kustoGetRowIndicesExcludingColumnFilter(state, excludeColIndex) {
 	return indices;
 }
 
-function __kustoNormalizeStringForFilter(val) {
+function __kustoNormalizeStringForFilter(val: any) {
 	try {
 		if (val === null || val === undefined) return '';
 		return String(val);
@@ -645,7 +651,7 @@ function __kustoNormalizeStringForFilter(val) {
 	}
 }
 
-function __kustoRowMatchesNullPolicy(raw, spec) {
+function __kustoRowMatchesNullPolicy(raw: any, spec: any) {
 	const isEmpty = __kustoIsNullOrEmpty(raw);
 	const includeNullEmpty = !(spec && spec.includeNullEmpty === false);
 	const includeNotNullEmpty = !(spec && spec.includeNotNullEmpty === false);
@@ -653,7 +659,7 @@ function __kustoRowMatchesNullPolicy(raw, spec) {
 	return includeNotNullEmpty;
 }
 
-function __kustoRowMatchesColumnFilter(state, rowIdx, colIndex, spec) {
+function __kustoRowMatchesColumnFilter(state: any, rowIdx: any, colIndex: any, spec: any): any {
 	try {
 		const rows = Array.isArray(state && state.rows) ? state.rows : [];
 		const row = rows[rowIdx];
@@ -682,7 +688,7 @@ function __kustoRowMatchesColumnFilter(state, rowIdx, colIndex, spec) {
 			}
 			if (!Array.isArray(rules) || rules.length === 0) return true;
 
-			const matchesRule = (rule) => {
+			const matchesRule = (rule: any) => {
 				if (!rule || typeof rule !== 'object') return null;
 				const op = String(rule.op || '');
 				if (!op) return null;
@@ -786,9 +792,9 @@ function __kustoRowMatchesColumnFilter(state, rowIdx, colIndex, spec) {
 	}
 }
 
-function __kustoComputeUniqueValueKeys(state, colIndex, rowIndices) {
+function __kustoComputeUniqueValueKeys(state: any, colIndex: any, rowIndices: any) {
 	const rows = Array.isArray(state && state.rows) ? state.rows : [];
-	const indices = Array.isArray(rowIndices) ? rowIndices : rows.map((_, i) => i);
+	const indices = Array.isArray(rowIndices) ? rowIndices : rows.map((_: any, i: any) => i);
 	const counts = new Map();
 	let nullCount = 0;
 	let truncated = false;
@@ -809,7 +815,7 @@ function __kustoComputeUniqueValueKeys(state, colIndex, rowIndices) {
 		}
 	}
 	const keys = Array.from(counts.keys());
-	keys.sort((a, b) => {
+	keys.sort((a: any, b: any) => {
 		const ca = counts.get(a) || 0;
 		const cb = counts.get(b) || 0;
 		if (cb !== ca) return cb - ca;
@@ -818,7 +824,7 @@ function __kustoComputeUniqueValueKeys(state, colIndex, rowIndices) {
 	return { keys, counts, nullCount, truncated };
 }
 
-function __kustoNormalizeDraftFilter(state, colIndex, draft) {
+function __kustoNormalizeDraftFilter(state: any, colIndex: any, draft: any): any {
 	const spec = (draft && typeof draft === 'object') ? { ...draft } : null;
 	if (!spec) return null;
 
@@ -836,8 +842,8 @@ function __kustoNormalizeDraftFilter(state, colIndex, draft) {
 	if (spec.kind === 'values') {
 		const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIndex);
 		const uniq = __kustoComputeUniqueValueKeys(state, colIndex, baseRowIndices);
-		const allKeys = ([]).concat((uniq.nullCount > 0) ? [__KUSTO_NULL_EMPTY_KEY] : [], uniq.keys);
-		const allowed = Array.isArray(spec.allowedValues) ? spec.allowedValues.filter(v => typeof v === 'string') : [];
+		const allKeys = ([] as any[]).concat((uniq.nullCount > 0) ? [__KUSTO_NULL_EMPTY_KEY] : [], uniq.keys);
+		const allowed = Array.isArray(spec.allowedValues) ? spec.allowedValues.filter((v: any) => typeof v === 'string') : [];
 		// If user selected all known values, treat as no-op.
 		if (allowed.length >= allKeys.length) {
 			// Compare as sets.
@@ -861,8 +867,8 @@ function __kustoNormalizeDraftFilter(state, colIndex, draft) {
 			rules = [{ ...spec }];
 		}
 		if (!Array.isArray(rules)) rules = [];
-		rules = rules.filter(r => r && typeof r === 'object' && String(r.op || ''));
-		rules = rules.map(r => ({ ...r, join: (String(r.join || '') === 'or') ? 'or' : 'and' }));
+		rules = rules.filter((r: any) => r && typeof r === 'object' && String(r.op || ''));
+		rules = rules.map((r: any) => ({ ...r, join: (String(r.join || '') === 'or') ? 'or' : 'and' }));
 		if (rules.length === 0) return null;
 		spec.rules = rules;
 		spec.op = undefined;
@@ -876,7 +882,7 @@ function __kustoNormalizeDraftFilter(state, colIndex, draft) {
 		// Precompute thresholds for top/bottom/last per rule.
 		const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIndex);
 		if (t === 'number') {
-			const needsRank = rules.some(r => {
+			const needsRank = rules.some((r: any) => {
 				const op = String(r.op || '');
 				return op === 'top' || op === 'bottom';
 			});
@@ -891,7 +897,7 @@ function __kustoNormalizeDraftFilter(state, colIndex, draft) {
 					if (v === null) continue;
 					sortedValues.push(v);
 				}
-				sortedValues.sort((a, b) => a - b);
+				sortedValues.sort((a: any, b: any) => a - b);
 			}
 			for (const r of rules) {
 				const op = String(r.op || '');
@@ -933,7 +939,7 @@ function __kustoNormalizeDraftFilter(state, colIndex, draft) {
 	return null;
 }
 
-function __kustoGetRulesCombineEnabledFromDom(boxId) {
+function __kustoGetRulesCombineEnabledFromDom(boxId: any) {
 	try {
 		const el = document.getElementById(boxId + '_filter_rules_combine_toggle');
 		if (!el) return false;
@@ -944,10 +950,10 @@ function __kustoGetRulesCombineEnabledFromDom(boxId) {
 	}
 }
 
-function __kustoSetRulesCombineEnabled(boxId, enabled) {
+function __kustoSetRulesCombineEnabled(boxId: any, enabled: any) {
 	try {
-		if (window.__kustoActiveFilterPopover) {
-			window.__kustoActiveFilterPopover.draftCombine = !!enabled;
+		if ((_win.__kustoActiveFilterPopover as any)) {
+			(_win.__kustoActiveFilterPopover as any).draftCombine = !!enabled;
 		}
 		const el = document.getElementById(boxId + '_filter_rules_combine_toggle');
 		if (!el) return;
@@ -958,14 +964,14 @@ function __kustoSetRulesCombineEnabled(boxId, enabled) {
 	} catch { /* ignore */ }
 }
 
-function __kustoToggleRulesCombine(boxId) {
+function __kustoToggleRulesCombine(boxId: any) {
 	try {
 		const enabled = __kustoGetRulesCombineEnabledFromDom(boxId);
 		__kustoSetRulesCombineEnabled(boxId, !enabled);
 	} catch { /* ignore */ }
 }
 
-function __kustoGetRulesJoinOpFromDom(boxId) {
+function __kustoGetRulesJoinOpFromDom(boxId: any) {
 	try {
 		const el = document.getElementById(boxId + '_filter_rules_join');
 		if (!el) return 'and';
@@ -976,11 +982,11 @@ function __kustoGetRulesJoinOpFromDom(boxId) {
 	}
 }
 
-function __kustoSetRulesJoinOp(boxId, joinOp) {
+function __kustoSetRulesJoinOp(boxId: any, joinOp: any) {
 	try {
 		const op = (String(joinOp) === 'or') ? 'or' : 'and';
-		if (window.__kustoActiveFilterPopover) {
-			window.__kustoActiveFilterPopover.draftRulesJoinOp = op;
+		if ((_win.__kustoActiveFilterPopover as any)) {
+			(_win.__kustoActiveFilterPopover as any).draftRulesJoinOp = op;
 		}
 		const el = document.getElementById(boxId + '_filter_rules_join');
 		if (el) el.setAttribute('data-join', op);
@@ -991,7 +997,7 @@ function __kustoSetRulesJoinOp(boxId, joinOp) {
 	} catch { /* ignore */ }
 }
 
-function __kustoApplyFiltersAndRerender(boxId) {
+function __kustoApplyFiltersAndRerender(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const rows = Array.isArray(state.rows) ? state.rows : [];
@@ -1020,11 +1026,11 @@ function __kustoApplyFiltersAndRerender(boxId) {
 		const statusEl = document.getElementById(boxId + '_data_search_status');
 		const prevBtn = document.getElementById(boxId + '_data_search_prev');
 		const nextBtn = document.getElementById(boxId + '_data_search_next');
-		if (typeof __kustoUpdateSearchStatus === 'function') {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
 		}
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
 		}
 		document.querySelectorAll('#' + boxId + '_table td.search-match, #' + boxId + '_table td.search-match-current')
 			.forEach(cell => {
@@ -1034,41 +1040,41 @@ function __kustoApplyFiltersAndRerender(boxId) {
 
 	__kustoEnsureDisplayRowIndexMaps(state);
 	__kustoRerenderResultsTable(boxId);
-	try { schedulePersist && schedulePersist('filter'); } catch { /* ignore */ }
+	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)('filter'); } catch { /* ignore */ }
 }
 
 function closeColumnFilterPopover() {
 	try {
-		if (!window.__kustoActiveFilterPopover) return;
-		const { elId } = window.__kustoActiveFilterPopover;
+		if (!(_win.__kustoActiveFilterPopover as any)) return;
+		const { elId } = (_win.__kustoActiveFilterPopover as any);
 		const el = elId ? document.getElementById(elId) : null;
 		if (el) el.remove();
 	} catch { /* ignore */ }
-	try { window.__kustoActiveFilterPopover = null; } catch { /* ignore */ }
+	try { (_win.__kustoActiveFilterPopover as any) = null; } catch { /* ignore */ }
 }
 
-function closeColumnFilterDialogOnBackdrop(event) {
+function closeColumnFilterDialogOnBackdrop(event: any) {
 	try {
-		if (!event || !window.__kustoActiveFilterPopover) return;
+		if (!event || !(_win.__kustoActiveFilterPopover as any)) return;
 		if (event.target !== event.currentTarget) return;
 		closeColumnFilterPopover();
 	} catch { /* ignore */ }
 }
 
 function __kustoEnsureFilterGlobalCloseHandler() {
-	if (window.__kustoFilterGlobalCloseHandlerInstalled) return;
-	window.__kustoFilterGlobalCloseHandlerInstalled = true;
+	if ((_win.__kustoFilterGlobalCloseHandlerInstalled as any)) return;
+	(_win.__kustoFilterGlobalCloseHandlerInstalled as any) = true;
 	document.addEventListener('click', (event) => {
 		try {
-			if (!window.__kustoActiveFilterPopover) return;
-			const elId = window.__kustoActiveFilterPopover.elId;
+			if (!(_win.__kustoActiveFilterPopover as any)) return;
+			const elId = (_win.__kustoActiveFilterPopover as any).elId;
 			const el = elId ? document.getElementById(elId) : null;
 			if (!el) {
-				window.__kustoActiveFilterPopover = null;
+				(_win.__kustoActiveFilterPopover as any) = null;
 				return;
 			}
-			const target = event && event.target;
-			if (target && (el.contains(target) || (target.closest && target.closest('.column-menu-btn')))) {
+			const target = event && (event as any).target;
+			if (target && (el.contains(target as Node) || ((target as any).closest && (target as any).closest('.column-menu-btn')))) {
 				return;
 			}
 			closeColumnFilterPopover();
@@ -1078,7 +1084,7 @@ function __kustoEnsureFilterGlobalCloseHandler() {
 	}, true);
 }
 
-function openColumnFilter(event, colIndex, boxId) {
+function openColumnFilter(event: any, colIndex: any, boxId: any) {
 	try {
 		if (event && typeof event.preventDefault === 'function') event.preventDefault();
 		if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
@@ -1109,15 +1115,15 @@ function openColumnFilter(event, colIndex, boxId) {
 	const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
 	const inferredType = __kustoInferColumnType(state, colIdx, baseRowIndices);
 	const mode = (existing && existing.kind === 'rules') || (existing && existing.kind === 'compound') ? 'rules' : 'values';
-	window.__kustoActiveFilterPopover = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
+	(_win.__kustoActiveFilterPopover as any) = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
 	dialog.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 	document.body.appendChild(modal);
 	try { __kustoEnsureFilterPopoverSearchControl(boxId, colIdx); } catch { /* ignore */ }
 }
 
-function __kustoEnsureFilterPopoverSearchControl(boxId, colIdx) {
+function __kustoEnsureFilterPopoverSearchControl(boxId: any, colIdx: any) {
 	try {
-		const active = window.__kustoActiveFilterPopover;
+		const active = (_win.__kustoActiveFilterPopover as any);
 		if (!active || active.boxId !== boxId || active.colIndex !== colIdx) return;
 		if (String(active.mode || '') !== 'values') return;
 
@@ -1125,12 +1131,12 @@ function __kustoEnsureFilterPopoverSearchControl(boxId, colIdx) {
 		if (!host) return;
 		if (document.getElementById(boxId + '_filter_value_search')) return;
 
-		if (typeof window.__kustoCreateSearchControl !== 'function') {
+		if (typeof (_win.__kustoCreateSearchControl as any) !== 'function') {
 			// Older webview / script load order issue; fall back silently.
 			return;
 		}
 
-		window.__kustoCreateSearchControl(host, {
+		(_win.__kustoCreateSearchControl as any)(host, {
 			inputId: boxId + '_filter_value_search',
 			modeId: boxId + '_filter_value_search_mode',
 			inputClass: 'kusto-filter-search kusto-filter-values-search kusto-filter-search-with-icon',
@@ -1140,12 +1146,12 @@ function __kustoEnsureFilterPopoverSearchControl(boxId, colIdx) {
 	} catch { /* ignore */ }
 }
 
-function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
+function __kustoRenderFilterPopoverHtml(boxId: any, colIdx: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return '';
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const colName = cols[colIdx] !== undefined ? String(cols[colIdx]) : ('Column ' + String(colIdx));
-	const active = window.__kustoActiveFilterPopover;
+	const active = (_win.__kustoActiveFilterPopover as any);
 	const mode = active && active.mode ? String(active.mode) : 'values';
 	const dataType = active && active.dataType ? String(active.dataType) : 'string';
 	const filters = __kustoEnsureColumnFiltersMap(state);
@@ -1158,7 +1164,7 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 	if (mode === 'values') {
 		const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
 		const uniq = __kustoComputeUniqueValueKeys(state, colIdx, baseRowIndices);
-		const allPossibleKeys = ([]).concat((uniq.nullCount > 0) ? [__KUSTO_NULL_EMPTY_KEY] : [], uniq.keys);
+		const allPossibleKeys = ([] as any[]).concat((uniq.nullCount > 0) ? [__KUSTO_NULL_EMPTY_KEY] : [], uniq.keys);
 		const draftAllowed = (active && Array.isArray(active.draftValuesAllowed)) ? active.draftValuesAllowed : null;
 		const selected = (
 			draftAllowed
@@ -1196,7 +1202,7 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 					return '<label class="kusto-filter-value" data-value-text="null or empty"><input type="checkbox" class="kusto-filter-value-cb" value="' + __kustoEscapeForHtmlAttribute(k) + '"' + checked + ' /> <span class="kusto-filter-value-text">Null or empty</span><span class="kusto-filter-value-count">' + String(cnt) + '</span></label>';
 				})()
 				: '') +
-			uniq.keys.map(k => {
+			uniq.keys.map((k: any) => {
 				const checked = selectedSet.has(k) ? ' checked' : '';
 				const cnt = uniq.counts.get(k) || 0;
 				const dt = String(k || '').toLowerCase();
@@ -1254,45 +1260,45 @@ function __kustoRenderFilterPopoverHtml(boxId, colIdx) {
 	return header + modes + '<div class="kusto-filter-body">' + body + '</div>' + footer;
 }
 
-function __kustoFilterSearchValues(boxId, colIdx) {
+function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 	try {
-		if (typeof window.__kustoGetSearchControlState !== 'function' || typeof window.__kustoTryBuildSearchRegex !== 'function') {
+		if (typeof (_win.__kustoGetSearchControlState as any) !== 'function' || typeof (_win.__kustoTryBuildSearchRegex as any) !== 'function') {
 			// Backward compat: treat as simple contains.
-			const q = String(((document.getElementById(boxId + '_filter_value_search') || {}).value) || '').trim().toLowerCase();
+			const q = String((document.getElementById(boxId + '_filter_value_search') as any || {}).value || '').trim().toLowerCase();
 			const list = document.getElementById(boxId + '_filter_values_list');
 			if (!list) return;
-			const items = Array.from(list.querySelectorAll('label.kusto-filter-value'));
+			const items = Array.from(list.querySelectorAll('label.kusto-filter-value')) as any[];
 			for (const it of items) {
 				const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '').toLowerCase();
-				it.style.display = (!q || t.includes(q)) ? '' : 'none';
+				(it as any).style.display = (!q || t.includes(q)) ? '' : 'none';
 			}
 			return;
 		}
 
-		const st = window.__kustoGetSearchControlState(boxId + '_filter_value_search', boxId + '_filter_value_search_mode');
+		const st = (_win.__kustoGetSearchControlState as any)(boxId + '_filter_value_search', boxId + '_filter_value_search_mode');
 		const q = String((st && st.query) ? st.query : '');
 		const mode = st && st.mode ? st.mode : 'wildcard';
-		const built = window.__kustoTryBuildSearchRegex(q, mode);
+		const built = (_win.__kustoTryBuildSearchRegex as any)(q, mode);
 		const input = document.getElementById(boxId + '_filter_value_search');
 		try { if (input) input.title = built && built.error ? String(built.error) : ''; } catch { /* ignore */ }
 		const regex = built && built.regex ? built.regex : null;
 
 		const list = document.getElementById(boxId + '_filter_values_list');
 		if (!list) return;
-		const items = Array.from(list.querySelectorAll('label.kusto-filter-value'));
+		const items = Array.from(list.querySelectorAll('label.kusto-filter-value')) as any[];
 		for (const it of items) {
 			const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '');
-			const hit = (!q || !regex) ? true : !!window.__kustoRegexTest(regex, t);
+			const hit = (!q || !regex) ? true : !!(_win.__kustoRegexTest as any)(regex, t);
 			it.style.display = hit ? '' : 'none';
 		}
 	} catch { /* ignore */ }
 }
 
-function __kustoFilterSetAllValues(boxId, colIdx, checked) {
+function __kustoFilterSetAllValues(boxId: any, colIdx: any, checked: any) {
 	try {
 		const list = document.getElementById(boxId + '_filter_values_list');
 		if (!list) return;
-		const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb'));
+		const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb')) as any[];
 		for (const cb of cbs) {
 			if (!cb) continue;
 			// Only affect currently visible values (e.g. when search is filtering the list).
@@ -1309,7 +1315,7 @@ function __kustoFilterSetAllValues(boxId, colIdx, checked) {
 	} catch { /* ignore */ }
 }
 
-function __kustoGetValuesAllowedFromSpec(spec) {
+function __kustoGetValuesAllowedFromSpec(spec: any) {
 	try {
 		if (!spec || typeof spec !== 'object') return null;
 		if (spec.kind === 'values' && Array.isArray(spec.allowedValues)) return spec.allowedValues;
@@ -1320,7 +1326,7 @@ function __kustoGetValuesAllowedFromSpec(spec) {
 	}
 }
 
-function __kustoGetRulesSpecFromExisting(existing, dataType) {
+function __kustoGetRulesSpecFromExisting(existing: any, dataType: any) {
 	try {
 		if (!existing || typeof existing !== 'object') return { dataType, rules: [] };
 		if (existing.kind === 'compound' && existing.rules && typeof existing.rules === 'object') {
@@ -1335,7 +1341,7 @@ function __kustoGetRulesSpecFromExisting(existing, dataType) {
 			}
 			// Back-compat: single rule format
 			if (existing.op) {
-				const r = { op: String(existing.op || '') };
+				const r: any = { op: String(existing.op || '') };
 				if (existing.a !== undefined) r.a = existing.a;
 				if (existing.b !== undefined) r.b = existing.b;
 				if (existing.n !== undefined) r.n = existing.n;
@@ -1350,7 +1356,7 @@ function __kustoGetRulesSpecFromExisting(existing, dataType) {
 	}
 }
 
-function __kustoRenderRulesListHtml(boxId, colIdx, dataType, existing) {
+function __kustoRenderRulesListHtml(boxId: any, colIdx: any, dataType: any, existing: any) {
 	const ruleSpec = __kustoGetRulesSpecFromExisting(existing, dataType);
 	const dt = String(ruleSpec.dataType || dataType || 'string');
 	const rules = Array.isArray(ruleSpec.rules) ? ruleSpec.rules.slice() : [];
@@ -1359,13 +1365,13 @@ function __kustoRenderRulesListHtml(boxId, colIdx, dataType, existing) {
 		rules.push({ op: '' });
 	}
 
-	const isUniqueOp = (op) => {
+	const isUniqueOp = (op: any) => {
 		const v = String(op || '');
 		return v === 'isEmpty' || v === 'isNotEmpty';
 	};
 	const usedUniqueOps = new Set(
 		rules
-			.map(r => (r && r.op) ? String(r.op) : '')
+			.map((r: any) => (r && r.op) ? String(r.op) : '')
 			.filter(op => op && isUniqueOp(op))
 	);
 	let lastRealRuleIdx = -1;
@@ -1375,7 +1381,7 @@ function __kustoRenderRulesListHtml(boxId, colIdx, dataType, existing) {
 	}
 
 	const ops = __kustoGetRuleOpsForType(dt);
-	const optionsHtml = (selectedOp) => {
+	const optionsHtml = (selectedOp: any) => {
 		const op = String(selectedOp || '');
 		return ['<option value=""' + (!op ? ' selected' : '') + '>Select…</option>']
 			.concat(
@@ -1389,7 +1395,7 @@ function __kustoRenderRulesListHtml(boxId, colIdx, dataType, existing) {
 						// Hide unique options that are already used by another rule.
 						return !usedUniqueOps.has(v);
 					})
-					.map(o => '<option value="' + o.v + '"' + (op === o.v ? ' selected' : '') + '>' + o.t + '</option>')
+					.map((o: any) => '<option value="' + o.v + '"' + (op === o.v ? ' selected' : '') + '>' + o.t + '</option>')
 			)
 			.join('');
 	};
@@ -1425,7 +1431,7 @@ function __kustoRenderRulesListHtml(boxId, colIdx, dataType, existing) {
 	}).join('');
 }
 
-function __kustoGetRuleOpsForType(dataType) {
+function __kustoGetRuleOpsForType(dataType: any) {
 	const base = [
 		{ v: 'isEmpty', t: 'Null or empty' },
 		{ v: 'isNotEmpty', t: 'Not null or empty' }
@@ -1463,7 +1469,7 @@ function __kustoGetRuleOpsForType(dataType) {
 	]);
 }
 
-function __kustoRenderRuleRowInputsHtml(boxId, dataType, rule) {
+function __kustoRenderRuleRowInputsHtml(boxId: any, dataType: any, rule: any) {
 	const op = rule && rule.op ? String(rule.op) : '';
 	if (op === 'isEmpty' || op === 'isNotEmpty' || !op) {
 		return '<span class="kusto-filter-rule-inputs"></span>';
@@ -1502,12 +1508,12 @@ function __kustoRenderRuleRowInputsHtml(boxId, dataType, rule) {
 	return '<span class="kusto-filter-rule-inputs"><input type="text" class="kusto-filter-rule-text" value="' + __kustoEscapeForHtmlAttribute(text) + '" placeholder="Value…" /></span>';
 }
 
-function __kustoCaptureRulesFromDom(boxId) {
+function __kustoCaptureRulesFromDom(boxId: any) {
 	try {
 		const list = document.getElementById(boxId + '_filter_rules_list');
 		if (!list) return [];
-		const rows = Array.from(list.querySelectorAll('.kusto-filter-rule-row'));
-		return rows.map(row => {
+		const rows = Array.from(list.querySelectorAll('.kusto-filter-rule-row')) as any[];
+		return rows.map((row: any) => {
 			const join = String((row && row.getAttribute && row.getAttribute('data-join')) || 'and');
 			const op = String(((row.querySelector('.kusto-filter-rule-op') || {}).value) || '');
 			const a = (row.querySelector('.kusto-filter-rule-a') || {}).value;
@@ -1522,7 +1528,7 @@ function __kustoCaptureRulesFromDom(boxId) {
 	}
 }
 
-function __kustoSetRuleJoin(boxId, colIdx, ruleIdx, joinOp) {
+function __kustoSetRuleJoin(boxId: any, colIdx: any, ruleIdx: any, joinOp: any) {
 	try {
 		const colIndex = parseInt(String(colIdx), 10);
 		const idx = parseInt(String(ruleIdx), 10);
@@ -1534,19 +1540,19 @@ function __kustoSetRuleJoin(boxId, colIdx, ruleIdx, joinOp) {
 		if (!row) return;
 		const op = (String(joinOp) === 'or') ? 'or' : 'and';
 		row.setAttribute('data-join', op);
-		const andBtn = row.querySelector('.kusto-filter-rule-join-btn.and');
-		const orBtn = row.querySelector('.kusto-filter-rule-join-btn.or');
+		const andBtn = row.querySelector('.kusto-filter-rule-join-btn.and') as any;
+		const orBtn = row.querySelector('.kusto-filter-rule-join-btn.or') as any;
 		if (andBtn) andBtn.classList.toggle('active', op === 'and');
 		if (orBtn) orBtn.classList.toggle('active', op === 'or');
 		try {
-			if (window.__kustoActiveFilterPopover) {
-				window.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
+			if ((_win.__kustoActiveFilterPopover as any)) {
+				(_win.__kustoActiveFilterPopover as any).draftRules = __kustoCaptureRulesFromDom(boxId);
 			}
 		} catch { /* ignore */ }
 	} catch { /* ignore */ }
 }
 
-function __kustoOnRuleRowOpChanged(boxId, colIdx, ruleIdx) {
+function __kustoOnRuleRowOpChanged(boxId: any, colIdx: any, ruleIdx: any) {
 	try {
 		const state = __kustoGetResultsState(boxId);
 		if (!state) return;
@@ -1560,7 +1566,7 @@ function __kustoOnRuleRowOpChanged(boxId, colIdx, ruleIdx) {
 		const currentRules = __kustoCaptureRulesFromDom(boxId);
 		// Ensure trailing empty row.
 		if (currentRules.length === 0 || String((currentRules[currentRules.length - 1] || {}).op || '') !== '') {
-			currentRules.push({ op: '' });
+			currentRules.push({ op: '' } as any);
 		}
 		const listEl = document.getElementById(boxId + '_filter_rules_list');
 		if (!listEl) return;
@@ -1570,7 +1576,7 @@ function __kustoOnRuleRowOpChanged(boxId, colIdx, ruleIdx) {
 	}
 }
 
-function __kustoDeleteRuleRow(boxId, colIdx, ruleIdx) {
+function __kustoDeleteRuleRow(boxId: any, colIdx: any, ruleIdx: any) {
 	try {
 		const state = __kustoGetResultsState(boxId);
 		if (!state) return;
@@ -1586,7 +1592,7 @@ function __kustoDeleteRuleRow(boxId, colIdx, ruleIdx) {
 		}
 		// Ensure trailing empty row.
 		if (rules.length === 0 || String((rules[rules.length - 1] || {}).op || '') !== '') {
-			rules.push({ op: '' });
+			rules.push({ op: '' } as any);
 		}
 		const listEl = document.getElementById(boxId + '_filter_rules_list');
 		if (!listEl) return;
@@ -1596,7 +1602,7 @@ function __kustoDeleteRuleRow(boxId, colIdx, ruleIdx) {
 	}
 }
 
-function __kustoRenderRulesEditorHtml(boxId, colIdx, dataType, existing) {
+function __kustoRenderRulesEditorHtml(boxId: any, colIdx: any, dataType: any, existing: any) {
 	const spec = (existing && existing.kind === 'rules') ? existing : null;
 	const op = spec ? String(spec.op || '') : '';
 	let ops = [
@@ -1634,7 +1640,7 @@ function __kustoRenderRulesEditorHtml(boxId, colIdx, dataType, existing) {
 		]);
 	}
 	const options = ['<option value=""' + (!op ? ' selected' : '') + '>Select…</option>']
-		.concat(ops.map(o => '<option value="' + o.v + '"' + (op === o.v ? ' selected' : '') + '>' + o.t + '</option>'))
+		.concat(ops.map((o: any) => '<option value="' + o.v + '"' + (op === o.v ? ' selected' : '') + '>' + o.t + '</option>'))
 		.join('');
 
 	let inputs = '';
@@ -1681,19 +1687,19 @@ function __kustoRenderRulesEditorHtml(boxId, colIdx, dataType, existing) {
 	);
 }
 
-function __kustoToDateTimeLocalValue(isoOrRaw) {
+function __kustoToDateTimeLocalValue(isoOrRaw: any) {
 	try {
 		const ms = __kustoTryParseDateMs(isoOrRaw);
 		if (ms === null) return '';
 		const d = new Date(ms);
-		const pad = (n) => String(n).padStart(2, '0');
+		const pad = (n: any) => String(n).padStart(2, '0');
 		return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 	} catch {
 		return '';
 	}
 }
 
-function __kustoFromDateTimeLocalValue(v) {
+function __kustoFromDateTimeLocalValue(v: any) {
 	try {
 		const s = String(v || '').trim();
 		if (!s) return '';
@@ -1705,29 +1711,29 @@ function __kustoFromDateTimeLocalValue(v) {
 	}
 }
 
-function __kustoSetFilterMode(boxId, colIdx, mode) {
-	if (!window.__kustoActiveFilterPopover) return;
+function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
+	if (!(_win.__kustoActiveFilterPopover as any)) return;
 	// Capture unsaved UI state when switching modes.
 	try {
-		const current = String(window.__kustoActiveFilterPopover.mode || 'values');
+		const current = String((_win.__kustoActiveFilterPopover as any).mode || 'values');
 		if (current === 'values') {
 			const list = document.getElementById(boxId + '_filter_values_list');
 			if (list) {
 				const allowed = [];
-				const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb'));
+				const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb')) as any[];
 				for (const cb of cbs) {
 					if (cb && cb.checked) allowed.push(String(cb.value || ''));
 				}
-				window.__kustoActiveFilterPopover.draftValuesAllowed = allowed;
+				(_win.__kustoActiveFilterPopover as any).draftValuesAllowed = allowed;
 			}
 		} else {
-			window.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
-			window.__kustoActiveFilterPopover.draftCombine = __kustoGetRulesCombineEnabledFromDom(boxId);
+			(_win.__kustoActiveFilterPopover as any).draftRules = __kustoCaptureRulesFromDom(boxId);
+			(_win.__kustoActiveFilterPopover as any).draftCombine = __kustoGetRulesCombineEnabledFromDom(boxId);
 		}
 	} catch { /* ignore */ }
 
-	window.__kustoActiveFilterPopover.mode = (String(mode) === 'rules') ? 'rules' : 'values';
-	const dialogId = window.__kustoActiveFilterPopover.dialogId || window.__kustoActiveFilterPopover.elId;
+	(_win.__kustoActiveFilterPopover as any).mode = (String(mode) === 'rules') ? 'rules' : 'values';
+	const dialogId = (_win.__kustoActiveFilterPopover as any).dialogId || (_win.__kustoActiveFilterPopover as any).elId;
 	const el = dialogId ? document.getElementById(dialogId) : null;
 	if (!el) return;
 	// Re-infer type against the current context.
@@ -1735,22 +1741,22 @@ function __kustoSetFilterMode(boxId, colIdx, mode) {
 		const state = __kustoGetResultsState(boxId);
 		if (state) {
 			const base = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
-			window.__kustoActiveFilterPopover.dataType = __kustoInferColumnType(state, colIdx, base);
+			(_win.__kustoActiveFilterPopover as any).dataType = __kustoInferColumnType(state, colIdx, base);
 		}
 	} catch { /* ignore */ }
 	el.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 }
 
-function __kustoOnFilterOpChanged(boxId, colIdx) {
+function __kustoOnFilterOpChanged(boxId: any, colIdx: any) {
 	try {
-		const pop = window.__kustoActiveFilterPopover;
+		const pop = (_win.__kustoActiveFilterPopover as any);
 		if (!pop) return;
 		const state = __kustoGetResultsState(boxId);
 		if (!state) return;
 		const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
 		pop.dataType = __kustoInferColumnType(state, colIdx, baseRowIndices);
 
-		const op = String(((document.getElementById(boxId + '_filter_op') || {}).value) || '');
+		const op = String((document.getElementById(boxId + '_filter_op') as any || {}).value || '');
 		const a = document.getElementById(boxId + '_filter_a');
 		const b = document.getElementById(boxId + '_filter_b');
 		const n = document.getElementById(boxId + '_filter_n');
@@ -1760,14 +1766,14 @@ function __kustoOnFilterOpChanged(boxId, colIdx) {
 			if (a) a.style.display = 'none';
 			if (b) b.style.display = 'none';
 			if (n) n.style.display = 'none';
-			if (last) last.style.display = 'none';
+			if (last) (last as any).style.display = 'none';
 			return;
 		}
 
 		if (pop.dataType === 'date') {
 			if (a) a.style.display = (op === 'before' || op === 'after' || op === 'between') ? '' : 'none';
 			if (b) b.style.display = (op === 'between') ? '' : 'none';
-			if (last) last.style.display = (op === 'last') ? '' : 'none';
+			if (last) (last as any).style.display = (op === 'last') ? '' : 'none';
 			return;
 		}
 		if (pop.dataType === 'number') {
@@ -1781,26 +1787,26 @@ function __kustoOnFilterOpChanged(boxId, colIdx) {
 	}
 }
 
-function __kustoFilterToggleAllValues(boxId, colIdx) {
+function __kustoFilterToggleAllValues(boxId: any, colIdx: any) {
 	try {
 		const list = document.getElementById(boxId + '_filter_values_list');
 		const all = document.getElementById(boxId + '_filter_all');
 		if (!list || !all) return;
-		const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb'));
+		const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb')) as any[];
 		for (const cb of cbs) {
-			cb.checked = !!all.checked;
+			(cb as any).checked = !!(all as any).checked;
 		}
 	} catch { /* ignore */ }
 }
 
-function applyColumnFilter(boxId, colIdx) {
+function applyColumnFilter(boxId: any, colIdx: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const colIndex = parseInt(String(colIdx), 10);
 	if (!isFinite(colIndex) || colIndex < 0) return;
 	const filters = __kustoEnsureColumnFiltersMap(state);
 	const existing = filters[String(colIndex)] || null;
-	const pop = window.__kustoActiveFilterPopover;
+	const pop = (_win.__kustoActiveFilterPopover as any);
 	const mode = pop && pop.mode ? String(pop.mode) : 'values';
 	const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIndex);
 	const inferredType = __kustoInferColumnType(state, colIndex, baseRowIndices);
@@ -1810,7 +1816,7 @@ function applyColumnFilter(boxId, colIdx) {
 		const list = document.getElementById(boxId + '_filter_values_list');
 		const allowed = [];
 		if (list) {
-			const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb'));
+			const cbs = Array.from(list.querySelectorAll('input.kusto-filter-value-cb')) as any[];
 			for (const cb of cbs) {
 				if (cb && cb.checked) {
 					allowed.push(String(cb.value || ''));
@@ -1824,12 +1830,12 @@ function applyColumnFilter(boxId, colIdx) {
 		}
 	} else {
 		const combine = __kustoGetRulesCombineEnabledFromDom(boxId);
-		let rules = __kustoCaptureRulesFromDom(boxId);
+		let rules: any[] = __kustoCaptureRulesFromDom(boxId);
 		rules = Array.isArray(rules) ? rules : [];
 		// Drop trailing empty rules.
-		rules = rules.filter(r => r && typeof r === 'object' && String(r.op || ''));
+		rules = rules.filter((r: any) => r && typeof r === 'object' && String(r.op || ''));
 		// Normalize rule field shapes based on inferred type.
-		rules = rules.map(r => {
+		rules = rules.map((r: any) => {
 			const op = String(r.op || '');
 			const join = (r && String(r.join || '') === 'or') ? 'or' : 'and';
 			if (inferredType === 'date') {
@@ -1874,7 +1880,7 @@ function applyColumnFilter(boxId, colIdx) {
 	closeColumnFilterPopover();
 }
 
-function clearColumnFilter(boxId, colIdx) {
+function clearColumnFilter(boxId: any, colIdx: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const colIndex = parseInt(String(colIdx), 10);
@@ -1885,7 +1891,7 @@ function clearColumnFilter(boxId, colIdx) {
 	closeColumnFilterPopover();
 }
 
-function __kustoSetSortSpecAndRerender(boxId, nextSpec) {
+function __kustoSetSortSpecAndRerender(boxId: any, nextSpec: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	state.sortSpec = __kustoNormalizeSortSpec(nextSpec, (state.columns || []).length);
@@ -1899,10 +1905,10 @@ function __kustoSetSortSpecAndRerender(boxId, nextSpec) {
 		}
 	} catch { /* ignore */ }
 	__kustoRerenderResultsTable(boxId);
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch { /* ignore */ }
 }
 
-function __kustoGetSortRuleIndex(state, colIndex) {
+function __kustoGetSortRuleIndex(state: any, colIndex: any) {
 	if (!state || !Array.isArray(state.sortSpec)) return -1;
 	for (let i = 0; i < state.sortSpec.length; i++) {
 		if (state.sortSpec[i] && state.sortSpec[i].colIndex === colIndex) return i;
@@ -1910,7 +1916,7 @@ function __kustoGetSortRuleIndex(state, colIndex) {
 	return -1;
 }
 
-function handleHeaderSortClick(event, colIndex, boxId) {
+function handleHeaderSortClick(event: any, colIndex: any, boxId: any) {
 	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
@@ -1939,15 +1945,15 @@ function handleHeaderSortClick(event, colIndex, boxId) {
 	__kustoSetSortSpecAndRerender(boxId, spec);
 }
 
-function sortColumnAscending(colIndex, boxId) {
+function sortColumnAscending(colIndex: any, boxId: any) {
 	__kustoSetSortSpecAndRerender(boxId, [{ colIndex: colIndex, dir: 'asc' }]);
 }
 
-function sortColumnDescending(colIndex, boxId) {
+function sortColumnDescending(colIndex: any, boxId: any) {
 	__kustoSetSortSpecAndRerender(boxId, [{ colIndex: colIndex, dir: 'desc' }]);
 }
 
-function toggleSortDialog(boxId) {
+function toggleSortDialog(boxId: any) {
 	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
 	const modal = document.getElementById(boxId + '_sort_modal');
 	if (!modal) return;
@@ -1963,7 +1969,7 @@ function toggleSortDialog(boxId) {
 	}
 }
 
-function closeSortDialog(boxId) {
+function closeSortDialog(boxId: any) {
 	const modal = document.getElementById(boxId + '_sort_modal');
 	if (!modal) return;
 	modal.classList.remove('visible');
@@ -1973,14 +1979,14 @@ function closeSortDialog(boxId) {
 	} catch { /* ignore */ }
 }
 
-function closeSortDialogOnBackdrop(event, boxId) {
+function closeSortDialogOnBackdrop(event: any, boxId: any) {
 	// Only close if the click hit the backdrop.
 	if (event && event.target && event.currentTarget && event.target === event.currentTarget) {
 		closeSortDialog(boxId);
 	}
 }
 
-function __kustoRenderSortDialog(boxId) {
+function __kustoRenderSortDialog(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const listEl = document.getElementById(boxId + '_sort_list');
@@ -1992,10 +1998,10 @@ function __kustoRenderSortDialog(boxId) {
 		? '<div class="kusto-sort-empty">No sort applied.</div>'
 		: '';
 
-	const rulesHtml = spec.map((rule, idx) => {
+	const rulesHtml = spec.map((rule: any, idx: any) => {
 		const colIndex = rule.colIndex;
 		const dir = __kustoNormalizeSortDirection(rule.dir);
-		const options = cols.map((c, i) => {
+		const options = cols.map((c: any, i: any) => {
 			const selected = (i === colIndex) ? ' selected' : '';
 			return '<option value="' + String(i) + '"' + selected + '>' + __kustoEscapeForHtml(String(c ?? '')) + '</option>';
 		}).join('');
@@ -2016,7 +2022,7 @@ function __kustoRenderSortDialog(boxId) {
 		);
 	}).join('');
 
-	const addOptions = cols.map((c, i) => {
+	const addOptions = cols.map((c: any, i: any) => {
 		return '<option value="' + String(i) + '">' + __kustoEscapeForHtml(String(c ?? '')) + '</option>';
 	}).join('');
 
@@ -2039,15 +2045,15 @@ function __kustoRenderSortDialog(boxId) {
 	try { __kustoWireSortDialogDnD(boxId); } catch { /* ignore */ }
 }
 
-function __kustoAddSortRuleInline(boxId) {
+function __kustoAddSortRuleInline(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const colSel = document.getElementById(boxId + '_sort_add_col');
 	const dirSel = document.getElementById(boxId + '_sort_add_dir');
 	if (!colSel || !dirSel) return;
-	const colIndex = parseInt(String(colSel.value), 10);
+	const colIndex = parseInt(String((colSel as any).value), 10);
 	if (!isFinite(colIndex) || colIndex < 0) return;
-	const dir = (String(dirSel.value) === 'desc') ? 'desc' : 'asc';
+	const dir = (String((dirSel as any).value) === 'desc') ? 'desc' : 'asc';
 	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
 	// Remove any existing rule for the column.
 	for (let i = spec.length - 1; i >= 0; i--) {
@@ -2060,35 +2066,35 @@ function __kustoAddSortRuleInline(boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function __kustoWireSortDialogDnD(boxId) {
+function __kustoWireSortDialogDnD(boxId: any) {
 	const listEl = document.getElementById(boxId + '_sort_list');
 	if (!listEl) return;
-	const rows = Array.from(listEl.querySelectorAll('.kusto-sort-row[data-sort-idx]'));
+	const rows = Array.from(listEl.querySelectorAll('.kusto-sort-row[data-sort-idx]')) as any[];
 	if (rows.length === 0) return;
 
 	// Keep drag state on window to survive re-renders.
-	if (!window.__kustoSortDnD) {
-		window.__kustoSortDnD = { boxId: null, fromIdx: -1, dragEnabled: false };
+	if (!(_win.__kustoSortDnD as any)) {
+		(_win.__kustoSortDnD as any) = { boxId: null, fromIdx: -1, dragEnabled: false };
 	}
 
 	for (const row of rows) {
-		row.draggable = true;
-		row.addEventListener('dragstart', (e) => {
+		(row as any).draggable = true;
+		row.addEventListener('dragstart', (e: any) => {
 			const idx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
 			if (!isFinite(idx)) return;
-			const handle = e && e.target && e.target.closest ? e.target.closest('.kusto-sort-grab') : null;
+			const handle = e && e.target && (e.target as HTMLElement).closest ? (e.target as HTMLElement).closest('.kusto-sort-grab') : null;
 			if (!handle) {
 				// Only allow drag when starting from the grab handle.
 				try { e.preventDefault(); } catch { /* ignore */ }
 				return;
 			}
-			window.__kustoSortDnD.boxId = boxId;
-			window.__kustoSortDnD.fromIdx = idx;
+			(_win.__kustoSortDnD as any).boxId = boxId;
+			(_win.__kustoSortDnD as any).fromIdx = idx;
 			row.classList.add('kusto-sort-dragging');
 			try {
-				e.dataTransfer.effectAllowed = 'move';
+				(e as any).dataTransfer.effectAllowed = 'move';
 				// Some browsers require data to be set.
-				e.dataTransfer.setData('text/plain', String(idx));
+				(e as any).dataTransfer.setData('text/plain', String(idx));
 			} catch { /* ignore */ }
 		});
 
@@ -2097,16 +2103,16 @@ function __kustoWireSortDialogDnD(boxId) {
 			for (const r of rows) r.classList.remove('kusto-sort-drop');
 		});
 
-		row.addEventListener('dragover', (e) => {
+		row.addEventListener('dragover', (e: any) => {
 			try { e.preventDefault(); } catch { /* ignore */ }
 			for (const r of rows) r.classList.remove('kusto-sort-drop');
 			row.classList.add('kusto-sort-drop');
-			try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+			try { (e as any).dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
 		});
 
-		row.addEventListener('drop', (e) => {
+		row.addEventListener('drop', (e: any) => {
 			try { e.preventDefault(); } catch { /* ignore */ }
-			const fromIdx = window.__kustoSortDnD ? window.__kustoSortDnD.fromIdx : -1;
+			const fromIdx = (_win.__kustoSortDnD as any) ? (_win.__kustoSortDnD as any).fromIdx : -1;
 			const toIdx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
 			if (!isFinite(fromIdx) || !isFinite(toIdx) || fromIdx === toIdx) return;
 			__kustoMoveSortRule(boxId, fromIdx, toIdx);
@@ -2114,7 +2120,7 @@ function __kustoWireSortDialogDnD(boxId) {
 	}
 }
 
-function __kustoMoveSortRule(boxId, fromIdx, toIdx) {
+function __kustoMoveSortRule(boxId: any, fromIdx: any, toIdx: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
@@ -2127,7 +2133,7 @@ function __kustoMoveSortRule(boxId, fromIdx, toIdx) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function addSortRule(boxId) {
+function addSortRule(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const cols = Array.isArray(state.columns) ? state.columns : [];
@@ -2135,7 +2141,7 @@ function addSortRule(boxId) {
 	const spec = Array.isArray(state.sortSpec) ? state.sortSpec.slice() : [];
 	// Pick first unused column, else first.
 	let colIndex = 0;
-	const used = new Set(spec.map(r => r && r.colIndex));
+	const used = new Set(spec.map((r: any) => r && r.colIndex));
 	for (let i = 0; i < cols.length; i++) {
 		if (!used.has(i)) { colIndex = i; break; }
 	}
@@ -2144,12 +2150,12 @@ function addSortRule(boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function clearSort(boxId) {
+function clearSort(boxId: any) {
 	__kustoSetSortSpecAndRerender(boxId, []);
 	__kustoRenderSortDialog(boxId);
 }
 
-function updateSortRuleColumn(ruleIndex, value, boxId) {
+function updateSortRuleColumn(ruleIndex: any, value: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const idx = parseInt(String(ruleIndex), 10);
@@ -2173,7 +2179,7 @@ function updateSortRuleColumn(ruleIndex, value, boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function updateSortRuleDirection(ruleIndex, value, boxId) {
+function updateSortRuleDirection(ruleIndex: any, value: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const idx = parseInt(String(ruleIndex), 10);
@@ -2191,7 +2197,7 @@ function updateSortRuleDirection(ruleIndex, value, boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function moveSortRuleUp(ruleIndex, boxId) {
+function moveSortRuleUp(ruleIndex: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const idx = parseInt(String(ruleIndex), 10);
@@ -2204,7 +2210,7 @@ function moveSortRuleUp(ruleIndex, boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function moveSortRuleDown(ruleIndex, boxId) {
+function moveSortRuleDown(ruleIndex: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const idx = parseInt(String(ruleIndex), 10);
@@ -2217,7 +2223,7 @@ function moveSortRuleDown(ruleIndex, boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function removeSortRule(ruleIndex, boxId) {
+function removeSortRule(ruleIndex: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const idx = parseInt(String(ruleIndex), 10);
@@ -2228,17 +2234,17 @@ function removeSortRule(ruleIndex, boxId) {
 	__kustoRenderSortDialog(boxId);
 }
 
-function __kustoRerenderResultsTable(boxId) {
+function __kustoRerenderResultsTable(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return;
 	const table = document.getElementById(boxId + '_table');
 	if (!table) return;
 
-	try { __kustoRerenderResultsTableBody(boxId); } catch { /* ignore */ }
+	try { __kustoRerenderResultsTableBody(boxId, undefined); } catch { /* ignore */ }
 	return;
 }
 
-function __kustoGetVirtualizationState(state) {
+function __kustoGetVirtualizationState(state: any) {
 	if (!state || typeof state !== 'object') return null;
 	if (!state.__kustoVirtual) {
 		state.__kustoVirtual = {
@@ -2260,7 +2266,7 @@ function __kustoGetVirtualizationState(state) {
 	return state.__kustoVirtual;
 }
 
-function __kustoResolveVirtualScrollElement(containerEl) {
+function __kustoResolveVirtualScrollElement(containerEl: any) {
 	if (!containerEl) return null;
 	// Prefer the table container itself when it is scrollable.
 	try {
@@ -2300,7 +2306,7 @@ function __kustoResolveVirtualScrollElement(containerEl) {
 	return containerEl;
 }
 
-function __kustoResolveScrollSourceForEvent(ev, containerEl) {
+function __kustoResolveScrollSourceForEvent(ev: any, containerEl: any) {
 	try {
 		if (!containerEl) return null;
 		const t = ev && ev.target ? ev.target : null;
@@ -2336,7 +2342,7 @@ function __kustoResolveScrollSourceForEvent(ev, containerEl) {
 	return __kustoResolveVirtualScrollElement(containerEl);
 }
 
-function __kustoGetVirtualScrollMetrics(scrollEl, containerEl) {
+function __kustoGetVirtualScrollMetrics(scrollEl: any, containerEl: any) {
 	let scrollTop = 0;
 	let clientH = 0;
 	try {
@@ -2363,7 +2369,7 @@ function __kustoGetVirtualScrollMetrics(scrollEl, containerEl) {
 	return { scrollTop, clientH };
 }
 
-function __kustoBumpVisualVersion(state) {
+function __kustoBumpVisualVersion(state: any) {
 	try {
 		if (!state || typeof state !== 'object') return;
 		const cur = (typeof state.__kustoVisualVersion === 'number' && isFinite(state.__kustoVisualVersion))
@@ -2373,7 +2379,7 @@ function __kustoBumpVisualVersion(state) {
 	} catch { /* ignore */ }
 }
 
-function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, options) {
+function __kustoComputeVirtualRange(state: any, containerEl: any, displayRowIndices: any, options: any) {
 	const v = __kustoGetVirtualizationState(state);
 	const total = Array.isArray(displayRowIndices) ? displayRowIndices.length : 0;
 	if (!v || !containerEl || total <= 0) {
@@ -2436,7 +2442,7 @@ function __kustoComputeVirtualRange(state, containerEl, displayRowIndices, optio
 	return { start, end };
 }
 
-function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, matchSet, currentKey) {
+function __kustoBuildResultsTableRowHtml(rowIdx: any, displayIdx: any, state: any, boxId: any, matchSet: any, currentKey: any) {
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const row = rows[rowIdx] || [];
 	const range = (state && state.cellSelectionRange && typeof state.cellSelectionRange === 'object') ? state.cellSelectionRange : null;
@@ -2445,7 +2451,7 @@ function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, match
 	return (
 		'<tr data-row="' + rowIdx + '"' + trClass + '>' +
 		'<td class="row-selector" onclick="toggleRowSelection(' + rowIdx + ', ' + boxIdArg + '); event.stopPropagation();">' + (displayIdx + 1) + '</td>' +
-		row.map((cell, colIdx) => {
+		row.map((cell: any, colIdx: any) => {
 			const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 			const displayValue = hasHover ? cell.display : cell;
 			const fullValue = hasHover ? cell.full : cell;
@@ -2478,7 +2484,7 @@ function __kustoBuildResultsTableRowHtml(rowIdx, displayIdx, state, boxId, match
 	);
 }
 
-function __kustoRerenderResultsTableBody(boxId, options) {
+function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 	const table = document.getElementById(boxId + '_table');
@@ -2492,7 +2498,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 		for (let i = 0; i < (state.columns || []).length; i++) {
 			const indicator = document.getElementById(boxId + '_sort_ind_' + i);
 			if (!indicator) continue;
-			const ruleIdx = spec.findIndex(r => r && r.colIndex === i);
+			const ruleIdx = spec.findIndex((r: any) => r && r.colIndex === i);
 			if (ruleIdx < 0) {
 				indicator.innerHTML = '';
 				continue;
@@ -2535,7 +2541,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const cols = Array.isArray(state.columns) ? state.columns : [];
-	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i);
+	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_: any, i: any) => i);
 
 	try {
 		const countEl = document.getElementById(boxId + '_results_count');
@@ -2626,7 +2632,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 	}
 
 	try {
-		const tbody = table.querySelector('tbody');
+		const tbody = table.querySelector('tbody') as any;
 		if (tbody) {
 			if (!v || !v.enabled || v.lastStart !== visibleRange.start || v.lastEnd !== visibleRange.end || v.lastDisplayVersion !== displayVersion || v.lastVisualVersion !== visualVersion) {
 				// Save scrollTop before innerHTML replacement. Replacing tbody content can
@@ -2667,7 +2673,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 			// condition below ensures we re-measure until a real (> 12) value is
 			// obtained.
 			if (!v.rowHeight || v.rowHeight <= 12 || v.rowHeight === 22) {
-				const sample = table.querySelector('tbody tr[data-row]');
+				const sample = table.querySelector('tbody tr[data-row]') as any;
 				if (sample) {
 					const h = Math.max(12, Math.round(sample.getBoundingClientRect().height || 0));
 					if (h && isFinite(h) && h > 12 && h !== v.rowHeight) {
@@ -2678,7 +2684,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 			}
 			// Measure thead height so scrollTop-to-row-index mapping accounts for the header.
 			if (!v.theadHeight) {
-				const thead = table.querySelector('thead');
+				const thead = table.querySelector('thead') as any;
 				if (thead) {
 					const th = Math.max(0, Math.round(thead.getBoundingClientRect().height || 0));
 					if (th && isFinite(th)) {
@@ -2709,7 +2715,7 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 			const scrollEl = __kustoResolveVirtualScrollElement(container);
 			if (vv && scrollEl) {
 				if (!vv.scrollHandler) {
-					vv.scrollHandler = (ev) => {
+					vv.scrollHandler = (ev: any) => {
 						try {
 							// Ignore scroll/wheel events that clearly don't relate to this table.
 							try {
@@ -2910,11 +2916,11 @@ function __kustoRerenderResultsTableBody(boxId, options) {
 	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 }
 
-function displayResult(result) {
-	const boxId = window.lastExecutedBox;
+function displayResult(result: any) {
+	const boxId = (_win.lastExecutedBox as any);
 	if (!boxId) { return; }
 
-	setQueryExecuting(boxId, false);
+	(_win.setQueryExecuting as any)(boxId, false);
 
 	displayResultForBox(result, boxId, {
 		label: 'Results',
@@ -2924,17 +2930,17 @@ function displayResult(result) {
 
 // Ensure these entrypoints are always accessible globally (some hosts/tooling can
 // make bare function declarations non-global).
-try { window.displayResult = displayResult; } catch { /* ignore */ }
-try { window.displayResultForBox = displayResultForBox; } catch { /* ignore */ }
+try { (window as any).displayResult = displayResult; } catch { /* ignore */ }
+try { (window as any).displayResultForBox = displayResultForBox; } catch { /* ignore */ }
 
 function __kustoEnsureResultsStateMap() {
-	if (!window.__kustoResultsByBoxId || typeof window.__kustoResultsByBoxId !== 'object') {
-		window.__kustoResultsByBoxId = {};
+	if (!(_win.__kustoResultsByBoxId as any) || typeof (_win.__kustoResultsByBoxId as any) !== 'object') {
+		(_win.__kustoResultsByBoxId as any) = {};
 	}
-	return window.__kustoResultsByBoxId;
+	return (_win.__kustoResultsByBoxId as any);
 }
 
-function __kustoGetResultsState(boxId) {
+function __kustoGetResultsState(boxId: any) {
 	if (!boxId) {
 		return null;
 	}
@@ -2942,31 +2948,31 @@ function __kustoGetResultsState(boxId) {
 	return map[boxId] || null;
 }
 
-function __kustoSetResultsState(boxId, state) {
+function __kustoSetResultsState(boxId: any, state: any) {
 	if (!boxId) {
 		return;
 	}
 	const map = __kustoEnsureResultsStateMap();
 	map[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
-	try { window.currentResult = state; } catch { /* ignore */ }
+	try { (_win.currentResult as any) = state; } catch { /* ignore */ }
 	// Notify any dependent sections (charts/transformations) that this data source changed.
 	try {
-		if (typeof window.__kustoNotifyResultsUpdated === 'function') {
-			window.__kustoNotifyResultsUpdated(boxId);
+		if (typeof (_win.__kustoNotifyResultsUpdated as any) === 'function') {
+			(_win.__kustoNotifyResultsUpdated as any)(boxId);
 		}
 	} catch { /* ignore */ }
 }
 
-function displayResultForBox(result, boxId, options) {
+function displayResultForBox(result: any, boxId: any, options: any) {
 	if (!boxId) { return; }
 
 	// If the section is a <kw-query-section> Lit element, delegate to displayResult().
 	if (!(options && options.resultsDiv)) {
 		try {
 			const sectionEl = document.getElementById(boxId);
-			if (sectionEl && typeof sectionEl.displayResult === 'function') {
-				sectionEl.displayResult(result, options);
+			if (sectionEl && typeof (sectionEl as any).displayResult === 'function') {
+				(sectionEl as any).displayResult(result, options);
 				// Still update global results state for cross-section dependencies.
 				const cols = Array.isArray(result && result.columns) ? result.columns : [];
 				const rws = Array.isArray(result && result.rows) ? result.rows : [];
@@ -2979,7 +2985,7 @@ function displayResultForBox(result, boxId, options) {
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				});
 				try { __kustoEnsureDisplayRowIndexMaps(__kustoGetResultsState(boxId)); } catch { /* ignore */ }
-				try { __kustoTryStoreQueryResult(boxId, result); } catch { /* ignore */ }
+				try { (_win.__kustoTryStoreQueryResult as any)(boxId, result); } catch { /* ignore */ }
 				try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 				return;
 			}
@@ -3031,7 +3037,7 @@ function displayResultForBox(result, boxId, options) {
 	const chevronDownSvg = '<svg class="results-tools-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
 	const stateForRender = __kustoGetResultsState(boxId);
-	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_, i) => i);
+	const displayRowIndices = (stateForRender && Array.isArray(stateForRender.displayRowIndices)) ? stateForRender.displayRowIndices : rows.map((_: any, i: any) => i);
 
 	// Build the collapsed Tools dropdown menu (shown when width is narrow)
 	const toolsDropdownHtml =
@@ -3075,20 +3081,20 @@ function displayResultForBox(result, boxId, options) {
 
 		// Server stats rows
 		if (serverStats) {
-			const fmtCpuMs = function(ms) {
+			const fmtCpuMs = function(ms: any) {
 				if (ms < 1000) { return ms.toFixed(1) + 'ms'; }
 				return (ms / 1000).toFixed(3) + 's';
 			};
-			const fmtBytes = function(bytes) {
+			const fmtBytes = function(bytes: any) {
 				if (bytes == null || !isFinite(bytes)) { return '?'; }
 				if (bytes < 1024) { return bytes + ' B'; }
 				if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
 				if (bytes < 1024 * 1024 * 1024) { return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
 				return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 			};
-			const fmtNum = function(n) { return n == null ? '?' : Number(n).toLocaleString(); };
+			const fmtNum = function(n: any) { return n == null ? '?' : Number(n).toLocaleString(); };
 
-			const statRow = function(label, value) {
+			const statRow = function(label: any, value: any) {
 				return '<div class="results-label-tooltip-row results-label-tooltip-stat-row">' +
 					'<span class="results-label-tooltip-title">' + label + '</span>' +
 					'<span class="results-label-tooltip-value">' + value + '</span>' +
@@ -3192,7 +3198,7 @@ function displayResultForBox(result, boxId, options) {
 		'<table id="' + boxId + '_table">' +
 		'<thead><tr>' +
 		'<th class="row-selector">#</th>' +
-		columns.map((c, i) =>
+		columns.map((c: any, i: any) =>
 			'<th data-col="' + i + '" onclick="handleHeaderSortClick(event, ' + i + ', \'' + __kustoEscapeJsStringLiteral(boxId) + '\')">' +
 			'<div class="column-header-content">' +
 			'<div class="column-header-left">' +
@@ -3284,15 +3290,15 @@ function displayResultForBox(result, boxId, options) {
 	} catch { /* ignore */ }
 	try { __kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 	try {
-		if (typeof __kustoApplyResultsVisibility === 'function') {
-			__kustoApplyResultsVisibility(boxId);
+		if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
+			(_win.__kustoApplyResultsVisibility as any)(boxId);
 		}
 	} catch {
 		// ignore
 	}
 	try {
-		if (typeof __kustoUpdateQueryResultsToggleButton === 'function') {
-			__kustoUpdateQueryResultsToggleButton(boxId);
+		if (typeof (_win.__kustoUpdateQueryResultsToggleButton) === 'function') {
+			(_win.__kustoUpdateQueryResultsToggleButton as any)(boxId);
 		}
 	} catch {
 		// ignore
@@ -3300,18 +3306,18 @@ function displayResultForBox(result, boxId, options) {
 	resultsDiv.classList.add('visible');
 }
 
-function __kustoEnsureResultsSearchControls(boxId) {
+function __kustoEnsureResultsSearchControls(boxId: any) {
 	try {
-		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+		if (typeof (_win.__kustoCreateSearchControl as any) !== 'function') return;
 
 		const dataHost = document.getElementById(boxId + '_data_search_host');
 		if (dataHost && !document.getElementById(boxId + '_data_search')) {
-			window.__kustoCreateSearchControl(dataHost, {
+			(_win.__kustoCreateSearchControl as any)(dataHost, {
 				inputId: boxId + '_data_search',
 				modeId: boxId + '_data_search_mode',
 				ariaLabel: 'Search data',
 				onInput: function () { searchData(boxId); },
-				onKeyDown: function (e) { handleDataSearchKeydown(e, boxId); },
+				onKeyDown: function (e: any) { handleDataSearchKeydown(e, boxId); },
 				onPrev: function () { previousSearchMatch(boxId); },
 				onNext: function () { nextSearchMatch(boxId); }
 			});
@@ -3319,18 +3325,18 @@ function __kustoEnsureResultsSearchControls(boxId) {
 
 		const colHost = document.getElementById(boxId + '_column_search_host');
 		if (colHost && !document.getElementById(boxId + '_column_search')) {
-			window.__kustoCreateSearchControl(colHost, {
+			(_win.__kustoCreateSearchControl as any)(colHost, {
 				inputId: boxId + '_column_search',
 				modeId: boxId + '_column_search_mode',
 				ariaLabel: 'Scroll to column',
 				onInput: function () { filterColumns(boxId); },
-				onKeyDown: function (e) { handleColumnSearchKeydown(e, boxId); }
+				onKeyDown: function (e: any) { handleColumnSearchKeydown(e, boxId); }
 			});
 		}
 	} catch { /* ignore */ }
 }
 
-function __kustoTryExtractJsonFromErrorText(raw) {
+function __kustoTryExtractJsonFromErrorText(raw: any) {
 	const text = String(raw || '');
 	const firstObj = text.indexOf('{');
 	const firstArr = text.indexOf('[');
@@ -3361,7 +3367,7 @@ function __kustoTryExtractJsonFromErrorText(raw) {
 	}
 }
 
-function __kustoExtractLinePosition(text) {
+function __kustoExtractLinePosition(text: any) {
 	const s = String(text || '');
 	const m = s.match(/\[line:position\s*=\s*(\d+)\s*:\s*(\d+)\s*\]/i);
 	if (!m) {
@@ -3375,7 +3381,7 @@ function __kustoExtractLinePosition(text) {
 	return { line, col, token: `[line:position=${line}:${col}]` };
 }
 
-function __kustoNormalizeBadRequestInnerMessage(msg) {
+function __kustoNormalizeBadRequestInnerMessage(msg: any) {
 	let s = String(msg || '').trim();
 	// Strip boilerplate prefixes commonly returned by Kusto.
 	s = s.replace(/^Request is invalid[^:]*:\s*/i, '');
@@ -3383,7 +3389,7 @@ function __kustoNormalizeBadRequestInnerMessage(msg) {
 	return s.trim();
 }
 
-function __kustoStripLinePositionTokens(text) {
+function __kustoStripLinePositionTokens(text: any) {
 	let s = String(text || '');
 	// Remove any existing [line:position=...] tokens to avoid duplicating adjusted locations.
 	s = s.replace(/\s*\[line:position\s*=\s*\d+\s*:\s*\d+\s*\]\s*/gi, ' ');
@@ -3392,7 +3398,7 @@ function __kustoStripLinePositionTokens(text) {
 	return s;
 }
 
-function __kustoTryExtractAutoFindTermFromMessage(message) {
+function __kustoTryExtractAutoFindTermFromMessage(message: any) {
 	try {
 		const msg = String(message || '');
 		if (!msg.trim()) return null;
@@ -3432,7 +3438,7 @@ function __kustoTryExtractAutoFindTermFromMessage(message) {
 	return null;
 }
 
-function __kustoBuildErrorUxModel(rawError) {
+function __kustoBuildErrorUxModel(rawError: any) {
 	const raw = (rawError === null || rawError === undefined) ? '' : String(rawError);
 	if (!raw.trim()) {
 		return { kind: 'none' };
@@ -3477,7 +3483,7 @@ function __kustoBuildErrorUxModel(rawError) {
 	};
 }
 
-function __kustoMaybeAdjustLocationForCacheLine(boxId, location) {
+function __kustoMaybeAdjustLocationForCacheLine(boxId: any, location: any) {
 	if (!location || typeof location !== 'object') {
 		return location;
 	}
@@ -3487,7 +3493,7 @@ function __kustoMaybeAdjustLocationForCacheLine(boxId, location) {
 	}
 	let cacheEnabled = false;
 	try {
-		cacheEnabled = !!(window.__kustoLastRunCacheEnabledByBoxId && window.__kustoLastRunCacheEnabledByBoxId[bid]);
+		cacheEnabled = !!((_win.__kustoLastRunCacheEnabledByBoxId as any) && (_win.__kustoLastRunCacheEnabledByBoxId as any)[bid]);
 	} catch {
 		cacheEnabled = false;
 	}
@@ -3508,25 +3514,25 @@ function __kustoMaybeAdjustLocationForCacheLine(boxId, location) {
 	};
 }
 
-function __kustoEscapeForHtml(s) {
-	return (typeof escapeHtml === 'function') ? escapeHtml(String(s || '')) : String(s || '');
+function __kustoEscapeForHtml(s: any) {
+	return (typeof (_win.escapeHtml) === 'function') ? (_win.escapeHtml as any)(String(s || '')) : String(s || '');
 }
 
-function __kustoEscapeJsStringLiteral(s) {
+function __kustoEscapeJsStringLiteral(s: any) {
 	return String(s || '')
 		.replace(/\\/g, '\\\\')
 		.replace(/'/g, "\\'")
 		.replace(/"/g, '\\"');
 }
 
-function __kustoEscapeForHtmlAttribute(s) {
+function __kustoEscapeForHtmlAttribute(s: any) {
 	// Attribute-safe escaping (quotes included).
 	return __kustoEscapeForHtml(s)
 		.replace(/"/g, '&quot;')
 		.replace(/'/g, '&#39;');
 }
 
-function __kustoRenderActivityIdInlineHtml(boxId, clientActivityId) {
+function __kustoRenderActivityIdInlineHtml(boxId: any, clientActivityId: any) {
 	if (!clientActivityId || typeof clientActivityId !== 'string') {
 		return '';
 	}
@@ -3543,7 +3549,7 @@ function __kustoRenderActivityIdInlineHtml(boxId, clientActivityId) {
 	);
 }
 
-function __kustoRenderErrorUxHtml(boxId, model, clientActivityId) {
+function __kustoRenderErrorUxHtml(boxId: any, model: any, clientActivityId: any) {
 	if (!model || model.kind === 'none') {
 		return '';
 	}
@@ -3595,7 +3601,7 @@ function __kustoRenderErrorUxHtml(boxId, model, clientActivityId) {
 
 // Centralized error UX renderer (hidden when no error).
 try {
-	window.__kustoRenderErrorUx = function (boxId, error, clientActivityId) {
+	(window as any).__kustoRenderErrorUx = function (boxId: any, error: any, clientActivityId: any) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
 		try { __kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
@@ -3620,8 +3626,8 @@ try {
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof __kustoApplyResultsVisibility === 'function') {
-					__kustoApplyResultsVisibility(bid);
+				if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
+					(_win.__kustoApplyResultsVisibility as any)(bid);
 				}
 			} catch { /* ignore */ }
 			return;
@@ -3630,20 +3636,20 @@ try {
 		resultsDiv.innerHTML = html;
 		resultsDiv.classList.add('visible');
 		try {
-			if (typeof __kustoApplyResultsVisibility === 'function') {
-				__kustoApplyResultsVisibility(bid);
+			if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
+				(_win.__kustoApplyResultsVisibility as any)(bid);
 			}
 		} catch { /* ignore */ }
 		try {
-			if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
-				window.__kustoClampResultsWrapperHeight(bid);
+			if (typeof (_win.__kustoClampResultsWrapperHeight as any) === 'function') {
+				(_win.__kustoClampResultsWrapperHeight as any)(bid);
 			}
 		} catch { /* ignore */ }
 		// Special UX: on SEM0139, auto-find the unresolved expression in the query editor.
 		try {
-			if (model && model.autoFindTerm && typeof window.__kustoAutoFindInQueryEditor === 'function') {
+			if (model && model.autoFindTerm && typeof (_win.__kustoAutoFindInQueryEditor as any) === 'function') {
 				setTimeout(() => {
-					try { window.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
+					try { (_win.__kustoAutoFindInQueryEditor as any)(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
 				}, 0);
 			}
 		} catch { /* ignore */ }
@@ -3654,7 +3660,7 @@ try {
 
 // Navigate to a line/column in the query editor and scroll it into view.
 try {
-	window.__kustoNavigateToQueryLocation = function (event, boxId, line, col) {
+	(window as any).__kustoNavigateToQueryLocation = function (event: any, boxId: any, line: any, col: any) {
 		try {
 			if (event && typeof event.preventDefault === 'function') {
 				event.preventDefault();
@@ -3676,7 +3682,7 @@ try {
 			}
 		} catch { /* ignore */ }
 		try {
-			const editor = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+			const editor = (typeof (_win.queryEditors as any) !== 'undefined' && (_win.queryEditors as any)) ? (_win.queryEditors as any)[bid] : null;
 			if (!editor) return;
 			const pos = { lineNumber: ln, column: cn };
 			try { editor.focus(); } catch { /* ignore */ }
@@ -3697,15 +3703,15 @@ try {
 
 // Delegated click handler for clickable error locations.
 try {
-	if (!window.__kustoErrorLocationClickHandlerInstalled) {
-		window.__kustoErrorLocationClickHandlerInstalled = true;
+	if (!(_win.__kustoErrorLocationClickHandlerInstalled as any)) {
+		(_win.__kustoErrorLocationClickHandlerInstalled as any) = true;
 		document.addEventListener('click', (event) => {
 			try {
 				const target = event && event.target ? event.target : null;
-				if (!target || typeof target.closest !== 'function') {
+				if (!target || typeof (target as any).closest !== 'function') {
 					return;
 				}
-				const link = target.closest('a.kusto-error-location');
+				const link = (target as any).closest('a.kusto-error-location');
 				if (!link) {
 					return;
 				}
@@ -3715,8 +3721,8 @@ try {
 				if (!boxId || !isFinite(line) || !isFinite(col)) {
 					return;
 				}
-				if (typeof window.__kustoNavigateToQueryLocation === 'function') {
-					window.__kustoNavigateToQueryLocation(event, boxId, line, col);
+				if (typeof (_win.__kustoNavigateToQueryLocation as any) === 'function') {
+					(_win.__kustoNavigateToQueryLocation as any)(event, boxId, line, col);
 					return;
 				}
 			} catch {
@@ -3728,15 +3734,15 @@ try {
 	// ignore
 }
 
-function displayError(error) {
-	const boxId = window.lastExecutedBox;
+function displayError(error: any) {
+	const boxId = (_win.lastExecutedBox as any);
 	if (!boxId) { return; }
 
-	setQueryExecuting(boxId, false);
+	(_win.setQueryExecuting as any)(boxId, false);
 
 	try {
-		if (typeof window.__kustoRenderErrorUx === 'function') {
-			window.__kustoRenderErrorUx(boxId, error);
+		if (typeof (_win.__kustoRenderErrorUx as any) === 'function') {
+			(_win.__kustoRenderErrorUx as any)(boxId, error);
 			return;
 		}
 	} catch { /* ignore */ }
@@ -3751,12 +3757,12 @@ function displayError(error) {
 // Display a non-query error message in a specific box's results area.
 // Used for auxiliary actions like refreshing databases.
 try {
-	window.__kustoDisplayBoxError = function (boxId, error) {
+	(window as any).__kustoDisplayBoxError = function (boxId: any, error: any) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
 		try {
-			if (typeof window.__kustoRenderErrorUx === 'function') {
-				window.__kustoRenderErrorUx(bid, error);
+			if (typeof (_win.__kustoRenderErrorUx as any) === 'function') {
+				(_win.__kustoRenderErrorUx as any)(bid, error);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -3773,10 +3779,10 @@ try {
 }
 
 function displayCancelled() {
-	const boxId = window.lastExecutedBox;
+	const boxId = (_win.lastExecutedBox as any);
 	if (!boxId) { return; }
 
-	setQueryExecuting(boxId, false);
+	(_win.setQueryExecuting as any)(boxId, false);
 
 	const resultsDiv = document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
@@ -3788,7 +3794,7 @@ function displayCancelled() {
 	resultsDiv.classList.add('visible');
 }
 
-function __kustoClampInt(value, min, max) {
+function __kustoClampInt(value: any, min: any, max: any) {
 	const n = parseInt(String(value), 10);
 	if (!isFinite(n)) return min;
 	if (n < min) return min;
@@ -3796,7 +3802,7 @@ function __kustoClampInt(value, min, max) {
 	return n;
 }
 
-function __kustoTryGetDomEventFromInlineHandler(explicitEvent) {
+function __kustoTryGetDomEventFromInlineHandler(explicitEvent: any) {
 	try {
 		if (explicitEvent && typeof explicitEvent === 'object') {
 			return explicitEvent;
@@ -3811,7 +3817,7 @@ function __kustoTryGetDomEventFromInlineHandler(explicitEvent) {
 	return null;
 }
 
-function __kustoSetCellSelectionState(boxId, state, nextRow, nextCol, options) {
+function __kustoSetCellSelectionState(boxId: any, state: any, nextRow: any, nextCol: any, options: any) {
 	if (!state) return;
 	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
 
@@ -3847,7 +3853,7 @@ function __kustoSetCellSelectionState(boxId, state, nextRow, nextCol, options) {
 	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 }
 
-function selectCell(a, b, c, d) {
+function selectCell(a: any, b: any, c: any, d: any) {
 	// Backward-compatible signature:
 	// - selectCell(row, col, boxId)
 	// - selectCell(event, row, col, boxId)
@@ -3862,8 +3868,8 @@ function selectCell(a, b, c, d) {
 
 	// Record that results were interacted with (used by global Ctrl+C handler).
 	try {
-		window.__kustoLastActiveResultsBoxId = boxId;
-		window.__kustoLastActiveResultsInteractionAt = Date.now();
+		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
+		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
 	} catch { /* ignore */ }
 
 	// NOTE: Native `dblclick` doesn't reliably fire because a single click triggers a full
@@ -3899,8 +3905,8 @@ function selectCell(a, b, c, d) {
 		// If this is a rapid second click, open the cell viewer instead of toggling selection off.
 		if (isSyntheticDoubleClick) {
 			try {
-				if (typeof openCellViewer === 'function') {
-					openCellViewer(row, col, boxId);
+				if (typeof (_win.openCellViewer) === 'function') {
+					(_win.openCellViewer as any)(row, col, boxId);
 				}
 			} catch { /* ignore */ }
 			return;
@@ -3924,8 +3930,8 @@ function selectCell(a, b, c, d) {
 	// If this was a synthetic double click, open the cell viewer after selection.
 	if (isSyntheticDoubleClick) {
 		try {
-			if (typeof openCellViewer === 'function') {
-				openCellViewer(row, col, boxId);
+			if (typeof (_win.openCellViewer) === 'function') {
+				(_win.openCellViewer as any)(row, col, boxId);
 			}
 		} catch { /* ignore */ }
 		return;
@@ -3933,7 +3939,7 @@ function selectCell(a, b, c, d) {
 
 	// Scroll focus cell into view
 	try {
-		const cellEl = document.querySelector('#' + boxId + '_table td[data-row="' + state.selectedCell.row + '"][data-col="' + state.selectedCell.col + '"]');
+		const cellEl = document.querySelector('#' + boxId + '_table td[data-row="' + state.selectedCell.row + '"][data-col="' + state.selectedCell.col + '"]') as any;
 		if (cellEl) {
 			cellEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
 		}
@@ -3948,14 +3954,14 @@ function selectCell(a, b, c, d) {
 	} catch { /* ignore */ }
 }
 
-function toggleRowSelection(row, boxId) {
+function toggleRowSelection(row: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
 	// Record that results were interacted with (used by global Ctrl+C handler).
 	try {
-		window.__kustoLastActiveResultsBoxId = boxId;
-		window.__kustoLastActiveResultsInteractionAt = Date.now();
+		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
+		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
 	} catch { /* ignore */ }
 
 	// Try to get the event for shift-key detection.
@@ -4009,7 +4015,7 @@ function toggleRowSelection(row, boxId) {
 /**
  * Update the active/toggle state of dropdown items based on current tool state.
  */
-function __kustoUpdateResultsToolsDropdownState(boxId) {
+function __kustoUpdateResultsToolsDropdownState(boxId: any) {
 	try {
 		const searchContainer = document.getElementById(boxId + '_data_search_container');
 		const columnContainer = document.getElementById(boxId + '_column_search_container');
@@ -4037,14 +4043,14 @@ function __kustoUpdateResultsToolsDropdownState(boxId) {
  * Handle action from the Tools dropdown menu.
  * Closes the dropdown and executes the action.
  */
-function __kustoResultsToolsDropdownAction(boxId, action) {
+function __kustoResultsToolsDropdownAction(boxId: any, action: any) {
 	// Close the dropdown immediately
 	__kustoCloseResultsToolsDropdown(boxId);
 
 	// Execute the action
 	switch (action) {
 		case 'visibility':
-			toggleQueryResultsVisibility(boxId);
+			(_win.toggleQueryResultsVisibility as any)(boxId);
 			break;
 		case 'search':
 			toggleSearchTool(boxId);
@@ -4068,7 +4074,7 @@ function __kustoResultsToolsDropdownAction(boxId, action) {
  * Toggle the collapsed Tools dropdown menu for the results header.
  * This menu is shown when the container is too narrow to display individual tool buttons.
  */
-function __kustoToggleResultsToolsDropdown(boxId) {
+function __kustoToggleResultsToolsDropdown(boxId: any) {
 	const btn = document.getElementById(boxId + '_results_tools_dropdown_btn');
 	const menu = document.getElementById(boxId + '_results_tools_dropdown_menu');
 	if (!btn || !menu) return;
@@ -4122,7 +4128,7 @@ function __kustoToggleResultsToolsDropdown(boxId) {
 /**
  * Close the collapsed Tools dropdown menu.
  */
-function __kustoCloseResultsToolsDropdown(boxId) {
+function __kustoCloseResultsToolsDropdown(boxId: any) {
 	const btn = document.getElementById(boxId + '_results_tools_dropdown_btn');
 	const menu = document.getElementById(boxId + '_results_tools_dropdown_menu');
 	if (menu) menu.classList.remove('is-open');
@@ -4144,9 +4150,9 @@ function __kustoCloseAllResultsToolsDropdowns() {
 }
 
 // Close results tools dropdown when clicking outside
-document.addEventListener('click', function(e) {
+document.addEventListener('click', function (e: any) {
 	try {
-		if (!e.target.closest('.results-tools-dropdown')) {
+		if (!(e.target as HTMLElement).closest('.results-tools-dropdown')) {
 			__kustoCloseAllResultsToolsDropdowns();
 		}
 	} catch { /* ignore */ }
@@ -4154,12 +4160,12 @@ document.addEventListener('click', function(e) {
 
 // ============================================
 
-function toggleSearchTool(boxId) {
+function toggleSearchTool(boxId: any) {
 	__kustoEnsureResultsShownForTool(boxId);
 	const container = document.getElementById(boxId + '_data_search_container');
-	const button = event.target.closest('.tool-toggle-btn');
+	const button = (window as any).event && (window as any).event.target && (window as any).event.target.closest('.tool-toggle-btn');
 
-	if (container.style.display === 'none') {
+	if (container!.style.display === 'none') {
 		// Close the other tool first
 		const columnContainer = document.getElementById(boxId + '_column_search_container');
 		if (columnContainer) {
@@ -4169,7 +4175,7 @@ function toggleSearchTool(boxId) {
 		document.querySelectorAll('.tool-toggle-btn').forEach(btn => btn.classList.remove('active'));
 
 		// Show this tool
-		container.style.display = 'flex';
+		container!.style.display = 'flex';
 		button.classList.add('active');
 
 		// Focus the input
@@ -4179,12 +4185,12 @@ function toggleSearchTool(boxId) {
 		}
 	} else {
 		// Hide this tool
-		container.style.display = 'none';
+		container!.style.display = 'none';
 		button.classList.remove('active');
 	}
 }
 
-function toggleColumnTool(boxId) {
+function toggleColumnTool(boxId: any) {
 	__kustoEnsureResultsShownForTool(boxId);
 	const body = document.getElementById(boxId + '_results_body');
 	// If results were hidden, the body may still be display:none for a tick.
@@ -4194,9 +4200,9 @@ function toggleColumnTool(boxId) {
 		}
 	} catch { /* ignore */ }
 	const container = document.getElementById(boxId + '_column_search_container');
-	const button = event.target.closest('.tool-toggle-btn');
+	const button = (window as any).event && (window as any).event.target && (window as any).event.target.closest('.tool-toggle-btn');
 
-	if (container.style.display === 'none') {
+	if (container!.style.display === 'none') {
 		// Close the other tool first
 		const searchContainer = document.getElementById(boxId + '_data_search_container');
 		if (searchContainer) {
@@ -4206,7 +4212,7 @@ function toggleColumnTool(boxId) {
 		document.querySelectorAll('.tool-toggle-btn').forEach(btn => btn.classList.remove('active'));
 
 		// Show this tool
-		container.style.display = 'block';
+		container!.style.display = 'block';
 		button.classList.add('active');
 
 		// Focus the input
@@ -4216,29 +4222,29 @@ function toggleColumnTool(boxId) {
 		}
 	} else {
 		// Hide this tool
-		container.style.display = 'none';
+		container!.style.display = 'none';
 		button.classList.remove('active');
 	}
 }
 
-function searchData(boxId) {
+function searchData(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
 	let query = '';
 	let mode = 'wildcard';
-	let built = { regex: null, error: null };
+	let built: any = { regex: null, error: null };
 	try {
-		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
-			const st = window.__kustoGetSearchControlState(boxId + '_data_search', boxId + '_data_search_mode');
+		if (typeof (_win.__kustoGetSearchControlState as any) === 'function' && typeof (_win.__kustoTryBuildSearchRegex as any) === 'function') {
+			const st = (_win.__kustoGetSearchControlState as any)(boxId + '_data_search', boxId + '_data_search_mode');
 			query = String((st && st.query) ? st.query : '');
 			mode = st && st.mode ? st.mode : 'wildcard';
-			built = window.__kustoTryBuildSearchRegex(query, mode);
+			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
 		} else {
 			const searchInput = document.getElementById(boxId + '_data_search');
-			query = searchInput ? String(searchInput.value || '') : '';
+			query = searchInput ? String((searchInput as any).value || '') : '';
 			mode = 'wildcard';
-			built = { regex: query ? new RegExp(escapeRegex(String(query).trim()), 'gi') : null, error: null };
+			built = { regex: query ? new RegExp((_win.escapeRegex as any)(String(query).trim()), 'gi') : null, error: null };
 		}
 	} catch { /* ignore */ }
 	const regex = built && built.regex ? built.regex : null;
@@ -4258,31 +4264,31 @@ function searchData(boxId) {
 	try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
 
 	if (!String(query || '').trim()) {
-		if (typeof __kustoUpdateSearchStatus === 'function') {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
 		}
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
 		}
 		return;
 	}
 
 	if (built && built.error) {
-		if (typeof __kustoUpdateSearchStatus === 'function') {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, true, built.error);
+		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, true, built.error);
 		}
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
 		}
 		return;
 	}
 
 	// Search through visible rows (respects current sort/filter)
 	const rows = Array.isArray(state.rows) ? state.rows : [];
-	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_, i) => i);
-	displayRowIndices.forEach((rowIdx) => {
+	const displayRowIndices = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : rows.map((_: any, i: any) => i);
+	displayRowIndices.forEach((rowIdx: any) => {
 		const row = rows[rowIdx] || [];
-		row.forEach((cell, colIdx) => {
+		row.forEach((cell: any, colIdx: any) => {
 			let cellText = '';
 
 			// Extract searchable text from cell
@@ -4298,7 +4304,7 @@ function searchData(boxId) {
 			}
 
 			// Check if search term is in cell text
-			if (regex && typeof window.__kustoRegexTest === 'function' ? window.__kustoRegexTest(regex, cellText) : cellText.toLowerCase().includes(String(query).toLowerCase())) {
+			if (regex && typeof (_win.__kustoRegexTest as any) === 'function' ? (_win.__kustoRegexTest as any)(regex, cellText) : cellText.toLowerCase().includes(String(query).toLowerCase())) {
 				state.searchMatches.push({ row: rowIdx, col: colIdx });
 			}
 		});
@@ -4310,24 +4316,24 @@ function searchData(boxId) {
 		// Jump to first match
 		state.currentSearchIndex = 0;
 		try { __kustoBumpVisualVersion(state); } catch { /* ignore */ }
-		if (typeof __kustoUpdateSearchStatus === 'function') {
-			__kustoUpdateSearchStatus(statusEl, matchCount, 0, false, '');
+		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, matchCount, 0, false, '');
 		}
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, true, matchCount);
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, true, matchCount);
 		}
 		highlightCurrentSearchMatch(boxId);
 	} else {
-		if (typeof __kustoUpdateSearchStatus === 'function') {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
 		}
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
 		}
 	}
 }
 
-function nextSearchMatch(boxId) {
+function nextSearchMatch(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -4339,7 +4345,7 @@ function nextSearchMatch(boxId) {
 	highlightCurrentSearchMatch(boxId);
 }
 
-function previousSearchMatch(boxId) {
+function previousSearchMatch(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -4351,7 +4357,7 @@ function previousSearchMatch(boxId) {
 	highlightCurrentSearchMatch(boxId);
 }
 
-function highlightCurrentSearchMatch(boxId) {
+function highlightCurrentSearchMatch(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -4364,19 +4370,19 @@ function highlightCurrentSearchMatch(boxId) {
 	try { __kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
 
 	const match = matches[currentIndex];
-	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]');
+	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]') as any;
 	if (cell) {
 		cell.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
 	}
 
 	// Update status text using embedded status element.
 	const statusEl = document.getElementById(boxId + '_data_search_status');
-	if (typeof __kustoUpdateSearchStatus === 'function') {
-		__kustoUpdateSearchStatus(statusEl, matches.length, currentIndex, false, '');
+	if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
+		(_win.__kustoUpdateSearchStatus as any)(statusEl, matches.length, currentIndex, false, '');
 	}
 }
 
-function handleDataSearchKeydown(event, boxId) {
+function handleDataSearchKeydown(event: any, boxId: any) {
 	if (event.key === 'Enter') {
 		event.preventDefault();
 		if (event.shiftKey) {
@@ -4387,7 +4393,7 @@ function handleDataSearchKeydown(event, boxId) {
 	}
 }
 
-function handleTableKeydown(event, boxId) {
+function handleTableKeydown(event: any, boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -4474,7 +4480,7 @@ function handleTableKeydown(event, boxId) {
 	}
 }
 
-function filterColumns(boxId) {
+function filterColumns(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -4484,16 +4490,16 @@ function filterColumns(boxId) {
 
 	let query = '';
 	let mode = 'wildcard';
-	let built = { regex: null, error: null };
+	let built: any = { regex: null, error: null };
 	try {
-		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
-			const st = window.__kustoGetSearchControlState(boxId + '_column_search', boxId + '_column_search_mode');
+		if (typeof (_win.__kustoGetSearchControlState as any) === 'function' && typeof (_win.__kustoTryBuildSearchRegex as any) === 'function') {
+			const st = (_win.__kustoGetSearchControlState as any)(boxId + '_column_search', boxId + '_column_search_mode');
 			query = String((st && st.query) ? st.query : '');
 			mode = st && st.mode ? st.mode : 'wildcard';
-			built = window.__kustoTryBuildSearchRegex(query, mode);
+			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
 		} else {
-			query = String(input.value || '');
-			built = { regex: query ? new RegExp(escapeRegex(String(query).trim()), 'gi') : null, error: null };
+			query = String((input as any).value || '');
+			built = { regex: query ? new RegExp((_win.escapeRegex as any)(String(query).trim()), 'gi') : null, error: null };
 		}
 	} catch { /* ignore */ }
 	const regex = built && built.regex ? built.regex : null;
@@ -4508,15 +4514,15 @@ function filterColumns(boxId) {
 	}
 
 	const matches = state.columns
-		.map((col, idx) => ({ name: col, index: idx }))
-		.filter(col => regex ? (typeof window.__kustoRegexTest === 'function' ? window.__kustoRegexTest(regex, col.name) : col.name.toLowerCase().includes(String(query).toLowerCase())) : false);
+		.map((col: any, idx: any) => ({ name: col, index: idx }))
+		.filter((col: any) => regex ? (typeof (_win.__kustoRegexTest as any) === 'function' ? (_win.__kustoRegexTest as any)(regex, col.name) : col.name.toLowerCase().includes(String(query).toLowerCase())) : false);
 
 	if (matches.length === 0) {
 		autocomplete.classList.remove('visible');
 		return;
 	}
 
-	autocomplete.innerHTML = matches.map((col, idx) =>
+	autocomplete.innerHTML = matches.map((col: any, idx: any) =>
 		'<div class="column-autocomplete-item' + (idx === 0 ? ' selected' : '') + '" ' +
 		'data-col-index="' + col.index + '" ' +
 		'onclick="scrollToColumn(' + col.index + ', \'' + boxId + '\')">' +
@@ -4524,10 +4530,10 @@ function filterColumns(boxId) {
 	).join('');
 
 	autocomplete.classList.add('visible');
-	window.currentAutocompleteIndex = 0;
+	(_win.currentAutocompleteIndex as any) = 0;
 }
 
-function handleColumnSearchKeydown(event, boxId) {
+function handleColumnSearchKeydown(event: any, boxId: any) {
 	const autocomplete = document.getElementById(boxId + '_column_autocomplete');
 	if (!autocomplete || !autocomplete.classList.contains('visible')) { return; }
 
@@ -4536,21 +4542,21 @@ function handleColumnSearchKeydown(event, boxId) {
 
 	if (event.key === 'ArrowDown') {
 		event.preventDefault();
-		window.currentAutocompleteIndex = (window.currentAutocompleteIndex + 1) % items.length;
+		(_win.currentAutocompleteIndex as any) = ((_win.currentAutocompleteIndex as any) + 1) % items.length;
 		updateAutocompleteSelection(items);
 	} else if (event.key === 'ArrowUp') {
 		event.preventDefault();
-		window.currentAutocompleteIndex = (window.currentAutocompleteIndex - 1 + items.length) % items.length;
+		(_win.currentAutocompleteIndex as any) = ((_win.currentAutocompleteIndex as any) - 1 + items.length) % items.length;
 		updateAutocompleteSelection(items);
 	} else if (event.key === 'Enter') {
 		event.preventDefault();
-		const selected = items[window.currentAutocompleteIndex];
+		const selected = items[(_win.currentAutocompleteIndex as any)];
 		if (selected) {
-			const colIndex = parseInt(selected.getAttribute('data-col-index'));
+			const colIndex = parseInt(selected.getAttribute('data-col-index') || '');
 			scrollToColumn(colIndex, boxId);
 			autocomplete.classList.remove('visible');
 			const input = document.getElementById(boxId + '_column_search');
-			if (input) { input.value = ''; }
+			if (input) { (input as any).value = ''; }
 		}
 	} else if (event.key === 'Escape') {
 		event.preventDefault();
@@ -4558,9 +4564,9 @@ function handleColumnSearchKeydown(event, boxId) {
 	}
 }
 
-function updateAutocompleteSelection(items) {
-	items.forEach((item, idx) => {
-		if (idx === window.currentAutocompleteIndex) {
+function updateAutocompleteSelection(items: any) {
+	items.forEach((item: any, idx: any) => {
+		if (idx === (_win.currentAutocompleteIndex as any)) {
 			item.classList.add('selected');
 			item.scrollIntoView({ block: 'nearest' });
 		} else {
@@ -4569,7 +4575,7 @@ function updateAutocompleteSelection(items) {
 	});
 }
 
-function scrollToColumn(colIndex, boxId) {
+function scrollToColumn(colIndex: any, boxId: any) {
 	// When selecting a column via keyboard or mouse, always close the autocomplete dropdown.
 	try {
 		const autocomplete = document.getElementById(boxId + '_column_autocomplete');
@@ -4578,9 +4584,9 @@ function scrollToColumn(colIndex, boxId) {
 		}
 		const input = document.getElementById(boxId + '_column_search');
 		if (input) {
-			input.value = '';
+			(input as any).value = '';
 		}
-		window.currentAutocompleteIndex = 0;
+		(_win.currentAutocompleteIndex as any) = 0;
 	} catch { /* ignore */ }
 
 	const state = __kustoGetResultsState(boxId);
@@ -4595,14 +4601,14 @@ function scrollToColumn(colIndex, boxId) {
 
 	// Then scroll the container to center the column
 	setTimeout(() => {
-		const cell = document.querySelector('#' + boxId + '_table td[data-row="' + firstRow + '"][data-col="' + colIndex + '"]');
+		const cell = document.querySelector('#' + boxId + '_table td[data-row="' + firstRow + '"][data-col="' + colIndex + '"]') as any;
 		if (cell) {
 			cell.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
 		}
 	}, 100);
 }
 
-function __kustoCopyTextToClipboard(text) {
+function __kustoCopyTextToClipboard(text: any) {
 	try {
 		navigator.clipboard.writeText(text).then(() => {
 			// Copied
@@ -4614,7 +4620,7 @@ function __kustoCopyTextToClipboard(text) {
 	}
 }
 
-function __kustoGetDisplayRowsInRange(state, displayRowMin, displayRowMax) {
+function __kustoGetDisplayRowsInRange(state: any, displayRowMin: any, displayRowMax: any) {
 	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const maxDisplay = (disp && disp.length > 0) ? (disp.length - 1) : (rows.length - 1);
@@ -4627,7 +4633,7 @@ function __kustoGetDisplayRowsInRange(state, displayRowMin, displayRowMax) {
 	return out;
 }
 
-function __kustoCellToClipboardString(cell) {
+function __kustoCellToClipboardString(cell: any) {
 	// For cells with display/full structure, prefer display for clipboard (it's usually cleaner for dates).
 	// This gives us ISO-formatted dates instead of the long timezone strings.
 	try {
@@ -4648,7 +4654,7 @@ function __kustoCellToClipboardString(cell) {
 	return s;
 }
 
-function __kustoCellToCsvString(cell) {
+function __kustoCellToCsvString(cell: any) {
 	// For cells with display/full structure, prefer display for CSV (it's usually cleaner for dates).
 	// This gives us ISO-formatted dates instead of the long timezone strings.
 	let raw;
@@ -4673,15 +4679,15 @@ function __kustoCellToCsvString(cell) {
 	return s;
 }
 
-function __kustoGetVisibleResultsAsCsv(boxId) {
+function __kustoGetVisibleResultsAsCsv(boxId: any) {
 	return __kustoGetResultsAsCsv(boxId, 'visible');
 }
 
-function __kustoGetAllResultsAsCsv(boxId) {
+function __kustoGetAllResultsAsCsv(boxId: any) {
 	return __kustoGetResultsAsCsv(boxId, 'all');
 }
 
-function __kustoGetResultsAsCsv(boxId, mode) {
+function __kustoGetResultsAsCsv(boxId: any, mode: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) return '';
 
@@ -4689,12 +4695,12 @@ function __kustoGetResultsAsCsv(boxId, mode) {
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
-	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_, i) => i)) : rows.map((_, i) => i);
+	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_: any, i: any) => i)) : rows.map((_: any, i: any) => i);
 
-	const header = cols.map(c => __kustoCellToCsvString(c)).join(',');
-	const body = rowIndices.map(rowIdx => {
+	const header = cols.map((c: any) => __kustoCellToCsvString(c)).join(',');
+	const body = rowIndices.map((rowIdx: any) => {
 		const row = rows[rowIdx] || [];
-		return row.map(cell => __kustoCellToCsvString(cell)).join(',');
+		return row.map((cell: any) => __kustoCellToCsvString(cell)).join(',');
 	}).join('\r\n');
 
 	// Always end with newline so CSV viewers behave nicely.
@@ -4702,7 +4708,7 @@ function __kustoGetResultsAsCsv(boxId, mode) {
 }
 
 
-function __kustoMakeSafeCsvFileNameFromLabel(label) {
+function __kustoMakeSafeCsvFileNameFromLabel(label: any) {
 	try {
 		let base = String(label || '').trim();
 		if (!base) {
@@ -4725,18 +4731,18 @@ function __kustoMakeSafeCsvFileNameFromLabel(label) {
 }
 
 
-function __kustoSaveResultsToCsvFile(boxId, sectionLabel, mode) {
+function __kustoSaveResultsToCsvFile(boxId: any, sectionLabel: any, mode: any) {
 	try {
 		const csv = (mode === 'visible') ? __kustoGetVisibleResultsAsCsv(boxId) : __kustoGetAllResultsAsCsv(boxId);
 		if (!csv || !csv.trim()) {
-			try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
+			try { (_win.vscode as any) && (_win.vscode as any).postMessage && (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
 			return;
 		}
-		if (typeof vscode === 'undefined' || !vscode || typeof vscode.postMessage !== 'function') {
+		if (typeof (_win.vscode as any) === 'undefined' || !(_win.vscode as any) || typeof (_win.vscode as any).postMessage !== 'function') {
 			// vscode API unavailable - cannot show a message
 			return;
 		}
-		vscode.postMessage({
+		(_win.vscode as any).postMessage({
 			type: 'saveResultsCsv',
 			boxId: boxId,
 			csv: csv,
@@ -4744,16 +4750,16 @@ function __kustoSaveResultsToCsvFile(boxId, sectionLabel, mode) {
 		});
 	} catch (err) {
 		console.error('Failed to prepare CSV:', err);
-		try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any) && (_win.vscode as any).postMessage && (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
 	}
 }
 
 // Back-compat entrypoint (still used by older markup/hosts).
-function saveVisibleResultsToCsvFile(boxId, sectionLabel) {
+function saveVisibleResultsToCsvFile(boxId: any, sectionLabel: any) {
 	__kustoSaveResultsToCsvFile(boxId, sectionLabel, 'visible');
 }
 
-function __kustoIsResultsFiltered(state) {
+function __kustoIsResultsFiltered(state: any) {
 	try {
 		if (!state) return false;
 		const rows = Array.isArray(state.rows) ? state.rows : [];
@@ -4772,7 +4778,7 @@ function __kustoIsResultsFiltered(state) {
 	}
 }
 
-function __kustoIsFilterSpecActive(spec) {
+function __kustoIsFilterSpecActive(spec: any): any {
 	try {
 		if (!spec) return false;
 		if (typeof spec !== 'object') return true;
@@ -4793,7 +4799,7 @@ function __kustoIsFilterSpecActive(spec) {
 				return false;
 			}
 			// Consider active only if at least one rule has an operator.
-			return rules.some(r => r && typeof r === 'object' && String(r.op || ''));
+			return rules.some((r: any) => r && typeof r === 'object' && String(r.op || ''));
 		}
 		// Unknown spec shapes: treat as active.
 		return true;
@@ -4802,14 +4808,14 @@ function __kustoIsFilterSpecActive(spec) {
 	}
 }
 
-function __kustoOnSavePrimary(boxId, sectionLabel) {
+function __kustoOnSavePrimary(boxId: any, sectionLabel: any) {
 	const state = __kustoGetResultsState(boxId);
 	const filtered = __kustoIsResultsFiltered(state);
 	// Default: when filtered, save the filtered view; otherwise, save full results.
 	__kustoSaveResultsToCsvFile(boxId, sectionLabel, filtered ? 'visible' : 'all');
 }
 
-function __kustoOnSaveSecondary(boxId, sectionLabel) {
+function __kustoOnSaveSecondary(boxId: any, sectionLabel: any) {
 	const state = __kustoGetResultsState(boxId);
 	const filtered = __kustoIsResultsFiltered(state);
 	// When filtered, secondary is the full/unfiltered export.
@@ -4818,18 +4824,18 @@ function __kustoOnSaveSecondary(boxId, sectionLabel) {
 
 function __kustoHideSplitMenu() {
 	try {
-		if (window.__kustoSplitMenuEl) {
-			window.__kustoSplitMenuEl.remove();
+		if ((_win.__kustoSplitMenuEl as any)) {
+			(_win.__kustoSplitMenuEl as any).remove();
 		}
 	} catch { /* ignore */ }
-	try { window.__kustoSplitMenuEl = null; } catch { /* ignore */ }
+	try { (_win.__kustoSplitMenuEl as any) = null; } catch { /* ignore */ }
 }
 
-function __kustoShowSplitMenu(anchorEl, label, onClick) {
+function __kustoShowSplitMenu(anchorEl: any, label: any, onClick: any) {
 	__kustoShowSplitMenuItems(anchorEl, [{ label, onClick }]);
 }
 
-function __kustoShowSplitMenuItems(anchorEl, items) {
+function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 	try { __kustoHideSplitMenu(); } catch { /* ignore */ }
 	try {
 		if (!anchorEl) return;
@@ -4851,7 +4857,7 @@ function __kustoShowSplitMenuItems(anchorEl, items) {
 			btn.type = 'button';
 			btn.className = 'kusto-split-menu-item';
 			btn.textContent = it.label;
-			btn.addEventListener('click', (ev) => {
+			btn.addEventListener('click', (ev: any) => {
 				try { ev.preventDefault(); ev.stopPropagation(); } catch { /* ignore */ }
 				try { __kustoHideSplitMenu(); } catch { /* ignore */ }
 				try { it.onClick && it.onClick(); } catch { /* ignore */ }
@@ -4859,7 +4865,7 @@ function __kustoShowSplitMenuItems(anchorEl, items) {
 			el.appendChild(btn);
 		}
 
-		window.__kustoSplitMenuEl = el;
+		(_win.__kustoSplitMenuEl as any) = el;
 		document.body.appendChild(el);
 
 		// Auto-size to content, but clamp to viewport and keep on-screen.
@@ -4883,11 +4889,11 @@ function __kustoShowSplitMenuItems(anchorEl, items) {
 			try {
 				document.addEventListener('mousedown', function __kustoSplitMenuDismiss(ev) {
 					try {
-						if (!window.__kustoSplitMenuEl) {
+						if (!(_win.__kustoSplitMenuEl as any)) {
 							document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
 							return;
 						}
-						if (window.__kustoSplitMenuEl.contains(ev.target) || anchorEl.contains(ev.target)) return;
+						if ((_win.__kustoSplitMenuEl as any).contains(ev.target as HTMLElement) || anchorEl.contains(ev.target as HTMLElement)) return;
 						__kustoHideSplitMenu();
 						document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
 					} catch { /* ignore */ }
@@ -4897,7 +4903,7 @@ function __kustoShowSplitMenuItems(anchorEl, items) {
 	} catch { /* ignore */ }
 }
 
-function __kustoSetSplitCaretsVisible(boxId, visible) {
+function __kustoSetSplitCaretsVisible(boxId: any, visible: any) {
 	try {
 		const saveCaret = document.getElementById(boxId + '_results_save_menu_btn');
 		const copyCaret = document.getElementById(boxId + '_results_copy_menu_btn');
@@ -4912,7 +4918,7 @@ function __kustoSetSplitCaretsVisible(boxId, visible) {
 	} catch { /* ignore */ }
 }
 
-function __kustoUpdateSplitButtonState(boxId) {
+function __kustoUpdateSplitButtonState(boxId: any) {
 	try {
 		const state = __kustoGetResultsState(boxId);
 		const filtered = __kustoIsResultsFiltered(state);
@@ -4930,7 +4936,7 @@ function __kustoUpdateSplitButtonState(boxId) {
 	} catch { /* ignore */ }
 }
 
-function __kustoOnSaveMenu(boxId, sectionLabel, anchor) {
+function __kustoOnSaveMenu(boxId: any, sectionLabel: any, anchor: any) {
 	try {
 		const state = __kustoGetResultsState(boxId);
 		if (!__kustoIsResultsFiltered(state)) return;
@@ -4942,19 +4948,19 @@ function __kustoOnSaveMenu(boxId, sectionLabel, anchor) {
 }
 
 // Drag selection support: allow mouse-drag to select a rectangular range of cells.
-function __kustoEnsureDragSelectionHandlers(boxId) {
+function __kustoEnsureDragSelectionHandlers(boxId: any) {
 	try {
 		if (!boxId) return;
 		const containerId = boxId + '_table_container';
 		const container = document.getElementById(containerId);
 		if (!container) return;
 		// Avoid installing multiple handlers.
-		if (container.__kustoDragHandlersInstalled) return;
+		if ((container as any).__kustoDragHandlersInstalled) return;
 
 		let isDragging = false;
-		let anchorCell = null; // {row, col}
+		let anchorCell: any = null; // {row, col}
 
-		const getCellFromEvent = (ev) => {
+		const getCellFromEvent = (ev: any) => {
 			try {
 				const td = ev.target && ev.target.closest ? ev.target.closest('td[data-row][data-col]') : null;
 				if (!td) return null;
@@ -4967,7 +4973,7 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 			}
 		};
 
-		const onMouseDown = (ev) => {
+		const onMouseDown = (ev: any) => {
 			try {
 				// Only left button
 				if (ev.button !== 0) return;
@@ -5017,10 +5023,10 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 					// If this is a rapid second click, open the cell viewer instead of clearing selection.
 					if (isSyntheticDoubleClick) {
 						try {
-							if (typeof openCellViewer === 'function') {
-								openCellViewer(cell.row, cell.col, boxId);
+							if (typeof (_win.openCellViewer) === 'function') {
+								(_win.openCellViewer as any)(cell.row, cell.col, boxId);
 							} else {
-								console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
+								console.warn('[kusto-query-editor] (_win.openCellViewer as any)() not available (did cellViewer.js load?)');
 							}
 						} catch { /* ignore */ }
 						return;
@@ -5058,17 +5064,17 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 				// If this was a synthetic double click (same cell, quickly), open the viewer.
 				if (isSyntheticDoubleClick) {
 					try {
-						if (typeof openCellViewer === 'function') {
-							openCellViewer(cell.row, cell.col, boxId);
+						if (typeof (_win.openCellViewer) === 'function') {
+							(_win.openCellViewer as any)(cell.row, cell.col, boxId);
 						} else {
-							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
+							console.warn('[kusto-query-editor] (_win.openCellViewer as any)() not available (did cellViewer.js load?)');
 						}
 					} catch { /* ignore */ }
 				}
 			} catch { /* ignore */ }
 		};
 
-		const onMouseMove = (ev) => {
+		const onMouseMove = (ev: any) => {
 			try {
 				if (!isDragging) return;
 				const cell = getCellFromEvent(ev);
@@ -5084,7 +5090,7 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 			} catch { /* ignore */ }
 		};
 
-		const onMouseUp = (ev) => {
+		const onMouseUp = (ev: any) => {
 			try {
 				if (!isDragging) return;
 				isDragging = false;
@@ -5101,34 +5107,34 @@ function __kustoEnsureDragSelectionHandlers(boxId) {
 		document.addEventListener('mouseup', onMouseUp);
 
 		// Mark installed and keep references for possible cleanup.
-		container.__kustoDragHandlersInstalled = true;
-		container.__kustoDragHandlers = { onMouseDown, onMouseMove, onMouseUp };
+		(container as any).__kustoDragHandlersInstalled = true;
+		(container as any).__kustoDragHandlers = { onMouseDown, onMouseMove, onMouseUp };
 	} catch { /* ignore */ }
 }
 
-function __kustoRemoveDragSelectionHandlers(boxId) {
+function __kustoRemoveDragSelectionHandlers(boxId: any) {
 	try {
 		if (!boxId) return;
 		const container = document.getElementById(boxId + '_table_container');
-		if (!container || !container.__kustoDragHandlersInstalled) return;
-		const h = container.__kustoDragHandlers || {};
+		if (!container || !(container as any).__kustoDragHandlersInstalled) return;
+		const h = (container as any).__kustoDragHandlers || {};
 		if (h.onMouseDown) container.removeEventListener('mousedown', h.onMouseDown);
 		if (h.onMouseMove) container.removeEventListener('mousemove', h.onMouseMove);
 		if (h.onMouseUp) document.removeEventListener('mouseup', h.onMouseUp);
-		container.__kustoDragHandlersInstalled = false;
-		container.__kustoDragHandlers = null;
+		(container as any).__kustoDragHandlersInstalled = false;
+		(container as any).__kustoDragHandlers = null;
 	} catch { /* ignore */ }
 }
 
-function copyVisibleResultsToClipboard(boxId) {
+function copyVisibleResultsToClipboard(boxId: any) {
 	__kustoCopyResultsToClipboard(boxId, 'visible');
 }
 
-function copyAllResultsToClipboard(boxId) {
+function copyAllResultsToClipboard(boxId: any) {
 	__kustoCopyResultsToClipboard(boxId, 'all');
 }
 
-function __kustoCopyResultsToClipboard(boxId, mode) {
+function __kustoCopyResultsToClipboard(boxId: any, mode: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -5136,33 +5142,33 @@ function __kustoCopyResultsToClipboard(boxId, mode) {
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
-	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_, i) => i)) : rows.map((_, i) => i);
+	const rowIndices = (mode === 'visible') ? (disp ? disp : rows.map((_: any, i: any) => i)) : rows.map((_: any, i: any) => i);
 
-	const header = cols.map(c => __kustoCellToClipboardString(c)).join('\t');
-	const body = rowIndices.map(rowIdx => {
+	const header = cols.map((c: any) => __kustoCellToClipboardString(c)).join('\t');
+	const body = rowIndices.map((rowIdx: any) => {
 		const row = rows[rowIdx] || [];
-		return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
+		return row.map((cell: any) => __kustoCellToClipboardString(cell)).join('\t');
 	}).join('\n');
 
 	const text = header + (body ? ('\n' + body) : '');
 	__kustoCopyTextToClipboard(text);
 }
 
-function __kustoOnCopyPrimary(boxId) {
+function __kustoOnCopyPrimary(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	const filtered = __kustoIsResultsFiltered(state);
 	// Default: when filtered, copy the filtered view; otherwise, copy full results.
 	__kustoCopyResultsToClipboard(boxId, filtered ? 'visible' : 'all');
 }
 
-function __kustoOnCopySecondary(boxId) {
+function __kustoOnCopySecondary(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	const filtered = __kustoIsResultsFiltered(state);
 	// When filtered, secondary is the full/unfiltered copy.
 	__kustoCopyResultsToClipboard(boxId, filtered ? 'all' : 'visible');
 }
 
-function __kustoOnCopyMenu(boxId, anchor) {
+function __kustoOnCopyMenu(boxId: any, anchor: any) {
 	try {
 		const state = __kustoGetResultsState(boxId);
 		if (!__kustoIsResultsFiltered(state)) return;
@@ -5173,7 +5179,7 @@ function __kustoOnCopyMenu(boxId, anchor) {
 	} catch { /* ignore */ }
 }
 
-function copySelectionToClipboard(boxId) {
+function copySelectionToClipboard(boxId: any) {
 	const state = __kustoGetResultsState(boxId);
 	if (!state) { return; }
 
@@ -5217,12 +5223,12 @@ function copySelectionToClipboard(boxId) {
 	// Next: selected rows.
 	if (state.selectedRows && state.selectedRows.size > 0) {
 		// Build header row for all columns.
-		const headerLine = columns.map(col => __kustoCellToClipboardString(col)).join('\t');
+		const headerLine = columns.map((col: any) => __kustoCellToClipboardString(col)).join('\t');
 
-		const rowIndices = Array.from(state.selectedRows).sort((a, b) => a - b);
+		const rowIndices = Array.from(state.selectedRows).sort((a: any, b: any) => a - b);
 		const dataLines = rowIndices.map(rowIdx => {
-			const row = state.rows[rowIdx] || [];
-			return row.map(cell => __kustoCellToClipboardString(cell)).join('\t');
+			const row = state.rows[rowIdx as number] || [];
+			return row.map((cell: any) => __kustoCellToClipboardString(cell)).join('\t');
 		});
 		__kustoCopyTextToClipboard([headerLine, ...dataLines].join('\n'));
 		return;
@@ -5238,14 +5244,14 @@ function copySelectionToClipboard(boxId) {
 
 function __kustoHideContextMenu() {
 	try {
-		if (window.__kustoContextMenuEl) {
-			window.__kustoContextMenuEl.remove();
+		if ((_win.__kustoContextMenuEl as any)) {
+			(_win.__kustoContextMenuEl as any).remove();
 		}
 	} catch { /* ignore */ }
-	try { window.__kustoContextMenuEl = null; } catch { /* ignore */ }
+	try { (_win.__kustoContextMenuEl as any) = null; } catch { /* ignore */ }
 }
 
-function handleTableContextMenu(event, boxId) {
+function handleTableContextMenu(event: any, boxId: any) {
 	try {
 		if (!event) return;
 		event.preventDefault();
@@ -5306,9 +5312,9 @@ function handleTableContextMenu(event, boxId) {
 	menu.style.top = String(event.pageY || 0) + 'px';
 	menu.innerHTML = '<button type="button" class="kusto-context-menu-item">Copy</button>';
 
-	const btn = menu.querySelector('button');
+	const btn = menu.querySelector('button') as any;
 	if (btn) {
-		btn.addEventListener('click', (e) => {
+		btn.addEventListener('click', (e: any) => {
 			try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
 			copySelectionToClipboard(boxId);
 			__kustoHideContextMenu();
@@ -5316,13 +5322,13 @@ function handleTableContextMenu(event, boxId) {
 	}
 
 	document.body.appendChild(menu);
-	try { window.__kustoContextMenuEl = menu; } catch { /* ignore */ }
+	try { (_win.__kustoContextMenuEl as any) = menu; } catch { /* ignore */ }
 
 	setTimeout(() => {
 		try {
-			const onDocMouseDown = (e) => {
+			const onDocMouseDown = (e: any) => {
 				try {
-					if (!menu.contains(e.target)) {
+					if (!menu.contains(e.target as Node)) {
 						__kustoHideContextMenu();
 						document.removeEventListener('mousedown', onDocMouseDown, true);
 					}
@@ -5338,10 +5344,10 @@ function handleTableContextMenu(event, boxId) {
 // Uses position:fixed so the tooltip escapes any overflow:hidden ancestors.
 // A delegated mouseenter/mouseleave handler positions and shows/hides using a class.
 (function __kustoInitResultsLabelTooltipPositioning() {
-	var _hideTimer = null;
+	var _hideTimer: any = null;
 
-	function positionAndShow(anchor) {
-		var tooltip = anchor.querySelector('.results-label-tooltip');
+	function positionAndShow(anchor: any) {
+		var tooltip = anchor.querySelector('.results-label-tooltip') as any;
 		if (!tooltip) return;
 		clearTimeout(_hideTimer);
 		// Make it visible first so we can measure it
@@ -5362,34 +5368,206 @@ function handleTableContextMenu(event, boxId) {
 		tooltip.style.left = left + 'px';
 	}
 
-	function scheduleHide(tooltip) {
+	function scheduleHide(tooltip: any) {
 		clearTimeout(_hideTimer);
 		_hideTimer = setTimeout(function() {
 			tooltip.classList.remove('is-visible');
 		}, 120);
 	}
 
-	document.addEventListener('mouseenter', function(e) {
-		var anchor = e.target.closest && e.target.closest('.results-label-tooltip-anchor');
+	document.addEventListener('mouseenter', function (e: any) {
+		var anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
 		if (anchor) {
 			positionAndShow(anchor);
 		}
 		// Keep tooltip open while hovering the tooltip itself
-		var tt = e.target.closest && e.target.closest('.results-label-tooltip');
+		var tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
 		if (tt && tt.classList.contains('is-visible')) {
 			clearTimeout(_hideTimer);
 		}
 	}, true);
 
-	document.addEventListener('mouseleave', function(e) {
-		var anchor = e.target.closest && e.target.closest('.results-label-tooltip-anchor');
+	document.addEventListener('mouseleave', function (e: any) {
+		var anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
 		if (anchor) {
-			var tooltip = anchor.querySelector('.results-label-tooltip');
+			var tooltip = anchor.querySelector('.results-label-tooltip') as any;
 			if (tooltip) scheduleHide(tooltip);
 		}
-		var tt = e.target.closest && e.target.closest('.results-label-tooltip');
+		var tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
 		if (tt) {
 			scheduleHide(tt);
 		}
 	}, true);
 })();
+
+// ── Window bridge exports for remaining legacy callers ──
+(window as any).__kustoCopyClientActivityId = __kustoCopyClientActivityId;
+(window as any).__kustoGetSearchIconSvg = __kustoGetSearchIconSvg;
+(window as any).__kustoGetScrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg;
+(window as any).__kustoGetCopyIconSvg = __kustoGetCopyIconSvg;
+(window as any).__kustoGetSaveIconSvg = __kustoGetSaveIconSvg;
+(window as any).__kustoGetFilterIconSvg = __kustoGetFilterIconSvg;
+(window as any).__kustoGetResultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg;
+(window as any).__kustoEnsureResultsShownForTool = __kustoEnsureResultsShownForTool;
+(window as any).__kustoFocusTableContainer = __kustoFocusTableContainer;
+(window as any).__kustoEnsureResultsCopyKeyHandlerInstalled = __kustoEnsureResultsCopyKeyHandlerInstalled;
+(window as any).__kustoSetResultsToolsVisible = __kustoSetResultsToolsVisible;
+(window as any).__kustoHideResultsTools = __kustoHideResultsTools;
+(window as any).__kustoGetSortIconSvg = __kustoGetSortIconSvg;
+(window as any).__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
+(window as any).__kustoGetSelectAllIconSvg = __kustoGetSelectAllIconSvg;
+(window as any).__kustoGetDeselectAllIconSvg = __kustoGetDeselectAllIconSvg;
+(window as any).__kustoGetCloseIconSvg = __kustoGetCloseIconSvg;
+(window as any).__kustoNormalizeSortDirection = __kustoNormalizeSortDirection;
+(window as any).__kustoNormalizeSortSpec = __kustoNormalizeSortSpec;
+(window as any).__kustoGetCellSortValue = __kustoGetCellSortValue;
+(window as any).__kustoCompareSortValues = __kustoCompareSortValues;
+(window as any).__kustoFormatNumberForDisplay = __kustoFormatNumberForDisplay;
+(window as any).__kustoFormatDateForDisplay = __kustoFormatDateForDisplay;
+(window as any).__kustoFormatCellDisplayValueForTable = __kustoFormatCellDisplayValueForTable;
+(window as any).__kustoComputeSortedRowIndices = __kustoComputeSortedRowIndices;
+(window as any).__kustoEnsureDisplayRowIndexMaps = __kustoEnsureDisplayRowIndexMaps;
+(window as any).__kustoEnsureColumnFiltersMap = __kustoEnsureColumnFiltersMap;
+(window as any).__kustoGetRawCellValue = __kustoGetRawCellValue;
+(window as any).__kustoIsNullOrEmpty = __kustoIsNullOrEmpty;
+(window as any).__kustoTryParseNumber = __kustoTryParseNumber;
+(window as any).__kustoTryParseDateMs = __kustoTryParseDateMs;
+(window as any).__kustoInferColumnType = __kustoInferColumnType;
+(window as any).__kustoGetRowIndicesExcludingColumnFilter = __kustoGetRowIndicesExcludingColumnFilter;
+(window as any).__kustoNormalizeStringForFilter = __kustoNormalizeStringForFilter;
+(window as any).__kustoRowMatchesNullPolicy = __kustoRowMatchesNullPolicy;
+(window as any).__kustoRowMatchesColumnFilter = __kustoRowMatchesColumnFilter;
+(window as any).__kustoComputeUniqueValueKeys = __kustoComputeUniqueValueKeys;
+(window as any).__kustoNormalizeDraftFilter = __kustoNormalizeDraftFilter;
+(window as any).__kustoGetRulesCombineEnabledFromDom = __kustoGetRulesCombineEnabledFromDom;
+(window as any).__kustoSetRulesCombineEnabled = __kustoSetRulesCombineEnabled;
+(window as any).__kustoToggleRulesCombine = __kustoToggleRulesCombine;
+(window as any).__kustoGetRulesJoinOpFromDom = __kustoGetRulesJoinOpFromDom;
+(window as any).__kustoSetRulesJoinOp = __kustoSetRulesJoinOp;
+(window as any).__kustoApplyFiltersAndRerender = __kustoApplyFiltersAndRerender;
+(window as any).closeColumnFilterPopover = closeColumnFilterPopover;
+(window as any).closeColumnFilterDialogOnBackdrop = closeColumnFilterDialogOnBackdrop;
+(window as any).__kustoEnsureFilterGlobalCloseHandler = __kustoEnsureFilterGlobalCloseHandler;
+(window as any).openColumnFilter = openColumnFilter;
+(window as any).__kustoEnsureFilterPopoverSearchControl = __kustoEnsureFilterPopoverSearchControl;
+(window as any).__kustoRenderFilterPopoverHtml = __kustoRenderFilterPopoverHtml;
+(window as any).__kustoFilterSearchValues = __kustoFilterSearchValues;
+(window as any).__kustoFilterSetAllValues = __kustoFilterSetAllValues;
+(window as any).__kustoGetValuesAllowedFromSpec = __kustoGetValuesAllowedFromSpec;
+(window as any).__kustoGetRulesSpecFromExisting = __kustoGetRulesSpecFromExisting;
+(window as any).__kustoRenderRulesListHtml = __kustoRenderRulesListHtml;
+(window as any).__kustoGetRuleOpsForType = __kustoGetRuleOpsForType;
+(window as any).__kustoRenderRuleRowInputsHtml = __kustoRenderRuleRowInputsHtml;
+(window as any).__kustoCaptureRulesFromDom = __kustoCaptureRulesFromDom;
+(window as any).__kustoSetRuleJoin = __kustoSetRuleJoin;
+(window as any).__kustoOnRuleRowOpChanged = __kustoOnRuleRowOpChanged;
+(window as any).__kustoDeleteRuleRow = __kustoDeleteRuleRow;
+(window as any).__kustoRenderRulesEditorHtml = __kustoRenderRulesEditorHtml;
+(window as any).__kustoToDateTimeLocalValue = __kustoToDateTimeLocalValue;
+(window as any).__kustoFromDateTimeLocalValue = __kustoFromDateTimeLocalValue;
+(window as any).__kustoSetFilterMode = __kustoSetFilterMode;
+(window as any).__kustoOnFilterOpChanged = __kustoOnFilterOpChanged;
+(window as any).__kustoFilterToggleAllValues = __kustoFilterToggleAllValues;
+(window as any).applyColumnFilter = applyColumnFilter;
+(window as any).clearColumnFilter = clearColumnFilter;
+(window as any).__kustoSetSortSpecAndRerender = __kustoSetSortSpecAndRerender;
+(window as any).__kustoGetSortRuleIndex = __kustoGetSortRuleIndex;
+(window as any).handleHeaderSortClick = handleHeaderSortClick;
+(window as any).sortColumnAscending = sortColumnAscending;
+(window as any).sortColumnDescending = sortColumnDescending;
+(window as any).toggleSortDialog = toggleSortDialog;
+(window as any).closeSortDialog = closeSortDialog;
+(window as any).closeSortDialogOnBackdrop = closeSortDialogOnBackdrop;
+(window as any).__kustoRenderSortDialog = __kustoRenderSortDialog;
+(window as any).__kustoAddSortRuleInline = __kustoAddSortRuleInline;
+(window as any).__kustoWireSortDialogDnD = __kustoWireSortDialogDnD;
+(window as any).__kustoMoveSortRule = __kustoMoveSortRule;
+(window as any).addSortRule = addSortRule;
+(window as any).clearSort = clearSort;
+(window as any).updateSortRuleColumn = updateSortRuleColumn;
+(window as any).updateSortRuleDirection = updateSortRuleDirection;
+(window as any).moveSortRuleUp = moveSortRuleUp;
+(window as any).moveSortRuleDown = moveSortRuleDown;
+(window as any).removeSortRule = removeSortRule;
+(window as any).__kustoRerenderResultsTable = __kustoRerenderResultsTable;
+(window as any).__kustoGetVirtualizationState = __kustoGetVirtualizationState;
+(window as any).__kustoResolveVirtualScrollElement = __kustoResolveVirtualScrollElement;
+(window as any).__kustoResolveScrollSourceForEvent = __kustoResolveScrollSourceForEvent;
+(window as any).__kustoGetVirtualScrollMetrics = __kustoGetVirtualScrollMetrics;
+(window as any).__kustoBumpVisualVersion = __kustoBumpVisualVersion;
+(window as any).__kustoComputeVirtualRange = __kustoComputeVirtualRange;
+(window as any).__kustoBuildResultsTableRowHtml = __kustoBuildResultsTableRowHtml;
+(window as any).__kustoRerenderResultsTableBody = __kustoRerenderResultsTableBody;
+(window as any).displayResult = displayResult;
+(window as any).__kustoEnsureResultsStateMap = __kustoEnsureResultsStateMap;
+(window as any).__kustoGetResultsState = __kustoGetResultsState;
+(window as any).__kustoSetResultsState = __kustoSetResultsState;
+(window as any).displayResultForBox = displayResultForBox;
+(window as any).__kustoEnsureResultsSearchControls = __kustoEnsureResultsSearchControls;
+(window as any).__kustoTryExtractJsonFromErrorText = __kustoTryExtractJsonFromErrorText;
+(window as any).__kustoExtractLinePosition = __kustoExtractLinePosition;
+(window as any).__kustoNormalizeBadRequestInnerMessage = __kustoNormalizeBadRequestInnerMessage;
+(window as any).__kustoStripLinePositionTokens = __kustoStripLinePositionTokens;
+(window as any).__kustoTryExtractAutoFindTermFromMessage = __kustoTryExtractAutoFindTermFromMessage;
+(window as any).__kustoBuildErrorUxModel = __kustoBuildErrorUxModel;
+(window as any).__kustoMaybeAdjustLocationForCacheLine = __kustoMaybeAdjustLocationForCacheLine;
+(window as any).__kustoEscapeForHtml = __kustoEscapeForHtml;
+(window as any).__kustoEscapeJsStringLiteral = __kustoEscapeJsStringLiteral;
+(window as any).__kustoEscapeForHtmlAttribute = __kustoEscapeForHtmlAttribute;
+(window as any).__kustoRenderActivityIdInlineHtml = __kustoRenderActivityIdInlineHtml;
+(window as any).__kustoRenderErrorUxHtml = __kustoRenderErrorUxHtml;
+(window as any).displayError = displayError;
+(window as any).displayCancelled = displayCancelled;
+(window as any).__kustoClampInt = __kustoClampInt;
+(window as any).__kustoTryGetDomEventFromInlineHandler = __kustoTryGetDomEventFromInlineHandler;
+(window as any).__kustoSetCellSelectionState = __kustoSetCellSelectionState;
+(window as any).selectCell = selectCell;
+(window as any).toggleRowSelection = toggleRowSelection;
+(window as any).__kustoUpdateResultsToolsDropdownState = __kustoUpdateResultsToolsDropdownState;
+(window as any).__kustoResultsToolsDropdownAction = __kustoResultsToolsDropdownAction;
+(window as any).__kustoToggleResultsToolsDropdown = __kustoToggleResultsToolsDropdown;
+(window as any).__kustoCloseResultsToolsDropdown = __kustoCloseResultsToolsDropdown;
+(window as any).__kustoCloseAllResultsToolsDropdowns = __kustoCloseAllResultsToolsDropdowns;
+(window as any).toggleSearchTool = toggleSearchTool;
+(window as any).toggleColumnTool = toggleColumnTool;
+(window as any).searchData = searchData;
+(window as any).nextSearchMatch = nextSearchMatch;
+(window as any).previousSearchMatch = previousSearchMatch;
+(window as any).highlightCurrentSearchMatch = highlightCurrentSearchMatch;
+(window as any).handleDataSearchKeydown = handleDataSearchKeydown;
+(window as any).handleTableKeydown = handleTableKeydown;
+(window as any).filterColumns = filterColumns;
+(window as any).handleColumnSearchKeydown = handleColumnSearchKeydown;
+(window as any).updateAutocompleteSelection = updateAutocompleteSelection;
+(window as any).scrollToColumn = scrollToColumn;
+(window as any).__kustoCopyTextToClipboard = __kustoCopyTextToClipboard;
+(window as any).__kustoGetDisplayRowsInRange = __kustoGetDisplayRowsInRange;
+(window as any).__kustoCellToClipboardString = __kustoCellToClipboardString;
+(window as any).__kustoCellToCsvString = __kustoCellToCsvString;
+(window as any).__kustoGetVisibleResultsAsCsv = __kustoGetVisibleResultsAsCsv;
+(window as any).__kustoGetAllResultsAsCsv = __kustoGetAllResultsAsCsv;
+(window as any).__kustoGetResultsAsCsv = __kustoGetResultsAsCsv;
+(window as any).__kustoMakeSafeCsvFileNameFromLabel = __kustoMakeSafeCsvFileNameFromLabel;
+(window as any).__kustoSaveResultsToCsvFile = __kustoSaveResultsToCsvFile;
+(window as any).saveVisibleResultsToCsvFile = saveVisibleResultsToCsvFile;
+(window as any).__kustoIsResultsFiltered = __kustoIsResultsFiltered;
+(window as any).__kustoIsFilterSpecActive = __kustoIsFilterSpecActive;
+(window as any).__kustoOnSavePrimary = __kustoOnSavePrimary;
+(window as any).__kustoOnSaveSecondary = __kustoOnSaveSecondary;
+(window as any).__kustoHideSplitMenu = __kustoHideSplitMenu;
+(window as any).__kustoShowSplitMenu = __kustoShowSplitMenu;
+(window as any).__kustoShowSplitMenuItems = __kustoShowSplitMenuItems;
+(window as any).__kustoSetSplitCaretsVisible = __kustoSetSplitCaretsVisible;
+(window as any).__kustoUpdateSplitButtonState = __kustoUpdateSplitButtonState;
+(window as any).__kustoOnSaveMenu = __kustoOnSaveMenu;
+(window as any).__kustoEnsureDragSelectionHandlers = __kustoEnsureDragSelectionHandlers;
+(window as any).__kustoRemoveDragSelectionHandlers = __kustoRemoveDragSelectionHandlers;
+(window as any).copyVisibleResultsToClipboard = copyVisibleResultsToClipboard;
+(window as any).copyAllResultsToClipboard = copyAllResultsToClipboard;
+(window as any).__kustoCopyResultsToClipboard = __kustoCopyResultsToClipboard;
+(window as any).__kustoOnCopyPrimary = __kustoOnCopyPrimary;
+(window as any).__kustoOnCopySecondary = __kustoOnCopySecondary;
+(window as any).__kustoOnCopyMenu = __kustoOnCopyMenu;
+(window as any).copySelectionToClipboard = copySelectionToClipboard;
+(window as any).__kustoHideContextMenu = __kustoHideContextMenu;
+(window as any).handleTableContextMenu = handleTableContextMenu;

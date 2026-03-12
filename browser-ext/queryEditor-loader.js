@@ -57,14 +57,9 @@
 		'legacy/functions.generated.js',
 
 		'legacy/monaco.js',
-		'legacy/queryBoxes.js',
-		'legacy/copilotQueryBoxes.js',
-		'legacy/extraBoxes.js',
-		'legacy/resultsTable.js',
 
 
 		'dist/webview/webview.bundle.js',
-		'legacy/main.js'
 	];
 
 	var loadScript = function(relativePath) {

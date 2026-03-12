@@ -10,6 +10,11 @@ import './modules/objectViewer.js';
 import './modules/cellViewer.js';
 import './modules/schema.js';
 import './modules/persistence.js';
+import './modules/copilotQueryBoxes.js';
+import './modules/resultsTable.js';
+import './modules/queryBoxes.js';
+import './modules/extraBoxes.js';
+import './modules/main.js'; // Must be last — message dispatcher
 import './components/kw-object-viewer.js';
 import './components/kw-filter-dialog.js';
 import './components/kw-sort-dialog.js';
