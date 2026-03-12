@@ -1,15 +1,25 @@
-function openObjectViewer(row, col, boxId) {
-	if (!window.currentResult || window.currentResult.boxId !== boxId) { return; }
+// Object Viewer module — converted from legacy/objectViewer.js
+// Window bridge exports at bottom for remaining inline onclick callers.
+export {};
 
-	const cellData = window.currentResult.rows[row][col];
+declare const escapeHtml: (s: string) => string;
+declare const escapeRegex: (s: string) => string;
+
+const _win = window as unknown as Record<string, unknown>;
+
+function openObjectViewer(row: number, col: number, boxId: string): void {
+	const currentResult = _win.currentResult as any;
+	if (!currentResult || currentResult.boxId !== boxId) { return; }
+
+	const cellData = currentResult.rows[row][col];
 	if (!cellData || !cellData.isObject) { return; }
 
 	const columnName = __kustoGetObjectViewerColumnName(col);
 
 	const modal = document.getElementById('objectViewer');
 	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
-	const searchInput = document.getElementById('objectViewerSearch');
-	const searchMode = document.getElementById('objectViewerSearchMode');
+	const searchInput = document.getElementById('objectViewerSearch') as HTMLInputElement | null;
+	const searchMode = document.getElementById('objectViewerSearchMode') as HTMLElement | null;
 	const titleEl = document.getElementById('objectViewerTitle');
 
 	// Header title: Object viewer for <column> (column bold)
@@ -29,7 +39,7 @@ function openObjectViewer(row, col, boxId) {
 	try { __kustoEnsureObjectViewerRawToggleIcon(); } catch { /* ignore */ }
 	try { __kustoEnsureObjectViewerRawCopyIcon(); } catch { /* ignore */ }
 	try {
-		window.__kustoObjectViewerRawVisible = true;
+		_win.__kustoObjectViewerRawVisible = true;
 		const rawBody = document.getElementById('objectViewerRawBody');
 		if (rawBody) { rawBody.style.display = ''; }
 		const rawToggle = document.getElementById('objectViewerRawToggle');
@@ -38,28 +48,28 @@ function openObjectViewer(row, col, boxId) {
 
 	// Initialize navigation state and render.
 	const rootValue = __kustoParseMaybeJson(cellData.full);
-	window.__kustoObjectViewerState = {
+	_win.__kustoObjectViewerState = {
 		columnName: columnName,
 		stack: [{ label: columnName, value: rootValue }]
 	};
 	__kustoRenderObjectViewer();
 
-	modal.classList.add('visible');
+	if (modal) modal.classList.add('visible');
 
 	// Check if there's an active data search and if this cell is a search match
-	const dataSearchInput = document.getElementById(boxId + '_data_search');
-	const dataSearchMode = document.getElementById(boxId + '_data_search_mode');
+	const dataSearchInput = document.getElementById(boxId + '_data_search') as HTMLInputElement | null;
+	const dataSearchMode = document.getElementById(boxId + '_data_search_mode') as HTMLElement | null;
 	const dataSearchTerm = dataSearchInput ? dataSearchInput.value : '';
 
-	if (dataSearchTerm && window.currentResult.searchMatches &&
-		window.currentResult.searchMatches.some(m => m.row === row && m.col === col)) {
+	if (dataSearchTerm && currentResult.searchMatches &&
+		currentResult.searchMatches.some((m: any) => m.row === row && m.col === col)) {
 		// Automatically search for the same term in the object viewer
 		if (searchInput) searchInput.value = dataSearchTerm;
 		try {
-			const dataModeVal = dataSearchMode ? (dataSearchMode.dataset.mode || dataSearchMode.value) : null;
+			const dataModeVal = dataSearchMode ? ((dataSearchMode as any).dataset.mode || (dataSearchMode as any).value) : null;
 			if (searchMode && dataModeVal) {
-				searchMode.dataset.mode = String(dataModeVal);
-				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, dataModeVal);
+				(searchMode as any).dataset.mode = String(dataModeVal);
+				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, dataModeVal);
 			}
 		} catch { /* ignore */ }
 		searchInObjectViewer();
@@ -68,22 +78,23 @@ function openObjectViewer(row, col, boxId) {
 		if (searchInput) searchInput.value = '';
 		try {
 			if (searchMode) {
-				searchMode.dataset.mode = 'wildcard';
-				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, 'wildcard');
+				(searchMode as any).dataset.mode = 'wildcard';
+				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, 'wildcard');
 			}
 		} catch { /* ignore */ }
-		document.getElementById('objectViewerSearchResults').textContent = '';
+		const resultsSpan = document.getElementById('objectViewerSearchResults');
+		if (resultsSpan) resultsSpan.textContent = '';
 	}
 }
 
-function __kustoEnsureObjectViewerSearchControl() {
+function __kustoEnsureObjectViewerSearchControl(): void {
 	try {
 		if (document.getElementById('objectViewerSearch')) return;
 		const host = document.getElementById('objectViewerSearchHost');
 		if (!host) return;
-		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+		if (typeof (_win.__kustoCreateSearchControl) !== 'function') return;
 
-		window.__kustoCreateSearchControl(host, {
+		(_win.__kustoCreateSearchControl as any)(host, {
 			inputId: 'objectViewerSearch',
 			modeId: 'objectViewerSearchMode',
 			ariaLabel: 'Search',
@@ -92,7 +103,7 @@ function __kustoEnsureObjectViewerSearchControl() {
 	} catch { /* ignore */ }
 }
 
-function copyObjectViewerRawToClipboard() {
+function copyObjectViewerRawToClipboard(): void {
 	const rawBody = document.getElementById('objectViewerRawBody');
 	const rawEl = document.getElementById('objectViewerContent');
 	if (!rawBody || !rawEl) { return; }
@@ -103,33 +114,36 @@ function copyObjectViewerRawToClipboard() {
 		const hasSelection = sel && !sel.isCollapsed && typeof sel.toString === 'function' && sel.toString();
 		const inRaw = sel && sel.anchorNode && sel.focusNode && rawBody.contains(sel.anchorNode) && rawBody.contains(sel.focusNode);
 		if (hasSelection && inRaw) {
-			textToCopy = sel.toString();
+			textToCopy = sel!.toString();
 		}
 	} catch { /* ignore */ }
 
 	if (!textToCopy) {
 		try {
-			textToCopy = String(window.currentObjectViewerData && window.currentObjectViewerData.raw ? window.currentObjectViewerData.raw : '');
+			const data = _win.currentObjectViewerData as any;
+			textToCopy = String(data && data.raw ? data.raw : '');
 		} catch {
 			textToCopy = '';
 		}
 	}
 
-	__kustoWriteTextToClipboard(textToCopy);
+	if (typeof (_win.__kustoWriteTextToClipboard) === 'function') {
+		(_win.__kustoWriteTextToClipboard as any)(textToCopy);
+	}
 }
 
-function closeObjectViewer(event) {
-	if (event && event.target !== event.currentTarget && !event.currentTarget.classList.contains('object-viewer-close')) {
+function closeObjectViewer(event?: Event): void {
+	if (event && event.target !== event.currentTarget && !(event.currentTarget as HTMLElement).classList.contains('object-viewer-close')) {
 		return;
 	}
 
 	const modal = document.getElementById('objectViewer');
-	modal.classList.remove('visible');
-	window.currentObjectViewerData = null;
-	try { window.__kustoObjectViewerState = null; } catch { /* ignore */ }
+	if (modal) modal.classList.remove('visible');
+	_win.currentObjectViewerData = null;
+	try { _win.__kustoObjectViewerState = null; } catch { /* ignore */ }
 }
 
-function toggleObjectViewerRaw() {
+function toggleObjectViewerRaw(): void {
 	const body = document.getElementById('objectViewerRawBody');
 	const btn = document.getElementById('objectViewerRawToggle');
 	if (!body || !btn) { return; }
@@ -141,18 +155,18 @@ function toggleObjectViewerRaw() {
 		btn.title = next ? 'Hide raw value' : 'Show raw value';
 		btn.setAttribute('aria-label', btn.title);
 	} catch { /* ignore */ }
-	try { window.__kustoObjectViewerRawVisible = next; } catch { /* ignore */ }
+	try { _win.__kustoObjectViewerRawVisible = next; } catch { /* ignore */ }
 }
 
-function objectViewerNavigateBack() {
-	const st = window.__kustoObjectViewerState;
+function objectViewerNavigateBack(): void {
+	const st = _win.__kustoObjectViewerState as any;
 	if (!st || !Array.isArray(st.stack) || st.stack.length <= 1) { return; }
 	st.stack.pop();
 	__kustoRenderObjectViewer();
 }
 
-function objectViewerNavigateToDepth(depth) {
-	const st = window.__kustoObjectViewerState;
+function objectViewerNavigateToDepth(depth: number): void {
+	const st = _win.__kustoObjectViewerState as any;
 	if (!st || !Array.isArray(st.stack)) { return; }
 	const d = parseInt(String(depth), 10);
 	if (!isFinite(d) || d < 1 || d > st.stack.length) { return; }
@@ -161,8 +175,8 @@ function objectViewerNavigateToDepth(depth) {
 	__kustoRenderObjectViewer();
 }
 
-function objectViewerNavigateInto(key) {
-	const st = window.__kustoObjectViewerState;
+function objectViewerNavigateInto(key: string): void {
+	const st = _win.__kustoObjectViewerState as any;
 	if (!st || !Array.isArray(st.stack) || st.stack.length < 1) { return; }
 	const frame = st.stack[st.stack.length - 1];
 	if (!frame) { return; }
@@ -177,9 +191,10 @@ function objectViewerNavigateInto(key) {
 	}
 }
 
-function __kustoGetObjectViewerColumnName(colIndex) {
+function __kustoGetObjectViewerColumnName(colIndex: number): string {
 	try {
-		const cols = (window.currentResult && Array.isArray(window.currentResult.columns)) ? window.currentResult.columns : [];
+		const currentResult = _win.currentResult as any;
+		const cols = (currentResult && Array.isArray(currentResult.columns)) ? currentResult.columns : [];
 		const col = cols[colIndex];
 		if (typeof col === 'string') return col;
 		if (col && typeof col === 'object') {
@@ -193,11 +208,11 @@ function __kustoGetObjectViewerColumnName(colIndex) {
 	return 'column ' + (colIndex + 1);
 }
 
-function __kustoParseMaybeJson(value) {
+function __kustoParseMaybeJson(value: unknown): unknown {
 	if (typeof value !== 'string') {
 		return value;
 	}
-	const s = value.trim();
+	const s = (value as string).trim();
 	if (!s) {
 		return value;
 	}
@@ -206,13 +221,13 @@ function __kustoParseMaybeJson(value) {
 		return value;
 	}
 	try {
-		return JSON.parse(value);
+		return JSON.parse(value as string);
 	} catch {
 		return value;
 	}
 }
 
-function __kustoStringifyForSearch(value) {
+function __kustoStringifyForSearch(value: unknown): string {
 	try {
 		if (value === null || value === undefined) return '';
 		if (typeof value === 'string') return value;
@@ -222,7 +237,7 @@ function __kustoStringifyForSearch(value) {
 	}
 }
 
-function __kustoFormatScalarForTable(value) {
+function __kustoFormatScalarForTable(value: unknown): string {
 	if (value === null) return 'null';
 	if (value === undefined) return 'undefined';
 	if (typeof value === 'string') return value;
@@ -234,17 +249,17 @@ function __kustoFormatScalarForTable(value) {
 	}
 }
 
-function __kustoIsComplexValue(value) {
+function __kustoIsComplexValue(value: unknown): boolean {
 	if (value === null || value === undefined) return false;
 	if (typeof value === 'string') {
-		const s = value.trim();
+		const s = (value as string).trim();
 		return s.startsWith('{') || s.startsWith('[');
 	}
 	return typeof value === 'object';
 }
 
-function __kustoEnsureObjectViewerRawToggleIcon() {
-	const btn = document.getElementById('objectViewerRawToggle');
+function __kustoEnsureObjectViewerRawToggleIcon(): void {
+	const btn = document.getElementById('objectViewerRawToggle') as any;
 	if (!btn) { return; }
 	if (btn.__kustoHasIcon) { return; }
 	btn.__kustoHasIcon = true;
@@ -255,8 +270,8 @@ function __kustoEnsureObjectViewerRawToggleIcon() {
 		'</svg>'
 	);
 	try {
-		if (typeof __kustoGetResultsVisibilityIconSvg === 'function') {
-			btn.innerHTML = __kustoGetResultsVisibilityIconSvg();
+		if (typeof (_win.__kustoGetResultsVisibilityIconSvg) === 'function') {
+			btn.innerHTML = (_win.__kustoGetResultsVisibilityIconSvg as any)();
 		} else {
 			btn.innerHTML = fallbackIcon();
 		}
@@ -269,8 +284,8 @@ function __kustoEnsureObjectViewerRawToggleIcon() {
 	}
 }
 
-function __kustoEnsureObjectViewerRawCopyIcon() {
-	const btn = document.getElementById('objectViewerRawCopy');
+function __kustoEnsureObjectViewerRawCopyIcon(): void {
+	const btn = document.getElementById('objectViewerRawCopy') as any;
 	if (!btn) { return; }
 	if (btn.__kustoHasIcon) { return; }
 	btn.__kustoHasIcon = true;
@@ -281,7 +296,7 @@ function __kustoEnsureObjectViewerRawCopyIcon() {
 	}
 }
 
-function __kustoGetCopyIconSvg(size) {
+function __kustoGetCopyIconSvg(size?: number): string {
 	const s = (typeof size === 'number' && isFinite(size) && size > 0) ? Math.floor(size) : 16;
 	return (
 		'<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -291,7 +306,7 @@ function __kustoGetCopyIconSvg(size) {
 	);
 }
 
-function __kustoWriteTextToClipboard(text) {
+function __kustoWriteTextToClipboard(text: unknown): void {
 	const value = (text === null || text === undefined) ? '' : String(text);
 	try {
 		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -313,8 +328,8 @@ function __kustoWriteTextToClipboard(text) {
 	} catch { /* ignore */ }
 }
 
-function __kustoRenderObjectViewer() {
-	const st = window.__kustoObjectViewerState;
+function __kustoRenderObjectViewer(): void {
+	const st = _win.__kustoObjectViewerState as any;
 	if (!st || !Array.isArray(st.stack) || st.stack.length < 1) { return; }
 	const frame = st.stack[st.stack.length - 1];
 	const depth = st.stack.length;
@@ -340,9 +355,10 @@ function __kustoRenderObjectViewer() {
 				const isCurrent = i === (st.stack.length - 1);
 				crumb.disabled = isCurrent;
 				if (!isCurrent) {
-					crumb.addEventListener('click', (e) => {
+					const capturedI = i;
+					crumb.addEventListener('click', (e: Event) => {
 						try { e.stopPropagation(); } catch { /* ignore */ }
-						objectViewerNavigateToDepth(i + 1);
+						objectViewerNavigateToDepth(capturedI + 1);
 					});
 				}
 				propsTitle.appendChild(crumb);
@@ -358,25 +374,25 @@ function __kustoRenderObjectViewer() {
 
 	// Update Raw value content + search backing data.
 	try {
-		window.currentObjectViewerData = {
+		_win.currentObjectViewerData = {
 			raw: __kustoStringifyForSearch(frame.value),
 			formatted: formatJson(frame.value)
 		};
 	} catch {
-		window.currentObjectViewerData = {
+		_win.currentObjectViewerData = {
 			raw: String(frame.value || ''),
 			formatted: formatJson(frame.value)
 		};
 	}
 	try {
 		if (content) {
-			content.innerHTML = window.currentObjectViewerData.formatted;
+			content.innerHTML = (_win.currentObjectViewerData as any).formatted;
 		}
 	} catch { /* ignore */ }
 
 	// If user already typed a search term, keep highlighting in sync.
 	try {
-		const input = document.getElementById('objectViewerSearch');
+		const input = document.getElementById('objectViewerSearch') as HTMLInputElement | null;
 		if (input && String(input.value || '').trim()) {
 			searchInObjectViewer();
 		}
@@ -389,7 +405,7 @@ function __kustoRenderObjectViewer() {
 	const v = frame.value;
 
 	if (v && typeof v === 'object') {
-		const keys = Array.isArray(v) ? v.map((_, i) => String(i)) : Object.keys(v);
+		const keys = Array.isArray(v) ? v.map((_: unknown, i: number) => String(i)) : Object.keys(v as Record<string, unknown>);
 		for (const key of keys) {
 			const tr = document.createElement('tr');
 			const tdKey = document.createElement('td');
@@ -400,13 +416,13 @@ function __kustoRenderObjectViewer() {
 			keyText.textContent = String(key);
 			keyCell.appendChild(keyText);
 			const tdVal = document.createElement('td');
-			let nextValue;
-			try { nextValue = v[key]; } catch { nextValue = undefined; }
+			let nextValue: unknown;
+			try { nextValue = (v as any)[key]; } catch { nextValue = undefined; }
 
 			const parsedNext = __kustoParseMaybeJson(nextValue);
 			try {
-				tr.dataset.kustoKeyText = String(key);
-				tr.dataset.kustoValueText = __kustoStringifyForSearch(parsedNext);
+				(tr as any).dataset.kustoKeyText = String(key);
+				(tr as any).dataset.kustoValueText = __kustoStringifyForSearch(parsedNext);
 			} catch { /* ignore */ }
 
 			// Copy value icon (hover on row). Copies the property's raw value.
@@ -416,9 +432,10 @@ function __kustoRenderObjectViewer() {
 			copyBtn.title = 'Copy value to clipboard';
 			copyBtn.setAttribute('aria-label', 'Copy value to clipboard');
 			try { copyBtn.innerHTML = __kustoGetCopyIconSvg(14); } catch { copyBtn.textContent = 'Copy'; }
-			copyBtn.addEventListener('click', (e) => {
+			const capturedParsedNext = parsedNext;
+			copyBtn.addEventListener('click', (e: Event) => {
 				try { e.stopPropagation(); } catch { /* ignore */ }
-				__kustoWriteTextToClipboard(__kustoStringifyForSearch(parsedNext));
+				__kustoWriteTextToClipboard(__kustoStringifyForSearch(capturedParsedNext));
 			});
 			keyCell.appendChild(copyBtn);
 			tdKey.appendChild(keyCell);
@@ -427,9 +444,10 @@ function __kustoRenderObjectViewer() {
 				btn.type = 'button';
 				btn.className = 'object-view-btn';
 				btn.textContent = 'View';
-				btn.addEventListener('click', (e) => {
+				const capturedKey = key;
+				btn.addEventListener('click', (e: Event) => {
 					try { e.stopPropagation(); } catch { /* ignore */ }
-					objectViewerNavigateInto(key);
+					objectViewerNavigateInto(capturedKey);
 				});
 				tdVal.appendChild(btn);
 			} else {
@@ -455,20 +473,19 @@ function __kustoRenderObjectViewer() {
 	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 }
 
-function __kustoApplyObjectViewerTableSearchHighlight() {
+function __kustoApplyObjectViewerTableSearchHighlight(): void {
 	const table = document.getElementById('objectViewerPropsTable');
 	if (!table) { return; }
 	let query = '';
-	let mode = 'wildcard';
-	let built = { regex: null, error: null };
+	let built: any = { regex: null, error: null };
 	try {
-		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
-			const st = window.__kustoGetSearchControlState('objectViewerSearch', 'objectViewerSearchMode');
+		if (typeof (_win.__kustoGetSearchControlState) === 'function' && typeof (_win.__kustoTryBuildSearchRegex) === 'function') {
+			const st = (_win.__kustoGetSearchControlState as any)('objectViewerSearch', 'objectViewerSearchMode');
 			query = String((st && st.query) ? st.query : '');
-			mode = st && st.mode ? st.mode : 'wildcard';
-			built = window.__kustoTryBuildSearchRegex(query, mode);
+			const mode = st && st.mode ? st.mode : 'wildcard';
+			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
 		} else {
-			const input = document.getElementById('objectViewerSearch');
+			const input = document.getElementById('objectViewerSearch') as HTMLInputElement | null;
 			query = input ? String(input.value || '').trim() : '';
 			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
 		}
@@ -477,26 +494,26 @@ function __kustoApplyObjectViewerTableSearchHighlight() {
 	const rows = table.querySelectorAll('tr');
 	rows.forEach((tr) => {
 		try {
-			const keyText = tr.dataset ? String(tr.dataset.kustoKeyText || '') : '';
-			const valueText = tr.dataset ? String(tr.dataset.kustoValueText || '') : '';
-			const hit = !!query && !built.error && regex && (typeof window.__kustoRegexTest === 'function'
-				? (window.__kustoRegexTest(regex, keyText) || window.__kustoRegexTest(regex, valueText))
+			const keyText = (tr as any).dataset ? String((tr as any).dataset.kustoKeyText || '') : '';
+			const valueText = (tr as any).dataset ? String((tr as any).dataset.kustoValueText || '') : '';
+			const hit = !!query && !built.error && regex && (typeof (_win.__kustoRegexTest) === 'function'
+				? ((_win.__kustoRegexTest as any)(regex, keyText) || (_win.__kustoRegexTest as any)(regex, valueText))
 				: (keyText.toLowerCase().includes(query.toLowerCase()) || valueText.toLowerCase().includes(query.toLowerCase())));
 			tr.classList.toggle('search-match', hit);
 		} catch { /* ignore */ }
 	});
 }
 
-function formatJson(jsonString) {
+function formatJson(jsonString: unknown): string {
 	try {
 		const obj = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
 		return syntaxHighlightJson(obj);
-	} catch (e) {
-		return '<span class="json-string">' + escapeHtml(jsonString) + '</span>';
+	} catch {
+		return '<span class="json-string">' + escapeHtml(String(jsonString)) + '</span>';
 	}
 }
 
-function syntaxHighlightJson(obj, indent = 0) {
+function syntaxHighlightJson(obj: unknown, indent = 0): string {
 	const indentStr = '  '.repeat(indent);
 	const nextIndent = '  '.repeat(indent + 1);
 
@@ -534,7 +551,7 @@ function syntaxHighlightJson(obj, indent = 0) {
 	}
 
 	if (typeof obj === 'object') {
-		const keys = Object.keys(obj);
+		const keys = Object.keys(obj as Record<string, unknown>);
 		if (keys.length === 0) {
 			return '{}';
 		}
@@ -542,7 +559,7 @@ function syntaxHighlightJson(obj, indent = 0) {
 		let result = '{\n';
 		keys.forEach((key, index) => {
 			result += nextIndent + '<span class="json-key">"' + escapeHtml(key) + '"</span>: ';
-			result += syntaxHighlightJson(obj[key], indent + 1);
+			result += syntaxHighlightJson((obj as Record<string, unknown>)[key], indent + 1);
 			if (index < keys.length - 1) {
 				result += ',';
 			}
@@ -555,8 +572,9 @@ function syntaxHighlightJson(obj, indent = 0) {
 	return String(obj);
 }
 
-function searchInObjectViewer() {
-	if (!window.currentObjectViewerData) { return; }
+function searchInObjectViewer(): void {
+	const currentData = _win.currentObjectViewerData as any;
+	if (!currentData) { return; }
 
 	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
 	const content = document.getElementById('objectViewerContent');
@@ -564,43 +582,42 @@ function searchInObjectViewer() {
 	if (!content || !resultsSpan) return;
 
 	let query = '';
-	let mode = 'wildcard';
-	let built = { regex: null, error: null };
+	let built: any = { regex: null, error: null };
 	try {
-		if (typeof window.__kustoGetSearchControlState === 'function' && typeof window.__kustoTryBuildSearchRegex === 'function') {
-			const st = window.__kustoGetSearchControlState('objectViewerSearch', 'objectViewerSearchMode');
+		if (typeof (_win.__kustoGetSearchControlState) === 'function' && typeof (_win.__kustoTryBuildSearchRegex) === 'function') {
+			const st = (_win.__kustoGetSearchControlState as any)('objectViewerSearch', 'objectViewerSearchMode');
 			query = String((st && st.query) ? st.query : '');
-			mode = st && st.mode ? st.mode : 'wildcard';
-			built = window.__kustoTryBuildSearchRegex(query, mode);
+			const mode = st && st.mode ? st.mode : 'wildcard';
+			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
 		} else {
-			const input = document.getElementById('objectViewerSearch');
+			const input = document.getElementById('objectViewerSearch') as HTMLInputElement | null;
 			query = input ? String(input.value || '').trim() : '';
 			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
 		}
 	} catch { /* ignore */ }
 
 	if (!String(query || '').trim()) {
-		content.innerHTML = window.currentObjectViewerData.formatted;
+		content.innerHTML = currentData.formatted;
 		resultsSpan.textContent = '';
 		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 		return;
 	}
 
 	if (built && built.error) {
-		content.innerHTML = window.currentObjectViewerData.formatted;
+		content.innerHTML = currentData.formatted;
 		resultsSpan.textContent = String(built.error);
 		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 		return;
 	}
 
 	const regex = built && built.regex ? built.regex : null;
-	const rawJson = String(window.currentObjectViewerData.raw || '');
-	const matches = (regex && typeof window.__kustoCountRegexMatches === 'function') ? window.__kustoCountRegexMatches(regex, rawJson, 5000) : 0;
+	const rawJson = String(currentData.raw || '');
+	const matches = (regex && typeof (_win.__kustoCountRegexMatches) === 'function') ? (_win.__kustoCountRegexMatches as any)(regex, rawJson, 5000) : 0;
 
-	content.innerHTML = window.currentObjectViewerData.formatted;
+	content.innerHTML = currentData.formatted;
 	try {
-		if (regex && typeof window.__kustoHighlightElementTextNodes === 'function') {
-			window.__kustoHighlightElementTextNodes(content, regex, 'json-highlight');
+		if (regex && typeof (_win.__kustoHighlightElementTextNodes) === 'function') {
+			(_win.__kustoHighlightElementTextNodes as any)(content, regex, 'json-highlight');
 		}
 	} catch { /* ignore */ }
 
@@ -608,20 +625,20 @@ function searchInObjectViewer() {
 	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
 }
 
-function highlightSearchTerm(html, searchTerm) {
+function highlightSearchTerm(html: string, searchTerm: string): string {
 	// Create a temporary div to work with the HTML
 	const tempDiv = document.createElement('div');
 	tempDiv.innerHTML = html;
 
 	// Function to highlight text in text nodes
-	function highlightInNode(node) {
+	function highlightInNode(node: Node): void {
 		if (node.nodeType === Node.TEXT_NODE) {
-			const text = node.textContent;
+			const text = node.textContent || '';
 			const lowerText = text.toLowerCase();
 			const lowerSearch = searchTerm.toLowerCase();
 
 			if (lowerText.includes(lowerSearch)) {
-				const parts = [];
+				const parts: Node[] = [];
 				let lastIndex = 0;
 				let index = lowerText.indexOf(lowerSearch);
 
@@ -648,8 +665,10 @@ function highlightSearchTerm(html, searchTerm) {
 
 				// Replace the text node with highlighted parts
 				const parent = node.parentNode;
-				parts.forEach(part => parent.insertBefore(part, node));
-				parent.removeChild(node);
+				if (parent) {
+					parts.forEach(part => parent.insertBefore(part, node));
+					parent.removeChild(node);
+				}
 			}
 		} else if (node.nodeType === Node.ELEMENT_NODE) {
 			// Recursively process child nodes
@@ -660,3 +679,21 @@ function highlightSearchTerm(html, searchTerm) {
 	highlightInNode(tempDiv);
 	return tempDiv.innerHTML;
 }
+
+// ======================================================================
+// Window bridge: expose globals for remaining legacy callers / onclick
+// ======================================================================
+_win.openObjectViewer = openObjectViewer;
+_win.closeObjectViewer = closeObjectViewer;
+_win.copyObjectViewerRawToClipboard = copyObjectViewerRawToClipboard;
+_win.toggleObjectViewerRaw = toggleObjectViewerRaw;
+_win.objectViewerNavigateBack = objectViewerNavigateBack;
+_win.objectViewerNavigateToDepth = objectViewerNavigateToDepth;
+_win.objectViewerNavigateInto = objectViewerNavigateInto;
+_win.searchInObjectViewer = searchInObjectViewer;
+_win.formatJson = formatJson;
+_win.syntaxHighlightJson = syntaxHighlightJson;
+_win.highlightSearchTerm = highlightSearchTerm;
+_win.__kustoGetCopyIconSvg = __kustoGetCopyIconSvg;
+_win.__kustoWriteTextToClipboard = __kustoWriteTextToClipboard;
+_win.__kustoParseMaybeJson = __kustoParseMaybeJson;

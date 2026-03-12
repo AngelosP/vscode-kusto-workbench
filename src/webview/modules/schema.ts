@@ -1,8 +1,15 @@
-function setSchemaLoading(boxId, loading) {
-	schemaFetchInFlightByBoxId[boxId] = !!loading;
+// Schema module — converted from legacy/schema.js
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, unknown>;
+
+function setSchemaLoading(boxId: string, loading: boolean): void {
+	(_win.schemaFetchInFlightByBoxId as any)[boxId] = !!loading;
 
 	// Delegate to Lit element if available.
-	const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+	const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+		? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
 	if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 		if (loading) {
 			kwEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
@@ -17,28 +24,29 @@ function setSchemaLoading(boxId, loading) {
 		el.style.display = 'none';
 	}
 
-	const btn = document.getElementById(boxId + '_schema_refresh');
+	const btn = document.getElementById(boxId + '_schema_refresh') as HTMLElement | null;
 	if (!btn) {
 		return;
 	}
 
-	const manual = !!(btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1');
-	const auto = !!(btn.dataset && btn.dataset.kustoSchemaAutoInFlight === '1');
+	const dataset = (btn as any).dataset;
+	const manual = !!(dataset && dataset.kustoRefreshSchemaInFlight === '1');
+	const auto = !!(dataset && dataset.kustoSchemaAutoInFlight === '1');
 
 	// While loading, show the in-place spinner in the refresh button (unless manual mode already did).
 	if (loading) {
 		if (!manual && !auto) {
 			try {
-				if (btn.dataset) {
-					btn.dataset.kustoSchemaAutoInFlight = '1';
-					btn.dataset.kustoAutoPrevHtml = String(btn.innerHTML || '');
-					btn.dataset.kustoAutoPrevTitle = String(btn.title || '');
+				if (dataset) {
+					dataset.kustoSchemaAutoInFlight = '1';
+					dataset.kustoAutoPrevHtml = String(btn.innerHTML || '');
+					dataset.kustoAutoPrevTitle = String(btn.title || '');
 				}
 				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
 				btn.setAttribute('aria-busy', 'true');
 				btn.title = 'Loading schema…';
 			} catch { /* ignore */ }
-			btn.disabled = true;
+			(btn as any).disabled = true;
 		}
 		return;
 	}
@@ -46,48 +54,49 @@ function setSchemaLoading(boxId, loading) {
 	// On completion: restore manual button state if this was a manual refresh; otherwise restore auto.
 	try {
 		if (manual) {
-			const prev = btn.dataset.kustoPrevHtml;
+			const prev = dataset.kustoPrevHtml;
 			if (typeof prev === 'string' && prev) {
 				btn.innerHTML = prev;
 			}
 			try {
-				const prevTitle = btn.dataset.kustoPrevTitle;
+				const prevTitle = dataset.kustoPrevTitle;
 				if (typeof prevTitle === 'string') {
 					btn.title = prevTitle;
 				}
 			} catch { /* ignore */ }
-			try { delete btn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-			try { delete btn.dataset.kustoPrevTitle; } catch { /* ignore */ }
-			try { delete btn.dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
+			try { delete dataset.kustoPrevHtml; } catch { /* ignore */ }
+			try { delete dataset.kustoPrevTitle; } catch { /* ignore */ }
+			try { delete dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
 			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
-			btn.disabled = false;
+			(btn as any).disabled = false;
 			return;
 		}
 		if (auto) {
-			const prev = btn.dataset.kustoAutoPrevHtml;
+			const prev = dataset.kustoAutoPrevHtml;
 			if (typeof prev === 'string' && prev) {
 				btn.innerHTML = prev;
 			}
 			try {
-				const prevTitle = btn.dataset.kustoAutoPrevTitle;
+				const prevTitle = dataset.kustoAutoPrevTitle;
 				if (typeof prevTitle === 'string') {
 					btn.title = prevTitle;
 				}
 			} catch { /* ignore */ }
-			try { delete btn.dataset.kustoAutoPrevHtml; } catch { /* ignore */ }
-			try { delete btn.dataset.kustoAutoPrevTitle; } catch { /* ignore */ }
-			try { delete btn.dataset.kustoSchemaAutoInFlight; } catch { /* ignore */ }
+			try { delete dataset.kustoAutoPrevHtml; } catch { /* ignore */ }
+			try { delete dataset.kustoAutoPrevTitle; } catch { /* ignore */ }
+			try { delete dataset.kustoSchemaAutoInFlight; } catch { /* ignore */ }
 			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
-			btn.disabled = false;
+			(btn as any).disabled = false;
 		}
 	} catch {
 		// ignore
 	}
 }
 
-function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
+function setSchemaLoadedSummary(boxId: string, text: string, title: string, isError: boolean, meta?: any): void {
 	// Delegate to Lit element if available.
-	const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+	const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+		? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
 	if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 		const hasText = !!text;
 		if (hasText && meta) {
@@ -140,6 +149,7 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 		// ignore
 	}
 
+	const hasText = !!text;
 	if (hasText && meta && meta.fromCache) {
 		try {
 			const tablesCount = Number(meta.tablesCount);
@@ -154,13 +164,13 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 			link.className = 'schema-cached-link';
 			link.textContent = '(cached)';
 			link.title = 'Show cached values';
-			link.addEventListener('click', (e) => {
+			link.addEventListener('click', (e: Event) => {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
 				} catch { /* ignore */ }
 				try {
-					vscode.postMessage({ type: 'seeCachedValues' });
+					(_win.vscode as any).postMessage({ type: 'seeCachedValues' });
 				} catch { /* ignore */ }
 			});
 			el.appendChild(link);
@@ -176,32 +186,32 @@ function setSchemaLoadedSummary(boxId, text, title, isError, meta) {
 	el.style.display = hasText ? 'inline-flex' : 'none';
 }
 
-function ensureSchemaForBox(boxId, forceRefresh) {
+function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void {
 	if (!boxId) {
 		return;
 	}
-	if (!forceRefresh && schemaByBoxId[boxId]) {
+	if (!forceRefresh && (_win.schemaByBoxId as any)[boxId]) {
 		return;
 	}
-	if (schemaFetchInFlightByBoxId[boxId]) {
+	if ((_win.schemaFetchInFlightByBoxId as any)[boxId]) {
 		return;
 	}
 	const now = Date.now();
-	const last = lastSchemaRequestAtByBoxId[boxId] || 0;
+	const last = (_win.lastSchemaRequestAtByBoxId as any)[boxId] || 0;
 	// Avoid spamming schema fetch requests if autocomplete is invoked repeatedly.
 	if (!forceRefresh && now - last < 1500) {
 		return;
 	}
-	lastSchemaRequestAtByBoxId[boxId] = now;
+	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = now;
 
 	let ownerId = boxId;
 	try {
-		if (window && typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
-			ownerId = window.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+		if (typeof (_win.__kustoGetSelectionOwnerBoxId) === 'function') {
+			ownerId = (_win.__kustoGetSelectionOwnerBoxId as any)(boxId) || boxId;
 		}
 	} catch { /* ignore */ }
-	const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(ownerId) : '';
-	const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(ownerId) : '';
+	const connectionId = typeof (_win.__kustoGetConnectionId) === 'function' ? (_win.__kustoGetConnectionId as any)(ownerId) : '';
+	const database = typeof (_win.__kustoGetDatabase) === 'function' ? (_win.__kustoGetDatabase as any)(ownerId) : '';
 	if (!connectionId || !database) {
 		return;
 	}
@@ -209,13 +219,13 @@ function ensureSchemaForBox(boxId, forceRefresh) {
 	setSchemaLoading(boxId, true);
 	let requestToken = '';
 	try {
-		if (!window.__kustoSchemaRequestTokenByBoxId || typeof window.__kustoSchemaRequestTokenByBoxId !== 'object') {
-			window.__kustoSchemaRequestTokenByBoxId = {};
+		if (!_win.__kustoSchemaRequestTokenByBoxId || typeof _win.__kustoSchemaRequestTokenByBoxId !== 'object') {
+			_win.__kustoSchemaRequestTokenByBoxId = {};
 		}
 		requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-		window.__kustoSchemaRequestTokenByBoxId[boxId] = requestToken;
+		(_win.__kustoSchemaRequestTokenByBoxId as any)[boxId] = requestToken;
 	} catch { /* ignore */ }
-	vscode.postMessage({
+	(_win.vscode as any).postMessage({
 		type: 'prefetchSchema',
 		connectionId,
 		database,
@@ -226,8 +236,7 @@ function ensureSchemaForBox(boxId, forceRefresh) {
 }
 
 // Request database list for an arbitrary connectionId.
-// Uses the existing getDatabases/refreshDatabases message channel, but with a synthetic boxId.
-window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
+_win.__kustoRequestDatabases = async function (connectionId: string, forceRefresh?: boolean): Promise<any[]> {
 	const cid = String(connectionId || '').trim();
 	if (!cid) {
 		return [];
@@ -235,7 +244,7 @@ window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
 	try {
 		let clusterKey = '';
 		try {
-			const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '').trim() === cid) : null;
+			const conn = Array.isArray(_win.connections) ? (_win.connections as any[]).find((c: any) => c && String(c.id || '').trim() === cid) : null;
 			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 			if (clusterUrl) {
 				let u = clusterUrl;
@@ -250,6 +259,7 @@ window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
 			}
 		} catch { /* ignore */ }
 
+		const cachedDatabases = _win.cachedDatabases as any;
 		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
 		if (!forceRefresh && Array.isArray(cachedByCluster) && cachedByCluster.length) {
 			return cachedByCluster;
@@ -267,53 +277,52 @@ window.__kustoRequestDatabases = async function (connectionId, forceRefresh) {
 	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 	return await new Promise((resolve, reject) => {
 		try {
-			if (!databasesRequestResolversByBoxId || typeof databasesRequestResolversByBoxId !== 'object') {
-				databasesRequestResolversByBoxId = {};
+			let resolvers = _win.databasesRequestResolversByBoxId as any;
+			if (!resolvers || typeof resolvers !== 'object') {
+				resolvers = {};
+				_win.databasesRequestResolversByBoxId = resolvers;
 			}
-			databasesRequestResolversByBoxId[requestId] = { resolve, reject };
+			resolvers[requestId] = { resolve, reject };
 		} catch {
-			// If we can't stash a resolver, just resolve empty.
 			resolve([]);
 			return;
 		}
 
 		try {
-			vscode.postMessage({
+			(_win.vscode as any).postMessage({
 				type: forceRefresh ? 'refreshDatabases' : 'getDatabases',
 				connectionId: cid,
 				boxId: requestId
 			});
 		} catch (e) {
-			try { delete databasesRequestResolversByBoxId[requestId]; } catch { /* ignore */ }
+			try { delete (_win.databasesRequestResolversByBoxId as any)[requestId]; } catch { /* ignore */ }
 			reject(e);
 		}
 	});
 };
 
-function onDatabaseChanged(boxId) {
+function onDatabaseChanged(boxId: string): void {
 	// Clear any prior schema so it matches the newly selected DB.
-	delete schemaByBoxId[boxId];
+	delete (_win.schemaByBoxId as any)[boxId];
 	// Clear request throttling/in-flight so we can fetch immediately for the new DB.
 	try {
-		if (schemaFetchInFlightByBoxId) {
-			schemaFetchInFlightByBoxId[boxId] = false;
+		if (_win.schemaFetchInFlightByBoxId) {
+			(_win.schemaFetchInFlightByBoxId as any)[boxId] = false;
 		}
-		if (lastSchemaRequestAtByBoxId) {
-			lastSchemaRequestAtByBoxId[boxId] = 0;
+		if (_win.lastSchemaRequestAtByBoxId) {
+			(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
 		}
-		if (window && window.__kustoSchemaRequestTokenByBoxId) {
-			delete window.__kustoSchemaRequestTokenByBoxId[boxId];
+		if (_win.__kustoSchemaRequestTokenByBoxId) {
+			delete (_win.__kustoSchemaRequestTokenByBoxId as any)[boxId];
 		}
 	} catch { /* ignore */ }
 	setSchemaLoadedSummary(boxId, '', '', false);
 	// Persist selection immediately so VS Code Problems can reflect current schema context.
-	// Skip during document restore to avoid overwriting the per-file connection cache
-	// with intermediate values before the correct selection is fully applied.
 	try {
-		if (!__kustoRestoreInProgress) {
-			const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(boxId) : '';
-			const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(boxId) : '';
-			vscode.postMessage({
+		if (!_win.__kustoRestoreInProgress) {
+			const connectionId = typeof (_win.__kustoGetConnectionId) === 'function' ? (_win.__kustoGetConnectionId as any)(boxId) : '';
+			const database = typeof (_win.__kustoGetDatabase) === 'function' ? (_win.__kustoGetDatabase as any)(boxId) : '';
+			(_win.vscode as any).postMessage({
 				type: 'saveLastSelection',
 				connectionId: String(connectionId || ''),
 				database: String(database || '')
@@ -323,33 +332,34 @@ function onDatabaseChanged(boxId) {
 	ensureSchemaForBox(boxId, false);
 	// Update monaco-kusto schema if we have a cached schema for the new database
 	try {
-		if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-			window.__kustoUpdateSchemaForFocusedBox(boxId);
+		if (typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
+			(_win.__kustoUpdateSchemaForFocusedBox as any)(boxId);
 		}
 	} catch { /* ignore */ }
 	try {
-		if (typeof __kustoUpdateFavoritesUiForBox === 'function') {
-			__kustoUpdateFavoritesUiForBox(boxId);
-		} else if (window && typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-			window.__kustoUpdateFavoritesUiForAllBoxes();
+		if (typeof (_win.__kustoUpdateFavoritesUiForBox) === 'function') {
+			(_win.__kustoUpdateFavoritesUiForBox as any)(boxId);
+		} else if (typeof (_win.__kustoUpdateFavoritesUiForAllBoxes) === 'function') {
+			(_win.__kustoUpdateFavoritesUiForAllBoxes as any)();
 		}
 	} catch { /* ignore */ }
 	try {
-		if (window && typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof (_win.__kustoUpdateRunEnabledForBox) === 'function') {
+			(_win.__kustoUpdateRunEnabledForBox as any)(boxId);
 		}
 	} catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+	try { if (typeof (_win.schedulePersist) === 'function') (_win.schedulePersist as any)(); } catch { /* ignore */ }
 }
 
-function refreshSchema(boxId) {
+function refreshSchema(boxId: string): void {
 	if (!boxId) {
 		return;
 	}
 
 	// Update schema info UI via Lit element.
 	try {
-		const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+		const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+			? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
 		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 			kwEl.setSchemaInfo({ status: 'loading', statusText: 'Refreshing…' });
 		}
@@ -357,7 +367,7 @@ function refreshSchema(boxId) {
 
 	// Legacy: Update old schema refresh button if present
 	try {
-		const btn = document.getElementById(boxId + '_schema_refresh');
+		const btn = document.getElementById(boxId + '_schema_refresh') as any;
 		if (btn) {
 			if (btn.dataset && btn.dataset.kustoRefreshSchemaInFlight === '1') {
 				return;
@@ -377,8 +387,6 @@ function refreshSchema(boxId) {
 	} catch {
 		// ignore
 	}
-	// Hide the separate inline "Schema…" loading label while the refresh button is acting as the spinner.
-	// This also covers the case where a schema fetch was already in-flight before the click.
 	try {
 		const el = document.getElementById(boxId + '_schema_status');
 		if (el) {
@@ -387,15 +395,12 @@ function refreshSchema(boxId) {
 	} catch {
 		// ignore
 	}
-	// Force a refetch even if we fetched recently, but keep existing schema/summary
-	// so a transient connectivity failure doesn't wipe the UI.
-	lastSchemaRequestAtByBoxId[boxId] = 0;
+	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
 	ensureSchemaForBox(boxId, true);
 }
 
 // Request schema for an arbitrary (connectionId, database) pair.
-// Used by tools that need to resolve table names across DBs/clusters.
-async function __kustoRequestSchema(connectionId, database, forceRefresh) {
+async function __kustoRequestSchema(connectionId: string, database: string, forceRefresh?: boolean): Promise<any> {
 	try {
 		const cid = String(connectionId || '').trim();
 		const db = String(database || '').trim();
@@ -404,6 +409,7 @@ async function __kustoRequestSchema(connectionId, database, forceRefresh) {
 		}
 		const key = cid + '|' + db;
 		try {
+			const schemaByConnDb = _win.schemaByConnDb as any;
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) {
 				return schemaByConnDb[key];
 			}
@@ -412,13 +418,13 @@ async function __kustoRequestSchema(connectionId, database, forceRefresh) {
 		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		const p = new Promise((resolve, reject) => {
 			try {
-				schemaRequestResolversByBoxId[reqBoxId] = { resolve, reject, key };
+				(_win.schemaRequestResolversByBoxId as any)[reqBoxId] = { resolve, reject, key };
 			} catch (e) {
 				reject(e);
 			}
 		});
 		try {
-			vscode.postMessage({
+			(_win.vscode as any).postMessage({
 				type: 'prefetchSchema',
 				connectionId: cid,
 				database: db,
@@ -426,7 +432,7 @@ async function __kustoRequestSchema(connectionId, database, forceRefresh) {
 				forceRefresh: !!forceRefresh
 			});
 		} catch (e) {
-			try { delete schemaRequestResolversByBoxId[reqBoxId]; } catch { /* ignore */ }
+			try { delete (_win.schemaRequestResolversByBoxId as any)[reqBoxId]; } catch { /* ignore */ }
 			throw e;
 		}
 		return await p;
@@ -435,8 +441,12 @@ async function __kustoRequestSchema(connectionId, database, forceRefresh) {
 	}
 }
 
-try {
-	window.__kustoRequestSchema = __kustoRequestSchema;
-} catch {
-	// ignore
-}
+// ======================================================================
+// Window bridge: expose globals for remaining legacy callers
+// ======================================================================
+_win.setSchemaLoading = setSchemaLoading;
+_win.setSchemaLoadedSummary = setSchemaLoadedSummary;
+_win.ensureSchemaForBox = ensureSchemaForBox;
+_win.onDatabaseChanged = onDatabaseChanged;
+_win.refreshSchema = refreshSchema;
+_win.__kustoRequestSchema = __kustoRequestSchema;

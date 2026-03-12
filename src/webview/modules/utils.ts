@@ -1,14 +1,20 @@
-function escapeHtml(str) {
+// Utils module — converted from legacy/utils.js
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, unknown>;
+
+function escapeHtml(str: string): string {
 	const div = document.createElement('div');
 	div.textContent = str;
 	return div.innerHTML;
 }
 
-function escapeRegex(str) {
+function escapeRegex(str: string): string {
 	return str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
-function __kustoGetScrollY() {
+function __kustoGetScrollY(): number {
 	try {
 		if (typeof window.scrollY === 'number') {
 			return window.scrollY;
@@ -23,7 +29,7 @@ function __kustoGetScrollY() {
 	}
 }
 
-function __kustoMaybeAutoScrollWhileDragging(clientY, options) {
+function __kustoMaybeAutoScrollWhileDragging(clientY: number, options?: { thresholdPx?: number; maxStepPx?: number }): number {
 	// When dragging a resize handle near the viewport edge, scroll the page a bit so
 	// the user can keep resizing even when the cursor hits the bottom/top of the screen.
 	//
@@ -59,3 +65,11 @@ function __kustoMaybeAutoScrollWhileDragging(clientY, options) {
 		return 0;
 	}
 }
+
+// ======================================================================
+// Window bridge: expose globals for remaining legacy callers
+// ======================================================================
+_win.escapeHtml = escapeHtml;
+_win.escapeRegex = escapeRegex;
+_win.__kustoGetScrollY = __kustoGetScrollY;
+_win.__kustoMaybeAutoScrollWhileDragging = __kustoMaybeAutoScrollWhileDragging;

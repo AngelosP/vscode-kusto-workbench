@@ -220,6 +220,42 @@ async function main() {
 	});
 	if (watch) {
 		await ctx.watch();
+
+		// ── Watch non-bundled webview assets and re-copy on change ──
+		// Legacy JS, CSS, queryEditor.js/html are copied once at startup but
+		// need to be re-copied when edited during development.
+		const watchCopyTargets = [
+			{ src: path.join(webviewSrcDir, 'legacy'), dest: path.join(webviewDistDir, 'legacy') },
+			{ src: path.join(webviewSrcDir, 'styles'), dest: path.join(webviewDistDir, 'styles') },
+		];
+		const singleFileCopyTargets = [
+			{ src: path.join(webviewSrcDir, 'queryEditor.js'), dest: path.join(webviewDistDir, 'queryEditor.js') },
+			{ src: path.join(webviewSrcDir, 'queryEditor.html'), dest: path.join(webviewDistDir, 'queryEditor.html') },
+		];
+		for (const { src, dest } of watchCopyTargets) {
+			try {
+				fs.watch(src, { recursive: true }, async (eventType, filename) => {
+					try {
+						await fs.promises.cp(src, dest, { recursive: true, force: true });
+						console.log(`[watch] re-copied ${path.basename(src)}/ (${filename} ${eventType})`);
+					} catch (e) {
+						console.warn(`[watch] failed to re-copy ${path.basename(src)}/:`, e && e.message ? e.message : e);
+					}
+				});
+			} catch { /* ignore if fs.watch not supported */ }
+		}
+		for (const { src, dest } of singleFileCopyTargets) {
+			try {
+				fs.watch(src, async (eventType) => {
+					try {
+						await fs.promises.copyFile(src, dest);
+						console.log(`[watch] re-copied ${path.basename(src)} (${eventType})`);
+					} catch (e) {
+						console.warn(`[watch] failed to re-copy ${path.basename(src)}:`, e && e.message ? e.message : e);
+					}
+				});
+			} catch { /* ignore if fs.watch not supported */ }
+		}
 	} else {
 		await ctx.rebuild();
 		await ctx.dispose();

@@ -1,8 +1,12 @@
-import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from 'lit';
+import { LitElement, html, nothing, type TemplateResult, type PropertyValues } from 'lit';
+import { styles } from './kw-data-table.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { createTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, type Table, type ColumnDef, type SortingState, type ColumnFiltersState, type Row, type CellContext, type RowSelectionState, type Column } from '@tanstack/table-core';
 import { Virtualizer, elementScroll, observeElementRect, observeElementOffset } from '@tanstack/virtual-core';
 import type { KwObjectViewer } from './kw-object-viewer.js';
+import { rowMatchesFilterSpec, isColumnFiltered, getFilterSpecForColumn, type ColumnFilterSpec } from './kw-filter-dialog.js';
+import './kw-filter-dialog.js';
+import './kw-sort-dialog.js';
 
 export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
@@ -15,41 +19,9 @@ export interface DataTableOptions {
 	/** Show visibility toggle — fires 'visibility-toggle' CustomEvent. */
 	showVisibilityToggle?: boolean;
 }
-type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
+export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
 interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
 interface VItem { index: number; start: number; size: number; }
-interface ValuesFilterSpec { kind: 'values'; allowedValues: string[]; }
-type RuleDataType = 'string' | 'number' | 'date' | 'json';
-type RuleJoin = 'and' | 'or';
-type RuleUnit = 'minutes' | 'hours' | 'days' | 'weeks' | 'months' | 'years';
-
-interface RuleFilterRule {
-	op: string;
-	join?: RuleJoin;
-	a?: string;
-	b?: string;
-	n?: string;
-	unit?: RuleUnit;
-	text?: string;
-	threshold?: number;
-}
-
-interface RulesFilterSpec {
-	kind: 'rules';
-	dataType: RuleDataType;
-	combineOp?: RuleJoin;
-	rules: RuleFilterRule[];
-}
-
-interface CompoundFilterSpec {
-	kind: 'compound';
-	values?: ValuesFilterSpec;
-	rules?: RulesFilterSpec;
-}
-
-type ColumnFilterSpec = ValuesFilterSpec | RulesFilterSpec | CompoundFilterSpec;
-
-const NULL_EMPTY_KEY = '__KW_NULL_EMPTY__';
 
 function getCellDisplayValue(cell: CellValue): string {
 	if (cell === null || cell === undefined) return '';
@@ -184,12 +156,6 @@ export class KwDataTable extends LitElement {
 	@state() private _sortDialogOpen = false;
 	@state() private _filterDialogOpen = false;
 	@state() private _filterDialogColIndex: number | null = null;
-	@state() private _filterMode: 'values' | 'rules' = 'values';
-	@state() private _filterSearchQuery = '';
-	@state() private _filterDraftAllowedValues: string[] = [];
-	@state() private _filterDraftRules: RuleFilterRule[] = [];
-	@state() private _filterRulesDataType: RuleDataType = 'string';
-	@state() private _filterRulesCombine = false;
 	@state() private _bodyVisible = true;
 	@state() private _colJumpOpen = false;
 	@state() private _colJumpQuery = '';
@@ -293,7 +259,7 @@ export class KwDataTable extends LitElement {
 		const defs: ColumnDef<CellValue[]>[] = this.columns.map((col, i) => ({
 			id: String(i), header: col.name, accessorFn: (row: CellValue[]) => row[i],
 			cell: (info: CellContext<CellValue[], unknown>) => info.getValue(),
-			filterFn: (row, _columnId, filterValue) => this._rowMatchesFilterSpec(row.original[i], filterValue as ColumnFilterSpec | null),
+			filterFn: (row, _columnId, filterValue) => rowMatchesFilterSpec(row.original[i], filterValue as ColumnFilterSpec | null),
 			sortingFn: (rA: Row<CellValue[]>, rB: Row<CellValue[]>) => {
 				const a = getCellSortValue(rA.original[i]), b = getCellSortValue(rB.original[i]);
 				if (a === null && b === null) return 0; if (a === null) return 1; if (b === null) return -1;
@@ -452,7 +418,7 @@ export class KwDataTable extends LitElement {
 
 	private _computeColumnWidths(): number[] {
 		return this.columns.map((col, ci) => {
-			const headerLabel = this._isColumnFiltered(ci) ? `${col.name} (filtered)` : col.name;
+			const headerLabel = isColumnFiltered(ci, this._columnFilters) ? `${col.name} (filtered)` : col.name;
 			let width = this._measureHeaderWidth(headerLabel);
 			for (let ri = 0; ri < this.rows.length; ri++) {
 				const row = this.rows[ri];
@@ -578,443 +544,36 @@ export class KwDataTable extends LitElement {
 	private _isMatch(r: number, c: number): boolean { return this._searchMatches.some(m => m.row === r && m.col === c); }
 	private _isCurMatch(r: number, c: number): boolean { const m = this._searchMatches[this._currentMatchIndex]; return !!m && m.row === r && m.col === c; }
 
-	// ── Filter ──
 
-	private _isNullOrEmptyForFilter(raw: unknown): boolean {
-		if (raw === null || raw === undefined) return true;
-		if (typeof raw === 'string') return raw.trim() === '';
-		return false;
-	}
+// ── Filter (delegated to <kw-filter-dialog>) ──
 
-	private _filterValueKey(raw: unknown): string {
-		if (this._isNullOrEmptyForFilter(raw)) return NULL_EMPTY_KEY;
-		try { return String(raw); } catch { return ''; }
-	}
+private _openFilterDialog(colIndex: number): void {
+this._closeColumnMenu();
+this._filterDialogColIndex = colIndex;
+this._filterDialogOpen = true;
+}
 
-	private _tryParseNumber(raw: unknown): number | null {
-		if (raw === null || raw === undefined) return null;
-		if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-		const n = Number(String(raw));
-		return Number.isFinite(n) ? n : null;
-	}
+private _closeFilterDialog(): void {
+this._filterDialogOpen = false;
+this._filterDialogColIndex = null;
+}
 
-	private _tryParseDateMs(raw: unknown): number | null {
-		if (raw === null || raw === undefined) return null;
-		if (raw instanceof Date) {
-			const t = raw.getTime();
-			return Number.isFinite(t) ? t : null;
-		}
-		const t = Date.parse(String(raw));
-		return Number.isFinite(t) ? t : null;
-	}
+private _onFilterApply = (e: CustomEvent<{ colIndex: number; filterSpec: ColumnFilterSpec | null }>): void => {
+const { colIndex, filterSpec } = e.detail;
+const id = String(colIndex);
+const next = this._columnFilters.filter(f => f.id !== id);
+if (filterSpec) next.push({ id, value: filterSpec });
+this._setColumnFilters(next);
+this._closeFilterDialog();
+};
 
-	private _inferRuleDataType(colIndex: number): RuleDataType {
-		let numHits = 0;
-		let dateHits = 0;
-		let objHits = 0;
-		let sample = 0;
-		for (const row of this.rows) {
-			if (!row || !this._matchesOtherColumnFilters(row, colIndex)) continue;
-			const cell = row[colIndex];
-			const raw = (typeof cell === 'object' && cell !== null && 'full' in cell) ? cell.full : cell;
-			if (raw === null || raw === undefined || String(raw).trim() === '') continue;
-			sample++;
-			if (typeof raw === 'object') objHits++;
-			if (this._tryParseNumber(raw) !== null) numHits++;
-			if (this._tryParseDateMs(raw) !== null) dateHits++;
-			if (sample >= 100) break;
-		}
-		if (objHits > 0) return 'json';
-		if (numHits > 0 && numHits >= Math.max(2, Math.floor(sample * 0.6))) return 'number';
-		if (dateHits > 0 && dateHits >= Math.max(2, Math.floor(sample * 0.6))) return 'date';
-		return 'string';
-	}
-
-	private _durationToMs(n: number, unit: RuleUnit): number {
-		switch (unit) {
-			case 'minutes': return n * 60_000;
-			case 'hours': return n * 3_600_000;
-			case 'days': return n * 86_400_000;
-			case 'weeks': return n * 7 * 86_400_000;
-			case 'months': return n * 30 * 86_400_000;
-			case 'years': return n * 365 * 86_400_000;
-			default: return n * 86_400_000;
-		}
-	}
-
-	private _rowMatchesRules(cell: CellValue, spec: RulesFilterSpec): boolean {
-		const rules = Array.isArray(spec.rules) ? spec.rules.filter(r => String(r?.op ?? '').trim()) : [];
-		if (!rules.length) return true;
-
-		const raw = (typeof cell === 'object' && cell !== null && 'full' in cell) ? cell.full : cell;
-		const isEmpty = this._isNullOrEmptyForFilter(raw);
-		const fallbackJoin: RuleJoin = spec.combineOp === 'or' ? 'or' : 'and';
-
-		const matchOne = (rule: RuleFilterRule): boolean | null => {
-			const op = String(rule.op || '');
-			if (!op) return null;
-			if (op === 'isEmpty') return isEmpty;
-			if (op === 'isNotEmpty') return !isEmpty;
-			if (isEmpty) return false;
-
-			if (spec.dataType === 'number') {
-				const n = this._tryParseNumber(raw);
-				if (n === null) return false;
-				const a = this._tryParseNumber(rule.a);
-				const b = this._tryParseNumber(rule.b);
-				if (op === 'lt') return a !== null ? n < a : true;
-				if (op === 'gt') return a !== null ? n > a : true;
-				if (op === 'between') {
-					if (a === null || b === null) return true;
-					const lo = Math.min(a, b);
-					const hi = Math.max(a, b);
-					return n >= lo && n <= hi;
-				}
-				if (op === 'top' || op === 'bottom') {
-					const thr = this._tryParseNumber(rule.threshold);
-					if (thr === null) return true;
-					return op === 'top' ? n >= thr : n <= thr;
-				}
-				return true;
-			}
-
-			if (spec.dataType === 'date') {
-				const ms = this._tryParseDateMs(raw);
-				if (ms === null) return false;
-				const a = this._tryParseDateMs(rule.a);
-				const b = this._tryParseDateMs(rule.b);
-				if (op === 'before') return a !== null ? ms < a : true;
-				if (op === 'after') return a !== null ? ms > a : true;
-				if (op === 'between') {
-					if (a === null || b === null) return true;
-					const lo = Math.min(a, b);
-					const hi = Math.max(a, b);
-					return ms >= lo && ms <= hi;
-				}
-				if (op === 'last') {
-					const thr = this._tryParseDateMs(rule.threshold);
-					return thr !== null ? ms >= thr : true;
-				}
-				return true;
-			}
-
-			if (spec.dataType === 'json') {
-				let hay = '';
-				try { hay = typeof raw === 'object' ? JSON.stringify(raw) : String(raw); } catch { hay = String(raw); }
-				const needle = String(rule.text ?? '').trim().toLowerCase();
-				if (!needle) return null;
-				const contains = hay.toLowerCase().includes(needle);
-				if (op === 'contains') return contains;
-				if (op === 'notContains') return !contains;
-				return true;
-			}
-
-			const s = String(raw).toLowerCase();
-			const needle = String(rule.text ?? '').trim().toLowerCase();
-			if (!needle) return null;
-			if (op === 'startsWith') return s.startsWith(needle);
-			if (op === 'notStartsWith') return !s.startsWith(needle);
-			if (op === 'endsWith') return s.endsWith(needle);
-			if (op === 'notEndsWith') return !s.endsWith(needle);
-			if (op === 'contains') return s.includes(needle);
-			if (op === 'notContains') return !s.includes(needle);
-			return true;
-		};
-
-		let any = false;
-		let acc = false;
-		let prev: RuleFilterRule | null = null;
-		for (const rule of rules) {
-			const m = matchOne(rule);
-			if (m === null) continue;
-			if (!any) {
-				acc = !!m;
-				any = true;
-				prev = rule;
-				continue;
-			}
-			const join: RuleJoin = prev?.join === 'or' ? 'or' : fallbackJoin;
-			acc = join === 'or' ? (acc || !!m) : (acc && !!m);
-			prev = rule;
-		}
-		return any ? acc : true;
-	}
-
-	private _rowMatchesFilterSpec(cell: CellValue, spec: ColumnFilterSpec | null): boolean {
-		if (!spec) return true;
-		if (spec.kind === 'values') {
-			const raw = (typeof cell === 'object' && cell !== null && 'full' in cell) ? cell.full : cell;
-			const key = this._filterValueKey(raw);
-			return spec.allowedValues.includes(key);
-		}
-		if (spec.kind === 'rules') return this._rowMatchesRules(cell, spec);
-		if (spec.kind === 'compound') {
-			const valuesOk = spec.values ? this._rowMatchesFilterSpec(cell, spec.values) : true;
-			if (!valuesOk) return false;
-			const rulesOk = spec.rules ? this._rowMatchesFilterSpec(cell, spec.rules) : true;
-			return rulesOk;
-		}
-		return true;
-	}
-
-	private _getFilterSpecForColumn(colIndex: number): ColumnFilterSpec | null {
-		const id = String(colIndex);
-		const found = this._columnFilters.find(f => f.id === id);
-		if (!found || !found.value || typeof found.value !== 'object') return null;
-		const v = found.value as ColumnFilterSpec;
-		if (!v || typeof v !== 'object' || !('kind' in v)) return null;
-		return v;
-	}
-
-	private _isColumnFiltered(colIndex: number): boolean {
-		return !!this._getFilterSpecForColumn(colIndex);
-	}
-
-	private _matchesOtherColumnFilters(row: CellValue[], excludeCol: number): boolean {
-		for (const f of this._columnFilters) {
-			const ci = parseInt(f.id, 10);
-			if (!Number.isFinite(ci) || ci < 0 || ci === excludeCol) continue;
-			const spec = f.value as ColumnFilterSpec | null;
-			if (!this._rowMatchesFilterSpec(row[ci], spec)) return false;
-		}
-		return true;
-	}
-
-	private _computeFilterChoices(colIndex: number): Array<{ key: string; label: string; count: number }> {
-		const counts = new Map<string, number>();
-		for (const row of this.rows) {
-			if (!row || !this._matchesOtherColumnFilters(row, colIndex)) continue;
-			const raw = (typeof row[colIndex] === 'object' && row[colIndex] !== null && 'full' in (row[colIndex] as object))
-				? (row[colIndex] as { full?: unknown }).full
-				: row[colIndex];
-			const key = this._filterValueKey(raw);
-			counts.set(key, (counts.get(key) ?? 0) + 1);
-		}
-		const keys = Array.from(counts.keys());
-		keys.sort((a, b) => {
-			const ca = counts.get(a) ?? 0;
-			const cb = counts.get(b) ?? 0;
-			if (cb !== ca) return cb - ca;
-			if (a === NULL_EMPTY_KEY) return -1;
-			if (b === NULL_EMPTY_KEY) return 1;
-			return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-		});
-		return keys.map(key => ({ key, label: key === NULL_EMPTY_KEY ? 'Null or empty' : key, count: counts.get(key) ?? 0 }));
-	}
-
-	private _openFilterDialog(colIndex: number): void {
-		this._closeColumnMenu();
-		this._filterDialogColIndex = colIndex;
-		this._filterDialogOpen = true;
-		this._filterSearchQuery = '';
-		const choices = this._computeFilterChoices(colIndex);
-		const existing = this._getFilterSpecForColumn(colIndex);
-		const existingValues = existing?.kind === 'values'
-			? existing
-			: (existing?.kind === 'compound' ? existing.values : null);
-		const existingRules = existing?.kind === 'rules'
-			? existing
-			: (existing?.kind === 'compound' ? existing.rules : null);
-		// Preserve an explicit empty value-selection filter ("no matching rows") on dialog re-open.
-		this._filterDraftAllowedValues = existingValues ? [...existingValues.allowedValues] : choices.map(c => c.key);
-		this._filterRulesDataType = existingRules?.dataType ?? this._inferRuleDataType(colIndex);
-		this._filterDraftRules = existingRules?.rules?.length
-			? existingRules.rules.map(r => ({ ...r, join: r.join === 'or' ? 'or' : 'and', unit: (r.unit as RuleUnit) || 'days' }))
-			: [];
-		this._filterRulesCombine = existing?.kind === 'compound';
-		this._filterMode = existingRules ? 'rules' : 'values';
-	}
-
-	private _closeFilterDialog = (): void => {
-		this._filterDialogOpen = false;
-		this._filterDialogColIndex = null;
-		this._filterMode = 'values';
-		this._filterSearchQuery = '';
-		this._filterDraftAllowedValues = [];
-		this._filterDraftRules = [];
-		this._filterRulesDataType = 'string';
-		this._filterRulesCombine = false;
-	};
-
-	private _setFilterMode(mode: 'values' | 'rules'): void {
-		this._filterMode = mode;
-		if (mode === 'rules' && !this._filterDraftRules.length) {
-			this._filterDraftRules = [{ op: '', join: 'and', unit: 'days' }];
-		}
-	}
-
-	private _setColumnFilters(next: ColumnFiltersState): void {
-		this._columnFilters = next;
-		this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } }));
-		this._columnWidths = this._computeColumnWidths();
-		this._updateVCount();
-		this.requestUpdate();
-	}
-
-	private _toggleFilterChoice(key: string, checked: boolean): void {
-		const set = new Set(this._filterDraftAllowedValues);
-		if (checked) set.add(key);
-		else set.delete(key);
-		this._filterDraftAllowedValues = Array.from(set);
-	}
-
-	private _setAllVisibleFilterChoices(checked: boolean): void {
-		const colIndex = this._filterDialogColIndex;
-		if (colIndex === null) return;
-		const q = this._filterSearchQuery.trim().toLowerCase();
-		const choices = this._computeFilterChoices(colIndex).filter(c => !q || c.label.toLowerCase().includes(q));
-		const set = new Set(this._filterDraftAllowedValues);
-		for (const c of choices) {
-			if (checked) set.add(c.key);
-			else set.delete(c.key);
-		}
-		this._filterDraftAllowedValues = Array.from(set);
-	}
-
-	private _addRuleRow = (): void => {
-		this._filterDraftRules = [...this._filterDraftRules, { op: '', join: 'and', unit: 'days' }];
-	};
-
-	private _removeRuleRow = (idx: number): void => {
-		this._filterDraftRules = this._filterDraftRules.filter((_, i) => i !== idx);
-	};
-
-	private _updateRule = (idx: number, patch: Partial<RuleFilterRule>): void => {
-		const next = [...this._filterDraftRules];
-		next[idx] = { ...(next[idx] ?? { op: '', join: 'and', unit: 'days' }), ...patch };
-		this._filterDraftRules = next;
-	};
-
-	private _getOpsForType(type: RuleDataType): Array<{ v: string; t: string }> {
-		const base = [
-			{ v: 'isEmpty', t: 'Null or empty' },
-			{ v: 'isNotEmpty', t: 'Not null or empty' },
-		];
-		if (type === 'number') return base.concat([
-			{ v: 'lt', t: 'Less than' },
-			{ v: 'gt', t: 'Greater than' },
-			{ v: 'between', t: 'Between' },
-			{ v: 'top', t: 'Top...' },
-			{ v: 'bottom', t: 'Last...' },
-		]);
-		if (type === 'date') return base.concat([
-			{ v: 'before', t: 'Before' },
-			{ v: 'after', t: 'After' },
-			{ v: 'between', t: 'Between' },
-			{ v: 'last', t: 'Last...' },
-		]);
-		if (type === 'json') return base.concat([
-			{ v: 'contains', t: 'Contains' },
-			{ v: 'notContains', t: 'Does not contain' },
-		]);
-		return base.concat([
-			{ v: 'startsWith', t: 'Starts with' },
-			{ v: 'notStartsWith', t: 'Does not start with' },
-			{ v: 'endsWith', t: 'Ends with' },
-			{ v: 'notEndsWith', t: 'Does not end with' },
-			{ v: 'contains', t: 'Contains' },
-			{ v: 'notContains', t: 'Does not contain' },
-		]);
-	}
-
-	private _normalizeRulesForApply(colIndex: number): RuleFilterRule[] {
-		const rules = this._filterDraftRules
-			.filter(r => String(r.op || '').trim())
-			.map(r => ({
-				op: String(r.op || ''),
-				join: r.join === 'or' ? 'or' : 'and',
-				a: String(r.a ?? ''),
-				b: String(r.b ?? ''),
-				n: String(r.n ?? ''),
-				unit: (r.unit as RuleUnit) || 'days',
-				text: String(r.text ?? ''),
-			}) as RuleFilterRule);
-
-		if (!rules.length) return rules;
-
-		if (this._filterRulesDataType === 'number') {
-			const values: number[] = [];
-			for (const row of this.rows) {
-				if (!row || !this._matchesOtherColumnFilters(row, colIndex)) continue;
-				const cell = row[colIndex];
-				const raw = (typeof cell === 'object' && cell !== null && 'full' in cell) ? cell.full : cell;
-				const n = this._tryParseNumber(raw);
-				if (n !== null) values.push(n);
-			}
-			values.sort((a, b) => a - b);
-			for (const r of rules) {
-				if (r.op !== 'top' && r.op !== 'bottom') continue;
-				const n = parseInt(String(r.n || ''), 10);
-				if (!Number.isFinite(n) || n <= 0 || !values.length) continue;
-				if (r.op === 'top') {
-					const idx = Math.max(0, values.length - n);
-					r.threshold = values[idx];
-				} else {
-					const idx = Math.min(values.length - 1, Math.max(0, n - 1));
-					r.threshold = values[idx];
-				}
-			}
-		}
-
-		if (this._filterRulesDataType === 'date') {
-			const now = Date.now();
-			for (const r of rules) {
-				if (r.op !== 'last') continue;
-				const n = parseInt(String(r.n || ''), 10);
-				if (!Number.isFinite(n) || n <= 0) continue;
-				r.threshold = now - this._durationToMs(n, (r.unit as RuleUnit) || 'days');
-			}
-		}
-
-		return rules;
-	}
-
-	private _applyFilterDialog = (): void => {
-		const colIndex = this._filterDialogColIndex;
-		if (colIndex === null) return;
-		const id = String(colIndex);
-		const existing = this._getFilterSpecForColumn(colIndex);
-		const next = this._columnFilters.filter(f => f.id !== id);
-
-		let finalSpec: ColumnFilterSpec | null = null;
-		if (this._filterMode === 'values') {
-			const choices = this._computeFilterChoices(colIndex);
-			const allKeys = choices.map(c => c.key);
-			const selected = this._filterDraftAllowedValues.filter(v => allKeys.includes(v));
-			const isNoop = selected.length === allKeys.length && allKeys.every(v => selected.includes(v));
-			if (!isNoop) {
-				const valuesSpec: ValuesFilterSpec = { kind: 'values', allowedValues: selected };
-				const existingRules = existing?.kind === 'rules' ? existing : (existing?.kind === 'compound' ? existing.rules : null);
-				finalSpec = existingRules ? { kind: 'compound', values: valuesSpec, rules: existingRules } : valuesSpec;
-			}
-		} else {
-			const rules = this._normalizeRulesForApply(colIndex);
-			if (rules.length > 0) {
-				const rulesSpec: RulesFilterSpec = { kind: 'rules', dataType: this._filterRulesDataType, combineOp: 'and', rules };
-				if (this._filterRulesCombine) {
-					const existingValues = existing?.kind === 'values' ? existing : (existing?.kind === 'compound' ? existing.values : null);
-					if (existingValues) finalSpec = { kind: 'compound', values: existingValues, rules: rulesSpec };
-					else finalSpec = rulesSpec;
-				} else {
-					finalSpec = rulesSpec;
-				}
-			}
-		}
-
-		if (finalSpec) {
-			next.push({ id, value: finalSpec });
-		}
-		this._setColumnFilters(next);
-		this._closeFilterDialog();
-	};
-
-	private _removeFilterForColumn = (): void => {
-		const colIndex = this._filterDialogColIndex;
-		if (colIndex === null) return;
-		const id = String(colIndex);
-		this._setColumnFilters(this._columnFilters.filter(f => f.id !== id));
-		this._closeFilterDialog();
-	};
+private _setColumnFilters(next: ColumnFiltersState): void {
+this._columnFilters = next;
+this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } }));
+this._columnWidths = this._computeColumnWidths();
+this._updateVCount();
+this.requestUpdate();
+}
 
 	// ── Scroll To Row ──
 
@@ -1175,8 +734,20 @@ export class KwDataTable extends LitElement {
 				</div>
 				${totalRows === 0 ? html`<div class="empty-body">No matching rows</div>` : nothing}
 			</div>` : nothing}
-			${this._sortDialogOpen ? this._renderSortDialog() : nothing}
-			${this._filterDialogOpen ? this._renderFilterDialog() : nothing}
+			${this._sortDialogOpen ? html`<kw-sort-dialog
+				.columns=${this.columns}
+				.sorting=${this._sorting}
+				@sort-change=${this._onSortChange}
+				@sort-close=${() => this._sortDialogOpen = false}
+			></kw-sort-dialog>` : nothing}
+			${this._filterDialogOpen ? html`<kw-filter-dialog
+				.columns=${this.columns}
+				.rows=${this.rows}
+				.colIndex=${this._filterDialogColIndex}
+				.columnFilters=${this._columnFilters}
+				@filter-apply=${this._onFilterApply}
+				@filter-close=${() => this._closeFilterDialog()}
+			></kw-filter-dialog>` : nothing}
 			${this._columnMenuOpen !== null ? this._renderColumnMenu() : nothing}
 			<kw-object-viewer></kw-object-viewer>
 		</div>`;
@@ -1269,7 +840,7 @@ export class KwDataTable extends LitElement {
 
 	private _renderTh(h: any): TemplateResult {
 		const col = h.column as Column<CellValue[]>, sd = col.getIsSorted(), si = this._sorting.findIndex(s => s.id === col.id), ci = parseInt(col.id);
-		const isFiltered = this._isColumnFiltered(ci);
+		const isFiltered = isColumnFiltered(ci, this._columnFilters);
 		return html`<th @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }} class="${sd ? 'sorted' : ''}">
 			<div class="thc"><span class="thn">${col.columnDef.header}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
 				${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}
@@ -1315,140 +886,6 @@ export class KwDataTable extends LitElement {
 		</div>`;
 	}
 
-	private _renderFilterDialog(): TemplateResult {
-		const colIndex = this._filterDialogColIndex;
-		if (colIndex === null) return html``;
-		const colName = this.columns[colIndex]?.name ?? `Column ${colIndex + 1}`;
-		const q = this._filterSearchQuery.trim().toLowerCase();
-		const choices = this._computeFilterChoices(colIndex);
-		const filtered = choices.filter(c => !q || c.label.toLowerCase().includes(q));
-		const selectedSet = new Set(this._filterDraftAllowedValues);
-		const ops = this._getOpsForType(this._filterRulesDataType);
-		const opLabelByValue = new Map<string, string>([
-			...this._getOpsForType('string').map(o => [o.v, o.t] as const),
-			...this._getOpsForType('number').map(o => [o.v, o.t] as const),
-			...this._getOpsForType('date').map(o => [o.v, o.t] as const),
-			...this._getOpsForType('json').map(o => [o.v, o.t] as const),
-		]);
-		const activeRules = this._filterDraftRules.filter(r => String(r.op || '').trim()).length;
-		return html`<div class="sd-bg" @click=${this._closeFilterDialog}><div class="sd fd" @click=${(e: Event) => e.stopPropagation()}>
-			<div class="sd-h">
-				<strong>Filter applied to the column '${colName}'</strong>
-				<button type="button" class="nb sd-x" title="Close" aria-label="Close" @click=${this._closeFilterDialog}>${ICON.closeLarge}</button>
-			</div>
-			<div class="fd-modes">
-				<button class="fd-mode ${this._filterMode === 'values' ? 'active' : ''}" @click=${() => this._setFilterMode('values')}>Values</button>
-				<button class="fd-mode ${this._filterMode === 'rules' ? 'active' : ''}" @click=${() => this._setFilterMode('rules')}>Rules${activeRules > 0 ? ` (${activeRules})` : ''}</button>
-				${this._filterMode === 'rules' ? html`<label class="fd-combine"><input class="fd-combine-cb" type="checkbox" .checked=${this._filterRulesCombine} @change=${(e: Event) => { this._filterRulesCombine = (e.target as HTMLInputElement).checked; }} /><span>Apply these rules on top of value filters</span></label>` : nothing}
-			</div>
-			<div class="sd-b">
-				${this._filterMode === 'values' ? html`
-					<div class="fd-tools">
-						<div class="sc fd-search">
-							<svg class="sc-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>
-							<input type="text" class="sinp" placeholder="Search values..." autocomplete="off" spellcheck="false" .value=${this._filterSearchQuery}
-								@input=${(e: Event) => { this._filterSearchQuery = (e.target as HTMLInputElement).value; }} />
-						</div>
-						<div class="fd-actions">
-							<button class="sd-btn" @click=${() => this._setAllVisibleFilterChoices(true)}>Select all</button>
-							<button class="sd-btn" @click=${() => this._setAllVisibleFilterChoices(false)}>Deselect all</button>
-						</div>
-					</div>
-					<div class="fd-list" role="group" aria-label="Values">
-						${filtered.length === 0 ? html`<div class="fd-empty">No values match</div>` : filtered.map(item => html`
-							<label class="fd-item">
-								<input type="checkbox" .checked=${selectedSet.has(item.key)} @change=${(e: Event) => this._toggleFilterChoice(item.key, (e.target as HTMLInputElement).checked)} />
-								<span class="fd-item-text">${item.label}</span>
-								<span class="fd-item-count">${item.count}</span>
-							</label>
-						`)}
-					</div>
-				` : html`
-					<div class="fr-head">
-						<div class="fr-type-group">
-							<span class="fr-type-label">Type</span>
-							<select class="sr-col fr-type-select" .value=${this._filterRulesDataType} @change=${(e: Event) => { this._filterRulesDataType = (e.target as HTMLSelectElement).value as RuleDataType; }}>
-								<option value="string">String</option>
-								<option value="number">Number</option>
-								<option value="date">Date</option>
-								<option value="json">Json</option>
-							</select>
-						</div>
-					</div>
-					<div class="fr-list">
-						${this._filterDraftRules.length === 0 ? html`<div class="fd-empty">No rules yet</div>` : this._filterDraftRules.map((rule, idx) => html`
-							<div class="fr-row">
-								<select class="sr-col fr-rule-op" @change=${(e: Event) => this._updateRule(idx, { op: (e.target as HTMLSelectElement).value })}>
-									<option value="" ?selected=${!rule.op}>Select...</option>
-									${rule.op && !ops.some(o => o.v === rule.op) ? html`<option value="${rule.op}" selected>${opLabelByValue.get(rule.op) ?? rule.op}</option>` : nothing}
-									${ops.map(op => html`<option value="${op.v}" ?selected=${rule.op === op.v}>${op.t}</option>`)}
-								</select>
-								${this._filterRulesDataType === 'number' ? html`
-									${rule.op === 'between' || rule.op === 'lt' || rule.op === 'gt' ? html`<input class="sr-col" type="number" placeholder="A" .value=${rule.a ?? ''} @input=${(e: Event) => this._updateRule(idx, { a: (e.target as HTMLInputElement).value })} />` : nothing}
-									${rule.op === 'between' ? html`<input class="sr-col" type="number" placeholder="B" .value=${rule.b ?? ''} @input=${(e: Event) => this._updateRule(idx, { b: (e.target as HTMLInputElement).value })} />` : nothing}
-									${rule.op === 'top' || rule.op === 'bottom' ? html`<input class="sr-col" type="number" min="1" placeholder="N" .value=${rule.n ?? ''} @input=${(e: Event) => this._updateRule(idx, { n: (e.target as HTMLInputElement).value })} />` : nothing}
-								` : nothing}
-								${this._filterRulesDataType === 'date' ? html`
-									${rule.op === 'between' || rule.op === 'before' || rule.op === 'after' ? html`<input class="sr-col" type="datetime-local" .value=${rule.a ?? ''} @input=${(e: Event) => this._updateRule(idx, { a: (e.target as HTMLInputElement).value })} />` : nothing}
-									${rule.op === 'between' ? html`<input class="sr-col" type="datetime-local" .value=${rule.b ?? ''} @input=${(e: Event) => this._updateRule(idx, { b: (e.target as HTMLInputElement).value })} />` : nothing}
-									${rule.op === 'last' ? html`<input class="sr-col" type="number" min="1" placeholder="N" .value=${rule.n ?? ''} @input=${(e: Event) => this._updateRule(idx, { n: (e.target as HTMLInputElement).value })} />
-									<select class="sr-dir" .value=${rule.unit ?? 'days'} @change=${(e: Event) => this._updateRule(idx, { unit: (e.target as HTMLSelectElement).value as RuleUnit })}><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option><option value="weeks">weeks</option><option value="months">months</option><option value="years">years</option></select>` : nothing}
-								` : nothing}
-								${this._filterRulesDataType === 'string' || this._filterRulesDataType === 'json' ? html`
-									${(() => { const lo = String(rule.op || '').toLowerCase(); return lo.includes('contains') || lo.includes('startswith') || lo.includes('endswith'); })() ? html`<input class="sr-col" type="text" placeholder="Value..." .value=${rule.text ?? ''} @input=${(e: Event) => this._updateRule(idx, { text: (e.target as HTMLInputElement).value })} />` : nothing}
-								` : nothing}
-								${idx < this._filterDraftRules.length - 1 ? html`<select class="sr-dir fr-join-select" .value=${rule.join ?? 'and'} @change=${(e: Event) => this._updateRule(idx, { join: (e.target as HTMLSelectElement).value as RuleJoin })}><option value="and">And</option><option value="or">Or</option></select>` : nothing}
-								${idx === this._filterDraftRules.length - 1 ? html`<button type="button" class="fr-add-inline" title="Add rule" aria-label="Add rule" @click=${this._addRuleRow}>${ICON.plus}</button>` : nothing}
-								<button
-									class="sr-rm sr-rm-delete ${(this._filterDraftRules.length === 1 && idx === 0) ? 'is-hidden' : ''}"
-									title="Delete rule"
-									aria-label="Delete rule"
-									@click=${() => this._removeRuleRow(idx)}
-									?disabled=${this._filterDraftRules.length <= 1}
-								>${ICON.closeLarge}</button>
-							</div>
-						`)}
-					</div>
-				`}
-			</div>
-			<div class="sd-f">
-				<button class="sd-btn sd-btn-danger" @click=${this._removeFilterForColumn}>Remove Filter</button>
-				<button class="sd-btn" @click=${this._applyFilterDialog}>Apply</button>
-			</div>
-		</div></div>`;
-	}
-
-	private _renderSortDialog(): TemplateResult {
-		const unusedCols = this.columns.map((c, i) => ({ name: c.name, idx: i })).filter(c => !this._sorting.some(s => s.id === String(c.idx)));
-		return html`<div class="sd-bg" @click=${() => this._sortDialogOpen = false}><div class="sd" @click=${(e: Event) => e.stopPropagation()}>
-			<div class="sd-h">
-				<strong>Sort</strong>
-				<button class="nb sd-x" title="Close" @click=${() => this._sortDialogOpen = false}>${ICON.close}</button>
-			</div>
-			<div class="sd-b">
-				${this._sorting.length === 0 ? html`<div class="sd-e">No sort applied.</div>` : nothing}
-				${this._sorting.map((rule, idx) => html`<div class="sr">
-					<span class="sr-ord">${idx + 1}</span>
-					<button class="sr-rm" title="Remove" @click=${() => this._rmSort(idx)}>${ICON.close}</button>
-					<select class="sr-col" .value=${rule.id} @change=${(e: Event) => this._updSortCol(idx, (e.target as HTMLSelectElement).value)}>${this.columns.map((c, i) => html`<option value="${i}" ?selected=${rule.id === String(i)}>${c.name}</option>`)}</select>
-					<select class="sr-dir" .value=${rule.desc ? 'desc' : 'asc'} @change=${(e: Event) => this._updSortDir(idx, (e.target as HTMLSelectElement).value)}><option value="asc">Ascending</option><option value="desc">Descending</option></select>
-				</div>`)}
-				<div class="sr-add">
-					<span class="sr-add-label">Add sort</span>
-					<select class="sr-col" id="sr-add-col">
-						<option value="" selected>Select a column…</option>
-						${unusedCols.map(c => html`<option value="${c.idx}">${c.name}</option>`)}
-					</select>
-					<select class="sr-dir" id="sr-add-dir"><option value="asc" selected>Ascending</option><option value="desc">Descending</option></select>
-					<button class="sr-add-btn" title="Add" @click=${this._addSortInline}>+</button>
-				</div>
-			</div>
-			<div class="sd-f">
-				<button class="sd-btn sd-btn-danger" @click=${() => { this._clearSort(); }}>Remove Sort</button>
-				<button class="sd-btn" @click=${() => this._applySortDialog()}>Apply</button>
-			</div>
-		</div></div>`;
-	}
 
 	// ── Mouse drag selection ──
 
@@ -1575,29 +1012,13 @@ export class KwDataTable extends LitElement {
 		}
 	}
 	private _toggleBody(): void { this._bodyVisible = !this._bodyVisible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
-	private _addSortInline = (): void => {
-		const colSel = this.shadowRoot?.querySelector('#sr-add-col') as HTMLSelectElement | null;
-		const dirSel = this.shadowRoot?.querySelector('#sr-add-dir') as HTMLSelectElement | null;
-		if (!colSel || !dirSel) return;
-		const colIdx = colSel.value;
-		if (!colIdx) return;
-		const desc = dirSel.value === 'desc';
-		// Remove existing rule for this column
-		const next = this._sorting.filter(s => s.id !== colIdx);
-		next.push({ id: colIdx, desc });
-		this._sorting = next;
+	private _onSortChange = (e: CustomEvent<{ sorting: SortingState }>): void => {
+		this._sorting = e.detail.sorting;
 		this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));
 		this._updateVCount();
-	};
-	private _applySortDialog(): void {
-		// If user picked a column in the "Add sort" row but didn't click "+", apply it automatically
-		this._addSortInline();
 		this._sortDialogOpen = false;
-	}
+	};
 	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._updateVCount(); }
-	private _rmSort(idx: number): void { this._sorting = this._sorting.filter((_, i) => i !== idx); this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._updateVCount(); }
-	private _updSortCol(idx: number, id: string): void { const n = [...this._sorting]; n[idx] = { ...n[idx], id }; this._sorting = n; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._updateVCount(); }
-	private _updSortDir(idx: number, dir: string): void { const n = [...this._sorting]; n[idx] = { ...n[idx], desc: dir === 'desc' }; this._sorting = n; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._updateVCount(); }
 	private _selAll(): void { const mr = (this._table?.getRowModel().rows.length ?? 1) - 1, mc = this.columns.length - 1; this._selectedCell = { row: 0, col: 0 }; this._selectionAnchor = { row: 0, col: 0 }; this._selectionRange = { rowMin: 0, rowMax: mr, colMin: 0, colMax: mc }; }
 	private _scrollToCol(ci: number): void {
 		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
@@ -1783,152 +1204,6 @@ export class KwDataTable extends LitElement {
 
 	// ── Styles ──
 
-	static styles = css`
-		*,*::before,*::after{box-sizing:border-box}
-		:host{display:block;min-height:60px;position:relative}
-		.dt{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;border-top:1px solid var(--vscode-panel-border)}
-		.dt.no-top-border{border-top:none}
-
-		/* Header bar */
-		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
-		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.et{opacity:.7}
-		.tb{display:flex;gap:2px;align-items:center;flex-shrink:0}
-		.sep{width:1px;height:14px;background:var(--vscode-panel-border);margin:0 3px}
-		.tbtn{display:inline-flex;align-items:center;gap:4px;padding:3px 5px;font-size:11px;border:none;background:transparent;color:var(--vscode-descriptionForeground);border-radius:2px;cursor:pointer;font-family:inherit}
-		.tbtn:hover{background:var(--vscode-toolbar-hoverBackground);color:var(--vscode-foreground)}.tbtn.act{color:var(--vscode-foreground);background:var(--vscode-toolbar-activeBackground,var(--vscode-toolbar-hoverBackground))}.tbtn svg{stroke:currentColor;fill:none}
-
-		/* Search bar */
-		.sbar{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:12px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-editor-background);flex-shrink:0}
-		.sc{position:relative;display:flex;align-items:center;flex:1;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:2px}
-		.sc:focus-within{border-color:var(--vscode-focusBorder)}
-		.sc-icon{position:absolute;left:6px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--vscode-input-placeholderForeground);opacity:.7;flex-shrink:0}
-		.sinp{flex:1;padding:4px 8px 4px 26px;font-size:12px;font-family:inherit;background:transparent;color:var(--vscode-input-foreground);border:none;outline:none;min-width:0}.sinp::placeholder{color:var(--vscode-input-placeholderForeground)}
-		.sc-status{font-size:11px;color:var(--vscode-descriptionForeground);white-space:nowrap;padding:0 4px;flex-shrink:0;pointer-events:none}
-		.sc-status.err{color:var(--vscode-errorForeground)}
-		.sc-mode{width:20px;height:18px;padding:0;border:none;background:transparent;color:var(--vscode-input-foreground);opacity:.7;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;font-size:11px;flex-shrink:0}.sc-mode:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground)}.ml{font-family:monospace;font-weight:bold}
-		.sc-div{width:1px;height:14px;background:var(--vscode-input-foreground);opacity:.25;flex-shrink:0;margin:0 2px}
-		.sc-nav{width:20px;height:18px;padding:0;border:none;background:transparent;color:var(--vscode-input-foreground);opacity:.7;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;flex-shrink:0}.sc-nav:hover:not(:disabled){opacity:1;background:var(--vscode-toolbar-hoverBackground)}.sc-nav:disabled{opacity:.35;cursor:default}
-		.nb{width:22px;height:22px;padding:0;border:none;background:transparent;color:var(--vscode-foreground);cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:2px}.nb:hover:not(:disabled){background:var(--vscode-toolbar-hoverBackground)}.nb:disabled{opacity:.35;cursor:default}
-
-		/* Column jump — searchable dropdown */
-		.cj-wrap{flex:1;position:relative;display:flex;flex-direction:column;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:2px}
-		.cj-wrap:focus-within{border-color:var(--vscode-focusBorder)}
-		.cj-inp{padding:4px 8px;font-size:12px;font-family:inherit;background:transparent;color:var(--vscode-input-foreground);border:none;outline:none}.cj-inp::placeholder{color:var(--vscode-input-placeholderForeground)}
-		.cj-list{max-height:150px;overflow-y:auto;border-top:1px solid var(--vscode-panel-border)}
-		.cj-item{padding:4px 8px;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;outline:none}.cj-item:hover,.cj-item:focus{background:var(--vscode-list-hoverBackground)}
-		.cj-empty{padding:4px 8px;font-size:11px;color:var(--vscode-descriptionForeground);opacity:.7}
-
-		/* Scroll container — the focus outline is on .dt instead */
-		.vscroll{flex:1 1 0;overflow:auto;min-height:0;overflow-anchor:none;border:none;border-radius:0}
-		.vscroll:focus{outline:none}
-
-		/* Single data table matching original resultsTable.js styles */
-		.dtable{border-collapse:collapse;font-size:12px;user-select:none;table-layout:fixed}
-		.dtable-head-wrap{position:sticky;top:0;z-index:4;overflow:visible;border:none;border-radius:0}
-		th,td{text-align:left;padding:6px 8px;border-right:1px solid var(--vscode-panel-border);border-bottom:1px solid var(--vscode-panel-border);white-space:nowrap;position:relative;max-width:75ch;overflow:hidden;text-overflow:ellipsis}
-		.dtable th:first-child,.dtable td:first-child{border-left:1px solid var(--vscode-panel-border)}
-		.dtable thead th{border-top:1px solid var(--vscode-panel-border)}
-		th,td{height:27px}
-		td{background:var(--vscode-editor-background)}
-		th{font-weight:600;background:var(--vscode-list-hoverBackground);cursor:pointer;user-select:none}
-		th:hover{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground))}th.sorted{font-weight:700}
-		.thc{display:flex;align-items:center;gap:4px;flex-wrap:nowrap}.thn{display:flex;align-items:center;gap:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;min-width:0;white-space:nowrap}
-		.filtered-link{font-size:11px;color:var(--vscode-textLink-foreground);text-decoration:underline;cursor:pointer;flex-shrink:0;margin-left:5px}
-		.filtered-link:hover{color:var(--vscode-textLink-activeForeground)}
-		.si2{font-size:11px;opacity:.85;flex-shrink:0;line-height:1}.si2 sup{font-size:8px;margin-left:2px}
-		.cm-btn{width:20px;height:20px;padding:0;border:none;background:transparent;color:var(--vscode-foreground);cursor:pointer;opacity:.5;display:flex;align-items:center;justify-content:center;border-radius:2px;font-size:11px;flex-shrink:0}
-		.cm-btn:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground)}
-
-		/* Row number column: sticky left with double right border (matches original) */
-		.rn-h{width:40px;min-width:40px;max-width:40px;text-align:center;padding:6px 2px;cursor:default;position:sticky;left:0;z-index:3;background:var(--vscode-list-hoverBackground);border-right:2px solid var(--vscode-panel-border)}
-		.rn{width:40px;min-width:40px;max-width:40px;text-align:center;font-size:12px;opacity:.5;padding:6px 2px;cursor:pointer;position:sticky;left:0;z-index:1;background:var(--vscode-editor-background);border-right:2px solid var(--vscode-panel-border)}
-		.rn:hover{background:var(--vscode-list-hoverBackground);opacity:.8}
-
-		/* Object View button */
-		.obj-btn{padding:2px 8px;font-size:11px;background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-button-border,transparent);border-radius:3px;cursor:pointer;font-family:inherit}.obj-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}
-		.obj-cell{text-align:center}
-
-		/* Column menu */
-		.cm{position:fixed;z-index:10000;background:var(--vscode-menu-background,var(--vscode-editor-background));border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:0;padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translateX(-100%)}
-		.cmi{padding:4px 12px;font-size:12px;cursor:pointer;white-space:nowrap}.cmi:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground))}
-		.cms{height:1px;background:var(--vscode-menu-separatorBackground,var(--vscode-panel-border));margin:4px 0}
-
-		/* Spacer rows */
-		.vspacer td{padding:0;border:0;border-right:0;line-height:0;font-size:0;background:transparent}
-
-		/* Selection (matching original exactly) */
-		.sel-row td{background:var(--vscode-list-inactiveSelectionBackground)}
-		.sel-row .rn{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground);opacity:1}
-		.cr{background:var(--vscode-list-activeSelectionBackground)!important;color:var(--vscode-list-activeSelectionForeground)}
-		.cf{background:var(--vscode-list-activeSelectionBackground)!important;color:var(--vscode-list-activeSelectionForeground);outline:2px solid var(--vscode-focusBorder);outline-offset:-2px}
-		.mh{background:var(--vscode-editor-findMatchHighlightBackground)!important}
-		.mc{background:var(--vscode-editor-findMatchBackground)!important;outline:1px solid var(--vscode-editor-findMatchBorder)}
-
-		.empty,.empty-body,.hidden-msg{padding:16px;text-align:center;opacity:.7;font-size:12px}
-
-		/* Sort dialog — matches original kusto-sort-dialog */
-		.sd-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center}
-		.sd{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:4px;width:520px;max-width:calc(100% - 24px);max-height:80%;display:flex;flex-direction:column;box-shadow:0 4px 20px rgba(0,0,0,.3)}
-		.sd-h{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--vscode-panel-border)}
-		.sd-x{flex-shrink:0;width:28px;height:28px}
-		.sd-b{padding:10px 12px;overflow:auto}
-		.sd-f{display:flex;justify-content:flex-end;gap:8px;padding:10px 12px;border-top:1px solid var(--vscode-panel-border)}
-		.sd-btn{padding:4px 12px;font-size:12px;font-family:inherit;border-radius:2px;cursor:pointer;border:1px solid var(--vscode-button-border,transparent);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.sd-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}
-		.sd-btn-danger{color:var(--vscode-errorForeground)}
-		.sd-e{font-size:12px;color:var(--vscode-descriptionForeground);padding:6px 2px}
-		.sr{display:grid;grid-template-columns:26px 28px 1fr 140px;gap:8px;align-items:center;padding:6px 4px;border-radius:4px}
-		.sr:hover{background:var(--vscode-list-hoverBackground)}
-		.sr-ord{text-align:right;font-size:11px;color:var(--vscode-descriptionForeground)}
-		.sr-rm{padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:2px;color:var(--vscode-errorForeground);cursor:pointer}.sr-rm:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:var(--vscode-input-border)}
-		.sr-col,.sr-dir{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:0;padding:4px 6px;font-size:12px;font-family:inherit}
-		.sr-add{display:grid;grid-template-columns:1fr 1fr 140px 32px;gap:8px;align-items:center;padding:8px 4px 4px;border-top:1px solid var(--vscode-panel-border);margin-top:6px}
-		.sr-add-label{font-size:11px;color:var(--vscode-descriptionForeground)}
-		.sr-add-btn{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-button-border,transparent);border-radius:4px;width:32px;height:28px;cursor:pointer;font-size:16px;line-height:1;padding:0}.sr-add-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}
-
-		/* Filter dialog */
-		.fd{width:min(900px,calc(100vw - 24px));min-width:0;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px)}
-		.sr-rm.is-hidden{visibility:hidden;pointer-events:none}
-		.fd .sd-b{padding:8px;max-height:calc(100vh - 210px)}
-		.fd-modes{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--vscode-panel-border);flex-wrap:wrap}
-		.fd-mode{padding:4px 10px;font-size:12px;border:1px solid var(--vscode-input-border);background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border-radius:999px;cursor:pointer}
-		.fd-mode.active{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
-		.fd-combine{margin-left:auto;font-size:12px;color:var(--vscode-descriptionForeground);display:flex;align-items:center;gap:8px;line-height:1.2}
-		.fd-combine-cb{margin:0;inline-size:14px;block-size:14px;flex:0 0 14px}
-		.fd-tools{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-		.fd-search{flex:1}
-		.fd-actions{display:flex;gap:6px;flex-wrap:wrap}
-		.fd-list{max-height:min(60vh,640px);overflow:auto;border:1px solid var(--vscode-panel-border);border-radius:4px}
-		.fd-item{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--vscode-panel-border)}
-		.fd-item:last-child{border-bottom:none}
-		.fd-item:hover{background:var(--vscode-list-hoverBackground)}
-		.fd-item-text{overflow:visible;white-space:normal;word-break:break-word;line-height:1.35}
-		.fd-item-count{font-size:11px;color:var(--vscode-descriptionForeground)}
-		.fd-empty{padding:10px;font-size:12px;color:var(--vscode-descriptionForeground)}
-		.fr-head{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap}
-		.fr-type-group{display:flex;align-items:center;gap:8px;min-width:0}
-		.fr-type-label{font-size:12px;color:var(--vscode-descriptionForeground);white-space:nowrap}
-		.fr-type-select{min-width:120px}
-		.fr-list{display:flex;flex-direction:column;gap:8px;max-height:min(60vh,640px);overflow:auto;padding-right:2px;padding-left:34px}
-		.fr-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-		.fr-add-inline{margin-left:auto;flex:0 0 28px;width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:2px;background:transparent;color:var(--vscode-terminal-ansiGreen);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
-		.fr-add-inline:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:var(--vscode-input-border)}
-		.fr-add-inline:disabled{opacity:.35;cursor:default}
-		.fr-rule-op{flex:0 0 200px;min-width:200px}
-		.sr-rm-delete{color:var(--vscode-errorForeground)}
-		.fr-row > .sr-rm{flex:0 0 28px}
-		.fr-row > .sr-col,.fr-row > .sr-dir{flex:1 1 160px;min-width:120px}
-		.fr-row > .sr-col,.fr-row > .sr-dir,.fr-row > input.sr-col{height:28px}
-		.fr-row > select.fr-join-select.sr-dir{flex:0 0 auto;width:auto;min-width:0}
-		@media (max-width: 640px){
-			.fd-combine{margin-left:0;flex-basis:100%}
-			.fd .sd-b{max-height:calc(100vh - 240px)}
-			.fr-head{align-items:flex-start}
-			.fr-list{padding-left:0}
-		}
-
-		/* Compact mode overrides */
-		.compact th,.compact td{padding:4px 6px;font-size:11px;height:21px}.compact .hbar{padding:7px 0;font-size:11px}
-		.compact .rn{font-size:10px;width:32px;min-width:32px;max-width:32px;padding:4px 2px}.compact .rn-h{width:32px;min-width:32px;max-width:32px;padding:4px 2px}
-	`;
+	static styles = styles;
 }
 declare global { interface HTMLElementTagNameMap { 'kw-data-table': KwDataTable; } }

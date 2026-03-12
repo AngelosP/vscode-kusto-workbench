@@ -1,11 +1,14 @@
 let connections = [];
 try { window.connections = connections; } catch { /* ignore */ }
 let queryBoxes = [];
+try { window.queryBoxes = queryBoxes; } catch { /* ignore */ }
 let lastConnectionId = null;
 let lastDatabase = null;
 let cachedDatabases = {};
+try { window.cachedDatabases = cachedDatabases; } catch { /* ignore */ }
 let kustoFavorites = [];
 let leaveNoTraceClusters = [];
+try { window.leaveNoTraceClusters = leaveNoTraceClusters; } catch { /* ignore */ }
 let favoritesModeByBoxId = {};
 try { window.favoritesModeByBoxId = favoritesModeByBoxId; } catch { /* ignore */ }
 let pendingFavoriteSelectionByBoxId = {};
@@ -19,8 +22,11 @@ let queryEditorBoxByModelUri = {};
 let suggestDebounceTimers = {};
 let activeQueryEditorBoxId = null;
 let schemaByBoxId = {};
+try { window.schemaByBoxId = schemaByBoxId; } catch { /* ignore */ }
 let schemaFetchInFlightByBoxId = {};
+try { window.schemaFetchInFlightByBoxId = schemaFetchInFlightByBoxId; } catch { /* ignore */ }
 let lastSchemaRequestAtByBoxId = {};
+try { window.lastSchemaRequestAtByBoxId = lastSchemaRequestAtByBoxId; } catch { /* ignore */ }
 let monacoReadyPromise = null;
 
 // In-flight state for long-running toolbar actions.
@@ -29,11 +35,14 @@ let qualifyTablesInFlightByBoxId = {};
 // Cross-box schema cache (for tools like "fully qualify tables").
 // Key: `${connectionId}|${database}`
 let schemaByConnDb = {};
+try { window.schemaByConnDb = schemaByConnDb; } catch { /* ignore */ }
 // Pending schema requests keyed by request boxId.
 let schemaRequestResolversByBoxId = {};
+try { window.schemaRequestResolversByBoxId = schemaRequestResolversByBoxId; } catch { /* ignore */ }
 
 // Pending database list requests keyed by request boxId.
 let databasesRequestResolversByBoxId = {};
+try { window.databasesRequestResolversByBoxId = databasesRequestResolversByBoxId; } catch { /* ignore */ }
 
 // Missing cluster connections banner state
 let missingClusterDetectTimersByBoxId = {};
@@ -55,11 +64,13 @@ try { window.runModesByBoxId = runModesByBoxId; } catch { /* ignore */ }
 
 // Caret docs (custom tooltip) toggle
 let caretDocsEnabled = true;
+try { window.caretDocsEnabled = caretDocsEnabled; } catch { /* ignore */ }
 let caretDocOverlaysByBoxId = {};
 
 // Autocomplete behavior toggle
 // When enabled, the editor will attempt to trigger Monaco suggestions as you type.
 let autoTriggerAutocompleteEnabled = true;
+try { window.autoTriggerAutocompleteEnabled = autoTriggerAutocompleteEnabled; } catch { /* ignore */ }
 
 // Automatically trigger Copilot inline completions toggle
 // When enabled, the editor will request inline completions from GitHub Copilot.

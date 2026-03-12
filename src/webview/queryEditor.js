@@ -75,26 +75,22 @@
 	const scriptPaths = [
 		'legacy/vscode.js',
 		'legacy/state.js',
-		'legacy/persistence.js',
-		'legacy/utils.js',
-		'legacy/searchControl.js',
-		'legacy/dropdown.js',
+
+
 		'vendor/marked.min.js',
 		'vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'dist/queryEditor/vendor/echarts/echarts.webview.js',
 		'legacy/controlCommands.generated.js',
 		'legacy/functions.generated.js',
-		'legacy/schema.js',
+
 		'legacy/monaco.js',
 		'legacy/queryBoxes.js',
 		'legacy/copilotQueryBoxes.js',
 		'legacy/extraBoxes.js',
 		'legacy/resultsTable.js',
-		'legacy/diffView.js',
-		'legacy/objectViewer.js',
-		'legacy/cellViewer.js',
-		'legacy/columnAnalysis.js',
+
+
 		'dist/webview/webview.bundle.js',
 		'legacy/main.js'
 	];

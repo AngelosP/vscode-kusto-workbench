@@ -1,33 +1,48 @@
-function __kustoCloseAllColumnMenus() {
+// Column analysis module — converted from legacy/columnAnalysis.js
+// Window bridge exports at bottom for remaining inline onclick callers.
+export {};
+
+declare const escapeHtml: (s: string) => string;
+declare const displayResultForBox: (result: unknown, boxId: string, opts: unknown) => void;
+declare const __kustoGetResultsState: ((boxId: string) => {
+	columns: string[];
+	rows: unknown[][];
+	filteredRowIndices?: number[];
+	displayRowIndices?: number[];
+} | null) | undefined;
+
+const _win = window as unknown as Record<string, unknown>;
+
+function __kustoCloseAllColumnMenus(): void {
 	try {
 		document.querySelectorAll('.column-menu.visible').forEach((m) => {
 			try { m.classList.remove('visible'); } catch { /* ignore */ }
 		});
 	} catch { /* ignore */ }
 	try {
-		if (window.__kustoActiveColumnMenu) {
-			window.__kustoActiveColumnMenu = null;
+		if (_win.__kustoActiveColumnMenu) {
+			_win.__kustoActiveColumnMenu = null;
 		}
 	} catch { /* ignore */ }
 }
 
-function __kustoWireColumnMenuAutoClose() {
+function __kustoWireColumnMenuAutoClose(): void {
 	try {
-		if (window.__kustoColumnMenuAutoCloseWired) {
+		if (_win.__kustoColumnMenuAutoCloseWired) {
 			return;
 		}
-		window.__kustoColumnMenuAutoCloseWired = true;
+		_win.__kustoColumnMenuAutoCloseWired = true;
 	} catch { /* ignore */ }
 
-	const shouldIgnoreTarget = (target) => {
+	const shouldIgnoreTarget = (target: EventTarget | null): boolean => {
 		try {
-			const active = window.__kustoActiveColumnMenu;
+			const active = _win.__kustoActiveColumnMenu as { menu?: Element; button?: Element } | null;
 			if (active && active.menu) {
-				if (active.menu.contains(target)) return true;
-				if (active.button && active.button.contains && active.button.contains(target)) return true;
+				if (active.menu.contains(target as Node)) return true;
+				if (active.button && active.button.contains && active.button.contains(target as Node)) return true;
 			}
 			// Also ignore clicks on any column menu button (opening another menu will close the current one anyway).
-			if (target && target.closest && target.closest('.column-menu-btn')) return true;
+			if (target && (target as Element).closest && (target as Element).closest('.column-menu-btn')) return true;
 		} catch { /* ignore */ }
 		return false;
 	};
@@ -72,7 +87,7 @@ function __kustoWireColumnMenuAutoClose() {
 	}, { passive: true });
 }
 
-function toggleColumnMenu(colIdx, boxId) {
+function toggleColumnMenu(colIdx: number, boxId: string): void {
 	// Ensure outside-click/Escape dismiss is wired once.
 	try { __kustoWireColumnMenuAutoClose(); } catch { /* ignore */ }
 
@@ -91,8 +106,8 @@ function toggleColumnMenu(colIdx, boxId) {
 	if (isVisible) {
 		menu.classList.remove('visible');
 		try {
-			if (window.__kustoActiveColumnMenu && window.__kustoActiveColumnMenu.menu === menu) {
-				window.__kustoActiveColumnMenu = null;
+			if (_win.__kustoActiveColumnMenu && (_win.__kustoActiveColumnMenu as { menu?: Element }).menu === menu) {
+				_win.__kustoActiveColumnMenu = null;
 			}
 		} catch { /* ignore */ }
 		return;
@@ -102,7 +117,7 @@ function toggleColumnMenu(colIdx, boxId) {
 	const button = menu.previousElementSibling;
 	if (!button || typeof button.getBoundingClientRect !== 'function') {
 		menu.classList.add('visible');
-		try { window.__kustoActiveColumnMenu = { menu, button: button || null }; } catch { /* ignore */ }
+		try { _win.__kustoActiveColumnMenu = { menu, button: button || null }; } catch { /* ignore */ }
 		return;
 	}
 
@@ -115,7 +130,7 @@ function toggleColumnMenu(colIdx, boxId) {
 	menu.style.left = '0px';
 	menu.style.top = '0px';
 	menu.classList.add('visible');
-	try { window.__kustoActiveColumnMenu = { menu, button }; } catch { /* ignore */ }
+	try { _win.__kustoActiveColumnMenu = { menu, button }; } catch { /* ignore */ }
 
 	const menuRect = menu.getBoundingClientRect();
 	const viewportW = Math.max(0, window.innerWidth || 0);
@@ -143,7 +158,7 @@ function toggleColumnMenu(colIdx, boxId) {
 	menu.style.visibility = '';
 }
 
-function __kustoGetVisibleRowIndices(state) {
+function __kustoGetVisibleRowIndices(state: { rows: unknown[][]; filteredRowIndices?: number[]; displayRowIndices?: number[] } | null): number[] {
 	if (!state || !Array.isArray(state.rows)) {
 		return [];
 	}
@@ -156,7 +171,7 @@ function __kustoGetVisibleRowIndices(state) {
 	return state.rows.map((_, idx) => idx);
 }
 
-function showUniqueValues(colIdx, boxId) {
+function showUniqueValues(colIdx: number, boxId: string): void {
 	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
 	if (!state) { return; }
 
@@ -192,10 +207,11 @@ function showUniqueValues(colIdx, boxId) {
 
 	// Display in modal
 	const modal = document.getElementById('columnAnalysisModal');
-	const title = document.getElementById('columnAnalysisTitle');
-	const body = document.getElementById('columnAnalysisBody');
+	const titleEl = document.getElementById('columnAnalysisTitle');
+	const bodyEl = document.getElementById('columnAnalysisBody');
+	if (!modal || !titleEl || !bodyEl) return;
 
-	title.textContent = 'Unique Values - ' + columnName;
+	titleEl.textContent = 'Unique Values - ' + columnName;
 
 	const analysisBoxId = String(boxId) + '_col_' + String(colIdx) + '_unique_values';
 	const tableHostId = 'columnAnalysisTableHost';
@@ -206,7 +222,7 @@ function showUniqueValues(colIdx, boxId) {
 	html += '<div style="margin-top: 24px;">';
 	html += '<canvas id="uniqueValuesPieChart" style="width: 100%; height: 400px;"></canvas>';
 	html += '</div>';
-	body.innerHTML = html;
+	bodyEl.innerHTML = html;
 	modal.classList.add('visible');
 
 	// Render the tabular control after the DOM is updated.
@@ -236,7 +252,7 @@ function showUniqueValues(colIdx, boxId) {
 
 	// Draw pie chart after DOM is updated
 	setTimeout(() => {
-		const canvas = document.getElementById('uniqueValuesPieChart');
+		const canvas = document.getElementById('uniqueValuesPieChart') as HTMLCanvasElement | null;
 		if (canvas) {
 			canvas.width = canvas.offsetWidth;
 			canvas.height = 400;
@@ -245,12 +261,13 @@ function showUniqueValues(colIdx, boxId) {
 	}, 0);
 }
 
-function drawPieChart(canvasId, data, total) {
-	const canvas = document.getElementById(canvasId);
+function drawPieChart(canvasId: string, data: Array<[string, number]>, total: number): void {
+	const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
 	if (!canvas) return;
 	if (!total || total <= 0) return;
 
 	const ctx = canvas.getContext('2d');
+	if (!ctx) return;
 	// Calculate dimensions based on canvas width
 	const chartWidth = canvas.width * 0.6; // 60% for pie chart
 	const legendWidth = canvas.width * 0.4; // 40% for legend
@@ -277,7 +294,7 @@ function drawPieChart(canvasId, data, total) {
 	}
 
 	// Draw slices
-	displayData.forEach(([value, count], index) => {
+	displayData.forEach(([value, count]: [string, number], index: number) => {
 		const sliceAngle = (count / total) * 2 * Math.PI;
 		const color = colors[index % colors.length];
 
@@ -318,7 +335,7 @@ function drawPieChart(canvasId, data, total) {
 	const legendX = chartWidth + 20;
 	let legendY = 40;
 
-	displayData.forEach(([value, count], index) => {
+	displayData.forEach(([value, count]: [string, number], index: number) => {
 		const color = colors[index % colors.length];
 
 		// Draw color box
@@ -340,7 +357,7 @@ function drawPieChart(canvasId, data, total) {
 	});
 }
 
-function showDistinctCountPicker(colIdx, boxId) {
+function showDistinctCountPicker(colIdx: number, boxId: string): void {
 	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
 	if (!state) { return; }
 
@@ -349,10 +366,11 @@ function showDistinctCountPicker(colIdx, boxId) {
 
 	const columnName = state.columns[colIdx];
 	const modal = document.getElementById('columnAnalysisModal');
-	const title = document.getElementById('columnAnalysisTitle');
-	const body = document.getElementById('columnAnalysisBody');
+	const titleEl = document.getElementById('columnAnalysisTitle');
+	const bodyEl = document.getElementById('columnAnalysisBody');
+	if (!modal || !titleEl || !bodyEl) return;
 
-	title.textContent = 'Distinct Count - ' + columnName;
+	titleEl.textContent = 'Distinct Count - ' + columnName;
 	const analysisBoxId = String(boxId) + '_col_' + String(colIdx) + '_distinct_count';
 	const resultsHostId = 'distinctCountResultsHost';
 
@@ -375,15 +393,15 @@ function showDistinctCountPicker(colIdx, boxId) {
 	html += '</div>';
 	html += '<div id="' + resultsHostId + '" data-analysis-boxid="' + analysisBoxId + '"></div>';
 
-	body.innerHTML = html;
+	bodyEl.innerHTML = html;
 	modal.classList.add('visible');
 }
 
-function calculateDistinctCount(groupByColIdx, boxId) {
+function calculateDistinctCount(groupByColIdx: number, boxId: string): void {
 	const state = (typeof __kustoGetResultsState === 'function') ? __kustoGetResultsState(boxId) : null;
 	if (!state) { return; }
 
-	const targetColIdx = parseInt(document.getElementById('distinctCountTargetColumn').value);
+	const targetColIdx = parseInt((document.getElementById('distinctCountTargetColumn') as HTMLSelectElement | null)?.value ?? '');
 	if (isNaN(targetColIdx)) { return; }
 
 	const groupByColumnName = state.columns[groupByColIdx];
@@ -431,7 +449,7 @@ function calculateDistinctCount(groupByColIdx, boxId) {
 
 	// Calculate total distinct count across all groups
 	const totalDistinctValues = new Set();
-	groupedValues.forEach(valueSet => {
+	groupedValues.forEach((valueSet: Set<string>) => {
 		valueSet.forEach(value => totalDistinctValues.add(value));
 	});
 	const totalDistinctCount = totalDistinctValues.size;
@@ -461,11 +479,18 @@ function calculateDistinctCount(groupByColIdx, boxId) {
 	});
 }
 
-function closeColumnAnalysis(event) {
+function closeColumnAnalysis(event: Event | null): void {
 	if (event && event.target !== event.currentTarget) {
 		return;
 	}
 
 	const modal = document.getElementById('columnAnalysisModal');
-	modal.classList.remove('visible');
+	modal?.classList.remove('visible');
 }
+
+// ── Window bridge for inline onclick callers (resultsTable.js HTML strings) ──
+_win.toggleColumnMenu = toggleColumnMenu;
+_win.showUniqueValues = showUniqueValues;
+_win.showDistinctCountPicker = showDistinctCountPicker;
+_win.calculateDistinctCount = calculateDistinctCount;
+_win.closeColumnAnalysis = closeColumnAnalysis;

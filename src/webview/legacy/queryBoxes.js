@@ -5306,6 +5306,57 @@ function __kustoSetElementDisplay(el, display) {
 	} catch { /* ignore */ }
 }
 
+function __kustoUpdateFavoritesUiForBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const kwEl = __kustoGetQuerySectionElement(id);
+	if (kwEl && typeof kwEl.setFavorites === 'function') {
+		kwEl.setFavorites(Array.isArray(kustoFavorites) ? kustoFavorites : []);
+	}
+}
+
+window.__kustoUpdateFavoritesUiForAllBoxes = function () {
+	try {
+		queryBoxes.forEach(id => {
+			try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
+		});
+	} catch { /* ignore */ }
+};
+
+// Toggle the current cluster+database as a favorite for a given query box.
+// Sends a message to the extension host which handles add/remove + persistence.
+function toggleFavoriteForBox(boxId) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const clusterUrl = __kustoGetClusterUrl(id);
+	const database = __kustoGetDatabase(id);
+	if (!clusterUrl || !database) return;
+
+	const existing = __kustoFindFavorite(clusterUrl, database);
+	if (existing) {
+		// Already a favorite — remove it.
+		vscode.postMessage({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+	} else {
+		// Not a favorite yet — request add (extension host shows input box for name).
+		vscode.postMessage({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+	}
+}
+
+// Remove a specific favorite by cluster+database.
+function removeFavorite(clusterUrl, database) {
+	const c = String(clusterUrl || '').trim();
+	const d = String(database || '').trim();
+	if (!c || !d) return;
+	vscode.postMessage({ type: 'removeFavorite', clusterUrl: c, database: d });
+}
+
+// Favorites dropdowns are now managed by the Lit component's shadow DOM.
+// This function must exist because the document click/scroll/wheel handlers
+// call it without a try/catch guard.
+function closeAllFavoritesDropdowns() {
+	// no-op — Lit component handles its own dropdown lifecycle.
+}
+
 function __kustoApplyFavoritesMode(boxId, enabled) {
 	favoritesModeByBoxId = favoritesModeByBoxId || {};
 	favoritesModeByBoxId[boxId] = !!enabled;
@@ -5342,347 +5393,6 @@ function __kustoGetTrashIconSvg() {
 	);
 }
 
-function __kustoGetFavoriteClusterDbDisplay(fav) {
-	let clusterShort = '';
-	try {
-		clusterShort = (typeof formatClusterShortName === 'function')
-			? String(formatClusterShortName(String((fav && fav.clusterUrl) || '')) || '')
-			: '';
-	} catch { /* ignore */ }
-	if (!clusterShort) {
-		try {
-			clusterShort = String((fav && fav.clusterUrl) || '').trim();
-		} catch { /* ignore */ }
-	}
-	const db = String((fav && fav.database) || '').trim();
-	if (!clusterShort || !db) return '';
-	return clusterShort + '.' + db;
-}
-
-function __kustoFormatFavoriteDisplayHtml(fav) {
-	const nameRaw = String((fav && fav.name) || '').trim();
-	const clusterDbRaw = __kustoGetFavoriteClusterDbDisplay(fav);
-	const displayNameRaw = nameRaw || clusterDbRaw;
-	const showSuffix = !!(nameRaw && clusterDbRaw && nameRaw !== clusterDbRaw);
-	const name = (typeof escapeHtml === 'function') ? escapeHtml(displayNameRaw) : displayNameRaw;
-	const clusterDb = (typeof escapeHtml === 'function') ? escapeHtml(clusterDbRaw) : clusterDbRaw;
-	return '<span class="kusto-favorites-primary">' + name + '</span>' + (showSuffix ? (' <span class="kusto-favorites-secondary">(' + clusterDb + ')</span>') : '');
-}
-
-function __kustoApplyFavoriteSelection(boxId, encodedKey, opts) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	const keyStr = String(encodedKey || '');
-	const closeDropdown = !(opts && opts.closeDropdown === false);
-
-	if (keyStr === '__other__') {
-		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
-		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
-		try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
-		if (closeDropdown) {
-			closeFavoritesDropdown(id);
-		}
-		return;
-	}
-
-	let key = '';
-	try { key = decodeURIComponent(keyStr); } catch { key = keyStr; }
-	if (key === '__other__') {
-		try { __kustoApplyFavoritesMode(id, false); } catch { /* ignore */ }
-		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
-		try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
-		if (closeDropdown) {
-			closeFavoritesDropdown(id);
-		}
-		return;
-	}
-
-	const list = __kustoGetFavoritesSorted();
-	const fav = list.find(f => __kustoFavoriteKey(f.clusterUrl, f.database) === key);
-	if (!fav) {
-		closeFavoritesDropdown(id);
-		return;
-	}
-
-	const clusterUrl = String(fav.clusterUrl || '').trim();
-	const database = String(fav.database || '').trim();
-	if (!clusterUrl || !database) {
-		closeFavoritesDropdown(id);
-		return;
-	}
-
-	// Always stage the selection; apply immediately if possible, otherwise apply on the next connections refresh.
-	try {
-		pendingFavoriteSelectionByBoxId = pendingFavoriteSelectionByBoxId || {};
-		pendingFavoriteSelectionByBoxId[id] = { clusterUrl, database };
-	} catch { /* ignore */ }
-
-	let applied = false;
-	try {
-		applied = __kustoTryApplyPendingFavoriteSelectionForBox(id);
-	} catch { /* ignore */ }
-
-	if (!applied) {
-		try {
-			vscode.postMessage({ type: 'addConnectionsForClusters', boxId: id, clusterUrls: [clusterUrl] });
-		} catch { /* ignore */ }
-		try { updateConnectionSelects(); } catch { /* ignore */ }
-	}
-
-	// Update monaco-kusto schema when a favorite is selected
-	try {
-		if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-			window.__kustoUpdateSchemaForFocusedBox(id);
-		}
-	} catch { /* ignore */ }
-
-	try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
-	try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
-	try { window.__kustoUpdateRunEnabledForBox && window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
-	if (closeDropdown) {
-		closeFavoritesDropdown(id);
-	}
-}
-
-function removeFavoriteFromFavoritesMenu(ev, boxId, encodedKey) {
-	try { ev && ev.stopPropagation && ev.stopPropagation(); } catch { /* ignore */ }
-	try { ev && ev.preventDefault && ev.preventDefault(); } catch { /* ignore */ }
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	let key = '';
-	try { key = decodeURIComponent(String(encodedKey || '')); } catch { key = String(encodedKey || ''); }
-	const list = __kustoGetFavoritesSorted();
-	const fav = list.find(f => __kustoFavoriteKey(f.clusterUrl, f.database) === key);
-	if (!fav) {
-		try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
-		return;
-	}
-	const name = String((fav && fav.name) || '').trim();
-	const clusterDb = __kustoGetFavoriteClusterDbDisplay(fav);
-	const label = name || clusterDb || 'this favorite';
-	const clusterUrl = String(fav.clusterUrl || '').trim();
-	const database = String(fav.database || '').trim();
-	if (!clusterUrl || !database) return;
-
-	// Ask the extension host to confirm, then proceed if approved.
-	let requestId = '';
-	try {
-		requestId = '__kusto_rmfav__' + Date.now() + '_' + Math.random().toString(16).slice(2);
-	} catch {
-		requestId = '__kusto_rmfav__' + String(Date.now());
-	}
-	try {
-		__kustoConfirmRemoveFavoriteCallbacksById = __kustoConfirmRemoveFavoriteCallbacksById || Object.create(null);
-		__kustoConfirmRemoveFavoriteCallbacksById[requestId] = (ok) => {
-			if (!ok) return;
-
-			const removedKey = __kustoFavoriteKey(clusterUrl, database);
-			let currentKey = '';
-			try {
-				const currentClusterUrl = __kustoGetCurrentClusterUrlForBox(id);
-				const currentDb = __kustoGetCurrentDatabaseForBox(id);
-				if (currentClusterUrl && currentDb) {
-					currentKey = __kustoFavoriteKey(currentClusterUrl, currentDb);
-				}
-			} catch { /* ignore */ }
-			const removedWasSelected = !!(currentKey && removedKey && currentKey === removedKey);
-
-			// Optimistic UI update.
-			try {
-				kustoFavorites = (Array.isArray(kustoFavorites) ? kustoFavorites : []).filter(f => __kustoFavoriteKey(f.clusterUrl, f.database) !== removedKey);
-			} catch { /* ignore */ }
-			try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
-			try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
-
-			// Keep menu open and, if we just deleted the active selection, select the next available favorite.
-			try {
-				const menu = document.getElementById(id + '_favorites_menu');
-				if (menu) {
-					menu.style.display = 'block';
-				}
-				if (removedWasSelected) {
-					const remaining = __kustoGetFavoritesSorted();
-					if (Array.isArray(remaining) && remaining.length) {
-						const first = remaining.find(f => f && String(f.clusterUrl || '').trim() && String(f.database || '').trim());
-						if (first) {
-							const nextEncoded = encodeURIComponent(__kustoFavoriteKey(first.clusterUrl, first.database));
-							__kustoApplyFavoriteSelection(id, nextEncoded, { closeDropdown: false });
-							try { renderFavoritesMenuForBox(id); } catch { /* ignore */ }
-						}
-					}
-				}
-			} catch { /* ignore */ }
-
-			try {
-				vscode.postMessage({ type: 'removeFavorite', clusterUrl, database, boxId: id });
-			} catch { /* ignore */ }
-		};
-		// Safety cleanup in case no response arrives.
-		setTimeout(() => {
-			try { if (__kustoConfirmRemoveFavoriteCallbacksById) delete __kustoConfirmRemoveFavoriteCallbacksById[requestId]; } catch { /* ignore */ }
-		}, 20000);
-	} catch { /* ignore */ }
-
-	try {
-		vscode.postMessage({ type: 'confirmRemoveFavorite', requestId, label, clusterUrl, database, boxId: id });
-	} catch {
-		// If we can't ask for confirmation, do nothing.
-		try { if (__kustoConfirmRemoveFavoriteCallbacksById) delete __kustoConfirmRemoveFavoriteCallbacksById[requestId]; } catch { /* ignore */ }
-	}
-	return;
-}
-
-function __kustoUpdateFavoritesUiForBox(boxId) {
-	const kwEl = __kustoGetQuerySectionElement(boxId);
-	if (!kwEl) return;
-
-	const favorites = Array.isArray(kustoFavorites) ? kustoFavorites : [];
-
-	// Pass the full favorites list to the Lit element.
-	if (typeof kwEl.setFavorites === 'function') {
-		kwEl.setFavorites(favorites);
-	}
-
-	// If we have no favorites anymore, force exit favorites mode.
-	try {
-		const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[boxId]);
-		if (enabled && !favorites.length) {
-			__kustoApplyFavoritesMode(boxId, false);
-		}
-	} catch { /* ignore */ }
-}
-
-window.__kustoUpdateFavoritesUiForAllBoxes = function () {
-	try {
-		for (const id of (queryBoxes || [])) {
-			__kustoUpdateFavoritesUiForBox(id);
-		}
-	} catch { /* ignore */ }
-};
-
-function toggleFavoriteForBox(boxId) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	const clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
-	const database = __kustoGetCurrentDatabaseForBox(id);
-	if (!clusterUrl || !database) {
-		try {
-			vscode.postMessage({ type: 'showInfo', message: 'Select a cluster and database first.' });
-		} catch { /* ignore */ }
-		return;
-	}
-	const existing = __kustoFindFavorite(clusterUrl, database);
-	if (existing) {
-		// Optimistic UI update.
-		try {
-			kustoFavorites = (Array.isArray(kustoFavorites) ? kustoFavorites : []).filter(f => __kustoFavoriteKey(f.clusterUrl, f.database) !== __kustoFavoriteKey(clusterUrl, database));
-		} catch { /* ignore */ }
-		try { window.__kustoUpdateFavoritesUiForAllBoxes(); } catch { /* ignore */ }
-		try {
-			vscode.postMessage({ type: 'removeFavorite', clusterUrl, database, boxId: id });
-		} catch { /* ignore */ }
-		return;
-	}
-
-	const connShort = (typeof formatClusterShortName === 'function') ? formatClusterShortName(clusterUrl) : '';
-	const defaultName = (connShort ? connShort : clusterUrl) + '.' + database;
-	try {
-		vscode.postMessage({ type: 'requestAddFavorite', clusterUrl, database, defaultName, boxId: id });
-	} catch { /* ignore */ }
-}
-
-function toggleFavoritesMode(boxId) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
-	if (!hasAny) return;
-	const enabled = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
-	__kustoApplyFavoritesMode(id, !enabled);
-	try {
-		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-			window.__kustoUpdateRunEnabledForBox(id);
-		}
-	} catch { /* ignore */ }
-}
-
-// Used by persistence restore flows to force the UI state (instead of toggling).
-try {
-	window.__kustoSetFavoritesModeForBox = function (boxId, enabled) {
-		const id = String(boxId || '').trim();
-		if (!id) return;
-		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
-		if (!hasAny) return;
-		// When restoring favorites mode, verify that a matching favorite actually exists.
-		// If not, fall back to cluster/database dropdowns so the user can see the connection.
-		if (enabled) {
-			try {
-				let clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
-				let db = __kustoGetCurrentDatabaseForBox(id);
-				// During restore the dropdowns may not be populated yet; check Lit element state.
-				if (!clusterUrl) {
-					clusterUrl = __kustoGetClusterUrl(id);
-				}
-				if (!db) {
-					db = __kustoGetDatabase(id);
-				}
-				if (clusterUrl && db) {
-					const fav = __kustoFindFavorite(clusterUrl, db);
-					if (!fav) {
-						// No matching favorite — stay in cluster/database mode.
-						__kustoApplyFavoritesMode(id, false);
-						return;
-					}
-				}
-			} catch { /* ignore */ }
-		}
-		__kustoApplyFavoritesMode(id, !!enabled);
-		try {
-			if (typeof window.__kustoUpdateFavoritesUiForBox === 'function') {
-				window.__kustoUpdateFavoritesUiForBox(id);
-			}
-		} catch { /* ignore */ }
-		try {
-			if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
-				window.__kustoUpdateRunEnabledForBox(id);
-			}
-		} catch { /* ignore */ }
-	};
-} catch { /* ignore */ }
-
-function closeFavoritesDropdown(boxId) {
-	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
-}
-
-function closeAllFavoritesDropdowns() {
-	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
-}
-
-function renderFavoritesMenuForBox(boxId) {
-	// No-op: favorites dropdown is now rendered in kw-query-section shadow DOM.
-}
-
-function __kustoLog(boxId, event, message, data, level) {
-	// Diagnostics logging disabled.
-	return;
-	try {
-		if (!vscode || typeof vscode.postMessage !== 'function') return;
-		vscode.postMessage({
-			type: 'log',
-			level: level || 'info',
-			boxId: boxId ? String(boxId) : undefined,
-			event: event ? String(event) : undefined,
-			message: message ? String(message) : undefined,
-			data
-		});
-	} catch { /* ignore */ }
-}
-
-function selectFavoriteForBox(boxId, encodedKey) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	__kustoLog(id, 'favorites.select', 'User selected favorite item', { encodedKey: String(encodedKey || '') });
-	__kustoApplyFavoriteSelection(id, encodedKey, { closeDropdown: true });
-}
 
 function addMissingClusterConnections(boxId) {
 	const id = String(boxId || '').trim();
@@ -5743,6 +5453,7 @@ function updateConnectionSelects() {
 			// Delegate to the Lit element — it handles desired/current/last resolution internally.
 			el.setConnections(connections || [], { lastConnectionId: lastConnectionId || '' });
 		}
+		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
 	});
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {

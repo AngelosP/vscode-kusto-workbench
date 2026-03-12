@@ -1,18 +1,29 @@
-// Cell Viewer - A full-screen modal for viewing any cell value with search functionality.
+// Cell Viewer module — converted from legacy/cellViewer.js
+// Window bridge exports at bottom for remaining inline onclick callers.
+export {};
+
+declare const escapeHtml: (s: string) => string;
+declare const escapeRegex: (s: string) => string;
+declare const __kustoGetResultsState: ((boxId: string) => {
+	columns: any[];
+	rows: any[][];
+	searchMatches?: { row: number; col: number }[];
+} | null) | undefined;
+
+const _win = window as unknown as Record<string, unknown>;
 
 /**
  * State for the cell viewer.
- * @type {{ boxId: string, row: number, col: number, columnName: string, rawValue: string, searchTerm: string, searchMode?: string, searchError?: string, matchCount?: number, currentMatchIndex?: number } | null}
  */
-window.__kustoCellViewerState = null;
+_win.__kustoCellViewerState = null;
 
-function __kustoSetCellViewerNavEnabled(enabled, matchCount) {
+function __kustoSetCellViewerNavEnabled(enabled: boolean, matchCount: number): void {
 	try {
 		// Use embedded nav buttons from search control.
-		const prevBtn = document.getElementById('cellViewerSearch_prev');
-		const nextBtn = document.getElementById('cellViewerSearch_next');
-		if (typeof __kustoSetSearchNavEnabled === 'function') {
-			__kustoSetSearchNavEnabled(prevBtn, nextBtn, enabled, matchCount);
+		const prevBtn = document.getElementById('cellViewerSearch_prev') as HTMLButtonElement | null;
+		const nextBtn = document.getElementById('cellViewerSearch_next') as HTMLButtonElement | null;
+		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
+			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, enabled, matchCount);
 		} else {
 			const canNav = enabled && matchCount > 1;
 			if (prevBtn) prevBtn.disabled = !canNav;
@@ -21,8 +32,8 @@ function __kustoSetCellViewerNavEnabled(enabled, matchCount) {
 	} catch { /* ignore */ }
 }
 
-function __kustoUpdateCellViewerSearchStatus() {
-	const st = window.__kustoCellViewerState;
+function __kustoUpdateCellViewerSearchStatus(): void {
+	const st = _win.__kustoCellViewerState as any;
 	// Use embedded status from search control.
 	const statusEl = document.getElementById('cellViewerSearch_status');
 	const total = (st && typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
@@ -30,13 +41,13 @@ function __kustoUpdateCellViewerSearchStatus() {
 	const hasError = st && st.searchError;
 	const hasSearch = st && st.searchTerm;
 
-	if (typeof __kustoUpdateSearchStatus === 'function') {
+	if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
 		if (hasError) {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, true, st.searchError);
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, true, st.searchError);
 		} else if (!hasSearch) {
-			__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
 		} else {
-			__kustoUpdateSearchStatus(statusEl, total, cur, false, '');
+			(_win.__kustoUpdateSearchStatus as any)(statusEl, total, cur, false, '');
 		}
 	}
 
@@ -47,18 +58,18 @@ function __kustoUpdateCellViewerSearchStatus() {
 	}
 }
 
-function __kustoGetCellViewerMatchElement(matchIndex) {
+function __kustoGetCellViewerMatchElement(matchIndex: number): Element | null {
 	try {
 		const content = document.getElementById('cellViewerContent');
 		if (!content) return null;
 		return content.querySelector('span.cell-viewer-highlight[data-kusto-match-index="' + String(matchIndex) + '"]');
 	} catch {
-		return null;;
+		return null;
 	}
 }
 
-function __kustoApplyCellViewerCurrentMatch(scrollIntoView) {
-	const st = window.__kustoCellViewerState;
+function __kustoApplyCellViewerCurrentMatch(scrollIntoView: boolean): void {
+	const st = _win.__kustoCellViewerState as any;
 	if (!st) return;
 	const total = (typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
 	if (total <= 0) {
@@ -92,12 +103,9 @@ function __kustoApplyCellViewerCurrentMatch(scrollIntoView) {
 
 /**
  * Open the cell viewer for any cell (not just objects).
- * @param {number} row - Row index in the data.
- * @param {number} col - Column index.
- * @param {string} boxId - The query box ID.
  */
-function openCellViewer(row, col, boxId) {
-	const state = __kustoGetResultsState(boxId);
+function openCellViewer(row: number, col: number, boxId: string): void {
+	const state = typeof __kustoGetResultsState === 'function' ? __kustoGetResultsState(boxId) : null;
 	if (!state || !state.rows || !state.rows[row]) { return; }
 
 	const cell = state.rows[row][col];
@@ -128,10 +136,9 @@ function openCellViewer(row, col, boxId) {
 	const modal = document.getElementById('cellViewer');
 	const titleEl = document.getElementById('cellViewerTitle');
 	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
-	const searchInput = document.getElementById('cellViewerSearch');
-	const searchMode = document.getElementById('cellViewerSearchMode');
+	const searchInput = document.getElementById('cellViewerSearch') as HTMLInputElement | null;
+	const searchMode = document.getElementById('cellViewerSearchMode') as HTMLElement | null;
 	const content = document.getElementById('cellViewerContent');
-	const resultsSpan = document.getElementById('cellViewerSearchResults');
 
 	// Set the title.
 	try {
@@ -145,7 +152,7 @@ function openCellViewer(row, col, boxId) {
 	} catch { /* ignore */ }
 
 	// Store state.
-	window.__kustoCellViewerState = {
+	_win.__kustoCellViewerState = {
 		boxId: boxId,
 		row: row,
 		col: col,
@@ -162,38 +169,40 @@ function openCellViewer(row, col, boxId) {
 	try { __kustoEnsureCellViewerCopyIcon(); } catch { /* ignore */ }
 
 	// Check if there's an active data search and if this cell is a search match.
-	const dataSearchInput = document.getElementById(boxId + '_data_search');
-	const dataSearchMode = document.getElementById(boxId + '_data_search_mode');
+	const dataSearchInput = document.getElementById(boxId + '_data_search') as HTMLInputElement | null;
+	const dataSearchMode = document.getElementById(boxId + '_data_search_mode') as HTMLElement | null;
 	const dataSearchTerm = dataSearchInput ? dataSearchInput.value : '';
 	const isSearchMatch = dataSearchTerm && state.searchMatches &&
-		state.searchMatches.some(m => m.row === row && m.col === col);
+		state.searchMatches.some((m: any) => m.row === row && m.col === col);
+
+	const st = _win.__kustoCellViewerState as any;
 
 	if (isSearchMatch) {
 		// Pre-populate search with the current search term.
 		if (searchInput) searchInput.value = dataSearchTerm;
 		try {
-			const dataModeVal = dataSearchMode ? (dataSearchMode.dataset.mode || dataSearchMode.value) : null;
+			const dataModeVal = dataSearchMode ? ((dataSearchMode as any).dataset.mode || (dataSearchMode as any).value) : null;
 			if (searchMode && dataModeVal) {
-				searchMode.dataset.mode = String(dataModeVal);
-				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, dataModeVal);
-				window.__kustoCellViewerState.searchMode = String(dataModeVal);
+				(searchMode as any).dataset.mode = String(dataModeVal);
+				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, dataModeVal);
+				st.searchMode = String(dataModeVal);
 			}
 		} catch { /* ignore */ }
-		window.__kustoCellViewerState.searchTerm = dataSearchTerm;
-		window.__kustoCellViewerState.currentMatchIndex = 0;
-		window.__kustoCellViewerState.searchError = '';
+		st.searchTerm = dataSearchTerm;
+		st.currentMatchIndex = 0;
+		st.searchError = '';
 	} else {
 		if (searchInput) searchInput.value = '';
 		try {
 			if (searchMode) {
-				searchMode.dataset.mode = 'wildcard';
-				if (typeof __kustoUpdateSearchModeToggle === 'function') __kustoUpdateSearchModeToggle(searchMode, 'wildcard');
+				(searchMode as any).dataset.mode = 'wildcard';
+				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, 'wildcard');
 			}
 		} catch { /* ignore */ }
-		window.__kustoCellViewerState.searchTerm = '';
-		window.__kustoCellViewerState.searchMode = 'wildcard';
-		window.__kustoCellViewerState.searchError = '';
-		window.__kustoCellViewerState.currentMatchIndex = 0;
+		st.searchTerm = '';
+		st.searchMode = 'wildcard';
+		st.searchError = '';
+		st.currentMatchIndex = 0;
 	}
 
 	// Render the content.
@@ -201,7 +210,7 @@ function openCellViewer(row, col, boxId) {
 	try { __kustoApplyCellViewerCurrentMatch(true); } catch { /* ignore */ }
 
 	// Show the modal.
-	modal.classList.add('visible');
+	if (modal) modal.classList.add('visible');
 
 	// Focus the search input.
 	setTimeout(() => {
@@ -209,21 +218,21 @@ function openCellViewer(row, col, boxId) {
 	}, 50);
 }
 
-function __kustoEnsureCellViewerSearchControl() {
+function __kustoEnsureCellViewerSearchControl(): void {
 	try {
 		if (document.getElementById('cellViewerSearch')) return;
 		const host = document.getElementById('cellViewerSearchHost');
 		if (!host) return;
-		if (typeof window.__kustoCreateSearchControl !== 'function') return;
+		if (typeof (_win.__kustoCreateSearchControl) !== 'function') return;
 
-		window.__kustoCreateSearchControl(host, {
+		(_win.__kustoCreateSearchControl as any)(host, {
 			inputId: 'cellViewerSearch',
 			modeId: 'cellViewerSearchMode',
 			ariaLabel: 'Search',
 			onInput: function () { searchInCellViewer(); },
 			onPrev: function () { cellViewerNavigateMatch(-1); },
 			onNext: function () { cellViewerNavigateMatch(1); },
-			onKeyDown: function (e) {
+			onKeyDown: function (e: KeyboardEvent) {
 				if (e.key === 'Enter') {
 					e.preventDefault();
 					cellViewerNavigateMatch(e.shiftKey ? -1 : 1);
@@ -235,25 +244,21 @@ function __kustoEnsureCellViewerSearchControl() {
 
 /**
  * Close the cell viewer modal.
- * @param {Event} [event] - Optional click event.
  */
-function closeCellViewer(event) {
-	if (event && event.target !== event.currentTarget && !event.currentTarget.classList.contains('cell-viewer-close')) {
+function closeCellViewer(event?: Event): void {
+	if (event && event.target !== event.currentTarget && !(event.currentTarget as HTMLElement).classList.contains('cell-viewer-close')) {
 		return;
 	}
 
 	const modal = document.getElementById('cellViewer');
-	modal.classList.remove('visible');
-	window.__kustoCellViewerState = null;
+	if (modal) modal.classList.remove('visible');
+	_win.__kustoCellViewerState = null;
 }
 
 /**
  * Get the column name for the cell viewer title.
- * @param {object} state - The results state.
- * @param {number} colIndex - Column index.
- * @returns {string} - The column name.
  */
-function __kustoGetCellViewerColumnName(state, colIndex) {
+function __kustoGetCellViewerColumnName(state: any, colIndex: number): string {
 	try {
 		const cols = (state && Array.isArray(state.columns)) ? state.columns : [];
 		const col = cols[colIndex];
@@ -270,12 +275,11 @@ function __kustoGetCellViewerColumnName(state, colIndex) {
 /**
  * Render the cell viewer content with optional search highlighting.
  */
-function __kustoRenderCellViewerContent() {
-	const state = window.__kustoCellViewerState;
+function __kustoRenderCellViewerContent(): void {
+	const state = _win.__kustoCellViewerState as any;
 	if (!state) { return; }
 
 	const content = document.getElementById('cellViewerContent');
-	const resultsSpan = document.getElementById('cellViewerSearchResults');
 	if (!content) { return; }
 
 	const rawValue = state.rawValue || '';
@@ -293,10 +297,10 @@ function __kustoRenderCellViewerContent() {
 		return;
 	}
 
-	let built = { regex: null, error: null };
+	let built: any = { regex: null, error: null };
 	try {
-		if (typeof window.__kustoTryBuildSearchRegex === 'function') {
-			built = window.__kustoTryBuildSearchRegex(searchTerm, searchMode);
+		if (typeof (_win.__kustoTryBuildSearchRegex) === 'function') {
+			built = (_win.__kustoTryBuildSearchRegex as any)(searchTerm, searchMode);
 		} else {
 			built = { regex: new RegExp(escapeRegex(String(searchTerm).trim()), 'gi'), error: null };
 		}
@@ -315,8 +319,8 @@ function __kustoRenderCellViewerContent() {
 	}
 
 	const regex = built && built.regex ? built.regex : null;
-	const render = (regex && typeof window.__kustoHighlightPlainTextToHtml === 'function')
-		? window.__kustoHighlightPlainTextToHtml(rawValue, regex, { highlightClass: 'cell-viewer-highlight', includeMatchIndex: true, maxMatches: 5000 })
+	const render = (regex && typeof (_win.__kustoHighlightPlainTextToHtml) === 'function')
+		? (_win.__kustoHighlightPlainTextToHtml as any)(rawValue, regex, { highlightClass: 'cell-viewer-highlight', includeMatchIndex: true, maxMatches: 5000 })
 		: { html: escapeHtml(String(rawValue || '')), count: 0 };
 
 	state.matchCount = render && typeof render.count === 'number' ? render.count : 0;
@@ -336,20 +340,20 @@ function __kustoRenderCellViewerContent() {
 /**
  * Handle search input in the cell viewer.
  */
-function searchInCellViewer() {
-	const state = window.__kustoCellViewerState;
+function searchInCellViewer(): void {
+	const state = _win.__kustoCellViewerState as any;
 	if (!state) { return; }
 
 	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
 	let nextTerm = '';
 	let nextMode = 'wildcard';
 	try {
-		if (typeof window.__kustoGetSearchControlState === 'function') {
-			const st = window.__kustoGetSearchControlState('cellViewerSearch', 'cellViewerSearchMode');
+		if (typeof (_win.__kustoGetSearchControlState) === 'function') {
+			const st = (_win.__kustoGetSearchControlState as any)('cellViewerSearch', 'cellViewerSearchMode');
 			nextTerm = st ? String(st.query || '') : '';
 			nextMode = st && st.mode ? String(st.mode) : 'wildcard';
 		} else {
-			const searchInput = document.getElementById('cellViewerSearch');
+			const searchInput = document.getElementById('cellViewerSearch') as HTMLInputElement | null;
 			nextTerm = searchInput ? String(searchInput.value || '') : '';
 			nextMode = 'wildcard';
 		}
@@ -366,8 +370,8 @@ function searchInCellViewer() {
 	try { __kustoApplyCellViewerCurrentMatch(true); } catch { /* ignore */ }
 }
 
-function cellViewerNextMatch() {
-	const st = window.__kustoCellViewerState;
+function cellViewerNextMatch(): void {
+	const st = _win.__kustoCellViewerState as any;
 	if (!st || !st.searchTerm) return;
 	const total = (typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
 	if (total <= 0) return;
@@ -375,8 +379,8 @@ function cellViewerNextMatch() {
 	__kustoApplyCellViewerCurrentMatch(true);
 }
 
-function cellViewerPreviousMatch() {
-	const st = window.__kustoCellViewerState;
+function cellViewerPreviousMatch(): void {
+	const st = _win.__kustoCellViewerState as any;
 	if (!st || !st.searchTerm) return;
 	const total = (typeof st.matchCount === 'number' && isFinite(st.matchCount)) ? st.matchCount : 0;
 	if (total <= 0) return;
@@ -386,9 +390,8 @@ function cellViewerPreviousMatch() {
 
 /**
  * Navigate to next (+1) or previous (-1) match.
- * @param {number} delta - +1 for next, -1 for previous.
  */
-function cellViewerNavigateMatch(delta) {
+function cellViewerNavigateMatch(delta: number): void {
 	if (delta > 0) {
 		cellViewerNextMatch();
 	} else {
@@ -399,8 +402,8 @@ function cellViewerNavigateMatch(delta) {
 /**
  * Copy the cell viewer content to clipboard.
  */
-function copyCellViewerToClipboard() {
-	const state = window.__kustoCellViewerState;
+function copyCellViewerToClipboard(): void {
+	const state = _win.__kustoCellViewerState as any;
 	if (!state) { return; }
 
 	const content = document.getElementById('cellViewerContent');
@@ -412,7 +415,7 @@ function copyCellViewerToClipboard() {
 		const hasSelection = sel && !sel.isCollapsed && typeof sel.toString === 'function' && sel.toString();
 		const inContent = sel && sel.anchorNode && sel.focusNode && content && content.contains(sel.anchorNode) && content.contains(sel.focusNode);
 		if (hasSelection && inContent) {
-			textToCopy = sel.toString();
+			textToCopy = sel!.toString();
 		}
 	} catch { /* ignore */ }
 
@@ -421,20 +424,22 @@ function copyCellViewerToClipboard() {
 		textToCopy = state.rawValue || '';
 	}
 
-	__kustoWriteTextToClipboard(textToCopy);
+	if (typeof (_win.__kustoWriteTextToClipboard) === 'function') {
+		(_win.__kustoWriteTextToClipboard as any)(textToCopy);
+	}
 }
 
 /**
  * Ensure the copy icon is set on the cell viewer copy button.
  */
-function __kustoEnsureCellViewerCopyIcon() {
-	const btn = document.getElementById('cellViewerCopy');
+function __kustoEnsureCellViewerCopyIcon(): void {
+	const btn = document.getElementById('cellViewerCopy') as any;
 	if (!btn) { return; }
 	if (btn.__kustoHasIcon) { return; }
 	btn.__kustoHasIcon = true;
 	try {
-		if (typeof __kustoGetCopyIconSvg === 'function') {
-			btn.innerHTML = __kustoGetCopyIconSvg(16);
+		if (typeof (_win.__kustoGetCopyIconSvg) === 'function') {
+			btn.innerHTML = (_win.__kustoGetCopyIconSvg as any)(16);
 		} else {
 			btn.innerHTML = (
 				'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
@@ -450,12 +455,8 @@ function __kustoEnsureCellViewerCopyIcon() {
 
 /**
  * Handle double-click on a table cell to open the cell viewer.
- * @param {Event} event - The dblclick event.
- * @param {number} row - Row index.
- * @param {number} col - Column index.
- * @param {string} boxId - The query box ID.
  */
-function handleCellDoubleClick(event, row, col, boxId) {
+function handleCellDoubleClick(event: Event, row: number, col: number, boxId: string): void {
 	try {
 		event.stopPropagation();
 		event.preventDefault();
@@ -465,10 +466,9 @@ function handleCellDoubleClick(event, row, col, boxId) {
 
 /**
  * Handle keyboard navigation in the cell viewer.
- * @param {KeyboardEvent} event - The keydown event.
  */
-function handleCellViewerKeydown(event) {
-	if (!window.__kustoCellViewerState) { return; }
+function handleCellViewerKeydown(event: KeyboardEvent): void {
+	if (!_win.__kustoCellViewerState) { return; }
 
 	if (event.key === 'Escape') {
 		closeCellViewer();
@@ -476,11 +476,6 @@ function handleCellViewerKeydown(event) {
 		return;
 	}
 
-	// Match navigation shortcuts:
-	// - Enter: next match
-	// - Shift+Enter: previous match
-	// - F3: next match
-	// - Shift+F3: previous match
 	if (event.key === 'Enter') {
 		try {
 			if (event.shiftKey) {
@@ -512,3 +507,16 @@ document.addEventListener('keydown', function(event) {
 		handleCellViewerKeydown(event);
 	}
 });
+
+// ======================================================================
+// Window bridge: expose globals for remaining legacy callers / onclick
+// ======================================================================
+_win.openCellViewer = openCellViewer;
+_win.closeCellViewer = closeCellViewer;
+_win.handleCellDoubleClick = handleCellDoubleClick;
+_win.copyCellViewerToClipboard = copyCellViewerToClipboard;
+_win.searchInCellViewer = searchInCellViewer;
+_win.cellViewerNavigateMatch = cellViewerNavigateMatch;
+_win.cellViewerNextMatch = cellViewerNextMatch;
+_win.cellViewerPreviousMatch = cellViewerPreviousMatch;
+_win.handleCellViewerKeydown = handleCellViewerKeydown;

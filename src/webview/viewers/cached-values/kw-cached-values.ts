@@ -1,4 +1,5 @@
-import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import { styles } from './kw-cached-values.styles.js';
 import { customElement, state, query } from 'lit/decorators.js';
 import type { KwObjectViewer } from '../../components/kw-object-viewer.js';
 
@@ -569,117 +570,7 @@ export class KwCachedValues extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = css`
-		/* Ensure borders/padding don't cause height overflow + clipping in fixed-height panes. */
-		*, *::before, *::after { box-sizing: border-box; }
-
-		:host {
-			display: block;
-			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
-			color: var(--vscode-editor-foreground);
-			background: var(--vscode-editor-background);
-			padding: 16px;
-		}
-
-		h1 { font-size: 16px; margin: 0 0 12px 0; }
-		.small { opacity: 0.8; font-size: 12px; }
-		section { margin: 16px 0; padding: 12px; border: 1px solid var(--vscode-editorWidget-border); border-radius: 0; background: var(--vscode-editorWidget-background); max-height: 500px; overflow: auto; }
-		section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-		.sectionBody { min-height: 0; }
-		section.dbSection { overflow: hidden; display: flex; flex-direction: column; height: 500px; }
-		section.dbSection > header { flex: 0 0 auto; }
-		section.dbSection .sectionBody { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-		button { font-family: inherit; }
-		.iconButton { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 4px; border: 1px solid var(--vscode-button-border, transparent); background: transparent; color: var(--vscode-foreground); cursor: pointer; }
-		.iconButton:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
-		.iconButton:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground)); }
-		.iconButton svg { width: 16px; height: 16px; fill: currentColor; }
-		.linkButton { background: transparent; border: 0; padding: 0; margin: 0; color: var(--vscode-textLink-foreground); cursor: pointer; }
-		.linkButton:hover { text-decoration: underline; }
-		table { width: 100%; border-collapse: collapse; }
-		th, td { border-bottom: 1px solid var(--vscode-editorWidget-border); padding: 6px 8px; vertical-align: top; }
-		th { text-align: left; font-weight: 600; }
-		.tokenCol { white-space: nowrap; min-width: 92px; }
-		code, pre, textarea, input { font-family: var(--vscode-editor-font-family); }
-		textarea { width: 100%; min-height: 56px; }
-		.rowActions { display: flex; gap: 6px; flex-wrap: wrap; }
-		details pre { white-space: pre-wrap; word-break: break-all; }
-		input[type="text"] { width: 100%; }
-		select { width: 100%; }
-
-		.select-wrapper {
-			position: relative;
-			min-width: 40px;
-			display: flex;
-			align-items: center;
-		}
-		.select-wrapper select {
-			background: var(--vscode-dropdown-background);
-			color: var(--vscode-dropdown-foreground);
-			border: 1px solid var(--vscode-dropdown-border);
-			padding: 4px 24px 4px 8px;
-			font-size: 12px;
-			border-radius: 2px;
-			width: 100%;
-			cursor: pointer;
-		}
-		.select-wrapper select:disabled { opacity: 0.5; cursor: not-allowed; }
-
-		.mono { font-family: var(--vscode-editor-font-family); }
-		.twoPane { display: grid; grid-template-columns: 260px 1fr; gap: 10px; height: 100%; min-height: 0; align-items: stretch; }
-		.pane { border: 1px solid var(--vscode-editorWidget-border); border-radius: 0; overflow: hidden; min-height: 0; }
-		.list { height: 100%; overflow-y: scroll; overflow-x: hidden; }
-		.scrollPane:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-		.dbDetailHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-
-		.scrollPane { scrollbar-gutter: stable; }
-		.scrollPane::-webkit-scrollbar { width: 12px; height: 12px; }
-		.scrollPane::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 0; }
-		.scrollPane::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-		.scrollPane::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
-		.scrollPane::-webkit-scrollbar-corner { background: transparent; }
-		.listItem { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-editorWidget-border); cursor: pointer; }
-		.listItem:last-child { border-bottom: none; }
-		.listItem:hover { background: var(--vscode-list-hoverBackground); }
-		.listItem.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-		.listItem .count { opacity: 0.8; font-size: 12px; }
-
-		.refresh-btn {
-			background: transparent;
-			border: 1px solid var(--vscode-input-border);
-			color: var(--vscode-foreground);
-			cursor: pointer;
-			padding: 0;
-			font-size: 12px;
-			border-radius: 4px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			line-height: 0;
-			min-width: 28px;
-			width: 28px;
-			height: 28px;
-		}
-		.refresh-btn svg { display: block; }
-		.refresh-btn.close-btn { border: none; }
-		.refresh-btn:hover { background: var(--vscode-list-hoverBackground); }
-		.refresh-btn:active { opacity: 0.7; }
-
-		.tool-toggle-btn {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border);
-			border-radius: 2px;
-			padding: 4px 8px;
-			cursor: pointer;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			font-size: 14px;
-		}
-		.tool-toggle-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
-	`;
+	static styles = styles;
 }
 
 declare global {

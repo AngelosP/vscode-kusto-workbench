@@ -1,27 +1,26 @@
-// Shared dropdown rendering/helpers for the Kusto Query Editor webview.
-//
-// Goals:
-// - Provide a reusable dropdown control with consistent styling (matching the native select styling)
-// - Support optional per-item deletion (disabled by default)
-//
-// Note: The webview is built from concatenated global scripts (no bundler/modules).
+// Dropdown module — converted from legacy/dropdown.js
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, unknown>;
 
 (function initKustoDropdown() {
-	if (!window.__kustoDropdown || typeof window.__kustoDropdown !== 'object') {
-		window.__kustoDropdown = {};
+	if (!_win.__kustoDropdown || typeof _win.__kustoDropdown !== 'object') {
+		_win.__kustoDropdown = {};
 	}
+	const dd = _win.__kustoDropdown as Record<string, unknown>;
 
 	// SVG chevron-down icon matching VS Code's style
 	const chevronDownSvg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
 	// Export for use by other modules
-	window.__kustoDropdown.getChevronDownSvg = function() { return chevronDownSvg; };
+	dd.getChevronDownSvg = function() { return chevronDownSvg; };
 
-	const escAttr = (value) => {
+	const escAttr = (value: unknown): string => {
 		try {
 			// Prefer the existing helper if available.
-			if (typeof window.escapeHtml === 'function') {
-				return window.escapeHtml(String(value ?? ''));
+			if (typeof (_win.escapeHtml) === 'function') {
+				return (_win.escapeHtml as any)(String(value ?? ''));
 			}
 		} catch { /* ignore */ }
 		return String(value ?? '')
@@ -33,9 +32,8 @@
 	};
 
 	// Renders a VS Code styled <select> inside the canonical wrapper.
-	// Use this for simple lists (clusters/databases/etc.).
-	window.__kustoDropdown.renderSelectHtml = function (opts) {
-		const o = (opts && typeof opts === 'object') ? opts : {};
+	dd.renderSelectHtml = function (opts: any) {
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const wrapperClass = String(o.wrapperClass || '').trim();
 		const title = String(o.title || '').trim();
 		const iconSvg = o.iconSvg ? String(o.iconSvg) : '';
@@ -68,9 +66,8 @@
 	};
 
 	// Renders a button+menu dropdown that *looks like* our select inputs.
-	// Supports optional delete buttons per item (disabled by default).
-	window.__kustoDropdown.renderMenuDropdownHtml = function (opts) {
-		const o = (opts && typeof opts === 'object') ? opts : {};
+	dd.renderMenuDropdownHtml = function (opts: any) {
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const wrapperClass = String(o.wrapperClass || '').trim();
 		const title = String(o.title || '').trim();
 		const iconSvg = o.iconSvg ? String(o.iconSvg) : '';
@@ -107,7 +104,6 @@
 			? ('<select class="kusto-dropdown-hidden-select"' + selectIdAttr + changeAttr + extraAttrs + '>' + placeholderOption + '</select>')
 			: '';
 
-		// Keep event.stopPropagation() behavior consistent with existing favorites implementation.
 		const clickAttr = onToggle
 			? (' onclick="' + escAttr(onToggle) + '; event.stopPropagation();"')
 			: ' onclick="event.stopPropagation();"';
@@ -126,11 +122,9 @@
 	};
 
 	// Renders items into a dropdown menu.
-	// items: [{ key: string, html: string, ariaLabel?: string, enableDelete?: boolean, disabled?: boolean, selected?: boolean }]
-	// opts: { dropdownId: string, onSelectJs: (keyEnc) => string, onDeleteJs?: (keyEnc) => string }
-	window.__kustoDropdown.renderMenuItemsHtml = function (items, opts) {
+	dd.renderMenuItemsHtml = function (items: any[], opts: any) {
 		const list = Array.isArray(items) ? items : [];
-		const o = (opts && typeof opts === 'object') ? opts : {};
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const dropdownId = String(o.dropdownId || '').trim();
 		const onSelectJs = typeof o.onSelectJs === 'function' ? o.onSelectJs : null;
 		const onDeleteJs = typeof o.onDeleteJs === 'function' ? o.onDeleteJs : null;
@@ -141,8 +135,8 @@
 			return emptyHtml || '<div class="kusto-dropdown-empty">No items.</div>';
 		}
 
-		const trashSvg = (typeof window.__kustoGetTrashIconSvg === 'function') ? window.__kustoGetTrashIconSvg() : '';
-		const rows = [];
+		const trashSvg = (typeof (_win.__kustoGetTrashIconSvg) === 'function') ? (_win.__kustoGetTrashIconSvg as any)() : '';
+		const rows: string[] = [];
 
 		for (let idx = 0; idx < list.length; idx++) {
 			const it = list[idx];
@@ -182,21 +176,21 @@
 		return rows.join('');
 	};
 
-	const getWrapperFromSelect = (selectEl) => {
+	const getWrapperFromSelect = (selectEl: HTMLElement | null): HTMLElement | null => {
 		try {
 			if (!selectEl) return null;
 			if (typeof selectEl.closest === 'function') {
-				return selectEl.closest('.kusto-dropdown-wrapper');
+				return selectEl.closest('.kusto-dropdown-wrapper') as HTMLElement | null;
 			}
 		} catch { /* ignore */ }
 		return null;
 	};
 
-	window.__kustoDropdown.closeAllMenus = function () {
+	dd.closeAllMenus = function () {
 		try {
 			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu, .md-mode-dropdown-menu, .section-mode-dropdown-menu, .add-controls-dropdown-menu'));
 			for (const m of menus) {
-				try { m.style.display = 'none'; } catch { /* ignore */ }
+				try { (m as HTMLElement).style.display = 'none'; } catch { /* ignore */ }
 			}
 			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn, .qe-toolbar-overflow-btn, .md-mode-dropdown-btn, .section-mode-dropdown-btn, .add-controls-dropdown-btn'));
 			for (const b of buttons) {
@@ -206,14 +200,13 @@
 		} catch { /* ignore */ }
 	};
 
-	// Generic close for a specific dropdown button/menu by element id.
-	window.__kustoDropdown.closeMenuDropdown = function (buttonId, menuId) {
+	dd.closeMenuDropdown = function (buttonId: string, menuId: string) {
 		const bid = String(buttonId || '').trim();
 		const mid = String(menuId || '').trim();
 		if (!bid || !mid) return;
 		try {
 			const menu = document.getElementById(mid);
-			if (menu) menu.style.display = 'none';
+			if (menu) (menu as HTMLElement).style.display = 'none';
 		} catch { /* ignore */ }
 		try {
 			const btn = document.getElementById(bid);
@@ -224,23 +217,21 @@
 		} catch { /* ignore */ }
 	};
 
-	// Generic toggle for a dropdown button/menu by element id.
-	// opts: { buttonId, menuId, beforeOpen?: () => void, afterOpen?: () => void }
-	window.__kustoDropdown.toggleMenuDropdown = function (opts) {
-		const o = (opts && typeof opts === 'object') ? opts : {};
+	dd.toggleMenuDropdown = function (opts: any) {
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const bid = String(o.buttonId || '').trim();
 		const mid = String(o.menuId || '').trim();
 		if (!bid || !mid) return;
-		const btn = document.getElementById(bid);
-		const menu = document.getElementById(mid);
+		const btn = document.getElementById(bid) as HTMLButtonElement | null;
+		const menu = document.getElementById(mid) as HTMLElement | null;
 		if (!btn || !menu) return;
 		try {
 			if (btn.disabled) return;
 		} catch { /* ignore */ }
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { if (typeof closeAllRunMenus === 'function') closeAllRunMenus(); } catch { /* ignore */ }
-		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { if (typeof (_win.closeAllRunMenus) === 'function') (_win.closeAllRunMenus as any)(); } catch { /* ignore */ }
+		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
 
 		if (wasOpen) {
 			return;
@@ -258,23 +249,19 @@
 			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 
-
-		const positionFixedMenuUnderButton = (buttonEl, menuEl) => {
+		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {
 			try {
 				const rect = buttonEl.getBoundingClientRect();
-				// Default: below, left-aligned.
 				let left = rect.left;
 				let top = rect.bottom;
 				menuEl.style.minWidth = rect.width + 'px';
 				menuEl.style.left = left + 'px';
 				menuEl.style.top = top + 'px';
 
-				// Clamp within viewport and flip above if it would overflow.
 				const vw = Math.max(0, window.innerWidth || 0);
 				const vh = Math.max(0, window.innerHeight || 0);
 				const menuRect = menuEl.getBoundingClientRect();
 
-				// Horizontal clamp.
 				if (vw > 0) {
 					const overRight = (menuRect.right - vw);
 					if (overRight > 0) {
@@ -283,7 +270,6 @@
 					if (left < 0) left = 0;
 				}
 
-				// Vertical flip if needed.
 				if (vh > 0) {
 					const overBottom = (menuRect.bottom - vh);
 					if (overBottom > 0) {
@@ -298,7 +284,6 @@
 			} catch { /* ignore */ }
 		};
 
-		// If menu uses position:fixed, calculate and set top/left from button rect.
 		try {
 			const computedPos = window.getComputedStyle(menu).position;
 			if (computedPos === 'fixed') {
@@ -306,17 +291,15 @@
 			}
 		} catch { /* ignore */ }
 
-		// Close the dropdown automatically if focus leaves the dropdown wrapper
-		// (e.g., user pressed Tab, or clicked somewhere else).
 		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.wireCloseOnFocusOut === 'function') {
-				window.__kustoDropdown.wireCloseOnFocusOut(btn, menu);
+			if (dd && typeof (dd.wireCloseOnFocusOut) === 'function') {
+				(dd.wireCloseOnFocusOut as any)(btn, menu);
 			}
 		} catch { /* ignore */ }
 
 		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.wireMenuInteractions === 'function') {
-				window.__kustoDropdown.wireMenuInteractions(menu);
+			if (dd && typeof (dd.wireMenuInteractions) === 'function') {
+				(dd.wireMenuInteractions as any)(menu);
 			}
 		} catch { /* ignore */ }
 
@@ -329,17 +312,15 @@
 		try { menu.focus(); } catch { /* ignore */ }
 	};
 
-	// Wire focus-out behavior to close a dropdown when it loses focus.
-	// Safe to call multiple times.
-	window.__kustoDropdown.wireCloseOnFocusOut = function (buttonEl, menuEl) {
+	dd.wireCloseOnFocusOut = function (buttonEl: HTMLElement, menuEl: HTMLElement) {
 		const btn = buttonEl;
 		const menu = menuEl;
 		if (!btn || !menu) return;
 
-		let wrapper = null;
+		let wrapper: HTMLElement | null = null;
 		try {
 			if (typeof btn.closest === 'function') {
-				wrapper = btn.closest('.kusto-dropdown-wrapper') || btn.closest('.select-wrapper');
+				wrapper = btn.closest('.kusto-dropdown-wrapper') as HTMLElement || btn.closest('.select-wrapper') as HTMLElement;
 			}
 		} catch { /* ignore */ }
 		if (!wrapper) {
@@ -348,25 +329,22 @@
 		if (!wrapper) return;
 
 		try {
-			if (wrapper.dataset && wrapper.dataset.kustoCloseOnBlurWired === '1') {
+			if ((wrapper as any).dataset && (wrapper as any).dataset.kustoCloseOnBlurWired === '1') {
 				return;
 			}
-			if (wrapper.dataset) {
-				wrapper.dataset.kustoCloseOnBlurWired = '1';
+			if ((wrapper as any).dataset) {
+				(wrapper as any).dataset.kustoCloseOnBlurWired = '1';
 			}
 		} catch { /* ignore */ }
 
-		// Use focusout (bubbles) so we can detect focus moving anywhere outside the wrapper.
 		wrapper.addEventListener('focusout', () => {
 			try {
-				// Defer until the browser has updated document.activeElement.
 				setTimeout(() => {
 					try {
 						const active = document.activeElement;
-						if (active && wrapper.contains(active)) {
+						if (active && wrapper!.contains(active)) {
 							return;
 						}
-						// Only close if this dropdown is currently open.
 						if (String(menu.style.display || '') === 'block') {
 							try { menu.style.display = 'none'; } catch { /* ignore */ }
 							try { btn.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
@@ -378,11 +356,11 @@
 		});
 	};
 
-	const getMenuItems = (menuEl) => {
+	const getMenuItems = (menuEl: HTMLElement | null): HTMLElement[] => {
 		try {
 			if (!menuEl) return [];
 			const all = Array.from(menuEl.querySelectorAll('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]'));
-			return all.filter((el) => {
+			return (all as HTMLElement[]).filter((el) => {
 				try {
 					if (!el) return false;
 					if (el.classList && el.classList.contains('is-disabled')) return false;
@@ -397,7 +375,7 @@
 		}
 	};
 
-	const setActiveMenuItem = (menuEl, itemEl) => {
+	const setActiveMenuItem = (menuEl: HTMLElement, itemEl: HTMLElement) => {
 		if (!menuEl || !itemEl) return;
 		try {
 			const items = getMenuItems(menuEl);
@@ -409,17 +387,16 @@
 			try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
 			try {
 				const idx = items.indexOf(itemEl);
-				if (idx >= 0 && menuEl.dataset) {
-					menuEl.dataset.kustoActiveIndex = String(idx);
+				if (idx >= 0 && (menuEl as any).dataset) {
+					(menuEl as any).dataset.kustoActiveIndex = String(idx);
 				}
 			} catch { /* ignore */ }
 		} catch { /* ignore */ }
 	};
 
-	const getInitialActiveItem = (menuEl) => {
+	const getInitialActiveItem = (menuEl: HTMLElement): HTMLElement | null => {
 		const items = getMenuItems(menuEl);
 		if (!items.length) return null;
-		// Prefer selected item if present.
 		try {
 			for (const it of items) {
 				try {
@@ -432,13 +409,10 @@
 		return items[0];
 	};
 
-	// Wires keyboard navigation (ArrowUp/ArrowDown/Enter/Escape) and hover/focus active state.
-	// Safe to call multiple times; it will only attach listeners once per menu.
-	window.__kustoDropdown.wireMenuInteractions = function (menuEl) {
+	dd.wireMenuInteractions = function (menuEl: HTMLElement) {
 		if (!menuEl) return;
 		try {
-			if (menuEl.dataset && menuEl.dataset.kustoMenuWired === '1') {
-				// Still refresh initial active item if nothing is active.
+			if ((menuEl as any).dataset && (menuEl as any).dataset.kustoMenuWired === '1') {
 				const items = getMenuItems(menuEl);
 				const hasActive = items.some((it) => it.classList && it.classList.contains('is-active'));
 				if (!hasActive) {
@@ -450,32 +424,30 @@
 		} catch { /* ignore */ }
 
 		try {
-			if (menuEl.dataset) {
-				menuEl.dataset.kustoMenuWired = '1';
+			if ((menuEl as any).dataset) {
+				(menuEl as any).dataset.kustoMenuWired = '1';
 			}
 		} catch { /* ignore */ }
 
-		// Ensure menu itself can receive focus.
 		try { menuEl.setAttribute('tabindex', '-1'); } catch { /* ignore */ }
 
-		// Hover/focus drives active item.
 		try {
 			menuEl.addEventListener('mouseenter', (ev) => {
 				try {
-					const target = ev && ev.target ? ev.target.closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') : null;
+					const target = ev && ev.target ? (ev.target as HTMLElement).closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') as HTMLElement | null : null;
 					if (target) setActiveMenuItem(menuEl, target);
 				} catch { /* ignore */ }
 			}, true);
 			menuEl.addEventListener('focusin', (ev) => {
 				try {
-					const target = ev && ev.target ? ev.target.closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') : null;
+					const target = ev && ev.target ? (ev.target as HTMLElement).closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') as HTMLElement | null : null;
 					if (target) setActiveMenuItem(menuEl, target);
 				} catch { /* ignore */ }
 			}, true);
 		} catch { /* ignore */ }
 
 		menuEl.addEventListener('keydown', (ev) => {
-			const e = ev || window.event;
+			const e = ev || (window as any).event;
 			const key = String(e && e.key ? e.key : '');
 			if (!key) return;
 			const items = getMenuItems(menuEl);
@@ -483,8 +455,8 @@
 
 			let idx = -1;
 			try {
-				if (menuEl.dataset && typeof menuEl.dataset.kustoActiveIndex === 'string') {
-					idx = parseInt(menuEl.dataset.kustoActiveIndex, 10);
+				if ((menuEl as any).dataset && typeof (menuEl as any).dataset.kustoActiveIndex === 'string') {
+					idx = parseInt((menuEl as any).dataset.kustoActiveIndex, 10);
 				}
 			} catch { /* ignore */ }
 			if (!(idx >= 0 && idx < items.length)) {
@@ -529,7 +501,7 @@
 				}
 				case 'Escape': {
 					prevent();
-					try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+					try { dd && (dd.closeAllMenus as any) && (dd.closeAllMenus as any)(); } catch { /* ignore */ }
 					break;
 				}
 				default:
@@ -537,29 +509,25 @@
 			}
 		});
 
-		// Initialize active item.
 		try {
 			const initial = getInitialActiveItem(menuEl);
 			if (initial) setActiveMenuItem(menuEl, initial);
 		} catch { /* ignore */ }
 	};
 
-	// Syncs a menu dropdown from its hidden backing <select>.
-	// selectId is the DOM id of the <select>.
-	window.__kustoDropdown.syncSelectBackedDropdown = function (selectId) {
+	dd.syncSelectBackedDropdown = function (selectId: string) {
 		const id = String(selectId || '').trim();
 		if (!id) return;
-		const select = document.getElementById(id);
+		const select = document.getElementById(id) as HTMLSelectElement | null;
 		if (!select) return;
 
 		const wrapper = getWrapperFromSelect(select);
 		if (!wrapper) return;
-		const menu = wrapper.querySelector('.kusto-dropdown-menu');
-		const btn = wrapper.querySelector('.kusto-dropdown-btn');
-		const btnText = wrapper.querySelector('.kusto-dropdown-btn-text');
+		const menu = wrapper.querySelector('.kusto-dropdown-menu') as HTMLElement | null;
+		const btn = wrapper.querySelector('.kusto-dropdown-btn') as HTMLButtonElement | null;
+		const btnText = wrapper.querySelector('.kusto-dropdown-btn-text') as HTMLElement | null;
 		if (!menu || !btn || !btnText) return;
 
-		// Keep disabled state in sync.
 		try {
 			btn.disabled = !!select.disabled;
 			btn.setAttribute('aria-disabled', select.disabled ? 'true' : 'false');
@@ -567,7 +535,7 @@
 
 		let placeholderText = '';
 		try {
-			const ph = select.querySelector('option[value=""]');
+			const ph = select.querySelector('option[value=""]') as HTMLOptionElement | null;
 			if (ph && ph.disabled) {
 				placeholderText = String(ph.textContent || '').trim();
 			}
@@ -577,14 +545,12 @@
 		try {
 			const opt = select.selectedOptions && select.selectedOptions.length ? select.selectedOptions[0] : null;
 			if (opt) {
-				// Prefer the short label (without model id suffix) for the button text.
 				const shortLabel = opt.getAttribute('data-short-label');
 				selectedLabel = String(shortLabel || opt.textContent || '').trim();
 			}
 		} catch { /* ignore */ }
 
 		btnText.textContent = selectedLabel || placeholderText || 'Select...';
-		// Tooltip shows current selection (useful when label is truncated).
 		try {
 			btn.title = selectedLabel || '';
 		} catch { /* ignore */ }
@@ -597,15 +563,13 @@
 			}
 		})();
 
-		// Rebuild menu items from options.
-		const items = [];
+		const items: any[] = [];
 		try {
 			const opts = Array.from(select.options || []);
 			for (const o of opts) {
 				if (!o) continue;
 				const val = String(o.value || '');
 				const label = String(o.textContent || '').trim();
-				// Skip the placeholder option.
 				if (!val && o.disabled) {
 					continue;
 				}
@@ -629,23 +593,21 @@
 		}
 
 		try {
-			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
+			menu.innerHTML = (dd.renderMenuItemsHtml as any)(items, {
 				dropdownId: id,
-				onSelectJs: (keyEnc) => "window.__kustoDropdown.selectFromMenu('" + id + "', '" + keyEnc + "')"
+				onSelectJs: (keyEnc: string) => "window.__kustoDropdown.selectFromMenu('" + id + "', '" + keyEnc + "')"
 			});
 		} catch {
-			// Fallback: basic rendering.
 			menu.innerHTML = items
 				.map((it) => '<div class="kusto-dropdown-item" role="option" tabindex="-1" data-kusto-key="' + escAttr(it.key) + '" onclick="window.__kustoDropdown.selectFromMenu(\'' + escAttr(id) + '\', \'' + escAttr(it.key) + '\');">' + it.html + '</div>')
 				.join('');
 		}
 	};
 
-	// Select an option (by encoded value) from the menu, updating the hidden <select>.
-	window.__kustoDropdown.selectFromMenu = function (selectId, keyEnc) {
+	dd.selectFromMenu = function (selectId: string, keyEnc: string) {
 		const id = String(selectId || '').trim();
 		if (!id) return;
-		const select = document.getElementById(id);
+		const select = document.getElementById(id) as HTMLSelectElement | null;
 		if (!select || select.disabled) return;
 
 		let nextValue = '';
@@ -659,39 +621,36 @@
 		} catch {
 			try {
 				if (typeof select.onchange === 'function') {
-					select.onchange();
+					(select as any).onchange();
 				}
 			} catch { /* ignore */ }
 		}
-		// The onchange handler may have mutated selection/disabled state; re-sync.
-		try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
-		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
+		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
 	};
 
-	// Toggle the menu dropdown that is backed by a hidden <select>.
-	window.__kustoDropdown.toggleSelectMenu = function (selectId) {
+	dd.toggleSelectMenu = function (selectId: string) {
 		const id = String(selectId || '').trim();
 		if (!id) return;
-		const select = document.getElementById(id);
+		const select = document.getElementById(id) as HTMLSelectElement | null;
 		if (!select) return;
 		const wrapper = getWrapperFromSelect(select);
 		if (!wrapper) return;
-		const menu = wrapper.querySelector('.kusto-dropdown-menu');
-		const btn = wrapper.querySelector('.kusto-dropdown-btn');
+		const menu = wrapper.querySelector('.kusto-dropdown-menu') as HTMLElement | null;
+		const btn = wrapper.querySelector('.kusto-dropdown-btn') as HTMLButtonElement | null;
 		if (!menu || !btn) return;
 		if (btn.disabled) return;
 
 		try {
-			window.__kustoDropdown.toggleMenuDropdown({
+			(dd.toggleMenuDropdown as any)({
 				buttonId: btn.id,
 				menuId: menu.id,
 				beforeOpen: () => {
-					try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
+					try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
 				}
 			});
 		} catch {
-			// Fallback: older behavior
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id); } catch { /* ignore */ }
+			try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 			try { menu.focus(); } catch { /* ignore */ }
@@ -702,10 +661,8 @@
 	// Checkbox Multi-Select Dropdown
 	// =====================================
 
-	// Renders a button+menu dropdown with checkboxes for multi-select.
-	// opts: { wrapperId, buttonId, buttonTextId, menuId, placeholder, onToggle }
-	window.__kustoDropdown.renderCheckboxDropdownHtml = function (opts) {
-		const o = (opts && typeof opts === 'object') ? opts : {};
+	dd.renderCheckboxDropdownHtml = function (opts: any) {
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const wrapperClass = String(o.wrapperClass || '').trim();
 		const wrapperId = String(o.wrapperId || '').trim();
 		const buttonId = String(o.buttonId || '').trim();
@@ -738,12 +695,9 @@
 		);
 	};
 
-	// Renders checkbox items into a dropdown menu.
-	// items: [{ key: string, label: string, checked?: boolean, disabled?: boolean }]
-	// opts: { dropdownId: string, onChangeJs: string (function name to call with dropdownId) }
-	window.__kustoDropdown.renderCheckboxItemsHtml = function (items, opts) {
+	dd.renderCheckboxItemsHtml = function (items: any[], opts: any) {
 		const list = Array.isArray(items) ? items : [];
-		const o = (opts && typeof opts === 'object') ? opts : {};
+		const o = (opts && typeof opts === 'object') ? opts : {} as any;
 		const dropdownId = String(o.dropdownId || '').trim();
 		const onChangeJs = String(o.onChangeJs || '').trim();
 		const emptyHtml = String(o.emptyHtml || '').trim();
@@ -752,7 +706,7 @@
 			return emptyHtml || '<div class="kusto-dropdown-empty">No items.</div>';
 		}
 
-		const rows = [];
+		const rows: string[] = [];
 		for (let idx = 0; idx < list.length; idx++) {
 			const it = list[idx];
 			if (!it) continue;
@@ -784,16 +738,14 @@
 		return rows.join('');
 	};
 
-	// Get all selected values from a checkbox dropdown menu.
-	window.__kustoDropdown.getCheckboxSelections = function (menuId) {
+	dd.getCheckboxSelections = function (menuId: string): string[] {
 		const menu = document.getElementById(menuId);
 		if (!menu) return [];
-		const checkboxes = Array.from(menu.querySelectorAll('input[type="checkbox"]:checked'));
+		const checkboxes = Array.from(menu.querySelectorAll('input[type="checkbox"]:checked')) as HTMLInputElement[];
 		return checkboxes.map(cb => cb.value);
 	};
 
-	// Update the button text for a checkbox dropdown to show selected items.
-	window.__kustoDropdown.updateCheckboxButtonText = function (buttonTextId, selectedValues, placeholder) {
+	dd.updateCheckboxButtonText = function (buttonTextId: string, selectedValues: string[], placeholder: string) {
 		const btnText = document.getElementById(buttonTextId);
 		if (!btnText) return;
 		const ph = String(placeholder || 'Select...').trim();
@@ -810,15 +762,14 @@
 		}
 	};
 
-	// Toggle a checkbox dropdown.
-	window.__kustoDropdown.toggleCheckboxMenu = function (buttonId, menuId) {
-		const btn = document.getElementById(buttonId);
-		const menu = document.getElementById(menuId);
+	dd.toggleCheckboxMenu = function (buttonId: string, menuId: string) {
+		const btn = document.getElementById(buttonId) as HTMLButtonElement | null;
+		const menu = document.getElementById(menuId) as HTMLElement | null;
 		if (!btn || !menu) return;
 		if (btn.disabled) return;
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
 
 		if (wasOpen) return;
 
@@ -826,7 +777,6 @@
 		btn.setAttribute('aria-expanded', 'true');
 		try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
 
-		// If menu uses position:fixed, calculate and set top/left from button rect.
 		try {
 			const computedPos = window.getComputedStyle(menu).position;
 			if (computedPos === 'fixed') {
@@ -865,19 +815,17 @@
 			}
 		} catch { /* ignore */ }
 
-		// Prevent clicks inside the menu from closing it via global document click handler.
 		try {
-			if (!menu.dataset.kustoStopPropagationWired) {
+			if (!(menu as any).dataset.kustoStopPropagationWired) {
 				menu.addEventListener('click', (ev) => {
 					try { ev.stopPropagation(); } catch { /* ignore */ }
 				});
-				menu.dataset.kustoStopPropagationWired = '1';
+				(menu as any).dataset.kustoStopPropagationWired = '1';
 			}
 		} catch { /* ignore */ }
 
-		// Wire close on focus out.
 		try {
-			window.__kustoDropdown.wireCloseOnFocusOut(btn, menu);
+			(dd.wireCloseOnFocusOut as any)(btn, menu);
 		} catch { /* ignore */ }
 
 		try { menu.focus(); } catch { /* ignore */ }

@@ -37,39 +37,18 @@
 			flex-direction: column;
 		}
 
-		/* Plain .md files: the page itself should not scroll.
-		   Keep header controls + toolbar visible and scroll the editor surface instead. */
 		body[data-kusto-document-kind="md"] #queries-container {
 			flex: 1 1 auto;
 			min-height: 0;
 			display: flex;
 			flex-direction: column;
 		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] {
+
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"],
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] {
 			display: flex;
 			flex-direction: column;
 			height: 100%;
-		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-header {
-			flex: 0 0 auto;
-		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
-			flex: 1 1 auto;
-			min-height: 0;
-			height: auto;
-			overflow: hidden;
-		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor {
-			flex: 1 1 auto;
-			min-height: 0;
-		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer {
-			flex: 1 1 auto;
-			min-height: 0;
-			overflow: auto;
-		}
-
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] {
 			border: none;
 			box-shadow: none;
 			background: transparent;
@@ -79,125 +58,93 @@
 
 		/* Hide controls that aren't useful in single-section .md files. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .close-btn,
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_toggle"] {
-			display: none !important;
-		}
-
-		/* Hide the Markdown name input (not functional for .md mode). */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name {
-			display: none !important;
-		}
-
-		/* Remove the now-empty left header group so controls can align left. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name-group {
-			display: none !important;
-		}
-
-		/* In .md mode, tighten header spacing since the name input is hidden. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-header {
-			margin-bottom: 0;
-		}
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
-			margin: 0;
-		}
-
-		/* Hide the reorder grip/handle for single-section .md files. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .section-drag-handle {
-			display: none !important;
-		}
-
-		/* Hide maximize button + resize grip in .md mode (always auto-expands). */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_toggle"],
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-name-group,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .section-drag-handle,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-max-btn,
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-resizer {
-			display: none !important;
-		}
-
-		/* Mode buttons: add a little top margin in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-mode-btn {
-			/* Use container padding instead of button margins to avoid clipping in tight layouts. */
-			margin-top: 0;
-			margin-bottom: 0;
-		}
-
-		/* Remove the leftover divider line next to the mode buttons in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs-divider {
-			display: none !important;
-		}
-
-		/* Hide the dropdown in .md mode as well since we don't do responsive layout there. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-resizer,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs-divider,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-mode-dropdown {
 			display: none !important;
 		}
 
-		/* Align the mode buttons to the left and match the toolbar left margin. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tabs {
-			margin-left: 10px;
-			padding-top: 10px;
-			padding-bottom: 10px;
-		}
-		/* Undo any prior per-button alignment tweaks now that the group is left-aligned. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] button[id$="_md_mode_wysiwyg"] {
-			margin-right: 0 !important;
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-header {
+			flex: 0 0 auto;
+			margin-bottom: 0;
 		}
 
-		/* Remove any remaining border/chrome around the editor surface in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper {
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .query-editor-wrapper,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor {
+			flex: 1 1 auto;
+			min-height: 0;
+			height: auto;
+			overflow: hidden;
+			margin: 0;
 			border: none;
 			background: transparent;
 		}
 
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .markdown-viewer {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: auto;
+			border: none;
+			background: transparent;
+		}
+
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .md-tab.md-mode-btn {
+			margin-top: 0;
+			margin-bottom: 0;
+		}
+
+		/* Toast UI: remove all borders/outlines from the editor wrapper in .md mode. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-contents,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-contents,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
 			border: none !important;
 			outline: none !important;
 			box-shadow: none !important;
 			background: transparent;
 			padding-top: 0px !important;
-		}
-
-		/* Toast UI toolbar: keep a border just around the toolbar in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
-			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
-			box-shadow: none !important;
-			/* Inset the toolbar 10px from both edges. */
-			margin-left: 10px;
-			margin-right: 10px;
-			box-sizing: border-box;
-			margin-bottom: 0 !important;
-		}
-
-		/* Square corners on the parent UI wrapper in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-defaultUI {
 			border-radius: 0 !important;
 		}
 
-		/* Remove the extra vertical gap between the toolbar and the editor surface in .md mode.
-		   Also add left/right margins to align the scrollbar with the toolbar edges. */
+		/* Toast UI toolbar in .md mode: keep full border (the default), just clean up spacing. */
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
+			box-shadow: none !important;
+			margin-left: 0;
+			margin-right: 0;
+			margin-bottom: 0 !important;
+		}
+
+		/* Editor surface spacing in .md mode. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-main,
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-md-container,
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"] .kusto-markdown-editor .toastui-editor-ww-container {
 			margin-top: 5px !important;
 			margin-right: 5px;
 			padding-top: 0 !important;
 		}
 
-		/* Preview viewer: remove border for full-width docs feel in .md mode. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"] .markdown-viewer {
-			border: none;
-			background: transparent;
-		}
-
-		/* .md Preview mode: add extra left/right gutter around the viewer. */
-		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer {
-			/* Inset the viewer (and its scrollbar) to align with the toolbar. */
+		/* .md Preview mode viewer alignment. */
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer {
 			margin-left: 10px;
-			margin-right: 5px;
+			margin-right: 0;
 			padding-left: 0;
 			padding-right: 0;
-			/* Avoid negative margins here; they can overlap/clamp the header controls in Preview mode. */
 			margin-top: 0;
 		}
 
@@ -3591,7 +3538,7 @@
 		}
 
 		.kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
-			border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
+			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25)))) !important;
 			background: transparent !important;
 			color: var(--vscode-foreground);
 			height: 35px;
@@ -3602,6 +3549,14 @@
 			box-sizing: border-box;
 			align-items: center;
 			border-radius: 0;
+		}
+
+		/* In non-.md contexts (sections inside .kqlx/.mdx), toolbar only needs a bottom border
+		   since the section wrapper already provides the outer border. */
+		body:not([data-kusto-document-kind="md"]) .kusto-markdown-editor .toastui-editor-defaultUI-toolbar {
+			border-top: none !important;
+			border-right: none !important;
+			border-left: none !important;
 		}
 
 		.kusto-markdown-editor .toastui-editor-toolbar {
@@ -3739,6 +3694,27 @@
 		.kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents {
 			background: transparent !important;
 			color: var(--vscode-editor-foreground) !important;
+		}
+
+		/* Override vendor padding (18px 25px on .ProseMirror and 16px 25px 0 25px
+		   on ww-container contents) so text sits closer to the left edge in all contexts. */
+		.kusto-markdown-editor .toastui-editor-defaultUI .ProseMirror {
+			padding: 0 !important;
+			padding-left: 10px !important;
+		}
+		.kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents {
+			padding: 0 !important;
+			padding-left: 10px !important;
+		}
+		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor {
+			padding: 0 !important;
+		}
+		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor-md-preview {
+			padding-left: 10px !important;
+			padding-right: 10px !important;
+		}
+		.kusto-markdown-editor .toastui-editor-md-container .toastui-editor-md-preview .toastui-editor-contents {
+			padding-top: 0 !important;
 		}
 
 		/* The inline markdown preview - transparent to inherit from wrapper. */
@@ -4163,92 +4139,6 @@
 			padding: 8px;
 			font-size: 12px;
 			color: var(--vscode-descriptionForeground);
-		}
-
-		.kusto-favorites-btn {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-btn:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-
-		.kusto-favorites-btn-text {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn-text alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-primary {
-			color: var(--vscode-dropdown-foreground);
-			font-weight: 600;
-		}
-
-		.kusto-favorites-secondary {
-			color: var(--vscode-descriptionForeground);
-		}
-
-		.kusto-favorites-btn-caret {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-btn-caret alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-menu {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-menu alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-item {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-item-main {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item-main alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-item.is-active {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item.is-active alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-item:focus {
-			outline: none;
-		}
-
-		.kusto-favorites-item:focus-visible {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item:focus-visible alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-trash {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-trash alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-item:hover .kusto-favorites-trash,
-		.kusto-favorites-item.is-active .kusto-favorites-trash,
-		.kusto-favorites-item:focus-within .kusto-favorites-trash {
-			visibility: visible;
-			pointer-events: auto;
-		}
-
-		.kusto-favorites-trash:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-
-		.kusto-favorites-item:hover {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-item:hover alias */
-			--kusto-noop: 0;
-		}
-
-		.kusto-favorites-empty {
-			/* kept for backwards compatibility; styling defined by .kusto-dropdown-empty alias */
-			--kusto-noop: 0;
 		}
 
 		.select-wrapper select {
