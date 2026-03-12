@@ -46,7 +46,6 @@
 
 	var scriptPaths = [
 		'legacy/vscode.js',
-		'legacy/state.js',
 
 
 		'vendor/marked.min.js',
@@ -55,8 +54,6 @@
 		'dist/queryEditor/vendor/echarts/echarts.webview.js',
 		'legacy/controlCommands.generated.js',
 		'legacy/functions.generated.js',
-
-		'legacy/monaco.js',
 
 
 		'dist/webview/webview.bundle.js',

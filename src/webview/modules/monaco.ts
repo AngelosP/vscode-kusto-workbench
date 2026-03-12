@@ -1,3 +1,14 @@
+// Monaco module — converted from legacy/monaco.js
+// Monaco Editor configuration, completions, column inference, caret docs overlay.
+// Window bridge exports at bottom for remaining legacy callers.
+export {};
+
+const _win = window as unknown as Record<string, any>;
+
+// AMD globals loaded by require() — not available at module scope
+// but referenced inside the require() callback and other functions.
+declare const monaco: any;
+declare const require: any;
 function isDarkTheme() {
 	// VS Code webviews typically toggle these classes on theme changes.
 	try {
@@ -14,7 +25,7 @@ function isDarkTheme() {
 		// ignore
 	}
 
-	const parseCssColorToRgb = (value) => {
+	const parseCssColorToRgb = (value: any) => {
 		const v = String(value || '').trim();
 		if (!v) {
 			return null;
@@ -63,7 +74,7 @@ let lastAppliedIsDarkTheme = null;
 // Derive `columnsByTable` from `columnTypesByTable` to avoid storing duplicate column lists.
 // Falls back to legacy `columnsByTable` if present (older cached schema entries).
 const __kustoColumnsByTableCache = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
-function __kustoGetColumnsByTable(schema) {
+function __kustoGetColumnsByTable(schema: any) {
 	try {
 		if (!schema || typeof schema !== 'object') return null;
 		if (schema.columnsByTable && typeof schema.columnsByTable === 'object') return schema.columnsByTable;
@@ -73,7 +84,7 @@ function __kustoGetColumnsByTable(schema) {
 			const cached = __kustoColumnsByTableCache.get(schema);
 			if (cached) return cached;
 		}
-		const out = {};
+		const out: any = {};
 		for (const t of Object.keys(types)) {
 			const m = types[t];
 			if (!m || typeof m !== 'object') continue;
@@ -159,7 +170,7 @@ function getVSCodeEditorBackground() {
 	return null;
 }
 
-function defineCustomThemes(monaco) {
+function defineCustomThemes(monaco: any) {
 	if (!monaco || !monaco.editor || typeof monaco.editor.defineTheme !== 'function') return;
 	
 	// Get VS Code's editor background color
@@ -167,7 +178,7 @@ function defineCustomThemes(monaco) {
 	
 	try {
 		// Define dark theme with KQL syntax rules + VS Code background
-		const darkColors = { 'editorSuggestWidget.selectedBackground': '#004E8C' };
+		const darkColors: any = { 'editorSuggestWidget.selectedBackground': '#004E8C' };
 		if (bgColor) darkColors['editor.background'] = bgColor;
 		
 		monaco.editor.defineTheme('kusto-workbench-dark', {
@@ -178,7 +189,7 @@ function defineCustomThemes(monaco) {
 		});
 		
 		// Define light theme with KQL syntax rules + VS Code background
-		const lightColors = {};
+		const lightColors: any = {};
 		if (bgColor) lightColors['editor.background'] = bgColor;
 		
 		monaco.editor.defineTheme('kusto-workbench-light', {
@@ -194,7 +205,7 @@ function defineCustomThemes(monaco) {
 	}
 }
 
-function applyMonacoTheme(monaco) {
+function applyMonacoTheme(monaco: any) {
 	if (!monaco || !monaco.editor || typeof monaco.editor.setTheme !== 'function') {
 		return;
 	}
@@ -223,7 +234,7 @@ function applyMonacoTheme(monaco) {
 	}
 }
 
-function startMonacoThemeObserver(monaco) {
+function startMonacoThemeObserver(monaco: any) {
 	if (monacoThemeObserverStarted) {
 		return;
 	}
@@ -258,8 +269,8 @@ function startMonacoThemeObserver(monaco) {
 }
 
 function ensureMonaco() {
-	if (monacoReadyPromise) {
-		return monacoReadyPromise;
+	if (_win.monacoReadyPromise) {
+		return _win.monacoReadyPromise;
 	}
 
 	const waitForAmdLoader = () => {
@@ -286,18 +297,18 @@ function ensureMonaco() {
 		});
 	};
 
-	monacoReadyPromise = new Promise((resolve, reject) => {
+	_win.monacoReadyPromise = new Promise((resolve, reject) => {
 		try {
 			waitForAmdLoader().then((req) => {
 				// Monaco worker bootstrap.
 				// Monaco 0.5x uses version-hashed worker assets under vs/assets. The extension host
 				// discovers them and passes them into __kustoQueryEditorConfig.monacoWorkers.
 				try {
-					const cfg = window && window.__kustoQueryEditorConfig ? window.__kustoQueryEditorConfig : {};
+					const cfg = window && _win.__kustoQueryEditorConfig ? _win.__kustoQueryEditorConfig : {};
 					const workers = cfg && cfg.monacoWorkers ? cfg.monacoWorkers : null;
 					const cacheBuster = cfg && cfg.cacheBuster ? String(cfg.cacheBuster) : '';
 
-					const withCache = (url) => {
+					const withCache = (url: any) => {
 						try {
 							if (!cacheBuster) return String(url);
 							const u = new URL(String(url));
@@ -309,11 +320,11 @@ function ensureMonaco() {
 					};
 
 					if (workers && (workers.editor || workers.ts || workers.json || workers.css || workers.html)) {
-						window.MonacoEnvironment = window.MonacoEnvironment || {};
+						_win.MonacoEnvironment = _win.MonacoEnvironment || {};
 						
 						// Use getWorker (returns Worker instance) instead of getWorkerUrl
 						// This gives us more control over worker creation
-						window.MonacoEnvironment.getWorker = function (_workerId, label) {
+						_win.MonacoEnvironment.getWorker = function (_workerId: any, label: any) {
 							const l = String(label || '').toLowerCase();
 							
 							// For kusto, use the pre-bundled kusto worker that includes all dependencies
@@ -379,7 +390,7 @@ function ensureMonaco() {
 				}
 
 				try {
-					req.config({ paths: { vs: window.__kustoQueryEditorConfig.monacoVsUri } });
+					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig.monacoVsUri } });
 				} catch (e) {
 					reject(e);
 					return;
@@ -388,7 +399,7 @@ function ensureMonaco() {
 				// Load Monaco editor first, then monaco-kusto contribution module
 				// (monaco-kusto depends on Monaco's Emitter and other core classes being available)
 				// NOTE: monaco-kusto requires 'vs/editor/editor.main' - not the hashed API file
-				req(
+				(req as any)(
 					['vs/editor/editor.main'],
 					() => {
 						try {
@@ -406,27 +417,27 @@ function ensureMonaco() {
 								const originalSetModelMarkers = monaco.editor.setModelMarkers;
 								
 								// Track which model URIs should have kusto markers enabled
-								window.__kustoMarkersEnabledModels = new Set();
+								_win.__kustoMarkersEnabledModels = new Set();
 								
 								// Track model URI -> normalized cluster URL mapping
 								// This allows us to suppress markers for models that don't match the current context
-								window.__kustoModelClusterMap = {};
+								_win.__kustoModelClusterMap = {};
 								
-								monaco.editor.setModelMarkers = function(model, owner, markers) {
+								monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any) {
 									// Only intercept kusto markers
 									if (owner === 'kusto') {
 										const uri = model && model.uri ? model.uri.toString() : '';
-										if (!window.__kustoMarkersEnabledModels.has(uri)) {
+										if (!_win.__kustoMarkersEnabledModels.has(uri)) {
 											// Suppress markers for models that haven't been focused yet
 											return;
 										}
 										// CRITICAL: Suppress markers for models whose cluster doesn't match current context
 										// monaco-kusto validates ALL models when schema changes, but we only want errors
 										// for models that match the current schema context
-										const modelCluster = window.__kustoModelClusterMap[uri];
-										const currentCluster = window.__kustoMonacoDatabaseInContext?.clusterUrl;
+										const modelCluster = _win.__kustoModelClusterMap[uri];
+										const currentCluster = _win.__kustoMonacoDatabaseInContext?.clusterUrl;
 										if (modelCluster && currentCluster) {
-											const normalizeUrl = (url) => url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase() : '';
+											const normalizeUrl = (url: any) => url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase() : '';
 											const modelClusterNorm = normalizeUrl(modelCluster);
 											const currentClusterNorm = normalizeUrl(currentCluster);
 											if (modelClusterNorm !== currentClusterNorm) {
@@ -439,23 +450,23 @@ function ensureMonaco() {
 								};
 								
 								// Function to enable markers for a specific model (called on focus AFTER schema context is set)
-								window.__kustoEnableMarkersForModel = function(modelUri) {
+								_win.__kustoEnableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
-									if (!window.__kustoMarkersEnabledModels.has(uri)) {
-										window.__kustoMarkersEnabledModels.add(uri);
+									if (!_win.__kustoMarkersEnabledModels.has(uri)) {
+										_win.__kustoMarkersEnabledModels.add(uri);
 									}
 								};
 								
 								// Function to disable markers for a specific model (called on blur)
 								// This removes the model from the enabled set and clears existing markers
-								window.__kustoDisableMarkersForModel = function(modelUri) {
+								_win.__kustoDisableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
-									window.__kustoMarkersEnabledModels.delete(uri);
+									_win.__kustoMarkersEnabledModels.delete(uri);
 									// Also clear any existing markers for this model
 									try {
-										const model = monaco.editor.getModels().find(m => m.uri && m.uri.toString() === uri);
+										const model = monaco.editor.getModels().find((m: any) => m.uri && m.uri.toString() === uri);
 										if (model) {
 											originalSetModelMarkers.call(monaco.editor, model, 'kusto', []);
 										}
@@ -468,11 +479,11 @@ function ensureMonaco() {
 							}
 
 							// Now load monaco-kusto after Monaco is fully initialized
-							req(['vs/language/kusto/monaco.contribution'], () => {
+							(req as any)(['vs/language/kusto/monaco.contribution'], () => {
 								try {
 					// monaco.languages.register({ id: 'kusto' });
 
-					const KUSTO_KEYWORD_DOCS = {
+					const KUSTO_KEYWORD_DOCS: Record<string, any> = {
 						'summarize': {
 							signature: '| summarize [Column =] Aggregation(...) [by GroupKey[, ...]]',
 							description: 'Aggregates rows into groups (optionally) and computes aggregate values.'
@@ -613,7 +624,7 @@ function ensureMonaco() {
 						{ label: 'make-series', insert: 'make-series ', docKey: 'make-series' }
 					];
 
-					const KUSTO_FUNCTION_DOCS = {
+					const KUSTO_FUNCTION_DOCS: Record<string, any> = {
 						'dcount': {
 							args: ['expr', 'accuracy?'],
 							returnType: 'long',
@@ -866,8 +877,8 @@ function ensureMonaco() {
 						}
 					};
 
-					const isIdentChar = (ch) => /[A-Za-z0-9_\-]/.test(ch);
-					const isIdentStart = (ch) => /[A-Za-z_]/.test(ch);
+					const isIdentChar = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
+					const isIdentStart = (ch: any) => /[A-Za-z_]/.test(ch);
 
 					// Merge generated function docs (from `queryEditor/functions.generated.js`) into our in-memory
 					// `KUSTO_FUNCTION_DOCS` table. Smart Docs (hover/caret-docs panel) and autocomplete both rely on
@@ -875,11 +886,11 @@ function ensureMonaco() {
 					const __kustoEnsureGeneratedFunctionsMerged = () => {
 						try {
 							if (typeof window === 'undefined' || !window) return;
-							if (window.__kustoGeneratedFunctionsMerged) return;
-							window.__kustoGeneratedFunctionsMerged = true;
+							if (_win.__kustoGeneratedFunctionsMerged) return;
+							_win.__kustoGeneratedFunctionsMerged = true;
 
-							const raw = Array.isArray(window.__kustoFunctionEntries) ? window.__kustoFunctionEntries : [];
-							const docs = (window.__kustoFunctionDocs && typeof window.__kustoFunctionDocs === 'object') ? window.__kustoFunctionDocs : null;
+							const raw = Array.isArray(_win.__kustoFunctionEntries) ? _win.__kustoFunctionEntries : [];
+							const docs = (_win.__kustoFunctionDocs && typeof _win.__kustoFunctionDocs === 'object') ? _win.__kustoFunctionDocs : null;
 							for (const ent of raw) {
 								const name = Array.isArray(ent) ? ent[0] : (ent && ent.name);
 								if (!name) continue;
@@ -924,7 +935,7 @@ function ensureMonaco() {
 					const KUSTO_CONTROL_COMMAND_DOCS_VIEW = 'azure-data-explorer';
 					const KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h
 
-					const __kustoNormalizeControlCommand = (s) => {
+					const __kustoNormalizeControlCommand = (s: any) => {
 						let v = String(s || '').replace(/\s+/g, ' ').trim();
 						if (!v.startsWith('.')) return '';
 						// Many TOC titles include a trailing "command" word; strip it when it looks like metadata.
@@ -937,8 +948,8 @@ function ensureMonaco() {
 					};
 
 					const __kustoBuildControlCommandIndex = () => {
-						const raw = (typeof window !== 'undefined' && Array.isArray(window.__kustoControlCommandEntries))
-							? window.__kustoControlCommandEntries
+						const raw = (typeof window !== 'undefined' && Array.isArray(_win.__kustoControlCommandEntries))
+							? _win.__kustoControlCommandEntries
 							: [];
 						const byLower = new Map();
 						for (const ent of raw) {
@@ -970,19 +981,19 @@ function ensureMonaco() {
 
 					const __kustoGetOrInitControlCommandDocCache = () => {
 						try {
-							if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
-								window.__kustoControlCommandDocCache = {};
+							if (!_win.__kustoControlCommandDocCache || typeof _win.__kustoControlCommandDocCache !== 'object') {
+								_win.__kustoControlCommandDocCache = {};
 							}
-							if (!window.__kustoControlCommandDocPending || typeof window.__kustoControlCommandDocPending !== 'object') {
-								window.__kustoControlCommandDocPending = {};
+							if (!_win.__kustoControlCommandDocPending || typeof _win.__kustoControlCommandDocPending !== 'object') {
+								_win.__kustoControlCommandDocPending = {};
 							}
-							return window.__kustoControlCommandDocCache;
+							return _win.__kustoControlCommandDocCache;
 						} catch {
 							return {};
 						}
 					};
 
-					const __kustoParseControlCommandSyntaxFromLearnHtml = (html) => {
+					const __kustoParseControlCommandSyntaxFromLearnHtml = (html: any) => {
 						try {
 							const s = String(html || '');
 							if (!s.trim()) return null;
@@ -995,7 +1006,7 @@ function ensureMonaco() {
 								doc = null;
 							}
 
-						const cleanCode = (code) => {
+						const cleanCode = (code: any) => {
 							const raw = String(code || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 							// Trim leading/trailing blank lines while preserving inner formatting.
 							const lines = raw.split('\n');
@@ -1050,7 +1061,7 @@ function ensureMonaco() {
 					}
 					};
 
-					const __kustoExtractWithOptionArgsFromSyntax = (syntaxText) => {
+					const __kustoExtractWithOptionArgsFromSyntax = (syntaxText: any) => {
 						try {
 							const s = String(syntaxText || '');
 							if (!s) return [];
@@ -1074,7 +1085,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoScheduleFetchControlCommandSyntax = (cmd) => {
+					const __kustoScheduleFetchControlCommandSyntax = (cmd: any) => {
 						try {
 							if (!cmd || !cmd.commandLower || !cmd.href) return;
 							const cache = __kustoGetOrInitControlCommandDocCache();
@@ -1084,12 +1095,12 @@ function ensureMonaco() {
 							if (entry && entry.fetchedAt && (now - entry.fetchedAt) < KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS && entry.syntax) {
 								return;
 							}
-							if (window.__kustoControlCommandDocPending && window.__kustoControlCommandDocPending[key]) return;
+							if (_win.__kustoControlCommandDocPending && _win.__kustoControlCommandDocPending[key]) return;
 							const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-							window.__kustoControlCommandDocPending[key] = requestId;
+							_win.__kustoControlCommandDocPending[key] = requestId;
 							try {
-								if (typeof vscode !== 'undefined' && vscode && typeof vscode.postMessage === 'function') {
-									vscode.postMessage({
+								if (typeof _win.vscode !== 'undefined' && _win.vscode && typeof _win.vscode.postMessage === 'function') {
+									_win.vscode.postMessage({
 										type: 'fetchControlCommandSyntax',
 										requestId,
 										commandLower: key,
@@ -1102,7 +1113,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoFindEnclosingWithOptionsParen = (model, statementStartOffset, cursorOffset) => {
+					const __kustoFindEnclosingWithOptionsParen = (model: any, statementStartOffset: any, cursorOffset: any) => {
 						try {
 							const full = model.getValue();
 							const start = Math.max(0, Number(statementStartOffset) || 0);
@@ -1151,7 +1162,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoFindWithOptionsParenRange = (text, statementStartOffset) => {
+					const __kustoFindWithOptionsParenRange = (text: any, statementStartOffset: any) => {
 						try {
 							const full = String(text || '');
 							const start = Math.max(0, Number(statementStartOffset) || 0);
@@ -1163,8 +1174,8 @@ function ensureMonaco() {
 							let inSingle = false;
 							let inDouble = false;
 
-							const isIdentPart = (ch) => /[A-Za-z0-9_\-]/.test(ch);
-							const eqIgnoreCaseAt = (i, word) => slice.substr(i, word.length).toLowerCase() === word;
+							const isIdentPart = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
+							const eqIgnoreCaseAt = (i: any, word: any) => slice.substr(i, word.length).toLowerCase() === word;
 
 							for (let i = 0; i < slice.length; i++) {
 								const ch = slice[i];
@@ -1256,7 +1267,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoTryGetDotCommandCompletionContext = (model, position, statementStartInCursorText, statementTextUpToCursor) => {
+					const __kustoTryGetDotCommandCompletionContext = (model: any, position: any, statementStartInCursorText: any, statementTextUpToCursor: any) => {
 						try {
 							const stmt = String(statementTextUpToCursor || '');
 							const m = stmt.match(/^\s*\.([A-Za-z0-9_\-]*)$/);
@@ -1276,7 +1287,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoGetControlCommandHoverAt = (model, position) => {
+					const __kustoGetControlCommandHoverAt = (model: any, position: any) => {
 						try {
 							if (!__kustoControlCommands || __kustoControlCommands.length === 0) return null;
 							const full = model.getValue();
@@ -1329,7 +1340,7 @@ function ensureMonaco() {
 										active = Math.max(0, Math.min(active, withArgs.length - 1));
 									}
 									const formatted = withArgs
-										.map((a, i) => (i === active ? `**${a}**=` : `${a}=`))
+										.map((a: any, i: any) => (i === active ? `**${a}**=` : `${a}=`))
 										.join(', ');
 									signature = `${best.command} with (${formatted}...)`;
 								}
@@ -1357,7 +1368,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const getTokenAtPosition = (model, position) => {
+					const getTokenAtPosition = (model: any, position: any) => {
 						try {
 							const lineNumber = position.lineNumber;
 							const line = model.getLineContent(lineNumber);
@@ -1388,7 +1399,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const getMultiWordOperatorAt = (model, position) => {
+					const getMultiWordOperatorAt = (model: any, position: any) => {
 						try {
 							const lineNumber = position.lineNumber;
 							const line = model.getLineContent(lineNumber);
@@ -1418,7 +1429,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const getWordRangeAt = (model, position) => {
+					const getWordRangeAt = (model: any, position: any) => {
 						try {
 							const w = model.getWordAtPosition(position);
 							if (!w) {
@@ -1430,7 +1441,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const findEnclosingFunctionCall = (model, offset) => {
+					const findEnclosingFunctionCall = (model: any, offset: any) => {
 						const text = model.getValue();
 						if (!text) {
 							return null;
@@ -1475,7 +1486,7 @@ function ensureMonaco() {
 						return null;
 					};
 
-					const computeArgIndex = (model, openParenOffset, offset) => {
+					const computeArgIndex = (model: any, openParenOffset: any, offset: any) => {
 						const text = model.getValue();
 						let idx = 0;
 						let depth = 0;
@@ -1505,14 +1516,14 @@ function ensureMonaco() {
 						return idx;
 					};
 
-					const buildFunctionSignatureMarkdown = (name, doc, activeArgIndex) => {
+					const buildFunctionSignatureMarkdown = (name: any, doc: any, activeArgIndex: any) => {
 						const args = Array.isArray(doc.args) ? doc.args : [];
-						const formattedArgs = args.map((a, i) => (i === activeArgIndex ? `**${a}**` : a)).join(', ');
+						const formattedArgs = args.map((a: any, i: any) => (i === activeArgIndex ? `**${a}**` : a)).join(', ');
 						const ret = doc.returnType ? `: ${doc.returnType}` : '';
 						return `\`${name}(${formattedArgs})${ret}\``;
 					};
 
-					const getHoverInfoAt = (model, position) => {
+					const getHoverInfoAt = (model: any, position: any) => {
 						try { __kustoEnsureGeneratedFunctionsMerged(); } catch { /* ignore */ }
 						let offset;
 						try {
@@ -1750,7 +1761,7 @@ function ensureMonaco() {
 					});
 
 					// Basic formatter so users can format the whole query.
-					const formatKusto = (input) => {
+					const formatKusto = (input: any) => {
 						const raw = String(input || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 						const lines = raw.split('\n');
 						const out = [];
@@ -1780,7 +1791,7 @@ function ensureMonaco() {
 					};
 
 					monaco.languages.registerDocumentFormattingEditProvider('kusto', {
-						provideDocumentFormattingEdits(model) {
+						provideDocumentFormattingEdits(model: any) {
 							try {
 								const original = model.getValue();
 								const formatted = formatKusto(original);
@@ -1802,16 +1813,16 @@ function ensureMonaco() {
 					let __kustoProvideCompletionItemsForDiagnostics = null;
 					const __kustoCompletionProvider = {
 						triggerCharacters: [' ', '|', '.'],
-						provideCompletionItems: async function (model, position) {
+						provideCompletionItems: async function (model: any, position: any) {
 							// Generated Kusto function names (from Microsoft Learn TOC) are loaded by `queryEditor/functions.generated.js`.
 							// Merge those into our hand-authored docs so completions are comprehensive even when we don't
 							// have detailed arg/return docs for every function.
 							try {
 								if (typeof window !== 'undefined' && window) {
-									if (!window.__kustoGeneratedFunctionsMerged) {
-										window.__kustoGeneratedFunctionsMerged = true;
-										const raw = Array.isArray(window.__kustoFunctionEntries) ? window.__kustoFunctionEntries : [];
-										const docs = (window.__kustoFunctionDocs && typeof window.__kustoFunctionDocs === 'object') ? window.__kustoFunctionDocs : null;
+									if (!_win.__kustoGeneratedFunctionsMerged) {
+										_win.__kustoGeneratedFunctionsMerged = true;
+										const raw = Array.isArray(_win.__kustoFunctionEntries) ? _win.__kustoFunctionEntries : [];
+										const docs = (_win.__kustoFunctionDocs && typeof _win.__kustoFunctionDocs === 'object') ? _win.__kustoFunctionDocs : null;
 										for (const ent of raw) {
 											const name = Array.isArray(ent) ? ent[0] : (ent && ent.name);
 											if (!name) continue;
@@ -1847,10 +1858,10 @@ function ensureMonaco() {
 							} catch {
 								// ignore
 							}
-							const suggestions = [];
+							const suggestions: any[] = [];
 							const seen = new Set();
 
-							const pushSuggestion = (item, key) => {
+							const pushSuggestion = (item: any, key: any) => {
 								const k = key || item.label;
 								if (seen.has(k)) {
 									return;
@@ -1997,18 +2008,18 @@ function ensureMonaco() {
 							let boxId = null;
 							try {
 								if (model && model.uri) {
-									boxId = queryEditorBoxByModelUri[model.uri.toString()] || null;
+									boxId = _win.queryEditorBoxByModelUri[model.uri.toString()] || null;
 								}
 							} catch {
 								// ignore
 							}
 							if (!boxId) {
-								boxId = activeQueryEditorBoxId;
+								boxId = _win.activeQueryEditorBoxId;
 							}
-							const schema = boxId ? schemaByBoxId[boxId] : null;
+							const schema = boxId ? _win.schemaByBoxId[boxId] : null;
 							if (!schema || !schema.tables) {
 								// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
-								ensureSchemaForBox(boxId);
+								_win.ensureSchemaForBox(boxId);
 
 								// Even without schema, we can still suggest earlier `let` variables (multi-statement scripts).
 								try {
@@ -2047,13 +2058,13 @@ function ensureMonaco() {
 								if (shouldSuggestFunctions) {
 									// Use the full token/word range so selecting an item replaces the rest of the word.
 									const range = replaceRange;
-									const __kustoBuildFnInsertText = (fnName, fnDoc) => {
+									const __kustoBuildFnInsertText = (fnName: any, fnDoc: any) => {
 										const args = (fnDoc && Array.isArray(fnDoc.args)) ? fnDoc.args : [];
-										const required = args.filter(a => typeof a === 'string' && !a.endsWith('?'));
+										const required = args.filter((a: any) => typeof a === 'string' && !a.endsWith('?'));
 										if (required.length === 0) {
 											return { insertText: fnName + '()', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
 										}
-										const snippetArgs = required.map((a, i) => '${' + (i + 1) + ':' + a + '}').join(', ');
+										const snippetArgs = required.map((a: any, i: any) => '${' + (i + 1) + ':' + a + '}').join(', ');
 										return { insertText: fnName + '(' + snippetArgs + ')', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
 									};
 									for (const fn of Object.keys(KUSTO_FUNCTION_DOCS)) {
@@ -2092,7 +2103,7 @@ function ensureMonaco() {
 								return { suggestions };
 							}
 
-							const __kustoNormalizeClusterForKusto = (clusterUrl) => {
+							const __kustoNormalizeClusterForKusto = (clusterUrl: any) => {
 								let s = String(clusterUrl || '')
 									.trim()
 									.replace(/^https?:\/\//i, '')
@@ -2103,7 +2114,7 @@ function ensureMonaco() {
 								return s;
 							};
 
-							const __kustoParseFullyQualifiedTableExpr = (text) => {
+							const __kustoParseFullyQualifiedTableExpr = (text: any) => {
 								try {
 									const s = String(text || '');
 									// cluster('X').database('Y').Table
@@ -2117,11 +2128,11 @@ function ensureMonaco() {
 								}
 							};
 
-							const __kustoFindConnectionIdByClusterName = (clusterName) => {
+							const __kustoFindConnectionIdByClusterName = (clusterName: any) => {
 								try {
 									const target = __kustoNormalizeClusterForKusto(clusterName).toLowerCase();
 									if (!target) return null;
-									for (const c of (connections || [])) {
+									for (const c of (_win.connections || [])) {
 										if (!c || !c.id) continue;
 										const url = String(c.clusterUrl || '').trim();
 										if (!url) continue;
@@ -2134,22 +2145,22 @@ function ensureMonaco() {
 								return null;
 							};
 
-							const __kustoEnsureSchemaForClusterDb = async (clusterName, databaseName) => {
+							const __kustoEnsureSchemaForClusterDb = async (clusterName: any, databaseName: any) => {
 								try {
 									const cid = __kustoFindConnectionIdByClusterName(clusterName);
 									const db = String(databaseName || '').trim();
 									if (!cid || !db) return null;
 									const key = cid + '|' + db;
 									try {
-										if (schemaByConnDb && schemaByConnDb[key]) {
-											return schemaByConnDb[key];
+										if (_win.schemaByConnDb && _win.schemaByConnDb[key]) {
+											return _win.schemaByConnDb[key];
 										}
 									} catch { /* ignore */ }
-									if (typeof window.__kustoRequestSchema === 'function') {
-										const sch = await window.__kustoRequestSchema(cid, db, false);
+									if (typeof _win.__kustoRequestSchema === 'function') {
+										const sch = await _win.__kustoRequestSchema(cid, db, false);
 										try {
-											if (sch && schemaByConnDb) {
-												schemaByConnDb[key] = sch;
+											if (sch && _win.schemaByConnDb) {
+												_win.schemaByConnDb[key] = sch;
 											}
 										} catch { /* ignore */ }
 										return sch;
@@ -2159,15 +2170,15 @@ function ensureMonaco() {
 							};
 
 							// Special context: inside `| join ... on ...` or `| lookup ... on ...` we want columns (not tables).
-							const __kustoBuildLetTabularResolverForCompletion = (text) => {
-								const tablesByLower = {};
+							const __kustoBuildLetTabularResolverForCompletion = (text: any) => {
+								const tablesByLower: any = {};
 								try {
 									for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
 										tablesByLower[String(t).toLowerCase()] = String(t);
 									}
 								} catch { /* ignore */ }
-								const letSources = {};
-								const extractSourceLower = (rhsText) => {
+								const letSources: any = {};
+								const extractSourceLower = (rhsText: any) => {
 									const rhs = String(rhsText || '').trim();
 									if (!rhs) return null;
 									try {
@@ -2202,7 +2213,7 @@ function ensureMonaco() {
 										letSources[letNameLower] = srcLower;
 									}
 								} catch { /* ignore */ }
-								const resolve = (name) => {
+								const resolve = (name: any) => {
 									let cur = String(name || '').toLowerCase();
 									for (let depth = 0; depth < 8; depth++) {
 										if (tablesByLower[cur]) return tablesByLower[cur];
@@ -2215,10 +2226,10 @@ function ensureMonaco() {
 							};
 							const __kustoResolveToSchemaTableNameForCompletion = (() => {
 								const resolveLet = __kustoBuildLetTabularResolverForCompletion(model.getValue());
-								return (name) => __kustoFindSchemaTableName(name) || (resolveLet ? resolveLet(name) : null);
+								return (name: any) => __kustoFindSchemaTableName(name) || (resolveLet ? resolveLet(name) : null);
 							})();
 
-							const __kustoGetLastTopLevelStageText = (text, offset) => {
+							const __kustoGetLastTopLevelStageText = (text: any, offset: any) => {
 								try {
 									const before = String(text || '').slice(0, Math.max(0, offset));
 									// Best-effort: last pipe in the raw text (joins in parentheses are uncommon, but this is still heuristic).
@@ -2245,7 +2256,7 @@ function ensureMonaco() {
 							const shouldSuggestColumnsOrJoinOn = shouldSuggestColumns || __kustoIsJoinOrLookupOnContext;
 							const shouldSuggestFunctionsOrJoinOn = shouldSuggestFunctions || __kustoIsJoinOrLookupOnContext;
 
-							const __kustoExtractJoinOrLookupRightTable = (clauseText) => {
+							const __kustoExtractJoinOrLookupRightTable = (clauseText: any) => {
 								try {
 									const clause = String(clauseText || '');
 									// Prefer (RightTable)
@@ -2273,11 +2284,11 @@ function ensureMonaco() {
 							};
 
 							let __kustoActiveTabularContext = null;
-							const inferActiveTable = (text) => {
+							const inferActiveTable = (text: any) => {
 								__kustoActiveTabularContext = null;
 								// Prefer last explicit join/lookup/from target.
 								try {
-									const refs = [];
+									const refs: any[] = [];
 									for (const m of String(text || '').matchAll(/\b(join|lookup|from)\b/gi)) {
 										const kw = String(m[1] || '').toLowerCase();
 										const idx = (typeof m.index === 'number') ? m.index : -1;
@@ -2342,7 +2353,7 @@ function ensureMonaco() {
 
 							let activeTable = inferActiveTable(statementTextUpToCursor);
 
-							const __kustoFindSchemaTableName = (name) => {
+							const __kustoFindSchemaTableName = (name: any) => {
 								if (!name || !schema || !Array.isArray(schema.tables)) return null;
 								const lower = String(name).toLowerCase();
 								for (const t of schema.tables) {
@@ -2356,7 +2367,7 @@ function ensureMonaco() {
 								activeTable = __kustoFindSchemaTableName(activeTable) || activeTable;
 							} catch { /* ignore */ }
 
-							const __kustoSplitCommaList = (s) => {
+							const __kustoSplitCommaList = (s: any) => {
 								if (!s) return [];
 								return String(s)
 									.split(',')
@@ -2364,18 +2375,18 @@ function ensureMonaco() {
 									.filter(Boolean);
 							};
 
-							const __kustoComputeAvailableColumnsAtOffset = async (fullText, offset) => {
+							const __kustoComputeAvailableColumnsAtOffset = async (fullText: any, offset: any) => {
 								const columnsByTable = __kustoGetColumnsByTable(schema);
 								if (!schema || !columnsByTable) return null;
 
-								const __kustoParseJoinKind = (stageText) => {
+								const __kustoParseJoinKind = (stageText: any) => {
 									try {
 										const m = String(stageText || '').match(/\bkind\s*=\s*([A-Za-z_][\w-]*)\b/i);
 										return m && m[1] ? String(m[1]).toLowerCase() : '';
 									} catch { return ''; }
 								};
 
-								const __kustoJoinOutputMode = (kindLower) => {
+								const __kustoJoinOutputMode = (kindLower: any) => {
 									const k = String(kindLower || '').toLowerCase();
 									if (!k) return 'union';
 									if (k.includes('leftanti') || k.includes('leftsemi') || k === 'anti' || k === 'semi') return 'left';
@@ -2383,7 +2394,7 @@ function ensureMonaco() {
 									return 'union';
 								};
 
-								const __kustoExtractFirstParenGroup = (text) => {
+								const __kustoExtractFirstParenGroup = (text: any) => {
 									// Returns the content of the first (...) group at top-level.
 									try {
 										const s = String(text || '');
@@ -2466,7 +2477,7 @@ function ensureMonaco() {
 								const __kustoLetColsMemo = new Map();
 								const __kustoLetInProgress = new Set();
 
-								const __kustoInferSourceFromText = (text) => {
+								const __kustoInferSourceFromText = (text: any) => {
 									const lines = String(text || '').split(/\r?\n/);
 									for (const raw of lines) {
 										const line = String(raw || '').trim();
@@ -2480,7 +2491,7 @@ function ensureMonaco() {
 									return null;
 								};
 
-								const __kustoComputeColumnsForPipelineText = async (pipelineText) => {
+								const __kustoComputeColumnsForPipelineText = async (pipelineText: any) => {
 									const parts = __kustoSplitPipelineStagesDeep(String(pipelineText || ''));
 									if (!parts || parts.length === 0) return null;
 									const src = __kustoInferSourceFromText(parts[0]);
@@ -2488,8 +2499,8 @@ function ensureMonaco() {
 									if (src && src.kind === 'fq') {
 										const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
 											const otherColsByTable = __kustoGetColumnsByTable(otherSchema);
-											if (otherColsByTable && otherColsByTable[src.table]) {
-												cols = Array.from(otherColsByTable[src.table]);
+											if (otherColsByTable && otherColsByTable[src.table as string]) {
+												cols = Array.from(otherColsByTable[src.table as string]);
 											}
 									} else if (src && src.kind === 'ident') {
 										const t = __kustoFindSchemaTableName(src.name);
@@ -2523,7 +2534,7 @@ function ensureMonaco() {
 														.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
 														.replace(/\bisfuzzy\s*=\s*(true|false)\b/ig, ' ')
 														.trim();
-													const set = new Set(cols);
+													const set: any = new Set(cols);
 													for (const item of __kustoSplitCommaList(unionBody)) {
 														const expr = String(item || '').trim();
 														if (!expr) continue;
@@ -2550,7 +2561,7 @@ function ensureMonaco() {
 												for (const item of __kustoSplitCommaList(afterKw)) {
 													const m = item.match(/^([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)\b/);
 													if (m && m[1] && m[2]) {
-														cols = cols.filter(c => c !== m[2]);
+														cols = cols.filter((c: any) => c !== m[2]);
 														if (!cols.includes(m[1])) cols.push(m[1]);
 													}
 												}
@@ -2563,7 +2574,7 @@ function ensureMonaco() {
 													const mId = item.match(/^([A-Za-z_][\w]*)\b/);
 													if (mId && mId[1]) remove.add(mId[1]);
 												}
-												if (remove.size) cols = cols.filter(c => !remove.has(c));
+												if (remove.size) cols = cols.filter((c: any) => !remove.has(c));
 												continue;
 											}
 											if (/^project-keep\b/i.test(lower)) {
@@ -2590,7 +2601,7 @@ function ensureMonaco() {
 										}
 											if (/^extend\b/i.test(lower)) {
 												try {
-													const set = new Set(cols);
+													const set: any = new Set(cols);
 													const body = stage.replace(/^extend\b/i, '');
 													for (const m of body.matchAll(/\b([A-Za-z_][\w]*)\s*=/g)) {
 														if (m && m[1]) set.add(String(m[1]));
@@ -2602,7 +2613,7 @@ function ensureMonaco() {
 											if (/^parse(-where)?\b/i.test(lower)) {
 												// parse/parse-where extends the table with extracted columns.
 												try {
-													const set = new Set(cols);
+													const set: any = new Set(cols);
 													const withIdx = stage.toLowerCase().indexOf(' with ');
 													if (withIdx >= 0) {
 														const body = stage.slice(withIdx + 6);
@@ -2620,7 +2631,7 @@ function ensureMonaco() {
 											}
 											if (/^mv-expand\b/i.test(lower)) {
 												try {
-													const set = new Set(cols);
+													const set: any = new Set(cols);
 													const body = stage.replace(/^mv-expand\s*/i, '');
 													const body2 = body.split(/\blimit\b/i)[0] || body;
 													for (const part of __kustoSplitCommaList(body2)) {
@@ -2685,11 +2696,11 @@ function ensureMonaco() {
 												const mName = afterOp.match(/^([A-Za-z_][\w-]*)\b/);
 												rightExpr = (mName && mName[1]) ? mName[1] : null;
 											}
-											const rightCols = rightExpr ? await __kustoComputeColumnsForPipelineText(rightExpr) : null;
+											const rightCols: any = rightExpr ? await __kustoComputeColumnsForPipelineText(rightExpr) : null;
 											if (mode === 'right' && rightCols) { cols = Array.from(rightCols); continue; }
 											if (mode === 'left') { continue; }
 											if (rightCols) {
-												const set = new Set(cols);
+												const set: any = new Set(cols);
 												for (const c of rightCols) if (!set.has(c)) set.add(c);
 												cols = Array.from(set);
 											}
@@ -2700,7 +2711,7 @@ function ensureMonaco() {
 									return cols;
 								};
 
-								const __kustoComputeLetColumns = async (letNameLower) => {
+								const __kustoComputeLetColumns = async (letNameLower: any) => {
 									const key = String(letNameLower || '').toLowerCase();
 									if (!key) return null;
 									if (__kustoLetColsMemo.has(key)) return __kustoLetColsMemo.get(key);
@@ -2709,7 +2720,7 @@ function ensureMonaco() {
 									if (!rhs) return null;
 									__kustoLetInProgress.add(key);
 									try {
-										const cols = await __kustoComputeColumnsForPipelineText(rhs);
+										const cols: any = await __kustoComputeColumnsForPipelineText(rhs);
 										__kustoLetColsMemo.set(key, cols);
 										return cols;
 									} finally {
@@ -2717,16 +2728,16 @@ function ensureMonaco() {
 									}
 								};
 
-								const __kustoBuildLetTabularResolver = (text) => {
-									const tablesByLower = {};
+								const __kustoBuildLetTabularResolver = (text: any) => {
+									const tablesByLower: any = {};
 									try {
 										for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
 											tablesByLower[String(t).toLowerCase()] = String(t);
 										}
 									} catch { /* ignore */ }
 
-									const letSources = {};
-									const extractSourceLower = (rhsText) => {
+									const letSources: any = {};
+									const extractSourceLower = (rhsText: any) => {
 										const rhs = String(rhsText || '').trim();
 										if (!rhs) return null;
 										try {
@@ -2768,7 +2779,7 @@ function ensureMonaco() {
 										}
 									} catch { /* ignore */ }
 
-									const resolveToContext = async (name) => {
+									const resolveToContext = async (name: any) => {
 										let cur = String(name || '').toLowerCase();
 										for (let depth = 0; depth < 8; depth++) {
 											if (tablesByLower[cur]) {
@@ -2796,7 +2807,7 @@ function ensureMonaco() {
 								};
 
 								const resolveTabularNameToContext = __kustoBuildLetTabularResolver(fullText);
-								const __kustoResolveToSchemaTableName = (name) => __kustoFindSchemaTableName(name);
+								const __kustoResolveToSchemaTableName = (name: any) => __kustoFindSchemaTableName(name);
 								const statementStart = __kustoGetStatementStartAtOffset(fullText, offset);
 								const before = String(fullText || '').slice(statementStart, Math.max(statementStart, Math.max(0, offset)));
 								let resolvedCtx = null;
@@ -2872,7 +2883,7 @@ function ensureMonaco() {
 															if (/^union\b/i.test(lower)) {
 										// union T1, T2 ...  => available columns are the union of referenced tables + current columns
 																const unionBody = stage.replace(/^union\b/i, '').trim();
-										const set = new Set(cols);
+										const set: any = new Set(cols);
 										const schemaColumnsByTable = __kustoGetColumnsByTable(schema);
 										for (const m of unionBody.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
 											const t = __kustoResolveToSchemaTableName(m[1]);
@@ -2907,7 +2918,7 @@ function ensureMonaco() {
 																continue;
 															}
 															if (rightCols) {
-																const set = new Set(cols);
+																const set: any = new Set(cols);
 																for (const c of rightCols) if (!set.has(c)) set.add(c);
 																cols = Array.from(set);
 															}
@@ -2986,7 +2997,7 @@ function ensureMonaco() {
 										if (/^parse(-where)?\b/i.test(lower)) {
 										// parse/parse-where extends the table with extracted columns.
 										try {
-											const set = new Set(cols);
+											const set: any = new Set(cols);
 											// Heuristic: after `with`, patterns often include string constants followed by a column name.
 											const withIdx = stage.toLowerCase().indexOf(' with ');
 											if (withIdx >= 0) {
@@ -3007,7 +3018,7 @@ function ensureMonaco() {
 										if (/^mv-expand\b/i.test(lower)) {
 										// mv-expand can introduce a new column name when using `Name = ArrayExpression`.
 										try {
-											const set = new Set(cols);
+											const set: any = new Set(cols);
 											const body = stage.replace(/^mv-expand\s*/i, '');
 											const body2 = body.split(/\blimit\b/i)[0] || body;
 											for (const part of __kustoSplitCommaList(body2)) {
@@ -3117,6 +3128,7 @@ function ensureMonaco() {
 								}
 
 								// If inside `join/lookup ... on`, union left + right columns.
+								let columnsByTable: any = null;
 								if (__kustoIsJoinOrLookupOnContext) {
 									try {
 										const stmt = String(statementTextUpToCursor || '');
@@ -3140,7 +3152,7 @@ function ensureMonaco() {
 																	if (mName && mName[1]) rightName = mName[1];
 																}
 										const resolvedRight = __kustoResolveToSchemaTableNameForCompletion(rightName);
-										const columnsByTable = __kustoGetColumnsByTable(schema);
+										columnsByTable = __kustoGetColumnsByTable(schema);
 										const rightCols = (resolvedRight && columnsByTable && columnsByTable[resolvedRight]) ? columnsByTable[resolvedRight] : null;
 										const set = new Set(Array.isArray(columns) ? columns : []);
 										if (rightCols) {
@@ -3192,13 +3204,13 @@ function ensureMonaco() {
 							}
 
 							if (shouldSuggestFunctionsOrJoinOn) {
-								const __kustoBuildFnInsertText = (fnName, fnDoc) => {
+								const __kustoBuildFnInsertText = (fnName: any, fnDoc: any) => {
 									const args = (fnDoc && Array.isArray(fnDoc.args)) ? fnDoc.args : [];
-									const required = args.filter(a => typeof a === 'string' && !a.endsWith('?'));
+									const required = args.filter((a: any) => typeof a === 'string' && !a.endsWith('?'));
 									if (required.length === 0) {
 										return { insertText: fnName + '()', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
 									}
-									const snippetArgs = required.map((a, i) => '${' + (i + 1) + ':' + a + '}').join(', ');
+									const snippetArgs = required.map((a: any, i: any) => '${' + (i + 1) + ':' + a + '}').join(', ');
 									return { insertText: fnName + '(' + snippetArgs + ')', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet };
 								};
 
@@ -3267,7 +3279,7 @@ function ensureMonaco() {
 					// --- Live diagnostics (markers) + quick fixes ---
 					const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
 
-					const __kustoMaskCommentsPreserveLayout = (text) => {
+					const __kustoMaskCommentsPreserveLayout = (text: any) => {
 						try {
 							const s = String(text || '');
 							if (!s) return s;
@@ -3355,7 +3367,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoFilterMarkersByAutocomplete = async (model, markers) => {
+					const __kustoFilterMarkersByAutocomplete = async (model: any, markers: any) => {
 						try {
 							if (!model || !Array.isArray(markers) || markers.length === 0) return markers;
 							if (typeof __kustoProvideCompletionItemsForDiagnostics !== 'function') return markers;
@@ -3368,7 +3380,7 @@ function ensureMonaco() {
 
 							// Cache completion labels per position so multiple markers on the same token don't recompute.
 							const labelsByPos = new Map();
-							const getLabelsAt = async (lineNumber, column) => {
+							const getLabelsAt = async (lineNumber: any, column: any) => {
 								const key = String(lineNumber) + ':' + String(column);
 								if (labelsByPos.has(key)) return labelsByPos.get(key);
 								let set = null;
@@ -3420,9 +3432,9 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoClamp = (n, min, max) => Math.max(min, Math.min(max, n));
+					const __kustoClamp = (n: any, min: any, max: any) => Math.max(min, Math.min(max, n));
 
-					const __kustoSplitTopLevelStatements = (text) => {
+					const __kustoSplitTopLevelStatements = (text: any) => {
 						// Split on ';' and blank lines when not inside strings/comments/brackets.
 						const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 						const out = [];
@@ -3558,7 +3570,7 @@ function ensureMonaco() {
 						return out.filter(s => String(s.text || '').trim().length > 0);
 					};
 
-					const __kustoSplitPipelineStagesDeep = (text) => {
+					const __kustoSplitPipelineStagesDeep = (text: any) => {
 						// Split at the *shallowest* pipeline depth (not inside strings or comments).
 						// This allows pipes inside `let ... { ... }` bodies (depth 1) to behave like top-level pipelines.
 						const s = String(text || '');
@@ -3630,7 +3642,7 @@ function ensureMonaco() {
 						return parts;
 					};
 
-					const __kustoFindLastTopLevelPipeBeforeOffset = (text, offset) => {
+					const __kustoFindLastTopLevelPipeBeforeOffset = (text: any, offset: any) => {
 						// Returns the offset of the last top-level '|' before `offset` (exclusive), or -1.
 						try {
 							const s = String(text || '');
@@ -3668,7 +3680,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText, offsetInStmt) => {
+					const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText: any, offsetInStmt: any) => {
 						try {
 							const s = String(stmtText || '');
 							const pipeIdx = __kustoFindLastTopLevelPipeBeforeOffset(s, offsetInStmt);
@@ -3700,7 +3712,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoParsePipeHeaderFromLine = (trimmedPipeLine) => {
+					const __kustoParsePipeHeaderFromLine = (trimmedPipeLine: any) => {
 						try {
 							const t = String(trimmedPipeLine || '').trim();
 							if (!t.startsWith('|')) return null;
@@ -3725,7 +3737,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader) => {
+					const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader: any) => {
 						try {
 							if (!pipeHeader || !pipeHeader.key) return false;
 							const key = String(pipeHeader.key).toLowerCase();
@@ -3759,7 +3771,7 @@ function ensureMonaco() {
 						}
 					};
 
-					const __kustoGetStatementStartAtOffset = (text, offset) => {
+					const __kustoGetStatementStartAtOffset = (text: any, offset: any) => {
 						const raw = String(text || '');
 						const end = Math.max(0, Math.min(raw.length, Number(offset) || 0));
 						let last = -1;
@@ -3822,7 +3834,7 @@ function ensureMonaco() {
 						return last + 1;
 					};
 
-					const __kustoBuildLineStarts = (text) => {
+					const __kustoBuildLineStarts = (text: any) => {
 						const starts = [0];
 						for (let i = 0; i < text.length; i++) {
 							const ch = text.charCodeAt(i);
@@ -3833,7 +3845,7 @@ function ensureMonaco() {
 						return starts;
 					};
 
-					const __kustoOffsetToPosition = (lineStarts, offset) => {
+					const __kustoOffsetToPosition = (lineStarts: any, offset: any) => {
 						const off = __kustoClamp(offset, 0, Number.MAX_SAFE_INTEGER);
 						let lo = 0;
 						let hi = lineStarts.length - 1;
@@ -3855,14 +3867,14 @@ function ensureMonaco() {
 						return { lineNumber: lastLine, column: (off - start) + 1 };
 					};
 
-					const __kustoIsIdentStart = (ch) => {
+					const __kustoIsIdentStart = (ch: any) => {
 						return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95; // A-Z a-z _
 					};
-					const __kustoIsIdentPart = (ch) => {
+					const __kustoIsIdentPart = (ch: any) => {
 						return __kustoIsIdentStart(ch) || (ch >= 48 && ch <= 57) || ch === 45; // 0-9 -
 					};
 
-					const __kustoScanIdentifiers = (text) => {
+					const __kustoScanIdentifiers = (text: any) => {
 						// Lightweight lexer that returns identifier tokens with offsets.
 						const tokens = [];
 						let i = 0;
@@ -3949,7 +3961,7 @@ function ensureMonaco() {
 						return tokens;
 					};
 
-					const __kustoLevenshtein = (a, b) => {
+					const __kustoLevenshtein = (a: any, b: any) => {
 						const s = String(a || '');
 						const t = String(b || '');
 						if (s === t) return 0;
@@ -3972,7 +3984,7 @@ function ensureMonaco() {
 						return prev[m];
 					};
 
-					const __kustoBestMatches = (needle, candidates, maxCount) => {
+					const __kustoBestMatches = (needle: any, candidates: any, maxCount: any) => {
 						const n = String(needle || '');
 						const nl = n.toLowerCase();
 						const out = [];
@@ -3999,19 +4011,19 @@ function ensureMonaco() {
 						return best;
 					};
 
-					const __kustoGetSchemaForModel = (model) => {
+					const __kustoGetSchemaForModel = (model: any) => {
 						let boxId = null;
 						try {
-							boxId = model && model.uri ? (queryEditorBoxByModelUri[model.uri.toString()] || null) : null;
+							boxId = model && model.uri ? (_win.queryEditorBoxByModelUri[model.uri.toString()] || null) : null;
 						} catch { boxId = null; }
 						if (!boxId) {
-							boxId = activeQueryEditorBoxId;
+							boxId = _win.activeQueryEditorBoxId;
 						}
-						return { boxId, schema: boxId ? (schemaByBoxId[boxId] || null) : null };
+						return { boxId, schema: boxId ? (_win.schemaByBoxId[boxId] || null) : null };
 					};
 
-					const __kustoComputeDiagnostics = (text, schema) => {
-						const markers = [];
+					const __kustoComputeDiagnostics = (text: any, schema: any) => {
+						const markers: any[] = [];
 						const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 						if (!raw.trim()) {
 							return markers;
@@ -4085,7 +4097,7 @@ function ensureMonaco() {
 							}
 						})();
 
-						const __kustoIsTabularParamInScope = (nameLower, offset) => {
+						const __kustoIsTabularParamInScope = (nameLower: any, offset: any) => {
 							try {
 								const n = String(nameLower || '').toLowerCase();
 								const off = Number(offset) || 0;
@@ -4139,14 +4151,14 @@ function ensureMonaco() {
 						})();
 
 						const __kustoResolveTabularLetToTable = (() => {
-							const tablesByLower = {};
+							const tablesByLower: any = {};
 							try {
 								for (const t of tables) {
 									tablesByLower[String(t).toLowerCase()] = String(t);
 								}
 							} catch { /* ignore */ }
-							const letSources = {};
-							const extractSourceLower = (rhsText) => {
+							const letSources: any = {};
+							const extractSourceLower = (rhsText: any) => {
 								const rhs = String(rhsText || '').trim();
 								if (!rhs) return null;
 								try {
@@ -4181,7 +4193,7 @@ function ensureMonaco() {
 									letSources[letNameLower] = srcLower;
 								}
 							} catch { /* ignore */ }
-							return (nameLower) => {
+							return (nameLower: any) => {
 								let cur = String(nameLower || '').toLowerCase();
 								for (let depth = 0; depth < 8; depth++) {
 									if (tablesByLower[cur]) return tablesByLower[cur];
@@ -4192,7 +4204,7 @@ function ensureMonaco() {
 							};
 						})();
 
-												const __kustoParseFullyQualifiedTableExpr = (text) => {
+												const __kustoParseFullyQualifiedTableExpr = (text: any) => {
 													try {
 														const s = String(text || '');
 														const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
@@ -4206,12 +4218,12 @@ function ensureMonaco() {
 												};
 
 												// Unknown table checks: (1) statement-first identifier; (2) join/from identifier.
-						const reportUnknownName = (code, name, startOffset, endOffset, candidates, what) => {
+						const reportUnknownName = (code: any, name: any, startOffset: any, endOffset: any, candidates: any, what: any) => {
 							const start = __kustoOffsetToPosition(lineStarts, startOffset);
 							const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, endOffset));
 													const prefixLower = String(name || '').toLowerCase();
 													const filtered = prefixLower
-														? (candidates || []).filter((c) => String(c || '').toLowerCase().startsWith(prefixLower))
+														? (candidates || []).filter((c: any) => String(c || '').toLowerCase().startsWith(prefixLower))
 														: (candidates || []);
 													const best = __kustoBestMatches(name, filtered, 5);
 							const didYouMean = best.length ? (' Did you mean: ' + best.map(s => '`' + s + '`').join(', ') + '?') : '';
@@ -4328,7 +4340,7 @@ function ensureMonaco() {
 																// Let-declared names are always valid identifiers.
 																if (__kustoDeclaredLetNames.has(srcName.toLowerCase())) return { handled: true, ok: true };
 																if (__kustoResolveTabularLetToTable(srcName.toLowerCase())) return { handled: true, ok: true };
-																if (tables.length && !tables.some(t => String(t).toLowerCase() === srcName.toLowerCase())) {
+																if (tables.length && !tables.some((t: any) => String(t).toLowerCase() === srcName.toLowerCase())) {
 																	const localStart = line.toLowerCase().indexOf(srcName.toLowerCase());
 																	if (localStart >= 0) {
 																		reportUnknownName('KW_UNKNOWN_TABLE', srcName, runningOffset + localStart, runningOffset + localStart + srcName.length, __kustoTabularNameCandidates, 'table');
@@ -4356,7 +4368,7 @@ function ensureMonaco() {
 											} catch { /* ignore */ }
 											const resolvedLet = __kustoResolveTabularLetToTable(name.toLowerCase());
 											if (!resolvedLet) {
-												if (tables.length && !tables.some(t => String(t).toLowerCase() === name.toLowerCase())) {
+												if (tables.length && !tables.some((t: any) => String(t).toLowerCase() === name.toLowerCase())) {
 													const localStart = line.indexOf(name);
 													if (localStart >= 0) {
 														reportUnknownName('KW_UNKNOWN_TABLE', name, runningOffset + localStart, runningOffset + localStart + name.length, __kustoTabularNameCandidates, 'table');
@@ -4418,7 +4430,7 @@ function ensureMonaco() {
 										lastPipeHeader = __kustoParsePipeHeaderFromLine(trimmed);
 										allowIndentedContinuation = __kustoPipeHeaderAllowsIndentedContinuation(lastPipeHeader);
 										expectPipeAfterBareId = false;
-										__kustoDiagLog('pipe line', {
+										_win.__kustoDiagLog('pipe line', {
 											stmtStartOffset: baseOffset,
 											lineRaw: line,
 											pipeHeader: lastPipeHeader,
@@ -4485,7 +4497,7 @@ function ensureMonaco() {
 							} catch { /* ignore */ }
 
 							try {
-								const extractJoinOrLookupRightTable = (seg) => {
+								const extractJoinOrLookupRightTable = (seg: any) => {
 									try {
 										const clause = String(seg || '');
 										const paren = clause.match(/\(([^)]*)\)/);
@@ -4538,7 +4550,7 @@ function ensureMonaco() {
 											}
 										} catch { /* ignore */ }
 									if (__kustoResolveTabularLetToTable(String(name).toLowerCase())) continue;
-									if (tables.length && !tables.some(t => String(t).toLowerCase() === String(name).toLowerCase())) {
+									if (tables.length && !tables.some((t: any) => String(t).toLowerCase() === String(name).toLowerCase())) {
 										const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
 										const startOffset = baseOffset + idx + Math.max(0, localStart);
 										reportUnknownName('KW_UNKNOWN_TABLE', name, startOffset, startOffset + String(name).length, __kustoTabularNameCandidates, 'table');
@@ -4549,11 +4561,11 @@ function ensureMonaco() {
 
 						// Column checks: best-effort pipeline simulation at top-level (depth 0).
 						if (tables.length && columnsByTable) {
-							const isDynamicType = (t) => {
+							const isDynamicType = (t: any) => {
 								const v = String(t ?? '').trim().toLowerCase();
 								return v === 'dynamic' || v.includes('dynamic') || v === 'system.object' || v.includes('system.object') || v === 'object';
 							};
-							const getDynamicColumnsForTable = (table) => {
+							const getDynamicColumnsForTable = (table: any) => {
 								const set = new Set();
 								if (!table || !columnTypesByTable) return set;
 								const types = columnTypesByTable[table];
@@ -4563,7 +4575,7 @@ function ensureMonaco() {
 								}
 								return set;
 							};
-							const getDotChainRoot = (s, identStart) => {
+							const getDotChainRoot = (s: any, identStart: any) => {
 								let currentIdentStart = identStart;
 								if (currentIdentStart <= 0 || s[currentIdentStart - 1] !== '.') return null;
 								let root = null;
@@ -4602,7 +4614,7 @@ function ensureMonaco() {
 								// Statement-local string ranges (so semicolons don't confuse offsets).
 								// IMPORTANT: run this over comment-masked text so apostrophes inside comments can't
 								// accidentally open/close string literals and corrupt downstream identifier validation.
-								const stringRanges = [];
+								const stringRanges: any[] = [];
 								try {
 									const stmtLex = __kustoMaskCommentsPreserveLayout(stmtRaw);
 									let quote = null;
@@ -4626,7 +4638,7 @@ function ensureMonaco() {
 									}
 								} catch { /* ignore */ }
 								let stringRangeIdx = 0;
-								const isInStringLiteral = (localOffset) => {
+								const isInStringLiteral = (localOffset: any) => {
 									while (stringRangeIdx < stringRanges.length && stringRanges[stringRangeIdx][1] <= localOffset) {
 										stringRangeIdx++;
 									}
@@ -4650,7 +4662,7 @@ function ensureMonaco() {
 										if (src && src[1]) letSource = src[1];
 									}
 									if (letSource) {
-										const found = tables.find(t => String(t).toLowerCase() === String(letSource).toLowerCase());
+										const found = tables.find((t: any) => String(t).toLowerCase() === String(letSource).toLowerCase());
 										if (found && columnsByTable[found]) {
 											activeTable = found;
 										}
@@ -4670,7 +4682,7 @@ function ensureMonaco() {
 											if (!m || !m[1]) continue;
 											const name = m[1];
 											if (ignore.has(name.toLowerCase())) continue;
-											const found = tables.find(t => String(t).toLowerCase() === String(name).toLowerCase());
+											const found = tables.find((t: any) => String(t).toLowerCase() === String(name).toLowerCase());
 											if (found && columnsByTable[found]) { activeTable = found; break; }
 											const resolvedLet = __kustoResolveTabularLetToTable(String(name).toLowerCase());
 											if (resolvedLet && columnsByTable[resolvedLet]) { activeTable = resolvedLet; break; }
@@ -4678,14 +4690,14 @@ function ensureMonaco() {
 									}
 								} catch { activeTable = null; }
 
-								let colSet = null;
+								let colSet: any = null;
 								let dynamicRootCols = new Set();
 								if (activeTable) {
-									colSet = new Set((columnsByTable[activeTable] || []).map(c => String(c)));
+									colSet = new Set((columnsByTable[activeTable] || []).map((c: any) => String(c)));
 									dynamicRootCols = getDynamicColumnsForTable(activeTable);
 								}
 
-								const reportUnknownColumn = (name, localStartOffset, localEndOffset, candidates) => {
+								const reportUnknownColumn = (name: any, localStartOffset: any, localEndOffset: any, candidates: any) => {
 									reportUnknownName('KW_UNKNOWN_COLUMN', name, baseOffset + localStartOffset, baseOffset + localEndOffset, candidates, 'column');
 								};
 
@@ -4694,7 +4706,7 @@ function ensureMonaco() {
 									return Array.from(colSet);
 								};
 
-								const isFunctionCall = (idx) => {
+								const isFunctionCall = (idx: any) => {
 									try {
 										const t = tokens[idx];
 										if (!t || t.type !== 'ident') return false;
@@ -4786,7 +4798,7 @@ function ensureMonaco() {
 										if (byTok) {
 											const byText = stmtRaw.slice(byTok.endOffset, clauseEnd);
 												// Only include group-by output columns (aliases and bare keys).
-												const splitTopLevelCommaList = (s) => {
+												const splitTopLevelCommaList = (s: any) => {
 													try {
 														const text = String(s || '');
 														const parts = [];
@@ -4892,20 +4904,20 @@ function ensureMonaco() {
 
 				// DISABLED: Custom diagnostics - monaco-kusto now handles validation via its language service
 				// The function stub is kept for backwards compatibility with existing callers.
-				window.__kustoScheduleKustoDiagnostics = function (boxId, delayMs) {
+				_win.__kustoScheduleKustoDiagnostics = function (boxId: any, delayMs: any) {
 					// Monaco-kusto provides its own diagnostics/validation, so this is now a no-op.
 					return;
 				};
 
 					// Hover provider for diagnostics (shown on red underline hover).
 					monaco.languages.registerHoverProvider('kusto', {
-						provideHover: function (model, position) {
+						provideHover: function (model: any, position: any) {
 							try {
 								const markers = monaco.editor.getModelMarkers({ owner: KUSTO_DIAGNOSTICS_OWNER, resource: model.uri });
 								if (!markers || !markers.length) return null;
 								const line = position.lineNumber;
 								const col = position.column;
-								const hit = markers.filter(m =>
+								const hit = markers.filter((m: any) =>
 									m.startLineNumber <= line && m.endLineNumber >= line &&
 									(m.startLineNumber < line || m.startColumn <= col) &&
 									(m.endLineNumber > line || m.endColumn >= col)
@@ -4924,7 +4936,7 @@ function ensureMonaco() {
 
 					// Hover docs for keywords/functions, including argument tracking for function calls.
 					monaco.languages.registerHoverProvider('kusto', {
-						provideHover: function (model, position) {
+						provideHover: function (model: any, position: any) {
 							try {
 								const info = getHoverInfoAt(model, position);
 								if (!info) {
@@ -4941,7 +4953,7 @@ function ensureMonaco() {
 					});
 
 					// Expose a helper so the editor instance can decide whether to auto-show hover.
-					window.__kustoGetHoverInfoAt = getHoverInfoAt;
+					_win.__kustoGetHoverInfoAt = getHoverInfoAt;
 
 					// --- monaco-kusto integration ---
 					// Track which schemas have been loaded into the monaco-kusto worker
@@ -4949,37 +4961,37 @@ function ensureMonaco() {
 					// This is separate from our UI schema cache - this tracks what's IN the worker
 					// IMPORTANT: monaco-kusto keeps schema state per Monaco model URI (workerAccessor(modelUri)).
 					// If we always target models[0], schema/context updates apply to the wrong query box.
-					window.__kustoMonacoLoadedSchemas = window.__kustoMonacoLoadedSchemas || {}; // legacy/global (kept for logs)
-					window.__kustoMonacoLoadedSchemasByModel = window.__kustoMonacoLoadedSchemasByModel || {};
-					window.__kustoMonacoInitialized = false; // legacy/global (kept for logs)
-					window.__kustoMonacoInitializedByModel = window.__kustoMonacoInitializedByModel || {};
+					_win.__kustoMonacoLoadedSchemas = _win.__kustoMonacoLoadedSchemas || {}; // legacy/global (kept for logs)
+					_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
+					_win.__kustoMonacoInitialized = false; // legacy/global (kept for logs)
+					_win.__kustoMonacoInitializedByModel = _win.__kustoMonacoInitializedByModel || {};
 					// Track the current database in context: { clusterUrl, database }
-					window.__kustoMonacoDatabaseInContext = null; // legacy/global (current focused model)
-					window.__kustoMonacoDatabaseInContextByModel = window.__kustoMonacoDatabaseInContextByModel || {};
+					_win.__kustoMonacoDatabaseInContext = null; // legacy/global (current focused model)
+					_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
 					
 					// Cache all raw schema data we receive, so we can re-add them after cluster switches
 					// Key: `${clusterUrl}|${database}`, Value: { rawSchemaJson, clusterUrl, database }
-					window.__kustoSchemaCache = {};
+					_win.__kustoSchemaCache = {};
 					
 					// Mutex to serialize schema operations - prevents race conditions during parallel loads
-					window.__kustoSchemaOperationQueue = Promise.resolve();
+					_win.__kustoSchemaOperationQueue = Promise.resolve();
 					
 					// Function to set/add schema in monaco-kusto worker for full IntelliSense support
 					// Uses aggregate approach: first schema uses setSchemaFromShowSchema, 
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
-					window.__kustoSetMonacoKustoSchema = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null, forceRefresh = false) {
+					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Serialize schema operations to prevent race conditions
-						const operationPromise = window.__kustoSchemaOperationQueue.then(async () => {
-							return await window.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
-						}).catch(e => {
+						const operationPromise = _win.__kustoSchemaOperationQueue.then(async () => {
+							return await _win.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
+						}).catch((e: any) => {
 							console.error('[monaco-kusto] Queued operation failed:', e);
 						});
-						window.__kustoSchemaOperationQueue = operationPromise;
+						_win.__kustoSchemaOperationQueue = operationPromise;
 						return operationPromise;
 					};
 					
 					// Internal implementation - called through the queue
-					window.__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson, clusterUrl, database, setAsContext = false, modelUri = null, forceRefresh = false) {
+					_win.__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Resolve which Monaco model this operation applies to
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						if (!models || models.length === 0) {
@@ -4990,24 +5002,24 @@ function ensureMonaco() {
 						// If we don't clean up per-model caches on dispose, a newly-created model can inherit
 						// stale loadedSchemas/context and autocomplete will be wrong immediately.
 						try {
-							window.__kustoMonacoModelDisposeHookInstalled = window.__kustoMonacoModelDisposeHookInstalled || false;
-							if (!window.__kustoMonacoModelDisposeHookInstalled && monaco?.editor?.onWillDisposeModel) {
-								window.__kustoMonacoModelDisposeHookInstalled = true;
-								monaco.editor.onWillDisposeModel((model) => {
+							_win.__kustoMonacoModelDisposeHookInstalled = _win.__kustoMonacoModelDisposeHookInstalled || false;
+							if (!_win.__kustoMonacoModelDisposeHookInstalled && monaco?.editor?.onWillDisposeModel) {
+								_win.__kustoMonacoModelDisposeHookInstalled = true;
+								monaco.editor.onWillDisposeModel((model: any) => {
 									try {
 										const uriKey = model?.uri ? model.uri.toString() : null;
 										if (!uriKey) return;
-										if (window.__kustoMonacoLoadedSchemasByModel && window.__kustoMonacoLoadedSchemasByModel[uriKey]) {
-											try { delete window.__kustoMonacoLoadedSchemasByModel[uriKey]; } catch { /* ignore */ }
+										if (_win.__kustoMonacoLoadedSchemasByModel && _win.__kustoMonacoLoadedSchemasByModel[uriKey]) {
+											try { delete _win.__kustoMonacoLoadedSchemasByModel[uriKey]; } catch { /* ignore */ }
 										}
-										if (window.__kustoMonacoDatabaseInContextByModel && window.__kustoMonacoDatabaseInContextByModel[uriKey]) {
-											try { delete window.__kustoMonacoDatabaseInContextByModel[uriKey]; } catch { /* ignore */ }
+										if (_win.__kustoMonacoDatabaseInContextByModel && _win.__kustoMonacoDatabaseInContextByModel[uriKey]) {
+											try { delete _win.__kustoMonacoDatabaseInContextByModel[uriKey]; } catch { /* ignore */ }
 										}
-										if (window.__kustoMonacoInitializedByModel && window.__kustoMonacoInitializedByModel[uriKey]) {
-											try { delete window.__kustoMonacoInitializedByModel[uriKey]; } catch { /* ignore */ }
+										if (_win.__kustoMonacoInitializedByModel && _win.__kustoMonacoInitializedByModel[uriKey]) {
+											try { delete _win.__kustoMonacoInitializedByModel[uriKey]; } catch { /* ignore */ }
 										}
-										if (window.__kustoModelClusterMap && window.__kustoModelClusterMap[uriKey]) {
-											try { delete window.__kustoModelClusterMap[uriKey]; } catch { /* ignore */ }
+										if (_win.__kustoModelClusterMap && _win.__kustoModelClusterMap[uriKey]) {
+											try { delete _win.__kustoModelClusterMap[uriKey]; } catch { /* ignore */ }
 										}
 									} catch { /* ignore */ }
 								});
@@ -5015,10 +5027,10 @@ function ensureMonaco() {
 						} catch { /* ignore */ }
 
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : models[0].uri.toString();
-						window.__kustoMonacoLoadedSchemasByModel[modelKey] = window.__kustoMonacoLoadedSchemasByModel[modelKey] || {};
-						window.__kustoMonacoDatabaseInContextByModel[modelKey] = window.__kustoMonacoDatabaseInContextByModel[modelKey] || null;
-						window.__kustoMonacoInitializedByModel[modelKey] = !!window.__kustoMonacoInitializedByModel[modelKey];
-						const perModelLoadedSchemas = window.__kustoMonacoLoadedSchemasByModel[modelKey];
+						_win.__kustoMonacoLoadedSchemasByModel[modelKey] = _win.__kustoMonacoLoadedSchemasByModel[modelKey] || {};
+						_win.__kustoMonacoDatabaseInContextByModel[modelKey] = _win.__kustoMonacoDatabaseInContextByModel[modelKey] || null;
+						_win.__kustoMonacoInitializedByModel[modelKey] = !!_win.__kustoMonacoInitializedByModel[modelKey];
+						const perModelLoadedSchemas = _win.__kustoMonacoLoadedSchemasByModel[modelKey];
 						
 						const schemaKey = `${clusterUrl}|${database}`;
 						// If this is a force refresh, invalidate the loaded tracking so we reload the schema
@@ -5028,7 +5040,7 @@ function ensureMonaco() {
 						const alreadyLoaded = !!perModelLoadedSchemas[schemaKey];
 						
 						// Normalize cluster URLs for comparison
-						const normalizeClusterUrl = (url) => {
+						const normalizeClusterUrl = (url: any) => {
 							if (!url) return '';
 							let normalized = String(url).trim().toLowerCase();
 							normalized = normalized.replace(/^https?:\/\//, '');
@@ -5037,7 +5049,7 @@ function ensureMonaco() {
 						};
 						
 						// Check if the current worker schema is for the same cluster (per model)
-						const currentContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+						const currentContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
 						const currentClusterNormalized = normalizeClusterUrl(currentContext?.clusterUrl);
 						const newClusterNormalized = normalizeClusterUrl(clusterUrl);
 						const isSameCluster = currentContext && currentClusterNormalized === newClusterNormalized;
@@ -5058,7 +5070,7 @@ function ensureMonaco() {
 									return;
 								} else {
 									// Same cluster, different database - try to switch context
-									const switched = await window.__kustoSetDatabaseInContext(clusterUrl, database, modelKey);
+									const switched = await _win.__kustoSetDatabaseInContext(clusterUrl, database, modelKey);
 									if (switched) {
 										return;
 									}
@@ -5128,21 +5140,21 @@ function ensureMonaco() {
 										}
 									}
 									
-															if (!window.__kustoMonacoInitializedByModel[modelKey]) {
+															if (!_win.__kustoMonacoInitializedByModel[modelKey]) {
 										// First schema: use setSchemaFromShowSchema to establish base with database in context
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-																window.__kustoMonacoInitialized = true; // legacy
-																window.__kustoMonacoInitializedByModel[modelKey] = true;
+																_win.__kustoMonacoInitialized = true; // legacy
+																_win.__kustoMonacoInitializedByModel[modelKey] = true;
 																perModelLoadedSchemas[schemaKey] = true;
 																// Keep legacy/global in sync for debugging only
-																window.__kustoMonacoLoadedSchemas[schemaKey] = true;
-																window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+																_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
+																_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
 												
 												// Cache the schema for re-adding after cluster switches
-												window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+												_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 											} catch (schemaError) {
 												console.error('[monaco-kusto] setSchemaFromShowSchema failed:', schemaError);
 											}
@@ -5173,15 +5185,15 @@ function ensureMonaco() {
 																	} catch { /* ignore */ }
 																	perModelLoadedSchemas[schemaKey] = true;
 																	// Keep legacy/global in sync for debugging only
-																	window.__kustoMonacoLoadedSchemas = {};
-																	window.__kustoMonacoLoadedSchemas[schemaKey] = true;
-																	window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																	window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
-													window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+																	_win.__kustoMonacoLoadedSchemas = {};
+																	_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
+																	_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																	_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+													_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 													
 																	// Re-add schemas from OTHER clusters that we have cached.
 																	// This keeps cross-cluster database references working after switching.
-																	const otherClusterSchemas = Object.keys(window.__kustoSchemaCache || {})
+																	const otherClusterSchemas = Object.keys(_win.__kustoSchemaCache || {})
 																		.filter(key => {
 																			const [cachedClusterUrl] = key.split('|');
 																			const cachedClusterNorm = normalizeClusterUrl(cachedClusterUrl);
@@ -5189,7 +5201,7 @@ function ensureMonaco() {
 																		});
 													
 													for (const otherKey of otherClusterSchemas) {
-														const cached = window.__kustoSchemaCache[otherKey];
+														const cached = _win.__kustoSchemaCache[otherKey];
 														if (cached && cached.rawSchemaJson) {
 															try {
 																// Use addDatabaseToSchema to add this without replacing
@@ -5201,7 +5213,7 @@ function ensureMonaco() {
 																const engineSchema = await worker.normalizeSchema(otherSchemaObj, otherClusterUrl, otherDatabase);
 																let databaseSchema = engineSchema?.database;
 																if (!databaseSchema && engineSchema?.cluster?.databases) {
-																	databaseSchema = engineSchema.cluster.databases.find(db => 
+																	databaseSchema = engineSchema.cluster.databases.find((db: any) => 
 																		db.name.toLowerCase() === otherDatabase.toLowerCase()
 																	);
 																}
@@ -5225,7 +5237,7 @@ function ensureMonaco() {
 													const allQueryBoxes = document.querySelectorAll('.query-box[data-box-id]');
 													allQueryBoxes.forEach(box => {
 														const boxId = box.getAttribute('data-box-id');
-														const boxEditor = window.__kustoEditors?.[boxId];
+														const boxEditor = _win.__kustoEditors?.[boxId as string];
 														if (boxEditor) {
 															const boxCluster = box.getAttribute('data-cluster-url');
 															const boxClusterNorm = boxCluster ? normalizeClusterUrl(boxCluster) : null;
@@ -5253,7 +5265,7 @@ function ensureMonaco() {
 													// Extract the database schema
 													let databaseSchema = engineSchema?.database;
 													if (!databaseSchema && engineSchema?.cluster?.databases) {
-														databaseSchema = engineSchema.cluster.databases.find(db => 
+														databaseSchema = engineSchema.cluster.databases.find((db: any) => 
 															db.name.toLowerCase() === databaseInContext.toLowerCase()
 														);
 													}
@@ -5263,10 +5275,10 @@ function ensureMonaco() {
 																			await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
 																			perModelLoadedSchemas[schemaKey] = true;
 																			// Keep legacy/global in sync for debugging only
-																			window.__kustoMonacoLoadedSchemas[schemaKey] = true;
+																			_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
 														
 														// Cache the schema for re-adding after future cluster switches
-														window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+														_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 														
 																	// If requested, also switch context to this database.
 																	// NOTE: monaco-kusto's aggregated schema may not include newly-added databases
@@ -5278,11 +5290,11 @@ function ensureMonaco() {
 																			if (typeof worker.getSchema === 'function' && typeof worker.setSchema === 'function') {
 																				const currentSchema = await worker.getSchema();
 																				const currentDatabases = currentSchema?.cluster?.databases || [];
-																				const existingDb = currentDatabases.find(db => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase());
+																				const existingDb = currentDatabases.find((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase());
 																				// When the database already exists, replace it with the fresh databaseSchema
 																				// (important for forceRefresh — the old entry has stale tables/functions).
 																				const nextDatabases = existingDb
-																					? currentDatabases.map(db => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
+																					? currentDatabases.map((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
 																					: [...currentDatabases, databaseSchema];
 																				const updatedSchema = {
 																					...currentSchema,
@@ -5293,16 +5305,16 @@ function ensureMonaco() {
 																					database: databaseSchema
 																				};
 																				await worker.setSchema(updatedSchema);
-																				window.__kustoMonacoDatabaseInContextByModel = window.__kustoMonacoDatabaseInContextByModel || {};
-																				window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: (existingDb || databaseSchema).name };
-																				window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+																				_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
+																				_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: (existingDb || databaseSchema).name };
+																				_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
 																				contextSet = true;
 																			}
 																		} catch {
 																				contextSet = false;
 																		}
 																		if (!contextSet) {
-																			await window.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
+																			await _win.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
 																		}
 																	}
 													} else {
@@ -5316,13 +5328,13 @@ function ensureMonaco() {
 												if (typeof worker.setSchemaFromShowSchema === 'function') {
 													try {
 														await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-																			window.__kustoMonacoInitialized = true; // legacy
-																			window.__kustoMonacoInitializedByModel[modelKey] = true;
+																			_win.__kustoMonacoInitialized = true; // legacy
+																			_win.__kustoMonacoInitializedByModel[modelKey] = true;
 																			perModelLoadedSchemas[schemaKey] = true;
-																			window.__kustoMonacoLoadedSchemas[schemaKey] = true;
-														window.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
-																			window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																			window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+																			_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
+														_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+																			_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																			_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
 													} catch (e) {
 														console.error('[monaco-kusto] Fallback setSchemaFromShowSchema failed:', e);
 													}
@@ -5340,9 +5352,9 @@ function ensureMonaco() {
 					// Function to switch the "database in context" without reloading schemas
 					// This allows unqualified table names to resolve to the correct database
 					// Returns true if context switch succeeded, false otherwise
-					window.__kustoSetDatabaseInContext = async function (clusterUrl, database, modelUri = null) {
+					_win.__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null) {
 						// Normalize cluster URLs for comparison
-						const normalizeClusterUrl = (url) => {
+						const normalizeClusterUrl = (url: any) => {
 							if (!url) return '';
 							let normalized = String(url).trim().toLowerCase();
 							normalized = normalized.replace(/^https?:\/\//, '');
@@ -5354,8 +5366,8 @@ function ensureMonaco() {
 						if (!models || models.length === 0) {
 							return false;
 						}
-						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : models[0].uri.toString();
-						const currentContext = window.__kustoMonacoDatabaseInContextByModel?.[modelKey] || window.__kustoMonacoDatabaseInContext;
+						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : (modelUri as any).toString()) : models[0].uri.toString();
+						const currentContext = _win.__kustoMonacoDatabaseInContextByModel?.[modelKey] || _win.__kustoMonacoDatabaseInContext;
 						
 						// Check if already in this context (use normalized comparison for cluster URL)
 						const currentClusterNorm = normalizeClusterUrl(currentContext?.clusterUrl);
@@ -5388,7 +5400,7 @@ function ensureMonaco() {
 							const databases = currentSchema.cluster?.databases || [];
 							
 							// Find the database to set as context
-							const targetDatabase = databases.find(db => 
+							const targetDatabase = databases.find((db: any) => 
 								db.name.toLowerCase() === database.toLowerCase()
 							);
 							
@@ -5407,9 +5419,9 @@ function ensureMonaco() {
 							
 							await worker.setSchema(updatedSchema);
 							
-							window.__kustoMonacoDatabaseInContextByModel = window.__kustoMonacoDatabaseInContextByModel || {};
-							window.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
-							window.__kustoMonacoDatabaseInContext = window.__kustoMonacoDatabaseInContextByModel[modelKey];
+							_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
+							_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
+							_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
 							return true;
 							
 						} catch (e) {
@@ -5423,28 +5435,28 @@ function ensureMonaco() {
 					// so unqualified table names resolve correctly for the focused query box
 					// enableMarkers: if true (default), enables red squiggles for this box; set to false
 					//                when just making a section visible without giving it focus
-					window.__kustoUpdateSchemaForFocusedBox = async function (boxId, enableMarkers = true) {
+					_win.__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true) {
 						try {
 							if (!boxId) return;
 							
 							// Debounce: track the most recent focus request
 							// If another focus came in for the same box, skip duplicate processing
-							window.__kustoLastFocusedBoxId = window.__kustoLastFocusedBoxId || null;
-							window.__kustoFocusInProgress = window.__kustoFocusInProgress || null;
+							_win.__kustoLastFocusedBoxId = _win.__kustoLastFocusedBoxId || null;
+							_win.__kustoFocusInProgress = _win.__kustoFocusInProgress || null;
 							
 							// If we're already processing this exact box, skip
-							if (window.__kustoFocusInProgress === boxId) {
+							if (_win.__kustoFocusInProgress === boxId) {
 								return;
 							}
 							
-							window.__kustoFocusInProgress = boxId;
+							_win.__kustoFocusInProgress = boxId;
 							
 							// Mark worker as initialized once a query box gets focus
-							window.__kustoWorkerInitialized = true;
+							_win.__kustoWorkerInitialized = true;
 							
 							// If we need to reload schemas after tab became visible, do it now
-							if (window.__kustoWorkerNeedsSchemaReload) {
-								window.__kustoWorkerNeedsSchemaReload = false;
+							if (_win.__kustoWorkerNeedsSchemaReload) {
+								_win.__kustoWorkerNeedsSchemaReload = false;
 								
 								// Re-request schema for the focused box (this will trigger load)
 								// Other box schemas will be loaded when they get focus
@@ -5453,13 +5465,13 @@ function ensureMonaco() {
 							// Get the connection and database for this box
 							let ownerId = boxId;
 							try {
-								if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
-									ownerId = window.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+								if (typeof _win.__kustoGetSelectionOwnerBoxId === 'function') {
+									ownerId = _win.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
 								}
 							} catch { /* ignore */ }
 							
-							const connectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(ownerId) : '';
-							const database = window.__kustoGetDatabase ? window.__kustoGetDatabase(ownerId) : '';
+							const connectionId = _win.__kustoGetConnectionId ? _win.__kustoGetConnectionId(ownerId) : '';
+							const database = _win.__kustoGetDatabase ? _win.__kustoGetDatabase(ownerId) : '';
 							
 							// Only enable markers (red squiggles) if both cluster and database are selected.
 							// Without a full connection context, diagnostics would show false positives.
@@ -5471,11 +5483,11 @@ function ensureMonaco() {
 							// This allows red squiggles to show after focus, but only when we have schema context
 							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
 							if (enableMarkers) {
-								window.__kustoEnableMarkersForBox(boxId);
+								_win.__kustoEnableMarkersForBox(boxId);
 							}
 							
 							// Get the cluster URL for this connection
-							const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
+							const conn = Array.isArray(_win.connections) ? _win.connections.find(c => c && String(c.id || '') === connectionId) : null;
 							const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 							
 							if (!clusterUrl) {
@@ -5486,14 +5498,14 @@ function ensureMonaco() {
 							// Register model→cluster mapping for marker suppression
 							// This allows the interceptor to suppress markers for models that don't match current context
 							try {
-								const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
+								const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 								if (editor && typeof editor.getModel === 'function') {
 									const model = editor.getModel();
 									if (model && model.uri) {
 										const modelUri = model.uri.toString();
 										focusedModelUri = modelUri;
-										window.__kustoModelClusterMap = window.__kustoModelClusterMap || {};
-										window.__kustoModelClusterMap[modelUri] = clusterUrl;
+										_win.__kustoModelClusterMap = _win.__kustoModelClusterMap || {};
+										_win.__kustoModelClusterMap[modelUri] = clusterUrl;
 									}
 								}
 							} catch (e) { /* ignore */ }
@@ -5503,14 +5515,14 @@ function ensureMonaco() {
 							}
 							
 							const schemaKey = `${clusterUrl}|${database}`;
-							const currentContextForModel = window.__kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || window.__kustoMonacoDatabaseInContext;
+							const currentContextForModel = _win.__kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || _win.__kustoMonacoDatabaseInContext;
 											
 							// Check if this schema is already loaded in the worker
-							const perModelLoaded = window.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
+							const perModelLoaded = _win.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
 							const alreadyLoaded = !!perModelLoaded[schemaKey];
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							// This is the single source of truth - no duplicate caching
-							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
+							const schema = typeof _win.schemaByBoxId !== 'undefined' ? _win.schemaByBoxId[boxId] : null;
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
 							
 							if (alreadyLoaded) {
@@ -5519,7 +5531,7 @@ function ensureMonaco() {
 								const currentContext = currentContextForModel;
 								
 								// Normalize cluster URLs for comparison
-								const normalizeClusterUrl = (url) => {
+								const normalizeClusterUrl = (url: any) => {
 									if (!url) return '';
 									let normalized = String(url).trim().toLowerCase();
 									normalized = normalized.replace(/^https?:\/\//, '');
@@ -5541,13 +5553,13 @@ function ensureMonaco() {
 								} else {
 									// Same cluster, try to switch context
 									let contextSwitched = false;
-									if (typeof window.__kustoSetDatabaseInContext === 'function') {
-										contextSwitched = await window.__kustoSetDatabaseInContext(clusterUrl, database, focusedModelUri);
+									if (typeof _win.__kustoSetDatabaseInContext === 'function') {
+										contextSwitched = await _win.__kustoSetDatabaseInContext(clusterUrl, database, focusedModelUri);
 									}
 									
 									if (contextSwitched) {
 										// Context switch succeeded, trigger re-validation
-										window.__kustoTriggerRevalidation(boxId);
+										_win.__kustoTriggerRevalidation(boxId);
 										return;
 									} else {
 										// Context switch failed (database not found in current schema)
@@ -5562,38 +5574,38 @@ function ensureMonaco() {
 							
 							if (rawSchemaJson) {
 								// Load the schema AND set as context (setAsContext = true)
-								if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
-									await window.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+								if (typeof _win.__kustoSetMonacoKustoSchema === 'function') {
+									await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 								}
 								
 								// Trigger re-validation with the newly loaded schema
-								window.__kustoTriggerRevalidation(boxId);
+								_win.__kustoTriggerRevalidation(boxId);
 							} else {
 								// Request a fresh schema fetch which will include rawSchemaJson
 								// Markers will be enabled when schema loads
-								if (typeof ensureSchemaForBox === 'function') {
-									ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
+								if (typeof _win.ensureSchemaForBox === 'function') {
+									_win.ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
 								}
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Error updating schema for focused box:', e);
 						} finally {
 							// Clear the in-progress flag
-							if (window.__kustoFocusInProgress === boxId) {
-								window.__kustoFocusInProgress = null;
+							if (_win.__kustoFocusInProgress === boxId) {
+								_win.__kustoFocusInProgress = null;
 							}
 						}
 					};
 					
 					// Helper to enable markers for a specific box's editor
-					window.__kustoEnableMarkersForBox = function(boxId) {
+					_win.__kustoEnableMarkersForBox = function(boxId: any) {
 						try {
-							const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
+							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model && model.uri) {
-									if (typeof window.__kustoEnableMarkersForModel === 'function') {
-										window.__kustoEnableMarkersForModel(model.uri);
+									if (typeof _win.__kustoEnableMarkersForModel === 'function') {
+										_win.__kustoEnableMarkersForModel(model.uri);
 									}
 								}
 							}
@@ -5604,9 +5616,9 @@ function ensureMonaco() {
 					
 					// Helper to trigger re-validation for a specific box's editor
 					// This is needed after context switch since monaco-kusto doesn't auto-revalidate
-					window.__kustoTriggerRevalidation = function(boxId) {
+					_win.__kustoTriggerRevalidation = function(boxId: any) {
 						try {
-							const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
+							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model) {
@@ -5624,12 +5636,12 @@ function ensureMonaco() {
 
 					// Track which cross-cluster schemas have been loaded or requested
 					// Key: "clusterName|database" -> { status: 'pending'|'loaded'|'error', rawSchemaJson?: object }
-					window.__kustoCrossClusterSchemas = {};
+					_win.__kustoCrossClusterSchemas = {};
 
 					// Parse query text to extract cluster() and database() references
 					// Returns array of { clusterName, database } objects
-					window.__kustoExtractCrossClusterRefs = function (queryText) {
-						const refs = [];
+					_win.__kustoExtractCrossClusterRefs = function (queryText: any) {
+						const refs: any[] = [];
 						if (!queryText || typeof queryText !== 'string') {
 							return refs;
 						}
@@ -5662,7 +5674,7 @@ function ensureMonaco() {
 							const database = match[1];
 							if (database) {
 								// Check if this database is different from the current context
-								const currentDb = window.__kustoMonacoDatabaseInContext?.database;
+								const currentDb = _win.__kustoMonacoDatabaseInContext?.database;
 								if (database.toLowerCase() !== currentDb?.toLowerCase()) {
 									const exists = refs.some(r => 
 										r.clusterName === null &&
@@ -5679,11 +5691,11 @@ function ensureMonaco() {
 					};
 
 					// Request schema for a cross-cluster reference
-					window.__kustoRequestCrossClusterSchema = function (clusterName, database, boxId) {
+					_win.__kustoRequestCrossClusterSchema = function (clusterName: any, database: any, boxId: any) {
 						// If clusterName is null, resolve it from current context
 						let resolvedClusterName = clusterName;
 						if (clusterName === null) {
-							const currentContext = window.__kustoMonacoDatabaseInContext;
+							const currentContext = _win.__kustoMonacoDatabaseInContext;
 							if (currentContext?.clusterUrl) {
 								// Extract cluster name from URL (e.g., https://ddtelvscode.kusto.windows.net -> ddtelvscode)
 								const urlMatch = currentContext.clusterUrl.match(/https?:\/\/([^.]+)/i);
@@ -5696,17 +5708,17 @@ function ensureMonaco() {
 						const key = `${resolvedClusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						// Skip if already loaded or pending
-						if (window.__kustoCrossClusterSchemas[key]) {
+						if (_win.__kustoCrossClusterSchemas[key]) {
 							return;
 						}
 
 						// Mark as pending
-						window.__kustoCrossClusterSchemas[key] = { status: 'pending' };
+						_win.__kustoCrossClusterSchemas[key] = { status: 'pending' };
 
 						const requestToken = 'crosscluster_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 						
-						if (typeof vscode !== 'undefined' && vscode.postMessage) {
-							vscode.postMessage({
+						if (typeof _win.vscode !== 'undefined' && _win.vscode.postMessage) {
+							_win.vscode.postMessage({
 								type: 'requestCrossClusterSchema',
 								clusterName: resolvedClusterName,
 								database,
@@ -5718,19 +5730,19 @@ function ensureMonaco() {
 
 					// Apply a cross-cluster schema to monaco-kusto
 					// This is serialized through the same queue as __kustoSetMonacoKustoSchema to prevent races
-					window.__kustoApplyCrossClusterSchema = async function (clusterName, clusterUrl, database, rawSchemaJson) {
+					_win.__kustoApplyCrossClusterSchema = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
 						// Serialize through the same queue as primary schema operations
-						const operationPromise = window.__kustoSchemaOperationQueue.then(async () => {
-							return await window.__kustoApplyCrossClusterSchemaInternal(clusterName, clusterUrl, database, rawSchemaJson);
-						}).catch(e => {
+						const operationPromise = _win.__kustoSchemaOperationQueue.then(async () => {
+							return await _win.__kustoApplyCrossClusterSchemaInternal(clusterName, clusterUrl, database, rawSchemaJson);
+						}).catch((e: any) => {
 							console.error('[monaco-kusto] Cross-cluster schema operation failed:', e);
 						});
-						window.__kustoSchemaOperationQueue = operationPromise;
+						_win.__kustoSchemaOperationQueue = operationPromise;
 						return operationPromise;
 					};
 					
 					// Internal implementation - called through the queue
-					window.__kustoApplyCrossClusterSchemaInternal = async function (clusterName, clusterUrl, database, rawSchemaJson) {
+					_win.__kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
 						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						try {
@@ -5741,7 +5753,7 @@ function ensureMonaco() {
 									schemaObj = JSON.parse(rawSchemaJson);
 								} catch (e) {
 									console.error('[monaco-kusto] Failed to parse cross-cluster schema JSON:', e);
-									window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Failed to parse schema' };
+									_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Failed to parse schema' };
 									return;
 								}
 							} else {
@@ -5749,7 +5761,7 @@ function ensureMonaco() {
 							}
 
 							if (!schemaObj || !schemaObj.Databases) {
-								window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Invalid schema format' };
+								_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Invalid schema format' };
 								return;
 							}
 
@@ -5769,23 +5781,23 @@ function ensureMonaco() {
 												name: database,
 												tables: Object.entries(dbSchema.Tables || {}).map(([name, table]) => ({
 													name,
-													entityType: table.EntityType || 'Table',
-													columns: Object.entries(table.OrderedColumns || {}).map(([colName, col]) => ({
-														name: col.Name || colName,
-														type: col.CslType || col.Type || 'string',
-														docstring: col.Docstring || ''
+													entityType: (table as any).EntityType || 'Table',
+													columns: Object.entries((table as any).OrderedColumns || {}).map(([colName, col]) => ({
+														name: (col as any).Name || colName,
+														type: (col as any).CslType || (col as any).Type || 'string',
+														docstring: (col as any).Docstring || ''
 													})),
-													docstring: table.Docstring || ''
+													docstring: (table as any).Docstring || ''
 												})),
 												functions: Object.entries(dbSchema.Functions || {}).map(([name, func]) => ({
 													name,
-													inputParameters: (func.InputParameters || []).map(p => ({
+													inputParameters: ((func as any).InputParameters || []).map((p: any) => ({
 														name: p.Name || '',
 														type: p.CslType || p.Type || 'string',
 														cslDefaultValue: p.CslDefaultValue
 													})),
-													body: func.Body || '',
-													docstring: func.Docstring || ''
+													body: (func as any).Body || '',
+													docstring: (func as any).Docstring || ''
 												})),
 												graphs: [], // Empty for now, could be populated from ExternalTables or similar
 												entityGroups: [], // Empty for now
@@ -5803,51 +5815,51 @@ function ensureMonaco() {
 																			// clusterName should be exactly what the user typed (e.g., 'help' or 'https://help.kusto.windows.net')
 																		await worker.addDatabaseToSchema(model.uri.toString(), clusterName, databaseSchema);
 																			appliedCount++;
-																			window.__kustoMonacoLoadedSchemasByModel = window.__kustoMonacoLoadedSchemasByModel || {};
-																			window.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = window.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
-																			window.__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
+																			_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
+																			_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = _win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
+																			_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
 																		}
 																	} catch { /* ignore */ }
 																}
 																// Keep legacy/global in sync for debugging only
-																window.__kustoMonacoLoadedSchemas = window.__kustoMonacoLoadedSchemas || {};
-																window.__kustoMonacoLoadedSchemas[loadedKey] = true;
+																_win.__kustoMonacoLoadedSchemas = _win.__kustoMonacoLoadedSchemas || {};
+																_win.__kustoMonacoLoadedSchemas[loadedKey] = true;
 												
 																if (appliedCount > 0) {
-																	window.__kustoCrossClusterSchemas[key] = { 
+																	_win.__kustoCrossClusterSchemas[key] = { 
 																		status: 'loaded', 
 																		rawSchemaJson: schemaObj,
 																		clusterUrl
 																	};
 																} else {
-																	window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+																	_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
 																}
 											
 											// Show notification to user that cross-cluster schema was loaded
 											try {
-												if (typeof vscode !== 'undefined' && vscode.postMessage) {
-													vscode.postMessage({
+												if (typeof _win.vscode !== 'undefined' && _win.vscode.postMessage) {
+													_win.vscode.postMessage({
 														type: 'showInfo',
 														message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
 													});
 												}
 											} catch { /* ignore */ }
 													} else {
-														window.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
+														_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
 													}
 								}
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Failed to apply cross-cluster schema:', e);
-							window.__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
+							_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
 						}
 					};
 
 					// Check for cross-cluster references in a query and request schemas
-					window.__kustoCheckCrossClusterRefs = function (queryText, boxId) {
-						const refs = window.__kustoExtractCrossClusterRefs(queryText);
+					_win.__kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
+						const refs = _win.__kustoExtractCrossClusterRefs(queryText);
 						for (const ref of refs) {
-							window.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
+							_win.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
 						}
 					};
 
@@ -5855,7 +5867,7 @@ function ensureMonaco() {
 					// Provides ghost-text completions using GitHub Copilot via the VS Code extension host
 					let __kustoInlineCompletionRequestId = 0;
 					monaco.languages.registerInlineCompletionsProvider('kusto', {
-						provideInlineCompletions: async function (model, position, context, token) {
+						provideInlineCompletions: async function (model: any, position: any, context: any, token: any) {
 							console.log('[Kusto] provideInlineCompletions called', { position, context, triggerKind: context?.triggerKind });
 							try {
 								// triggerKind: 0 = automatic, 1 = manual (explicit)
@@ -5863,7 +5875,7 @@ function ensureMonaco() {
 
 								// Check if automatic inline completions are enabled
 								// The toggle only controls automatic triggers - manual triggers (SHIFT+SPACE) always work
-								if (!isManualTrigger && typeof window.copilotInlineCompletionsEnabled !== 'undefined' && !window.copilotInlineCompletionsEnabled) {
+								if (!isManualTrigger && typeof _win.copilotInlineCompletionsEnabled !== 'undefined' && !_win.copilotInlineCompletionsEnabled) {
 									console.log('[Kusto] Automatic inline completions disabled, returning empty');
 									return { items: [] };
 								}
@@ -5893,8 +5905,8 @@ function ensureMonaco() {
 								let boxId = '';
 								try {
 									const modelUri = model.uri ? model.uri.toString() : '';
-									if (typeof queryEditorBoxByModelUri !== 'undefined' && modelUri) {
-										boxId = queryEditorBoxByModelUri[modelUri] || '';
+									if (typeof _win.queryEditorBoxByModelUri !== 'undefined' && modelUri) {
+										boxId = _win.queryEditorBoxByModelUri[modelUri] || '';
 									}
 								} catch { /* ignore */ }
 
@@ -5902,12 +5914,12 @@ function ensureMonaco() {
 								const completionPromise = new Promise((resolve) => {
 									// Set a timeout to avoid hanging
 									const timeoutId = setTimeout(() => {
-										delete copilotInlineCompletionRequests[requestId];
+										delete _win.copilotInlineCompletionRequests[requestId];
 										resolve([]);
 									}, 5000);
 
-									copilotInlineCompletionRequests[requestId] = {
-										resolve: (completions) => {
+									_win.copilotInlineCompletionRequests[requestId] = {
+										resolve: (completions: any) => {
 											clearTimeout(timeoutId);
 											resolve(completions);
 										}
@@ -5917,7 +5929,7 @@ function ensureMonaco() {
 									if (token && typeof token.onCancellationRequested === 'function') {
 										token.onCancellationRequested(() => {
 											clearTimeout(timeoutId);
-											delete copilotInlineCompletionRequests[requestId];
+											delete _win.copilotInlineCompletionRequests[requestId];
 											resolve([]);
 										});
 									}
@@ -5926,7 +5938,7 @@ function ensureMonaco() {
 								// Request completion from extension
 								console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length, isManualTrigger });
 								try {
-									vscode.postMessage({
+									_win.vscode.postMessage({
 										type: 'requestCopilotInlineCompletion',
 										requestId: requestId,
 										boxId: boxId,
@@ -5946,7 +5958,7 @@ function ensureMonaco() {
 									// Show notification only for manual triggers (SHIFT+SPACE)
 									if (isManualTrigger) {
 										try {
-											vscode.postMessage({
+											_win.vscode.postMessage({
 												type: 'showInfo',
 												message: 'Copilot returned no inline suggestions. Often, trying again helps, especially after changing the position of the cursor.'
 											});
@@ -5971,12 +5983,12 @@ function ensureMonaco() {
 								return { items: [] };
 							}
 						},
-						freeInlineCompletions: function (completions) {
+						freeInlineCompletions: function (completions: any) {
 							// No cleanup needed
 						}
 					});
 					
-					window.__kustoWorkerInitialized = true;
+					_win.__kustoWorkerInitialized = true;
 					
 					// Start the theme observer to handle dynamic theme changes in VS Code
 					startMonacoThemeObserver(monaco);
@@ -5985,12 +5997,12 @@ function ensureMonaco() {
 								} catch (e) {
 									reject(e);
 								}
-							}, (e) => reject(e)); // monaco-kusto load error handler
+							}, (e: any) => reject(e)); // monaco-kusto load error handler
 						} catch (e) {
 							reject(e);
 						}
 					},
-					(e) => reject(e)
+					(e: any) => reject(e)
 				);
 			}).catch((e) => reject(e));
 		} catch (e) {
@@ -5999,26 +6011,26 @@ function ensureMonaco() {
 	});
 
 	// If Monaco init fails, allow retries within the same webview session.
-	monacoReadyPromise = monacoReadyPromise.catch((e) => {
-		try { monacoReadyPromise = null; } catch { /* ignore */ }
+	_win.monacoReadyPromise = _win.monacoReadyPromise.catch((e: any) => {
+		try { _win.monacoReadyPromise = null; } catch { /* ignore */ }
 		throw e;
 	});
 
-	return monacoReadyPromise;
+	return _win.monacoReadyPromise;
 }
 
 // Lazy loading state tracking
 // Monaco+Kusto worker is NOT loaded until user focuses a query box
 // This saves memory when files are opened but not actively edited
-window.__kustoWorkerInitialized = false;
-window.__kustoWorkerNeedsSchemaReload = false; // Set to true when tab becomes visible after being hidden
+_win.__kustoWorkerInitialized = false;
+_win.__kustoWorkerNeedsSchemaReload = false; // Set to true when tab becomes visible after being hidden
 
 // Proactively start loading Monaco as soon as this script is loaded.
 // This reduces the time the UI appears as a non-interactive placeholder before the editor mounts.
 // NOTE: Now disabled by default for lazy loading - Monaco will load on first editor creation
-// Set window.__kustoPreloadMonaco = true before this script loads to enable pre-warming
+// Set _win.__kustoPreloadMonaco = true before this script loads to enable pre-warming
 try {
-	if (window.__kustoPreloadMonaco) {
+	if (_win.__kustoPreloadMonaco) {
 		setTimeout(() => {
 			try {
 				const p = ensureMonaco();
@@ -6044,17 +6056,17 @@ try {
 				// This frees significant memory while keeping the basic worker alive
 				
 				// Mark that we need to reload schemas on next focus
-				window.__kustoWorkerNeedsSchemaReload = true;
+				_win.__kustoWorkerNeedsSchemaReload = true;
 				
 				// Clear the loaded schemas tracking
-				if (window.__kustoMonacoLoadedSchemas) {
-					window.__kustoMonacoLoadedSchemas = {};
+				if (_win.__kustoMonacoLoadedSchemas) {
+					_win.__kustoMonacoLoadedSchemas = {};
 				}
 				// Clear per-model tracking too (Monaco model URIs can be reused)
-				try { window.__kustoMonacoLoadedSchemasByModel = {}; } catch { /* ignore */ }
-				try { window.__kustoMonacoDatabaseInContextByModel = {}; } catch { /* ignore */ }
-				try { window.__kustoMonacoInitializedByModel = {}; } catch { /* ignore */ }
-				window.__kustoMonacoDatabaseInContext = null;
+				try { _win.__kustoMonacoLoadedSchemasByModel = {}; } catch { /* ignore */ }
+				try { _win.__kustoMonacoDatabaseInContextByModel = {}; } catch { /* ignore */ }
+				try { _win.__kustoMonacoInitializedByModel = {}; } catch { /* ignore */ }
+				_win.__kustoMonacoDatabaseInContext = null;
 				
 				// Optionally: Clear the schema from the worker to free memory
 				// This is async and may not complete before tab switch, but it's best effort
@@ -6095,7 +6107,7 @@ try {
 // Auto-resize Monaco editor wrappers so the full content is visible (no inner scrollbars).
 // This only applies while the wrapper has NOT been manually resized by the user.
 // User resize is tracked via wrapper.dataset.kustoUserResized === 'true'.
-function __kustoAttachAutoResizeToContent(editor, containerEl) {
+function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) {
 	try {
 		if (!editor || !containerEl || !containerEl.closest) {
 			return;
@@ -6106,7 +6118,7 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 		}
 
 		const FIT_SLACK_PX = 5;
-		const addVisibleRectHeight = (el) => {
+		const addVisibleRectHeight = (el: any) => {
 			try {
 				if (!el) return 0;
 				try {
@@ -6149,7 +6161,7 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 					const box = wrapper.closest ? wrapper.closest('.query-box') : null;
 					if (box && box.id) {
 						const boxId = box.id.replace(/_box$/, '');
-						if (typeof window.__kustoGetCopilotChatVisible === 'function' && window.__kustoGetCopilotChatVisible(boxId)) {
+						if (typeof _win.__kustoGetCopilotChatVisible === 'function' && _win.__kustoGetCopilotChatVisible(boxId)) {
 							return;
 						}
 					}
@@ -6259,7 +6271,7 @@ function __kustoAttachAutoResizeToContent(editor, containerEl) {
 const __kustoWritableGuardsByEditor = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
 
 
-function __kustoNormalizeTextareasWritable(root) {
+function __kustoNormalizeTextareasWritable(root: any) {
 	try {
 		if (!root || typeof root.querySelectorAll !== 'function') {
 			return;
@@ -6282,7 +6294,7 @@ function __kustoNormalizeTextareasWritable(root) {
 	}
 }
 
-function __kustoForceEditorWritable(editor) {
+function __kustoForceEditorWritable(editor: any) {
 	try {
 		if (!editor) return;
 		try {
@@ -6306,7 +6318,7 @@ function __kustoForceEditorWritable(editor) {
 	}
 }
 
-function __kustoInstallWritableGuard(editor) {
+function __kustoInstallWritableGuard(editor: any) {
 	try {
 		if (!editor) return;
 		if (typeof MutationObserver === 'undefined') return;
@@ -6333,7 +6345,7 @@ function __kustoInstallWritableGuard(editor) {
 				for (const m of mutations || []) {
 					if (!m || m.type !== 'attributes') continue;
 					const t = m.target;
-					if (!t || t.tagName !== 'TEXTAREA') continue;
+					if (!t || (t as any).tagName !== 'TEXTAREA') continue;
 					const a = String(m.attributeName || '').toLowerCase();
 					if (a === 'readonly' || a === 'disabled' || a === 'aria-disabled') {
 						schedule();
@@ -6360,7 +6372,7 @@ function __kustoInstallWritableGuard(editor) {
 	}
 }
 
-function __kustoEnsureEditorWritableSoon(editor) {
+function __kustoEnsureEditorWritableSoon(editor: any) {
 	try {
 		// Retry a few times; this avoids relying on a single timing point.
 		const delays = [0, 50, 250, 1000];
@@ -6379,13 +6391,13 @@ function __kustoEnsureAllEditorsWritableSoon() {
 	try {
 		const maps = [];
 		try {
-			if (typeof queryEditors !== 'undefined' && queryEditors) maps.push(queryEditors);
+			if (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) maps.push(_win.queryEditors);
 		} catch { /* ignore */ }
 		try {
-			if (typeof markdownEditors !== 'undefined' && markdownEditors) maps.push(markdownEditors);
+			if (typeof _win.__kustoMarkdownEditors !== 'undefined' && _win.__kustoMarkdownEditors) maps.push(_win.__kustoMarkdownEditors);
 		} catch { /* ignore */ }
 		try {
-			if (typeof pythonEditors !== 'undefined' && pythonEditors) maps.push(pythonEditors);
+			if (typeof _win.__kustoPythonEditors !== 'undefined' && _win.__kustoPythonEditors) maps.push(_win.__kustoPythonEditors);
 		} catch { /* ignore */ }
 
 		for (const m of maps) {
@@ -6403,7 +6415,7 @@ function __kustoEnsureAllEditorsWritableSoon() {
 	}
 }
 
-function __kustoToSingleLineKusto(input) {
+function __kustoToSingleLineKusto(input: any) {
 	try {
 		const text = String(input ?? '');
 		if (!text.trim()) return '';
@@ -6510,7 +6522,7 @@ function __kustoToSingleLineKusto(input) {
 	}
 }
 
-function __kustoExplodePipesToLines(input) {
+function __kustoExplodePipesToLines(input: any) {
 	try {
 		const text = String(input ?? '');
 		if (!text) return '';
@@ -6552,7 +6564,7 @@ function __kustoExplodePipesToLines(input) {
 	}
 }
 
-function __kustoSplitTopLevel(text, delimiterChar) {
+function __kustoSplitTopLevel(text: any, delimiterChar: any) {
 	const parts = [];
 	let buf = '';
 	let depth = 0;
@@ -6588,7 +6600,7 @@ function __kustoSplitTopLevel(text, delimiterChar) {
 	return parts;
 }
 
-function __kustoFindTopLevelKeyword(text, keywordLower) {
+function __kustoFindTopLevelKeyword(text: any, keywordLower: any) {
 	try {
 		const kw = String(keywordLower || '').toLowerCase();
 		if (!kw) return -1;
@@ -6627,7 +6639,7 @@ function __kustoFindTopLevelKeyword(text, keywordLower) {
 	}
 }
 
-function __kustoPrettifyWhereClause(rawAfterWhere) {
+function __kustoPrettifyWhereClause(rawAfterWhere: any) {
 	const raw = String(rawAfterWhere ?? '');
 	let items = [];
 	let cond = '';
@@ -6635,9 +6647,9 @@ function __kustoPrettifyWhereClause(rawAfterWhere) {
 	let depth = 0;
 	let inSingle = false;
 	let inDouble = false;
-	let pendingOp = null;
+	let pendingOp: any = null;
 	let lastWasSpace = false;
-	const pushCondChar = (ch) => {
+	const pushCondChar = (ch: any) => {
 		if (!inSingle && !inDouble && /\s/.test(ch)) {
 			if (!lastWasSpace) {
 				cond += ' ';
@@ -6720,7 +6732,7 @@ function __kustoPrettifyWhereClause(rawAfterWhere) {
 	return items;
 }
 
-function __kustoPrettifyKusto(input) {
+function __kustoPrettifyKusto(input: any) {
 	let raw = String(input ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	// If the query is currently single-line (or has multiple pipe clauses on one line), explode pipes
 	// back into separate lines before applying the rule-based formatter.
@@ -6802,7 +6814,7 @@ function __kustoPrettifyKusto(input) {
 			const rest = block.slice(1).join('\n');
 			const items = __kustoPrettifyWhereClause([after, rest].filter(Boolean).join('\n'));
 			let emittedFirst = false;
-			const pendingComments = [];
+			const pendingComments: any[] = [];
 			const emitPendingComments = () => {
 				for (const c of pendingComments.splice(0, pendingComments.length)) {
 					out.push('    ' + String(c || '').trim());
@@ -6821,7 +6833,7 @@ function __kustoPrettifyKusto(input) {
 						out.push('| where ' + it.text);
 						emittedFirst = true;
 					} else {
-						const op = String(it.op || 'and').toLowerCase();
+						const op = String((it as any).op || 'and').toLowerCase();
 						out.push('    ' + op + ' ' + it.text);
 					}
 				}
@@ -7020,8 +7032,8 @@ function __kustoPrettifyKusto(input) {
 			const pipeIndent = baseIndent + '    ';
 			let inPipeline = false;
 			for (let j = firstIdx + 1; j < out.length; j++) {
-				const line = String(out[j] ?? '');
-				const trimmed = line.trim();
+				const line: any = String(out[j] ?? '');
+				const trimmed: any = line.trim();
 				if (!trimmed) {
 					continue;
 				}
@@ -7047,7 +7059,7 @@ function __kustoPrettifyKusto(input) {
 	return out.join('\n');
 }
 
-function __kustoSplitKustoStatementsBySemicolon(text) {
+function __kustoSplitKustoStatementsBySemicolon(text: any) {
 	const raw = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	/** @type {{ statement: string, hasSemicolonAfter: boolean }[]} */
 	const segments = [];
@@ -7107,7 +7119,7 @@ function __kustoSplitKustoStatementsBySemicolon(text) {
 	return segments;
 }
 
-function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
+function __kustoPrettifyKustoTextWithSemicolonStatements(text: any) {
 	const raw = String(text ?? '');
 	const segments = __kustoSplitKustoStatementsBySemicolon(raw);
 	const hasMultipleStatements = segments.some((s) => s && s.hasSemicolonAfter);
@@ -7143,7 +7155,7 @@ function __kustoPrettifyKustoTextWithSemicolonStatements(text) {
 	return outLines.join('\n');
 }
 
-function __kustoIsElementVisibleForSuggest(el) {
+function __kustoIsElementVisibleForSuggest(el: any) {
 	try {
 		if (!el) return false;
 		// Most Monaco builds keep `aria-hidden` in sync.
@@ -7164,7 +7176,7 @@ function __kustoIsElementVisibleForSuggest(el) {
 	}
 }
 
-function __kustoGetWordNearCursor(ed) {
+function __kustoGetWordNearCursor(ed: any) {
 	try {
 		if (!ed) return '';
 		const model = ed.getModel && ed.getModel();
@@ -7175,7 +7187,7 @@ function __kustoGetWordNearCursor(ed) {
 		const column = Number(pos.column) || 0;
 		if (lineNumber <= 0 || column <= 0) return '';
 
-		const tryWordAtColumn = (col) => {
+		const tryWordAtColumn = (col: any) => {
 			try {
 				const c = Number(col) || 0;
 				if (c <= 0) return '';
@@ -7206,7 +7218,7 @@ function __kustoGetWordNearCursor(ed) {
 			const line = String(model.getLineContent(lineNumber) || '');
 			if (!line) return '';
 
-			const isWordCh = (c) => /[A-Za-z0-9_]/.test(String(c || ''));
+			const isWordCh = (c: any) => /[A-Za-z0-9_]/.test(String(c || ''));
 			let idx = Math.max(0, column - 1);
 			if (idx >= line.length) idx = line.length - 1;
 			if (idx < 0) return '';
@@ -7240,7 +7252,7 @@ function __kustoGetWordNearCursor(ed) {
 	}
 }
 
-function __kustoFindSuggestWidgetForEditor(ed, opts) {
+function __kustoFindSuggestWidgetForEditor(ed: any, opts: any) {
 	try {
 		const options = opts || {};
 		const requireVisible = options.requireVisible !== false;
@@ -7324,14 +7336,14 @@ function __kustoFindSuggestWidgetForEditor(ed, opts) {
 	}
 }
 
-function __kustoRegisterGlobalSuggestMutationHandler(doc, handler) {
+function __kustoRegisterGlobalSuggestMutationHandler(doc: any, handler: any) {
 	try {
 		if (!doc || !handler) return () => { };
 		const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
 		if (!win) return () => { };
 
 		if (!win.__kustoSuggestMutationHub) {
-			const hub = {
+			const hub: any = {
 				handlers: new Set(),
 				mo: null,
 				scheduled: false,
@@ -7342,7 +7354,7 @@ function __kustoRegisterGlobalSuggestMutationHandler(doc, handler) {
 						hub.scheduled = false;
 						try {
 							for (const h of Array.from(hub.handlers)) {
-								try { h(); } catch { /* ignore */ }
+								try { (h as any)(); } catch { /* ignore */ }
 							}
 						} catch { /* ignore */ }
 					};
@@ -7355,8 +7367,8 @@ function __kustoRegisterGlobalSuggestMutationHandler(doc, handler) {
 			};
 			try {
 				if (typeof MutationObserver !== 'undefined' && doc.body) {
-					hub.mo = new MutationObserver(() => hub.schedule());
-					hub.mo.observe(doc.body, {
+					(hub as any).mo = new MutationObserver(() => hub.schedule());
+					(hub as any).mo.observe(doc.body, {
 						subtree: true,
 						childList: true,
 						attributes: true,
@@ -7385,7 +7397,7 @@ function __kustoRegisterGlobalSuggestMutationHandler(doc, handler) {
 	}
 }
 
-function __kustoInstallSmartSuggestWidgetSizing(editor) {
+function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 	try {
 		if (!editor) return () => { };
 
@@ -7393,7 +7405,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		// After that, do not interact with the suggest list/widget at all; let Monaco own it.
 		// This avoids destabilizing Monaco suggest rendering across multiple editors.
 		const minimalDispose = (() => {
-			const safeTrigger = (ed, commandId) => {
+			const safeTrigger = (ed: any, commandId: any) => {
 				try {
 					if (!ed || !commandId) return;
 					const result = ed.trigger('keyboard', commandId, {});
@@ -7520,8 +7532,8 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				} catch { /* ignore */ }
 			};
 
-			let disposables = [];
-			const safeOn = (fn) => {
+			let disposables: any[] = [];
+			const safeOn = (fn: any) => {
 				try { if (fn && typeof fn.dispose === 'function') disposables.push(fn); } catch { /* ignore */ }
 			};
 			try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
@@ -7580,8 +7592,8 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			// Attach once on setup
 			try { attachInteractionListeners(); } catch { /* ignore */ }
 
-			let mo = null;
-			let unregister = null;
+			let mo: any = null;
+			let unregister: any = null;
 			try {
 				const root = getEditorDomMinimal();
 				const doc = (root && root.ownerDocument) ? root.ownerDocument : (typeof document !== 'undefined' ? document : null);
@@ -7620,7 +7632,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 
 		return minimalDispose;
 
-		const __kustoSafeEditorTrigger = (ed, commandId) => {
+		const __kustoSafeEditorTrigger = (ed: any, commandId: any) => {
 			try {
 				if (!ed || !commandId) return;
 				const result = ed.trigger('keyboard', commandId, {});
@@ -7657,7 +7669,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			return dom ? (dom.parentElement || dom) : null;
 		};
 
-		const getRowHeightPx = (suggestWidget) => {
+		const getRowHeightPx = (suggestWidget: any) => {
 			try {
 				const row = suggestWidget && suggestWidget.querySelector
 					? suggestWidget.querySelector('.monaco-list-row')
@@ -7680,11 +7692,11 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		// Use Monaco's supported configuration for suggest height when possible.
 		// Fall back to DOM clamp + internal relayout poke only when needed.
 		const DEFAULT_MAX_VISIBLE = 12;
-		let lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null };
-		let pendingAdjustTimer = null;
+		let lastApplied: any = { availablePx: null, rowHeightPx: null, maxVisible: null };
+		let pendingAdjustTimer: any = null;
 		let rafScheduled = false;
 		let lastRelayoutAt = 0;
-		const clearInjectedSuggestStyles = (suggest) => {
+		const clearInjectedSuggestStyles = (suggest: any) => {
 			try {
 				if (!suggest) return;
 				// Clear any DOM sizing we might have applied in fallback mode.
@@ -7697,17 +7709,17 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 						: [];
 					for (const el of injected) {
 						try {
-							el.style.height = '';
-							el.style.maxHeight = '';
-							el.style.overflowY = '';
-							delete el.dataset.kustoSuggestClamp;
+							(el as any).style.height = '';
+							(el as any).style.maxHeight = '';
+							(el as any).style.overflowY = '';
+							delete (el as any).dataset.kustoSuggestClamp;
 						} catch { /* ignore */ }
 					}
 				} catch { /* ignore */ }
 			} catch { /* ignore */ }
 		};
 
-		const applyDomClampFallback = (suggest, availablePx) => {
+		const applyDomClampFallback = (suggest: any, availablePx: any) => {
 			try {
 				if (!suggest) return;
 				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
@@ -7725,7 +7737,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
-		const applyListViewportClampFallback = (suggest, availablePx) => {
+		const applyListViewportClampFallback = (suggest: any, availablePx: any) => {
 			// Some Monaco builds can end up with a visible suggest widget whose internal list viewport
 			// collapses (scrollbar present but rows not painted). Apply a height to the list container
 			// as a last-resort recovery.
@@ -7773,16 +7785,16 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		};
 
 		let lastSuggestVisible = false;
-		let suggestListObserver = null;
+		let suggestListObserver: any = null;
 		let suggestPreselectRaf = false;
 		let lastPreselectAt = 0;
 		let lastPreselectTargetLower = '';
 		let lastPreselectFocusedLower = '';
-		let cursorClampTimer = null;
+		let cursorClampTimer: any = null;
 		let lastCursorClampAt = 0;
-		const debugSuggest = (eventName, data) => {
+		const debugSuggest = (eventName: any, data: any) => {
 			try {
-				const enabled = !!(window && (window.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
+				const enabled = !!(window && (_win.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
 				if (!enabled) return;
 				// eslint-disable-next-line no-console
 				console.debug('[kusto][suggest]', String(eventName || ''), data || {}, { boxId: editor && editor.__kustoBoxId });
@@ -7790,7 +7802,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 				// ignore
 			}
 		};
-		const normalizeSuggestLabel = (s) => {
+		const normalizeSuggestLabel = (s: any) => {
 			try {
 				let x = String(s || '').trim();
 				x = x.replace(/^(\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
@@ -7876,7 +7888,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 		};
 		try { editor.__kustoScheduleSuggestPreselect = scheduleSuggestPreselect; } catch { /* ignore */ }
 
-		const tryRelayoutSuggestWidget = (availablePx) => {
+		const tryRelayoutSuggestWidget = (availablePx: any) => {
 			// Best-effort poke of Monaco internals so keyboard navigation uses the updated height.
 			// All accesses are optional and guarded.
 			try {
@@ -7917,7 +7929,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
-		const applyMaxVisibleSuggestions = (maxVisible) => {
+		const applyMaxVisibleSuggestions = (maxVisible: any) => {
 			try {
 				const mv = Math.max(1, Math.floor(Number(maxVisible) || 0));
 				if (lastApplied.maxVisible === mv) {
@@ -7932,7 +7944,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
-		const computeMaxVisibleFromAvailablePx = (availablePx, rowHeightPx) => {
+		const computeMaxVisibleFromAvailablePx = (availablePx: any, rowHeightPx: any) => {
 			try {
 				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
 				const rh = Math.max(1, Math.floor(Number(rowHeightPx) || 0));
@@ -7945,7 +7957,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
-		const schedulePostLayoutAdjust = (root, boundsDom, suggest) => {
+		const schedulePostLayoutAdjust = (root: any, boundsDom: any, suggest: any) => {
 			try {
 				if (pendingAdjustTimer) return;
 				pendingAdjustTimer = setTimeout(() => {
@@ -8113,7 +8125,7 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			}
 		};
 
-		let mo = null;
+		let mo: any = null;
 				try {
 					const root = getEditorDom();
 					if (root && typeof MutationObserver !== 'undefined') {
@@ -8125,8 +8137,8 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 			mo = null;
 		}
 
-		let disposables = [];
-		const safeOn = (fn) => {
+		let disposables: any[] = [];
+		const safeOn = (fn: any) => {
 			try {
 				if (fn && typeof fn.dispose === 'function') disposables.push(fn);
 			} catch { /* ignore */ }
@@ -8162,13 +8174,13 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 
 		// Install one global viewport listener to update all visible suggest widgets across editors.
 		try {
-			if (!window.__kustoSuggestWidgetViewportListenersInstalled) {
-				window.__kustoSuggestWidgetViewportListenersInstalled = true;
-				window.__kustoClampAllSuggestWidgets = () => {
+			if (!_win.__kustoSuggestWidgetViewportListenersInstalled) {
+				_win.__kustoSuggestWidgetViewportListenersInstalled = true;
+				_win.__kustoClampAllSuggestWidgets = () => {
 					try {
-						if (typeof queryEditors === 'undefined' || !queryEditors) return;
-						for (const id of Object.keys(queryEditors)) {
-							const ed = queryEditors[id];
+						if (typeof _win.queryEditors === 'undefined' || !_win.queryEditors) return;
+						for (const id of Object.keys(_win.queryEditors)) {
+							const ed = _win.queryEditors[id];
 							if (ed && typeof ed.__kustoScheduleSuggestClamp === 'function') {
 								ed.__kustoScheduleSuggestClamp();
 							}
@@ -8176,10 +8188,10 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 					} catch { /* ignore */ }
 				};
 				window.addEventListener('resize', () => {
-					try { window.__kustoClampAllSuggestWidgets && window.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
 				});
 				window.addEventListener('scroll', () => {
-					try { window.__kustoClampAllSuggestWidgets && window.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
 				}, true);
 			}
 		} catch {
@@ -8231,8 +8243,8 @@ function __kustoInstallSmartSuggestWidgetSizing(editor) {
 	}
 }
 
-function initQueryEditor(boxId) {
-	return ensureMonaco().then(monaco => {
+function initQueryEditor(boxId: any) {
+	return ensureMonaco().then((monaco: any) => {
 		const container = document.getElementById(boxId + '_query_editor');
 		const wrapper = container && container.closest ? container.closest('.query-editor-wrapper') : null;
 		const placeholder = document.getElementById(boxId + '_query_placeholder');
@@ -8275,7 +8287,7 @@ function initQueryEditor(boxId) {
 		// If an editor instance already exists, ensure it's still attached to this container.
 		// If it's stale (detached due to DOM teardown), dispose and recreate.
 		try {
-			const existing = queryEditors && queryEditors[boxId] ? queryEditors[boxId] : null;
+			const existing = _win.queryEditors && _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 			if (existing) {
 				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
 				const attached = !!(dom && dom.isConnected && container.contains(dom));
@@ -8283,7 +8295,7 @@ function initQueryEditor(boxId) {
 					return;
 				}
 				try { existing.dispose(); } catch { /* ignore */ }
-				try { delete queryEditors[boxId]; } catch { /* ignore */ }
+				try { delete _win.queryEditors[boxId]; } catch { /* ignore */ }
 			}
 		} catch {
 			// ignore
@@ -8296,7 +8308,7 @@ function initQueryEditor(boxId) {
 		// If persistence restore ran before Monaco init, apply the restored wrapper height now.
 		// This avoids layout glitches when the Copilot split-pane is installed.
 		try {
-			const pending = window.__kustoPendingWrapperHeightPxByBoxId && window.__kustoPendingWrapperHeightPxByBoxId[boxId];
+			const pending = _win.__kustoPendingWrapperHeightPxByBoxId && _win.__kustoPendingWrapperHeightPxByBoxId[boxId];
 			if (typeof pending === 'number' && Number.isFinite(pending) && pending > 0) {
 				let w = wrapper;
 				if (!w) {
@@ -8304,17 +8316,17 @@ function initQueryEditor(boxId) {
 					w = (box && box.querySelector) ? box.querySelector('.query-editor-wrapper') : null;
 				}
 				if (w) {
-					w.style.height = Math.round(pending) + 'px';
-					try { w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+					(w as any).style.height = Math.round(pending) + 'px';
+					try { (w as any).dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 					// Also update the manual height map so __kustoGetWrapperHeightPx returns consistent values.
 					try {
-						if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
-							window.__kustoManualQueryEditorHeightPxByBoxId = {};
+						if (!_win.__kustoManualQueryEditorHeightPxByBoxId || typeof _win.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+							_win.__kustoManualQueryEditorHeightPxByBoxId = {};
 						}
-						window.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(pending);
+						_win.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(pending);
 					} catch { /* ignore */ }
 				}
-				try { delete window.__kustoPendingWrapperHeightPxByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete _win.__kustoPendingWrapperHeightPxByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 
@@ -8322,10 +8334,10 @@ function initQueryEditor(boxId) {
 		// to reduce async timing races in VS Code webviews.
 		let initialValue = '';
 		try {
-			const pending = window.__kustoPendingQueryTextByBoxId && window.__kustoPendingQueryTextByBoxId[boxId];
+			const pending = _win.__kustoPendingQueryTextByBoxId && _win.__kustoPendingQueryTextByBoxId[boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete window.__kustoPendingQueryTextByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete _win.__kustoPendingQueryTextByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch {
 			// ignore
@@ -8375,11 +8387,11 @@ function initQueryEditor(boxId) {
 			// monaco-kusto uses the language ID 'kusto' as the marker owner
 			const DIAG_OWNER = 'kusto';
 			const DIAG_HOVER_SHOW_DELAY_MS = 1000;
-			let diagHoverEl = null;
+			let diagHoverEl: any = null;
 			let diagHoverLastKey = '';
-			let diagHoverHideTimer = null;
-			let diagHoverShowTimer = null;
-			let diagHoverPending = null;
+			let diagHoverHideTimer: any = null;
+			let diagHoverShowTimer: any = null;
+			let diagHoverPending: any = null;
 			let diagHoverLastMouse = { at: 0, clientX: 0, clientY: 0, position: null };
 			let diagHoverLastCursor = { at: 0, position: null };
 			let diagHoverActiveSource = null; // 'mouse' | 'cursor'
@@ -8388,17 +8400,17 @@ function initQueryEditor(boxId) {
 				if (diagHoverEl) return diagHoverEl;
 				const el = document.createElement('div');
 				el.className = 'kusto-doc-widget kusto-diagnostics-hover';
-				el.style.position = 'fixed';
-				el.style.display = 'none';
-				el.style.pointerEvents = 'none';
+				(el as any).style.position = 'fixed';
+				(el as any).style.display = 'none';
+				(el as any).style.pointerEvents = 'none';
 				// Keep above the editor but below Monaco context widgets (quick fix / lightbulb menu).
-				el.style.zIndex = '1000';
+				(el as any).style.zIndex = '1000';
 				document.body.appendChild(el);
 				diagHoverEl = el;
 				return el;
 			};
 
-			const hideDiagHover = (immediate) => {
+			const hideDiagHover = (immediate: any) => {
 				try {
 					if (diagHoverShowTimer) {
 						clearTimeout(diagHoverShowTimer);
@@ -8421,7 +8433,7 @@ function initQueryEditor(boxId) {
 				} catch { /* ignore */ }
 			};
 
-			const getDiagnosticAt = (model, position) => {
+			const getDiagnosticAt = (model: any, position: any) => {
 				try {
 					if (!model || !position) return null;
 					const markers = monaco.editor.getModelMarkers({ owner: DIAG_OWNER, resource: model.uri });
@@ -8441,9 +8453,9 @@ function initQueryEditor(boxId) {
 				}
 			};
 
-			const formatDiagMessageHtml = (msg) => {
+			const formatDiagMessageHtml = (msg: any) => {
 				const raw = String(msg || '').trim();
-				const esc = (typeof escapeHtml === 'function') ? escapeHtml(raw) : raw;
+				const esc = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(raw) : raw;
 				// Minimal markdown-ish formatting: `code` + newlines.
 				const withCode = String(esc)
 					.replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -8470,14 +8482,14 @@ function initQueryEditor(boxId) {
 				}
 			};
 
-			const positionDiagHover = (el, clientX, clientY) => {
+			const positionDiagHover = (el: any, clientX: any, clientY: any) => {
 				try {
 					const pad = 12;
 					const maxW = 560;
-					el.style.maxWidth = maxW + 'px';
-					el.style.left = '0px';
-					el.style.top = '0px';
-					el.style.display = 'block';
+					(el as any).style.maxWidth = maxW + 'px';
+					(el as any).style.left = '0px';
+					(el as any).style.top = '0px';
+					(el as any).style.display = 'block';
 					// Measure now that it's visible.
 					const rect = el.getBoundingClientRect();
 					const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
@@ -8495,12 +8507,12 @@ function initQueryEditor(boxId) {
 						// Clamp within viewport.
 						y = Math.max(6, vh - rect.height - 6);
 					}
-					el.style.left = Math.round(x) + 'px';
-					el.style.top = Math.round(y) + 'px';
+					(el as any).style.left = Math.round(x) + 'px';
+					(el as any).style.top = Math.round(y) + 'px';
 				} catch { /* ignore */ }
 			};
 
-			const getClientPointForCursor = (pos) => {
+			const getClientPointForCursor = (pos: any) => {
 				try {
 					if (!pos) return null;
 					const dom = editor && typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
@@ -8518,7 +8530,7 @@ function initQueryEditor(boxId) {
 				}
 			};
 
-			const showDiagHover = (marker, mouseEventOrPoint) => {
+			const showDiagHover = (marker: any, mouseEventOrPoint: any) => {
 				try {
 					if (!marker) {
 						hideDiagHover(false);
@@ -8535,7 +8547,7 @@ function initQueryEditor(boxId) {
 						diagHoverLastKey = key;
 						el.innerHTML = formatDiagMessageHtml(marker.message || '');
 					}
-					el.style.display = 'block';
+					(el as any).style.display = 'block';
 					const be = mouseEventOrPoint && mouseEventOrPoint.browserEvent ? mouseEventOrPoint.browserEvent : null;
 					const cx = be ? be.clientX : (mouseEventOrPoint && typeof mouseEventOrPoint.clientX === 'number' ? mouseEventOrPoint.clientX : 0);
 					const cy = be ? be.clientY : (mouseEventOrPoint && typeof mouseEventOrPoint.clientY === 'number' ? mouseEventOrPoint.clientY : 0);
@@ -8543,7 +8555,7 @@ function initQueryEditor(boxId) {
 				} catch { /* ignore */ }
 			};
 
-			const scheduleDiagHover = (marker, point, source) => {
+			const scheduleDiagHover = (marker: any, point: any, source: any) => {
 				try {
 					if (!marker) {
 						hideDiagHover(false);
@@ -8661,7 +8673,7 @@ function initQueryEditor(boxId) {
 
 			// Hook mouse move to show diagnostics on hover.
 			try {
-				editor.onMouseMove((e) => {
+				editor.onMouseMove((e: any) => {
 					try {
 						const now = Date.now();
 						diagHoverLastMouse.at = now;
@@ -8703,7 +8715,7 @@ function initQueryEditor(boxId) {
 
 			// Hook cursor moves (keyboard or programmatic) to show diagnostics at caret.
 			try {
-				editor.onDidChangeCursorPosition((e) => {
+				editor.onDidChangeCursorPosition((e: any) => {
 					try {
 						diagHoverLastCursor.at = Date.now();
 						diagHoverLastCursor.position = e && e.position ? e.position : null;
@@ -8743,16 +8755,16 @@ function initQueryEditor(boxId) {
 			// - Statements are separated by one-or-more blank lines (the existing behavior).
 			// This must match Run Query behavior and the gutter indicator.
 			try {
-				if (typeof window.__kustoStatementSeparatorMinBlankLines !== 'number') {
-					window.__kustoStatementSeparatorMinBlankLines = 1;
+				if (typeof _win.__kustoStatementSeparatorMinBlankLines !== 'number') {
+					_win.__kustoStatementSeparatorMinBlankLines = 1;
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof window.__kustoGetStatementBlocksFromModel !== 'function') {
-					window.__kustoGetStatementBlocksFromModel = function (model) {
+				if (typeof _win.__kustoGetStatementBlocksFromModel !== 'function') {
+					_win.__kustoGetStatementBlocksFromModel = function (model: any) {
 						try {
 							if (!model || typeof model.getLineCount !== 'function' || typeof model.getLineContent !== 'function') return [];
-							const minBlankLines = Math.max(1, Number(window.__kustoStatementSeparatorMinBlankLines) || 1);
+							const minBlankLines = Math.max(1, Number(_win.__kustoStatementSeparatorMinBlankLines) || 1);
 							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
 							if (!lineCount) return [];
 							const blocks = [];
@@ -8819,14 +8831,14 @@ function initQueryEditor(boxId) {
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof window.__kustoIsSeparatorBlankLine !== 'function') {
-					window.__kustoIsSeparatorBlankLine = function (model, lineNumber) {
+				if (typeof _win.__kustoIsSeparatorBlankLine !== 'function') {
+					_win.__kustoIsSeparatorBlankLine = function (model: any, lineNumber: any) {
 						try {
 							if (!model || typeof model.getLineContent !== 'function' || typeof model.getLineCount !== 'function') return false;
 							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
 							const ln = Number(lineNumber) || 0;
 							if (!ln || ln < 1 || ln > lineCount) return false;
-							const minBlankLines = Math.max(1, Number(window.__kustoStatementSeparatorMinBlankLines) || 1);
+							const minBlankLines = Math.max(1, Number(_win.__kustoStatementSeparatorMinBlankLines) || 1);
 							const isBlank = /^\s*$/.test(String(model.getLineContent(ln) || ''));
 							if (!isBlank) return false;
 							let start = ln;
@@ -8850,8 +8862,8 @@ function initQueryEditor(boxId) {
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof window.__kustoExtractStatementTextAtCursor !== 'function') {
-					window.__kustoExtractStatementTextAtCursor = function (editor) {
+				if (typeof _win.__kustoExtractStatementTextAtCursor !== 'function') {
+					_win.__kustoExtractStatementTextAtCursor = function (editor: any) {
 						try {
 							if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') return null;
 							const model = editor.getModel();
@@ -8861,12 +8873,12 @@ function initQueryEditor(boxId) {
 							if (!cursorLine || cursorLine < 1) return null;
 							// If the cursor is on a separator (2+ blank lines), treat as "no statement".
 							try {
-								if (window.__kustoIsSeparatorBlankLine && window.__kustoIsSeparatorBlankLine(model, cursorLine)) {
+								if (_win.__kustoIsSeparatorBlankLine && _win.__kustoIsSeparatorBlankLine(model, cursorLine)) {
 									return null;
 								}
 							} catch { /* ignore */ }
-							const blocks = (window.__kustoGetStatementBlocksFromModel && typeof window.__kustoGetStatementBlocksFromModel === 'function')
-								? window.__kustoGetStatementBlocksFromModel(model)
+							const blocks = (_win.__kustoGetStatementBlocksFromModel && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
+								? _win.__kustoGetStatementBlocksFromModel(model)
 								: [];
 							if (!blocks || !blocks.length) return null;
 							let block = null;
@@ -8893,21 +8905,21 @@ function initQueryEditor(boxId) {
 			} catch { /* ignore */ }
 
 			const ACTIVE_STMT_CLASS = 'kusto-active-statement-gutter';
-			let activeStmtDecorationIds = [];
-			let cachedBlocks = null;
+			let activeStmtDecorationIds: any[] = [];
+			let cachedBlocks: any = null;
 			let cachedVersionId = -1;
 			let scheduled = false;
 
-			const computeStatementBlocks = (model) => {
+			const computeStatementBlocks = (model: any) => {
 				try {
-					if (window.__kustoGetStatementBlocksFromModel && typeof window.__kustoGetStatementBlocksFromModel === 'function') {
-						return window.__kustoGetStatementBlocksFromModel(model);
+					if (_win.__kustoGetStatementBlocksFromModel && typeof _win.__kustoGetStatementBlocksFromModel === 'function') {
+						return _win.__kustoGetStatementBlocksFromModel(model);
 					}
 				} catch { /* ignore */ }
 				return [];
 			};
 
-			const getBlocksCached = (model) => {
+			const getBlocksCached = (model: any) => {
 				try {
 					const v = (model && typeof model.getVersionId === 'function') ? model.getVersionId() : -1;
 					if (v !== cachedVersionId || !Array.isArray(cachedBlocks)) {
@@ -8939,7 +8951,7 @@ function initQueryEditor(boxId) {
 					}
 					// If cursor is on a separator blank-line run (2+ blank lines), don't show an active statement.
 					try {
-						if (window.__kustoIsSeparatorBlankLine && window.__kustoIsSeparatorBlankLine(model, pos.lineNumber)) {
+						if (_win.__kustoIsSeparatorBlankLine && _win.__kustoIsSeparatorBlankLine(model, pos.lineNumber)) {
 							activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
 							return;
 						}
@@ -9003,18 +9015,18 @@ function initQueryEditor(boxId) {
 
 		// SEM0139 helper: auto-select term and open Find-with-selection.
 		try {
-			if (!window.__kustoAutoFindStateByBoxId || typeof window.__kustoAutoFindStateByBoxId !== 'object') {
-				window.__kustoAutoFindStateByBoxId = {};
+			if (!_win.__kustoAutoFindStateByBoxId || typeof _win.__kustoAutoFindStateByBoxId !== 'object') {
+				_win.__kustoAutoFindStateByBoxId = {};
 			}
-			if (typeof window.__kustoAutoFindInQueryEditor !== 'function') {
-				window.__kustoAutoFindInQueryEditor = async (boxId, term) => {
+			if (typeof _win.__kustoAutoFindInQueryEditor !== 'function') {
+				_win.__kustoAutoFindInQueryEditor = async (boxId: any, term: any) => {
 					const bid = String(boxId || '').trim();
 					const t = String(term || '');
 					if (!bid || !t) return false;
-					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
 					if (!ed) return false;
 					try {
-						const state = window.__kustoAutoFindStateByBoxId[bid];
+						const state = _win.__kustoAutoFindStateByBoxId[bid];
 						if (state && state.term === t) {
 							return true;
 						}
@@ -9023,7 +9035,7 @@ function initQueryEditor(boxId) {
 					if (!model || typeof model.findMatches !== 'function') return false;
 					let match = null;
 					let usedTerm = t;
-					const tryFind = (needle) => {
+					const tryFind = (needle: any) => {
 						try {
 							const s = String(needle || '');
 							if (!s) return null;
@@ -9035,8 +9047,8 @@ function initQueryEditor(boxId) {
 
 					// Try exact first, then a few safe normalizations for bracket/dynamic access.
 					const candidates = (() => {
-						const list = [];
-						const push = (s) => {
+						const list: any[] = [];
+						const push = (s: any) => {
 							try {
 								const v = String(s || '');
 								if (!v) return;
@@ -9096,20 +9108,20 @@ function initQueryEditor(boxId) {
 						}
 					} catch { /* ignore */ }
 					try {
-						window.__kustoAutoFindStateByBoxId[bid] = { term: usedTerm, ts: Date.now() };
+						_win.__kustoAutoFindStateByBoxId[bid] = { term: usedTerm, ts: Date.now() };
 					} catch { /* ignore */ }
 					return true;
 				};
 			}
-			if (typeof window.__kustoClearAutoFindInQueryEditor !== 'function') {
-				window.__kustoClearAutoFindInQueryEditor = (boxId) => {
+			if (typeof _win.__kustoClearAutoFindInQueryEditor !== 'function') {
+				_win.__kustoClearAutoFindInQueryEditor = (boxId: any) => {
 					const bid = String(boxId || '').trim();
 					if (!bid) return;
 					let had = false;
-					try { had = !!(window.__kustoAutoFindStateByBoxId && window.__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
+					try { had = !!(_win.__kustoAutoFindStateByBoxId && _win.__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
 					if (!had) return;
-					try { delete window.__kustoAutoFindStateByBoxId[bid]; } catch { /* ignore */ }
-					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
+					try { delete _win.__kustoAutoFindStateByBoxId[bid]; } catch { /* ignore */ }
+					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
 					if (!ed) return;
 					try {
 						// Close find widget if it was opened by us.
@@ -9131,7 +9143,7 @@ function initQueryEditor(boxId) {
 		// Right-click Cut/Copy in Monaco context menu uses Monaco actions (not DOM cut/copy events).
 		// Override those actions to use our clipboard workaround when possible.
 		try {
-			const tryOverride = (actionId, isCut) => {
+			const tryOverride = (actionId: any, isCut: any) => {
 				try {
 					const action = editor.getAction && editor.getAction(actionId);
 					if (!action || typeof action.run !== 'function') {
@@ -9140,8 +9152,8 @@ function initQueryEditor(boxId) {
 					const originalRun = action.run.bind(action);
 					action.run = async () => {
 						try {
-							if (window && typeof window.__kustoCopyOrCutMonacoEditor === 'function') {
-								const ok = await window.__kustoCopyOrCutMonacoEditor(editor, !!isCut);
+							if (window && typeof _win.__kustoCopyOrCutMonacoEditor === 'function') {
+								const ok = await _win.__kustoCopyOrCutMonacoEditor(editor, !!isCut);
 								if (ok) {
 									return;
 								}
@@ -9165,7 +9177,7 @@ function initQueryEditor(boxId) {
 			// ignore
 		}
 
-		queryEditors[boxId] = editor;
+		_win.queryEditors[boxId] = editor;
 		// Allow other scripts to reliably map editor -> boxId (used for global key handlers).
 		try { editor.__kustoBoxId = boxId; } catch { /* ignore */ }
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
@@ -9189,9 +9201,9 @@ function initQueryEditor(boxId) {
 
 		// Trigger suggest, then auto-hide it if Monaco has nothing to show.
 		// NOTE: Be conservative here; hiding too early can suppress real suggestions.
-		const __kustoHideSuggestIfNoSuggestions = (ed, expectedModelVersionId) => {
+		const __kustoHideSuggestIfNoSuggestions = (ed: any, expectedModelVersionId: any) => {
 			try {
-				const __kustoSafeEditorTrigger = (editor, commandId) => {
+				const __kustoSafeEditorTrigger = (editor: any, commandId: any) => {
 					try {
 						if (!editor || !commandId) return;
 						const result = editor.trigger('keyboard', commandId, {});
@@ -9240,7 +9252,7 @@ function initQueryEditor(boxId) {
 		// Enhancement (best-effort): when the suggest widget opens and the caret is inside a word,
 		// preselect the suggestion that exactly matches the current word (if present).
 		// This is intentionally defensive: if Monaco DOM/structure differs, it does nothing.
-		const __kustoPreselectExactWordInSuggestIfPresent = (ed, expectedModelVersionId, forcedWord) => {
+		const __kustoPreselectExactWordInSuggestIfPresent = (ed: any, expectedModelVersionId: any, forcedWord: any) => {
 			try {
 				if (!ed) return;
 				try {
@@ -9260,7 +9272,7 @@ function initQueryEditor(boxId) {
 					currentWord = __kustoGetWordNearCursor(ed);
 				}
 				if (!currentWord || !String(currentWord).trim()) return;
-				const normalize = (s) => {
+				const normalize = (s: any) => {
 					try {
 						let x = String(s || '').trim();
 						// Strip common wrappers seen in Kusto identifiers.
@@ -9294,7 +9306,7 @@ function initQueryEditor(boxId) {
 						try { if (ctrl && ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch { /* ignore */ }
 						try { if (ctrl && ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch { /* ignore */ }
 
-						const tryGetList = (w0) => {
+						const tryGetList = (w0: any) => {
 							try {
 								const w = (w0 && w0.value) ? w0.value : w0;
 								if (!w) return null;
@@ -9304,7 +9316,7 @@ function initQueryEditor(boxId) {
 							}
 						};
 
-						const getListLength = (list) => {
+						const getListLength = (list: any) => {
 							try {
 								if (!list) return 0;
 								if (typeof list.length === 'number') return Math.max(0, Math.floor(list.length));
@@ -9320,7 +9332,7 @@ function initQueryEditor(boxId) {
 							return 0;
 						};
 
-						const getElementAt = (list, idx) => {
+						const getElementAt = (list: any, idx: any) => {
 							try {
 								if (!list || !isFinite(idx)) return null;
 								if (typeof list.element === 'function') return list.element(idx);
@@ -9335,7 +9347,7 @@ function initQueryEditor(boxId) {
 							return null;
 						};
 
-						const getLabelFromElement = (el) => {
+						const getLabelFromElement = (el: any) => {
 							try {
 								if (!el) return '';
 								// Try common shapes across Monaco builds.
@@ -9469,7 +9481,7 @@ function initQueryEditor(boxId) {
 			return false;
 		};
 
-		const __kustoTriggerAutocomplete = (ed) => {
+		const __kustoTriggerAutocomplete = (ed: any) => {
 			try {
 				if (!ed) return;
 				let shouldDeferTrigger = false;
@@ -9523,13 +9535,13 @@ function initQueryEditor(boxId) {
 			}
 		};
 
-		const __kustoMaybeAutoTriggerAutocomplete = (ed, boxId, changeEvent) => {
+		const __kustoMaybeAutoTriggerAutocomplete = (ed: any, boxId: any, changeEvent: any) => {
 			try {
 				if (!ed) return;
-				if (typeof window.autoTriggerAutocompleteEnabled !== 'boolean' || !window.autoTriggerAutocompleteEnabled) return;
+				if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean' || !_win.autoTriggerAutocompleteEnabled) return;
 				// Only auto-trigger for the currently focused query editor.
 				try {
-					if (typeof activeQueryEditorBoxId === 'string' && activeQueryEditorBoxId !== boxId) {
+					if (typeof _win.activeQueryEditorBoxId === 'string' && _win.activeQueryEditorBoxId !== boxId) {
 						return;
 					}
 				} catch { /* ignore */ }
@@ -9614,7 +9626,7 @@ function initQueryEditor(boxId) {
 								const charBeforeCursor = col > 1 ? line[col - 2] : ''; // col-2 because col is 1-based
 								const charAtCursor = col <= line.length ? line[col - 1] : ''; // char at cursor position (or empty if at EOL)
 
-								const isWordChar = (c) => /[A-Za-z0-9_]/.test(c || '');
+								const isWordChar = (c: any) => /[A-Za-z0-9_]/.test(c || '');
 
 								// If cursor is right after a word character and NOT followed by another word character,
 								// we're at the end of a completed term - skip triggering.
@@ -9636,7 +9648,7 @@ function initQueryEditor(boxId) {
 
 		// Expose the preselect helper so the suggest widget sizing/visibility observer can call it.
 		try {
-			editor.__kustoPreselectExactWordInSuggestIfPresent = (forcedWord) => {
+			editor.__kustoPreselectExactWordInSuggestIfPresent = (forcedWord: any) => {
 				try {
 					// Cache the current target word (best-effort) so callers can avoid redundant focus changes.
 					try {
@@ -9664,10 +9676,10 @@ function initQueryEditor(boxId) {
 
 		// Expose for toolbar / other scripts.
 		try {
-			if (typeof window.__kustoTriggerAutocompleteForBoxId !== 'function') {
-				window.__kustoTriggerAutocompleteForBoxId = (id) => {
+			if (typeof _win.__kustoTriggerAutocompleteForBoxId !== 'function') {
+				_win.__kustoTriggerAutocompleteForBoxId = (id: any) => {
 					try {
-						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
 						if (ed) {
 							__kustoTriggerAutocomplete(ed);
 						}
@@ -9680,7 +9692,7 @@ function initQueryEditor(boxId) {
 			// ignore
 		}
 
-		const __kustoReplaceAllText = (ed, nextText, label) => {
+		const __kustoReplaceAllText = (ed: any, nextText: any, label: any) => {
 			try {
 				if (!ed) return;
 				const model = ed.getModel && ed.getModel();
@@ -9702,10 +9714,10 @@ function initQueryEditor(boxId) {
 
 		// Expose query formatting helpers for toolbar buttons.
 		try {
-			if (typeof window.__kustoSingleLineQueryForBoxId !== 'function') {
-				window.__kustoSingleLineQueryForBoxId = (id) => {
+			if (typeof _win.__kustoSingleLineQueryForBoxId !== 'function') {
+				_win.__kustoSingleLineQueryForBoxId = (id: any) => {
 					try {
-						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
 						if (!ed) return;
 						const v = ed.getValue ? ed.getValue() : '';
 						const next = __kustoToSingleLineKusto(v);
@@ -9715,10 +9727,10 @@ function initQueryEditor(boxId) {
 					}
 				};
 			}
-			if (typeof window.__kustoPrettifyQueryForBoxId !== 'function') {
-				window.__kustoPrettifyQueryForBoxId = (id) => {
+			if (typeof _win.__kustoPrettifyQueryForBoxId !== 'function') {
+				_win.__kustoPrettifyQueryForBoxId = (id: any) => {
 					try {
-						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
 						if (!ed) return;
 						const v = ed.getValue ? ed.getValue() : '';
 						const next = __kustoPrettifyKustoTextWithSemicolonStatements(v);
@@ -9728,8 +9740,8 @@ function initQueryEditor(boxId) {
 					}
 				};
 			}
-			if (typeof window.__kustoPrettifyKustoText !== 'function') {
-				window.__kustoPrettifyKustoText = (text) => {
+			if (typeof _win.__kustoPrettifyKustoText !== 'function') {
+				_win.__kustoPrettifyKustoText = (text: any) => {
 					try {
 						return __kustoPrettifyKustoTextWithSemicolonStatements(String(text ?? ''));
 					} catch {
@@ -9737,25 +9749,25 @@ function initQueryEditor(boxId) {
 					}
 				};
 			}
-			if (typeof window.__kustoCopySingleLineQueryForBoxId !== 'function') {
-				window.__kustoCopySingleLineQueryForBoxId = async (id) => {
+			if (typeof _win.__kustoCopySingleLineQueryForBoxId !== 'function') {
+				_win.__kustoCopySingleLineQueryForBoxId = async (id: any) => {
 					try {
-						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
 						if (!ed) return;
 						let v = ed.getValue ? ed.getValue() : '';
 						// When the editor has multiple statements, operate on the statement under the cursor.
 						try {
 							const model = ed.getModel && ed.getModel();
-							const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
-								? window.__kustoGetStatementBlocksFromModel(model)
+							const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
+								? _win.__kustoGetStatementBlocksFromModel(model)
 								: [];
 							const hasMultipleStatements = blocks && blocks.length > 1;
-							if (hasMultipleStatements && typeof window.__kustoExtractStatementTextAtCursor === 'function') {
-								const stmt = window.__kustoExtractStatementTextAtCursor(ed);
+							if (hasMultipleStatements && typeof _win.__kustoExtractStatementTextAtCursor === 'function') {
+								const stmt = _win.__kustoExtractStatementTextAtCursor(ed);
 								if (stmt) {
 									v = stmt;
 								} else {
-									try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to copy that statement as a single line.' }); } catch { /* ignore */ }
+									try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to copy that statement as a single line.' }); } catch { /* ignore */ }
 									return;
 								}
 							}
@@ -9766,7 +9778,7 @@ function initQueryEditor(boxId) {
 						try {
 							if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
 								await navigator.clipboard.writeText(single);
-								try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch { /* ignore */ }
+								try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch { /* ignore */ }
 								return;
 							}
 						} catch {
@@ -9788,9 +9800,9 @@ function initQueryEditor(boxId) {
 						if (!ok) {
 							throw new Error('copy failed');
 						}
-						try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch { /* ignore */ }
+						try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch { /* ignore */ }
 					} catch {
-						try { vscode && vscode.postMessage && vscode.postMessage({ type: 'showInfo', message: 'Failed to copy single-line query to clipboard.' }); } catch { /* ignore */ }
+						try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Failed to copy single-line query to clipboard.' }); } catch { /* ignore */ }
 					}
 				};
 			}
@@ -9823,12 +9835,12 @@ function initQueryEditor(boxId) {
 		try {
 			const __kustoRunThisQueryBox = () => {
 				try {
-					if (typeof executeQuery === 'function') {
-						executeQuery(boxId);
+					if (typeof _win.executeQuery === 'function') {
+						_win.executeQuery(boxId);
 						return;
 					}
-					if (window && typeof window.executeQuery === 'function') {
-						window.executeQuery(boxId);
+					if (window && typeof _win.executeQuery === 'function') {
+						_win.executeQuery(boxId);
 					}
 				} catch {
 					// ignore
@@ -9841,7 +9853,7 @@ function initQueryEditor(boxId) {
 		}
 
 		// Docs tooltip: keep visible while typing, even when Monaco autocomplete is open.
-		const renderDocMarkdownToHtml = (markdown) => {
+		const renderDocMarkdownToHtml = (markdown: any) => {
 			let raw = String(markdown || '');
 			if (!raw.trim()) {
 				return '';
@@ -9868,7 +9880,7 @@ function initQueryEditor(boxId) {
 			} catch {
 				// ignore
 			}
-			const escaped = typeof escapeHtml === 'function' ? escapeHtml(raw) : raw;
+			const escaped = typeof _win.escapeHtml === 'function' ? _win.escapeHtml(raw) : raw;
 			const html = escaped
 				.replace(/\r\n/g, '\n')
 				.replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -9902,16 +9914,16 @@ function initQueryEditor(boxId) {
 
 			// Persist last docs HTML across editor/overlay recreation (can happen if VS Code detaches the webview DOM).
 			try {
-				if (!window.__kustoCaretDocsLastHtmlByBoxId || typeof window.__kustoCaretDocsLastHtmlByBoxId !== 'object') {
-					window.__kustoCaretDocsLastHtmlByBoxId = {};
+				if (!_win.__kustoCaretDocsLastHtmlByBoxId || typeof _win.__kustoCaretDocsLastHtmlByBoxId !== 'object') {
+					_win.__kustoCaretDocsLastHtmlByBoxId = {};
 				}
-				const cached = window.__kustoCaretDocsLastHtmlByBoxId[boxId];
+				const cached = _win.__kustoCaretDocsLastHtmlByBoxId[boxId];
 				if (typeof cached === 'string' && cached.trim()) {
 					lastDocsHtml = cached;
 					lastHtml = cached;
 					// If caret-docs are enabled, paint the cached docs immediately so we don't flash watermark.
 					try {
-						if (typeof window.caretDocsEnabled === 'undefined' || window.caretDocsEnabled !== false) {
+						if (typeof _win.caretDocsEnabled === 'undefined' || _win.caretDocsEnabled !== false) {
 							if (banner) banner.style.display = 'flex';
 							if (text) {
 								if (text.classList) text.classList.remove('is-watermark');
@@ -9925,22 +9937,22 @@ function initQueryEditor(boxId) {
 			// In VS Code webviews, document.hasFocus() can be unreliable when the VS Code window
 			// loses focus. Track focus explicitly from window-level events.
 			try {
-				if (typeof window.__kustoWebviewHasFocus !== 'boolean') {
-					window.__kustoWebviewHasFocus = true;
+				if (typeof _win.__kustoWebviewHasFocus !== 'boolean') {
+					_win.__kustoWebviewHasFocus = true;
 				}
-				if (!window.__kustoWebviewFocusListenersInstalled) {
-					window.__kustoWebviewFocusListenersInstalled = true;
+				if (!_win.__kustoWebviewFocusListenersInstalled) {
+					_win.__kustoWebviewFocusListenersInstalled = true;
 					try {
 						window.addEventListener(
 							'blur',
 							() => {
-								try { window.__kustoWebviewHasFocus = false; } catch { /* ignore */ }
+								try { _win.__kustoWebviewHasFocus = false; } catch { /* ignore */ }
 								// After focus flips, refresh the active overlay once so it can freeze/restore docs.
 								try {
 									setTimeout(() => {
 										try {
-											if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
-												window.__kustoRefreshActiveCaretDocs();
+											if (typeof _win.__kustoRefreshActiveCaretDocs === 'function') {
+												_win.__kustoRefreshActiveCaretDocs();
 											}
 										} catch { /* ignore */ }
 									}, 0);
@@ -9949,12 +9961,12 @@ function initQueryEditor(boxId) {
 							true
 						);
 					} catch { /* ignore */ }
-					try { window.addEventListener('focus', () => { try { window.__kustoWebviewHasFocus = true; } catch { /* ignore */ } }, true); } catch { /* ignore */ }
+					try { window.addEventListener('focus', () => { try { _win.__kustoWebviewHasFocus = true; } catch { /* ignore */ } }, true); } catch { /* ignore */ }
 					try {
 						document.addEventListener('visibilitychange', () => {
 							try {
 								// When the tab becomes hidden, treat as unfocused.
-								window.__kustoWebviewHasFocus = !document.hidden;
+								_win.__kustoWebviewHasFocus = !document.hidden;
 							} catch { /* ignore */ }
 						}, true);
 					} catch { /* ignore */ }
@@ -9963,8 +9975,8 @@ function initQueryEditor(boxId) {
 
 			const isWebviewFocused = () => {
 				try {
-					if (typeof window.__kustoWebviewHasFocus === 'boolean') {
-						return !!window.__kustoWebviewHasFocus;
+					if (typeof _win.__kustoWebviewHasFocus === 'boolean') {
+						return !!_win.__kustoWebviewHasFocus;
 					}
 				} catch { /* ignore */ }
 				try {
@@ -10018,7 +10030,7 @@ function initQueryEditor(boxId) {
 				try {
 					// Default to enabled if the global toggle hasn't been initialized yet.
 					try {
-						if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
+						if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
 							hide();
 							return;
 						}
@@ -10033,7 +10045,7 @@ function initQueryEditor(boxId) {
 							try {
 								// If the overall VS Code/webview is unfocused, freeze regardless of Monaco state.
 								try {
-									if (typeof window.__kustoWebviewHasFocus === 'boolean' && window.__kustoWebviewHasFocus === false) {
+									if (typeof _win.__kustoWebviewHasFocus === 'boolean' && _win.__kustoWebviewHasFocus === false) {
 										hasFocus = false;
 										throw new Error('webview not focused');
 									}
@@ -10097,8 +10109,8 @@ function initQueryEditor(boxId) {
 					// Prefer the explicit "active editor" tracking. In some Monaco builds,
 					// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
 					try {
-						const activeId = (typeof activeQueryEditorBoxId !== 'undefined' && activeQueryEditorBoxId)
-							? String(activeQueryEditorBoxId)
+						const activeId = (typeof _win.activeQueryEditorBoxId !== 'undefined' && _win.activeQueryEditorBoxId)
+							? String(_win.activeQueryEditorBoxId)
 							: null;
 						if (activeId && activeId !== String(boxId)) {
 								// When another editor is active, keep the last content (if any) instead
@@ -10135,7 +10147,7 @@ function initQueryEditor(boxId) {
 								return;
 							}
 
-					const getter = window.__kustoGetHoverInfoAt;
+					const getter = _win.__kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
 						showWatermark();
 						return;
@@ -10195,8 +10207,8 @@ function initQueryEditor(boxId) {
 						lastHtml = html;
 								lastDocsHtml = html;
 								try {
-									if (window.__kustoCaretDocsLastHtmlByBoxId && typeof window.__kustoCaretDocsLastHtmlByBoxId === 'object') {
-										window.__kustoCaretDocsLastHtmlByBoxId[boxId] = html;
+									if (_win.__kustoCaretDocsLastHtmlByBoxId && typeof _win.__kustoCaretDocsLastHtmlByBoxId === 'object') {
+										_win.__kustoCaretDocsLastHtmlByBoxId[boxId] = html;
 									}
 								} catch { /* ignore */ }
 						try {
@@ -10230,28 +10242,28 @@ function initQueryEditor(boxId) {
 
 					const docOverlay = createDocOverlay();
 					try {
-						if (typeof caretDocOverlaysByBoxId !== 'undefined' && caretDocOverlaysByBoxId) {
-							caretDocOverlaysByBoxId[boxId] = docOverlay;
+						if (typeof _win.caretDocOverlaysByBoxId !== 'undefined' && _win.caretDocOverlaysByBoxId) {
+							_win.caretDocOverlaysByBoxId[boxId] = docOverlay;
 						}
 					} catch { /* ignore */ }
 
 					// Keep the overlay positioned correctly when the outer webview scrolls/resizes.
 					// Install once globally to avoid accumulating listeners per editor.
 					try {
-						if (!window.__kustoCaretDocsViewportListenersInstalled) {
-							window.__kustoCaretDocsViewportListenersInstalled = true;
+						if (!_win.__kustoCaretDocsViewportListenersInstalled) {
+							_win.__kustoCaretDocsViewportListenersInstalled = true;
 							const refreshActive = () => {
 								try {
-									if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
+									if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
 										return;
 									}
-									const overlays = typeof caretDocOverlaysByBoxId !== 'undefined' ? caretDocOverlaysByBoxId : null;
+									const overlays = typeof _win.caretDocOverlaysByBoxId !== 'undefined' ? _win.caretDocOverlaysByBoxId : null;
 									if (!overlays) {
 										return;
 									}
 									let activeId = null;
 									try {
-										activeId = typeof activeQueryEditorBoxId !== 'undefined' ? activeQueryEditorBoxId : null;
+										activeId = typeof _win.activeQueryEditorBoxId !== 'undefined' ? _win.activeQueryEditorBoxId : null;
 									} catch {
 										activeId = null;
 									}
@@ -10264,7 +10276,7 @@ function initQueryEditor(boxId) {
 							};
 								try {
 									// Allow other features (e.g., async doc fetch) to request a re-render of the active caret-docs banner.
-									window.__kustoRefreshActiveCaretDocs = refreshActive;
+									_win.__kustoRefreshActiveCaretDocs = refreshActive;
 								} catch { /* ignore */ }
 							window.addEventListener('scroll', refreshActive, true);
 							window.addEventListener('resize', refreshActive);
@@ -10275,13 +10287,13 @@ function initQueryEditor(boxId) {
 
 		// Hide caret tooltip on Escape (without preventing Monaco default behavior).
 		try {
-			editor.onKeyDown((e) => {
+			editor.onKeyDown((e: any) => {
 				try {
 					if (!e) return;
 					// monaco.KeyCode.Escape === 9
 					if (e.keyCode === monaco.KeyCode.Escape) {
 						try {
-							if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
+							if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
 								docOverlay.hide();
 							} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
 								docOverlay.showWatermark();
@@ -10295,7 +10307,7 @@ function initQueryEditor(boxId) {
 		} catch {
 			// ignore
 		}
-		let docTimer = null;
+		let docTimer: any = null;
 		const scheduleDocUpdate = () => {
 			try {
 				if (docTimer) {
@@ -10314,7 +10326,7 @@ function initQueryEditor(boxId) {
 		try {
 			const model = editor.getModel();
 			if (model && model.uri) {
-				queryEditorBoxByModelUri[model.uri.toString()] = boxId;
+				_win.queryEditorBoxByModelUri[model.uri.toString()] = boxId;
 			}
 		} catch {
 			// ignore
@@ -10326,68 +10338,68 @@ function initQueryEditor(boxId) {
 			}
 			updatePlaceholderPosition();
 			// Hide placeholder while the editor is focused, even if empty.
-			const isFocused = activeQueryEditorBoxId === boxId;
+			const isFocused = _win.activeQueryEditorBoxId === boxId;
 			placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';
 		};
 		syncPlaceholder();
-		editor.onDidChangeModelContent((e) => {
+		editor.onDidChangeModelContent((e: any) => {
 			syncPlaceholder();
 			scheduleDocUpdate();
 			try {
-				if (typeof window.__kustoOnQueryValueChanged === 'function') {
-					window.__kustoOnQueryValueChanged(boxId, editor.getValue());
+				if (typeof _win.__kustoOnQueryValueChanged === 'function') {
+					_win.__kustoOnQueryValueChanged(boxId, editor.getValue());
 				}
 			} catch {
 				// ignore
 			}
 			try {
-				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
-					window.__kustoScheduleKustoDiagnostics(boxId, 250);
+				if (typeof _win.__kustoScheduleKustoDiagnostics === 'function') {
+					_win.__kustoScheduleKustoDiagnostics(boxId, 250);
 				}
 			} catch { /* ignore */ }
-			try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 			// Check for cross-cluster references and request their schemas
 			try {
-				if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
+				if (typeof _win.__kustoCheckCrossClusterRefs === 'function') {
 					// Debounce the check to avoid excessive requests while typing
-					if (!window.__kustoCrossClusterCheckTimeout) {
-						window.__kustoCrossClusterCheckTimeout = {};
+					if (!_win.__kustoCrossClusterCheckTimeout) {
+						_win.__kustoCrossClusterCheckTimeout = {};
 					}
-					clearTimeout(window.__kustoCrossClusterCheckTimeout[boxId]);
-					window.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
-						window.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+					clearTimeout(_win.__kustoCrossClusterCheckTimeout[boxId]);
+					_win.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
+						_win.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
 					}, 500);
 				}
 			} catch { /* ignore */ }
 			try { __kustoMaybeAutoTriggerAutocomplete(editor, boxId, e); } catch { /* ignore */ }
 		});
 		editor.onDidFocusEditorText(() => {
-			activeQueryEditorBoxId = boxId;
-			try { window.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
-			try { activeMonacoEditor = editor; } catch { /* ignore */ }
-			try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
-			try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
+			_win.activeQueryEditorBoxId = boxId;
+			try { _win.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+			try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+			try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+			try { _win.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 			try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 			syncPlaceholder();
-			ensureSchemaForBox(boxId);
+			_win.ensureSchemaForBox(boxId);
 			scheduleDocUpdate();
 			// Update monaco-kusto schema if switching to a different cluster/database
 			try {
-				if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-					window.__kustoUpdateSchemaForFocusedBox(boxId);
+				if (typeof _win.__kustoUpdateSchemaForFocusedBox === 'function') {
+					_win.__kustoUpdateSchemaForFocusedBox(boxId);
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
-					window.__kustoScheduleKustoDiagnostics(boxId, 0);
+				if (typeof _win.__kustoScheduleKustoDiagnostics === 'function') {
+					_win.__kustoScheduleKustoDiagnostics(boxId, 0);
 				}
 			} catch { /* ignore */ }
 			// Check for cross-cluster references on focus (in addition to content change)
 			try {
-				if (typeof window.__kustoCheckCrossClusterRefs === 'function') {
+				if (typeof _win.__kustoCheckCrossClusterRefs === 'function') {
 					// Small delay to let the schema load first
 					setTimeout(() => {
-						window.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+						_win.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
 					}, 100);
 				}
 			} catch { /* ignore */ }
@@ -10396,11 +10408,11 @@ function initQueryEditor(boxId) {
 		// still has focus. Track focus at the editor-widget level so our docs widget stays visible.
 		try {
 			editor.onDidFocusEditorWidget(() => {
-				activeQueryEditorBoxId = boxId;
-				try { window.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
-				try { activeMonacoEditor = editor; } catch { /* ignore */ }
-				try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
-				try { window.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
+				_win.activeQueryEditorBoxId = boxId;
+				try { _win.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+				try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { _win.__kustoLastMonacoInteractionAt = Date.now(); } catch { /* ignore */ }
 				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
 				syncPlaceholder();
 				scheduleDocUpdate();
@@ -10413,13 +10425,13 @@ function initQueryEditor(boxId) {
 						const stillFocused = isEditorFocused();
 						if (!stillFocused) {
 							try {
-								if (typeof window.caretDocsEnabled !== 'undefined' && window.caretDocsEnabled === false) {
+								if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
 									docOverlay.hide();
 								}
 							} catch { /* ignore */ }
-							if (activeQueryEditorBoxId === boxId) {
-								activeQueryEditorBoxId = null;
-								try { window.activeQueryEditorBoxId = null; } catch { /* ignore */ }
+							if (_win.activeQueryEditorBoxId === boxId) {
+								_win.activeQueryEditorBoxId = null;
+								try { _win.activeQueryEditorBoxId = null; } catch { /* ignore */ }
 							}
 							syncPlaceholder();
 							// Keep existing docs banner content visible while unfocused.
@@ -10428,8 +10440,8 @@ function initQueryEditor(boxId) {
 							// Disable markers (red squiggles) for this editor now that it's unfocused
 							try {
 								const model = editor.getModel();
-								if (model && model.uri && typeof window.__kustoDisableMarkersForModel === 'function') {
-									window.__kustoDisableMarkersForModel(model.uri);
+								if (model && model.uri && typeof _win.__kustoDisableMarkersForModel === 'function') {
+									_win.__kustoDisableMarkersForModel(model.uri);
 								}
 							} catch { /* ignore */ }
 						}
@@ -10447,8 +10459,8 @@ function initQueryEditor(boxId) {
 		// Defer focus slightly so Monaco can handle click-to-place-caret on the first click.
 		const focusSoon = () => {
 			setTimeout(() => {
-				try { activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
-				try { activeMonacoEditor = editor; } catch { /* ignore */ }
+				try { _win.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+				try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
 				try { editor.layout(); } catch { /* ignore */ }
 				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
 				try { editor.focus(); } catch { /* ignore */ }
@@ -10467,19 +10479,19 @@ function initQueryEditor(boxId) {
 		if (wrapper) {
 			wrapper.addEventListener('mousedown', (e) => {
 				try {
-					if (e && e.target && e.target.closest) {
+					if (e && e.target && (e.target as HTMLElement).closest) {
 						// Allow embedded UI (e.g. Copilot Chat) to receive focus.
-						if (e.target.closest('.kusto-copilot-chat') || e.target.closest('[data-kusto-no-editor-focus="true"]')) {
+						if ((e.target as HTMLElement).closest('.kusto-copilot-chat') || (e.target as HTMLElement).closest('[data-kusto-no-editor-focus="true"]')) {
 							return;
 						}
-						if (e.target.closest('.query-editor-toolbar')) {
+						if ((e.target as HTMLElement).closest('.query-editor-toolbar')) {
 							return;
 						}
-						if (e.target.closest('.query-editor-resizer')) {
+						if ((e.target as HTMLElement).closest('.query-editor-resizer')) {
 							return;
 						}
 						// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
-						if (e.target.closest('.find-widget') || e.target.closest('.suggest-widget') || e.target.closest('.parameter-hints-widget') || e.target.closest('.monaco-hover') || e.target.closest('.overflowingContentWidgets')) {
+						if ((e.target as HTMLElement).closest('.find-widget') || (e.target as HTMLElement).closest('.suggest-widget') || (e.target as HTMLElement).closest('.parameter-hints-widget') || (e.target as HTMLElement).closest('.monaco-hover') || (e.target as HTMLElement).closest('.overflowingContentWidgets')) {
 							return;
 						}
 					}
@@ -10494,9 +10506,9 @@ function initQueryEditor(boxId) {
 		// Keep a direct hook on the editor container too.
 		container.addEventListener('mousedown', (e) => {
 			try {
-				if (e && e.target && e.target.closest) {
+				if (e && e.target && (e.target as HTMLElement).closest) {
 					// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
-					if (e.target.closest('.find-widget') || e.target.closest('.suggest-widget') || e.target.closest('.parameter-hints-widget') || e.target.closest('.monaco-hover') || e.target.closest('.overflowingContentWidgets')) {
+					if ((e.target as HTMLElement).closest('.find-widget') || (e.target as HTMLElement).closest('.suggest-widget') || (e.target as HTMLElement).closest('.parameter-hints-widget') || (e.target as HTMLElement).closest('.monaco-hover') || (e.target as HTMLElement).closest('.overflowingContentWidgets')) {
 						return;
 					}
 				}
@@ -10521,8 +10533,8 @@ function initQueryEditor(boxId) {
 
 		// Kick off missing-cluster detection for the initial value as well.
 		try {
-			if (typeof window.__kustoOnQueryValueChanged === 'function') {
-				window.__kustoOnQueryValueChanged(boxId, editor.getValue());
+			if (typeof _win.__kustoOnQueryValueChanged === 'function') {
+				_win.__kustoOnQueryValueChanged(boxId, editor.getValue());
 			}
 		} catch {
 			// ignore
@@ -10533,29 +10545,29 @@ function initQueryEditor(boxId) {
 
 		// Keep Monaco laid out when the user resizes the wrapper.
 		if (wrapper && typeof ResizeObserver !== 'undefined') {
-			if (queryEditorResizeObservers[boxId]) {
-				try { queryEditorResizeObservers[boxId].disconnect(); } catch { /* ignore */ }
+			if (_win.queryEditorResizeObservers[boxId]) {
+				try { _win.queryEditorResizeObservers[boxId].disconnect(); } catch { /* ignore */ }
 			}
 			const ro = new ResizeObserver(() => {
 				try { editor.layout(); } catch { /* ignore */ }
 				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch { /* ignore */ }
 			});
 			ro.observe(wrapper);
-			queryEditorResizeObservers[boxId] = ro;
+			_win.queryEditorResizeObservers[boxId] = ro;
 		}
 
 		// In multi-editor layouts (e.g. Copilot split panes), editors can be created while hidden.
 		// Ensure we relayout when the wrapper becomes visible again so Monaco widgets position correctly.
 		try {
-			if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers && queryEditorVisibilityObservers[boxId]) {
-				try { queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
-				try { delete queryEditorVisibilityObservers[boxId]; } catch { /* ignore */ }
+			if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers && _win.queryEditorVisibilityObservers[boxId]) {
+				try { _win.queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
+				try { delete _win.queryEditorVisibilityObservers[boxId]; } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 		try {
-			if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers && queryEditorVisibilityMutationObservers[boxId]) {
-				try { queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
-				try { delete queryEditorVisibilityMutationObservers[boxId]; } catch { /* ignore */ }
+			if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers && _win.queryEditorVisibilityMutationObservers[boxId]) {
+				try { _win.queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
+				try { delete _win.queryEditorVisibilityMutationObservers[boxId]; } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 
@@ -10588,7 +10600,7 @@ function initQueryEditor(boxId) {
 					} catch { /* ignore */ }
 				});
 				io.observe(observedEl);
-				try { if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers) queryEditorVisibilityObservers[boxId] = io; } catch { /* ignore */ }
+				try { if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers) _win.queryEditorVisibilityObservers[boxId] = io; } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 
@@ -10604,14 +10616,14 @@ function initQueryEditor(boxId) {
 					} catch { /* ignore */ }
 				});
 				mo.observe(wrapper, { attributes: true, attributeFilter: ['class', 'style', 'aria-hidden'] });
-				try { if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers) queryEditorVisibilityMutationObservers[boxId] = mo; } catch { /* ignore */ }
+				try { if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers) _win.queryEditorVisibilityMutationObservers[boxId] = mo; } catch { /* ignore */ }
 			}
 		} catch { /* ignore */ }
 
 		// Initialize toolbar overflow handling (shows "..." button when buttons overflow)
 		try {
-			if (typeof initToolbarOverflow === 'function') {
-				initToolbarOverflow(boxId);
+			if (typeof _win.initToolbarOverflow === 'function') {
+				_win.initToolbarOverflow(boxId);
 			}
 		} catch { /* ignore */ }
 
@@ -10649,12 +10661,12 @@ function initQueryEditor(boxId) {
 					return;
 				}
 				try {
-					w.dataset.kustoUserResized = 'true';
-					try { delete w.dataset.kustoAutoResized; } catch { /* ignore */ }
+					(w as any).dataset.kustoUserResized = 'true';
+					try { delete (w as any).dataset.kustoAutoResized; } catch { /* ignore */ }
 				} catch { /* ignore */ }
 				try {
-					if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
-						window.__kustoManualQueryEditorHeightPxByBoxId = {};
+					if (!_win.__kustoManualQueryEditorHeightPxByBoxId || typeof _win.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+						_win.__kustoManualQueryEditorHeightPxByBoxId = {};
 					}
 				} catch { /* ignore */ }
 
@@ -10664,16 +10676,16 @@ function initQueryEditor(boxId) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startPageY = e.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 				const startHeight = w.getBoundingClientRect().height;
 
-				const onMove = (moveEvent) => {
+				const onMove = (moveEvent: any) => {
 					try {
-						if (typeof __kustoMaybeAutoScrollWhileDragging === 'function') {
-							__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
+							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 						}
 					} catch { /* ignore */ }
-					const pageY = moveEvent.clientY + (typeof __kustoGetScrollY === 'function' ? __kustoGetScrollY() : 0);
+					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					// Use a larger min-height when the Copilot chat is visible.
 					let minHeightPx = 120;
@@ -10685,10 +10697,10 @@ function initQueryEditor(boxId) {
 					} catch { /* ignore */ }
 					// Manual resizing should not have a max height cap.
 					const nextHeight = Math.max(minHeightPx, startHeight + delta);
-					w.style.height = nextHeight + 'px';
+					(w as any).style.height = nextHeight + 'px';
 					try {
-						if (window.__kustoManualQueryEditorHeightPxByBoxId && typeof window.__kustoManualQueryEditorHeightPxByBoxId === 'object') {
-							window.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(nextHeight);
+						if (_win.__kustoManualQueryEditorHeightPxByBoxId && typeof _win.__kustoManualQueryEditorHeightPxByBoxId === 'object') {
+							_win.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(nextHeight);
 						}
 					} catch { /* ignore */ }
 					try { editor.layout(); } catch { /* ignore */ }
@@ -10699,7 +10711,7 @@ function initQueryEditor(boxId) {
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
-					try { schedulePersist && schedulePersist(); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -10712,17 +10724,17 @@ function initQueryEditor(boxId) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-					if (typeof __kustoAutoSizeEditor === 'function') {
-						__kustoAutoSizeEditor(boxId);
+					if (typeof _win.__kustoAutoSizeEditor === 'function') {
+						_win.__kustoAutoSizeEditor(boxId);
 					}
 				} catch { /* ignore */ }
 			});
 		}
-	}).catch((e) => {
+	}).catch((e: any) => {
 		// If Monaco fails to initialize transiently, retry a few times so the editor
 		// doesn't get stuck in a non-interactive placeholder state until reopen.
 		try {
-			if (queryEditors && queryEditors[boxId]) {
+			if (_win.queryEditors && _win.queryEditors[boxId]) {
 				return;
 			}
 		} catch {
@@ -10731,9 +10743,9 @@ function initQueryEditor(boxId) {
 
 		let attempt = 0;
 		try {
-			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
-			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
-			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+			_win.__kustoMonacoInitRetryCountByBoxId = _win.__kustoMonacoInitRetryCountByBoxId || {};
+			attempt = (_win.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			_win.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
@@ -10753,3 +10765,32 @@ function initQueryEditor(boxId) {
 		}
 	});
 }
+
+// ── Window bridges for remaining legacy callers ──
+(window as any).isDarkTheme = isDarkTheme;
+(window as any).__kustoGetColumnsByTable = __kustoGetColumnsByTable;
+(window as any).getVSCodeEditorBackground = getVSCodeEditorBackground;
+(window as any).defineCustomThemes = defineCustomThemes;
+(window as any).applyMonacoTheme = applyMonacoTheme;
+(window as any).startMonacoThemeObserver = startMonacoThemeObserver;
+(window as any).ensureMonaco = ensureMonaco;
+(window as any).__kustoAttachAutoResizeToContent = __kustoAttachAutoResizeToContent;
+(window as any).__kustoNormalizeTextareasWritable = __kustoNormalizeTextareasWritable;
+(window as any).__kustoForceEditorWritable = __kustoForceEditorWritable;
+(window as any).__kustoInstallWritableGuard = __kustoInstallWritableGuard;
+(window as any).__kustoEnsureEditorWritableSoon = __kustoEnsureEditorWritableSoon;
+(window as any).__kustoEnsureAllEditorsWritableSoon = __kustoEnsureAllEditorsWritableSoon;
+(window as any).__kustoToSingleLineKusto = __kustoToSingleLineKusto;
+(window as any).__kustoExplodePipesToLines = __kustoExplodePipesToLines;
+(window as any).__kustoSplitTopLevel = __kustoSplitTopLevel;
+(window as any).__kustoFindTopLevelKeyword = __kustoFindTopLevelKeyword;
+(window as any).__kustoPrettifyWhereClause = __kustoPrettifyWhereClause;
+(window as any).__kustoPrettifyKusto = __kustoPrettifyKusto;
+(window as any).__kustoSplitKustoStatementsBySemicolon = __kustoSplitKustoStatementsBySemicolon;
+(window as any).__kustoPrettifyKustoTextWithSemicolonStatements = __kustoPrettifyKustoTextWithSemicolonStatements;
+(window as any).__kustoIsElementVisibleForSuggest = __kustoIsElementVisibleForSuggest;
+(window as any).__kustoGetWordNearCursor = __kustoGetWordNearCursor;
+(window as any).__kustoFindSuggestWidgetForEditor = __kustoFindSuggestWidgetForEditor;
+(window as any).__kustoRegisterGlobalSuggestMutationHandler = __kustoRegisterGlobalSuggestMutationHandler;
+(window as any).__kustoInstallSmartSuggestWidgetSizing = __kustoInstallSmartSuggestWidgetSizing;
+(window as any).initQueryEditor = initQueryEditor;

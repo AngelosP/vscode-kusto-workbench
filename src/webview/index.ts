@@ -1,6 +1,7 @@
 // Webview Lit components entry point.
 // Each component self-registers its custom element on import.
 // Legacy modules absorbed from global-scope JS — register window bridges on import.
+import './modules/state.js'; // Must be first — initializes all state globals on window
 import './modules/utils.js';
 import './modules/dropdown.js';
 import './modules/columnAnalysis.js';
@@ -14,6 +15,7 @@ import './modules/copilotQueryBoxes.js';
 import './modules/resultsTable.js';
 import './modules/queryBoxes.js';
 import './modules/extraBoxes.js';
+import './modules/monaco.js';
 import './modules/main.js'; // Must be last — message dispatcher
 import './components/kw-object-viewer.js';
 import './components/kw-filter-dialog.js';

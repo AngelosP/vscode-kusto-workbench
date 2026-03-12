@@ -357,9 +357,18 @@ class FakeModel {
 suite('KQL completions - functions list', () => {
 	const createCompletionProvider = () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
-		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
-		const generatedFunctionsPath = path.join(repoRoot, 'media', 'queryEditor', 'functions.generated.js');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		// Strip TypeScript annotations so the source can run in a JS VM sandbox
+		monacoSource = monacoSource
+			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*any\b(\[\])?/g, '')
+			.replace(/\(\w+ as any\)/g, (m) => m.slice(1, m.indexOf(' ')))
+			.replace(/\b_win\./g, 'window.')
+			.replace(/as HTMLElement\)/g, ')')
+			.replace(/ as string\b/g, '')
+			.replace(/ as any\b/g, '');
+		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'legacy', 'functions.generated.js');
 		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
 
 		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');
@@ -368,7 +377,7 @@ suite('KQL completions - functions list', () => {
 		const sandbox: any = {
 			exports: {},
 			console,
-			window: {},
+			window: null, // will be set to sandbox itself below
 
 			// Stubs for the webview globals referenced by the completion provider.
 			queryEditorBoxByModelUri: {},
@@ -409,6 +418,7 @@ suite('KQL completions - functions list', () => {
 		};
 
 		// Populate window.__kustoFunctionEntries from the generated file.
+		sandbox.window = sandbox; // Allow window.xxx to resolve to sandbox.xxx
 		vm.runInNewContext(generatedFunctionsSource, sandbox, { filename: 'functions.generated.js' });
 
 		const exportedFnDocs = fnDocsSrc.replace(/const\s+KUSTO_FUNCTION_DOCS\s*=\s*/, 'exports.KUSTO_FUNCTION_DOCS = ');
@@ -418,9 +428,6 @@ suite('KQL completions - functions list', () => {
 		// The completion provider references `KUSTO_FUNCTION_DOCS` as a free variable.
 		// Make it available as a global in the same sandbox context.
 		sandbox.KUSTO_FUNCTION_DOCS = sandbox.exports.KUSTO_FUNCTION_DOCS;
-		// The completion provider also expects `window.__kustoFunctionEntries`.
-		sandbox.window = sandbox.window || {};
-		(sandbox.window as any).__kustoFunctionEntries = (sandbox.window as any).__kustoFunctionEntries || (sandbox as any).__kustoFunctionEntries;
 		vm.runInNewContext(exportedProvider, sandbox, { filename: 'monaco.completionProvider.extract.js' });
 
 		assert.ok(sandbox.exports.KUSTO_FUNCTION_DOCS, 'Expected extracted KUSTO_FUNCTION_DOCS');
@@ -464,9 +471,18 @@ suite('KQL completions - functions list', () => {
 
 	test('Smart Docs hover resolves generated built-in function docs (row_number) without autocomplete', async () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
-		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
-		const generatedFunctionsPath = path.join(repoRoot, 'media', 'queryEditor', 'functions.generated.js');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		// Strip TypeScript annotations so the source can run in a JS VM sandbox
+		monacoSource = monacoSource
+			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*any\b(\[\])?/g, '')
+			.replace(/\(\w+ as any\)/g, (m) => m.slice(1, m.indexOf(' ')))
+			.replace(/\b_win\./g, 'window.')
+			.replace(/as HTMLElement\)/g, ')')
+			.replace(/ as string\b/g, '')
+			.replace(/ as any\b/g, '');
+		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'legacy', 'functions.generated.js');
 		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
 
 		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');
@@ -481,7 +497,7 @@ suite('KQL completions - functions list', () => {
 		const sandbox: any = {
 			exports: {},
 			console,
-			window: {},
+			window: null, // will be set to sandbox itself below
 			KUSTO_KEYWORD_DOCS: {},
 			__kustoGetControlCommandHoverAt: () => null,
 			getMultiWordOperatorAt: () => null,
@@ -496,6 +512,7 @@ suite('KQL completions - functions list', () => {
 		};
 
 		// Populate window.__kustoFunctionEntries + window.__kustoFunctionDocs from the generated file.
+		sandbox.window = sandbox; // Allow window.xxx to resolve to sandbox.xxx
 		vm.runInNewContext(generatedFunctionsSource, sandbox, { filename: 'functions.generated.js' });
 
 		const exportedFnDocs = fnDocsSrc.replace(/const\s+KUSTO_FUNCTION_DOCS\s*=\s*/, 'exports.KUSTO_FUNCTION_DOCS = ');

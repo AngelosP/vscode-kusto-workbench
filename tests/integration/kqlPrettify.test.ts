@@ -148,8 +148,17 @@ suite('KQL prettify', () => {
 	const createPrettify = () => {
 		// When compiled, this test runs from `out/tests/integration`, so repo root is three levels up.
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
-		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		// Strip TypeScript annotations so the source can run in a JS VM sandbox
+		monacoSource = monacoSource
+			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*any\b(\[\])?/g, '')
+			.replace(/\(\w+ as any\)/g, (m: string) => m.slice(1, m.indexOf(' ')))
+			.replace(/\b_win\./g, 'window.')
+			.replace(/as HTMLElement\)/g, ')')
+			.replace(/ as string\b/g, '')
+			.replace(/ as any\b/g, '');
 
 		// Extract helper functions needed by __kustoPrettifyKusto
 		const explodePipesFn = extractFunction(monacoSource, '__kustoExplodePipesToLines');

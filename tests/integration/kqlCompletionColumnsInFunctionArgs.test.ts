@@ -205,14 +205,23 @@ class FakeModel {
 suite('KQL completions - columns inside function args', () => {
 	const createCompletionProvider = () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'media', 'queryEditor', 'monaco.js');
-		const monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
+		// Strip TypeScript annotations so the source can run in a JS VM sandbox
+		monacoSource = monacoSource
+			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*any\b(\[\])?/g, '')
+			.replace(/\(\w+ as any\)/g, (m) => m.slice(1, m.indexOf(' ')))
+			.replace(/\b_win\./g, 'window.')
+			.replace(/as HTMLElement\)/g, ')')
+			.replace(/ as string\b/g, '')
+			.replace(/ as any\b/g, '');
 		const providerSrc = extractConstObjectAssignment(monacoSource, '__kustoCompletionProvider');
 
 		const sandbox: any = {
 			exports: {},
 			console,
-			window: {},
+			window: null, // will be set to sandbox itself below
 
 			queryEditorBoxByModelUri: {},
 			activeQueryEditorBoxId: 'box1',
@@ -288,6 +297,7 @@ suite('KQL completions - columns inside function args', () => {
 		};
 
 		const exportedProvider = providerSrc.replace(/const\s+__kustoCompletionProvider\s*=\s*/, 'exports.__kustoCompletionProvider = ');
+		sandbox.window = sandbox; // Allow window.xxx to resolve to sandbox.xxx
 		vm.runInNewContext(exportedProvider, sandbox, { filename: 'monaco.completionProvider.extract.js' });
 
 		assert.ok(sandbox.exports.__kustoCompletionProvider, 'Expected extracted __kustoCompletionProvider');
