@@ -787,8 +787,9 @@ export class KwUrlSection extends LitElement {
 	private _computeFitToContentsHeight(): number {
 		const RESIZER_HEIGHT = 12;
 
-		// For CSV tables: compute from row count, capped at 750px.
+		// For CSV tables: compute from row count, capped to show at most 10 visible rows.
 		if (this._csvActive && this._csvRows.length > 0) {
+			const MAX_AUTO_ROWS = 10;
 			const tableEl = this.shadowRoot?.querySelector('kw-data-table') as { getVisibleRowCount?: () => number } | null;
 			const visibleRows = (tableEl && typeof tableEl.getVisibleRowCount === 'function')
 				? Math.max(0, tableEl.getVisibleRowCount())
@@ -799,9 +800,11 @@ export class KwUrlSection extends LitElement {
 			const rowSample = (tableShadow?.querySelector('#dt-body tbody tr td') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
 			const rowH = rowSample > 0 ? rowSample : 24;
 			const EXTRA_PAD = 16;
+			const TABLE_CHROME = 120;
+			const MAX_AUTO_H = TABLE_CHROME + (MAX_AUTO_ROWS * rowH);
 			const contentH = hbarH + headH + (visibleRows * rowH) + RESIZER_HEIGHT;
-			const baseH = Math.max(120, Math.min(750, Math.ceil(contentH)));
-			return Math.min(750, baseH + EXTRA_PAD);
+			const baseH = Math.max(120, Math.min(MAX_AUTO_H, Math.ceil(contentH)));
+			return Math.min(MAX_AUTO_H, baseH + EXTRA_PAD);
 		}
 
 		// For other content (images, text, html): measure actual content, cap at 3000px.

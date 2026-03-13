@@ -17,19 +17,18 @@ const _win = window as unknown as Record<string, any>;
 // - URL: URL input + expand/collapse content viewer; content fetched by extension host
 // - Transformation: Data manipulation section (derive, summarize, pivot, etc.)
 
-let markdownBoxes: any[] = [];
+// Sub-module box arrays are initialized on window in their respective files
+// (extraBoxes-markdown.ts, extraBoxes-chart.ts, extraBoxes-transformation.ts).
+// Read references from window so all modules share the same arrays.
+let markdownBoxes: any[] = (window as any).__kustoMarkdownBoxes || [];
+let chartBoxes: any[] = (window as any).__kustoChartBoxes || [];
+let transformationBoxes: any[] = (window as any).__kustoTransformationBoxes || [];
+
+// Python and URL boxes are managed in this file (not sub-modules).
 let pythonBoxes: any[] = [];
 let urlBoxes: any[] = [];
-let chartBoxes: any[] = [];
-let transformationBoxes: any[] = [];
-
-// Expose box arrays on window so modules in bundle scope can access them.
-try {
-	(window as any).__kustoMarkdownBoxes = markdownBoxes;
-	(window as any).__kustoPythonBoxes = pythonBoxes;
-	(window as any).__kustoUrlBoxes = urlBoxes;
-	(window as any).__kustoChartBoxes = chartBoxes;
-} catch { /* ignore */ }
+(window as any).__kustoPythonBoxes = pythonBoxes;
+(window as any).__kustoUrlBoxes = urlBoxes;
 
 // Expose markdownEditors on window so main.js can access it for tool handlers
 (window as any).__kustoMarkdownEditors = (window as any).__kustoMarkdownEditors || {};
@@ -835,6 +834,24 @@ function initPythonEditor( boxId: any) {
 			editor.onDidChangeModelContent(() => {
 				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 			});
+		} catch {
+			// ignore
+		}
+
+		// Ctrl+Enter / Ctrl+Shift+Enter runs the Python code (not the Kusto query).
+		// addCommand prevents the event from reaching the global Ctrl+Enter handler
+		// in main.ts which would otherwise execute the last-focused Kusto query.
+		try {
+			const runPython = () => {
+				try {
+					const el = document.getElementById(boxId) as any;
+					if (el && typeof el._run === 'function') {
+						el._run();
+					}
+				} catch { /* ignore */ }
+			};
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
 		} catch {
 			// ignore
 		}

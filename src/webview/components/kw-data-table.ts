@@ -18,6 +18,8 @@ export interface DataTableOptions {
 	showSave?: boolean;
 	/** Show visibility toggle — fires 'visibility-toggle' CustomEvent. */
 	showVisibilityToggle?: boolean;
+	/** Initial body visibility (default true). Set to false to start with results hidden. */
+	initialBodyVisible?: boolean;
 }
 export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
 interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
@@ -230,6 +232,8 @@ export class KwDataTable extends LitElement {
 	@state() private _filterDialogOpen = false;
 	@state() private _filterDialogColIndex: number | null = null;
 	@state() private _bodyVisible = true;
+
+	private _initialBodyVisibleApplied = false;
 	@state() private _colJumpOpen = false;
 	@state() private _colJumpQuery = '';
 	@state() private _rowJumpVisible = false;
@@ -330,6 +334,13 @@ export class KwDataTable extends LitElement {
 
 	private _initTable(): void {
 		if (!this.columns.length) { this._table = null; this._columnTypes = []; return; }
+		// Apply initial body visibility from options (once).
+		if (!this._initialBodyVisibleApplied && this.options.initialBodyVisible === false) {
+			this._bodyVisible = false;
+			this._initialBodyVisibleApplied = true;
+		} else {
+			this._initialBodyVisibleApplied = true;
+		}
 		this._columnWidths = this._computeColumnWidths();
 		this._columnTypes = inferColumnTypes(this.columns, this.rows);
 		const colTypes = this._columnTypes;
@@ -855,7 +866,7 @@ this.requestUpdate();
 			? `${totalRows} of ${this.rows.length} rows (filtered)`
 			: `${totalRows} row${totalRows !== 1 ? 's' : ''}`;
 		return html`<div class="hbar">
-			<span class="hinfo">${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn ${!this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>` : nothing}</span>
+			<span class="hinfo">${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchVisible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpVisible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>

@@ -129,6 +129,15 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 				} catch { /* ignore */ }
 
 				const next = Math.max(120, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX));
+
+				// Only grow — never shrink below the current wrapper height.
+				// This prevents a jarring collapse when the user types a short query
+				// (e.g. selects an autocomplete item on a fresh section with one line of content).
+				const currentH = wrapper.getBoundingClientRect ? Math.ceil(wrapper.getBoundingClientRect().height || 0) : 0;
+				if (next <= currentH) {
+					return;
+				}
+
 				wrapper.style.height = next + 'px';
 				try {
 					if (wrapper.dataset) {

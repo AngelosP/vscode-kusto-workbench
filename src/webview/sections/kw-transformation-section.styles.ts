@@ -246,7 +246,8 @@ export const styles = css`
 		}
 
 		.tf-controls-scroll {
-			overflow: visible;
+			overflow-x: auto;
+			overflow-y: visible;
 			padding-bottom: 16px;
 			scrollbar-width: thin;
 			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;

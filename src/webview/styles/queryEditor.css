@@ -148,6 +148,12 @@
 			margin-top: 0;
 		}
 
+		/* Markdown section wrapper (non-.md file): add top margin to WYSIWYG/Markdown content. */
+		kw-markdown-section:not([plain-md]) .kusto-markdown-editor .toastui-editor-ww-container,
+		kw-markdown-section:not([plain-md]) .kusto-markdown-editor .toastui-editor-md-container {
+			margin-top: 10px;
+		}
+
 		.add-controls {
 			width: 100%;
 			display: flex;

@@ -21,6 +21,7 @@ import './components/kw-object-viewer.js';
 import './components/kw-filter-dialog.js';
 import './components/kw-sort-dialog.js';
 import './components/kw-data-table.js';
+import './components/kw-section-reorder-popup.js';
 import './viewers/cached-values/kw-cached-values.js';
 import './viewers/connection-manager/kw-connection-manager.js';
 import './sections/kw-python-section.js';

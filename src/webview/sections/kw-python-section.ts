@@ -8,8 +8,10 @@ import { customElement, property, state } from 'lit/decorators.js';
 export interface PythonSectionData {
 	id: string;
 	type: 'python';
+	name: string;
 	code: string;
 	output: string;
+	expanded: boolean;
 	editorHeightPx?: number;
 }
 
@@ -57,6 +59,8 @@ export class KwPythonSection extends LitElement {
 
 	// ── Internal state ────────────────────────────────────────────────────────
 
+	@state() private _title = '';
+	@state() private _expanded = true;
 	@state() private _output = '';
 	@state() private _running = false;
 
@@ -99,38 +103,77 @@ export class KwPythonSection extends LitElement {
 		return html`
 			<div class="section-root">
 			<div class="section-header-row">
-				<button type="button" class="section-drag-handle" draggable="true"
-					title="Drag to reorder" aria-label="Reorder section"
-					@dragstart=${this._onDragStart}>
-					<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-				</button>
-				<div class="section-title">Python</div>
+				<div class="query-name-group">
+					<button type="button" class="section-drag-handle" draggable="true"
+						title="Drag to reorder" aria-label="Reorder section"
+						@dragstart=${this._onDragStart}>
+						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
+					</button>
+					<input type="text" class="query-name"
+						placeholder="Python Name (optional)"
+						.value=${this._title}
+						@input=${this._onTitleInput} />
+				</div>
 				<div class="section-actions">
-					<div class="md-tabs" role="tablist" aria-label="Python controls">
-						<button class="unified-btn-secondary md-tab md-max-btn"
-							type="button" @click=${this._fitToContents}
+					<div class="header-tabs" role="tablist" aria-label="Python controls">
+						<button class="header-tab run-btn" type="button"
+							@click=${this._run} title="Run Python (Ctrl+Enter)"
+							aria-label="Run Python"
+							?disabled=${this._running}>
+							${KwPythonSection._runIcon}
+							<span class="run-label">Run</span>
+						</button>
+						<button class="header-tab" type="button"
+							@click=${this._fitToContents}
 							title="Fit to contents" aria-label="Fit to contents">
 							${KwPythonSection._maximizeIcon}
 						</button>
+						<button class="header-tab ${this._expanded ? 'is-active' : ''}" type="button"
+							role="tab" aria-selected="${this._expanded ? 'true' : 'false'}"
+							title="${this._expanded ? 'Hide' : 'Show'}"
+							aria-label="${this._expanded ? 'Hide' : 'Show'}"
+							@click=${this._toggleVisibility}>
+							${KwPythonSection._previewIcon}
+						</button>
 					</div>
-					<button class="section-btn" type="button"
-						@click=${this._run} title="Run Python"
-						?disabled=${this._running}>▶ Run</button>
-					<button class="unified-btn-secondary unified-btn-icon-only section-btn"
-						type="button" @click=${this._requestRemove}
-						title="Remove" aria-label="Remove">
+					<button class="close-btn" type="button"
+						title="Remove" aria-label="Remove"
+						@click=${this._requestRemove}>
 						${KwPythonSection._closeIcon}
 					</button>
 				</div>
 			</div>
 			<div class="editor-wrapper" id="editor-wrapper">
+				<div class="python-toolbar">
+					<button class="py-toolbar-btn" type="button" title="Comment/Uncomment (Ctrl+/)"
+						aria-label="Toggle comment" @click=${this._toggleComment}>
+						<span class="qe-icon">${KwPythonSection._commentIcon}</span>
+					</button>
+					<button class="py-toolbar-btn" type="button" title="Indent (Tab)"
+						aria-label="Indent" @click=${this._indent}>
+						<span class="qe-icon">${KwPythonSection._indentIcon}</span>
+					</button>
+					<button class="py-toolbar-btn" type="button" title="Outdent (Shift+Tab)"
+						aria-label="Outdent" @click=${this._outdent}>
+						<span class="qe-icon">${KwPythonSection._outdentIcon}</span>
+					</button>
+					<span class="py-toolbar-sep" aria-hidden="true"></span>
+					<button class="py-toolbar-btn" type="button" title="Undo (Ctrl+Z)"
+						aria-label="Undo" @click=${this._undo}>
+						<span class="qe-icon">${KwPythonSection._undoIcon}</span>
+					</button>
+					<button class="py-toolbar-btn" type="button" title="Redo (Ctrl+Y)"
+						aria-label="Redo" @click=${this._redo}>
+						<span class="qe-icon">${KwPythonSection._redoIcon}</span>
+					</button>
+				</div>
 				<slot name="editor"></slot>
 				<div class="resizer"
 					title="Drag to resize editor\nDouble-click to fit to contents"
 					@mousedown=${this._onResizerMouseDown}
 					@dblclick=${this._fitToContents}></div>
 			</div>
-			<div class="python-output" aria-label="Python output">${this._output}</div>
+			${this._output ? html`<div class="python-output" aria-label="Python output">${this._output}</div>` : ''}
 			</div>
 		`;
 	}
@@ -148,6 +191,57 @@ export class KwPythonSection extends LitElement {
 			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
 			<path d="M3 6V3h3"/><path d="M13 10v3h-3"/>
 			<path d="M3 3l4 4"/><path d="M13 13l-4-4"/>
+		</svg>`;
+
+	private static _previewIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
+			<circle cx="8" cy="8" r="2.1" />
+		</svg>`;
+
+	private static _runIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M4.5 2.5v11l9-5.5z"/>
+		</svg>`;
+
+	/* Comment toggle icon */
+	private static _commentIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+			<path d="M2 4h3l-3 4h3l-3 4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+			<path d="M9 4h5M9 8h4M9 12h3" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+		</svg>`;
+
+	/* Indent icon */
+	private static _indentIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M7 4h7M7 8h7M7 12h7"/>
+			<path d="M2 5l3 3-3 3"/>
+		</svg>`;
+
+	/* Outdent icon */
+	private static _outdentIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M7 4h7M7 8h7M7 12h7"/>
+			<path d="M5 5l-3 3 3 3"/>
+		</svg>`;
+
+	/* Undo icon */
+	private static _undoIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M3 6h7a3 3 0 0 1 0 6H9"/>
+			<path d="M5.5 3.5L3 6l2.5 2.5"/>
+		</svg>`;
+
+	/* Redo icon */
+	private static _redoIcon = html`
+		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+			<path d="M13 6H6a3 3 0 0 0 0 6h1"/>
+			<path d="M10.5 3.5L13 6l-2.5 2.5"/>
 		</svg>`;
 
 	// ── Monaco Editor ─────────────────────────────────────────────────────────
@@ -335,6 +429,47 @@ export class KwPythonSection extends LitElement {
 		}));
 	}
 
+	private _onTitleInput(e: Event): void {
+		this._title = (e.target as HTMLInputElement).value;
+		this._schedulePersist();
+	}
+
+	private _toggleVisibility(): void {
+		this._expanded = !this._expanded;
+		this.classList.toggle('is-collapsed', !this._expanded);
+		if (this._expanded) {
+			setTimeout(() => { try { this._editor?.layout(); } catch { /* ignore */ } }, 0);
+		}
+		this._schedulePersist();
+	}
+
+	// ── Toolbar actions ──────────────────────────────────────────────────────
+
+	private _toggleComment(): void {
+		if (!this._editor) return;
+		try { (this._editor as any).getAction?.('editor.action.commentLine')?.run?.(); } catch { /* ignore */ }
+	}
+
+	private _indent(): void {
+		if (!this._editor) return;
+		try { (this._editor as any).getAction?.('editor.action.indentLines')?.run?.(); } catch { /* ignore */ }
+	}
+
+	private _outdent(): void {
+		if (!this._editor) return;
+		try { (this._editor as any).getAction?.('editor.action.outdentLines')?.run?.(); } catch { /* ignore */ }
+	}
+
+	private _undo(): void {
+		if (!this._editor) return;
+		try { (this._editor as any).trigger?.('toolbar', 'undo', null); } catch { /* ignore */ }
+	}
+
+	private _redo(): void {
+		if (!this._editor) return;
+		try { (this._editor as any).trigger?.('toolbar', 'redo', null); } catch { /* ignore */ }
+	}
+
 	// ── Fit to contents ───────────────────────────────────────────────────────
 
 	private _fitToContents(): void {
@@ -491,8 +626,10 @@ export class KwPythonSection extends LitElement {
 		const data: PythonSectionData = {
 			id: this.boxId,
 			type: 'python',
+			name: this._title,
 			code,
 			output: this._output,
+			expanded: this._expanded,
 		};
 
 		const heightPx = this._getWrapperHeightPx();
@@ -540,6 +677,15 @@ export class KwPythonSection extends LitElement {
 		if (this._editor) {
 			this._editor.setValue(code);
 		}
+	}
+
+	public setTitle(title: string): void {
+		this._title = title;
+	}
+
+	public setExpanded(expanded: boolean): void {
+		this._expanded = expanded;
+		this.classList.toggle('is-collapsed', !expanded);
 	}
 }
 

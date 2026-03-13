@@ -135,7 +135,7 @@ export class KwMarkdownSection extends LitElement {
 							<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
 						</button>
 						<input type="text" class="query-name"
-							placeholder="Section Name (optional)"
+							placeholder="Markdown Name (optional)"
 							.value=${this._title}
 							@input=${this._onTitleInput} />
 					</div>

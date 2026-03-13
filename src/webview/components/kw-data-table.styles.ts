@@ -8,11 +8,14 @@ export const styles = css`
 
 		/* Header bar */
 		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
-		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.et{opacity:.7}
+		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:-4px}.et{opacity:.7}
 		.tb{display:flex;gap:2px;align-items:center;flex-shrink:0}
 		.sep{width:1px;height:14px;background:var(--vscode-panel-border);margin:0 3px}
 		.tbtn{display:inline-flex;align-items:center;gap:4px;padding:3px 5px;font-size:11px;border:none;background:transparent;color:var(--vscode-descriptionForeground);border-radius:2px;cursor:pointer;font-family:inherit}
 		.tbtn:hover{background:var(--vscode-toolbar-hoverBackground);color:var(--vscode-foreground)}.tbtn.act{color:var(--vscode-foreground);background:var(--vscode-toolbar-activeBackground,var(--vscode-toolbar-hoverBackground))}.tbtn svg{stroke:currentColor;fill:none}
+		.tbtn.vis-toggle{width:28px;height:28px;padding:0;justify-content:center;border-radius:4px}
+		.hidden-hint{font-size:11px;color:var(--vscode-disabledForeground,var(--vscode-descriptionForeground));font-style:italic;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:999}
+		.hidden-hint:hover{color:var(--vscode-foreground);text-decoration:underline}
 
 		/* Search bar */
 		.sbar{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:12px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-editor-background);flex-shrink:0}

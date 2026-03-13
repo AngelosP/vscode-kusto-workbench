@@ -745,9 +745,19 @@ export class KwQuerySection extends LitElement {
 		const target = normalizeClusterUrlKey(fav.clusterUrl);
 		const conn = this._connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
 		if (conn) {
+			const prevConnectionId = this._connectionId;
 			this._connectionId = conn.id;
 			this._desiredClusterUrl = conn.clusterUrl;
 			this._desiredDatabase = fav.database;
+			// Clear current database and list so schema/autocomplete reloads.
+			this._database = '';
+			this._databases = [];
+			// Dispatch connection-changed so schema gets cleared and databases reload.
+			this.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: { boxId: this.boxId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
+				bubbles: true, composed: true,
+			}));
+			// Also dispatch favorite-selected for any listeners that need the database hint.
 			this.dispatchEvent(new CustomEvent('favorite-selected', {
 				detail: { boxId: this.boxId, connectionId: conn.id, clusterUrl: conn.clusterUrl, database: fav.database },
 				bubbles: true, composed: true,
@@ -981,11 +991,15 @@ export class KwQuerySection extends LitElement {
 	}
 
 	private _getCurrentFavorite(): KustoFavorite | null {
-		if (!this._connectionId || !this._database) return null;
+		if (!this._connectionId) return null;
+		// Use _database if set, otherwise fall back to _desiredDatabase (which is set
+		// immediately on favorite selection, before the async DB list response arrives).
+		const db = this._database || this._desiredDatabase;
+		if (!db) return null;
 		const clusterUrl = this.getClusterUrl();
 		if (!clusterUrl) return null;
 		const target = normalizeClusterUrlKey(clusterUrl);
-		const dbLower = this._database.toLowerCase();
+		const dbLower = db.toLowerCase();
 		return this._favorites.find(f =>
 			normalizeClusterUrlKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
 		) || null;
@@ -1027,8 +1041,13 @@ export class KwQuerySection extends LitElement {
 		}
 
 		const dt = document.createElement('kw-data-table') as any;
-		dt.columns = columns;
-		dt.rows = rows;
+		// Check persisted visibility state.
+		let initialBodyVisible = true;
+		try {
+			const m = (window as any).__kustoResultsVisibleByBoxId;
+			if (m && m[this.boxId] === false) initialBodyVisible = false;
+		} catch { /* ignore */ }
+		// Set options BEFORE columns/rows so _initTable sees initialBodyVisible.
 		dt.options = {
 			label: options?.label || 'Results',
 			showExecutionTime: options?.showExecutionTime !== false,
@@ -1036,7 +1055,10 @@ export class KwQuerySection extends LitElement {
 			showSave: true,
 			showVisibilityToggle: true,
 			hideTopBorder: true,
+			initialBodyVisible,
 		} as DataTableOptions;
+		dt.columns = columns;
+		dt.rows = rows;
 
 		dt.addEventListener('save', (e: CustomEvent) => {
 			try {
@@ -1053,12 +1075,22 @@ export class KwQuerySection extends LitElement {
 		// .table-container and _results_body which don't exist with <kw-data-table>.
 		dt.addEventListener('visibility-toggle', (e: CustomEvent) => {
 			const visible = e.detail?.visible ?? true;
+			// Update the global map so serialize() picks up the correct value.
+			try {
+				if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
+					(window as any).__kustoResultsVisibleByBoxId = {};
+				}
+				(window as any).__kustoResultsVisibleByBoxId[this.boxId] = !!visible;
+			} catch { /* ignore */ }
 			if (resultsWrapper) {
 				if (!visible) {
 					// Shrink: remember current height, collapse to header-only height.
 					const curH = resultsWrapper.style.height;
-					if (curH && curH !== 'auto') {
+					if (curH && curH !== 'auto' && curH !== '40px') {
 						resultsWrapper.dataset.kustoPreviousHeight = curH;
+						// Mark as user-resized so the height is persisted to the .kqlx file
+						// and correctly restored when the file is reopened.
+						resultsWrapper.dataset.kustoUserResized = 'true';
 					}
 					// Collapse to just enough for the kw-data-table header bar.
 					resultsWrapper.style.height = '40px';
@@ -1081,17 +1113,25 @@ export class KwQuerySection extends LitElement {
 		// Ensure the results wrapper has proper layout for kw-data-table.
 		if (resultsWrapper) {
 			resultsWrapper.style.display = 'flex';
-			if (!resultsWrapper.dataset.kustoUserResized) {
-				// Auto-fit: estimate height from row count, capped at 750px.
-				// Row height is 27px (non-compact), header bar ~36px, thead ~28px, resizer ~12px.
+			if (!initialBodyVisible) {
+				// Start collapsed — just enough for the kw-data-table header bar.
+				resultsWrapper.style.height = '40px';
+				resultsWrapper.style.overflow = 'hidden';
+				if (resizer) resizer.style.display = 'none';
+			} else if (!resultsWrapper.dataset.kustoUserResized) {
+				// Auto-fit: estimate height from row count, capped to show at most 10 visible rows.
+				// Row height is 27px (non-compact). Chrome includes header bar, thead, resizer,
+				// border/padding, and extra headroom for scrollbar/sub-pixel rounding.
 				const ROW_H = 27;
-				const CHROME = 36 + 28 + 12 + 10; // hbar + thead + resizer + border/padding
+				const CHROME = 120;
+				const MAX_AUTO_ROWS = 10;
+				const MAX_AUTO_H = CHROME + (MAX_AUTO_ROWS * ROW_H);
 				const estimatedH = CHROME + (rows.length * ROW_H);
-				resultsWrapper.style.height = Math.max(120, Math.min(750, estimatedH)) + 'px';
+				resultsWrapper.style.height = Math.max(120, Math.min(MAX_AUTO_H, estimatedH)) + 'px';
 			}
 		}
-		// Show the resize grip
-		if (resizer) resizer.style.display = '';
+		// Show the resize grip (unless results are hidden).
+		if (resizer && initialBodyVisible) resizer.style.display = '';
 		// kw-data-table fills available space
 		dt.style.display = 'flex';
 		dt.style.flexDirection = 'column';
@@ -1100,9 +1140,15 @@ export class KwQuerySection extends LitElement {
 		dt.style.height = '100%';
 
 		// After the data-table renders, refine the height with actual measurements.
+		// Cap to ~10 visible rows (same constant as the initial estimate above).
+		const REFINE_ROW_H = 27;
+		const REFINE_MAX_ROWS = 10;
+		const REFINE_CHROME = 120;
+		const REFINE_MAX_H = REFINE_CHROME + (REFINE_MAX_ROWS * REFINE_ROW_H);
 		requestAnimationFrame(() => {
 			requestAnimationFrame(() => {
 				if (!resultsWrapper || !dt || typeof dt.getContentHeight !== 'function') return;
+				if (!initialBodyVisible) return;
 				if (resultsWrapper.dataset.kustoUserResized) return;
 				const contentH = dt.getContentHeight();
 				if (contentH > 0) {
@@ -1110,7 +1156,7 @@ export class KwQuerySection extends LitElement {
 					const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
 					const wrapperBorder = 1; // border-top on .results-wrapper
 					const desiredH = contentH + resizerH + wrapperBorder;
-					resultsWrapper.style.height = Math.max(120, Math.min(750, desiredH)) + 'px';
+					resultsWrapper.style.height = Math.max(120, Math.min(REFINE_MAX_H, desiredH)) + 'px';
 				}
 			});
 		});
@@ -1213,6 +1259,10 @@ export class KwQuerySection extends LitElement {
 			if (!wrapper) return undefined;
 			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') return undefined;
 			let inlineH = wrapper.style.height?.trim();
+			// When results are hidden the wrapper is collapsed to 40px;
+			// return the remembered pre-collapse height instead.
+			const prevToggle = wrapper.dataset.kustoPreviousHeight?.trim();
+			if (prevToggle && inlineH === '40px') inlineH = prevToggle;
 			if (!inlineH || inlineH === 'auto') {
 				const prev = wrapper.dataset.kustoPrevHeight?.trim();
 				if (prev) inlineH = prev;

@@ -14,9 +14,19 @@ export const styles = css`
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 		}
 
+		:host(.is-collapsed) .editor-wrapper {
+			display: none !important;
+		}
+		:host(.is-collapsed) .python-output {
+			display: none !important;
+		}
+		:host(.is-collapsed) {
+			padding-bottom: 2px;
+		}
+
 		.section-root {
 			padding: 12px;
-			padding-bottom: 0;
+			padding-bottom: 5px;
 		}
 
 		.section-header-row {
@@ -25,6 +35,14 @@ export const styles = css`
 			align-items: center;
 			justify-content: space-between;
 			margin-bottom: 8px;
+		}
+
+		.query-name-group {
+			display: inline-flex;
+			align-items: center;
+			gap: 0;
+			min-width: 0;
+			flex: 1 1 auto;
 		}
 
 		.section-drag-handle {
@@ -59,19 +77,36 @@ export const styles = css`
 			letter-spacing: -1px;
 		}
 
-		.section-title {
+		.query-name {
 			font-size: 12px;
 			color: var(--vscode-foreground);
-			font-weight: 600;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 2px 6px;
+			outline: none;
+			min-width: 0;
+			flex: 1 1 auto;
+			font-family: inherit;
+		}
+		.query-name::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+		.query-name:hover {
+			border-color: var(--vscode-input-border);
+		}
+		.query-name:focus {
+			border-color: var(--vscode-focusBorder);
 		}
 
 		.section-actions {
 			display: inline-flex;
-			gap: 8px;
+			gap: 2px;
 			align-items: center;
+			flex: 0 0 auto;
 		}
 
-		.md-tabs {
+		.header-tabs {
 			display: inline-flex;
 			gap: 2px;
 			align-items: center;
@@ -79,50 +114,10 @@ export const styles = css`
 			border-radius: 0;
 			overflow: visible;
 			margin: 0;
-		}
-
-		.section-btn {
 			background: transparent;
-			border: 1px solid var(--vscode-input-border);
-			color: var(--vscode-foreground);
-			cursor: pointer;
-			padding: 4px 8px;
-			font-size: 12px;
-			border-radius: 4px;
-		}
-		.section-btn:hover {
-			background: var(--vscode-list-hoverBackground);
 		}
 
-		.unified-btn-secondary {
-			background: transparent;
-			color: var(--vscode-foreground);
-			border: 1px solid transparent;
-			border-radius: 4px;
-			padding: 4px 8px;
-			font-size: 12px;
-			cursor: pointer;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			gap: 4px;
-			white-space: nowrap;
-			line-height: 1.4;
-		}
-		.unified-btn-secondary:hover:not(:disabled) {
-			background: var(--vscode-list-hoverBackground);
-		}
-		.unified-btn-icon-only {
-			width: 28px;
-			height: 28px;
-			min-width: 28px;
-			padding: 0;
-		}
-		.unified-btn-icon-only svg {
-			display: block;
-		}
-
-		.md-tab {
+		.header-tab {
 			background: transparent;
 			border: 1px solid transparent;
 			color: var(--vscode-foreground);
@@ -136,14 +131,121 @@ export const styles = css`
 			justify-content: center;
 			line-height: 0;
 		}
-		.md-tab svg {
+		.header-tab svg {
 			display: block;
 		}
-		.md-tab:hover {
+		.header-tab:hover {
 			background: var(--vscode-list-hoverBackground);
 		}
-		.md-tab.md-max-btn {
-			margin-right: 6px;
+		.header-tab.is-active {
+			background: var(--vscode-list-hoverBackground);
+			border-color: var(--vscode-input-border);
+		}
+
+		.header-tab.run-btn {
+			width: auto;
+			padding: 0 10px;
+			gap: 4px;
+			font-size: 12px;
+			line-height: 1;
+			height: 28px;
+		}
+		.header-tab.run-btn svg {
+			width: 12px;
+			height: 12px;
+		}
+		.run-label {
+			display: inline;
+		}
+		.header-tab.run-btn:disabled {
+			opacity: 0.5;
+			cursor: default;
+		}
+
+		.close-btn {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			border-radius: 4px;
+			cursor: pointer;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+		.close-btn svg {
+			display: block;
+		}
+		.close-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		/* ── Python toolbar (inside editor wrapper, above Monaco) ────── */
+
+		.python-toolbar {
+			display: flex;
+			align-items: center;
+			flex-wrap: nowrap;
+			gap: 4px;
+			padding: 0 6px;
+			height: 35px;
+			min-height: 35px;
+			border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+			background: transparent;
+			color: var(--vscode-foreground);
+			flex: 0 0 auto;
+			border-top-left-radius: 2px;
+			border-top-right-radius: 2px;
+			overflow: visible;
+			position: relative;
+		}
+
+		.py-toolbar-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 6px;
+			height: 28px;
+			min-width: 28px;
+		}
+		.py-toolbar-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+		.py-toolbar-btn .qe-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 16px;
+			height: 16px;
+		}
+		.py-toolbar-btn svg {
+			display: block;
+		}
+
+		.py-toolbar-sep {
+			width: auto;
+			height: auto;
+			background: transparent;
+			margin: 0 2px;
+			opacity: 0.9;
+			color: var(--vscode-descriptionForeground);
+			user-select: none;
+		}
+		.py-toolbar-sep::before {
+			content: '|';
+			display: inline-block;
+			line-height: 18px;
+			padding: 0 2px;
 		}
 
 		/* Editor wrapper — slotted content (Monaco) lives in light DOM */
@@ -152,7 +254,7 @@ export const styles = css`
 			width: 100%;
 			min-height: 120px;
 			height: 325px;
-			margin: 8px 0;
+			margin: 0 0 0 0;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
 			border-radius: 2px;
 			background: var(--vscode-editor-background);
@@ -209,6 +311,7 @@ export const styles = css`
 			border-radius: 4px;
 			background: var(--vscode-editor-background);
 			padding: 10px;
+			margin-top: 8px;
 			font-family: var(--vscode-editor-font-family);
 			font-size: 12px;
 			white-space: pre-wrap;

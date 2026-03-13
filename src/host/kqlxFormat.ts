@@ -70,8 +70,10 @@ export type KqlxSectionV1 =
 	| {
 			id?: string;
 			type: 'python';
+			name?: string;
 			code?: string;
 			output?: string;
+			expanded?: boolean;
 			editorHeightPx?: number;
 		}
 	| {

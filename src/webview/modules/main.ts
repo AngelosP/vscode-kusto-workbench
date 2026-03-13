@@ -682,8 +682,24 @@ document.addEventListener('keydown', (event: any) => {
 		return;
 	}
 
-	// Check if focus is on the Copilot Chat input textarea
-	const activeEl = document.activeElement;
+	// Don't execute if focus is inside a non-query section (Python, URL, markdown, etc.).
+	const activeEl = document.activeElement as HTMLElement | null;
+	try {
+		if (activeEl && activeEl.closest) {
+			if (activeEl.closest('kw-python-section, kw-url-section, kw-markdown-section, kw-chart-section, kw-transformation-section')) {
+				return;
+			}
+		}
+	} catch { /* ignore */ }
+	// Also check event.target in case activeElement doesn't reflect the right element.
+	try {
+		const target = (event.target as HTMLElement);
+		if (target && target.closest) {
+			if (target.closest('kw-python-section, kw-url-section, kw-markdown-section, kw-chart-section, kw-transformation-section')) {
+				return;
+			}
+		}
+	} catch { /* ignore */ }
 	if (activeEl && activeEl.id === _win.activeQueryEditorBoxId + '_copilot_input') {
 		event.preventDefault();
 		event.stopPropagation();
@@ -3127,6 +3143,79 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			}
 		};
 
+		// ── Reorder Popup: intercept drag-handle mousedown to open the minimap popup ──
+		// A mousedown + small mousemove on any .section-drag-handle triggers the popup
+		// instead of the native HTML5 drag. Works across shadow DOM boundaries.
+		(function installReorderPopupTrigger() {
+			let pending = false;
+			let startX = 0;
+			let startY = 0;
+			let targetSectionId = '';
+			const MOVE_THRESHOLD = 3; // px — avoid opening on accidental clicks
+
+			const findSectionFromHandle = (handle: HTMLElement): HTMLElement | null => {
+				// Walk from the handle's shadow host up to find a direct child of container
+				try {
+					let el: any = (handle.getRootNode?.() as any)?.host;
+					while (el) {
+						if (el.parentElement === container && el.id) return el;
+						el = el.parentElement;
+					}
+				} catch { /* ignore */ }
+				return null;
+			};
+
+			const onMouseMove = (e: MouseEvent) => {
+				if (!pending) return;
+				const dx = e.clientX - startX;
+				const dy = e.clientY - startY;
+				if (Math.abs(dx) + Math.abs(dy) < MOVE_THRESHOLD) return;
+				// Threshold met — open the popup
+				cleanup();
+				try {
+					const popup = document.getElementById('sectionReorderPopup') as any;
+					if (popup && typeof popup.open === 'function' && !popup.isOpen) {
+						popup.open(targetSectionId);
+					}
+				} catch { /* ignore */ }
+			};
+
+			const onMouseUp = () => {
+				cleanup();
+			};
+
+			const cleanup = () => {
+				pending = false;
+				targetSectionId = '';
+				document.removeEventListener('mousemove', onMouseMove, true);
+				document.removeEventListener('mouseup', onMouseUp, true);
+			};
+
+			document.addEventListener('mousedown', (e: MouseEvent) => {
+				if (pending) return;
+				// Check compatibility mode
+				try { if ((window as any).__kustoCompatibilityMode) return; } catch { /* ignore */ }
+				// Find handle across shadow DOM
+				const path = e.composedPath?.() ?? [];
+				let handle: HTMLElement | null = null;
+				for (const el of path) {
+					if ((el as HTMLElement).classList?.contains('section-drag-handle')) {
+						handle = el as HTMLElement;
+						break;
+					}
+				}
+				if (!handle) return;
+				const section = findSectionFromHandle(handle);
+				if (!section) return;
+				pending = true;
+				startX = e.clientX;
+				startY = e.clientY;
+				targetSectionId = section.id;
+				document.addEventListener('mousemove', onMouseMove, true);
+				document.addEventListener('mouseup', onMouseUp, true);
+			}, true);
+		})();
+
 		container.addEventListener('dragstart', (e: any) => {
 			ensureGlobalDnDGuards();
 			try {
@@ -3157,23 +3246,48 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			if (!handle) {
 				return;
 			}
-			// Find the query-box host: walk composedPath for shadow DOM, fallback to closest.
+
+			// Find the section host: walk composedPath for any direct child of the container.
 			let box: any = null;
 			try {
 				const path = e.composedPath ? e.composedPath() : [];
 				for (const el of path) {
-					if (el && el.classList && el.classList.contains('query-box')) {
+					if (el && el.parentElement === container && el.id) {
 						box = el;
 						break;
 					}
 				}
 			} catch { /* ignore */ }
+			// Fallback: walk from the handle's host element
 			if (!box) {
-				box = handle.closest ? handle.closest('.query-box') : null;
+				try {
+					let el = handle.getRootNode?.()?.host;
+					while (el) {
+						if (el.parentElement === container && el.id) {
+							box = el;
+							break;
+						}
+						el = el.parentElement;
+					}
+				} catch { /* ignore */ }
 			}
 			if (!box || !box.id) {
 				return;
 			}
+
+			// Open the reorder popup instead of doing an inline drag.
+			try { e.preventDefault(); } catch { /* ignore */ }
+			try {
+				const popup = document.getElementById('sectionReorderPopup') as any;
+				if (popup && typeof popup.open === 'function') {
+					if (!popup.isOpen) {
+						popup.open(String(box.id));
+					}
+					return;
+				}
+			} catch { /* ignore */ }
+
+			// Fallback to legacy inline drag if popup is unavailable.
 			draggingId = String(box.id);
 			draggingDidDrop = false;
 			try {

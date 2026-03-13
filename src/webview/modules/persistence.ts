@@ -426,6 +426,14 @@ function __kustoGetQueryResultsOutputHeightPx(boxId: any) {
 			return undefined;
 		}
 		let inlineHeight = (wrapper.style && typeof wrapper.style.height === 'string') ? wrapper.style.height.trim() : '';
+		// When results are hidden the wrapper is collapsed to 40px;
+		// return the remembered pre-collapse height instead.
+		try {
+			const prevToggle = (wrapper.dataset && wrapper.dataset.kustoPreviousHeight) ? String(wrapper.dataset.kustoPreviousHeight).trim() : '';
+			if (prevToggle && inlineHeight === '40px') {
+				inlineHeight = prevToggle;
+			}
+		} catch { /* ignore */ }
 		// If results were temporarily collapsed to auto, keep the user's last explicit height.
 		if (!inlineHeight || inlineHeight === 'auto') {
 			try {
@@ -455,6 +463,18 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 		if (!Number.isFinite(h) || h <= 0) return;
 		// Query results resizer bounds use ~900px max; keep persisted restore within that.
 		const clamped = Math.max(120, Math.min(900, Math.round(h)));
+		// If results are currently hidden, don't override the collapsed height.
+		// Store the persisted height so toggling results back on restores it.
+		let resultsHidden = false;
+		try {
+			const m = (_win.__kustoResultsVisibleByBoxId as any);
+			resultsHidden = !!(m && m[boxId] === false);
+		} catch { /* ignore */ }
+		if (resultsHidden) {
+			try { wrapper.dataset.kustoPreviousHeight = clamped + 'px'; } catch { /* ignore */ }
+			try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			return;
+		}
 		wrapper.style.height = clamped + 'px';
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
 		// If this section currently has short non-table content (errors, etc.), clamp on next tick.
@@ -1145,6 +1165,16 @@ function applyKqlxState(state: any) {
 				try {
 					(_win.__kustoPendingQueryTextByBoxId as any)[boxId] = String(section.query || '');
 				} catch { /* ignore */ }
+				// Restore per-query results visibility BEFORE displaying results,
+				// so displayResult sees the hidden state when creating kw-data-table.
+				try {
+					if (typeof section.resultsVisible === 'boolean') {
+						if (!((_win.__kustoResultsVisibleByBoxId as any)) || typeof (_win.__kustoResultsVisibleByBoxId) !== 'object') {
+							(_win as any).__kustoResultsVisibleByBoxId = {};
+						}
+						(_win.__kustoResultsVisibleByBoxId as any)[boxId] = !!section.resultsVisible;
+					}
+				} catch { /* ignore */ }
 				// Restore last result (if present + parseable).
 				try {
 					const rj = section.resultJson ? String(section.resultJson) : '';
@@ -1184,13 +1214,9 @@ function applyKqlxState(state: any) {
 					if (cu) (cu as any).value = String(section.cacheUnit || 'days');
 					try { (_win.toggleCacheControls as any)(boxId); } catch { /* ignore */ }
 				} catch { /* ignore */ }
-				// Restore per-query results visibility (show/hide results toggle).
+				// Apply results visibility UI (toggle button + legacy results wrapper).
 				try {
 					if (typeof section.resultsVisible === 'boolean') {
-						if (!(_win.__kustoResultsVisibleByBoxId as any) || typeof (_win.__kusto__kustoResultsVisibleByBoxId) !== 'object') {
-							(_win as any).__kustoResultsVisibleByBoxId = {};
-						}
-						(_win.__kustoResultsVisibleByBoxId as any)[boxId] = !!section.resultsVisible;
 						try { (_win.__kustoUpdateQueryResultsToggleButton as any) && (_win.__kustoUpdateQueryResultsToggleButton as any)(boxId); } catch { /* ignore */ }
 						try { (_win.__kustoApplyResultsVisibility as any) && (_win.__kustoApplyResultsVisibility as any)(boxId); } catch { /* ignore */ }
 					}
@@ -1366,11 +1392,17 @@ function applyKqlxState(state: any) {
 					(_win.__kustoPendingPythonCodeByBoxId as any)[pendingId] = String(section.code || '');
 				} catch { /* ignore */ }
 				const boxId = (_win.addPythonBox as any)({ id: pendingId });
-				// Set output and height on the Lit element.
+				// Set output, name, expanded, and height on the Lit element.
 				try {
 					const el = document.getElementById(boxId);
 					if (el && typeof (el as any).setOutput === 'function') {
 						(el as any).setOutput(String(section.output || ''));
+					}
+					if (el && typeof (el as any).setTitle === 'function' && section.name) {
+						(el as any).setTitle(String(section.name));
+					}
+					if (el && typeof (el as any).setExpanded === 'function' && typeof section.expanded === 'boolean') {
+						(el as any).setExpanded(section.expanded);
 					}
 					if (el && section.editorHeightPx) {
 						el.setAttribute('editor-height-px', String(section.editorHeightPx));
