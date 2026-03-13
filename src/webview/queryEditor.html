@@ -127,21 +127,8 @@
 		</div>
 	</div>
 
-	<!-- Diff View Modal -->
-	<div id="diffViewModal" class="diff-view-modal">
-		<div class="diff-view-content" onclick="event.stopPropagation()">
-			<div class="diff-view-header">
-				<h3 id="diffViewTitle">Diff</h3>
-				<button id="diffViewCloseBtn" class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn diff-view-close" type="button" onclick="closeDiffView()" title="Close" aria-label="Close">
-					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-						<path d="M4 4l8 8" />
-						<path d="M12 4L4 12" />
-					</svg>
-				</button>
-			</div>
-			<div class="diff-view-body" id="diffViewBody"></div>
-		</div>
-	</div>
+	<!-- Diff View (Lit component) -->
+	<kw-diff-view></kw-diff-view>
 
 	<!-- Share Modal -->
 	<div id="shareModal" class="share-modal" onclick="__kustoCloseShareModal(event)">

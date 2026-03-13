@@ -182,6 +182,10 @@ function __kustoRowKeyForComparison( row: any) {
 
 function __kustoNormalizeColumnNameForComparison( name: any) {
 	try {
+		// Columns can be plain strings or {name, type} objects (Kusto column metadata).
+		if (name && typeof name === 'object' && 'name' in name) {
+			return String(name.name == null ? '' : name.name).trim().toLowerCase();
+		}
 		return String(name == null ? '' : name).trim().toLowerCase();
 	} catch {
 		return '';

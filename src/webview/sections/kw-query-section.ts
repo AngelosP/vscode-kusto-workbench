@@ -881,6 +881,7 @@ export class KwQuerySection extends LitElement {
 			if (conn) this._desiredClusterUrl = conn.clusterUrl;
 		}
 
+
 		// If connection changed, fire event so databases get loaded
 		if (prev !== resolvedId && resolvedId) {
 			this.dispatchEvent(new CustomEvent('connection-changed', {
@@ -895,24 +896,43 @@ export class KwQuerySection extends LitElement {
 		this._databases = databases;
 		this._databasesLoading = false;
 
-		const desired = desiredDb || this._desiredDatabase;
-		if (desired && databases.includes(desired)) {
+		// Priority tiers (strict — no tier may override a higher one):
+		// 1. _desiredDatabase: set by file restore or favorite selection. Highest priority.
+		// 2. _database: already-active selection (user picked it, or tier 1 applied it earlier).
+		//    A background DB refresh must NEVER override the user's current choice.
+		// 3. desiredDb: global lastDatabase hint. Only used when nothing else is selected.
+		// 4. Auto-select: single-database clusters.
+
+		if (this._desiredDatabase && databases.includes(this._desiredDatabase)) {
+			// Tier 1: explicit desired database (from file or favorite)
 			const prev = this._database;
-			this._database = desired;
+			this._database = this._desiredDatabase;
 			this._desiredDatabase = '';
-			if (prev !== desired) {
+			if (prev !== this._database) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: desired },
+					detail: { boxId: this.boxId, database: this._database },
 					bubbles: true, composed: true,
 				}));
 			}
 		} else if (this._database && databases.includes(this._database)) {
-			// Keep current selection
+			// Tier 2: keep current selection
+		} else if (desiredDb && databases.includes(desiredDb)) {
+			// Tier 3: global lastDatabase fallback (only when nothing else selected)
+			const prev = this._database;
+			this._database = desiredDb;
+			this._desiredDatabase = '';
+			if (prev !== desiredDb) {
+				this.dispatchEvent(new CustomEvent('database-changed', {
+					detail: { boxId: this.boxId, database: desiredDb },
+					bubbles: true, composed: true,
+				}));
+			}
 		} else if (databases.length === 1) {
-			// Auto-select single database
+			// Tier 4: auto-select single database
 			const db = databases[0];
 			const prev = this._database;
 			this._database = db;
+			this._desiredDatabase = '';
 			if (prev !== db) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
 					detail: { boxId: this.boxId, database: db },
@@ -947,9 +967,14 @@ export class KwQuerySection extends LitElement {
 		return this._favoritesMode;
 	}
 
-	/** Update available favorites. */
+	/** Update available favorites. Sorts alphabetically by name. */
 	public setFavorites(favorites: KustoFavorite[]): void {
-		this._favorites = favorites;
+		const sorted = (Array.isArray(favorites) ? favorites : []).slice().sort((a, b) => {
+			const an = String((a?.name) || '').toLowerCase();
+			const bn = String((b?.name) || '').toLowerCase();
+			return an.localeCompare(bn);
+		});
+		this._favorites = sorted;
 	}
 
 	/** Check if run button should be enabled (has connection + database). */
@@ -992,8 +1017,6 @@ export class KwQuerySection extends LitElement {
 
 	private _getCurrentFavorite(): KustoFavorite | null {
 		if (!this._connectionId) return null;
-		// Use _database if set, otherwise fall back to _desiredDatabase (which is set
-		// immediately on favorite selection, before the async DB list response arrives).
 		const db = this._database || this._desiredDatabase;
 		if (!db) return null;
 		const clusterUrl = this.getClusterUrl();

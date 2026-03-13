@@ -5672,7 +5672,6 @@ function ensureMonaco() {
 					let __kustoInlineCompletionRequestId = 0;
 					monaco.languages.registerInlineCompletionsProvider('kusto', {
 						provideInlineCompletions: async function (model: any, position: any, context: any, token: any) {
-							console.log('[Kusto] provideInlineCompletions called', { position, context, triggerKind: context?.triggerKind });
 							try {
 								// triggerKind: 0 = automatic, 1 = manual (explicit)
 								const isManualTrigger = context && context.triggerKind === 1;
@@ -5680,7 +5679,6 @@ function ensureMonaco() {
 								// Check if automatic inline completions are enabled
 								// The toggle only controls automatic triggers - manual triggers (SHIFT+SPACE) always work
 								if (!isManualTrigger && typeof _win.copilotInlineCompletionsEnabled !== 'undefined' && !_win.copilotInlineCompletionsEnabled) {
-									console.log('[Kusto] Automatic inline completions disabled, returning empty');
 									return { items: [] };
 								}
 

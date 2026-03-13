@@ -527,6 +527,21 @@ function addQueryBox( options: any) {
 		}
 	} catch { /* ignore */ }
 
+	// Apply desired cluster/database from options BEFORE updateConnectionSelects(),
+	// because setConnections() → connection-changed → cached DB load → setDatabases()
+	// all run synchronously inside updateConnectionSelects. If _desiredDatabase isn't
+	// set yet, the global lastDatabase would be applied instead (wrong database bug).
+	try {
+		if (kwEl && options) {
+			if (options.clusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
+				kwEl.setDesiredClusterUrl(String(options.clusterUrl));
+			}
+			if (options.database && typeof kwEl.setDesiredDatabase === 'function') {
+				kwEl.setDesiredDatabase(String(options.database));
+			}
+		}
+	} catch { /* ignore */ }
+
 	_win.updateConnectionSelects();
 	// For newly added sections, if the prefilled cluster+db matches an existing favorite,
 	// automatically switch to Favorites mode.

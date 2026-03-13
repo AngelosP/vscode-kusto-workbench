@@ -1108,7 +1108,9 @@ function applyKqlxState(state: any) {
 				const isLegacyCopilotQuerySection = t === 'copilotQuery';
 				const boxId = (_win.addQueryBox as any)({
 					id: (section.id ? String(section.id) : undefined),
-					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true
+					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
+					clusterUrl: String(section.clusterUrl || ''),
+					database: String(section.database || '')
 				});
 				try {
 					if ((_win.__kustoSetSectionName as any)) (_win.__kustoSetSectionName as any)(boxId, String(section.name || ''));

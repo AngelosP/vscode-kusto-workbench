@@ -130,17 +130,13 @@ document.addEventListener('keydown', (event: any) => {
 
 		let handled = false;
 
-		// Diff View
+		// Diff View (Lit component)
 		if (!handled) {
 			try {
-				const modal = document.getElementById('diffViewModal') as any;
-				if (modal && modal.classList && modal.classList.contains('visible')) {
+				const diffView = document.querySelector('kw-diff-view') as any;
+				if (diffView && diffView.isVisible) {
 					handled = true;
-					if (typeof (window as any).closeDiffView === 'function') {
-						(window as any).closeDiffView();
-					} else {
-						modal.classList.remove('visible');
-					}
+					diffView.close();
 				}
 			} catch { /* ignore */ }
 		}

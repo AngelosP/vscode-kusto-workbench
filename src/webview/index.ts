@@ -6,7 +6,7 @@ import './modules/utils.js';
 import './modules/dropdown.js';
 import './modules/columnAnalysis.js';
 import './modules/searchControl.js';
-import './modules/diffView.js';
+import './viewers/kw-diff-view.js';
 import './modules/objectViewer.js';
 import './modules/cellViewer.js';
 import './modules/schema.js';
