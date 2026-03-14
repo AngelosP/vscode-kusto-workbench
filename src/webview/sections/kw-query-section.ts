@@ -600,6 +600,9 @@ export class KwQuerySection extends LitElement {
 
 	// ── Dropdown events ───────────────────────────────────────────────────────
 
+	// Scroll position when a dropdown was last opened (for threshold dismiss)
+	private _scrollAtDropdownOpen = 0;
+
 	private _closeAllDropdowns(): void {
 		if (this._clusterMenuOpen || this._databaseMenuOpen || this._favoritesMenuOpen || this._schemaPopoverOpen) {
 			this._clusterMenuOpen = false;
@@ -610,43 +613,53 @@ export class KwQuerySection extends LitElement {
 	}
 
 	private _closeOnScroll(e: Event): void {
-		// Don't dismiss if scrolling inside the popover itself.
+		// Nothing to close
+		if (!this._clusterMenuOpen && !this._databaseMenuOpen && !this._favoritesMenuOpen && !this._schemaPopoverOpen) return;
+		// Don't dismiss if scrolling inside the popover itself
 		if (this._schemaPopoverOpen) {
 			const target = e.target as Element | null;
 			if (target && this.shadowRoot) {
 				const popover = this.shadowRoot.querySelector('.schema-info-popover');
 				if (popover && popover.contains(target)) return;
 			}
-			this._schemaPopoverOpen = false;
 		}
+		// Threshold: close when scroll exceeds 20px from open position
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - this._scrollAtDropdownOpen) > 20) {
+			this._closeAllDropdowns();
+		}
+	}
+
+	private _captureScrollPosition(): void {
+		this._scrollAtDropdownOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 	}
 
 	private _toggleClusterMenu(e: Event): void {
 		e.stopPropagation();
 		const wasOpen = this._clusterMenuOpen;
 		this._closeAllDropdowns();
-		if (!wasOpen) this._clusterMenuOpen = true;
+		if (!wasOpen) { this._clusterMenuOpen = true; this._captureScrollPosition(); }
 	}
 
 	private _toggleDatabaseMenu(e: Event): void {
 		e.stopPropagation();
 		const wasOpen = this._databaseMenuOpen;
 		this._closeAllDropdowns();
-		if (!wasOpen) this._databaseMenuOpen = true;
+		if (!wasOpen) { this._databaseMenuOpen = true; this._captureScrollPosition(); }
 	}
 
 	private _toggleFavoritesMenu(e: Event): void {
 		e.stopPropagation();
 		const wasOpen = this._favoritesMenuOpen;
 		this._closeAllDropdowns();
-		if (!wasOpen) this._favoritesMenuOpen = true;
+		if (!wasOpen) { this._favoritesMenuOpen = true; this._captureScrollPosition(); }
 	}
 
 	private _toggleSchemaPopover(e: Event): void {
 		e.stopPropagation();
 		const wasOpen = this._schemaPopoverOpen;
 		this._closeAllDropdowns();
-		if (!wasOpen) this._schemaPopoverOpen = true;
+		if (!wasOpen) { this._schemaPopoverOpen = true; this._captureScrollPosition(); }
 	}
 
 	private _onMenuKeydown(e: KeyboardEvent): void {

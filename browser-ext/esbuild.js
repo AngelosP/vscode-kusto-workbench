@@ -161,12 +161,12 @@ copyDirSync(
 
 // ---- 5. Replace vscode.js with the shim ----
 
-// The queryEditor-loader.js loads legacy/vscode.js first.
+// The queryEditor-loader.js loads vscodeApi.js first.
 // We need to replace it with our shim so the webview code gets the stub.
-console.log('Replacing dist/webview/legacy/vscode.js with vscode-shim.js...');
+console.log('Replacing dist/webview/vscodeApi.js with vscode-shim.js...');
 copyIfExists(
 	path.join(__dirname, 'vscode-shim.js'),
-	path.join(DIST, 'dist', 'webview', 'legacy', 'vscode.js')
+	path.join(DIST, 'dist', 'webview', 'vscodeApi.js')
 );
 
 // ---- Done ----

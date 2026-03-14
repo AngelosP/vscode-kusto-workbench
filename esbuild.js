@@ -32,14 +32,6 @@ async function main() {
 	const webviewSrcDir = path.join(__dirname, 'src', 'webview');
 	const webviewDistDir = path.join(__dirname, 'dist', 'webview');
 	try {
-		// Legacy JS scripts
-		const legacySrc = path.join(webviewSrcDir, 'legacy');
-		const legacyDest = path.join(webviewDistDir, 'legacy');
-		await fs.promises.mkdir(legacyDest, { recursive: true });
-		if (fs.promises.cp) {
-			await fs.promises.cp(legacySrc, legacyDest, { recursive: true, force: true });
-		}
-
 		// CSS
 		const stylesSrc = path.join(webviewSrcDir, 'styles');
 		const stylesDest = path.join(webviewDistDir, 'styles');
@@ -68,6 +60,10 @@ async function main() {
 		await fs.promises.copyFile(
 			path.join(webviewSrcDir, 'queryEditor.js'),
 			path.join(webviewDistDir, 'queryEditor.js')
+		);
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'vscodeApi.js'),
+			path.join(webviewDistDir, 'vscodeApi.js')
 		);
 	} catch (e) {
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
@@ -225,12 +221,12 @@ async function main() {
 		// Legacy JS, CSS, queryEditor.js/html are copied once at startup but
 		// need to be re-copied when edited during development.
 		const watchCopyTargets = [
-			{ src: path.join(webviewSrcDir, 'legacy'), dest: path.join(webviewDistDir, 'legacy') },
 			{ src: path.join(webviewSrcDir, 'styles'), dest: path.join(webviewDistDir, 'styles') },
 		];
 		const singleFileCopyTargets = [
 			{ src: path.join(webviewSrcDir, 'queryEditor.js'), dest: path.join(webviewDistDir, 'queryEditor.js') },
 			{ src: path.join(webviewSrcDir, 'queryEditor.html'), dest: path.join(webviewDistDir, 'queryEditor.html') },
+			{ src: path.join(webviewSrcDir, 'vscodeApi.js'), dest: path.join(webviewDistDir, 'vscodeApi.js') },
 		];
 		for (const { src, dest } of watchCopyTargets) {
 			try {

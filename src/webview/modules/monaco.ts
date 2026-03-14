@@ -4944,7 +4944,11 @@ function ensureMonaco() {
 										}
 									}
 									
-															if (!_win.__kustoMonacoInitializedByModel[modelKey]) {
+													// Use the GLOBAL init flag to decide between set (replace) vs add.
+													// setSchemaFromShowSchema replaces the ENTIRE worker schema.
+													// We must only use it for the very first schema load across ALL models.
+													// After that, use addDatabaseToSchema to avoid wiping other models' schemas.
+													if (!_win.__kustoMonacoInitialized) {
 										// First schema: use setSchemaFromShowSchema to establish base with database in context
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
@@ -5377,9 +5381,51 @@ function ensureMonaco() {
 							}
 							
 							if (rawSchemaJson) {
-								// Load the schema AND set as context (setAsContext = true)
-								if (typeof _win.__kustoSetMonacoKustoSchema === 'function') {
-									await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+								// Load the schema AND set as context (setAsContext = true).
+								// Use setSchemaFromShowSchema directly to GUARANTEE the correct
+								// database is set as context. The addDatabaseToSchema path can
+								// fail to switch context if the worker state was replaced by
+								// another model's setSchemaFromShowSchema during initial load.
+								try {
+									if (monaco?.languages?.kusto?.getKustoWorker) {
+										const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+										const worker = await workerAccessor(monaco.Uri.parse(focusedModelUri));
+										if (worker && typeof worker.setSchemaFromShowSchema === 'function') {
+											let schemaObj = rawSchemaJson;
+											if (typeof schemaObj === 'string') {
+												try { schemaObj = JSON.parse(schemaObj); } catch { /* ignore */ }
+											}
+											if (schemaObj && schemaObj.Databases && !schemaObj.Plugins) {
+												schemaObj = { Plugins: [], ...schemaObj };
+											}
+											let databaseInContext = database;
+											if (schemaObj?.Databases) {
+												const dbKeys = Object.keys(schemaObj.Databases);
+												const matchedKey = dbKeys.find((k: string) => k.toLowerCase() === database.toLowerCase());
+												if (matchedKey) databaseInContext = matchedKey;
+											}
+											await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+
+											// Update tracking state
+											_win.__kustoMonacoInitializedByModel = _win.__kustoMonacoInitializedByModel || {};
+											_win.__kustoMonacoInitializedByModel[focusedModelUri] = true;
+											const pl = _win.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
+											pl[schemaKey] = true;
+											if (_win.__kustoMonacoLoadedSchemasByModel) {
+												_win.__kustoMonacoLoadedSchemasByModel[focusedModelUri] = pl;
+											}
+											_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
+											_win.__kustoMonacoDatabaseInContextByModel[focusedModelUri] = { clusterUrl, database: databaseInContext };
+											_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[focusedModelUri];
+											_win.__kustoSchemaCache = _win.__kustoSchemaCache || {};
+											_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+										}
+									}
+								} catch (e) {
+									// Fallback: try the queued path
+									if (typeof _win.__kustoSetMonacoKustoSchema === 'function') {
+										await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+									}
 								}
 								
 								// Trigger re-validation with the newly loaded schema

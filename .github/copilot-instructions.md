@@ -201,6 +201,42 @@ Custom diagnostics use codes like:
 * `@toast-ui/editor` \- WYSIWYG markdown editor
 * `echarts` \- Charting library
 
+## Popup & Dropdown Dismiss-on-Scroll Policy
+
+All floating UI elements (popups, dropdowns, menus, tooltips) must be **dismissed on scroll**, never anchored to move with the viewport. This matches VS Code's native behavior and avoids janky scroll-tracking.
+
+### Categories
+
+| Category | Behavior | Examples |
+| -------- | -------- | -------- |
+| **Ephemeral** | Close immediately on any scroll | Monaco autocomplete, context menus, tooltips, caret docs, hover info |
+| **Interactive** | Close when scroll exceeds **20px threshold** | Dropdowns (favorites, clusters, databases, chart type, chart columns), cache settings, run-mode menu, tools menu, share modal |
+| **Never anchor** | Never attempt to reposition a popup to follow scroll | All categories — anchoring is explicitly prohibited |
+
+### Implementation Pattern
+
+For interactive dropdowns with threshold:
+```typescript
+// On open: capture scroll position
+const scrollAtOpen = scrollContainer.scrollTop;
+
+// Passive scroll listener (added on open, removed on close)
+const onScroll = () => {
+  if (Math.abs(scrollContainer.scrollTop - scrollAtOpen) > 20) {
+    closeDropdown();
+  }
+};
+scrollContainer.addEventListener('scroll', onScroll, { passive: true });
+```
+
+### Why Not Anchor?
+
+Anchoring (repositioning popups on every scroll frame) was considered and rejected because:
+- The webview scroll container's rendering pipeline is not under our control, causing visible lag
+- `requestAnimationFrame` repositioning still produces janky movement on fast scrolls
+- The threshold-based dismiss approach provides a better UX with far less complexity
+- VS Code's own dropdown menus use the same dismiss-on-scroll pattern
+
 ## Responsive Layout (CSS Container Queries)
 
 The query section header toolbar uses **CSS Container Queries** for responsive layout, not JavaScript. This ensures correct layout immediately when sections are added, without race conditions.

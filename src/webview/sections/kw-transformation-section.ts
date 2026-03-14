@@ -143,6 +143,7 @@ export class KwTransformationSection extends LitElement {
 
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
+	private _scrollAtPopupOpen = 0;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -816,6 +817,7 @@ export class KwTransformationSection extends LitElement {
 				this._refreshDatasets();
 			}
 			this._openDropdownId = id;
+			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 			this.updateComplete.then(() => {
 				const menu = this.shadowRoot?.querySelector('.dropdown-menu') as HTMLElement;
 				if (menu) {
@@ -838,10 +840,11 @@ export class KwTransformationSection extends LitElement {
 	}
 
 	private _closeAllPopupsOnScroll(): void {
-		if (this._openDropdownId) {
-			this._openDropdownId = '';
-			document.removeEventListener('mousedown', this._closeDropdownBound);
-		}
+		if (!this._openDropdownId) return;
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
+		this._openDropdownId = '';
+		document.removeEventListener('mousedown', this._closeDropdownBound);
 	}
 
 	// ── Derive handlers ───────────────────────────────────────────────────────

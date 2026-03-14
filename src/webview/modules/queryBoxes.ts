@@ -1681,28 +1681,68 @@ function toggleCachePill( boxId: any) {
 function toggleCachePopup( boxId: any) {
 	const popup = document.getElementById(boxId + '_cache_popup') as any;
 	if (!popup) return;
-	
+
 	const isOpen = popup.classList.contains('open');
-	
-	// Close all other popups first
-	document.querySelectorAll('.cache-popup.open').forEach((p: any) =>  {
-		if (p !== popup) p.classList.remove('open');
+
+	// Close all other popups first (and clean up their listeners)
+	document.querySelectorAll('.cache-popup.open').forEach((p: any) => {
+		if (p !== popup) {
+			if (p._kustoCacheClose) p._kustoCacheClose();
+			else p.classList.remove('open');
+		}
 	});
-	
-	popup.classList.toggle('open', !isOpen);
-	
-	if (!isOpen) {
-		// Add click-outside listener
-		setTimeout(() => {
-			const closeHandler = (e: any) => {
-				if (!popup.contains(e.target) && !e.target.closest('#' + boxId + '_cache_label')) {
-					popup.classList.remove('open');
-					document.removeEventListener('click', closeHandler);
-				}
-			};
-			document.addEventListener('click', closeHandler);
-		}, 0);
+
+	if (isOpen) {
+		// Closing — clean up listeners
+		if (popup._kustoCacheClose) popup._kustoCacheClose();
+		else popup.classList.remove('open');
+		return;
 	}
+
+	popup.classList.add('open');
+
+	// Capture scroll position for threshold-based dismiss (interactive — 20px)
+	const scrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+	const closePopup = () => {
+		popup.classList.remove('open');
+		delete popup._kustoCacheClose;
+		document.removeEventListener('click', clickHandler);
+		document.removeEventListener('scroll', scrollHandler, true);
+		document.removeEventListener('wheel', wheelHandler, true);
+	};
+
+	popup._kustoCacheClose = closePopup;
+
+	const clickHandler = (e: any) => {
+		try {
+			if (!popup.contains(e.target) && !(e.target.closest && e.target.closest('#' + boxId + '_cache_label'))) {
+				closePopup();
+			}
+		} catch { closePopup(); }
+	};
+
+	const scrollHandler = () => {
+		try {
+			const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+			if (Math.abs(scrollY - scrollAtOpen) > 20) {
+				closePopup();
+			}
+		} catch { /* ignore */ }
+	};
+
+	const wheelHandler = (e: any) => {
+		try {
+			// Allow wheel inside the popup (e.g. number input spin)
+			if (popup.contains(e.target)) return;
+			closePopup();
+		} catch { closePopup(); }
+	};
+
+	// Delay click listener to avoid closing from the opening click
+	setTimeout(() => { document.addEventListener('click', clickHandler); }, 0);
+	document.addEventListener('scroll', scrollHandler, true);
+	document.addEventListener('wheel', wheelHandler, { passive: true, capture: true } as any);
 }
 
 // Keep for backward compatibility

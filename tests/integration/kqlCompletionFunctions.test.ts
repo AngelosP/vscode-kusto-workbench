@@ -368,7 +368,7 @@ suite('KQL completions - functions list', () => {
 			.replace(/as HTMLElement\)/g, ')')
 			.replace(/ as string\b/g, '')
 			.replace(/ as any\b/g, '');
-		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'legacy', 'functions.generated.js');
+		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'modules', 'functions.generated.js');
 		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
 
 		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');
@@ -482,7 +482,7 @@ suite('KQL completions - functions list', () => {
 			.replace(/as HTMLElement\)/g, ')')
 			.replace(/ as string\b/g, '')
 			.replace(/ as any\b/g, '');
-		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'legacy', 'functions.generated.js');
+		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'modules', 'functions.generated.js');
 		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
 
 		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');

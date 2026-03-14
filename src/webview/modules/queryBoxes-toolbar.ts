@@ -1461,6 +1461,8 @@ document.addEventListener('click', (ev: any) => {
 });
 
 // Close dropdowns on scroll/wheel so they don't float detached from their buttons.
+// Legacy run-mode menus close immediately (ephemeral). Interactive dropdowns
+// handled by Lit components use their own threshold-based dismiss.
 document.addEventListener('scroll', (ev: any) => {
 	// The dropdown menus themselves are scrollable; do not dismiss on internal menu scroll.
 	try {
@@ -1469,16 +1471,23 @@ document.addEventListener('scroll', (ev: any) => {
 			return;
 		}
 	} catch { /* ignore */ }
+	// Run menus are ephemeral — close immediately
 	closeAllRunMenus();
-	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch { /* ignore */ }
-	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	// Legacy dropdown module (used by tools, cache settings, etc.) — close with threshold
+	try {
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - (typeof (window as any).__kustoToolbarScrollAtOpen === 'number' ? (window as any).__kustoToolbarScrollAtOpen : 0)) > 20) {
+			(window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus();
+		}
+	} catch { /* ignore */ }
 }, true); // Use capture to catch scroll events on nested scrollable elements
 
 document.addEventListener('wheel', (ev: any) => {
 	// Allow scrolling inside dropdown menus without dismissing them.
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
+	// Run menus are ephemeral — close immediately on wheel
 	closeAllRunMenus();
-	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch { /* ignore */ }
+	// Legacy dropdown menus also close on wheel (users expect wheel to dismiss)
 	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 }, { passive: true });
 

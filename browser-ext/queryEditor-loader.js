@@ -45,15 +45,13 @@
 	var extensionRootUrl = new URL('.', window.location.href);
 
 	var scriptPaths = [
-		'legacy/vscode.js',
+		'vscodeApi.js',
 
 
 		'vendor/marked.min.js',
 		'vendor/purify.min.js',
 		'dist/queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 		'dist/queryEditor/vendor/echarts/echarts.webview.js',
-		'legacy/controlCommands.generated.js',
-		'legacy/functions.generated.js',
 
 
 		'dist/webview/webview.bundle.js',

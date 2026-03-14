@@ -452,6 +452,36 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 
 			try { checkSuggestVisibilityTransition(); } catch { /* ignore */ }
 
+			// Dismiss suggest widgets on outer (notebook/body) scroll — ephemeral per dismiss-on-scroll policy.
+			try {
+				if (!_win.__kustoSuggestWidgetScrollDismissInstalled) {
+					_win.__kustoSuggestWidgetScrollDismissInstalled = true;
+					window.addEventListener('scroll', (ev: any) => {
+						try {
+							const target = ev && ev.target;
+							// If scroll originated inside a Monaco editor or suggest widget, ignore.
+							if (target && target !== document && target !== document.documentElement && target !== document.body) {
+								try {
+									if (target.closest && (target.closest('.monaco-editor') || target.closest('.suggest-widget'))) {
+										return;
+									}
+								} catch { /* ignore */ }
+							}
+							// Outer scroll — dismiss all suggest widgets.
+							if (typeof _win.queryEditors === 'undefined' || !_win.queryEditors) return;
+							for (const id of Object.keys(_win.queryEditors)) {
+								const ed = _win.queryEditors[id];
+								if (!ed) continue;
+								try {
+									const r = ed.trigger('keyboard', 'hideSuggestWidget', {});
+									if (r && typeof r.then === 'function') r.catch(() => { /* ignore */ });
+								} catch { /* ignore */ }
+							}
+						} catch { /* ignore */ }
+					}, true);
+				}
+			} catch { /* ignore */ }
+
 			const dispose = () => {
 				try { if (mo) mo.disconnect(); } catch { /* ignore */ }
 				try { mo = null; } catch { /* ignore */ }
@@ -478,6 +508,9 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 		})();
 
 		return minimalDispose;
+
+		// NOTE: All code below this return is unreachable (dead code from legacy sizing approach).
+		// It is kept for reference but never executes.
 
 		const __kustoSafeEditorTrigger = (ed: any, commandId: any) => {
 			try {

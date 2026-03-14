@@ -247,6 +247,8 @@ const _win = window as unknown as Record<string, unknown>;
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+			// Capture scroll position for threshold-based dismiss (see queryBoxes-toolbar.ts scroll handler)
+			try { (_win as any).__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {

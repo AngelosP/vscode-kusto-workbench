@@ -252,6 +252,7 @@ export class KwDataTable extends LitElement {
 	private _resizeObs: ResizeObserver | null = null;
 	private _viewportResizeObs: ResizeObserver | null = null;
 	private _isDragging = false;
+	private _scrollAtPopupOpen = 0;
 	private _virtualizerCleanup: (() => void) | null = null;
 	private _syncRaf = 0;
 	private _lastVStart = -1;
@@ -304,6 +305,7 @@ export class KwDataTable extends LitElement {
 		this._installViewportResizeWatcher();
 		document.addEventListener('copy', this._onDocumentCopy, true);
 		document.addEventListener('keydown', this._onDocumentKeydown, true);
+		document.addEventListener('scroll', this._onDocumentScrollDismiss, { capture: true, passive: true });
 	}
 	protected updated(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) this._initVirtualizer();
@@ -312,6 +314,14 @@ export class KwDataTable extends LitElement {
 		if (changed.has('_bodyVisible') && this._bodyVisible) this._initVirtualizer();
 		this._installViewportResizeWatcher();
 		this._syncHeaderScroll();
+		// Capture scroll position when a popup opens (for threshold-based dismiss)
+		if ((changed.has('_columnMenuOpen') && this._columnMenuOpen !== null) ||
+			(changed.has('_colJumpOpen') && this._colJumpOpen) ||
+			(changed.has('_sortDialogOpen') && this._sortDialogOpen) ||
+			(changed.has('_filterDialogOpen') && this._filterDialogOpen) ||
+			(changed.has('_rowJumpVisible') && this._rowJumpVisible)) {
+			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		}
 	}
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
@@ -325,6 +335,7 @@ export class KwDataTable extends LitElement {
 		document.removeEventListener('mousedown', this._onDocMouseDown);
 		document.removeEventListener('copy', this._onDocumentCopy, true);
 		document.removeEventListener('keydown', this._onDocumentKeydown, true);
+		document.removeEventListener('scroll', this._onDocumentScrollDismiss, true);
 		window.removeEventListener('resize', this._onViewportResize);
 	}
 
@@ -1216,6 +1227,17 @@ this.requestUpdate();
 			document.body.removeChild(ta);
 		} catch { /* ignore */ }
 	}
+
+	private _onDocumentScrollDismiss = (): void => {
+		if (!this._columnMenuOpen && this._columnMenuOpen !== 0 && !this._colJumpOpen && !this._sortDialogOpen && !this._filterDialogOpen && !this._rowJumpVisible) return;
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
+		this._columnMenuOpen = null;
+		this._colJumpOpen = false;
+		this._sortDialogOpen = false;
+		this._filterDialogOpen = false;
+		this._rowJumpVisible = false;
+	};
 
 	private _onDocumentCopy = (e: ClipboardEvent): void => {
 		if (!this._isSelectionInThisTable()) return;

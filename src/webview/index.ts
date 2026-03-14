@@ -2,6 +2,8 @@
 // Each component self-registers its custom element on import.
 // Legacy modules absorbed from global-scope JS — register window bridges on import.
 import './modules/state.js'; // Must be first — initializes all state globals on window
+import './modules/controlCommands.generated.js';
+import './modules/functions.generated.js';
 import './modules/utils.js';
 import './modules/dropdown.js';
 import './modules/columnAnalysis.js';

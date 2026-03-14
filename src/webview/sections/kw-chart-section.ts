@@ -189,6 +189,7 @@ export class KwChartSection extends LitElement {
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _closeAxisPopupBound = this._closeAxisPopupOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
+	private _scrollAtPopupOpen = 0;
 	private _themeObserver: MutationObserver | null = null;
 	private _lastThemeDark: boolean | null = null;
 
@@ -727,12 +728,17 @@ export class KwChartSection extends LitElement {
 		}));
 	}
 
+	private _captureScrollPosition(): void {
+		this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
+	}
+
 	private _toggleDropdown(id: string, btnEl?: HTMLElement): void {
 		if (this._openDropdownId === id) {
 			this._openDropdownId = '';
 			document.removeEventListener('mousedown', this._closeDropdownBound);
 		} else {
 			this._openDropdownId = id;
+			this._captureScrollPosition();
 			// After Lit re-renders the menu, position it using the button's bounding rect
 			if (btnEl) {
 				this.updateComplete.then(() => {
@@ -755,8 +761,11 @@ export class KwChartSection extends LitElement {
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 	}
 
-	/** Close all fixed-position dropdowns and axis popups (e.g. on scroll). */
+	/** Close all fixed-position dropdowns and axis popups when scroll exceeds threshold. */
 	private _closeAllPopupsOnScroll(): void {
+		if (!this._openDropdownId && !this._openAxisPopup && !this._modeDropdownOpen) return;
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		if (this._openDropdownId) {
 			this._openDropdownId = '';
 			document.removeEventListener('mousedown', this._closeDropdownBound);
@@ -969,6 +978,7 @@ export class KwChartSection extends LitElement {
 		const textCenter = rect.left + (textWidth / 2);
 		this._axisPopupPos = { top: rect.bottom + 8, left: textCenter - arrowTipOffset };
 		this._openAxisPopup = axis;
+		this._captureScrollPosition();
 
 		// Defer so the current click doesn't immediately close it
 		setTimeout(() => document.addEventListener('mousedown', this._closeAxisPopupBound), 0);
