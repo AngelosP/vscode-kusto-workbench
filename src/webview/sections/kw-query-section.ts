@@ -1092,6 +1092,10 @@ export class KwQuerySection extends LitElement {
 			showVisibilityToggle: true,
 			hideTopBorder: true,
 			initialBodyVisible,
+			metadata: {
+				clientActivityId: typeof metadata.clientActivityId === 'string' ? metadata.clientActivityId : undefined,
+				serverStats: (metadata.serverStats && typeof metadata.serverStats === 'object') ? metadata.serverStats as Record<string, unknown> : undefined,
+			},
 		} as DataTableOptions;
 		dt.columns = columns;
 		dt.rows = rows;

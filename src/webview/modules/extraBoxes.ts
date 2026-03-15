@@ -52,12 +52,12 @@ try { window.__kustoPythonEditors = pythonEditors; } catch { /* ignore */ }
 // - yAxisSettings: { showAxisLabel, customLabel, min, max, seriesColors, titleGap } (Y-axis customizations)
 // Explicitly on window so persistence.js can access it
 window.chartStateByBoxId = window.chartStateByBoxId || {};
-var chartStateByBoxId = window.chartStateByBoxId;
+const chartStateByBoxId = window.chartStateByBoxId;
 
 // Transformation UI state keyed by boxId.
 // Explicitly on window so persistence.js can access it
 window.transformationStateByBoxId = window.transformationStateByBoxId || {};
-var transformationStateByBoxId = window.transformationStateByBoxId;
+const transformationStateByBoxId = window.transformationStateByBoxId;
 
 // When query/transform results update, refresh dependent charts/transformations.
 let __kustoIsRefreshingDependents = false;

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // Persistence module — converted from legacy/persistence.js
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
@@ -786,11 +785,11 @@ function getKqlxState() {
 	};
 }
 
-var __kustoLastPersistSignature = '';
+let __kustoLastPersistSignature = '';
 // In compatibility mode (no sidecar), only the query text is saved to disk.
 // Track the last query text separately so cluster/database-only changes don't
 // trigger unnecessary persistDocument messages that would dirty the file.
-var __kustoLastCompatQueryText = '';
+let __kustoLastCompatQueryText = '';
 
 function schedulePersist(reason?: any, immediate?: any) {
 	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
@@ -816,11 +815,11 @@ function schedulePersist(reason?: any, immediate?: any) {
 				// nowhere to save that metadata. Skip the persist if only metadata changed.
 				if ((_win.__kustoCompatibilityMode as any)) {
 					try {
-						var compatQueryText = '';
-						var sections = (state && Array.isArray(state.sections)) ? state.sections : [];
-						var singleKind = String((_win.__kustoCompatibilitySingleKind as any) || 'query');
-						var firstQ = null;
-						for (var si = 0; si < sections.length; si++) {
+						let compatQueryText = '';
+						const sections = (state && Array.isArray(state.sections)) ? state.sections : [];
+						const singleKind = String((_win.__kustoCompatibilitySingleKind as any) || 'query');
+						let firstQ = null;
+						for (let si = 0; si < sections.length; si++) {
 							if (sections[si] && String(sections[si].type || '') === singleKind) {
 								firstQ = sections[si];
 								break;

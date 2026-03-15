@@ -857,12 +857,14 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 				return (ms / 1000).toFixed(3) + 's';
 			};
 			const fmtBytes = function(bytes: any) {
+				// eslint-disable-next-line eqeqeq
 				if (bytes == null || !isFinite(bytes)) { return '?'; }
 				if (bytes < 1024) { return bytes + ' B'; }
 				if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
 				if (bytes < 1024 * 1024 * 1024) { return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
 				return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 			};
+			// eslint-disable-next-line eqeqeq
 			const fmtNum = function(n: any) { return n == null ? '?' : Number(n).toLocaleString(); };
 
 			const statRow = function(label: any, value: any) {
@@ -874,42 +876,51 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 
 			tooltipRows += '<div class="results-label-tooltip-separator"></div>';
 
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.cpuTimeMs != null && isFinite(serverStats.cpuTimeMs)) {
 				tooltipRows += statRow('Server CPU', fmtCpuMs(serverStats.cpuTimeMs));
 			} else if (serverStats.cpuTime) {
 				tooltipRows += statRow('Server CPU', serverStats.cpuTime);
 			}
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.peakMemoryPerNode != null && isFinite(serverStats.peakMemoryPerNode)) {
 				tooltipRows += statRow('Peak memory', fmtBytes(serverStats.peakMemoryPerNode));
 			}
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.extentsScanned != null) {
-				var extLabel = fmtNum(serverStats.extentsScanned);
+				let extLabel = fmtNum(serverStats.extentsScanned);
+				// eslint-disable-next-line eqeqeq
 				if (serverStats.extentsTotal != null) {
 					extLabel += ' / ' + fmtNum(serverStats.extentsTotal);
 				}
 				tooltipRows += statRow('Extents scanned', extLabel);
 			}
 			// Cache
-			var memHits = typeof serverStats.memoryCacheHits === 'number' ? serverStats.memoryCacheHits : null;
-			var memMisses = typeof serverStats.memoryCacheMisses === 'number' ? serverStats.memoryCacheMisses : null;
+			const memHits = typeof serverStats.memoryCacheHits === 'number' ? serverStats.memoryCacheHits : null;
+			const memMisses = typeof serverStats.memoryCacheMisses === 'number' ? serverStats.memoryCacheMisses : null;
+			// eslint-disable-next-line eqeqeq
 			if (memHits != null || memMisses != null) {
-				var total = (memHits || 0) + (memMisses || 0);
-				var rate = total > 0 ? ((memHits || 0) / total * 100).toFixed(1) + '%' : 'N/A';
+				const total = (memHits || 0) + (memMisses || 0);
+				const rate = total > 0 ? ((memHits || 0) / total * 100).toFixed(1) + '%' : 'N/A';
 				tooltipRows += statRow('Memory cache', rate + ' (' + fmtNum(memHits || 0) + ' hits, ' + fmtNum(memMisses || 0) + ' misses)');
 			}
-			var diskHits = typeof serverStats.diskCacheHits === 'number' ? serverStats.diskCacheHits : null;
-			var diskMisses = typeof serverStats.diskCacheMisses === 'number' ? serverStats.diskCacheMisses : null;
+			const diskHits = typeof serverStats.diskCacheHits === 'number' ? serverStats.diskCacheHits : null;
+			const diskMisses = typeof serverStats.diskCacheMisses === 'number' ? serverStats.diskCacheMisses : null;
+			// eslint-disable-next-line eqeqeq
 			if (diskHits != null || diskMisses != null) {
-				var dTotal = (diskHits || 0) + (diskMisses || 0);
-				var dRate = dTotal > 0 ? ((diskHits || 0) / dTotal * 100).toFixed(1) + '%' : 'N/A';
+				const dTotal = (diskHits || 0) + (diskMisses || 0);
+				const dRate = dTotal > 0 ? ((diskHits || 0) / dTotal * 100).toFixed(1) + '%' : 'N/A';
 				tooltipRows += statRow('Disk cache', dRate + ' (' + fmtNum(diskHits || 0) + ' hits, ' + fmtNum(diskMisses || 0) + ' misses)');
 			}
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.shardHotHitBytes != null || serverStats.shardHotMissBytes != null) {
 				tooltipRows += statRow('Shard hot cache', fmtBytes(serverStats.shardHotHitBytes || 0) + ' hit / ' + fmtBytes(serverStats.shardHotMissBytes || 0) + ' miss');
 			}
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.serverRowCount != null) {
 				tooltipRows += statRow('Server row count', fmtNum(serverStats.serverRowCount));
 			}
+			// eslint-disable-next-line eqeqeq
 			if (serverStats.serverTableSize != null) {
 				tooltipRows += statRow('Result size', fmtBytes(serverStats.serverTableSize));
 			}

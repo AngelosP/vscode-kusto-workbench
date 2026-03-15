@@ -421,11 +421,11 @@ export class KwConnectionManager extends LitElement {
 				visibleDbs = databases.filter(db => favDbs.has(db));
 			}
 
-			if (visibleDbs.length === 0) return html`
+			if (visibleDbs.length === 0) {return html`
 				<div class="empty-state">
 					<div class="empty-state-text">${this._filterFavorites ? 'No favorite databases in this cluster.' : 'No databases found.'}</div>
 					${!this._filterFavorites ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
-				</div>`;
+				</div>`;}
 
 			return html`${visibleDbs.map(db => {
 				const isFav = this._isFavorite(conn.clusterUrl, db);
@@ -583,11 +583,11 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderTablePreview(tableKey: string, tableName: string, data: TablePreview | undefined, conn: KustoConnection, ep: ExplorerPath): TemplateResult {
 		if (data?.loading) return html`<div class="explorer-detail-section"><div class="preview-action loading">${ICONS.spinner} Loading preview…</div></div>`;
-		if (data?.error) return html`
+		if (data?.error) {return html`
 			<div class="explorer-detail-section">
 				<div class="preview-error">${data.error}</div>
 				<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.table} Retry preview</button>
-			</div>`;
+			</div>`;}
 		if (data?.columns && data?.rows) {
 			if (data.rows.length === 0) return html`<div class="explorer-detail-section"><div style="font-size: 11px; opacity: 0.7; padding: 4px 0;">Table is empty.</div></div>`;
 			const dtColumns = data.columns.map((c: any) => ({ name: typeof c === 'string' ? c : c.name ?? '', type: typeof c === 'object' ? c.type : undefined }));

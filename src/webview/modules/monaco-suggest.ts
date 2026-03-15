@@ -676,7 +676,6 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 			try {
 				const enabled = !!(window && (_win.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
 				if (!enabled) return;
-				// eslint-disable-next-line no-console
 				console.debug('[kusto][suggest]', String(eventName || ''), data || {}, { boxId: editor && editor.__kustoBoxId });
 			} catch {
 				// ignore

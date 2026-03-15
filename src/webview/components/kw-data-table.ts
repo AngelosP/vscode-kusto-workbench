@@ -20,9 +20,11 @@ export interface DataTableOptions {
 	showVisibilityToggle?: boolean;
 	/** Initial body visibility (default true). Set to false to start with results hidden. */
 	initialBodyVisible?: boolean;
+	/** Query metadata — client activity ID and server stats shown in a hover tooltip. */
+	metadata?: { clientActivityId?: string; serverStats?: Record<string, unknown> };
 }
 export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
-interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
+export interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
 interface VItem { index: number; start: number; size: number; }
 
 export function getCellDisplayValue(cell: CellValue): string {
@@ -40,6 +42,45 @@ export function getCellSortValue(cell: CellValue): string | number | boolean | n
 	if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') return cell;
 	if (typeof cell === 'object' && 'full' in cell) { const f = cell.full; if (typeof f === 'number' || typeof f === 'string' || typeof f === 'boolean') return f; }
 	return getCellDisplayValue(cell);
+}
+
+/**
+ * Pure function that builds the tab-separated clipboard text for a data table.
+ * Extracted so it can be unit-tested independently.
+ */
+export function buildClipboardText(
+	columns: DataTableColumn[],
+	rows: CellValue[][],
+	selectionRange: CellRange | null,
+	selectedCell: { row: number; col: number } | null,
+): string {
+	if (selectionRange) {
+		const { rowMin, rowMax, colMin, colMax } = selectionRange;
+		// A 1×1 range is a single cell — copy just the value, no header.
+		if (rowMin === rowMax && colMin === colMax) {
+			const row = rows[rowMin];
+			if (row) return getCellDisplayValue(row[colMin]);
+			return '';
+		}
+		const lines = [columns.slice(colMin, colMax + 1).map(c => c.name).join('\t')];
+		for (let r = rowMin; r <= rowMax; r++) {
+			const row = rows[r];
+			if (!row) continue;
+			const cells: string[] = [];
+			for (let c = colMin; c <= colMax; c++) cells.push(getCellDisplayValue(row[c]));
+			lines.push(cells.join('\t'));
+		}
+		return lines.join('\n');
+	}
+	if (selectedCell) {
+		const row = rows[selectedCell.row];
+		if (row) return getCellDisplayValue(row[selectedCell.col]);
+	}
+	const lines = [columns.map(c => c.name).join('\t')];
+	for (const row of rows) {
+		lines.push(row.map(cell => getCellDisplayValue(cell)).join('\t'));
+	}
+	return lines.join('\n');
 }
 
 // ── Column type inference for sorting ──
@@ -232,6 +273,10 @@ export class KwDataTable extends LitElement {
 	@state() private _filterDialogOpen = false;
 	@state() private _filterDialogColIndex: number | null = null;
 	@state() private _bodyVisible = true;
+	@state() private _metaTooltipVisible = false;
+	private _metaTooltipPos = { top: 0, left: 0 };
+	private _metaHideTimer: ReturnType<typeof setTimeout> | null = null;
+	private _metaCopyDone = false;
 
 	private _initialBodyVisibleApplied = false;
 	@state() private _colJumpOpen = false;
@@ -627,7 +672,7 @@ export class KwDataTable extends LitElement {
 		if (!rx || !this._table) { this._searchMatches = []; this._currentMatchIndex = 0; return; }
 		const matches: Array<{ row: number; col: number }> = [];
 		const rows = this._table.getRowModel().rows;
-		for (let r = 0; r < rows.length; r++) for (let c = 0; c < rows[r].original.length; c++) {
+		for (let r = 0; r < rows.length; r++) {for (let c = 0; c < rows[r].original.length; c++) {
 			const cell = rows[r].original[c];
 			// For object/complex cells, search the full JSON content, not just the display text
 			let searchText: string;
@@ -639,7 +684,7 @@ export class KwDataTable extends LitElement {
 			}
 			rx.lastIndex = 0;
 			if (rx.test(searchText)) matches.push({ row: r, col: c });
-		}
+		}}
 		this._searchMatches = matches; this._currentMatchIndex = 0;
 		if (matches.length > 0) this._goToMatch(0);
 	}
@@ -876,8 +921,10 @@ this.requestUpdate();
 		const rowSummary = isFiltered
 			? `${totalRows} of ${this.rows.length} rows (filtered)`
 			: `${totalRows} row${totalRows !== 1 ? 's' : ''}`;
+		const meta = this.options.metadata;
+		const hasTooltip = !!(meta && (meta.clientActivityId || meta.serverStats));
 		return html`<div class="hbar">
-			<span class="hinfo">${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
+			<span class="hinfo${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchVisible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpVisible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
@@ -888,6 +935,114 @@ this.requestUpdate();
 				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._copy()}>${ICON.copy}</button>
 				${this._sorting.length > 0 ? html`<button class="tbtn" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
 			</div>` : nothing}
+			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
+		</div>`;
+	}
+
+	// ── Metadata tooltip (Client Activity ID + Server Stats) ──
+
+	private _showMetaTooltip(e: MouseEvent): void {
+		if (this._metaHideTimer) { clearTimeout(this._metaHideTimer); this._metaHideTimer = null; }
+		const el = e.currentTarget as HTMLElement;
+		const rect = el.getBoundingClientRect();
+		this._metaTooltipPos = { top: rect.bottom + 4, left: rect.left };
+		this._metaTooltipVisible = true;
+	}
+
+	private _scheduleHideMetaTooltip = (): void => {
+		if (this._metaHideTimer) clearTimeout(this._metaHideTimer);
+		this._metaHideTimer = setTimeout(() => { this._metaTooltipVisible = false; }, 120);
+	};
+
+	private _cancelHideMetaTooltip = (): void => {
+		if (this._metaHideTimer) { clearTimeout(this._metaHideTimer); this._metaHideTimer = null; }
+	};
+
+	private _copyActivityId(): void {
+		const id = this.options.metadata?.clientActivityId;
+		if (!id) return;
+		navigator.clipboard.writeText(id).then(() => {
+			this._metaCopyDone = true;
+			this.requestUpdate();
+			setTimeout(() => { this._metaCopyDone = false; this.requestUpdate(); }, 1200);
+		}).catch(() => { /* ignore */ });
+	}
+
+	private _renderMetaTooltip(): TemplateResult {
+		const meta = this.options.metadata!;
+		const ss = meta.serverStats as Record<string, any> | null ?? null;
+		const fmtCpuMs = (ms: number) => ms < 1000 ? ms.toFixed(1) + 'ms' : (ms / 1000).toFixed(3) + 's';
+		const fmtBytes = (bytes: unknown) => {
+			const b = Number(bytes);
+			// eslint-disable-next-line eqeqeq
+			if (bytes == null || !isFinite(b)) return '?';
+			if (b < 1024) return b + ' B';
+			if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+			if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+			return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+		};
+		// eslint-disable-next-line eqeqeq
+		const fmtNum = (n: unknown) => n == null ? '?' : Number(n).toLocaleString();
+
+		const statRows: TemplateResult[] = [];
+		if (ss) {
+			// eslint-disable-next-line eqeqeq
+			if (ss.cpuTimeMs != null && isFinite(ss.cpuTimeMs)) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Server CPU</span><span class="mt-val">${fmtCpuMs(ss.cpuTimeMs)}</span></div>`);
+			} else if (ss.cpuTime) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Server CPU</span><span class="mt-val">${ss.cpuTime}</span></div>`);
+			}
+			// eslint-disable-next-line eqeqeq
+			if (ss.peakMemoryPerNode != null && isFinite(ss.peakMemoryPerNode)) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Peak memory</span><span class="mt-val">${fmtBytes(ss.peakMemoryPerNode)}</span></div>`);
+			}
+			// eslint-disable-next-line eqeqeq
+			if (ss.extentsScanned != null) {
+				// eslint-disable-next-line eqeqeq
+				const ext = fmtNum(ss.extentsScanned) + (ss.extentsTotal != null ? ' / ' + fmtNum(ss.extentsTotal) : '');
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Extents scanned</span><span class="mt-val">${ext}</span></div>`);
+			}
+			const memHits = typeof ss.memoryCacheHits === 'number' ? ss.memoryCacheHits : null;
+			const memMisses = typeof ss.memoryCacheMisses === 'number' ? ss.memoryCacheMisses : null;
+			// eslint-disable-next-line eqeqeq
+			if (memHits != null || memMisses != null) {
+				const total = (memHits || 0) + (memMisses || 0);
+				const rate = total > 0 ? ((memHits || 0) / total * 100).toFixed(1) + '%' : 'N/A';
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Memory cache</span><span class="mt-val">${rate} (${fmtNum(memHits || 0)} hits, ${fmtNum(memMisses || 0)} misses)</span></div>`);
+			}
+			const diskHits = typeof ss.diskCacheHits === 'number' ? ss.diskCacheHits : null;
+			const diskMisses = typeof ss.diskCacheMisses === 'number' ? ss.diskCacheMisses : null;
+			// eslint-disable-next-line eqeqeq
+			if (diskHits != null || diskMisses != null) {
+				const dTotal = (diskHits || 0) + (diskMisses || 0);
+				const dRate = dTotal > 0 ? ((diskHits || 0) / dTotal * 100).toFixed(1) + '%' : 'N/A';
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Disk cache</span><span class="mt-val">${dRate} (${fmtNum(diskHits || 0)} hits, ${fmtNum(diskMisses || 0)} misses)</span></div>`);
+			}
+			// eslint-disable-next-line eqeqeq
+			if (ss.shardHotHitBytes != null || ss.shardHotMissBytes != null) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Shard hot cache</span><span class="mt-val">${fmtBytes(ss.shardHotHitBytes || 0)} hit / ${fmtBytes(ss.shardHotMissBytes || 0)} miss</span></div>`);
+			}
+			// eslint-disable-next-line eqeqeq
+			if (ss.serverRowCount != null) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Server row count</span><span class="mt-val">${fmtNum(ss.serverRowCount)}</span></div>`);
+			}
+			// eslint-disable-next-line eqeqeq
+			if (ss.serverTableSize != null) {
+				statRows.push(html`<div class="mt-row mt-stat"><span class="mt-title">Result size</span><span class="mt-val">${fmtBytes(ss.serverTableSize)}</span></div>`);
+			}
+		}
+
+		return html`<div class="mt-popup" style="top:${this._metaTooltipPos.top}px;left:${this._metaTooltipPos.left}px"
+			@mouseenter=${this._cancelHideMetaTooltip}
+			@mouseleave=${this._scheduleHideMetaTooltip}>
+			${meta.clientActivityId ? html`<div class="mt-row">
+				<span class="mt-title">Client Activity ID</span>
+				<span class="mt-val">${meta.clientActivityId}</span>
+				<button class="mt-copy${this._metaCopyDone ? ' mt-copy-done' : ''}" title="Copy to clipboard" @click=${() => this._copyActivityId()}>
+					<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M4 4h1V2.5A1.5 1.5 0 0 1 6.5 1h7A1.5 1.5 0 0 1 15 2.5v7a1.5 1.5 0 0 1-1.5 1.5H12v1h1.5A2.5 2.5 0 0 0 16 9.5v-7A2.5 2.5 0 0 0 13.5 0h-7A2.5 2.5 0 0 0 4 2.5V4z"/><path d="M2.5 5A2.5 2.5 0 0 0 0 7.5v6A2.5 2.5 0 0 0 2.5 16h6a2.5 2.5 0 0 0 2.5-2.5v-6A2.5 2.5 0 0 0 8.5 5h-6zM1 7.5A1.5 1.5 0 0 1 2.5 6h6A1.5 1.5 0 0 1 10 7.5v6a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 1 13.5v-6z"/></svg>
+				</button>
+			</div>` : nothing}
+			${statRows.length > 0 ? html`${meta.clientActivityId ? html`<div class="mt-sep"></div>` : nothing}${statRows}` : nothing}
 		</div>`;
 	}
 
@@ -1182,35 +1337,16 @@ this.requestUpdate();
 
 	private _buildClipboardText(): string {
 		if (!this._table) return '';
-		const rows = this._table.getRowModel().rows;
-		if (this._selectionRange) {
-			const { rowMin, rowMax, colMin, colMax } = this._selectionRange;
-			const lines = [this.columns.slice(colMin, colMax + 1).map(c => c.name).join('\t')];
-			for (let r = rowMin; r <= rowMax; r++) {
-				const row = rows[r];
-				if (!row) continue;
-				const cells: string[] = [];
-				for (let c = colMin; c <= colMax; c++) cells.push(getCellDisplayValue(row.original[c]));
-				lines.push(cells.join('\t'));
-			}
-			return lines.join('\n');
-		}
-		if (this._selectedCell) {
-			const row = rows[this._selectedCell.row];
-			if (row) return getCellDisplayValue(row.original[this._selectedCell.col]);
-		}
-		const lines = [this.columns.map(c => c.name).join('\t')];
-		for (const row of rows) {
-			lines.push(row.original.map(cell => getCellDisplayValue(cell)).join('\t'));
-		}
-		return lines.join('\n');
+		const rows = this._table.getRowModel().rows.map(r => r.original);
+		return buildClipboardText(this.columns, rows, this._selectionRange, this._selectedCell);
 	}
 
 	private _writeTextToClipboard(text: string): void {
+		// eslint-disable-next-line eqeqeq
 		const value = text == null ? '' : String(text);
 		try {
 			if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-				navigator.clipboard.writeText(value);
+				navigator.clipboard.writeText(value).catch(() => { /* ignore — document may not be focused */ });
 				return;
 			}
 		} catch { /* ignore */ }

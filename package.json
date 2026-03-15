@@ -1142,7 +1142,7 @@
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src/host",
+    "lint": "eslint src/host src/webview",
     "test": "vscode-test",
     "test:webview": "vitest run",
     "test:webview:watch": "vitest"

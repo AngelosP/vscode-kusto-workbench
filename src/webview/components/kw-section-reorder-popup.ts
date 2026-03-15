@@ -146,8 +146,10 @@ export class KwSectionReorderPopup extends LitElement {
 			border: 1px solid transparent;
 			cursor: grab;
 			user-select: none;
-			transition: transform 200ms cubic-bezier(0.2, 0, 0, 1),
-			            background 150ms ease,
+			/* NOTE: transform is NOT listed here — it is managed exclusively by the
+			   FLIP animation code (inline styles) to avoid interference with the
+			   panel entrance animation. */
+			transition: background 150ms ease,
 			            border-color 150ms ease,
 			            box-shadow 150ms ease,
 			            opacity 150ms ease;
@@ -287,6 +289,7 @@ export class KwSectionReorderPopup extends LitElement {
 		this._draggingId = '';
 		this._dropIndex = -1;
 		this._originId = '';
+		this._cardPositions.clear();
 	}
 
 	get isOpen(): boolean {
@@ -577,7 +580,7 @@ export class KwSectionReorderPopup extends LitElement {
 			card.style.transform = `translate(${dx}px, ${dy}px)`;
 			card.style.transition = 'none';
 			// Force reflow
-			card.offsetHeight; // eslint-disable-line @typescript-eslint/no-unused-expressions
+			card.offsetHeight;
 			card.style.transition = 'transform 280ms cubic-bezier(0.2, 0, 0, 1)';
 			card.style.transform = '';
 			card.addEventListener('transitionend', () => {

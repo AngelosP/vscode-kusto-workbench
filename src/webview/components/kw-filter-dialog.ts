@@ -200,17 +200,17 @@ function getOpsForType(type: RuleDataType): Array<{ v: string; t: string }> {
 		{ v: 'isEmpty', t: 'Null or empty' },
 		{ v: 'isNotEmpty', t: 'Not null or empty' },
 	];
-	if (type === 'number') return base.concat([
+	if (type === 'number') {return base.concat([
 		{ v: 'lt', t: 'Less than' }, { v: 'gt', t: 'Greater than' },
 		{ v: 'between', t: 'Between' }, { v: 'top', t: 'Top...' }, { v: 'bottom', t: 'Last...' },
-	]);
-	if (type === 'date') return base.concat([
+	]);}
+	if (type === 'date') {return base.concat([
 		{ v: 'before', t: 'Before' }, { v: 'after', t: 'After' },
 		{ v: 'between', t: 'Between' }, { v: 'last', t: 'Last...' },
-	]);
-	if (type === 'json') return base.concat([
+	]);}
+	if (type === 'json') {return base.concat([
 		{ v: 'contains', t: 'Contains' }, { v: 'notContains', t: 'Does not contain' },
-	]);
+	]);}
 	return base.concat([
 		{ v: 'startsWith', t: 'Starts with' }, { v: 'notStartsWith', t: 'Does not start with' },
 		{ v: 'endsWith', t: 'Ends with' }, { v: 'notEndsWith', t: 'Does not end with' },

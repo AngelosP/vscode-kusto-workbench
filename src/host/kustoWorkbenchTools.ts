@@ -11,7 +11,6 @@ import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } 
 
 function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> | vscode.LanguageModelToolInvocationPrepareOptions<T>): T {
 	// Try 'input' first (original API), then 'parameters' (new API)
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const opts = options as any;
 	return opts.input ?? opts.parameters ?? ({} as T);
 }

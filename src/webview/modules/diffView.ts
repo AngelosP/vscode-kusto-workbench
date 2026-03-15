@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // Reusable dataset diff view for the query editor webview.
 // Mechanically ported from legacy JS — strict typing deferred to dedicated refactor.
 //
@@ -459,6 +458,7 @@ const clampSharedResultsTableToMaxRows = (resultsHostEl: any, maxRows: any) => {
 
 const getCellFromState = (state: any, rowIndex: any, colIndex: any) => {
 	try {
+		// eslint-disable-next-line eqeqeq
 		if (!state || rowIndex == null || colIndex == null) return undefined;
 		const rows = getRows(state);
 		if (rowIndex < 0 || rowIndex >= rows.length) return undefined;
@@ -591,6 +591,7 @@ const buildDiffModelFromStates = (aState: any, bState: any, labels: any) => {
 const renderInto = (containerEl: any, model: any, options: any) => {
 	if (!containerEl) return;
 	const opts = (options && typeof options === 'object') ? options : {};
+	// eslint-disable-next-line eqeqeq
 	const joinColumnKey = (opts && opts.joinColumnKey != null) ? String(opts.joinColumnKey) : '';
 	const diffKeyPrefix = sanitizeDomIdPart(opts && opts.diffKeyPrefix ? opts.diffKeyPrefix : 'diff');
 

@@ -184,8 +184,10 @@ function __kustoNormalizeColumnNameForComparison( name: any) {
 	try {
 		// Columns can be plain strings or {name, type} objects (Kusto column metadata).
 		if (name && typeof name === 'object' && 'name' in name) {
+			// eslint-disable-next-line eqeqeq
 			return String(name.name == null ? '' : name.name).trim().toLowerCase();
 		}
+		// eslint-disable-next-line eqeqeq
 		return String(name == null ? '' : name).trim().toLowerCase();
 	} catch {
 		return '';
@@ -959,6 +961,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 		const fmt = opts.formatter || ((v: any) => String(v));
 		const lowerIsBetter = opts.lowerIsBetter !== false;
 
+		// eslint-disable-next-line eqeqeq
 		if (sourceVal == null || comparisonVal == null || !isFinite(sourceVal) || !isFinite(comparisonVal)) {
 			return null; // not available
 		}
@@ -992,6 +995,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 		return (ms / 1000).toFixed(3) + 's';
 	};
 	const fmtBytes = (bytes: any) => {
+		// eslint-disable-next-line eqeqeq
 		if (bytes == null || !isFinite(bytes)) { return '?'; }
 		if (bytes < 1024) { return bytes + ' B'; }
 		if (bytes < 1024 * 1024) { return (bytes / 1024).toFixed(1) + ' KB'; }
@@ -999,6 +1003,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 		return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 	};
 	const fmtNum = (n: any) => {
+		// eslint-disable-next-line eqeqeq
 		if (n == null) { return '?'; }
 		return Number(n).toLocaleString();
 	};
@@ -1547,6 +1552,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
+	// eslint-disable-next-line eqeqeq
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
 		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch { /* ignore */ }
 		return '';
@@ -1558,7 +1564,9 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 	// This applies to:
 	// - The Copilot optimize flow (optimized override query provided)
 	// - The "Compare two queries" button (creates the optimized comparison section first)
+	// eslint-disable-next-line eqeqeq
 	const isCompareButtonScenario = isManualCompareOnly && (comparisonQueryOverride == null);
+	// eslint-disable-next-line eqeqeq
 	const isOptimizeScenario = ((comparisonQueryOverride != null) && !!overrideText.trim()) || isCompareButtonScenario;
 	let sourceNameForOptimize = '';
 	let desiredOptimizedName = '';

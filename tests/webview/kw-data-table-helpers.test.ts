@@ -6,6 +6,7 @@ import {
 	inferColumnTypes,
 	getCellDisplayValue,
 	getCellSortValue,
+	buildClipboardText,
 	type DataTableColumn,
 	type CellValue,
 } from '../../src/webview/components/kw-data-table.js';
@@ -330,5 +331,69 @@ describe('getCellSortValue', () => {
 	it('object with .full object → falls back to display value', () => {
 		const v = getCellSortValue({ full: { a: 1 } });
 		expect(v).toBe('{"a":1}');
+	});
+});
+
+// ── buildClipboardText ────────────────────────────────────────────────────────
+
+describe('buildClipboardText', () => {
+	const cols: DataTableColumn[] = [
+		{ name: 'Name' },
+		{ name: 'Age' },
+		{ name: 'City' },
+	];
+	const rows: CellValue[][] = [
+		['Alice', 30, 'Seattle'],
+		['Bob', 25, 'Portland'],
+		['Carol', 35, 'Denver'],
+	];
+
+	it('copies full table with headers when nothing is selected', () => {
+		const text = buildClipboardText(cols, rows, null, null);
+		expect(text).toBe(
+			'Name\tAge\tCity\n' +
+			'Alice\t30\tSeattle\n' +
+			'Bob\t25\tPortland\n' +
+			'Carol\t35\tDenver'
+		);
+	});
+
+	it('copies single cell value without header when selectedCell is set', () => {
+		const text = buildClipboardText(cols, rows, null, { row: 1, col: 0 });
+		expect(text).toBe('Bob');
+	});
+
+	it('copies single cell value without header for a 1×1 range selection', () => {
+		// When a user drags within a single cell, _selectionRange becomes 1×1.
+		// The clipboard text should still be just the cell value — no column header.
+		const text = buildClipboardText(cols, rows, { rowMin: 0, rowMax: 0, colMin: 1, colMax: 1 }, { row: 0, col: 1 });
+		expect(text).toBe('30');
+	});
+
+	it('copies multi-cell range with headers', () => {
+		const text = buildClipboardText(cols, rows, { rowMin: 0, rowMax: 1, colMin: 0, colMax: 1 }, { row: 0, col: 0 });
+		expect(text).toBe(
+			'Name\tAge\n' +
+			'Alice\t30\n' +
+			'Bob\t25'
+		);
+	});
+
+	it('copies single column range (multiple rows) with header', () => {
+		const text = buildClipboardText(cols, rows, { rowMin: 0, rowMax: 2, colMin: 2, colMax: 2 }, { row: 0, col: 2 });
+		expect(text).toBe(
+			'City\n' +
+			'Seattle\n' +
+			'Portland\n' +
+			'Denver'
+		);
+	});
+
+	it('copies null/undefined cell values as empty string', () => {
+		const nullRows: CellValue[][] = [
+			[null, undefined, 'hello'],
+		];
+		const text = buildClipboardText(cols, nullRows, null, { row: 0, col: 0 });
+		expect(text).toBe('');
 	});
 });

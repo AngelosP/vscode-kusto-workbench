@@ -3060,18 +3060,18 @@ function scrollToColumn(colIndex: any, boxId: any) {
 
 // A delegated mouseenter/mouseleave handler positions and shows/hides using a class.
 (function __kustoInitResultsLabelTooltipPositioning() {
-	var _hideTimer: any = null;
+	let _hideTimer: any = null;
 
 	function positionAndShow(anchor: any) {
-		var tooltip = anchor.querySelector('.results-label-tooltip') as any;
+		const tooltip = anchor.querySelector('.results-label-tooltip') as any;
 		if (!tooltip) return;
 		clearTimeout(_hideTimer);
 		// Make it visible first so we can measure it
 		tooltip.classList.add('is-visible');
-		var rect = anchor.getBoundingClientRect();
-		var ttRect = tooltip.getBoundingClientRect();
-		var top = rect.bottom + 4;
-		var left = rect.left;
+		const rect = anchor.getBoundingClientRect();
+		const ttRect = tooltip.getBoundingClientRect();
+		let top = rect.bottom + 4;
+		let left = rect.left;
 		// Prevent overflowing the right edge of the viewport
 		if (left + ttRect.width > window.innerWidth - 8) {
 			left = Math.max(8, window.innerWidth - ttRect.width - 8);
@@ -3092,24 +3092,24 @@ function scrollToColumn(colIndex: any, boxId: any) {
 	}
 
 	document.addEventListener('mouseenter', function (e: any) {
-		var anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
+		const anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
 		if (anchor) {
 			positionAndShow(anchor);
 		}
 		// Keep tooltip open while hovering the tooltip itself
-		var tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
+		const tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
 		if (tt && tt.classList.contains('is-visible')) {
 			clearTimeout(_hideTimer);
 		}
 	}, true);
 
 	document.addEventListener('mouseleave', function (e: any) {
-		var anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
+		const anchor = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip-anchor');
 		if (anchor) {
-			var tooltip = anchor.querySelector('.results-label-tooltip') as any;
+			const tooltip = anchor.querySelector('.results-label-tooltip') as any;
 			if (tooltip) scheduleHide(tooltip);
 		}
-		var tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
+		const tt = (e.target as HTMLElement).closest && (e.target as HTMLElement).closest('.results-label-tooltip');
 		if (tt) {
 			scheduleHide(tt);
 		}

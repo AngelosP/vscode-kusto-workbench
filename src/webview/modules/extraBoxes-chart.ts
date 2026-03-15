@@ -2145,8 +2145,11 @@ export function __kustoRenderChart( boxId: any) {
 						const av = a.__kustoSortValue;
 						const bv = b.__kustoSortValue;
 						// Handle null/undefined values - push them to the end.
+						// eslint-disable-next-line eqeqeq
 						if (av == null && bv == null) return 0;
+						// eslint-disable-next-line eqeqeq
 						if (av == null) return 1;
+						// eslint-disable-next-line eqeqeq
 						if (bv == null) return -1;
 						// Compare values.
 						let cmp = 0;

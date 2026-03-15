@@ -1500,6 +1500,7 @@ export class KwTransformationSection extends LitElement {
 				}
 				if (a.fn === 'min' || a.fn === 'max') {
 					const n = tryParseNum(raw);
+					// eslint-disable-next-line eqeqeq
 					const v: any = n !== null ? n : (raw == null ? null : String(raw));
 					if (v === null) continue;
 					if (a.fn === 'min') { if (a.min === null || v < a.min) a.min = v; }
@@ -1635,6 +1636,7 @@ export class KwTransformationSection extends LitElement {
 		for (const r of rows) {
 			const row = Array.isArray(r) ? r : [];
 			const raw = getRaw(row[idx]);
+			// eslint-disable-next-line eqeqeq
 			const key = raw == null ? 'null' : (typeof raw === 'string' ? 's:' + raw : JSON.stringify(raw));
 			if (seen.has(key)) continue;
 			seen.add(key);
