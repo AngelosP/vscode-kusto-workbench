@@ -14,12 +14,12 @@ const safeString = (v: unknown): string => {
 	} catch { return '[unprintable]'; }
 };
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 const normalizeCell = (cell: unknown): unknown[] => {
 	try {
-		if (typeof (_win as any).__kustoNormalizeCellForComparison === 'function') {
-			return (_win as any).__kustoNormalizeCellForComparison(cell);
+		if (typeof _win.__kustoNormalizeCellForComparison === 'function') {
+			return _win.__kustoNormalizeCellForComparison(cell);
 		}
 	} catch { /* ignore */ }
 	if (cell === null || cell === undefined) return ['n', null];
@@ -65,13 +65,13 @@ const getRows = (state: any): unknown[][] => {
 const buildColumnMappingByName = (state: any, canonicalNormalizedNames: string[]): number[] => {
 	try {
 		if (typeof (_win.__kustoBuildNameBasedColumnMapping) === 'function') {
-			return (_win.__kustoBuildNameBasedColumnMapping as any)(state, canonicalNormalizedNames);
+			return _win.__kustoBuildNameBasedColumnMapping(state, canonicalNormalizedNames);
 		}
 	} catch { /* ignore */ }
 	const cols = getColumns(state);
 	const used = new Set<number>();
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return (_win.__kustoNormalizeColumnNameForComparison as any)(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
 		return safeString(n).trim().toLowerCase();
 	};
 	const normalized = cols.map(normName);
@@ -89,7 +89,7 @@ const buildCanonicalColumnsSorted = (aState: any, bState: any): { columns: Canon
 	const aCols = getColumns(aState);
 	const bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return (_win.__kustoNormalizeColumnNameForComparison as any)(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aNorm = aCols.map(normName);
@@ -192,7 +192,7 @@ const buildDiffModelFromStates = (aState: any, bState: any, labels: any): DiffMo
 
 	const aCols = getColumns(aState), bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return (_win.__kustoNormalizeColumnNameForComparison as any)(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aSet = new Set(aCols.map(normName)), bSet = new Set(bCols.map(normName));
@@ -304,15 +304,15 @@ export class KwDiffView extends LitElement {
 		let aState: any = null, bState: any = null;
 		try {
 			if (typeof (_win.__kustoGetResultsState) === 'function') {
-				aState = (_win.__kustoGetResultsState as any)(aBoxId);
-				bState = (_win.__kustoGetResultsState as any)(bBoxId);
+				aState = _win.__kustoGetResultsState!(aBoxId);
+				bState = _win.__kustoGetResultsState!(bBoxId);
 			}
 		} catch { /* ignore */ }
 
 		if (!aState || !bState) {
 			try {
-				if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
-					(_win.vscode as any).postMessage({ type: 'showInfo', message: 'No results available to diff yet. Run both queries first.' });
+				if (_win.vscode && typeof _win.vscode?.postMessage === 'function') {
+					_win.vscode?.postMessage({ type: 'showInfo', message: 'No results available to diff yet. Run both queries first.' });
 				}
 			} catch { /* ignore */ }
 			return;
@@ -534,7 +534,7 @@ export class KwDiffView extends LitElement {
 
 // ── Window bridges (backward compat) ──
 
-(window as any).closeDiffView = function () {
+window.closeDiffView = function () {
 	try {
 		const el = document.querySelector('kw-diff-view') as KwDiffView | null;
 		if (el) { el.close(); return; }
@@ -544,7 +544,7 @@ export class KwDiffView extends LitElement {
 	} catch { /* ignore */ }
 };
 
-(window as any).openDiffViewModal = function (args: any) {
+window.openDiffViewModal = function (args: any) {
 	try {
 		const el = document.querySelector('kw-diff-view') as KwDiffView | null;
 		if (el) { el.open(args); return; }
@@ -552,9 +552,9 @@ export class KwDiffView extends LitElement {
 };
 
 // Expose the model builder for queryBoxes-execution.ts (counts matching/unmatching rows)
-_win.__kustoDiffView = _win.__kustoDiffView || {};
-(_win.__kustoDiffView as Record<string, unknown>).buildModelFromResultsStates = buildDiffModelFromStates;
-(_win.__kustoDiffView as Record<string, unknown>).render = function () { /* no-op — Lit component handles rendering */ };
+_win.__kustoDiffView = _win.__kustoDiffView || {} as typeof _win.__kustoDiffView;
+_win.__kustoDiffView.buildModelFromResultsStates = buildDiffModelFromStates;
+_win.__kustoDiffView.render = function () { /* no-op — Lit component handles rendering */ };
 
 declare global {
 	interface HTMLElementTagNameMap {

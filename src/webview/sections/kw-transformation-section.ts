@@ -280,7 +280,7 @@ export class KwTransformationSection extends LitElement {
 					.rows=${this._resultRows}
 					.options=${{ label: 'Transformations', showExecutionTime: false, compact: true, hideTopBorder: true } as DataTableOptions}
 					@save=${(e: CustomEvent) => {
-						const vscode = (window as any).vscode;
+						const vscode = window.vscode;
 						if (vscode && typeof vscode.postMessage === 'function') {
 							vscode.postMessage({
 								type: 'saveResultsCsv',
@@ -749,8 +749,8 @@ export class KwTransformationSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof (window as any).__kustoGetScrollY === 'function'
-			? (window as any).__kustoGetScrollY as () => number
+		const getScrollY = typeof window.__kustoGetScrollY === 'function'
+			? window.__kustoGetScrollY as () => number
 			: () => 0;
 
 		const startPageY = e.clientY + getScrollY();
@@ -761,8 +761,8 @@ export class KwTransformationSection extends LitElement {
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof (window as any).__kustoMaybeAutoScrollWhileDragging === 'function') {
-					(window as any).__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
+					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
 			} catch { /* ignore */ }
 			const pageY = moveEvent.clientY + getScrollY();
@@ -949,7 +949,7 @@ export class KwTransformationSection extends LitElement {
 
 				// Charts that reference this transformation.
 				if (id.startsWith('chart_')) {
-					const w = window as any;
+					const w = window;
 					const st = typeof w.__kustoGetChartState === 'function' ? w.__kustoGetChartState(id) : null;
 					if (!st || String(st.dataSourceId || '') !== myId) continue;
 
@@ -982,7 +982,7 @@ export class KwTransformationSection extends LitElement {
 
 				// Downstream transformations that reference this transformation.
 				if (id.startsWith('transformation_')) {
-					const w = window as any;
+					const w = window;
 					const stMap = w.transformationStateByBoxId;
 					const st = stMap ? stMap[id] : null;
 					if (!st || String(st.dataSourceId || '') !== myId) continue;
@@ -1220,7 +1220,7 @@ export class KwTransformationSection extends LitElement {
 	}
 
 	private _syncGlobalState(): void {
-		const w = window as any;
+		const w = window;
 		const stateMap = w.transformationStateByBoxId;
 		if (!stateMap || typeof stateMap !== 'object') return;
 		const st = stateMap[this.boxId];
@@ -1245,7 +1245,7 @@ export class KwTransformationSection extends LitElement {
 	}
 
 	private _writeToGlobalState(): void {
-		const w = window as any;
+		const w = window;
 		if (!w.transformationStateByBoxId) w.transformationStateByBoxId = {};
 		const st = w.transformationStateByBoxId[this.boxId] || {};
 
@@ -1274,7 +1274,7 @@ export class KwTransformationSection extends LitElement {
 
 	private _refreshDatasets(): void {
 		try {
-			const fn = (window as any).__kustoGetChartDatasetsInDomOrder;
+			const fn = window.__kustoGetChartDatasetsInDomOrder;
 			if (typeof fn === 'function') {
 				// Filter out this transformation's own ID to prevent circular dependency.
 				const all = fn() || [];
@@ -1286,7 +1286,7 @@ export class KwTransformationSection extends LitElement {
 	private _getColumnNames(): string[] {
 		const ds = this._datasets.find(d => d.id === this._dataSourceId);
 		if (!ds) return [];
-		const norm = (window as any).__kustoNormalizeResultsColumnName;
+		const norm = window.__kustoNormalizeResultsColumnName;
 		const cols = Array.isArray(ds.columns) ? ds.columns : [];
 		if (typeof norm === 'function') {
 			return cols.map((c: string) => norm(c)).filter((c: string) => c);
@@ -1308,7 +1308,7 @@ export class KwTransformationSection extends LitElement {
 
 	private _syncResultsToGlobal(): void {
 		try {
-			const w = window as any;
+			const w = window;
 			const cols = this._resultColumns.map(c => c.name);
 			const rows = this._resultRows;
 			// Register results directly in the global state map so other sections
@@ -1341,7 +1341,7 @@ export class KwTransformationSection extends LitElement {
 			return;
 		}
 
-		const w = window as any;
+		const w = window;
 		const norm = typeof w.__kustoNormalizeResultsColumnName === 'function'
 			? w.__kustoNormalizeResultsColumnName : (c: string) => c;
 		const colNames = (ds.columns || []).map((c: string) => norm(c)).filter((c: string) => c);
@@ -1394,7 +1394,7 @@ export class KwTransformationSection extends LitElement {
 	}
 
 	private _computeDerive(colNames: string[], _colIndex: Record<string, number>, rows: unknown[][], getRaw: (v: unknown) => unknown): void {
-		const w = window as any;
+		const w = window;
 		let deriveColumns = this._deriveColumns;
 		if (!deriveColumns.length) {
 			deriveColumns = [{ name: '', expression: '' }];
@@ -1654,7 +1654,7 @@ export class KwTransformationSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = (window as any).schedulePersist;
+			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
 		} catch { /* ignore */ }
 	}
@@ -1684,7 +1684,7 @@ export class KwTransformationSection extends LitElement {
 
 		// Back-compat: if deriveColumns is empty but legacy fields exist, serialize them
 		if (!deriveColumns.length) {
-			const w = window as any;
+			const w = window;
 			const st = w.transformationStateByBoxId?.[this.boxId];
 			if (st?.deriveColumnName || st?.deriveExpression) {
 				data.deriveColumns = [{ name: st.deriveColumnName || 'derived', expression: st.deriveExpression || '' }];

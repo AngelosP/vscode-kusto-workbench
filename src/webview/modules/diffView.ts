@@ -11,7 +11,7 @@
 export {};
 
 declare const escapeHtml: (s: string) => string;
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 const safeString = (v: any) => {
 	try {
@@ -36,8 +36,8 @@ const getBoxLabel = (boxId: any) => {
 
 const normalizeCell = (cell: any) => {
 	try {
-		if (typeof (_win as any).__kustoNormalizeCellForComparison === 'function') {
-			return (_win as any).__kustoNormalizeCellForComparison(cell);
+		if (typeof _win.__kustoNormalizeCellForComparison === 'function') {
+			return _win.__kustoNormalizeCellForComparison(cell);
 		}
 	} catch { /* ignore */ }
 	try {
@@ -402,7 +402,7 @@ const renderUsingSharedResultsTable = (hostEl: any, boxId: any, label: any, colu
 		// visibility handler will hide the entire body, making it look like rows are missing.
 		try {
 			if (!(_win.__kustoResultsVisibleByBoxId) || typeof (_win.__kustoResultsVisibleByBoxId) !== 'object') {
-				(_win as any).__kustoResultsVisibleByBoxId = {};
+				_win.__kustoResultsVisibleByBoxId = {};
 			}
 			(_win.__kustoResultsVisibleByBoxId as any)[String(boxId || '')] = true;
 			if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
@@ -712,7 +712,7 @@ const ensureModalHookups = () => {
 	} catch { /* ignore */ }
 };
 
-(_win as any).closeDiffView = function () {
+_win.closeDiffView = function () {
 	try {
 		const modal = document.getElementById('diffViewModal');
 		if (modal && modal.classList) {
@@ -721,7 +721,7 @@ const ensureModalHookups = () => {
 	} catch { /* ignore */ }
 };
 
-(_win as any).openDiffViewModal = function (args: any) {
+_win.openDiffViewModal = function (args: any) {
 	ensureModalHookups();
 
 	const aBoxId = args && typeof args === 'object' ? String(args.aBoxId || '') : '';

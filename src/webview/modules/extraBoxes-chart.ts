@@ -2,14 +2,14 @@
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // Access shared chart/transformation state from window (set by extraBoxes.ts).
 // Initialize on window if not already present, so load order doesn't matter.
-(window as any).chartStateByBoxId = (window as any).chartStateByBoxId || {};
-let chartStateByBoxId = (window as any).chartStateByBoxId;
-(window as any).__kustoChartBoxes = (window as any).__kustoChartBoxes || [];
-let chartBoxes: any[] = (window as any).__kustoChartBoxes;
+window.chartStateByBoxId = window.chartStateByBoxId || {};
+let chartStateByBoxId = window.chartStateByBoxId;
+window.__kustoChartBoxes = window.__kustoChartBoxes || [];
+let chartBoxes: any[] = window.__kustoChartBoxes;
 export const __kustoChartTypeIcons = {
 	line: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,24 10,16 16,20 22,8 28,12"/></svg>',
 	area: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4,24 L10,16 L16,20 L22,8 L28,12 L28,28 L4,28 Z"/></svg>',
@@ -653,7 +653,7 @@ export function __kustoSyncLabelSettingsUI( boxId: any) {
 		const modeEl = document.getElementById(id + '_chart_label_mode') as any;
 		if (modeEl) {
 			modeEl.value = mode;
-			try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
 		}
 		
 		// Sync density slider
@@ -730,14 +730,14 @@ export function __kustoSyncAxisSettingsUI( boxId: any, axis: any) {
 			const sortEl = document.getElementById(id + '_chart_' + ax + '_sort') as any;
 			if (sortEl) {
 				sortEl.value = settings.sortDirection || '';
-				try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
 			}
 			
 			// X-axis specific: Scale type
 			const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale') as any;
 			if (scaleEl) {
 				scaleEl.value = settings.scaleType || '';
-				try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
 			}
 			
 			// X-axis specific: Label density slider (100 = All/show all, 1 = minimum density)
@@ -1084,7 +1084,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		}
 	} catch { /* ignore */ }
 	// Sync the unified dropdown button text for Data.
-	try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch { /* ignore */ }
 
 	// Update chart type picker selection (visual buttons)
 	try {
@@ -1126,7 +1126,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				labelModeText.textContent = opt ? opt.text : 'Auto (smart)';
 			}
 			// Also sync dropdown if it exists
-			try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 
@@ -1172,7 +1172,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	const xOptions = ['', ...colNames.filter((c: any) => c)];
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
 	// Sync the unified dropdown button text for X.
-	try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch { /* ignore */ }
 
 	// Populate Y checkbox dropdown (for line/area/bar).
 	const yMenu = document.getElementById(id + '_chart_y_menu') as any;
@@ -1191,7 +1191,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			checked: desiredYCols.includes(c)
 		}));
 		try {
-			yMenu.innerHTML = (window as any).__kustoDropdown.renderCheckboxItemsHtml(items, {
+			yMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
 				dropdownId: id + '_chart_y',
 				onChangeJs: '__kustoOnChartYCheckboxChanged'
 			});
@@ -1201,7 +1201,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		// Update button text.
 		const selected = desiredYCols.filter((c: any) => yOptions.includes(c));
 		try {
-			(window as any).__kustoDropdown.updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
+			window.__kustoDropdown.updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
 		} catch { /* ignore */ }
 	}
 
@@ -1222,7 +1222,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			checked: desiredTooltipCols.includes(c)
 		}));
 		try {
-			tooltipMenu.innerHTML = (window as any).__kustoDropdown.renderCheckboxItemsHtml(items, {
+			tooltipMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
 				dropdownId: isPieOrFunnel ? (id + '_chart_tooltip_pie') : (id + '_chart_tooltip'),
 				onChangeJs: '__kustoOnChartTooltipCheckboxChanged'
 			});
@@ -1230,7 +1230,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			tooltipMenu.innerHTML = '<div class="kusto-dropdown-empty">No columns available.</div>';
 		}
 		try {
-			(window as any).__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
+			window.__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
 		} catch { /* ignore */ }
 	}
 
@@ -1246,7 +1246,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		_win.__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
 		try { legendSelect.disabled = disableLegend; } catch { /* ignore */ }
 		// Sync the unified dropdown button text and disabled state for Legend.
-		try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch { /* ignore */ }
+		try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch { /* ignore */ }
 		// Also sync the button's disabled state.
 		try {
 			const legendBtn = document.getElementById(id + '_chart_legend_btn') as any;
@@ -1259,8 +1259,8 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
 	// Sync the unified dropdown button text for Label and Value.
-	try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
-	try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
 
 	// Funnel Sort dropdown: show only for funnel chart type.
 	try {
@@ -1273,7 +1273,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			const sortOptions = ['', ...colNames.filter((c: any) => c)];
 			const currentSortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
 			_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
-			try { (window as any).__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch { /* ignore */ }
 			// Update the sort UI (direction button visibility).
 			try { __kustoUpdateFunnelSortUI(id); } catch { /* ignore */ }
 		}
@@ -1600,7 +1600,7 @@ export function __kustoRenderChart( boxId: any) {
 	if (!canvas) return;
 
 	// If ECharts isn't loaded yet, show a simple placeholder.
-	if (!(window as any).echarts || typeof (window as any).echarts.init !== 'function') {
+	if (!window.echarts || typeof window.echarts.init !== 'function') {
 		try { canvas.textContent = 'Loading chart…'; } catch { /* ignore */ }
 		return;
 	}
@@ -1735,7 +1735,7 @@ export function __kustoRenderChart( boxId: any) {
 		const prev = st.__echarts && st.__echarts.instance ? st.__echarts : null;
 		if (!prev || prev.canvasId !== canvasId || prev.isDark !== isDark) {
 			try { if (prev && prev.instance) prev.instance.dispose(); } catch { /* ignore */ }
-			st.__echarts = { instance: (window as any).echarts.init(canvas, themeName), canvasId, isDark };
+			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark };
 			// Canvas changed (Edit <-> Preview). Rebind resize observer.
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
@@ -3457,7 +3457,7 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 	const st = __kustoGetChartState(boxId);
 	const menuId = boxId + '_chart_y_menu';
 	try {
-		const selected = (window as any).__kustoDropdown.getCheckboxSelections(menuId);
+		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
 		st.yColumns = selected;
 		st.yColumn = selected.length ? selected[0] : '';
 		// If multiple Y columns are selected, Legend grouping is not supported.
@@ -3479,12 +3479,12 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 				legendBtn.disabled = disableLegend;
 				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
 			}
-			try { (window as any).__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch { /* ignore */ }
 			// Update legend position button visibility when legend column is cleared.
 			try { __kustoUpdateLegendPositionButtonUI(boxId); } catch { /* ignore */ }
 		} catch { /* ignore */ }
 		// Update button text.
-		(window as any).__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
+		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
 	} catch { /* ignore */ }
 	// Update series colors UI in Y-axis settings popup (in case it's open)
 	try {
@@ -3516,9 +3516,9 @@ export function __kustoOnChartTooltipCheckboxChanged( dropdownId: any) {
 	if (!boxId) return;
 	const st = __kustoGetChartState(boxId);
 	try {
-		const selected = (window as any).__kustoDropdown.getCheckboxSelections(menuId);
+		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
 		st.tooltipColumns = selected;
-		(window as any).__kustoDropdown.updateCheckboxButtonText(textId, selected, '(none)');
+		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, '(none)');
 	} catch { /* ignore */ }
 	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
@@ -3606,69 +3606,69 @@ export function removeChartBox( boxId: any) {
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoNormalizeLegendPosition = __kustoNormalizeLegendPosition;
-(window as any).__kustoUpdateLegendPositionButtonUI = __kustoUpdateLegendPositionButtonUI;
-(window as any).__kustoOnChartLegendPositionClicked = __kustoOnChartLegendPositionClicked;
-(window as any).__kustoFormatNumber = __kustoFormatNumber;
-(window as any).__kustoComputeAxisFontSize = __kustoComputeAxisFontSize;
-(window as any).__kustoGetChartState = __kustoGetChartState;
-(window as any).__kustoGetDefaultAxisSettings = __kustoGetDefaultAxisSettings;
-(window as any).__kustoHasCustomAxisSettings = __kustoHasCustomAxisSettings;
-(window as any).__kustoGetDefaultYAxisSettings = __kustoGetDefaultYAxisSettings;
-(window as any).__kustoHasCustomYAxisSettings = __kustoHasCustomYAxisSettings;
-(window as any).__kustoUpdateSeriesColorsUI = __kustoUpdateSeriesColorsUI;
-(window as any).__kustoOnSeriesColorChanged = __kustoOnSeriesColorChanged;
-(window as any).__kustoResetSeriesColor = __kustoResetSeriesColor;
-(window as any).__kustoToggleAxisSettingsPopup = __kustoToggleAxisSettingsPopup;
-(window as any).__kustoCloseAxisSettingsPopup = __kustoCloseAxisSettingsPopup;
-(window as any).__kustoCloseAllAxisSettingsPopups = __kustoCloseAllAxisSettingsPopups;
-(window as any).__kustoToggleLabelSettingsPopup = __kustoToggleLabelSettingsPopup;
-(window as any).__kustoCloseLabelSettingsPopup = __kustoCloseLabelSettingsPopup;
-(window as any).__kustoSyncLabelSettingsUI = __kustoSyncLabelSettingsUI;
-(window as any).__kustoHasCustomLabelSettings = __kustoHasCustomLabelSettings;
-(window as any).__kustoUpdateLabelSettingsIndicator = __kustoUpdateLabelSettingsIndicator;
-(window as any).__kustoSyncAxisSettingsUI = __kustoSyncAxisSettingsUI;
-(window as any).__kustoUpdateAxisLabelIndicator = __kustoUpdateAxisLabelIndicator;
-(window as any).__kustoOnAxisSettingChanged = __kustoOnAxisSettingChanged;
-(window as any).__kustoResetAxisSettings = __kustoResetAxisSettings;
-(window as any).__kustoGetChartMinResizeHeight = __kustoGetChartMinResizeHeight;
-(window as any).__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
-(window as any).__kustoGetChartActiveCanvasElementId = __kustoGetChartActiveCanvasElementId;
-(window as any).__kustoGetIsDarkThemeForEcharts = __kustoGetIsDarkThemeForEcharts;
-(window as any).__kustoFormatUtcDateTime = __kustoFormatUtcDateTime;
-(window as any).__kustoComputeTimePeriodGranularity = __kustoComputeTimePeriodGranularity;
-(window as any).__kustoFormatTimePeriodLabel = __kustoFormatTimePeriodLabel;
-(window as any).__kustoGenerateContinuousTimeLabels = __kustoGenerateContinuousTimeLabels;
-(window as any).__kustoShouldShowTimeForUtcAxis = __kustoShouldShowTimeForUtcAxis;
-(window as any).__kustoComputeTimeAxisLabelRotation = __kustoComputeTimeAxisLabelRotation;
-(window as any).__kustoComputeCategoryLabelRotation = __kustoComputeCategoryLabelRotation;
-(window as any).__kustoMeasureLabelChars = __kustoMeasureLabelChars;
-(window as any).__kustoRefreshChartsForThemeChange = __kustoRefreshChartsForThemeChange;
-(window as any).__kustoStartEchartsThemeObserver = __kustoStartEchartsThemeObserver;
-(window as any).__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
-(window as any).__kustoRenderChart = __kustoRenderChart;
-(window as any).__kustoUpdateChartModeButtons = __kustoUpdateChartModeButtons;
-(window as any).__kustoApplyChartMode = __kustoApplyChartMode;
-(window as any).__kustoSetChartMode = __kustoSetChartMode;
-(window as any).__kustoUpdateChartVisibilityToggleButton = __kustoUpdateChartVisibilityToggleButton;
-(window as any).__kustoApplyChartBoxVisibility = __kustoApplyChartBoxVisibility;
-(window as any).toggleChartBoxVisibility = toggleChartBoxVisibility;
-(window as any).__kustoMaximizeChartBox = __kustoMaximizeChartBox;
-(window as any).__kustoAutoFitChartIfClipped = __kustoAutoFitChartIfClipped;
-(window as any).addChartBox = addChartBox;
-(window as any).__kustoOnChartDataSourceChanged = __kustoOnChartDataSourceChanged;
-(window as any).__kustoOnChartTypeChanged = __kustoOnChartTypeChanged;
-(window as any).__kustoSelectChartType = __kustoSelectChartType;
-(window as any).__kustoOnChartLabelsToggled = __kustoOnChartLabelsToggled;
-(window as any).__kustoOnChartLabelModeChanged = __kustoOnChartLabelModeChanged;
-(window as any).__kustoOnChartLabelDensityChanged = __kustoOnChartLabelDensityChanged;
-(window as any).__kustoOnChartMappingChanged = __kustoOnChartMappingChanged;
-(window as any).__kustoOnChartYCheckboxChanged = __kustoOnChartYCheckboxChanged;
-(window as any).__kustoOnChartTooltipCheckboxChanged = __kustoOnChartTooltipCheckboxChanged;
-(window as any).__kustoOnChartFunnelSortChanged = __kustoOnChartFunnelSortChanged;
-(window as any).__kustoOnChartFunnelSortDirToggle = __kustoOnChartFunnelSortDirToggle;
-(window as any).__kustoUpdateFunnelSortUI = __kustoUpdateFunnelSortUI;
-(window as any).removeChartBox = removeChartBox;
+window.__kustoNormalizeLegendPosition = __kustoNormalizeLegendPosition;
+window.__kustoUpdateLegendPositionButtonUI = __kustoUpdateLegendPositionButtonUI;
+window.__kustoOnChartLegendPositionClicked = __kustoOnChartLegendPositionClicked;
+window.__kustoFormatNumber = __kustoFormatNumber;
+window.__kustoComputeAxisFontSize = __kustoComputeAxisFontSize;
+window.__kustoGetChartState = __kustoGetChartState;
+window.__kustoGetDefaultAxisSettings = __kustoGetDefaultAxisSettings;
+window.__kustoHasCustomAxisSettings = __kustoHasCustomAxisSettings;
+window.__kustoGetDefaultYAxisSettings = __kustoGetDefaultYAxisSettings;
+window.__kustoHasCustomYAxisSettings = __kustoHasCustomYAxisSettings;
+window.__kustoUpdateSeriesColorsUI = __kustoUpdateSeriesColorsUI;
+window.__kustoOnSeriesColorChanged = __kustoOnSeriesColorChanged;
+window.__kustoResetSeriesColor = __kustoResetSeriesColor;
+window.__kustoToggleAxisSettingsPopup = __kustoToggleAxisSettingsPopup;
+window.__kustoCloseAxisSettingsPopup = __kustoCloseAxisSettingsPopup;
+window.__kustoCloseAllAxisSettingsPopups = __kustoCloseAllAxisSettingsPopups;
+window.__kustoToggleLabelSettingsPopup = __kustoToggleLabelSettingsPopup;
+window.__kustoCloseLabelSettingsPopup = __kustoCloseLabelSettingsPopup;
+window.__kustoSyncLabelSettingsUI = __kustoSyncLabelSettingsUI;
+window.__kustoHasCustomLabelSettings = __kustoHasCustomLabelSettings;
+window.__kustoUpdateLabelSettingsIndicator = __kustoUpdateLabelSettingsIndicator;
+window.__kustoSyncAxisSettingsUI = __kustoSyncAxisSettingsUI;
+window.__kustoUpdateAxisLabelIndicator = __kustoUpdateAxisLabelIndicator;
+window.__kustoOnAxisSettingChanged = __kustoOnAxisSettingChanged;
+window.__kustoResetAxisSettings = __kustoResetAxisSettings;
+window.__kustoGetChartMinResizeHeight = __kustoGetChartMinResizeHeight;
+window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
+window.__kustoGetChartActiveCanvasElementId = __kustoGetChartActiveCanvasElementId;
+window.__kustoGetIsDarkThemeForEcharts = __kustoGetIsDarkThemeForEcharts;
+window.__kustoFormatUtcDateTime = __kustoFormatUtcDateTime;
+window.__kustoComputeTimePeriodGranularity = __kustoComputeTimePeriodGranularity;
+window.__kustoFormatTimePeriodLabel = __kustoFormatTimePeriodLabel;
+window.__kustoGenerateContinuousTimeLabels = __kustoGenerateContinuousTimeLabels;
+window.__kustoShouldShowTimeForUtcAxis = __kustoShouldShowTimeForUtcAxis;
+window.__kustoComputeTimeAxisLabelRotation = __kustoComputeTimeAxisLabelRotation;
+window.__kustoComputeCategoryLabelRotation = __kustoComputeCategoryLabelRotation;
+window.__kustoMeasureLabelChars = __kustoMeasureLabelChars;
+window.__kustoRefreshChartsForThemeChange = __kustoRefreshChartsForThemeChange;
+window.__kustoStartEchartsThemeObserver = __kustoStartEchartsThemeObserver;
+window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
+window.__kustoRenderChart = __kustoRenderChart;
+window.__kustoUpdateChartModeButtons = __kustoUpdateChartModeButtons;
+window.__kustoApplyChartMode = __kustoApplyChartMode;
+window.__kustoSetChartMode = __kustoSetChartMode;
+window.__kustoUpdateChartVisibilityToggleButton = __kustoUpdateChartVisibilityToggleButton;
+window.__kustoApplyChartBoxVisibility = __kustoApplyChartBoxVisibility;
+window.toggleChartBoxVisibility = toggleChartBoxVisibility;
+window.__kustoMaximizeChartBox = __kustoMaximizeChartBox;
+window.__kustoAutoFitChartIfClipped = __kustoAutoFitChartIfClipped;
+window.addChartBox = addChartBox;
+window.__kustoOnChartDataSourceChanged = __kustoOnChartDataSourceChanged;
+window.__kustoOnChartTypeChanged = __kustoOnChartTypeChanged;
+window.__kustoSelectChartType = __kustoSelectChartType;
+window.__kustoOnChartLabelsToggled = __kustoOnChartLabelsToggled;
+window.__kustoOnChartLabelModeChanged = __kustoOnChartLabelModeChanged;
+window.__kustoOnChartLabelDensityChanged = __kustoOnChartLabelDensityChanged;
+window.__kustoOnChartMappingChanged = __kustoOnChartMappingChanged;
+window.__kustoOnChartYCheckboxChanged = __kustoOnChartYCheckboxChanged;
+window.__kustoOnChartTooltipCheckboxChanged = __kustoOnChartTooltipCheckboxChanged;
+window.__kustoOnChartFunnelSortChanged = __kustoOnChartFunnelSortChanged;
+window.__kustoOnChartFunnelSortDirToggle = __kustoOnChartFunnelSortDirToggle;
+window.__kustoUpdateFunnelSortUI = __kustoUpdateFunnelSortUI;
+window.removeChartBox = removeChartBox;
 
 
 

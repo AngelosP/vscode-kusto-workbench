@@ -10,7 +10,7 @@ import './extraBoxes-chart';
 import './extraBoxes-transformation';
 import './extraBoxes-markdown';
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
 // - Python: Monaco editor + Run button; output viewer

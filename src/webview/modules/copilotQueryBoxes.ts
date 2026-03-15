@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 const COPILOT_QUERY_KIND = 'copilotQuery';
 const DEFAULT_CHAT_WIDTH_PX = 720;
@@ -728,10 +728,10 @@ function __kustoSetCopilotChatRunning(boxId: any, running: any, statusText: any 
 			// When running, clicking the button should cancel instead of send.
 			if (running) {
 				sendBtn.title = 'Stop (Esc)';
-				sendBtn.onclick = function () { (window as any).__kustoCopilotWriteQueryCancel(boxId); };
+				sendBtn.onclick = function () { window.__kustoCopilotWriteQueryCancel!(boxId); };
 			} else {
 				sendBtn.title = 'Send (Enter)';
-				sendBtn.onclick = function () { (window as any).__kustoCopilotWriteQuerySend(boxId); };
+				sendBtn.onclick = function () { window.__kustoCopilotWriteQuerySend!(boxId); };
 			}
 		}
 		// Tools button stays usable while running.
@@ -994,7 +994,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 					// Enter without Shift sends the message
 					if (e.key === 'Enter' && !e.shiftKey) {
 						try { e.preventDefault(); } catch { /* ignore */ }
-						(window as any).__kustoCopilotWriteQuerySend(boxId);
+						window.__kustoCopilotWriteQuerySend!(boxId);
 					}
 				});
 
@@ -1147,7 +1147,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 }
 
 // Toolbar handler.
-(window as any).__kustoToggleCopilotChatForBox = function (boxId: any) {
+window.__kustoToggleCopilotChatForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 
@@ -1167,7 +1167,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 (_win.__kustoGetCopilotChatVisible as any) = __kustoGetCopilotChatVisible;
 (_win.__kustoSetCopilotChatVisible as any) = __kustoSetCopilotChatVisible;
 
-(window as any).addCopilotQueryBox = function addCopilotQueryBox(options: any) {
+window.addCopilotQueryBox = function addCopilotQueryBox(options: any) {
 	const id = (_win.addQueryBox as any)(options || {});
 	try {
 		const kinds = __kustoEnsureQueryBoxKindMap();
@@ -1180,7 +1180,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 	return id;
 };
 
-(window as any).__kustoCopilotWriteQuerySend = function __kustoCopilotWriteQuerySend(boxId: any) {
+window.__kustoCopilotWriteQuerySend = function __kustoCopilotWriteQuerySend(boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 
@@ -1250,7 +1250,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 	}
 };
 
-(window as any).__kustoCopilotWriteQueryCancel = function __kustoCopilotWriteQueryCancel(boxId: any) {
+window.__kustoCopilotWriteQueryCancel = function __kustoCopilotWriteQueryCancel(boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
@@ -1265,7 +1265,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 	// The send-icon button is toggled back to send mode via __kustoSetCopilotChatRunning(false).
 };
 
-(window as any).__kustoDisposeCopilotQueryBox = function __kustoDisposeCopilotQueryBox(boxId: any) {
+window.__kustoDisposeCopilotQueryBox = function __kustoDisposeCopilotQueryBox(boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
@@ -1286,7 +1286,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 };
 
 // Called by main.js message handler.
-(window as any).__kustoCopilotApplyWriteQueryOptions = function (boxId: any, models: any, selectedModelId: any, tools: any) {
+window.__kustoCopilotApplyWriteQueryOptions = function (boxId: any, models: any, selectedModelId: any, tools: any) {
 	__kustoApplyModelOptions(String(boxId || ''), models, selectedModelId);
 	try { __kustoSetCopilotToolsOptions(String(boxId || ''), tools || []); } catch { /* ignore */ }
 };
@@ -1309,7 +1309,7 @@ function __kustoCopilotCloseToolsPanel(boxId: any) {
 	}
 }
 
-(window as any).__kustoCopilotClearConversation = function __kustoCopilotClearConversation(boxId: any) {
+window.__kustoCopilotClearConversation = function __kustoCopilotClearConversation(boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
@@ -1343,7 +1343,7 @@ function __kustoCopilotCloseToolsPanel(boxId: any) {
 	} catch { /* ignore */ }
 };
 
-(window as any).__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(boxId: any) {
+window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
@@ -1416,15 +1416,15 @@ document.addEventListener('click', function (e) {
 	__kustoCopilotCloseToolsPanel(id);
 }, true);
 
-(window as any).__kustoCopilotWriteQueryStatus = function (boxId: any, text: any, detail: any, role: any) {
+window.__kustoCopilotWriteQueryStatus = function (boxId: any, text: any, detail: any, role: any) {
 	// If role is specified (e.g. 'assistant'), use that; otherwise default to 'notification'
 	const effectiveRole = (role === 'assistant') ? 'assistant' : 'notification';
 	__kustoAppendChatMessage(String(boxId || ''), effectiveRole, String(text || ''), String(detail || ''));
 };
-(window as any).__kustoCopilotWriteQuerySetQuery = function (boxId: any, queryText: any) {
+window.__kustoCopilotWriteQuerySetQuery = function (boxId: any, queryText: any) {
 	__kustoSetQueryText(String(boxId || ''), queryText);
 };
-(window as any).__kustoCopilotWriteQueryDone = function (boxId: any, ok: any, message: any) {
+window.__kustoCopilotWriteQueryDone = function (boxId: any, ok: any, message: any) {
 	const id = String(boxId || '').trim();
 	__kustoSetCopilotChatRunning(id, false);
 	if (message) {
@@ -1433,13 +1433,13 @@ document.addEventListener('click', function (e) {
 };
 
 // Called by main.js when the host returns a local tool payload.
-(window as any).__kustoCopilotWriteQueryToolResult = function (boxId: any, toolName: any, label: any, jsonText: any, entryId: any) {
+window.__kustoCopilotWriteQueryToolResult = function (boxId: any, toolName: any, label: any, jsonText: any, entryId: any) {
 	__kustoAppendToolResponse(String(boxId || ''), String(toolName || ''), String(label || ''), String(jsonText || ''), String(entryId || ''));
 };
 
 // Called by main.js when Copilot executes a query and receives results.
 // Shows a link with hover tooltip (query text), clicking inserts a new section with the query and results.
-(window as any).__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, resultSummary: any, errorMessage: any, entryId: any, result: any) {
+window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, resultSummary: any, errorMessage: any, entryId: any, result: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -1496,9 +1496,9 @@ document.addEventListener('click', function (e) {
 		insertBtn.onclick = (e: any) => {
 			try { e.preventDefault(); } catch { /* ignore */ }
 			try {
-				if (typeof (window as any).addQueryBox === 'function') {
+				if (typeof window.addQueryBox === 'function') {
 					// Create new box with results visible by default
-					const newBoxId = (window as any).addQueryBox({ initialQuery: safeQuery, defaultResultsVisible: true });
+					const newBoxId = window.addQueryBox({ initialQuery: safeQuery, defaultResultsVisible: true });
 					if (newBoxId) {
 						setTimeout(() => {
 							// Set the query text
@@ -1606,7 +1606,7 @@ document.addEventListener('click', function (e) {
 
 // Called by main.js when general-query-rules.md is loaded for the first message.
 // Shows a link with hover tooltip (preview of content), clicking opens markdown preview.
-(window as any).__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: any, preview: any, entryId: any) {
+window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: any, preview: any, entryId: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -1735,7 +1735,7 @@ document.addEventListener('click', function (e) {
 
 // Called by main.js when Copilot asks a clarifying question.
 // Shows the question as an assistant message in the chat.
-(window as any).__kustoCopilotAppendClarifyingQuestion = function (boxId: any, question: any, entryId: any) {
+window.__kustoCopilotAppendClarifyingQuestion = function (boxId: any, question: any, entryId: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -1827,7 +1827,7 @@ document.addEventListener('click', function (e) {
 
 // Called by main.js when user sends a message and has a query in the editor.
 // Shows the query snapshot with ability to remove it from conversation history.
-(window as any).__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any, entryId: any) {
+window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any, entryId: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -1954,7 +1954,7 @@ document.addEventListener('click', function (e) {
 // Development Notes — context injection card
 // ─────────────────────────────────────────────────────────────────
 
-(window as any).__kustoCopilotAppendDevNotesContext = function (boxId: any, preview: any, entryId: any) {
+window.__kustoCopilotAppendDevNotesContext = function (boxId: any, preview: any, entryId: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;
@@ -2053,7 +2053,7 @@ document.addEventListener('click', function (e) {
 // Development Notes — tool call rendering (save/remove)
 // ─────────────────────────────────────────────────────────────────
 
-(window as any).__kustoCopilotAppendDevNoteToolCall = function (boxId: any, action: any, detail: any, result: any, entryId: any) {
+window.__kustoCopilotAppendDevNoteToolCall = function (boxId: any, action: any, detail: any, result: any, entryId: any) {
 	try {
 		const id = String(boxId || '').trim();
 		if (!id) return;

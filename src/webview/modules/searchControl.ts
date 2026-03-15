@@ -6,7 +6,7 @@ export {};
 declare const escapeHtml: (s: string) => string;
 declare const escapeRegex: (s: string) => string;
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 const SEARCH_MODE_WILDCARD = 'wildcard';
 const SEARCH_MODE_REGEX = 'regex';

@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 function escapeHtml(str: string): string {
 	const div = document.createElement('div');

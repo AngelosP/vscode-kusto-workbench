@@ -5,7 +5,7 @@ export {};
 declare const escapeHtml: (s: string) => string;
 declare const escapeRegex: (s: string) => string;
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 function openObjectViewer(row: number, col: number, boxId: string): void {
 	const currentResult = _win.currentResult as any;

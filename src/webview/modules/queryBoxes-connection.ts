@@ -3,7 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 function formatClusterDisplayName( connection: any) {
 	if (!connection) {

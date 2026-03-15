@@ -1,7 +1,7 @@
 // Transformation box creation, expression engine, pivot, derive, summarize.
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // Access shared transformation state from window (set by extraBoxes.ts).
 // Initialize on window if not already present, so load order doesn't matter.

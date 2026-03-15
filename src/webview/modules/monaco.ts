@@ -37,7 +37,7 @@ import {
 } from './monaco-suggest';
 import { __kustoAttachAutoResizeToContent } from './monaco-resize';
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // AMD globals loaded by require() — not available at module scope
 // but referenced inside the require() callback and other functions.
@@ -159,7 +159,7 @@ function ensureMonaco() {
 									return worker;
 								}
 								// Fall back to standard editor worker if kusto worker not available
-								return new Worker(cfg.monacoEditorWorkerUri);
+								return new Worker(cfg.monacoEditorWorkerUri || '');
 							}
 							
 							// For other workers, create them directly
@@ -194,7 +194,7 @@ function ensureMonaco() {
 				}
 
 				try {
-					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig.monacoVsUri } });
+					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig!.monacoVsUri } });
 				} catch (e) {
 					reject(e);
 					return;
@@ -5027,7 +5027,9 @@ function ensureMonaco() {
 																}
 																
 																if (databaseSchema) {
-																		await worker.addDatabaseToSchema(modelKey, otherClusterUrl, databaseSchema);
+																		// Use models[0].uri — guaranteed synced after setSchemaFromShowSchema.
+																		const syncedUri = models[0].uri.toString();
+																		await worker.addDatabaseToSchema(syncedUri, otherClusterUrl, databaseSchema);
 																	// NOTE: Do NOT mark as loaded! Re-added schemas are only for cross-cluster references.
 																	// They are NOT primary schemas and need full REPLACE when actually focused.
 																} else {
@@ -5065,7 +5067,21 @@ function ensureMonaco() {
 											}
 										} else {
 											// Same cluster or not setting as context: use addDatabaseToSchema to ADD without replacing
-											if (typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
+											//
+											// IMPORTANT: The kusto worker schema is GLOBAL — shared across all Monaco models.
+											// If another model already loaded this exact schema (same schemaKey), the worker
+											// already has it and we can skip the addDatabaseToSchema call entirely.
+											// This also avoids "document is null" errors from the worker when the current
+											// model's document hasn't been synced to the worker yet.
+											const alreadyLoadedGlobally = !forceRefresh && !!_win.__kustoMonacoLoadedSchemas[schemaKey];
+											if (alreadyLoadedGlobally) {
+												// Schema already in worker from a previous model — just update per-model tracking
+												perModelLoadedSchemas[schemaKey] = true;
+												_win.__kustoSchemaCache[schemaKey] = _win.__kustoSchemaCache[schemaKey] || { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+												if (setAsContext) {
+													await _win.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
+												}
+											} else if (typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
 												try {
 													// First normalize the raw schema to get the Database object
 													const engineSchema = await worker.normalizeSchema(schemaObj, clusterUrl, databaseInContext);
@@ -5079,13 +5095,16 @@ function ensureMonaco() {
 													}
 													
 													if (databaseSchema) {
-														// Add the database to the existing schema in the worker
-																			await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
-																			perModelLoadedSchemas[schemaKey] = true;
-																			// Keep legacy/global in sync for debugging only
-																			_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
-														
-														// Cache the schema for re-adding after future cluster switches
+														// Add the database to the existing schema in the worker.
+														// Use models[0].uri — the first model is guaranteed to have its document
+														// synced from the initial setSchemaFromShowSchema call. The current model
+														// (modelKey) may not have been synced yet, causing "document is null" errors.
+														// The schema is global in the worker so the URI doesn't affect what's stored.
+														const syncedUri = models[0].uri.toString();
+														await worker.addDatabaseToSchema(syncedUri, clusterUrl, databaseSchema);
+														perModelLoadedSchemas[schemaKey] = true;
+														// Keep legacy/global in sync for debugging only
+														_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
 														_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 														
 																	// If requested, also switch context to this database.
@@ -5655,21 +5674,26 @@ function ensureMonaco() {
 												minorVersion: 0
 											};
 												
-																// Apply to ALL models so whichever box gets focus has the schema available
-																const loadedKey = `${clusterUrl}|${database}`;
-																let appliedCount = 0;
+// The kusto worker schema is GLOBAL — one addDatabaseToSchema call
+															// applies to all models. Use models[0].uri which is guaranteed to
+															// have its document synced (avoids "document is null" errors).
+															const loadedKey = `${clusterUrl}|${database}`;
+															let appliedCount = 0;
+															try {
+																const syncedModel = models[0];
+																const worker2 = await workerAccessor(syncedModel.uri);
+																if (worker2 && typeof worker2.addDatabaseToSchema === 'function') {
+																	await worker2.addDatabaseToSchema(syncedModel.uri.toString(), clusterName, databaseSchema);
+																	appliedCount++;
+																}
+															} catch { /* ignore */ }
+															// Update per-model tracking for ALL models
+															if (appliedCount > 0) {
 																for (const model of models) {
-																	try {
-																		const worker = await workerAccessor(model.uri);
-																		if (worker && typeof worker.addDatabaseToSchema === 'function') {
-																			// clusterName should be exactly what the user typed (e.g., 'help' or 'https://help.kusto.windows.net')
-																		await worker.addDatabaseToSchema(model.uri.toString(), clusterName, databaseSchema);
-																			appliedCount++;
-																			_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
-																			_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = _win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
-																			_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
-																		}
-																	} catch { /* ignore */ }
+																	_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
+																	_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = _win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
+																	_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
+																}
 																}
 																// Keep legacy/global in sync for debugging only
 																_win.__kustoMonacoLoadedSchemas = _win.__kustoMonacoLoadedSchemas || {};
@@ -5786,7 +5810,7 @@ function ensureMonaco() {
 								// Request completion from extension
 								console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length, isManualTrigger });
 								try {
-									_win.vscode.postMessage({
+									_win.vscode!.postMessage({
 										type: 'requestCopilotInlineCompletion',
 										requestId: requestId,
 										boxId: boxId,
@@ -5806,7 +5830,7 @@ function ensureMonaco() {
 									// Show notification only for manual triggers (SHIFT+SPACE)
 									if (isManualTrigger) {
 										try {
-											_win.vscode.postMessage({
+											_win.vscode!.postMessage({
 												type: 'showInfo',
 												message: 'Copilot returned no inline suggestions. Often, trying again helps, especially after changing the position of the cursor.'
 											});
@@ -7544,13 +7568,7 @@ function initQueryEditor(boxId: any) {
 		try {
 			const __kustoRunThisQueryBox = () => {
 				try {
-					if (typeof _win.executeQuery === 'function') {
-						_win.executeQuery(boxId);
-						return;
-					}
-					if (window && typeof _win.executeQuery === 'function') {
-						_win.executeQuery(boxId);
-					}
+					_win.executeQuery(boxId);
 				} catch {
 					// ignore
 				}

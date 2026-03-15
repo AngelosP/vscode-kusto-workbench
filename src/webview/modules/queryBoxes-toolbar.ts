@@ -2,7 +2,7 @@
 // Extracted from queryBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // --- Toggle button functions ---
 

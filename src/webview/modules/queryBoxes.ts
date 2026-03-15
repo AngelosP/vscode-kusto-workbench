@@ -5,7 +5,7 @@ import './queryBoxes-execution';
 import './queryBoxes-connection';
 export {};
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // Diagnostics logging — no-op (was removed from original source, callers remain).
 function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }

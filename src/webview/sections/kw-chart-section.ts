@@ -839,7 +839,7 @@ export class KwChartSection extends LitElement {
 
 	private _onFitToContents(): void {
 		try {
-			const fn = (window as any).__kustoMaximizeChartBox;
+			const fn = window.__kustoMaximizeChartBox;
 			if (typeof fn === 'function') fn(this.boxId);
 		} catch { /* ignore */ }
 	}
@@ -1053,7 +1053,7 @@ export class KwChartSection extends LitElement {
 			const isDark = this._isDarkTheme();
 			if (this._lastThemeDark !== isDark) {
 				this._lastThemeDark = isDark;
-				try { (window as any).__kustoDisposeChartEcharts?.(this.boxId); } catch { /* ignore */ }
+				try { window.__kustoDisposeChartEcharts?.(this.boxId); } catch { /* ignore */ }
 				this._renderChart();
 			}
 		});
@@ -1111,7 +1111,7 @@ export class KwChartSection extends LitElement {
 	 * This is how persisted state flows into the Lit component from addChartBox.
 	 */
 	private _syncGlobalChartState(): void {
-		const win = window as any;
+		const win = window;
 		if (!this.boxId) return;
 		const global = win.chartStateByBoxId;
 		if (!global || typeof global !== 'object') return;
@@ -1148,7 +1148,7 @@ export class KwChartSection extends LitElement {
 	 * the existing __kustoRenderChart and persistence.js can read from it.
 	 */
 	private _writeToGlobalChartState(): void {
-		const win = window as any;
+		const win = window;
 		if (!this.boxId) return;
 		if (!win.chartStateByBoxId) win.chartStateByBoxId = {};
 		const st = win.chartStateByBoxId[this.boxId] || {};
@@ -1193,7 +1193,7 @@ export class KwChartSection extends LitElement {
 	 */
 	public refreshDatasets(): void {
 		try {
-			const fn = (window as any).__kustoGetChartDatasetsInDomOrder;
+			const fn = window.__kustoGetChartDatasetsInDomOrder;
 			if (typeof fn === 'function') {
 				this._datasets = fn() || [];
 			}
@@ -1246,7 +1246,7 @@ export class KwChartSection extends LitElement {
 		if (!this._expanded) return;
 		this._refreshDatasets();
 		try {
-			const fn = (window as any).__kustoRenderChart;
+			const fn = window.__kustoRenderChart;
 			if (typeof fn === 'function') {
 				fn(this.boxId);
 			}
@@ -1263,7 +1263,7 @@ export class KwChartSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = (window as any).schedulePersist;
+			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
 		} catch { /* ignore */ }
 	}
@@ -1325,7 +1325,7 @@ export class KwChartSection extends LitElement {
 
 		// Validation status
 		try {
-			const fn = (window as any).__kustoGetChartValidationStatus;
+			const fn = window.__kustoGetChartValidationStatus;
 			if (typeof fn === 'function') {
 				const vs = fn(this.boxId);
 				if (vs) data.validation = vs;

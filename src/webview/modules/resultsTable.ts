@@ -1,10 +1,10 @@
-﻿// Results table module — converted from legacy/resultsTable.js
+// Results table module — converted from legacy/resultsTable.js
 // Window bridge exports at bottom for remaining legacy callers.
 import './resultsTable-export';
 import './resultsTable-render';
 export {};
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 function __kustoCopyClientActivityId(boxId: any) {
 	try {

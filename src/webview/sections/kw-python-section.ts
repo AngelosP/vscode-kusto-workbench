@@ -251,7 +251,7 @@ export class KwPythonSection extends LitElement {
 		const slotted = this._getEditorContainer();
 		if (!slotted) return;
 
-		const ensureMonaco = (window as any).ensureMonaco as (() => Promise<any>) | undefined;
+		const ensureMonaco = window.ensureMonaco as (() => Promise<any>) | undefined;
 		if (typeof ensureMonaco !== 'function') {
 			this._retryInit();
 			return;
@@ -292,11 +292,11 @@ export class KwPythonSection extends LitElement {
 			// Track active editor for global key handlers.
 			try {
 				editor.onDidFocusEditorText(() => {
-					try { (window as any).activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
 					this._forceWritable(editor);
 				});
 				editor.onDidFocusEditorWidget(() => {
-					try { (window as any).activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
 					this._forceWritable(editor);
 				});
 			} catch { /* ignore */ }
@@ -306,13 +306,13 @@ export class KwPythonSection extends LitElement {
 			// Writable guards.
 			this._forceWritable(editor);
 			try {
-				if (typeof (window as any).__kustoEnsureEditorWritableSoon === 'function') {
-					(window as any).__kustoEnsureEditorWritableSoon(editor);
+				if (typeof window.__kustoEnsureEditorWritableSoon === 'function') {
+					window.__kustoEnsureEditorWritableSoon(editor);
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoInstallWritableGuard === 'function') {
-					(window as any).__kustoInstallWritableGuard(editor);
+				if (typeof window.__kustoInstallWritableGuard === 'function') {
+					window.__kustoInstallWritableGuard(editor);
 				}
 			} catch { /* ignore */ }
 
@@ -326,8 +326,8 @@ export class KwPythonSection extends LitElement {
 
 			// Auto-resize.
 			try {
-				if (typeof (window as any).__kustoAttachAutoResizeToContent === 'function') {
-					(window as any).__kustoAttachAutoResizeToContent(editor, slotted);
+				if (typeof window.__kustoAttachAutoResizeToContent === 'function') {
+					window.__kustoAttachAutoResizeToContent(editor, slotted);
 				}
 			} catch { /* ignore */ }
 
@@ -373,8 +373,8 @@ export class KwPythonSection extends LitElement {
 
 	private _forceWritable(editor: MonacoEditor): void {
 		try {
-			if (typeof (window as any).__kustoForceEditorWritable === 'function') {
-				(window as any).__kustoForceEditorWritable(editor);
+			if (typeof window.__kustoForceEditorWritable === 'function') {
+				window.__kustoForceEditorWritable(editor);
 			}
 		} catch { /* ignore */ }
 	}
@@ -399,7 +399,7 @@ export class KwPythonSection extends LitElement {
 		this._output = 'Running…';
 		this._running = true;
 		try {
-			const vscode = (window as any).vscode;
+			const vscode = window.vscode;
 			if (vscode && typeof vscode.postMessage === 'function') {
 				vscode.postMessage({ type: 'executePython', boxId: this.boxId, code });
 			}
@@ -534,8 +534,8 @@ export class KwPythonSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof (window as any).__kustoGetScrollY === 'function'
-			? (window as any).__kustoGetScrollY as () => number
+		const getScrollY = typeof window.__kustoGetScrollY === 'function'
+			? window.__kustoGetScrollY as () => number
 			: () => 0;
 
 		const startPageY = e.clientY + getScrollY();
@@ -543,8 +543,8 @@ export class KwPythonSection extends LitElement {
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof (window as any).__kustoMaybeAutoScrollWhileDragging === 'function') {
-					(window as any).__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
+					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
 			} catch { /* ignore */ }
 			const pageY = moveEvent.clientY + getScrollY();
@@ -598,7 +598,7 @@ export class KwPythonSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = (window as any).schedulePersist;
+			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
 		} catch { /* ignore */ }
 	}
@@ -616,7 +616,7 @@ export class KwPythonSection extends LitElement {
 		if (!code) {
 			// Fallback: check pending code buffer (Monaco may not be ready yet).
 			try {
-				const pending = (window as any).__kustoPendingPythonCodeByBoxId;
+				const pending = window.__kustoPendingPythonCodeByBoxId;
 				if (pending && typeof pending[this.boxId] === 'string') {
 					code = pending[this.boxId];
 				}

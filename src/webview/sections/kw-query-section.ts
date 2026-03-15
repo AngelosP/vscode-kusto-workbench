@@ -104,8 +104,8 @@ function clusterShortNameKey(url: string): string {
 
 function formatClusterShortName(clusterUrl: string): string {
 	try {
-		if (typeof (window as any).formatClusterShortName === 'function') {
-			return (window as any).formatClusterShortName(clusterUrl);
+		if (typeof window.formatClusterShortName === 'function') {
+			return window.formatClusterShortName(clusterUrl);
 		}
 	} catch { /* ignore */ }
 	const raw = String(clusterUrl || '').trim();
@@ -129,8 +129,8 @@ function formatFavoriteDisplay(fav: KustoFavorite): { primary: string; suffix: s
 
 function formatClusterDisplayName(conn: KustoConnection): string {
 	try {
-		if (typeof (window as any).formatClusterDisplayName === 'function') {
-			return (window as any).formatClusterDisplayName(conn);
+		if (typeof window.formatClusterDisplayName === 'function') {
+			return window.formatClusterDisplayName(conn);
 		}
 	} catch { /* ignore */ }
 	if (conn.name) return conn.name;
@@ -568,24 +568,24 @@ export class KwQuerySection extends LitElement {
 	private _onNameInput(e: Event): void {
 		const input = e.target as HTMLInputElement;
 		this._name = input.value;
-		try { (window as any).schedulePersist?.(); } catch { /* ignore */ }
-		try { (window as any).__kustoRefreshAllDataSourceDropdowns?.(); } catch { /* ignore */ }
+		try { window.schedulePersist?.(); } catch { /* ignore */ }
+		try { window.__kustoRefreshAllDataSourceDropdowns?.(); } catch { /* ignore */ }
 	}
 
 	private _onShareClick(): void {
-		try { (window as any).__kustoOpenShareModal?.(this.boxId); } catch { /* ignore */ }
+		try { window.__kustoOpenShareModal?.(this.boxId); } catch { /* ignore */ }
 	}
 
 	private _onMaximizeClick(): void {
-		try { (window as any).__kustoMaximizeQueryBox?.(this.boxId); } catch { /* ignore */ }
+		try { window.__kustoMaximizeQueryBox?.(this.boxId); } catch { /* ignore */ }
 	}
 
 	private _onToggleClick(): void {
-		try { (window as any).toggleQueryBoxVisibility?.(this.boxId); } catch { /* ignore */ }
+		try { window.toggleQueryBoxVisibility?.(this.boxId); } catch { /* ignore */ }
 	}
 
 	private _onCloseClick(): void {
-		try { (window as any).removeQueryBox?.(this.boxId); } catch { /* ignore */ }
+		try { window.removeQueryBox?.(this.boxId); } catch { /* ignore */ }
 	}
 
 	private _onDragStart(e: DragEvent): void {
@@ -695,9 +695,9 @@ export class KwQuerySection extends LitElement {
 	private _onClusterAction(action: string): void {
 		this._closeAllDropdowns();
 		if (action === '__enter_new__') {
-			try { (window as any).promptAddConnectionFromDropdown?.(this.boxId); } catch { /* ignore */ }
+			try { window.promptAddConnectionFromDropdown?.(this.boxId); } catch { /* ignore */ }
 		} else if (action === '__import_xml__') {
-			try { (window as any).importConnectionsFromXmlFile?.(this.boxId); } catch { /* ignore */ }
+			try { window.importConnectionsFromXmlFile?.(this.boxId); } catch { /* ignore */ }
 		}
 	}
 
@@ -805,7 +805,7 @@ export class KwQuerySection extends LitElement {
 	}
 
 	private _onSeeCachedValues(): void {
-		try { (window as any).vscode?.postMessage({ type: 'seeCachedValues' }); } catch { /* ignore */ }
+		try { window.vscode?.postMessage({ type: 'seeCachedValues' }); } catch { /* ignore */ }
 	}
 
 	// ── Public API (called by legacy code) ────────────────────────────────────
@@ -1080,7 +1080,7 @@ export class KwQuerySection extends LitElement {
 		// Check persisted visibility state.
 		let initialBodyVisible = true;
 		try {
-			const m = (window as any).__kustoResultsVisibleByBoxId;
+			const m = window.__kustoResultsVisibleByBoxId;
 			if (m && m[this.boxId] === false) initialBodyVisible = false;
 		} catch { /* ignore */ }
 		// Set options BEFORE columns/rows so _initTable sees initialBodyVisible.
@@ -1098,7 +1098,7 @@ export class KwQuerySection extends LitElement {
 
 		dt.addEventListener('save', (e: CustomEvent) => {
 			try {
-				(window as any).vscode?.postMessage({
+				window.vscode?.postMessage({
 					type: 'saveResultsCsv',
 					csv: e.detail.csv,
 					suggestedFileName: e.detail.suggestedFileName,
@@ -1113,10 +1113,10 @@ export class KwQuerySection extends LitElement {
 			const visible = e.detail?.visible ?? true;
 			// Update the global map so serialize() picks up the correct value.
 			try {
-				if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
-					(window as any).__kustoResultsVisibleByBoxId = {};
+				if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+					window.__kustoResultsVisibleByBoxId = {};
 				}
-				(window as any).__kustoResultsVisibleByBoxId[this.boxId] = !!visible;
+				window.__kustoResultsVisibleByBoxId[this.boxId] = !!visible;
 			} catch { /* ignore */ }
 			if (resultsWrapper) {
 				if (!visible) {
@@ -1141,7 +1141,7 @@ export class KwQuerySection extends LitElement {
 			}
 			// Show/hide the resize grip.
 			if (resizer) resizer.style.display = visible ? '' : 'none';
-			try { (window as any).schedulePersist?.(); } catch { /* ignore */ }
+			try { window.schedulePersist?.(); } catch { /* ignore */ }
 		});
 
 		resultsDiv.appendChild(dt);
@@ -1219,23 +1219,23 @@ export class KwQuerySection extends LitElement {
 
 		const expanded = this._expanded;
 		let resultsVisible = true;
-		try { const m = (window as any).__kustoResultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch { /* ignore */ }
+		try { const m = window.__kustoResultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch { /* ignore */ }
 
 		const clusterUrl = this.getClusterUrl();
 
 		let query = '';
 		try {
-			const qe = (window as any).queryEditors;
+			const qe = window.queryEditors;
 			if (qe && qe[b] && typeof qe[b].getValue === 'function') {
 				query = qe[b].getValue() || '';
 			}
 		} catch { /* ignore */ }
-		if (!query) { try { query = (window as any).__kustoPendingQueryTextByBoxId?.[b] || ''; } catch { /* ignore */ } }
+		if (!query) { try { query = window.__kustoPendingQueryTextByBoxId?.[b] || ''; } catch { /* ignore */ } }
 
 		let resultJson = '';
-		try { resultJson = String((window as any).__kustoQueryResultJsonByBoxId?.[b] || ''); } catch { /* ignore */ }
+		try { resultJson = String(window.__kustoQueryResultJsonByBoxId?.[b] || ''); } catch { /* ignore */ }
 
-		const runMode = ((window as any).runModesByBoxId?.[b]) || 'take100';
+		const runMode = (window.runModesByBoxId?.[b]) || 'take100';
 
 		const cacheEnabledEl = document.getElementById(b + '_cache_enabled') as HTMLInputElement | null;
 		const cacheValueEl = document.getElementById(b + '_cache_value') as HTMLInputElement | null;
@@ -1246,8 +1246,8 @@ export class KwQuerySection extends LitElement {
 
 		let copilotChatVisible: boolean | undefined;
 		let copilotChatWidthPx: number | undefined;
-		try { const fn = (window as any).__kustoGetCopilotChatVisible; if (typeof fn === 'function') copilotChatVisible = !!fn(b); } catch { /* ignore */ }
-		try { const fn = (window as any).__kustoGetCopilotChatWidthPx; if (typeof fn === 'function') { const w = fn(b); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } } catch { /* ignore */ }
+		try { const fn = window.__kustoGetCopilotChatVisible; if (typeof fn === 'function') copilotChatVisible = !!fn(b); } catch { /* ignore */ }
+		try { const fn = window.__kustoGetCopilotChatWidthPx; if (typeof fn === 'function') { const w = fn(b); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } } catch { /* ignore */ }
 
 		const shouldPersist = !!(resultJson && !this._isLeaveNoTrace(clusterUrl));
 		const editorHeightPx = this._getEditorHeightPx();
@@ -1271,7 +1271,7 @@ export class KwQuerySection extends LitElement {
 	private _getEditorHeightPx(): number | undefined {
 		try {
 			// Check manual height map first (set by drag resize).
-			const m = (window as any).__kustoManualQueryEditorHeightPxByBoxId;
+			const m = window.__kustoManualQueryEditorHeightPxByBoxId;
 			const v = m?.[this.boxId];
 			if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.round(v);
 			// Measure from the DOM directly — find the editor wrapper and read its inline height.
@@ -1314,7 +1314,7 @@ export class KwQuerySection extends LitElement {
 	private _isLeaveNoTrace(clusterUrl: string): boolean {
 		try {
 			if (!clusterUrl) return false;
-			const list = (window as any).leaveNoTraceClusters;
+			const list = window.leaveNoTraceClusters;
 			if (!Array.isArray(list)) return false;
 			const norm = this._normUrl(clusterUrl);
 			if (!norm) return false;

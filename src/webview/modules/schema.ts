@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 function setSchemaLoading(boxId: string, loading: boolean): void {
 	(_win.schemaFetchInFlightByBoxId as any)[boxId] = !!loading;

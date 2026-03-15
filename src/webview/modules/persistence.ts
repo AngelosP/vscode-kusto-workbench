@@ -3,7 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 // Persistence + .kqlx document round-tripping.
 //
 // The extension host stores the state as JSON in a .kqlx file.
@@ -19,9 +19,9 @@ let __kustoDocumentDataApplyCount = 0;
 let __kustoHasAppliedDocument = false;
 let __kustoLastAppliedDocumentUri = '';
 // Set by the extension host; true for globalStorage/session.kqlx.
-if ((_win.__kustoIsSessionFile as any) === undefined) (_win as any).__kustoIsSessionFile = false;
+if ((_win.__kustoIsSessionFile as any) === undefined) _win.__kustoIsSessionFile = false;
 // Set by the extension host; true for .kql/.csl files.
-if ((_win.__kustoCompatibilityMode as any) === undefined) (_win as any).__kustoCompatibilityMode = false;
+if ((_win.__kustoCompatibilityMode as any) === undefined) _win.__kustoCompatibilityMode = false;
 
 /**
  * Helper to normalize a cluster URL for consistent comparison.
@@ -62,12 +62,12 @@ function __kustoIsLeaveNoTraceCluster(clusterUrl: any) {
 // - allowedSectionKinds controls which add buttons are shown/enabled.
 // - defaultSectionKind controls which section we create for an empty document.
 // - upgradeRequestType controls which message we send when in compatibility mode.
-(_win as any).__kustoAllowedSectionKinds = (_win.__kustoAllowedSectionKinds as any) || ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
-(_win as any).__kustoDefaultSectionKind = (_win.__kustoDefaultSectionKind as any) || 'query';
-(_win as any).__kustoCompatibilitySingleKind = (_win.__kustoCompatibilitySingleKind as any) || 'query';
-(_win as any).__kustoUpgradeRequestType = (_win.__kustoUpgradeRequestType as any) || 'requestUpgradeToKqlx';
-(_win as any).__kustoCompatibilityTooltip = (_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
-(_win as any).__kustoDocumentKind = (_win.__kustoDocumentKind as any) || '';
+_win.__kustoAllowedSectionKinds = (_win.__kustoAllowedSectionKinds as any) || ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+_win.__kustoDefaultSectionKind = (_win.__kustoDefaultSectionKind as any) || 'query';
+_win.__kustoCompatibilitySingleKind = (_win.__kustoCompatibilitySingleKind as any) || 'query';
+_win.__kustoUpgradeRequestType = (_win.__kustoUpgradeRequestType as any) || 'requestUpgradeToKqlx';
+_win.__kustoCompatibilityTooltip = (_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
+_win.__kustoDocumentKind = (_win.__kustoDocumentKind as any) || '';
 
 function __kustoApplyDocumentCapabilities() {
 	try {
@@ -113,7 +113,7 @@ function __kustoApplyDocumentCapabilities() {
 
 function __kustoSetCompatibilityMode(enabled: any) {
 	try {
-		(_win as any).__kustoCompatibilityMode = !!enabled;
+		_win.__kustoCompatibilityMode = !!enabled;
 		const msg = String((_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.');
 		const wrappers = document.querySelectorAll('.add-controls .add-control-wrapper');
 		for (const w of wrappers as any) {
@@ -148,7 +148,7 @@ function __kustoSetCompatibilityMode(enabled: any) {
 		if (enabled) {
 			try {
 				if ((_win.__kustoQueryEditorPendingAdds as any) && typeof (_win.__kustoQueryEditorPendingAdds) === 'object') {
-					(_win as any).__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
+					_win.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 				}
 			} catch {
 				// ignore
@@ -220,20 +220,20 @@ function __kustoRequestAddSection(kind: any) {
 // In some browsers, relying on a global function declaration is not enough to override
 // an existing window property, so assign explicitly.
 try {
-	(_win as any).__kustoRequestAddSection = __kustoRequestAddSection;
+	_win.__kustoRequestAddSection = __kustoRequestAddSection;
 } catch {
 	// ignore
 }
 
 // During restore, Monaco editors are created asynchronously.
 // Stash initial values here so init*Editor can apply them once the editor exists.
-(_win as any).__kustoPendingQueryTextByBoxId = (_win.__kustoPendingQueryTextByBoxId as any) || {};
-(_win as any).__kustoPendingMarkdownTextByBoxId = (_win.__kustoPendingMarkdownTextByBoxId as any) || {};
-(_win as any).__kustoPendingPythonCodeByBoxId = (_win.__kustoPendingPythonCodeByBoxId as any) || {};
+_win.__kustoPendingQueryTextByBoxId = (_win.__kustoPendingQueryTextByBoxId as any) || {};
+_win.__kustoPendingMarkdownTextByBoxId = (_win.__kustoPendingMarkdownTextByBoxId as any) || {};
+_win.__kustoPendingPythonCodeByBoxId = (_win.__kustoPendingPythonCodeByBoxId as any) || {};
 
 // Optional persisted query results (per box), stored as JSON text.
 // This stays in-memory and is included in getKqlxState.
-(_win as any).__kustoQueryResultJsonByBoxId = (_win.__kustoQueryResultJsonByBoxId as any) || {};
+_win.__kustoQueryResultJsonByBoxId = (_win.__kustoQueryResultJsonByBoxId as any) || {};
 
 // Persisted query results are stored inline in the .kqlx document.
 // Keep a cap to avoid ballooning the file, but try hard to keep *some* results
@@ -923,17 +923,17 @@ function __kustoClearAllSections() {
 		// ignore
 	}
 	// Clear passthrough dev notes sections
-	try { (_win as any).__kustoDevNotesSections = []; } catch { /* ignore */ }
+	try { _win.__kustoDevNotesSections = []; } catch { /* ignore */ }
 }
 
 function applyKqlxState(state: any) {
 	__kustoRestoreInProgress = true;
-	(_win as any).__kustoRestoreInProgress = true;
+	_win.__kustoRestoreInProgress = true;
 	try {
 		__kustoPersistenceEnabled = false;
 
 		// Reset persisted results when loading a new document.
-		try { (_win as any).__kustoQueryResultJsonByBoxId = {}; } catch { /* ignore */ }
+		try { _win.__kustoQueryResultJsonByBoxId = {}; } catch { /* ignore */ }
 
 		__kustoClearAllSections();
 
@@ -1099,7 +1099,7 @@ function applyKqlxState(state: any) {
 			if (t === 'devnotes') {
 				// Dev notes are hidden — store as passthrough, no DOM element
 				try {
-					(_win as any).__kustoDevNotesSections = (_win.__kustoDevNotesSections as any) || [];
+					_win.__kustoDevNotesSections = (_win.__kustoDevNotesSections as any) || [];
 					(_win.__kustoDevNotesSections as any).push(section);
 				} catch { /* ignore */ }
 				continue;
@@ -1172,7 +1172,7 @@ function applyKqlxState(state: any) {
 				try {
 					if (typeof section.resultsVisible === 'boolean') {
 						if (!((_win.__kustoResultsVisibleByBoxId as any)) || typeof (_win.__kustoResultsVisibleByBoxId) !== 'object') {
-							(_win as any).__kustoResultsVisibleByBoxId = {};
+							_win.__kustoResultsVisibleByBoxId = {};
 						}
 						(_win.__kustoResultsVisibleByBoxId as any)[boxId] = !!section.resultsVisible;
 					}
@@ -1193,7 +1193,7 @@ function applyKqlxState(state: any) {
 								} else if (typeof p.metadata.executionTime === 'undefined') {
 									p.metadata.executionTime = '';
 								}
-								(_win as any).lastExecutedBox = boxId;
+								_win.lastExecutedBox = boxId;
 								if (typeof (_win.displayResult) === 'function') {
 									(_win.displayResult as any)(p);
 								}
@@ -1243,7 +1243,7 @@ function applyKqlxState(state: any) {
 				// Monaco editor may initialize after restore; remember desired wrapper height for initQueryEditor.
 				try {
 					if (typeof section.editorHeightPx === 'number' && Number.isFinite(section.editorHeightPx) && section.editorHeightPx > 0) {
-						if (!(_win.__kustoPendingWrapperHeightPxByBoxId as any)) (_win as any).__kustoPendingWrapperHeightPxByBoxId = {};
+						if (!(_win.__kustoPendingWrapperHeightPxByBoxId as any)) _win.__kustoPendingWrapperHeightPxByBoxId = {};
 						(_win.__kustoPendingWrapperHeightPxByBoxId as any)[boxId] = section.editorHeightPx;
 					}
 				} catch { /* ignore */ }
@@ -1436,7 +1436,7 @@ function applyKqlxState(state: any) {
 		}
 	} finally {
 		__kustoRestoreInProgress = false;
-		(_win as any).__kustoRestoreInProgress = false;
+		_win.__kustoRestoreInProgress = false;
 		__kustoPersistenceEnabled = true;
 		// Do not auto-persist immediately after restore: Monaco editors may not be ready yet,
 		// and persisting too early can overwrite loaded content with empty strings.
@@ -1448,7 +1448,7 @@ function __kustoApplyPendingAdds() {
 		? (_win.__kustoQueryEditorPendingAdds as any)
 		: { query: 0, markdown: 0, python: 0, url: 0 };
 	// Reset counts so they don't replay on reload.
-	(_win as any).__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+	_win.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
 
 	const pendingTotal = (pendingAdds.query || 0) + (pendingAdds.markdown || 0) + (pendingAdds.python || 0) + (pendingAdds.url || 0);
 	if (pendingTotal <= 0) {
@@ -1507,7 +1507,7 @@ function handleDocumentDataMessage(message: any) {
 			if (typeof __kustoSetCompatibilityMode === 'function') {
 				__kustoSetCompatibilityMode(!!message.compatibilityMode);
 			} else {
-				(_win as any).__kustoCompatibilityMode = !!message.compatibilityMode;
+				_win.__kustoCompatibilityMode = !!message.compatibilityMode;
 			}
 		}
 	} catch {
@@ -1518,13 +1518,13 @@ function handleDocumentDataMessage(message: any) {
 	// This prevents restore issues when messages arrive out-of-order.
 	try {
 		if (typeof message.documentUri === 'string') {
-			(_win as any).__kustoDocumentUri = String(message.documentUri);
+			_win.__kustoDocumentUri = String(message.documentUri);
 		}
 		if (Array.isArray(message.allowedSectionKinds)) {
-			(_win as any).__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
+			_win.__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
 		}
 		if (typeof message.documentKind === 'string') {
-			(_win as any).__kustoDocumentKind = String(message.documentKind);
+			_win.__kustoDocumentKind = String(message.documentKind);
 			try {
 				if (document && document.body && document.body.dataset) {
 					document.body.dataset.kustoDocumentKind = String(message.documentKind);
@@ -1532,16 +1532,16 @@ function handleDocumentDataMessage(message: any) {
 			} catch { /* ignore */ }
 		}
 		if (typeof message.defaultSectionKind === 'string') {
-			(_win as any).__kustoDefaultSectionKind = String(message.defaultSectionKind);
+			_win.__kustoDefaultSectionKind = String(message.defaultSectionKind);
 		}
 		if (typeof message.compatibilitySingleKind === 'string') {
-			(_win as any).__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+			_win.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
 		}
 		if (typeof message.upgradeRequestType === 'string') {
-			(_win as any).__kustoUpgradeRequestType = String(message.upgradeRequestType);
+			_win.__kustoUpgradeRequestType = String(message.upgradeRequestType);
 		}
 		if (typeof message.compatibilityTooltip === 'string') {
-			(_win as any).__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+			_win.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
 		}
 		try {
 			if (typeof __kustoApplyDocumentCapabilities === 'function') {

@@ -11,7 +11,7 @@ declare const __kustoGetResultsState: ((boxId: string) => {
 	displayRowIndices?: number[];
 } | null) | undefined;
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 function __kustoCloseAllColumnMenus(): void {
 	try {

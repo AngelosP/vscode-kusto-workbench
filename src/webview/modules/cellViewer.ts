@@ -10,7 +10,7 @@ declare const __kustoGetResultsState: ((boxId: string) => {
 	searchMatches?: { row: number; col: number }[];
 } | null) | undefined;
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 /**
  * State for the cell viewer.

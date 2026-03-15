@@ -1,17 +1,17 @@
 // Markdown box creation, Toast UI editor setup, markdown themes.
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 // Access shared state from window (set by extraBoxes.ts).
 // Initialize on window if not already present, so load order doesn't matter.
-(window as any).__kustoMarkdownBoxes = (window as any).__kustoMarkdownBoxes || [];
-let markdownBoxes: any[] = (window as any).__kustoMarkdownBoxes;
-(window as any).__kustoMarkdownEditors = (window as any).__kustoMarkdownEditors || {};
-let markdownEditors = (window as any).__kustoMarkdownEditors;
+window.__kustoMarkdownBoxes = window.__kustoMarkdownBoxes || [];
+let markdownBoxes: any[] = window.__kustoMarkdownBoxes;
+window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
+let markdownEditors = window.__kustoMarkdownEditors;
 let markdownViewers: any = {};
-(window as any).__kustoPythonEditors = (window as any).__kustoPythonEditors || {};
-let pythonEditors: any = (window as any).__kustoPythonEditors;
+window.__kustoPythonEditors = window.__kustoPythonEditors || {};
+let pythonEditors: any = window.__kustoPythonEditors;
 export let __kustoPendingMarkdownRevealByBoxId: any = {};
 
 export function __kustoTryApplyPendingMarkdownReveal( boxId: any) {
@@ -22,8 +22,8 @@ export function __kustoTryApplyPendingMarkdownReveal( boxId: any) {
 		}
 		try { delete __kustoPendingMarkdownRevealByBoxId[boxId]; } catch { /* ignore */ }
 		try {
-			if (typeof (window as any).__kustoRevealMarkdownRangeInBox === 'function') {
-				(window as any).__kustoRevealMarkdownRangeInBox(boxId, pending);
+			if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
+				window.__kustoRevealMarkdownRangeInBox(boxId, pending);
 			}
 		} catch { /* ignore */ }
 	} catch {
@@ -34,10 +34,10 @@ export function __kustoTryApplyPendingMarkdownReveal( boxId: any) {
 // Called by main.js when the extension host asks us to reveal a range.
 // For .md compatibility mode, there is exactly one markdown section; reveal in that first box.
 try {
-	if (typeof (window as any).__kustoRevealTextRangeFromHost !== 'function') {
-		(window as any).__kustoRevealTextRangeFromHost = (message: any) => {
+	if (typeof window.__kustoRevealTextRangeFromHost !== 'function') {
+		window.__kustoRevealTextRangeFromHost = (message: any) => {
 			try {
-				const kind = String((window as any).__kustoDocumentKind || '');
+				const kind = String(window.__kustoDocumentKind || '');
 				if (kind !== 'md') {
 					return;
 				}
@@ -63,7 +63,7 @@ try {
 							(_win.vscode as any).postMessage({
 								type: 'debugMdSearchReveal',
 								phase: 'markdownReveal(queued)',
-								detail: `${String((window as any).__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
+								detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
 							});
 						}
 					} catch { /* ignore */ }
@@ -75,12 +75,12 @@ try {
 						(_win.vscode as any).postMessage({
 							type: 'debugMdSearchReveal',
 							phase: 'markdownReveal(apply)',
-							detail: `${String((window as any).__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
+							detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
 						});
 					}
 				} catch { /* ignore */ }
-				if (typeof (window as any).__kustoRevealMarkdownRangeInBox === 'function') {
-					(window as any).__kustoRevealMarkdownRangeInBox(boxId, payload);
+				if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
+					window.__kustoRevealMarkdownRangeInBox(boxId, payload);
 				}
 			} catch {
 				// ignore
@@ -94,8 +94,8 @@ try {
 // Reveal a markdown range inside a specific markdown box, by switching to markdown mode
 // (so line/character mapping is stable) and then using ToastUI's selection API.
 try {
-	if (typeof (window as any).__kustoRevealMarkdownRangeInBox !== 'function') {
-		(window as any).__kustoRevealMarkdownRangeInBox = (boxId: any, payload: any) => {
+	if (typeof window.__kustoRevealMarkdownRangeInBox !== 'function') {
+		window.__kustoRevealMarkdownRangeInBox = (boxId: any, payload: any) => {
 			const id = String(boxId || '');
 			if (!id) return;
 			const sl = payload && typeof payload.startLine === 'number' ? payload.startLine : 0;
@@ -105,8 +105,8 @@ try {
 			const matchText = payload && typeof payload.matchText === 'string' ? String(payload.matchText) : '';
 			const startOffset = payload && typeof payload.startOffset === 'number' ? payload.startOffset : undefined;
 			const endOffset = payload && typeof payload.endOffset === 'number' ? payload.endOffset : undefined;
-			const desiredUiMode = (typeof (window as any).__kustoGetMarkdownMode === 'function')
-				? String((window as any).__kustoGetMarkdownMode(id) || 'wysiwyg')
+			const desiredUiMode = (typeof window.__kustoGetMarkdownMode === 'function')
+				? String(window.__kustoGetMarkdownMode(id) || 'wysiwyg')
 				: 'wysiwyg';
 
 			try {
@@ -264,7 +264,7 @@ try {
 						setTimeout(() => {
 							const ok = selectInPreviewByOccurrence();
 							if (!ok) {
-								try { (window as any).find && (window as any).find(findText); } catch { /* ignore */ }
+								try { window.find && window.find(findText); } catch { /* ignore */ }
 							}
 						}, 0);
 					} catch { /* ignore */ }
@@ -331,8 +331,8 @@ try {
 
 			try {
 				// Ensure we are not in preview mode; preview hides the editor surface.
-				if (desiredUiMode === 'preview' && typeof (window as any).__kustoSetMarkdownMode === 'function') {
-					(window as any).__kustoSetMarkdownMode(id, 'wysiwyg');
+				if (desiredUiMode === 'preview' && typeof window.__kustoSetMarkdownMode === 'function') {
+					window.__kustoSetMarkdownMode(id, 'wysiwyg');
 				}
 			} catch { /* ignore */ }
 			applySelectionInDesiredMode();
@@ -657,7 +657,7 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 
 export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 	try {
-		if (String((window as any).__kustoDocumentKind || '') !== 'md') {
+		if (String(window.__kustoDocumentKind || '') !== 'md') {
 			return;
 		}
 		const id = String(boxId || '').trim();
@@ -779,13 +779,13 @@ export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 
 export function __kustoScheduleMdAutoExpand( boxId: any) {
 	try {
-		if (String((window as any).__kustoDocumentKind || '') !== 'md') {
+		if (String(window.__kustoDocumentKind || '') !== 'md') {
 			return;
 		}
 		const id = String(boxId || '').trim();
 		if (!id) return;
-		(window as any).__kustoMdAutoExpandTimersByBoxId = (window as any).__kustoMdAutoExpandTimersByBoxId || {};
-		const map = (window as any).__kustoMdAutoExpandTimersByBoxId;
+		window.__kustoMdAutoExpandTimersByBoxId = window.__kustoMdAutoExpandTimersByBoxId || {};
+		const map = window.__kustoMdAutoExpandTimersByBoxId;
 		if (map[id]) {
 			try { clearTimeout(map[id]); } catch { /* ignore */ }
 		}
@@ -854,13 +854,13 @@ export function __kustoMaximizePythonBox( boxId: any) {
 
 export function __kustoEnsureMarkdownModeMap() {
 	try {
-		if (!(window as any).__kustoMarkdownModeByBoxId || typeof (window as any).__kustoMarkdownModeByBoxId !== 'object') {
-			(window as any).__kustoMarkdownModeByBoxId = {};
+		if (!window.__kustoMarkdownModeByBoxId || typeof window.__kustoMarkdownModeByBoxId !== 'object') {
+			window.__kustoMarkdownModeByBoxId = {};
 		}
 	} catch {
 		// ignore
 	}
-	return (window as any).__kustoMarkdownModeByBoxId;
+	return window.__kustoMarkdownModeByBoxId;
 }
 
 export function __kustoGetMarkdownMode( boxId: any) {
@@ -929,7 +929,7 @@ export function __kustoToggleMdModeDropdown( boxId: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
-		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 		if (isOpen) {
 			menu.style.display = 'none';
 			btn.setAttribute('aria-expanded', 'false');
@@ -1256,7 +1256,7 @@ export function ensureMarkedGlobal() {
 						try {
 							if (typeof (_win.marked as any) === 'undefined' || !(_win.marked as any)) {
 								// Best-effort: make it available as a global for the existing renderer.
-								(window as any).marked = m;
+								window.marked = m;
 							}
 						} catch {
 							// ignore
@@ -1295,8 +1295,8 @@ export function addMarkdownBox( options: any) {
 	try {
 		const initialText = options && typeof options.text === 'string' ? options.text : undefined;
 		if (typeof initialText === 'string') {
-			(window as any).__kustoPendingMarkdownTextByBoxId = (window as any).__kustoPendingMarkdownTextByBoxId || {};
-			(window as any).__kustoPendingMarkdownTextByBoxId[id] = initialText;
+			window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
+			window.__kustoPendingMarkdownTextByBoxId[id] = initialText;
 		}
 	} catch {
 		// ignore
@@ -1313,13 +1313,13 @@ export function addMarkdownBox( options: any) {
 
 	// For plain .md files, enable full-page mode (no section chrome).
 	try {
-		if (String((window as any).__kustoDocumentKind || '') === 'md' || (options && options.mdAutoExpand)) {
+		if (String(window.__kustoDocumentKind || '') === 'md' || (options && options.mdAutoExpand)) {
 			litEl.setAttribute('plain-md', '');
 		}
 	} catch { /* ignore */ }
 
 	// Pass initial text if available.
-	const pendingText = (window as any).__kustoPendingMarkdownTextByBoxId && (window as any).__kustoPendingMarkdownTextByBoxId[id];
+	const pendingText = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[id];
 	if (typeof pendingText === 'string') {
 		litEl.setAttribute('initial-text', pendingText);
 	}
@@ -1348,7 +1348,7 @@ export function addMarkdownBox( options: any) {
 	// Apply persisted height.
 	try {
 		const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
-		const isPlainMd = String((window as any).__kustoDocumentKind || '') === 'md';
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
 		if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
 			litEl.setAttribute('editor-height-px', String(h));
 		}
@@ -1366,7 +1366,7 @@ export function addMarkdownBox( options: any) {
 
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		const isPlainMd = String((window as any).__kustoDocumentKind || '') === 'md';
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
 		if (!isPlainMd) {
 			const controls = document.querySelector('.add-controls');
 			if (controls && typeof controls.scrollIntoView === 'function') {
@@ -1479,8 +1479,8 @@ export function removeMarkdownBox( boxId: any) {
 	}
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		if ((window as any).__kustoMarkdownModeByBoxId && typeof (window as any).__kustoMarkdownModeByBoxId === 'object') {
-			delete (window as any).__kustoMarkdownModeByBoxId[boxId];
+		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
+			delete window.__kustoMarkdownModeByBoxId[boxId];
 		}
 	} catch { /* ignore */ }
 }
@@ -1492,7 +1492,7 @@ export function __kustoUpdateMarkdownVisibilityToggleButton( boxId: any) {
 	}
 	let expanded = true;
 	try {
-		expanded = !((window as any).__kustoMarkdownExpandedByBoxId && (window as any).__kustoMarkdownExpandedByBoxId[boxId] === false);
+		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	btn.classList.toggle('is-active', expanded);
 	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
@@ -1507,7 +1507,7 @@ export function __kustoApplyMarkdownBoxVisibility( boxId: any) {
 	}
 	let expanded = true;
 	try {
-		expanded = !((window as any).__kustoMarkdownExpandedByBoxId && (window as any).__kustoMarkdownExpandedByBoxId[boxId] === false);
+		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	try {
 		box.classList.toggle('is-collapsed', !expanded);
@@ -1528,11 +1528,11 @@ export function __kustoApplyMarkdownBoxVisibility( boxId: any) {
 
 export function toggleMarkdownBoxVisibility( boxId: any) {
 	try {
-		if (!(window as any).__kustoMarkdownExpandedByBoxId || typeof (window as any).__kustoMarkdownExpandedByBoxId !== 'object') {
-			(window as any).__kustoMarkdownExpandedByBoxId = {};
+		if (!window.__kustoMarkdownExpandedByBoxId || typeof window.__kustoMarkdownExpandedByBoxId !== 'object') {
+			window.__kustoMarkdownExpandedByBoxId = {};
 		}
-		const current = !((window as any).__kustoMarkdownExpandedByBoxId[boxId] === false);
-		(window as any).__kustoMarkdownExpandedByBoxId[boxId] = !current;
+		const current = !(window.__kustoMarkdownExpandedByBoxId[boxId] === false);
+		window.__kustoMarkdownExpandedByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyMarkdownBoxVisibility(boxId); } catch { /* ignore */ }
@@ -1565,7 +1565,7 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 
 	let ToastEditor = null;
 	try {
-		ToastEditor = ((window as any).toastui && (window as any).toastui.Editor) ? (window as any).toastui.Editor : null;
+		ToastEditor = (window.toastui && window.toastui.Editor) ? window.toastui.Editor : null;
 	} catch {
 		ToastEditor = null;
 	}
@@ -1574,9 +1574,9 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 		// Webview scripts load sequentially, but keep a small retry loop for safety.
 		let attempt = 0;
 		try {
-			(window as any).__kustoToastUiViewerInitRetryCountByBoxId = (window as any).__kustoToastUiViewerInitRetryCountByBoxId || {};
-			attempt = ((window as any).__kustoToastUiViewerInitRetryCountByBoxId[boxId] || 0) + 1;
-			(window as any).__kustoToastUiViewerInitRetryCountByBoxId[boxId] = attempt;
+			window.__kustoToastUiViewerInitRetryCountByBoxId = window.__kustoToastUiViewerInitRetryCountByBoxId || {};
+			attempt = (window.__kustoToastUiViewerInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoToastUiViewerInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
@@ -1711,7 +1711,7 @@ export function initMarkdownEditor( boxId: any) {
 
 	let ToastEditor = null;
 	try {
-		ToastEditor = ((window as any).toastui && (window as any).toastui.Editor) ? (window as any).toastui.Editor : null;
+		ToastEditor = (window.toastui && window.toastui.Editor) ? window.toastui.Editor : null;
 	} catch {
 		ToastEditor = null;
 	}
@@ -1720,9 +1720,9 @@ export function initMarkdownEditor( boxId: any) {
 		// Webview scripts load sequentially, but keep a small retry loop for safety.
 		let attempt = 0;
 		try {
-			(window as any).__kustoToastUiInitRetryCountByBoxId = (window as any).__kustoToastUiInitRetryCountByBoxId || {};
-			attempt = ((window as any).__kustoToastUiInitRetryCountByBoxId[boxId] || 0) + 1;
-			(window as any).__kustoToastUiInitRetryCountByBoxId[boxId] = attempt;
+			window.__kustoToastUiInitRetryCountByBoxId = window.__kustoToastUiInitRetryCountByBoxId || {};
+			attempt = (window.__kustoToastUiInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoToastUiInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
@@ -1749,10 +1749,10 @@ export function initMarkdownEditor( boxId: any) {
 	// Avoid setMarkdown() during init; pass initial value into the constructor.
 	let initialValue = '';
 	try {
-		const pending = (window as any).__kustoPendingMarkdownTextByBoxId && (window as any).__kustoPendingMarkdownTextByBoxId[boxId];
+		const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
 		if (typeof pending === 'string') {
 			initialValue = pending;
-			try { delete (window as any).__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
 		}
 	} catch {
 		// ignore
@@ -2105,10 +2105,10 @@ export function initMarkdownEditor( boxId: any) {
 	// Check for any pending text that might have been set during async initialization
 	// (e.g., if toolUpdateMarkdownSection was called while we were creating the editor)
 	try {
-		const latePending = (window as any).__kustoPendingMarkdownTextByBoxId && (window as any).__kustoPendingMarkdownTextByBoxId[boxId];
+		const latePending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
 		if (typeof latePending === 'string') {
 			api.setValue(latePending);
-			try { delete (window as any).__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 	
@@ -2118,7 +2118,7 @@ export function initMarkdownEditor( boxId: any) {
 	// For multi-section files (.kqlx, .mdx), fix the double-border issue by removing
 	// the Toast UI's border (the section wrapper already provides the border).
 	try {
-		const isPlainMd = String((window as any).__kustoDocumentKind || '') === 'md';
+		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
 		if (!isPlainMd) {
 			const defaultUI = container.querySelector('.toastui-editor-defaultUI');
 			if (defaultUI) {
@@ -2225,7 +2225,7 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 		}
 		const baseUri = (() => {
 			try {
-				return (typeof (window as any).__kustoDocumentUri === 'string') ? String((window as any).__kustoDocumentUri) : '';
+				return (typeof window.__kustoDocumentUri === 'string') ? String(window.__kustoDocumentUri) : '';
 			} catch {
 				return '';
 			}
@@ -2235,8 +2235,8 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 		}
 
 		// Cache across renders to avoid spamming the extension host.
-		(window as any).__kustoResolvedImageSrcCache = (window as any).__kustoResolvedImageSrcCache || {};
-		const cache = (window as any).__kustoResolvedImageSrcCache;
+		window.__kustoResolvedImageSrcCache = window.__kustoResolvedImageSrcCache || {};
+		const cache = window.__kustoResolvedImageSrcCache;
 
 		const imgs = rootEl.querySelectorAll('img');
 		for (const img of imgs) {
@@ -2272,7 +2272,7 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 					continue;
 				}
 
-				const resolver = (window as any).__kustoResolveResourceUri;
+				const resolver = window.__kustoResolveResourceUri;
 				if (typeof resolver !== 'function') {
 					continue;
 				}
@@ -2298,35 +2298,35 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoTryApplyPendingMarkdownReveal = __kustoTryApplyPendingMarkdownReveal;
-(window as any).__kustoIsDarkTheme = __kustoIsDarkTheme;
-(window as any).__kustoApplyToastUiThemeToHost = __kustoApplyToastUiThemeToHost;
-(window as any).__kustoApplyToastUiThemeAll = __kustoApplyToastUiThemeAll;
-(window as any).__kustoStartToastUiThemeObserver = __kustoStartToastUiThemeObserver;
-(window as any).__kustoMaximizeMarkdownBox = __kustoMaximizeMarkdownBox;
-(window as any).__kustoAutoExpandMarkdownBoxToContent = __kustoAutoExpandMarkdownBoxToContent;
-(window as any).__kustoScheduleMdAutoExpand = __kustoScheduleMdAutoExpand;
-(window as any).__kustoEnsureMarkdownModeMap = __kustoEnsureMarkdownModeMap;
-(window as any).__kustoGetMarkdownMode = __kustoGetMarkdownMode;
-(window as any).__kustoSetMarkdownMode = __kustoSetMarkdownMode;
-(window as any).__kustoUpdateMarkdownModeButtons = __kustoUpdateMarkdownModeButtons;
-(window as any).__kustoToggleMdModeDropdown = __kustoToggleMdModeDropdown;
-(window as any).__kustoCloseMdModeDropdown = __kustoCloseMdModeDropdown;
-(window as any).__kustoUpdateMdModeResponsive = __kustoUpdateMdModeResponsive;
-(window as any).__kustoSetupMdModeResizeObserver = __kustoSetupMdModeResizeObserver;
-(window as any).__kustoCleanupMdModeResizeObserver = __kustoCleanupMdModeResizeObserver;
-(window as any).__kustoUpdateMarkdownPreviewSizing = __kustoUpdateMarkdownPreviewSizing;
-(window as any).__kustoApplyMarkdownEditorMode = __kustoApplyMarkdownEditorMode;
-(window as any).isLikelyDarkTheme = isLikelyDarkTheme;
-(window as any).getToastUiPlugins = getToastUiPlugins;
-(window as any).ensureMarkedGlobal = ensureMarkedGlobal;
-(window as any).addMarkdownBox = addMarkdownBox;
-(window as any).__kustoAutoFitMarkdownBoxHeight = __kustoAutoFitMarkdownBoxHeight;
-(window as any).removeMarkdownBox = removeMarkdownBox;
-(window as any).__kustoUpdateMarkdownVisibilityToggleButton = __kustoUpdateMarkdownVisibilityToggleButton;
-(window as any).__kustoApplyMarkdownBoxVisibility = __kustoApplyMarkdownBoxVisibility;
-(window as any).toggleMarkdownBoxVisibility = toggleMarkdownBoxVisibility;
-(window as any).initMarkdownViewer = initMarkdownViewer;
-(window as any).initMarkdownEditor = initMarkdownEditor;
-(window as any).__kustoRewriteToastUiImagesInContainer = __kustoRewriteToastUiImagesInContainer;
+window.__kustoTryApplyPendingMarkdownReveal = __kustoTryApplyPendingMarkdownReveal;
+window.__kustoIsDarkTheme = __kustoIsDarkTheme;
+window.__kustoApplyToastUiThemeToHost = __kustoApplyToastUiThemeToHost;
+window.__kustoApplyToastUiThemeAll = __kustoApplyToastUiThemeAll;
+window.__kustoStartToastUiThemeObserver = __kustoStartToastUiThemeObserver;
+window.__kustoMaximizeMarkdownBox = __kustoMaximizeMarkdownBox;
+window.__kustoAutoExpandMarkdownBoxToContent = __kustoAutoExpandMarkdownBoxToContent;
+window.__kustoScheduleMdAutoExpand = __kustoScheduleMdAutoExpand;
+window.__kustoEnsureMarkdownModeMap = __kustoEnsureMarkdownModeMap;
+window.__kustoGetMarkdownMode = __kustoGetMarkdownMode;
+window.__kustoSetMarkdownMode = __kustoSetMarkdownMode;
+window.__kustoUpdateMarkdownModeButtons = __kustoUpdateMarkdownModeButtons;
+window.__kustoToggleMdModeDropdown = __kustoToggleMdModeDropdown;
+window.__kustoCloseMdModeDropdown = __kustoCloseMdModeDropdown;
+window.__kustoUpdateMdModeResponsive = __kustoUpdateMdModeResponsive;
+window.__kustoSetupMdModeResizeObserver = __kustoSetupMdModeResizeObserver;
+window.__kustoCleanupMdModeResizeObserver = __kustoCleanupMdModeResizeObserver;
+window.__kustoUpdateMarkdownPreviewSizing = __kustoUpdateMarkdownPreviewSizing;
+window.__kustoApplyMarkdownEditorMode = __kustoApplyMarkdownEditorMode;
+window.isLikelyDarkTheme = isLikelyDarkTheme;
+window.getToastUiPlugins = getToastUiPlugins;
+window.ensureMarkedGlobal = ensureMarkedGlobal;
+window.addMarkdownBox = addMarkdownBox;
+window.__kustoAutoFitMarkdownBoxHeight = __kustoAutoFitMarkdownBoxHeight;
+window.removeMarkdownBox = removeMarkdownBox;
+window.__kustoUpdateMarkdownVisibilityToggleButton = __kustoUpdateMarkdownVisibilityToggleButton;
+window.__kustoApplyMarkdownBoxVisibility = __kustoApplyMarkdownBoxVisibility;
+window.toggleMarkdownBoxVisibility = toggleMarkdownBoxVisibility;
+window.initMarkdownViewer = initMarkdownViewer;
+window.initMarkdownEditor = initMarkdownEditor;
+window.__kustoRewriteToastUiImagesInContainer = __kustoRewriteToastUiImagesInContainer;
 

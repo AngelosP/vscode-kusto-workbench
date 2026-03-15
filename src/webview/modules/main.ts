@@ -3,7 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 // VS Code can intercept Ctrl/Cmd+V in webviews; provide a reliable paste path for Monaco.
 document.addEventListener('keydown', async (event: any) => {
 	if (!(event.ctrlKey || event.metaKey) || (event.key !== 'v' && event.key !== 'V')) {

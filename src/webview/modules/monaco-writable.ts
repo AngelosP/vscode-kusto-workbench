@@ -1,7 +1,7 @@
 // Monaco editor writability guards — extracted from monaco.ts (Phase 6 decomposition).
 // Forces Monaco textareas to remain writable despite VS Code webview timing glitches.
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 
 const __kustoWritableGuardsByEditor = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
 

@@ -2,7 +2,7 @@
 // All global state variables exposed on window for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 const connections: any[] = [];
 try { _win.connections = connections; } catch { /* ignore */ }

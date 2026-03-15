@@ -1,7 +1,7 @@
 // Monaco suggest widget management — extracted from monaco.ts (Phase 6 decomposition).
 // Handles suggest widget visibility, cursor-word detection, preselect, and smart sizing.
 
-const _win = window as unknown as Record<string, any>;
+const _win = window;
 export function __kustoIsElementVisibleForSuggest(el: any) {
 	try {
 		if (!el) return false;

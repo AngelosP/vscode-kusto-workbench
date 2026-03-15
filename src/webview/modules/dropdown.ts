@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-const _win = window as unknown as Record<string, unknown>;
+const _win = window;
 
 (function initKustoDropdown() {
 	if (!_win.__kustoDropdown || typeof _win.__kustoDropdown !== 'object') {
@@ -248,7 +248,7 @@ const _win = window as unknown as Record<string, unknown>;
 			btn.setAttribute('aria-expanded', 'true');
 			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
 			// Capture scroll position for threshold-based dismiss (see queryBoxes-toolbar.ts scroll handler)
-			try { (_win as any).__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch { /* ignore */ }
+			try { _win.__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch { /* ignore */ }
 		} catch { /* ignore */ }
 
 		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {
@@ -449,7 +449,7 @@ const _win = window as unknown as Record<string, unknown>;
 		} catch { /* ignore */ }
 
 		menuEl.addEventListener('keydown', (ev) => {
-			const e = ev || (window as any).event;
+			const e = ev || window.event;
 			const key = String(e && e.key ? e.key : '');
 			if (!key) return;
 			const items = getMenuItems(menuEl);
