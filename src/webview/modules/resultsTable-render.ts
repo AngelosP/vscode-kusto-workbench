@@ -688,10 +688,10 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 }
 
 function displayResult(result: any) {
-	const boxId = (_win.lastExecutedBox as any);
+	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
-	(_win.setQueryExecuting as any)(boxId, false);
+	_win.setQueryExecuting(boxId, false);
 
 	displayResultForBox(result, boxId, {
 		label: 'Results',
@@ -701,14 +701,14 @@ function displayResult(result: any) {
 
 // Ensure these entrypoints are always accessible globally (some hosts/tooling can
 // make bare function declarations non-global).
-try { (window as any).displayResult = displayResult; } catch { /* ignore */ }
-try { (window as any).displayResultForBox = displayResultForBox; } catch { /* ignore */ }
+try { window.displayResult = displayResult; } catch { /* ignore */ }
+try { window.displayResultForBox = displayResultForBox; } catch { /* ignore */ }
 
 function __kustoEnsureResultsStateMap() {
-	if (!(_win.__kustoResultsByBoxId as any) || typeof (_win.__kustoResultsByBoxId as any) !== 'object') {
-		(_win.__kustoResultsByBoxId as any) = {};
+	if (!_win.__kustoResultsByBoxId || typeof _win.__kustoResultsByBoxId !== 'object') {
+		_win.__kustoResultsByBoxId = {};
 	}
-	return (_win.__kustoResultsByBoxId as any);
+	return _win.__kustoResultsByBoxId;
 }
 
 function __kustoGetResultsState(boxId: any) {
@@ -726,11 +726,11 @@ function __kustoSetResultsState(boxId: any, state: any) {
 	const map = __kustoEnsureResultsStateMap();
 	map[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
-	try { (_win.currentResult as any) = state; } catch { /* ignore */ }
+	try { _win.currentResult = state; } catch { /* ignore */ }
 	// Notify any dependent sections (charts/transformations) that this data source changed.
 	try {
-		if (typeof (_win.__kustoNotifyResultsUpdated as any) === 'function') {
-			(_win.__kustoNotifyResultsUpdated as any)(boxId);
+		if (typeof _win.__kustoNotifyResultsUpdated === 'function') {
+			_win.__kustoNotifyResultsUpdated(boxId);
 		}
 	} catch { /* ignore */ }
 }
@@ -756,7 +756,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				});
 				try { _win.__kustoEnsureDisplayRowIndexMaps(__kustoGetResultsState(boxId)); } catch { /* ignore */ }
-				try { (_win.__kustoTryStoreQueryResult as any)(boxId, result); } catch { /* ignore */ }
+				try { _win.__kustoTryStoreQueryResult(boxId, result); } catch { /* ignore */ }
 				try { _win.__kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 				return;
 			}
@@ -1061,15 +1061,15 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 	} catch { /* ignore */ }
 	try { _win.__kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
 	try {
-		if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
-			(_win.__kustoApplyResultsVisibility as any)(boxId);
+		if (typeof _win.__kustoApplyResultsVisibility === 'function') {
+			_win.__kustoApplyResultsVisibility(boxId);
 		}
 	} catch {
 		// ignore
 	}
 	try {
-		if (typeof (_win.__kustoUpdateQueryResultsToggleButton) === 'function') {
-			(_win.__kustoUpdateQueryResultsToggleButton as any)(boxId);
+		if (typeof _win.__kustoUpdateQueryResultsToggleButton === 'function') {
+			_win.__kustoUpdateQueryResultsToggleButton(boxId);
 		}
 	} catch {
 		// ignore
@@ -1079,11 +1079,11 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 
 function __kustoEnsureResultsSearchControls(boxId: any) {
 	try {
-		if (typeof (_win.__kustoCreateSearchControl as any) !== 'function') return;
+		if (typeof _win.__kustoCreateSearchControl !== 'function') return;
 
 		const dataHost = document.getElementById(boxId + '_data_search_host');
 		if (dataHost && !document.getElementById(boxId + '_data_search')) {
-			(_win.__kustoCreateSearchControl as any)(dataHost, {
+			_win.__kustoCreateSearchControl(dataHost, {
 				inputId: boxId + '_data_search',
 				modeId: boxId + '_data_search_mode',
 				ariaLabel: 'Search data',
@@ -1096,7 +1096,7 @@ function __kustoEnsureResultsSearchControls(boxId: any) {
 
 		const colHost = document.getElementById(boxId + '_column_search_host');
 		if (colHost && !document.getElementById(boxId + '_column_search')) {
-			(_win.__kustoCreateSearchControl as any)(colHost, {
+			_win.__kustoCreateSearchControl(colHost, {
 				inputId: boxId + '_column_search',
 				modeId: boxId + '_column_search_mode',
 				ariaLabel: 'Scroll to column',
@@ -1264,7 +1264,7 @@ function __kustoMaybeAdjustLocationForCacheLine(boxId: any, location: any) {
 	}
 	let cacheEnabled = false;
 	try {
-		cacheEnabled = !!((_win.__kustoLastRunCacheEnabledByBoxId as any) && (_win.__kustoLastRunCacheEnabledByBoxId as any)[bid]);
+		cacheEnabled = !!(_win.__kustoLastRunCacheEnabledByBoxId && _win.__kustoLastRunCacheEnabledByBoxId[bid]);
 	} catch {
 		cacheEnabled = false;
 	}
@@ -1286,7 +1286,7 @@ function __kustoMaybeAdjustLocationForCacheLine(boxId: any, location: any) {
 }
 
 function __kustoEscapeForHtml(s: any) {
-	return (typeof (_win.escapeHtml) === 'function') ? (_win.escapeHtml as any)(String(s || '')) : String(s || '');
+	return (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(String(s || '')) : String(s || '');
 }
 
 function __kustoEscapeJsStringLiteral(s: any) {
@@ -1372,7 +1372,7 @@ function __kustoRenderErrorUxHtml(boxId: any, model: any, clientActivityId: any)
 
 // Centralized error UX renderer (hidden when no error).
 try {
-	(window as any).__kustoRenderErrorUx = function (boxId: any, error: any, clientActivityId: any) {
+	window.__kustoRenderErrorUx = function (boxId: any, error: any, clientActivityId: any) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
 		try { _win.__kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
@@ -1397,8 +1397,8 @@ try {
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
-					(_win.__kustoApplyResultsVisibility as any)(bid);
+				if (typeof _win.__kustoApplyResultsVisibility === 'function') {
+					_win.__kustoApplyResultsVisibility(bid);
 				}
 			} catch { /* ignore */ }
 			return;
@@ -1407,20 +1407,20 @@ try {
 		resultsDiv.innerHTML = html;
 		resultsDiv.classList.add('visible');
 		try {
-			if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
-				(_win.__kustoApplyResultsVisibility as any)(bid);
+			if (typeof _win.__kustoApplyResultsVisibility === 'function') {
+				_win.__kustoApplyResultsVisibility(bid);
 			}
 		} catch { /* ignore */ }
 		try {
-			if (typeof (_win.__kustoClampResultsWrapperHeight as any) === 'function') {
-				(_win.__kustoClampResultsWrapperHeight as any)(bid);
+			if (typeof _win.__kustoClampResultsWrapperHeight === 'function') {
+				_win.__kustoClampResultsWrapperHeight(bid);
 			}
 		} catch { /* ignore */ }
 		// Special UX: on SEM0139, auto-find the unresolved expression in the query editor.
 		try {
-			if (model && model.autoFindTerm && typeof (_win.__kustoAutoFindInQueryEditor as any) === 'function') {
+			if (model && model.autoFindTerm && typeof _win.__kustoAutoFindInQueryEditor === 'function') {
 				setTimeout(() => {
-					try { (_win.__kustoAutoFindInQueryEditor as any)(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
+					try { _win.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
 				}, 0);
 			}
 		} catch { /* ignore */ }
@@ -1431,7 +1431,7 @@ try {
 
 // Navigate to a line/column in the query editor and scroll it into view.
 try {
-	(window as any).__kustoNavigateToQueryLocation = function (event: any, boxId: any, line: any, col: any) {
+	window.__kustoNavigateToQueryLocation = function (event: any, boxId: any, line: any, col: any) {
 		try {
 			if (event && typeof event.preventDefault === 'function') {
 				event.preventDefault();
@@ -1453,7 +1453,7 @@ try {
 			}
 		} catch { /* ignore */ }
 		try {
-			const editor = (typeof (_win.queryEditors as any) !== 'undefined' && (_win.queryEditors as any)) ? (_win.queryEditors as any)[bid] : null;
+			const editor = _win.queryEditors ? _win.queryEditors[bid] : null;
 			if (!editor) return;
 			const pos = { lineNumber: ln, column: cn };
 			try { editor.focus(); } catch { /* ignore */ }
@@ -1474,8 +1474,8 @@ try {
 
 // Delegated click handler for clickable error locations.
 try {
-	if (!(_win.__kustoErrorLocationClickHandlerInstalled as any)) {
-		(_win.__kustoErrorLocationClickHandlerInstalled as any) = true;
+	if (!_win.__kustoErrorLocationClickHandlerInstalled) {
+		_win.__kustoErrorLocationClickHandlerInstalled = true;
 		document.addEventListener('click', (event) => {
 			try {
 				const target = event && event.target ? event.target : null;
@@ -1492,8 +1492,8 @@ try {
 				if (!boxId || !isFinite(line) || !isFinite(col)) {
 					return;
 				}
-				if (typeof (_win.__kustoNavigateToQueryLocation as any) === 'function') {
-					(_win.__kustoNavigateToQueryLocation as any)(event, boxId, line, col);
+				if (typeof _win.__kustoNavigateToQueryLocation === 'function') {
+					_win.__kustoNavigateToQueryLocation(event, boxId, line, col);
 					return;
 				}
 			} catch {
@@ -1506,14 +1506,14 @@ try {
 }
 
 function displayError(error: any) {
-	const boxId = (_win.lastExecutedBox as any);
+	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
-	(_win.setQueryExecuting as any)(boxId, false);
+	_win.setQueryExecuting(boxId, false);
 
 	try {
-		if (typeof (_win.__kustoRenderErrorUx as any) === 'function') {
-			(_win.__kustoRenderErrorUx as any)(boxId, error);
+		if (typeof _win.__kustoRenderErrorUx === 'function') {
+			_win.__kustoRenderErrorUx(boxId, error);
 			return;
 		}
 	} catch { /* ignore */ }
@@ -1528,12 +1528,12 @@ function displayError(error: any) {
 // Display a non-query error message in a specific box's results area.
 // Used for auxiliary actions like refreshing databases.
 try {
-	(window as any).__kustoDisplayBoxError = function (boxId: any, error: any) {
+	window.__kustoDisplayBoxError = function (boxId: any, error: any) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
 		try {
-			if (typeof (_win.__kustoRenderErrorUx as any) === 'function') {
-				(_win.__kustoRenderErrorUx as any)(bid, error);
+			if (typeof _win.__kustoRenderErrorUx === 'function') {
+				_win.__kustoRenderErrorUx(bid, error);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -1550,10 +1550,10 @@ try {
 }
 
 function displayCancelled() {
-	const boxId = (_win.lastExecutedBox as any);
+	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
-	(_win.setQueryExecuting as any)(boxId, false);
+	_win.setQueryExecuting(boxId, false);
 
 	const resultsDiv = document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
@@ -1566,33 +1566,33 @@ function displayCancelled() {
 }
 
 // ── Window bridge exports for remaining legacy callers ──
-(window as any).__kustoRerenderResultsTable = __kustoRerenderResultsTable;
-(window as any).__kustoGetVirtualizationState = __kustoGetVirtualizationState;
-(window as any).__kustoResolveVirtualScrollElement = __kustoResolveVirtualScrollElement;
-(window as any).__kustoResolveScrollSourceForEvent = __kustoResolveScrollSourceForEvent;
-(window as any).__kustoGetVirtualScrollMetrics = __kustoGetVirtualScrollMetrics;
-(window as any).__kustoBumpVisualVersion = __kustoBumpVisualVersion;
-(window as any).__kustoComputeVirtualRange = __kustoComputeVirtualRange;
-(window as any).__kustoBuildResultsTableRowHtml = __kustoBuildResultsTableRowHtml;
-(window as any).__kustoRerenderResultsTableBody = __kustoRerenderResultsTableBody;
-(window as any).displayResult = displayResult;
-(window as any).__kustoEnsureResultsStateMap = __kustoEnsureResultsStateMap;
-(window as any).__kustoGetResultsState = __kustoGetResultsState;
-(window as any).__kustoSetResultsState = __kustoSetResultsState;
-(window as any).displayResultForBox = displayResultForBox;
-(window as any).__kustoEnsureResultsSearchControls = __kustoEnsureResultsSearchControls;
-(window as any).__kustoTryExtractJsonFromErrorText = __kustoTryExtractJsonFromErrorText;
-(window as any).__kustoExtractLinePosition = __kustoExtractLinePosition;
-(window as any).__kustoNormalizeBadRequestInnerMessage = __kustoNormalizeBadRequestInnerMessage;
-(window as any).__kustoStripLinePositionTokens = __kustoStripLinePositionTokens;
-(window as any).__kustoTryExtractAutoFindTermFromMessage = __kustoTryExtractAutoFindTermFromMessage;
-(window as any).__kustoBuildErrorUxModel = __kustoBuildErrorUxModel;
-(window as any).__kustoMaybeAdjustLocationForCacheLine = __kustoMaybeAdjustLocationForCacheLine;
-(window as any).__kustoEscapeForHtml = __kustoEscapeForHtml;
-(window as any).__kustoEscapeJsStringLiteral = __kustoEscapeJsStringLiteral;
-(window as any).__kustoEscapeForHtmlAttribute = __kustoEscapeForHtmlAttribute;
-(window as any).__kustoRenderActivityIdInlineHtml = __kustoRenderActivityIdInlineHtml;
-(window as any).__kustoRenderErrorUxHtml = __kustoRenderErrorUxHtml;
-(window as any).displayError = displayError;
-(window as any).displayCancelled = displayCancelled;
+window.__kustoRerenderResultsTable = __kustoRerenderResultsTable;
+window.__kustoGetVirtualizationState = __kustoGetVirtualizationState;
+window.__kustoResolveVirtualScrollElement = __kustoResolveVirtualScrollElement;
+window.__kustoResolveScrollSourceForEvent = __kustoResolveScrollSourceForEvent;
+window.__kustoGetVirtualScrollMetrics = __kustoGetVirtualScrollMetrics;
+window.__kustoBumpVisualVersion = __kustoBumpVisualVersion;
+window.__kustoComputeVirtualRange = __kustoComputeVirtualRange;
+window.__kustoBuildResultsTableRowHtml = __kustoBuildResultsTableRowHtml;
+window.__kustoRerenderResultsTableBody = __kustoRerenderResultsTableBody;
+window.displayResult = displayResult;
+window.__kustoEnsureResultsStateMap = __kustoEnsureResultsStateMap;
+window.__kustoGetResultsState = __kustoGetResultsState;
+window.__kustoSetResultsState = __kustoSetResultsState;
+window.displayResultForBox = displayResultForBox;
+window.__kustoEnsureResultsSearchControls = __kustoEnsureResultsSearchControls;
+window.__kustoTryExtractJsonFromErrorText = __kustoTryExtractJsonFromErrorText;
+window.__kustoExtractLinePosition = __kustoExtractLinePosition;
+window.__kustoNormalizeBadRequestInnerMessage = __kustoNormalizeBadRequestInnerMessage;
+window.__kustoStripLinePositionTokens = __kustoStripLinePositionTokens;
+window.__kustoTryExtractAutoFindTermFromMessage = __kustoTryExtractAutoFindTermFromMessage;
+window.__kustoBuildErrorUxModel = __kustoBuildErrorUxModel;
+window.__kustoMaybeAdjustLocationForCacheLine = __kustoMaybeAdjustLocationForCacheLine;
+window.__kustoEscapeForHtml = __kustoEscapeForHtml;
+window.__kustoEscapeJsStringLiteral = __kustoEscapeJsStringLiteral;
+window.__kustoEscapeForHtmlAttribute = __kustoEscapeForHtmlAttribute;
+window.__kustoRenderActivityIdInlineHtml = __kustoRenderActivityIdInlineHtml;
+window.__kustoRenderErrorUxHtml = __kustoRenderErrorUxHtml;
+window.displayError = displayError;
+window.displayCancelled = displayCancelled;
 

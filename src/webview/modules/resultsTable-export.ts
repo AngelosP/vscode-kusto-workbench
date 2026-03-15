@@ -132,14 +132,14 @@ function __kustoSaveResultsToCsvFile(boxId: any, sectionLabel: any, mode: any) {
 	try {
 		const csv = (mode === 'visible') ? __kustoGetVisibleResultsAsCsv(boxId) : __kustoGetAllResultsAsCsv(boxId);
 		if (!csv || !csv.trim()) {
-			try { (_win.vscode as any) && (_win.vscode as any).postMessage && (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
+			try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
 			return;
 		}
-		if (typeof (_win.vscode as any) === 'undefined' || !(_win.vscode as any) || typeof (_win.vscode as any).postMessage !== 'function') {
+		if (typeof _win.vscode === 'undefined' || !_win.vscode || typeof _win.vscode.postMessage !== 'function') {
 			// vscode API unavailable - cannot show a message
 			return;
 		}
-		(_win.vscode as any).postMessage({
+		_win.vscode.postMessage({
 			type: 'saveResultsCsv',
 			boxId: boxId,
 			csv: csv,
@@ -147,7 +147,7 @@ function __kustoSaveResultsToCsvFile(boxId: any, sectionLabel: any, mode: any) {
 		});
 	} catch (err) {
 		console.error('Failed to prepare CSV:', err);
-		try { (_win.vscode as any) && (_win.vscode as any).postMessage && (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
+		try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
 	}
 }
 
@@ -221,11 +221,11 @@ function __kustoOnSaveSecondary(boxId: any, sectionLabel: any) {
 
 function __kustoHideSplitMenu() {
 	try {
-		if ((_win.__kustoSplitMenuEl as any)) {
-			(_win.__kustoSplitMenuEl as any).remove();
+		if (_win.__kustoSplitMenuEl) {
+			_win.__kustoSplitMenuEl.remove();
 		}
 	} catch { /* ignore */ }
-	try { (_win.__kustoSplitMenuEl as any) = null; } catch { /* ignore */ }
+	try { _win.__kustoSplitMenuEl = null; } catch { /* ignore */ }
 }
 
 function __kustoShowSplitMenu(anchorEl: any, label: any, onClick: any) {
@@ -262,7 +262,7 @@ function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 			el.appendChild(btn);
 		}
 
-		(_win.__kustoSplitMenuEl as any) = el;
+		_win.__kustoSplitMenuEl = el;
 		document.body.appendChild(el);
 
 		// Auto-size to content, but clamp to viewport and keep on-screen.
@@ -286,11 +286,11 @@ function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 			try {
 				document.addEventListener('mousedown', function __kustoSplitMenuDismiss(ev) {
 					try {
-						if (!(_win.__kustoSplitMenuEl as any)) {
+						if (!_win.__kustoSplitMenuEl) {
 							document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
 							return;
 						}
-						if ((_win.__kustoSplitMenuEl as any).contains(ev.target as HTMLElement) || anchorEl.contains(ev.target as HTMLElement)) return;
+						if (_win.__kustoSplitMenuEl.contains(ev.target as HTMLElement) || anchorEl.contains(ev.target as HTMLElement)) return;
 						__kustoHideSplitMenu();
 						document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
 					} catch { /* ignore */ }
@@ -420,10 +420,10 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 					// If this is a rapid second click, open the cell viewer instead of clearing selection.
 					if (isSyntheticDoubleClick) {
 						try {
-							if (typeof (_win.openCellViewer) === 'function') {
-								(_win.openCellViewer as any)(cell.row, cell.col, boxId);
-							} else {
-								console.warn('[kusto-query-editor] (_win.openCellViewer as any)() not available (did cellViewer.js load?)');
+						if (typeof _win.openCellViewer === 'function') {
+							_win.openCellViewer(cell.row, cell.col, boxId);
+						} else {
+							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
 							}
 						} catch { /* ignore */ }
 						return;
@@ -461,10 +461,10 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 				// If this was a synthetic double click (same cell, quickly), open the viewer.
 				if (isSyntheticDoubleClick) {
 					try {
-						if (typeof (_win.openCellViewer) === 'function') {
-							(_win.openCellViewer as any)(cell.row, cell.col, boxId);
+						if (typeof _win.openCellViewer === 'function') {
+							_win.openCellViewer(cell.row, cell.col, boxId);
 						} else {
-							console.warn('[kusto-query-editor] (_win.openCellViewer as any)() not available (did cellViewer.js load?)');
+							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
 						}
 					} catch { /* ignore */ }
 				}
@@ -641,11 +641,11 @@ function copySelectionToClipboard(boxId: any) {
 
 function __kustoHideContextMenu() {
 	try {
-		if ((_win.__kustoContextMenuEl as any)) {
-			(_win.__kustoContextMenuEl as any).remove();
+		if (_win.__kustoContextMenuEl) {
+			_win.__kustoContextMenuEl.remove();
 		}
 	} catch { /* ignore */ }
-	try { (_win.__kustoContextMenuEl as any) = null; } catch { /* ignore */ }
+	try { _win.__kustoContextMenuEl = null; } catch { /* ignore */ }
 }
 
 function handleTableContextMenu(event: any, boxId: any) {
@@ -719,7 +719,7 @@ function handleTableContextMenu(event: any, boxId: any) {
 	}
 
 	document.body.appendChild(menu);
-	try { (_win.__kustoContextMenuEl as any) = menu; } catch { /* ignore */ }
+	try { _win.__kustoContextMenuEl = menu; } catch { /* ignore */ }
 
 	setTimeout(() => {
 		try {
@@ -742,34 +742,34 @@ function handleTableContextMenu(event: any, boxId: any) {
 // A delegated mouseenter/mouseleave handler positions and shows/hides using a class.
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).__kustoCopyTextToClipboard = __kustoCopyTextToClipboard;
-(window as any).__kustoGetDisplayRowsInRange = __kustoGetDisplayRowsInRange;
-(window as any).__kustoCellToClipboardString = __kustoCellToClipboardString;
-(window as any).__kustoCellToCsvString = __kustoCellToCsvString;
-(window as any).__kustoGetVisibleResultsAsCsv = __kustoGetVisibleResultsAsCsv;
-(window as any).__kustoGetAllResultsAsCsv = __kustoGetAllResultsAsCsv;
-(window as any).__kustoGetResultsAsCsv = __kustoGetResultsAsCsv;
-(window as any).__kustoMakeSafeCsvFileNameFromLabel = __kustoMakeSafeCsvFileNameFromLabel;
-(window as any).__kustoSaveResultsToCsvFile = __kustoSaveResultsToCsvFile;
-(window as any).saveVisibleResultsToCsvFile = saveVisibleResultsToCsvFile;
-(window as any).__kustoIsResultsFiltered = __kustoIsResultsFiltered;
-(window as any).__kustoIsFilterSpecActive = __kustoIsFilterSpecActive;
-(window as any).__kustoOnSavePrimary = __kustoOnSavePrimary;
-(window as any).__kustoOnSaveSecondary = __kustoOnSaveSecondary;
-(window as any).__kustoHideSplitMenu = __kustoHideSplitMenu;
-(window as any).__kustoShowSplitMenu = __kustoShowSplitMenu;
-(window as any).__kustoShowSplitMenuItems = __kustoShowSplitMenuItems;
-(window as any).__kustoSetSplitCaretsVisible = __kustoSetSplitCaretsVisible;
-(window as any).__kustoUpdateSplitButtonState = __kustoUpdateSplitButtonState;
-(window as any).__kustoOnSaveMenu = __kustoOnSaveMenu;
-(window as any).__kustoEnsureDragSelectionHandlers = __kustoEnsureDragSelectionHandlers;
-(window as any).__kustoRemoveDragSelectionHandlers = __kustoRemoveDragSelectionHandlers;
-(window as any).copyVisibleResultsToClipboard = copyVisibleResultsToClipboard;
-(window as any).copyAllResultsToClipboard = copyAllResultsToClipboard;
-(window as any).__kustoCopyResultsToClipboard = __kustoCopyResultsToClipboard;
-(window as any).__kustoOnCopyPrimary = __kustoOnCopyPrimary;
-(window as any).__kustoOnCopySecondary = __kustoOnCopySecondary;
-(window as any).__kustoOnCopyMenu = __kustoOnCopyMenu;
-(window as any).copySelectionToClipboard = copySelectionToClipboard;
-(window as any).__kustoHideContextMenu = __kustoHideContextMenu;
-(window as any).handleTableContextMenu = handleTableContextMenu;
+window.__kustoCopyTextToClipboard = __kustoCopyTextToClipboard;
+window.__kustoGetDisplayRowsInRange = __kustoGetDisplayRowsInRange;
+window.__kustoCellToClipboardString = __kustoCellToClipboardString;
+window.__kustoCellToCsvString = __kustoCellToCsvString;
+window.__kustoGetVisibleResultsAsCsv = __kustoGetVisibleResultsAsCsv;
+window.__kustoGetAllResultsAsCsv = __kustoGetAllResultsAsCsv;
+window.__kustoGetResultsAsCsv = __kustoGetResultsAsCsv;
+window.__kustoMakeSafeCsvFileNameFromLabel = __kustoMakeSafeCsvFileNameFromLabel;
+window.__kustoSaveResultsToCsvFile = __kustoSaveResultsToCsvFile;
+window.saveVisibleResultsToCsvFile = saveVisibleResultsToCsvFile;
+window.__kustoIsResultsFiltered = __kustoIsResultsFiltered;
+window.__kustoIsFilterSpecActive = __kustoIsFilterSpecActive;
+window.__kustoOnSavePrimary = __kustoOnSavePrimary;
+window.__kustoOnSaveSecondary = __kustoOnSaveSecondary;
+window.__kustoHideSplitMenu = __kustoHideSplitMenu;
+window.__kustoShowSplitMenu = __kustoShowSplitMenu;
+window.__kustoShowSplitMenuItems = __kustoShowSplitMenuItems;
+window.__kustoSetSplitCaretsVisible = __kustoSetSplitCaretsVisible;
+window.__kustoUpdateSplitButtonState = __kustoUpdateSplitButtonState;
+window.__kustoOnSaveMenu = __kustoOnSaveMenu;
+window.__kustoEnsureDragSelectionHandlers = __kustoEnsureDragSelectionHandlers;
+window.__kustoRemoveDragSelectionHandlers = __kustoRemoveDragSelectionHandlers;
+window.copyVisibleResultsToClipboard = copyVisibleResultsToClipboard;
+window.copyAllResultsToClipboard = copyAllResultsToClipboard;
+window.__kustoCopyResultsToClipboard = __kustoCopyResultsToClipboard;
+window.__kustoOnCopyPrimary = __kustoOnCopyPrimary;
+window.__kustoOnCopySecondary = __kustoOnCopySecondary;
+window.__kustoOnCopyMenu = __kustoOnCopyMenu;
+window.copySelectionToClipboard = copySelectionToClipboard;
+window.__kustoHideContextMenu = __kustoHideContextMenu;
+window.handleTableContextMenu = handleTableContextMenu;

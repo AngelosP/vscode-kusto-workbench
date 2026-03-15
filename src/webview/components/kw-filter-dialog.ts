@@ -11,36 +11,39 @@ export type RuleJoin = 'and' | 'or';
 export type RuleUnit = 'minutes' | 'hours' | 'days' | 'weeks' | 'months' | 'years';
 export interface RuleFilterRule {
 	op: string; join?: RuleJoin; a?: string; b?: string;
-	n?: string; unit?: RuleUnit; text?: string; threshold?: number;
+	n?: string; unit?: RuleUnit; text?: string; threshold?: string;
 }
 export interface RulesFilterSpec { kind: 'rules'; dataType: RuleDataType; combineOp?: RuleJoin; rules: RuleFilterRule[]; }
 export interface CompoundFilterSpec { kind: 'compound'; values?: ValuesFilterSpec; rules?: RulesFilterSpec; }
 export type ColumnFilterSpec = ValuesFilterSpec | RulesFilterSpec | CompoundFilterSpec;
 
-const NULL_EMPTY_KEY = '__KW_NULL_EMPTY__';
+export const NULL_EMPTY_KEY = '__KW_NULL_EMPTY__';
 
 // ── Pure filter utility functions (exported) ──────────────────────────────────
 
-function isNullOrEmptyForFilter(raw: unknown): boolean {
+export function isNullOrEmptyForFilter(raw: unknown): boolean {
 	if (raw === null || raw === undefined) return true;
 	if (typeof raw === 'string') return raw.trim() === '';
 	return false;
 }
 
-function filterValueKey(raw: unknown): string {
+export function filterValueKey(raw: unknown): string {
 	if (isNullOrEmptyForFilter(raw)) return NULL_EMPTY_KEY;
 	try { return String(raw); } catch { return ''; }
 }
 
-function tryParseNumber(raw: unknown): number | null {
+export function tryParseNumber(raw: unknown): number | null {
 	if (raw === null || raw === undefined) return null;
 	if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-	const n = Number(String(raw));
+	const s = String(raw).trim();
+	if (s === '') return null;
+	const n = Number(s);
 	return Number.isFinite(n) ? n : null;
 }
 
-function tryParseDateMs(raw: unknown): number | null {
+export function tryParseDateMs(raw: unknown): number | null {
 	if (raw === null || raw === undefined) return null;
+	if (typeof raw === 'number' || typeof raw === 'boolean') return null;
 	if (raw instanceof Date) {
 		const t = raw.getTime();
 		return Number.isFinite(t) ? t : null;
@@ -49,7 +52,7 @@ function tryParseDateMs(raw: unknown): number | null {
 	return Number.isFinite(t) ? t : null;
 }
 
-function durationToMs(n: number, unit: RuleUnit): number {
+export function durationToMs(n: number, unit: RuleUnit): number {
 	switch (unit) {
 		case 'minutes': return n * 60_000;
 		case 'hours': return n * 3_600_000;
@@ -61,7 +64,7 @@ function durationToMs(n: number, unit: RuleUnit): number {
 	}
 }
 
-function rowMatchesRules(cell: CellValue, spec: RulesFilterSpec): boolean {
+export function rowMatchesRules(cell: CellValue, spec: RulesFilterSpec): boolean {
 	const rules = Array.isArray(spec.rules) ? spec.rules.filter(r => String(r?.op ?? '').trim()) : [];
 	if (!rules.length) return true;
 
@@ -327,8 +330,8 @@ export class KwFilterDialog extends LitElement {
 				if (r.op !== 'top' && r.op !== 'bottom') continue;
 				const n = parseInt(String(r.n || ''), 10);
 				if (!Number.isFinite(n) || n <= 0 || !values.length) continue;
-				if (r.op === 'top') r.threshold = values[Math.max(0, values.length - n)];
-				else r.threshold = values[Math.min(values.length - 1, Math.max(0, n - 1))];
+				if (r.op === 'top') r.threshold = String(values[Math.max(0, values.length - n)]);
+				else r.threshold = String(values[Math.min(values.length - 1, Math.max(0, n - 1))]);
 			}
 		}
 
@@ -338,7 +341,7 @@ export class KwFilterDialog extends LitElement {
 				if (r.op !== 'last') continue;
 				const n = parseInt(String(r.n || ''), 10);
 				if (!Number.isFinite(n) || n <= 0) continue;
-				r.threshold = now - durationToMs(n, (r.unit as RuleUnit) || 'days');
+				r.threshold = new Date(now - durationToMs(n, (r.unit as RuleUnit) || 'days')).toISOString();
 			}
 		}
 

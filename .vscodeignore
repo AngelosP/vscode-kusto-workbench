@@ -19,5 +19,6 @@ browser-ext/**
 **/tsconfig.json
 **/tsconfig.webview.json
 **/eslint.config.mjs
+**/vitest.config.ts
 **/*.map
 **/.vscode-test.*

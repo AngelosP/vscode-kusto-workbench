@@ -1143,7 +1143,9 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src/host",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:webview": "vitest run",
+    "test:webview:watch": "vitest"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",
@@ -1155,9 +1157,11 @@
     "chai": "^4.5.0",
     "esbuild": "^0.27.1",
     "eslint": "^9.39.1",
+    "happy-dom": "^20.8.4",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.48.1"
+    "typescript-eslint": "^8.48.1",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",

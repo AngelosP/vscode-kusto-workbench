@@ -25,7 +25,7 @@ export type CellValue = string | number | boolean | null | undefined | { display
 interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
 interface VItem { index: number; start: number; size: number; }
 
-function getCellDisplayValue(cell: CellValue): string {
+export function getCellDisplayValue(cell: CellValue): string {
 	if (cell === null || cell === undefined) return '';
 	if (typeof cell === 'string') return cell;
 	if (typeof cell === 'number' || typeof cell === 'boolean') return String(cell);
@@ -35,7 +35,7 @@ function getCellDisplayValue(cell: CellValue): string {
 	}
 	try { return JSON.stringify(cell); } catch { return String(cell); }
 }
-function getCellSortValue(cell: CellValue): string | number | boolean | null {
+export function getCellSortValue(cell: CellValue): string | number | boolean | null {
 	if (cell === null || cell === undefined) return null;
 	if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') return cell;
 	if (typeof cell === 'object' && 'full' in cell) { const f = cell.full; if (typeof f === 'number' || typeof f === 'string' || typeof f === 'boolean') return f; }
@@ -44,11 +44,11 @@ function getCellSortValue(cell: CellValue): string | number | boolean | null {
 
 // ── Column type inference for sorting ──
 
-type ColumnSortType = 'string' | 'number' | 'date' | 'boolean';
+export type ColumnSortType = 'string' | 'number' | 'date' | 'boolean';
 
 const _numRx = /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/;
 
-function tryParseNum(raw: unknown): number | null {
+export function tryParseNum(raw: unknown): number | null {
 	if (raw === null || raw === undefined) return null;
 	if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
 	if (typeof raw === 'boolean') return null;
@@ -61,7 +61,7 @@ function tryParseNum(raw: unknown): number | null {
 const _isoDateRx = /^\d{4}-\d{2}-\d{2}[T ]/;
 const _verboseDateRx = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i;
 
-function tryParseDateMs(raw: unknown): number | null {
+export function tryParseDateMs(raw: unknown): number | null {
 	if (raw === null || raw === undefined) return null;
 	if (typeof raw === 'number' || typeof raw === 'boolean') return null;
 	const s = String(raw).trim();
@@ -72,7 +72,7 @@ function tryParseDateMs(raw: unknown): number | null {
 	return Number.isFinite(t) ? t : null;
 }
 
-function kustoTypeToSortType(kustoType: string | undefined): ColumnSortType | null {
+export function kustoTypeToSortType(kustoType: string | undefined): ColumnSortType | null {
 	if (!kustoType) return null;
 	const t = kustoType.toLowerCase().replace(/^system\./, '');
 	switch (t) {
@@ -85,7 +85,7 @@ function kustoTypeToSortType(kustoType: string | undefined): ColumnSortType | nu
 	}
 }
 
-function inferColumnTypes(columns: DataTableColumn[], rows: CellValue[][]): ColumnSortType[] {
+export function inferColumnTypes(columns: DataTableColumn[], rows: CellValue[][]): ColumnSortType[] {
 	return columns.map((col, i) => {
 		// 1. Column metadata from Kusto (most reliable)
 		const fromMeta = kustoTypeToSortType(col.type);

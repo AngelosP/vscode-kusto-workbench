@@ -86,14 +86,14 @@ function __kustoGetResultsVisibilityIconSvg() {
 
 function __kustoEnsureResultsShownForTool(boxId: any) {
 	try {
-		if ((_win.__kustoResultsVisibleByBoxId as any) && (_win.__kustoResultsVisibleByBoxId as any)[boxId] === false) {
+		if (_win.__kustoResultsVisibleByBoxId && _win.__kustoResultsVisibleByBoxId[boxId] === false) {
 			if (typeof (_win.__kustoSetResultsVisible) === 'function') {
-				(_win.__kustoSetResultsVisible as any)(boxId, true);
+				_win.__kustoSetResultsVisible(boxId, true);
 			} else {
-				(_win.__kustoResultsVisibleByBoxId as any)[boxId] = true;
+				_win.__kustoResultsVisibleByBoxId[boxId] = true;
 				try {
 					if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
-						(_win.__kustoApplyResultsVisibility as any)(boxId);
+						_win.__kustoApplyResultsVisibility(boxId);
 					}
 				} catch { /* ignore */ }
 			}
@@ -110,16 +110,16 @@ function __kustoEnsureResultsShownForTool(boxId: any) {
 function __kustoFocusTableContainer(container: any, boxId: any) {
 	if (!container) return;
 	try {
-		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
-		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
+		_win.__kustoLastActiveResultsBoxId = boxId;
+		_win.__kustoLastActiveResultsInteractionAt = Date.now();
 	} catch { /* ignore */ }
 	try { container.focus(); } catch { /* ignore */ }
 }
 
 function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 	try {
-		if ((_win.__kustoResultsCopyKeyHandlerInstalled as any)) return;
-		(_win.__kustoResultsCopyKeyHandlerInstalled as any) = true;
+		if (_win.__kustoResultsCopyKeyHandlerInstalled) return;
+		_win.__kustoResultsCopyKeyHandlerInstalled = true;
 	} catch { /* ignore */ }
 
 	document.addEventListener('keydown', (event) => {
@@ -142,12 +142,12 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 				}
 			} catch { /* ignore */ }
 
-			const boxId = (typeof (_win.__kustoLastActiveResultsBoxId as any) === 'string') ? (_win.__kustoLastActiveResultsBoxId as any) : '';
+			const boxId = (typeof _win.__kustoLastActiveResultsBoxId === 'string') ? _win.__kustoLastActiveResultsBoxId : '';
 			if (!boxId) return;
 
 			// Only override Ctrl+C if the last interaction was with results more recently than Monaco.
-			const lastResultsAt = Number((_win.__kustoLastActiveResultsInteractionAt as any) || 0);
-			const lastMonacoAt = Number((_win.__kustoLastMonacoInteractionAt as any) || 0);
+			const lastResultsAt = Number(_win.__kustoLastActiveResultsInteractionAt || 0);
+			const lastMonacoAt = Number(_win.__kustoLastMonacoInteractionAt || 0);
 			if (lastResultsAt <= lastMonacoAt) return;
 
 			const state = typeof _win.__kustoGetResultsState === 'function' ? _win.__kustoGetResultsState(boxId) : null;
@@ -954,8 +954,8 @@ function __kustoGetRulesCombineEnabledFromDom(boxId: any) {
 
 function __kustoSetRulesCombineEnabled(boxId: any, enabled: any) {
 	try {
-		if ((_win.__kustoActiveFilterPopover as any)) {
-			(_win.__kustoActiveFilterPopover as any).draftCombine = !!enabled;
+		if (_win.__kustoActiveFilterPopover) {
+			_win.__kustoActiveFilterPopover.draftCombine = !!enabled;
 		}
 		const el = document.getElementById(boxId + '_filter_rules_combine_toggle');
 		if (!el) return;
@@ -987,8 +987,8 @@ function __kustoGetRulesJoinOpFromDom(boxId: any) {
 function __kustoSetRulesJoinOp(boxId: any, joinOp: any) {
 	try {
 		const op = (String(joinOp) === 'or') ? 'or' : 'and';
-		if ((_win.__kustoActiveFilterPopover as any)) {
-			(_win.__kustoActiveFilterPopover as any).draftRulesJoinOp = op;
+		if (_win.__kustoActiveFilterPopover) {
+			_win.__kustoActiveFilterPopover.draftRulesJoinOp = op;
 		}
 		const el = document.getElementById(boxId + '_filter_rules_join');
 		if (el) el.setAttribute('data-join', op);
@@ -1029,10 +1029,10 @@ function __kustoApplyFiltersAndRerender(boxId: any) {
 		const prevBtn = document.getElementById(boxId + '_data_search_prev');
 		const nextBtn = document.getElementById(boxId + '_data_search_next');
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
+			_win.__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
 		}
 		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
-			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
+			_win.__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
 		}
 		document.querySelectorAll('#' + boxId + '_table td.search-match, #' + boxId + '_table td.search-match-current')
 			.forEach(cell => {
@@ -1042,37 +1042,37 @@ function __kustoApplyFiltersAndRerender(boxId: any) {
 
 	__kustoEnsureDisplayRowIndexMaps(state);
 	_win.__kustoRerenderResultsTable(boxId);
-	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)('filter'); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist('filter'); } catch { /* ignore */ }
 }
 
 function closeColumnFilterPopover() {
 	try {
-		if (!(_win.__kustoActiveFilterPopover as any)) return;
-		const { elId } = (_win.__kustoActiveFilterPopover as any);
+		if (!_win.__kustoActiveFilterPopover) return;
+		const { elId } = _win.__kustoActiveFilterPopover;
 		const el = elId ? document.getElementById(elId) : null;
 		if (el) el.remove();
 	} catch { /* ignore */ }
-	try { (_win.__kustoActiveFilterPopover as any) = null; } catch { /* ignore */ }
+	try { _win.__kustoActiveFilterPopover = null; } catch { /* ignore */ }
 }
 
 function closeColumnFilterDialogOnBackdrop(event: any) {
 	try {
-		if (!event || !(_win.__kustoActiveFilterPopover as any)) return;
+		if (!event || !_win.__kustoActiveFilterPopover) return;
 		if (event.target !== event.currentTarget) return;
 		closeColumnFilterPopover();
 	} catch { /* ignore */ }
 }
 
 function __kustoEnsureFilterGlobalCloseHandler() {
-	if ((_win.__kustoFilterGlobalCloseHandlerInstalled as any)) return;
-	(_win.__kustoFilterGlobalCloseHandlerInstalled as any) = true;
+	if (_win.__kustoFilterGlobalCloseHandlerInstalled) return;
+	_win.__kustoFilterGlobalCloseHandlerInstalled = true;
 	document.addEventListener('click', (event) => {
 		try {
-			if (!(_win.__kustoActiveFilterPopover as any)) return;
-			const elId = (_win.__kustoActiveFilterPopover as any).elId;
+			if (!_win.__kustoActiveFilterPopover) return;
+			const elId = _win.__kustoActiveFilterPopover.elId;
 			const el = elId ? document.getElementById(elId) : null;
 			if (!el) {
-				(_win.__kustoActiveFilterPopover as any) = null;
+				_win.__kustoActiveFilterPopover = null;
 				return;
 			}
 			const target = event && (event as any).target;
@@ -1117,7 +1117,7 @@ function openColumnFilter(event: any, colIndex: any, boxId: any) {
 	const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
 	const inferredType = __kustoInferColumnType(state, colIdx, baseRowIndices);
 	const mode = (existing && existing.kind === 'rules') || (existing && existing.kind === 'compound') ? 'rules' : 'values';
-	(_win.__kustoActiveFilterPopover as any) = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
+	_win.__kustoActiveFilterPopover = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
 	dialog.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 	document.body.appendChild(modal);
 	try { __kustoEnsureFilterPopoverSearchControl(boxId, colIdx); } catch { /* ignore */ }
@@ -1125,7 +1125,7 @@ function openColumnFilter(event: any, colIndex: any, boxId: any) {
 
 function __kustoEnsureFilterPopoverSearchControl(boxId: any, colIdx: any) {
 	try {
-		const active = (_win.__kustoActiveFilterPopover as any);
+		const active = _win.__kustoActiveFilterPopover;
 		if (!active || active.boxId !== boxId || active.colIndex !== colIdx) return;
 		if (String(active.mode || '') !== 'values') return;
 
@@ -1133,12 +1133,12 @@ function __kustoEnsureFilterPopoverSearchControl(boxId: any, colIdx: any) {
 		if (!host) return;
 		if (document.getElementById(boxId + '_filter_value_search')) return;
 
-		if (typeof (_win.__kustoCreateSearchControl as any) !== 'function') {
+		if (typeof _win.__kustoCreateSearchControl !== 'function') {
 			// Older webview / script load order issue; fall back silently.
 			return;
 		}
 
-		(_win.__kustoCreateSearchControl as any)(host, {
+		_win.__kustoCreateSearchControl(host, {
 			inputId: boxId + '_filter_value_search',
 			modeId: boxId + '_filter_value_search_mode',
 			inputClass: 'kusto-filter-search kusto-filter-values-search kusto-filter-search-with-icon',
@@ -1153,7 +1153,7 @@ function __kustoRenderFilterPopoverHtml(boxId: any, colIdx: any) {
 	if (!state) return '';
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const colName = cols[colIdx] !== undefined ? String(cols[colIdx]) : ('Column ' + String(colIdx));
-	const active = (_win.__kustoActiveFilterPopover as any);
+	const active = _win.__kustoActiveFilterPopover;
 	const mode = active && active.mode ? String(active.mode) : 'values';
 	const dataType = active && active.dataType ? String(active.dataType) : 'string';
 	const filters = __kustoEnsureColumnFiltersMap(state);
@@ -1264,7 +1264,7 @@ function __kustoRenderFilterPopoverHtml(boxId: any, colIdx: any) {
 
 function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 	try {
-		if (typeof (_win.__kustoGetSearchControlState as any) !== 'function' || typeof (_win.__kustoTryBuildSearchRegex as any) !== 'function') {
+		if (typeof _win.__kustoGetSearchControlState !== 'function' || typeof _win.__kustoTryBuildSearchRegex !== 'function') {
 			// Backward compat: treat as simple contains.
 			const q = String((document.getElementById(boxId + '_filter_value_search') as any || {}).value || '').trim().toLowerCase();
 			const list = document.getElementById(boxId + '_filter_values_list');
@@ -1277,10 +1277,10 @@ function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 			return;
 		}
 
-		const st = (_win.__kustoGetSearchControlState as any)(boxId + '_filter_value_search', boxId + '_filter_value_search_mode');
+		const st = _win.__kustoGetSearchControlState(boxId + '_filter_value_search', boxId + '_filter_value_search_mode');
 		const q = String((st && st.query) ? st.query : '');
 		const mode = st && st.mode ? st.mode : 'wildcard';
-		const built = (_win.__kustoTryBuildSearchRegex as any)(q, mode);
+		const built = _win.__kustoTryBuildSearchRegex(q, mode);
 		const input = document.getElementById(boxId + '_filter_value_search');
 		try { if (input) input.title = built && built.error ? String(built.error) : ''; } catch { /* ignore */ }
 		const regex = built && built.regex ? built.regex : null;
@@ -1290,7 +1290,7 @@ function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 		const items = Array.from(list.querySelectorAll('label.kusto-filter-value')) as any[];
 		for (const it of items) {
 			const t = String((it && it.getAttribute && it.getAttribute('data-value-text')) || '');
-			const hit = (!q || !regex) ? true : !!(_win.__kustoRegexTest as any)(regex, t);
+			const hit = (!q || !regex) ? true : !!_win.__kustoRegexTest(regex, t);
 			it.style.display = hit ? '' : 'none';
 		}
 	} catch { /* ignore */ }
@@ -1547,8 +1547,8 @@ function __kustoSetRuleJoin(boxId: any, colIdx: any, ruleIdx: any, joinOp: any) 
 		if (andBtn) andBtn.classList.toggle('active', op === 'and');
 		if (orBtn) orBtn.classList.toggle('active', op === 'or');
 		try {
-			if ((_win.__kustoActiveFilterPopover as any)) {
-				(_win.__kustoActiveFilterPopover as any).draftRules = __kustoCaptureRulesFromDom(boxId);
+			if (_win.__kustoActiveFilterPopover) {
+				_win.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
 			}
 		} catch { /* ignore */ }
 	} catch { /* ignore */ }
@@ -1714,10 +1714,10 @@ function __kustoFromDateTimeLocalValue(v: any) {
 }
 
 function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
-	if (!(_win.__kustoActiveFilterPopover as any)) return;
+	if (!_win.__kustoActiveFilterPopover) return;
 	// Capture unsaved UI state when switching modes.
 	try {
-		const current = String((_win.__kustoActiveFilterPopover as any).mode || 'values');
+		const current = String(_win.__kustoActiveFilterPopover.mode || 'values');
 		if (current === 'values') {
 			const list = document.getElementById(boxId + '_filter_values_list');
 			if (list) {
@@ -1726,16 +1726,16 @@ function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
 				for (const cb of cbs) {
 					if (cb && cb.checked) allowed.push(String(cb.value || ''));
 				}
-				(_win.__kustoActiveFilterPopover as any).draftValuesAllowed = allowed;
+				_win.__kustoActiveFilterPopover.draftValuesAllowed = allowed;
 			}
 		} else {
-			(_win.__kustoActiveFilterPopover as any).draftRules = __kustoCaptureRulesFromDom(boxId);
-			(_win.__kustoActiveFilterPopover as any).draftCombine = __kustoGetRulesCombineEnabledFromDom(boxId);
+			_win.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
+			_win.__kustoActiveFilterPopover.draftCombine = __kustoGetRulesCombineEnabledFromDom(boxId);
 		}
 	} catch { /* ignore */ }
 
-	(_win.__kustoActiveFilterPopover as any).mode = (String(mode) === 'rules') ? 'rules' : 'values';
-	const dialogId = (_win.__kustoActiveFilterPopover as any).dialogId || (_win.__kustoActiveFilterPopover as any).elId;
+	_win.__kustoActiveFilterPopover.mode = (String(mode) === 'rules') ? 'rules' : 'values';
+	const dialogId = _win.__kustoActiveFilterPopover.dialogId || _win.__kustoActiveFilterPopover.elId;
 	const el = dialogId ? document.getElementById(dialogId) : null;
 	if (!el) return;
 	// Re-infer type against the current context.
@@ -1743,7 +1743,7 @@ function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
 		const state = _win.__kustoGetResultsState(boxId);
 		if (state) {
 			const base = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
-			(_win.__kustoActiveFilterPopover as any).dataType = __kustoInferColumnType(state, colIdx, base);
+			_win.__kustoActiveFilterPopover.dataType = __kustoInferColumnType(state, colIdx, base);
 		}
 	} catch { /* ignore */ }
 	el.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
@@ -1751,7 +1751,7 @@ function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
 
 function __kustoOnFilterOpChanged(boxId: any, colIdx: any) {
 	try {
-		const pop = (_win.__kustoActiveFilterPopover as any);
+		const pop = _win.__kustoActiveFilterPopover;
 		if (!pop) return;
 		const state = _win.__kustoGetResultsState(boxId);
 		if (!state) return;
@@ -1808,7 +1808,7 @@ function applyColumnFilter(boxId: any, colIdx: any) {
 	if (!isFinite(colIndex) || colIndex < 0) return;
 	const filters = __kustoEnsureColumnFiltersMap(state);
 	const existing = filters[String(colIndex)] || null;
-	const pop = (_win.__kustoActiveFilterPopover as any);
+	const pop = _win.__kustoActiveFilterPopover;
 	const mode = pop && pop.mode ? String(pop.mode) : 'values';
 	const baseRowIndices = __kustoGetRowIndicesExcludingColumnFilter(state, colIndex);
 	const inferredType = __kustoInferColumnType(state, colIndex, baseRowIndices);
@@ -1907,7 +1907,7 @@ function __kustoSetSortSpecAndRerender(boxId: any, nextSpec: any) {
 		}
 	} catch { /* ignore */ }
 	_win.__kustoRerenderResultsTable(boxId);
-	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 }
 
 function __kustoGetSortRuleIndex(state: any, colIndex: any) {
@@ -2075,8 +2075,8 @@ function __kustoWireSortDialogDnD(boxId: any) {
 	if (rows.length === 0) return;
 
 	// Keep drag state on window to survive re-renders.
-	if (!(_win.__kustoSortDnD as any)) {
-		(_win.__kustoSortDnD as any) = { boxId: null, fromIdx: -1, dragEnabled: false };
+	if (!_win.__kustoSortDnD) {
+		_win.__kustoSortDnD = { boxId: null, fromIdx: -1, dragEnabled: false };
 	}
 
 	for (const row of rows) {
@@ -2090,8 +2090,8 @@ function __kustoWireSortDialogDnD(boxId: any) {
 				try { e.preventDefault(); } catch { /* ignore */ }
 				return;
 			}
-			(_win.__kustoSortDnD as any).boxId = boxId;
-			(_win.__kustoSortDnD as any).fromIdx = idx;
+			_win.__kustoSortDnD.boxId = boxId;
+			_win.__kustoSortDnD.fromIdx = idx;
 			row.classList.add('kusto-sort-dragging');
 			try {
 				(e as any).dataTransfer.effectAllowed = 'move';
@@ -2114,7 +2114,7 @@ function __kustoWireSortDialogDnD(boxId: any) {
 
 		row.addEventListener('drop', (e: any) => {
 			try { e.preventDefault(); } catch { /* ignore */ }
-			const fromIdx = (_win.__kustoSortDnD as any) ? (_win.__kustoSortDnD as any).fromIdx : -1;
+			const fromIdx = _win.__kustoSortDnD ? _win.__kustoSortDnD.fromIdx : -1;
 			const toIdx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
 			if (!isFinite(fromIdx) || !isFinite(toIdx) || fromIdx === toIdx) return;
 			__kustoMoveSortRule(boxId, fromIdx, toIdx);
@@ -2314,8 +2314,8 @@ function selectCell(a: any, b: any, c: any, d: any) {
 
 	// Record that results were interacted with (used by global Ctrl+C handler).
 	try {
-		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
-		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
+		_win.__kustoLastActiveResultsBoxId = boxId;
+		_win.__kustoLastActiveResultsInteractionAt = Date.now();
 	} catch { /* ignore */ }
 
 	// NOTE: Native `dblclick` doesn't reliably fire because a single click triggers a full
@@ -2352,7 +2352,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 		if (isSyntheticDoubleClick) {
 			try {
 				if (typeof (_win.openCellViewer) === 'function') {
-					(_win.openCellViewer as any)(row, col, boxId);
+					_win.openCellViewer(row, col, boxId);
 				}
 			} catch { /* ignore */ }
 			return;
@@ -2377,7 +2377,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 	if (isSyntheticDoubleClick) {
 		try {
 			if (typeof (_win.openCellViewer) === 'function') {
-				(_win.openCellViewer as any)(row, col, boxId);
+				_win.openCellViewer(row, col, boxId);
 			}
 		} catch { /* ignore */ }
 		return;
@@ -2406,8 +2406,8 @@ function toggleRowSelection(row: any, boxId: any) {
 
 	// Record that results were interacted with (used by global Ctrl+C handler).
 	try {
-		(_win.__kustoLastActiveResultsBoxId as any) = boxId;
-		(_win.__kustoLastActiveResultsInteractionAt as any) = Date.now();
+		_win.__kustoLastActiveResultsBoxId = boxId;
+		_win.__kustoLastActiveResultsInteractionAt = Date.now();
 	} catch { /* ignore */ }
 
 	// Try to get the event for shift-key detection.
@@ -2496,7 +2496,7 @@ function __kustoResultsToolsDropdownAction(boxId: any, action: any) {
 	// Execute the action
 	switch (action) {
 		case 'visibility':
-			(_win.toggleQueryResultsVisibility as any)(boxId);
+			_win.toggleQueryResultsVisibility(boxId);
 			break;
 		case 'search':
 			toggleSearchTool(boxId);
@@ -2609,7 +2609,7 @@ document.addEventListener('click', function (e: any) {
 function toggleSearchTool(boxId: any) {
 	__kustoEnsureResultsShownForTool(boxId);
 	const container = document.getElementById(boxId + '_data_search_container');
-	const button = (window as any).event && (window as any).event.target && (window as any).event.target.closest('.tool-toggle-btn');
+	const button = window.event && window.event.target && (window.event.target as Element).closest('.tool-toggle-btn');
 
 	if (container!.style.display === 'none') {
 		// Close the other tool first
@@ -2646,7 +2646,7 @@ function toggleColumnTool(boxId: any) {
 		}
 	} catch { /* ignore */ }
 	const container = document.getElementById(boxId + '_column_search_container');
-	const button = (window as any).event && (window as any).event.target && (window as any).event.target.closest('.tool-toggle-btn');
+	const button = window.event && window.event.target && (window.event.target as Element).closest('.tool-toggle-btn');
 
 	if (container!.style.display === 'none') {
 		// Close the other tool first
@@ -2681,16 +2681,16 @@ function searchData(boxId: any) {
 	let mode = 'wildcard';
 	let built: any = { regex: null, error: null };
 	try {
-		if (typeof (_win.__kustoGetSearchControlState as any) === 'function' && typeof (_win.__kustoTryBuildSearchRegex as any) === 'function') {
-			const st = (_win.__kustoGetSearchControlState as any)(boxId + '_data_search', boxId + '_data_search_mode');
+		if (typeof _win.__kustoGetSearchControlState === 'function' && typeof _win.__kustoTryBuildSearchRegex === 'function') {
+			const st = _win.__kustoGetSearchControlState(boxId + '_data_search', boxId + '_data_search_mode');
 			query = String((st && st.query) ? st.query : '');
 			mode = st && st.mode ? st.mode : 'wildcard';
-			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
+			built = _win.__kustoTryBuildSearchRegex(query, mode);
 		} else {
 			const searchInput = document.getElementById(boxId + '_data_search');
 			query = searchInput ? String((searchInput as any).value || '') : '';
 			mode = 'wildcard';
-			built = { regex: query ? new RegExp((_win.escapeRegex as any)(String(query).trim()), 'gi') : null, error: null };
+			built = { regex: query ? new RegExp(_win.escapeRegex(String(query).trim()), 'gi') : null, error: null };
 		}
 	} catch { /* ignore */ }
 	const regex = built && built.regex ? built.regex : null;
@@ -2711,20 +2711,20 @@ function searchData(boxId: any) {
 
 	if (!String(query || '').trim()) {
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
+			_win.__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
 		}
 		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
-			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
+			_win.__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
 		}
 		return;
 	}
 
 	if (built && built.error) {
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, true, built.error);
+			_win.__kustoUpdateSearchStatus(statusEl, 0, 0, true, built.error);
 		}
 		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
-			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
+			_win.__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
 		}
 		return;
 	}
@@ -2750,7 +2750,7 @@ function searchData(boxId: any) {
 			}
 
 			// Check if search term is in cell text
-			if (regex && typeof (_win.__kustoRegexTest as any) === 'function' ? (_win.__kustoRegexTest as any)(regex, cellText) : cellText.toLowerCase().includes(String(query).toLowerCase())) {
+			if (regex && typeof _win.__kustoRegexTest === 'function' ? _win.__kustoRegexTest(regex, cellText) : cellText.toLowerCase().includes(String(query).toLowerCase())) {
 				state.searchMatches.push({ row: rowIdx, col: colIdx });
 			}
 		});
@@ -2763,18 +2763,18 @@ function searchData(boxId: any) {
 		state.currentSearchIndex = 0;
 		try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-			(_win.__kustoUpdateSearchStatus as any)(statusEl, matchCount, 0, false, '');
+			_win.__kustoUpdateSearchStatus(statusEl, matchCount, 0, false, '');
 		}
 		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
-			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, true, matchCount);
+			_win.__kustoSetSearchNavEnabled(prevBtn, nextBtn, true, matchCount);
 		}
 		highlightCurrentSearchMatch(boxId);
 	} else {
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-			(_win.__kustoUpdateSearchStatus as any)(statusEl, 0, 0, false, '');
+			_win.__kustoUpdateSearchStatus(statusEl, 0, 0, false, '');
 		}
 		if (typeof (_win.__kustoSetSearchNavEnabled) === 'function') {
-			(_win.__kustoSetSearchNavEnabled as any)(prevBtn, nextBtn, false, 0);
+			_win.__kustoSetSearchNavEnabled(prevBtn, nextBtn, false, 0);
 		}
 	}
 }
@@ -2824,7 +2824,7 @@ function highlightCurrentSearchMatch(boxId: any) {
 	// Update status text using embedded status element.
 	const statusEl = document.getElementById(boxId + '_data_search_status');
 	if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
-		(_win.__kustoUpdateSearchStatus as any)(statusEl, matches.length, currentIndex, false, '');
+		_win.__kustoUpdateSearchStatus(statusEl, matches.length, currentIndex, false, '');
 	}
 }
 
@@ -2938,14 +2938,14 @@ function filterColumns(boxId: any) {
 	let mode = 'wildcard';
 	let built: any = { regex: null, error: null };
 	try {
-		if (typeof (_win.__kustoGetSearchControlState as any) === 'function' && typeof (_win.__kustoTryBuildSearchRegex as any) === 'function') {
-			const st = (_win.__kustoGetSearchControlState as any)(boxId + '_column_search', boxId + '_column_search_mode');
+		if (typeof _win.__kustoGetSearchControlState === 'function' && typeof _win.__kustoTryBuildSearchRegex === 'function') {
+			const st = _win.__kustoGetSearchControlState(boxId + '_column_search', boxId + '_column_search_mode');
 			query = String((st && st.query) ? st.query : '');
 			mode = st && st.mode ? st.mode : 'wildcard';
-			built = (_win.__kustoTryBuildSearchRegex as any)(query, mode);
+			built = _win.__kustoTryBuildSearchRegex(query, mode);
 		} else {
 			query = String((input as any).value || '');
-			built = { regex: query ? new RegExp((_win.escapeRegex as any)(String(query).trim()), 'gi') : null, error: null };
+			built = { regex: query ? new RegExp(_win.escapeRegex(String(query).trim()), 'gi') : null, error: null };
 		}
 	} catch { /* ignore */ }
 	const regex = built && built.regex ? built.regex : null;
@@ -2961,7 +2961,7 @@ function filterColumns(boxId: any) {
 
 	const matches = state.columns
 		.map((col: any, idx: any) => ({ name: col, index: idx }))
-		.filter((col: any) => regex ? (typeof (_win.__kustoRegexTest as any) === 'function' ? (_win.__kustoRegexTest as any)(regex, col.name) : col.name.toLowerCase().includes(String(query).toLowerCase())) : false);
+		.filter((col: any) => regex ? (typeof _win.__kustoRegexTest === 'function' ? _win.__kustoRegexTest(regex, col.name) : col.name.toLowerCase().includes(String(query).toLowerCase())) : false);
 
 	if (matches.length === 0) {
 		autocomplete.classList.remove('visible');
@@ -2976,7 +2976,7 @@ function filterColumns(boxId: any) {
 	).join('');
 
 	autocomplete.classList.add('visible');
-	(_win.currentAutocompleteIndex as any) = 0;
+	_win.currentAutocompleteIndex = 0;
 }
 
 function handleColumnSearchKeydown(event: any, boxId: any) {
@@ -2988,15 +2988,15 @@ function handleColumnSearchKeydown(event: any, boxId: any) {
 
 	if (event.key === 'ArrowDown') {
 		event.preventDefault();
-		(_win.currentAutocompleteIndex as any) = ((_win.currentAutocompleteIndex as any) + 1) % items.length;
+		_win.currentAutocompleteIndex = (_win.currentAutocompleteIndex + 1) % items.length;
 		updateAutocompleteSelection(items);
 	} else if (event.key === 'ArrowUp') {
 		event.preventDefault();
-		(_win.currentAutocompleteIndex as any) = ((_win.currentAutocompleteIndex as any) - 1 + items.length) % items.length;
+		_win.currentAutocompleteIndex = (_win.currentAutocompleteIndex - 1 + items.length) % items.length;
 		updateAutocompleteSelection(items);
 	} else if (event.key === 'Enter') {
 		event.preventDefault();
-		const selected = items[(_win.currentAutocompleteIndex as any)];
+		const selected = items[_win.currentAutocompleteIndex];
 		if (selected) {
 			const colIndex = parseInt(selected.getAttribute('data-col-index') || '');
 			scrollToColumn(colIndex, boxId);
@@ -3012,7 +3012,7 @@ function handleColumnSearchKeydown(event: any, boxId: any) {
 
 function updateAutocompleteSelection(items: any) {
 	items.forEach((item: any, idx: any) => {
-		if (idx === (_win.currentAutocompleteIndex as any)) {
+		if (idx === _win.currentAutocompleteIndex) {
 			item.classList.add('selected');
 			item.scrollIntoView({ block: 'nearest' });
 		} else {
@@ -3032,7 +3032,7 @@ function scrollToColumn(colIndex: any, boxId: any) {
 		if (input) {
 			(input as any).value = '';
 		}
-		(_win.currentAutocompleteIndex as any) = 0;
+		_win.currentAutocompleteIndex = 0;
 	} catch { /* ignore */ }
 
 	const state = _win.__kustoGetResultsState(boxId);
@@ -3117,115 +3117,115 @@ function scrollToColumn(colIndex: any, boxId: any) {
 })();
 
 // ── Window bridge exports for remaining legacy callers ──
-(window as any).__kustoCopyClientActivityId = __kustoCopyClientActivityId;
-(window as any).__kustoGetSearchIconSvg = __kustoGetSearchIconSvg;
-(window as any).__kustoGetScrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg;
-(window as any).__kustoGetCopyIconSvg = __kustoGetCopyIconSvg;
-(window as any).__kustoGetSaveIconSvg = __kustoGetSaveIconSvg;
-(window as any).__kustoGetFilterIconSvg = __kustoGetFilterIconSvg;
-(window as any).__kustoGetResultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg;
-(window as any).__kustoEnsureResultsShownForTool = __kustoEnsureResultsShownForTool;
-(window as any).__kustoFocusTableContainer = __kustoFocusTableContainer;
-(window as any).__kustoEnsureResultsCopyKeyHandlerInstalled = __kustoEnsureResultsCopyKeyHandlerInstalled;
-(window as any).__kustoSetResultsToolsVisible = __kustoSetResultsToolsVisible;
-(window as any).__kustoHideResultsTools = __kustoHideResultsTools;
-(window as any).__kustoGetSortIconSvg = __kustoGetSortIconSvg;
-(window as any).__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
-(window as any).__kustoGetSelectAllIconSvg = __kustoGetSelectAllIconSvg;
-(window as any).__kustoGetDeselectAllIconSvg = __kustoGetDeselectAllIconSvg;
-(window as any).__kustoGetCloseIconSvg = __kustoGetCloseIconSvg;
-(window as any).__kustoNormalizeSortDirection = __kustoNormalizeSortDirection;
-(window as any).__kustoNormalizeSortSpec = __kustoNormalizeSortSpec;
-(window as any).__kustoGetCellSortValue = __kustoGetCellSortValue;
-(window as any).__kustoCompareSortValues = __kustoCompareSortValues;
-(window as any).__kustoFormatNumberForDisplay = __kustoFormatNumberForDisplay;
-(window as any).__kustoFormatDateForDisplay = __kustoFormatDateForDisplay;
-(window as any).__kustoFormatCellDisplayValueForTable = __kustoFormatCellDisplayValueForTable;
-(window as any).__kustoComputeSortedRowIndices = __kustoComputeSortedRowIndices;
-(window as any).__kustoEnsureDisplayRowIndexMaps = __kustoEnsureDisplayRowIndexMaps;
-(window as any).__kustoEnsureColumnFiltersMap = __kustoEnsureColumnFiltersMap;
-(window as any).__kustoGetRawCellValue = __kustoGetRawCellValue;
-(window as any).__kustoIsNullOrEmpty = __kustoIsNullOrEmpty;
-(window as any).__kustoTryParseNumber = __kustoTryParseNumber;
-(window as any).__kustoTryParseDateMs = __kustoTryParseDateMs;
-(window as any).__kustoInferColumnType = __kustoInferColumnType;
-(window as any).__kustoGetRowIndicesExcludingColumnFilter = __kustoGetRowIndicesExcludingColumnFilter;
-(window as any).__kustoNormalizeStringForFilter = __kustoNormalizeStringForFilter;
-(window as any).__kustoRowMatchesNullPolicy = __kustoRowMatchesNullPolicy;
-(window as any).__kustoRowMatchesColumnFilter = __kustoRowMatchesColumnFilter;
-(window as any).__kustoComputeUniqueValueKeys = __kustoComputeUniqueValueKeys;
-(window as any).__kustoNormalizeDraftFilter = __kustoNormalizeDraftFilter;
-(window as any).__kustoGetRulesCombineEnabledFromDom = __kustoGetRulesCombineEnabledFromDom;
-(window as any).__kustoSetRulesCombineEnabled = __kustoSetRulesCombineEnabled;
-(window as any).__kustoToggleRulesCombine = __kustoToggleRulesCombine;
-(window as any).__kustoGetRulesJoinOpFromDom = __kustoGetRulesJoinOpFromDom;
-(window as any).__kustoSetRulesJoinOp = __kustoSetRulesJoinOp;
-(window as any).__kustoApplyFiltersAndRerender = __kustoApplyFiltersAndRerender;
-(window as any).closeColumnFilterPopover = closeColumnFilterPopover;
-(window as any).closeColumnFilterDialogOnBackdrop = closeColumnFilterDialogOnBackdrop;
-(window as any).__kustoEnsureFilterGlobalCloseHandler = __kustoEnsureFilterGlobalCloseHandler;
-(window as any).openColumnFilter = openColumnFilter;
-(window as any).__kustoEnsureFilterPopoverSearchControl = __kustoEnsureFilterPopoverSearchControl;
-(window as any).__kustoRenderFilterPopoverHtml = __kustoRenderFilterPopoverHtml;
-(window as any).__kustoFilterSearchValues = __kustoFilterSearchValues;
-(window as any).__kustoFilterSetAllValues = __kustoFilterSetAllValues;
-(window as any).__kustoGetValuesAllowedFromSpec = __kustoGetValuesAllowedFromSpec;
-(window as any).__kustoGetRulesSpecFromExisting = __kustoGetRulesSpecFromExisting;
-(window as any).__kustoRenderRulesListHtml = __kustoRenderRulesListHtml;
-(window as any).__kustoGetRuleOpsForType = __kustoGetRuleOpsForType;
-(window as any).__kustoRenderRuleRowInputsHtml = __kustoRenderRuleRowInputsHtml;
-(window as any).__kustoCaptureRulesFromDom = __kustoCaptureRulesFromDom;
-(window as any).__kustoSetRuleJoin = __kustoSetRuleJoin;
-(window as any).__kustoOnRuleRowOpChanged = __kustoOnRuleRowOpChanged;
-(window as any).__kustoDeleteRuleRow = __kustoDeleteRuleRow;
-(window as any).__kustoRenderRulesEditorHtml = __kustoRenderRulesEditorHtml;
-(window as any).__kustoToDateTimeLocalValue = __kustoToDateTimeLocalValue;
-(window as any).__kustoFromDateTimeLocalValue = __kustoFromDateTimeLocalValue;
-(window as any).__kustoSetFilterMode = __kustoSetFilterMode;
-(window as any).__kustoOnFilterOpChanged = __kustoOnFilterOpChanged;
-(window as any).__kustoFilterToggleAllValues = __kustoFilterToggleAllValues;
-(window as any).applyColumnFilter = applyColumnFilter;
-(window as any).clearColumnFilter = clearColumnFilter;
-(window as any).__kustoSetSortSpecAndRerender = __kustoSetSortSpecAndRerender;
-(window as any).__kustoGetSortRuleIndex = __kustoGetSortRuleIndex;
-(window as any).handleHeaderSortClick = handleHeaderSortClick;
-(window as any).sortColumnAscending = sortColumnAscending;
-(window as any).sortColumnDescending = sortColumnDescending;
-(window as any).toggleSortDialog = toggleSortDialog;
-(window as any).closeSortDialog = closeSortDialog;
-(window as any).closeSortDialogOnBackdrop = closeSortDialogOnBackdrop;
-(window as any).__kustoRenderSortDialog = __kustoRenderSortDialog;
-(window as any).__kustoAddSortRuleInline = __kustoAddSortRuleInline;
-(window as any).__kustoWireSortDialogDnD = __kustoWireSortDialogDnD;
-(window as any).__kustoMoveSortRule = __kustoMoveSortRule;
-(window as any).addSortRule = addSortRule;
-(window as any).clearSort = clearSort;
-(window as any).updateSortRuleColumn = updateSortRuleColumn;
-(window as any).updateSortRuleDirection = updateSortRuleDirection;
-(window as any).moveSortRuleUp = moveSortRuleUp;
-(window as any).moveSortRuleDown = moveSortRuleDown;
-(window as any).removeSortRule = removeSortRule;
+window.__kustoCopyClientActivityId = __kustoCopyClientActivityId;
+window.__kustoGetSearchIconSvg = __kustoGetSearchIconSvg;
+window.__kustoGetScrollToColumnIconSvg = __kustoGetScrollToColumnIconSvg;
+window.__kustoGetCopyIconSvg = __kustoGetCopyIconSvg;
+window.__kustoGetSaveIconSvg = __kustoGetSaveIconSvg;
+window.__kustoGetFilterIconSvg = __kustoGetFilterIconSvg;
+window.__kustoGetResultsVisibilityIconSvg = __kustoGetResultsVisibilityIconSvg;
+window.__kustoEnsureResultsShownForTool = __kustoEnsureResultsShownForTool;
+window.__kustoFocusTableContainer = __kustoFocusTableContainer;
+window.__kustoEnsureResultsCopyKeyHandlerInstalled = __kustoEnsureResultsCopyKeyHandlerInstalled;
+window.__kustoSetResultsToolsVisible = __kustoSetResultsToolsVisible;
+window.__kustoHideResultsTools = __kustoHideResultsTools;
+window.__kustoGetSortIconSvg = __kustoGetSortIconSvg;
+window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
+window.__kustoGetSelectAllIconSvg = __kustoGetSelectAllIconSvg;
+window.__kustoGetDeselectAllIconSvg = __kustoGetDeselectAllIconSvg;
+window.__kustoGetCloseIconSvg = __kustoGetCloseIconSvg;
+window.__kustoNormalizeSortDirection = __kustoNormalizeSortDirection;
+window.__kustoNormalizeSortSpec = __kustoNormalizeSortSpec;
+window.__kustoGetCellSortValue = __kustoGetCellSortValue;
+window.__kustoCompareSortValues = __kustoCompareSortValues;
+window.__kustoFormatNumberForDisplay = __kustoFormatNumberForDisplay;
+window.__kustoFormatDateForDisplay = __kustoFormatDateForDisplay;
+window.__kustoFormatCellDisplayValueForTable = __kustoFormatCellDisplayValueForTable;
+window.__kustoComputeSortedRowIndices = __kustoComputeSortedRowIndices;
+window.__kustoEnsureDisplayRowIndexMaps = __kustoEnsureDisplayRowIndexMaps;
+window.__kustoEnsureColumnFiltersMap = __kustoEnsureColumnFiltersMap;
+window.__kustoGetRawCellValue = __kustoGetRawCellValue;
+window.__kustoIsNullOrEmpty = __kustoIsNullOrEmpty;
+window.__kustoTryParseNumber = __kustoTryParseNumber;
+window.__kustoTryParseDateMs = __kustoTryParseDateMs;
+window.__kustoInferColumnType = __kustoInferColumnType;
+window.__kustoGetRowIndicesExcludingColumnFilter = __kustoGetRowIndicesExcludingColumnFilter;
+window.__kustoNormalizeStringForFilter = __kustoNormalizeStringForFilter;
+window.__kustoRowMatchesNullPolicy = __kustoRowMatchesNullPolicy;
+window.__kustoRowMatchesColumnFilter = __kustoRowMatchesColumnFilter;
+window.__kustoComputeUniqueValueKeys = __kustoComputeUniqueValueKeys;
+window.__kustoNormalizeDraftFilter = __kustoNormalizeDraftFilter;
+window.__kustoGetRulesCombineEnabledFromDom = __kustoGetRulesCombineEnabledFromDom;
+window.__kustoSetRulesCombineEnabled = __kustoSetRulesCombineEnabled;
+window.__kustoToggleRulesCombine = __kustoToggleRulesCombine;
+window.__kustoGetRulesJoinOpFromDom = __kustoGetRulesJoinOpFromDom;
+window.__kustoSetRulesJoinOp = __kustoSetRulesJoinOp;
+window.__kustoApplyFiltersAndRerender = __kustoApplyFiltersAndRerender;
+window.closeColumnFilterPopover = closeColumnFilterPopover;
+window.closeColumnFilterDialogOnBackdrop = closeColumnFilterDialogOnBackdrop;
+window.__kustoEnsureFilterGlobalCloseHandler = __kustoEnsureFilterGlobalCloseHandler;
+window.openColumnFilter = openColumnFilter;
+window.__kustoEnsureFilterPopoverSearchControl = __kustoEnsureFilterPopoverSearchControl;
+window.__kustoRenderFilterPopoverHtml = __kustoRenderFilterPopoverHtml;
+window.__kustoFilterSearchValues = __kustoFilterSearchValues;
+window.__kustoFilterSetAllValues = __kustoFilterSetAllValues;
+window.__kustoGetValuesAllowedFromSpec = __kustoGetValuesAllowedFromSpec;
+window.__kustoGetRulesSpecFromExisting = __kustoGetRulesSpecFromExisting;
+window.__kustoRenderRulesListHtml = __kustoRenderRulesListHtml;
+window.__kustoGetRuleOpsForType = __kustoGetRuleOpsForType;
+window.__kustoRenderRuleRowInputsHtml = __kustoRenderRuleRowInputsHtml;
+window.__kustoCaptureRulesFromDom = __kustoCaptureRulesFromDom;
+window.__kustoSetRuleJoin = __kustoSetRuleJoin;
+window.__kustoOnRuleRowOpChanged = __kustoOnRuleRowOpChanged;
+window.__kustoDeleteRuleRow = __kustoDeleteRuleRow;
+window.__kustoRenderRulesEditorHtml = __kustoRenderRulesEditorHtml;
+window.__kustoToDateTimeLocalValue = __kustoToDateTimeLocalValue;
+window.__kustoFromDateTimeLocalValue = __kustoFromDateTimeLocalValue;
+window.__kustoSetFilterMode = __kustoSetFilterMode;
+window.__kustoOnFilterOpChanged = __kustoOnFilterOpChanged;
+window.__kustoFilterToggleAllValues = __kustoFilterToggleAllValues;
+window.applyColumnFilter = applyColumnFilter;
+window.clearColumnFilter = clearColumnFilter;
+window.__kustoSetSortSpecAndRerender = __kustoSetSortSpecAndRerender;
+window.__kustoGetSortRuleIndex = __kustoGetSortRuleIndex;
+window.handleHeaderSortClick = handleHeaderSortClick;
+window.sortColumnAscending = sortColumnAscending;
+window.sortColumnDescending = sortColumnDescending;
+window.toggleSortDialog = toggleSortDialog;
+window.closeSortDialog = closeSortDialog;
+window.closeSortDialogOnBackdrop = closeSortDialogOnBackdrop;
+window.__kustoRenderSortDialog = __kustoRenderSortDialog;
+window.__kustoAddSortRuleInline = __kustoAddSortRuleInline;
+window.__kustoWireSortDialogDnD = __kustoWireSortDialogDnD;
+window.__kustoMoveSortRule = __kustoMoveSortRule;
+window.addSortRule = addSortRule;
+window.clearSort = clearSort;
+window.updateSortRuleColumn = updateSortRuleColumn;
+window.updateSortRuleDirection = updateSortRuleDirection;
+window.moveSortRuleUp = moveSortRuleUp;
+window.moveSortRuleDown = moveSortRuleDown;
+window.removeSortRule = removeSortRule;
 // Virtual scrolling, rendering, result display, error UX, and escape bridges are in resultsTable-render.ts.
-(window as any).__kustoClampInt = __kustoClampInt;
-(window as any).__kustoTryGetDomEventFromInlineHandler = __kustoTryGetDomEventFromInlineHandler;
-(window as any).__kustoSetCellSelectionState = __kustoSetCellSelectionState;
-(window as any).selectCell = selectCell;
-(window as any).toggleRowSelection = toggleRowSelection;
-(window as any).__kustoUpdateResultsToolsDropdownState = __kustoUpdateResultsToolsDropdownState;
-(window as any).__kustoResultsToolsDropdownAction = __kustoResultsToolsDropdownAction;
-(window as any).__kustoToggleResultsToolsDropdown = __kustoToggleResultsToolsDropdown;
-(window as any).__kustoCloseResultsToolsDropdown = __kustoCloseResultsToolsDropdown;
-(window as any).__kustoCloseAllResultsToolsDropdowns = __kustoCloseAllResultsToolsDropdowns;
-(window as any).toggleSearchTool = toggleSearchTool;
-(window as any).toggleColumnTool = toggleColumnTool;
-(window as any).searchData = searchData;
-(window as any).nextSearchMatch = nextSearchMatch;
-(window as any).previousSearchMatch = previousSearchMatch;
-(window as any).highlightCurrentSearchMatch = highlightCurrentSearchMatch;
-(window as any).handleDataSearchKeydown = handleDataSearchKeydown;
-(window as any).handleTableKeydown = handleTableKeydown;
-(window as any).filterColumns = filterColumns;
-(window as any).handleColumnSearchKeydown = handleColumnSearchKeydown;
-(window as any).updateAutocompleteSelection = updateAutocompleteSelection;
-(window as any).scrollToColumn = scrollToColumn;
+window.__kustoClampInt = __kustoClampInt;
+window.__kustoTryGetDomEventFromInlineHandler = __kustoTryGetDomEventFromInlineHandler;
+window.__kustoSetCellSelectionState = __kustoSetCellSelectionState;
+window.selectCell = selectCell;
+window.toggleRowSelection = toggleRowSelection;
+window.__kustoUpdateResultsToolsDropdownState = __kustoUpdateResultsToolsDropdownState;
+window.__kustoResultsToolsDropdownAction = __kustoResultsToolsDropdownAction;
+window.__kustoToggleResultsToolsDropdown = __kustoToggleResultsToolsDropdown;
+window.__kustoCloseResultsToolsDropdown = __kustoCloseResultsToolsDropdown;
+window.__kustoCloseAllResultsToolsDropdowns = __kustoCloseAllResultsToolsDropdowns;
+window.toggleSearchTool = toggleSearchTool;
+window.toggleColumnTool = toggleColumnTool;
+window.searchData = searchData;
+window.nextSearchMatch = nextSearchMatch;
+window.previousSearchMatch = previousSearchMatch;
+window.highlightCurrentSearchMatch = highlightCurrentSearchMatch;
+window.handleDataSearchKeydown = handleDataSearchKeydown;
+window.handleTableKeydown = handleTableKeydown;
+window.filterColumns = filterColumns;
+window.handleColumnSearchKeydown = handleColumnSearchKeydown;
+window.updateAutocompleteSelection = updateAutocompleteSelection;
+window.scrollToColumn = scrollToColumn;
 // Copy/export, CSV save, split menus, drag selection, and context menu bridges are in resultsTable-export.ts.
