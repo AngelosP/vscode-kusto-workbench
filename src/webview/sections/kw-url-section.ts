@@ -192,7 +192,7 @@ export class KwUrlSection extends LitElement {
 							.options=${{ label: 'CSV', showExecutionTime: false, compact: true } as DataTableOptions}
 							@visible-row-count-change=${this._onCsvVisibleRowCountChange}
 							@save=${(e: CustomEvent) => {
-								const vscode = (window as any).vscode;
+								const vscode = window.vscode;
 								if (vscode && typeof vscode.postMessage === 'function') {
 									vscode.postMessage({
 										type: 'saveResultsCsv',
@@ -449,7 +449,7 @@ export class KwUrlSection extends LitElement {
 			htmlContent = `<base href="${escapedUrl}">` + htmlContent;
 		}
 		// Sanitize with DOMPurify if available.
-		const DOMPurify = (window as any).DOMPurify;
+		const DOMPurify = window.DOMPurify;
 		if (DOMPurify && typeof DOMPurify.sanitize === 'function') {
 			htmlContent = DOMPurify.sanitize(htmlContent, {
 				ADD_TAGS: ['base'],
@@ -642,8 +642,8 @@ export class KwUrlSection extends LitElement {
 		this._schedulePersist();
 		// Refresh Data dropdowns in Chart/Transformation sections.
 		try {
-			if (typeof (window as any).__kustoRefreshAllDataSourceDropdowns === 'function') {
-				(window as any).__kustoRefreshAllDataSourceDropdowns();
+			if (typeof window.__kustoRefreshAllDataSourceDropdowns === 'function') {
+				window.__kustoRefreshAllDataSourceDropdowns();
 			}
 		} catch { /* ignore */ }
 	}
@@ -731,7 +731,7 @@ export class KwUrlSection extends LitElement {
 		this._fetchState = { ...st, loading: true, error: '' };
 		this._renderUrlContent();
 		try {
-			const vscode = (window as any).vscode;
+			const vscode = window.vscode;
 			if (vscode && typeof vscode.postMessage === 'function') {
 				vscode.postMessage({ type: 'fetchUrl', boxId: this.boxId, url });
 			}
@@ -872,8 +872,8 @@ export class KwUrlSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof (window as any).__kustoGetScrollY === 'function'
-			? (window as any).__kustoGetScrollY as () => number
+		const getScrollY = typeof window.__kustoGetScrollY === 'function'
+			? window.__kustoGetScrollY as () => number
 			: () => 0;
 
 		const startPageY = e.clientY + getScrollY();
@@ -895,8 +895,8 @@ export class KwUrlSection extends LitElement {
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof (window as any).__kustoMaybeAutoScrollWhileDragging === 'function') {
-					(window as any).__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
+				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
+					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
 			} catch { /* ignore */ }
 			const pageY = moveEvent.clientY + getScrollY();
@@ -922,7 +922,7 @@ export class KwUrlSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = (window as any).schedulePersist;
+			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
 		} catch { /* ignore */ }
 	}

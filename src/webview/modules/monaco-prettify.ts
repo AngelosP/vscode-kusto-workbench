@@ -743,11 +743,11 @@ export function __kustoPrettifyKustoTextWithSemicolonStatements(text: any) {
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoToSingleLineKusto = __kustoToSingleLineKusto;
-(window as any).__kustoExplodePipesToLines = __kustoExplodePipesToLines;
-(window as any).__kustoSplitTopLevel = __kustoSplitTopLevel;
-(window as any).__kustoFindTopLevelKeyword = __kustoFindTopLevelKeyword;
-(window as any).__kustoPrettifyWhereClause = __kustoPrettifyWhereClause;
-(window as any).__kustoPrettifyKusto = __kustoPrettifyKusto;
-(window as any).__kustoSplitKustoStatementsBySemicolon = __kustoSplitKustoStatementsBySemicolon;
-(window as any).__kustoPrettifyKustoTextWithSemicolonStatements = __kustoPrettifyKustoTextWithSemicolonStatements;
+window.__kustoToSingleLineKusto = __kustoToSingleLineKusto;
+window.__kustoExplodePipesToLines = __kustoExplodePipesToLines;
+window.__kustoSplitTopLevel = __kustoSplitTopLevel;
+window.__kustoFindTopLevelKeyword = __kustoFindTopLevelKeyword;
+window.__kustoPrettifyWhereClause = __kustoPrettifyWhereClause;
+window.__kustoPrettifyKusto = __kustoPrettifyKusto;
+window.__kustoSplitKustoStatementsBySemicolon = __kustoSplitKustoStatementsBySemicolon;
+window.__kustoPrettifyKustoTextWithSemicolonStatements = __kustoPrettifyKustoTextWithSemicolonStatements;

@@ -20,22 +20,22 @@ const _win = window;
 // Sub-module box arrays are initialized on window in their respective files
 // (extraBoxes-markdown.ts, extraBoxes-chart.ts, extraBoxes-transformation.ts).
 // Read references from window so all modules share the same arrays.
-let markdownBoxes: any[] = (window as any).__kustoMarkdownBoxes || [];
-let chartBoxes: any[] = (window as any).__kustoChartBoxes || [];
-let transformationBoxes: any[] = (window as any).__kustoTransformationBoxes || [];
+let markdownBoxes: any[] = window.__kustoMarkdownBoxes || [];
+let chartBoxes: any[] = window.__kustoChartBoxes || [];
+let transformationBoxes: any[] = window.__kustoTransformationBoxes || [];
 
 // Python and URL boxes are managed in this file (not sub-modules).
 let pythonBoxes: any[] = [];
 let urlBoxes: any[] = [];
-(window as any).__kustoPythonBoxes = pythonBoxes;
-(window as any).__kustoUrlBoxes = urlBoxes;
+window.__kustoPythonBoxes = pythonBoxes;
+window.__kustoUrlBoxes = urlBoxes;
 
 // Expose markdownEditors on window so main.js can access it for tool handlers
-(window as any).__kustoMarkdownEditors = (window as any).__kustoMarkdownEditors || {};
-let markdownEditors = (window as any).__kustoMarkdownEditors;
+window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
+let markdownEditors = window.__kustoMarkdownEditors;
 let markdownViewers: any = {};
 let pythonEditors: any = {};
-try { (window as any).__kustoPythonEditors = pythonEditors; } catch { /* ignore */ }
+try { window.__kustoPythonEditors = pythonEditors; } catch { /* ignore */ }
 
 // Chart UI state keyed by boxId.
 // - mode: 'edit' | 'preview'
@@ -51,13 +51,13 @@ try { (window as any).__kustoPythonEditors = pythonEditors; } catch { /* ignore 
 // - xAxisSettings: { sortDirection, scaleType, labelDensity, showAxisLabel, customLabel, titleGap } (X-axis customizations)
 // - yAxisSettings: { showAxisLabel, customLabel, min, max, seriesColors, titleGap } (Y-axis customizations)
 // Explicitly on window so persistence.js can access it
-(window as any).chartStateByBoxId = (window as any).chartStateByBoxId || {};
-var chartStateByBoxId = (window as any).chartStateByBoxId;
+window.chartStateByBoxId = window.chartStateByBoxId || {};
+var chartStateByBoxId = window.chartStateByBoxId;
 
 // Transformation UI state keyed by boxId.
 // Explicitly on window so persistence.js can access it
-(window as any).transformationStateByBoxId = (window as any).transformationStateByBoxId || {};
-var transformationStateByBoxId = (window as any).transformationStateByBoxId;
+window.transformationStateByBoxId = window.transformationStateByBoxId || {};
+var transformationStateByBoxId = window.transformationStateByBoxId;
 
 // When query/transform results update, refresh dependent charts/transformations.
 let __kustoIsRefreshingDependents = false;
@@ -116,8 +116,8 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 }
 
 try {
-	(window as any).__kustoRefreshDependentExtraBoxes = __kustoRefreshDependentExtraBoxes;
-	(window as any).__kustoNotifyResultsUpdated = (boxId: any) => {
+	window.__kustoRefreshDependentExtraBoxes = __kustoRefreshDependentExtraBoxes;
+	window.__kustoNotifyResultsUpdated = (boxId: any) => {
 		try {
 			const id = String(boxId || '');
 			if (!id) return;
@@ -210,7 +210,7 @@ function __kustoRefreshAllDataSourceDropdowns() {
 }
 
 // Expose globally for use by main.js reorder logic
-try { (window as any).__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch { /* ignore */ }
+try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch { /* ignore */ }
 
 /**
  * Configure a chart section programmatically (used by LLM tools).
@@ -293,7 +293,7 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 }
 
 // Expose for tool calls from main.js
-try { (window as any).__kustoConfigureChart = __kustoConfigureChartFromTool; } catch { /* ignore */ }
+try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch { /* ignore */ }
 
 /**
  * Validate a chart's configuration and return detailed status for tools.
@@ -411,7 +411,7 @@ function __kustoGetChartValidationStatus( boxId: any) {
 }
 
 // Expose for tool calls
-try { (window as any).__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch { /* ignore */ }
+try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch { /* ignore */ }
 
 /**
  * Configure a transformation section programmatically (used by LLM tools).
@@ -568,7 +568,7 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
-		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
 		if (isOpen) {
 			menu.style.display = 'none';
 			btn.setAttribute('aria-expanded', 'false');
@@ -668,7 +668,7 @@ function addPythonBox( options: any) {
 	litEl.setAttribute('box-id', id);
 
 	// Pass initial code if available.
-	const pendingCode = (window as any).__kustoPendingPythonCodeByBoxId && (window as any).__kustoPendingPythonCodeByBoxId[id];
+	const pendingCode = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[id];
 	if (typeof pendingCode === 'string') {
 		litEl.setAttribute('initial-code', pendingCode);
 	}
@@ -742,10 +742,10 @@ function initPythonEditor( boxId: any) {
 		// Avoid editor.setValue() during init; pass initial value into create() to reduce timing races.
 		let initialValue = '';
 		try {
-			const pending = (window as any).__kustoPendingPythonCodeByBoxId && (window as any).__kustoPendingPythonCodeByBoxId[boxId];
+			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete (window as any).__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
 			}
 		} catch {
 			// ignore
@@ -930,9 +930,9 @@ function initPythonEditor( boxId: any) {
 
 		let attempt = 0;
 		try {
-			(window as any).__kustoMonacoInitRetryCountByBoxId = (window as any).__kustoMonacoInitRetryCountByBoxId || {};
-			attempt = ((window as any).__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
-			(window as any).__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
+			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
@@ -1067,28 +1067,28 @@ function removeUrlBox( boxId: any) {
 
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).__kustoGetChartDatasetsInDomOrder = __kustoGetChartDatasetsInDomOrder;
-(window as any).__kustoConfigureChartFromTool = __kustoConfigureChartFromTool;
-(window as any).__kustoGetRawCellValueForChart = __kustoGetRawCellValueForChart;
-(window as any).__kustoCellToChartString = __kustoCellToChartString;
-(window as any).__kustoCellToChartNumber = __kustoCellToChartNumber;
-(window as any).__kustoCellToChartTimeMs = __kustoCellToChartTimeMs;
-(window as any).__kustoInferTimeXAxisFromRows = __kustoInferTimeXAxisFromRows;
-(window as any).__kustoNormalizeResultsColumnName = __kustoNormalizeResultsColumnName;
-(window as any).__kustoSetSelectOptions = __kustoSetSelectOptions;
-(window as any).__kustoPickFirstNonEmpty = __kustoPickFirstNonEmpty;
-(window as any).__kustoToggleSectionModeDropdown = __kustoToggleSectionModeDropdown;
-(window as any).__kustoCloseSectionModeDropdown = __kustoCloseSectionModeDropdown;
-(window as any).__kustoUpdateSectionModeResponsive = __kustoUpdateSectionModeResponsive;
-(window as any).__kustoSetupSectionModeResizeObserver = __kustoSetupSectionModeResizeObserver;
-(window as any).__kustoCleanupSectionModeResizeObserver = __kustoCleanupSectionModeResizeObserver;
-(window as any).addPythonBox = addPythonBox;
-(window as any).removePythonBox = removePythonBox;
-(window as any).initPythonEditor = initPythonEditor;
-(window as any).setPythonOutput = setPythonOutput;
-(window as any).runPythonBox = runPythonBox;
-(window as any).onPythonResult = onPythonResult;
-(window as any).onPythonError = onPythonError;
-(window as any).addUrlBox = addUrlBox;
-(window as any).removeUrlBox = removeUrlBox;
+window.__kustoGetChartDatasetsInDomOrder = __kustoGetChartDatasetsInDomOrder;
+window.__kustoConfigureChartFromTool = __kustoConfigureChartFromTool;
+window.__kustoGetRawCellValueForChart = __kustoGetRawCellValueForChart;
+window.__kustoCellToChartString = __kustoCellToChartString;
+window.__kustoCellToChartNumber = __kustoCellToChartNumber;
+window.__kustoCellToChartTimeMs = __kustoCellToChartTimeMs;
+window.__kustoInferTimeXAxisFromRows = __kustoInferTimeXAxisFromRows;
+window.__kustoNormalizeResultsColumnName = __kustoNormalizeResultsColumnName;
+window.__kustoSetSelectOptions = __kustoSetSelectOptions;
+window.__kustoPickFirstNonEmpty = __kustoPickFirstNonEmpty;
+window.__kustoToggleSectionModeDropdown = __kustoToggleSectionModeDropdown;
+window.__kustoCloseSectionModeDropdown = __kustoCloseSectionModeDropdown;
+window.__kustoUpdateSectionModeResponsive = __kustoUpdateSectionModeResponsive;
+window.__kustoSetupSectionModeResizeObserver = __kustoSetupSectionModeResizeObserver;
+window.__kustoCleanupSectionModeResizeObserver = __kustoCleanupSectionModeResizeObserver;
+window.addPythonBox = addPythonBox;
+window.removePythonBox = removePythonBox;
+window.initPythonEditor = initPythonEditor;
+window.setPythonOutput = setPythonOutput;
+window.runPythonBox = runPythonBox;
+window.onPythonResult = onPythonResult;
+window.onPythonError = onPythonError;
+window.addUrlBox = addUrlBox;
+window.removeUrlBox = removeUrlBox;
 

@@ -84,8 +84,8 @@ document.addEventListener('keydown', async (event: any) => {
 // This keeps the notebook feel: wheel always scrolls the document unless there's actually
 // something under the cursor that can scroll.
 try {
-	if (!(window as any).__kustoWheelPassthroughInstalled) {
-		(window as any).__kustoWheelPassthroughInstalled = true;
+	if (!window.__kustoWheelPassthroughInstalled) {
+		window.__kustoWheelPassthroughInstalled = true;
 		document.addEventListener('wheel', (event: any) => {
 			try {
 				if (!event || event.defaultPrevented) return;
@@ -146,8 +146,8 @@ document.addEventListener('keydown', (event: any) => {
 			const modal = document.getElementById('objectViewer') as any;
 			if (modal && modal.classList && modal.classList.contains('visible')) {
 				handled = true;
-				if (typeof (window as any).closeObjectViewer === 'function') {
-					(window as any).closeObjectViewer();
+				if (typeof window.closeObjectViewer === 'function') {
+					window.closeObjectViewer();
 				} else {
 					modal.classList.remove('visible');
 				}
@@ -160,8 +160,8 @@ document.addEventListener('keydown', (event: any) => {
 				const modal = document.getElementById('columnAnalysisModal') as any;
 				if (modal && modal.classList && modal.classList.contains('visible')) {
 					handled = true;
-					if (typeof (window as any).closeColumnAnalysis === 'function') {
-						(window as any).closeColumnAnalysis();
+					if (typeof window.closeColumnAnalysis === 'function') {
+						window.closeColumnAnalysis();
 					} else {
 						modal.classList.remove('visible');
 					}
@@ -175,8 +175,8 @@ document.addEventListener('keydown', (event: any) => {
 				const modal = document.querySelector && document.querySelector('.kusto-filter-modal.visible');
 				if (modal) {
 					handled = true;
-					if (typeof (window as any).closeColumnFilterPopover === 'function') {
-						(window as any).closeColumnFilterPopover();
+					if (typeof window.closeColumnFilterPopover === 'function') {
+						window.closeColumnFilterPopover();
 					} else {
 						try { modal.remove(); } catch { /* ignore */ }
 					}
@@ -193,8 +193,8 @@ document.addEventListener('keydown', (event: any) => {
 					const suffix = '_sort_modal';
 					const id = modal.id ? String(modal.id) : '';
 					const boxId = id.endsWith(suffix) ? id.slice(0, -suffix.length) : '';
-					if (boxId && typeof (window as any).closeSortDialog === 'function') {
-						(window as any).closeSortDialog(boxId);
+					if (boxId && typeof window.closeSortDialog === 'function') {
+						window.closeSortDialog(boxId);
 					} else {
 						modal.classList.remove('visible');
 					}
@@ -208,8 +208,8 @@ document.addEventListener('keydown', (event: any) => {
 				const modal = document.getElementById('shareModal') as any;
 				if (modal && modal.classList && modal.classList.contains('visible')) {
 					handled = true;
-					if (typeof (window as any).__kustoCloseShareModal === 'function') {
-						(window as any).__kustoCloseShareModal();
+					if (typeof window.__kustoCloseShareModal === 'function') {
+						window.__kustoCloseShareModal();
 					} else {
 						modal.classList.remove('visible');
 					}
@@ -263,8 +263,8 @@ document.addEventListener('keydown', (event: any) => {
 		// Prefer the shared helper so we keep the "hide if no suggestions" behavior.
 		try {
 			const boxId = editor.__kustoBoxId;
-			if (boxId && typeof (window as any).__kustoTriggerAutocompleteForBoxId === 'function') {
-				(window as any).__kustoTriggerAutocompleteForBoxId(boxId);
+			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
 				return;
 			}
 		} catch {
@@ -290,7 +290,7 @@ let __kustoKqlLanguageRequestResolversById: any = {};
 let __kustoResourceUriRequestResolversById: any = {};
 
 try {
-	(window as any).__kustoResolveResourceUri = async function (args: any) {
+	window.__kustoResolveResourceUri = async function (args: any) {
 		const p = (args && typeof args.path === 'string') ? String(args.path) : '';
 		const baseUri = (args && typeof args.baseUri === 'string') ? String(args.baseUri) : '';
 		if (!p || !_win.vscode || typeof (_win.vscode as any).postMessage !== 'function') {
@@ -332,7 +332,7 @@ try {
 }
 
 try {
-	(window as any).__kustoRequestKqlDiagnostics = async function (args: any) {
+	window.__kustoRequestKqlDiagnostics = async function (args: any) {
 		const text = (args && typeof args.text === 'string') ? args.text : '';
 		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
 		const database = (args && typeof args.database === 'string') ? args.database : '';
@@ -376,7 +376,7 @@ try {
 }
 
 try {
-	(window as any).__kustoRequestKqlTableReferences = async function (args: any) {
+	window.__kustoRequestKqlTableReferences = async function (args: any) {
 		const text = (args && typeof args.text === 'string') ? args.text : '';
 		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
 		const database = (args && typeof args.database === 'string') ? args.database : '';
@@ -616,7 +616,7 @@ async function __kustoCopyOrCutMonacoEditorImpl( editor: any, eventOrNull: any, 
 
 // Expose for Monaco context-menu action overrides.
 try {
-	(window as any).__kustoCopyOrCutMonacoEditor = async function (editor: any, isCut: any) {
+	window.__kustoCopyOrCutMonacoEditor = async function (editor: any, isCut: any) {
 		return await __kustoCopyOrCutMonacoEditorImpl(editor, null, !!isCut);
 	};
 } catch {
@@ -848,28 +848,28 @@ window.addEventListener('message', async (event: any) => {
 				const commandLower = String(message.commandLower || '').trim();
 				if (commandLower) {
 					try {
-						if (!(window as any).__kustoControlCommandDocCache || typeof (window as any).__kustoControlCommandDocCache !== 'object') {
-							(window as any).__kustoControlCommandDocCache = {};
+						if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
+							window.__kustoControlCommandDocCache = {};
 						}
 					} catch { /* ignore */ }
 					try {
 						const ok = !!message.ok;
 						const syntax = ok && typeof message.syntax === 'string' ? String(message.syntax) : '';
 						const withArgs = ok && Array.isArray(message.withArgs) ? message.withArgs.map((s: any) => String(s)) : [];
-						(window as any).__kustoControlCommandDocCache[commandLower] = {
+						window.__kustoControlCommandDocCache[commandLower] = {
 							syntax,
 							withArgs,
 							fetchedAt: Date.now()
 						};
 					} catch { /* ignore */ }
 					try {
-						if ((window as any).__kustoControlCommandDocPending && typeof (window as any).__kustoControlCommandDocPending === 'object') {
-							delete (window as any).__kustoControlCommandDocPending[commandLower];
+						if (window.__kustoControlCommandDocPending && typeof window.__kustoControlCommandDocPending === 'object') {
+							delete window.__kustoControlCommandDocPending[commandLower];
 						}
 					} catch { /* ignore */ }
 					try {
-						if (typeof (window as any).__kustoRefreshActiveCaretDocs === 'function') {
-							(window as any).__kustoRefreshActiveCaretDocs();
+						if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
+							window.__kustoRefreshActiveCaretDocs();
 						}
 					} catch { /* ignore */ }
 				}
@@ -903,15 +903,15 @@ window.addEventListener('message', async (event: any) => {
 			break;
 		case 'persistenceMode':
 				try {
-					(window as any).__kustoIsSessionFile = !!message.isSessionFile;
+					window.__kustoIsSessionFile = !!message.isSessionFile;
 					try {
 						if (typeof message.documentUri === 'string') {
-							(window as any).__kustoDocumentUri = String(message.documentUri);
+							window.__kustoDocumentUri = String(message.documentUri);
 						}
 					} catch { /* ignore */ }
 						try {
 							if (typeof message.documentKind === 'string') {
-								(window as any).__kustoDocumentKind = String(message.documentKind);
+								window.__kustoDocumentKind = String(message.documentKind);
 								try {
 									if (document && document.body && document.body.dataset) {
 										document.body.dataset.kustoDocumentKind = String(message.documentKind);
@@ -921,25 +921,25 @@ window.addEventListener('message', async (event: any) => {
 						} catch { /* ignore */ }
 						try {
 							if (Array.isArray(message.allowedSectionKinds)) {
-								(window as any).__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
+								window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
 							}
 							if (typeof message.defaultSectionKind === 'string') {
-								(window as any).__kustoDefaultSectionKind = String(message.defaultSectionKind);
+								window.__kustoDefaultSectionKind = String(message.defaultSectionKind);
 							}
 							if (typeof message.compatibilitySingleKind === 'string') {
-								(window as any).__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+								window.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
 							}
 							if (typeof message.upgradeRequestType === 'string') {
-								(window as any).__kustoUpgradeRequestType = String(message.upgradeRequestType);
+								window.__kustoUpgradeRequestType = String(message.upgradeRequestType);
 							}
 							if (typeof message.compatibilityTooltip === 'string') {
-								(window as any).__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+								window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
 							}
 						} catch { /* ignore */ }
 							if (typeof _win.__kustoSetCompatibilityMode === 'function') {
 								_win.__kustoSetCompatibilityMode(!!message.compatibilityMode);
 							} else {
-								(window as any).__kustoCompatibilityMode = !!message.compatibilityMode;
+								window.__kustoCompatibilityMode = !!message.compatibilityMode;
 							}
 						try {
 							if (typeof _win.__kustoApplyDocumentCapabilities === 'function') {
@@ -957,7 +957,7 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof _win.__kustoSetCompatibilityMode === 'function') {
 					_win.__kustoSetCompatibilityMode(false);
 				} else {
-					(window as any).__kustoCompatibilityMode = false;
+					window.__kustoCompatibilityMode = false;
 				}
 			} catch { /* ignore */ }
 			try {
@@ -974,7 +974,7 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof _win.__kustoSetCompatibilityMode === 'function') {
 					_win.__kustoSetCompatibilityMode(false);
 				} else {
-					(window as any).__kustoCompatibilityMode = false;
+					window.__kustoCompatibilityMode = false;
 				}
 			} catch { /* ignore */ }
 			try {
@@ -986,47 +986,47 @@ window.addEventListener('message', async (event: any) => {
 			break;
 		case 'connectionsData':
 			_win.connections = message.connections;
-			try { (window as any).connections = _win.connections; } catch { /* ignore */ }
+			try { window.connections = _win.connections; } catch { /* ignore */ }
 			_win.lastConnectionId = message.lastConnectionId;
 			_win.lastDatabase = message.lastDatabase;
 			_win.cachedDatabases = message.cachedDatabases || {};
 			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			_win.leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
-			try { (window as any).__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch { /* ignore */ }
-			try { (window as any).__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch { /* ignore */ }
+			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch { /* ignore */ }
+			try { window.__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch { /* ignore */ }
 			_win.caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			_win.autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			_win.copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
 			try {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
 				// When true, document-level restore should not override this global preference.
-				(window as any).__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
+				window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
 			} catch { /* ignore */ }
 			try {
-				(window as any).__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
+				window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
 			} catch { /* ignore */ }
 			try {
-				(window as any).__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
+				window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
 			} catch { /* ignore */ }
 			_win.updateConnectionSelects();
 			try {
-				if (typeof (window as any).__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-					(window as any).__kustoUpdateFavoritesUiForAllBoxes();
+				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+					window.__kustoUpdateFavoritesUiForAllBoxes();
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
-					(window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes();
+				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-					(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode();
+				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoOnConnectionsUpdated === 'function') {
-					(window as any).__kustoOnConnectionsUpdated();
+				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
+					window.__kustoOnConnectionsUpdated();
 				}
 			} catch { /* ignore */ }
 			try { _win.updateCaretDocsToggleButtons(); } catch { /* ignore */ }
@@ -1036,16 +1036,16 @@ window.addEventListener('message', async (event: any) => {
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
 			try {
-				if (!Array.isArray((window as any).__kustoDevNotesSections)) {
-					(window as any).__kustoDevNotesSections = [];
+				if (!Array.isArray(window.__kustoDevNotesSections)) {
+					window.__kustoDevNotesSections = [];
 				}
 				const action = String(message.action || '');
 				if (action === 'add') {
 					// Ensure a single devnotes section exists
-					let dn = (window as any).__kustoDevNotesSections.find((s: any) => s && s.type === 'devnotes');
+					let dn = window.__kustoDevNotesSections.find((s: any) => s && s.type === 'devnotes');
 					if (!dn) {
 						dn = { type: 'devnotes', id: 'devnotes_' + Date.now(), entries: [] };
-						(window as any).__kustoDevNotesSections.push(dn);
+						window.__kustoDevNotesSections.push(dn);
 					}
 					if (!Array.isArray(dn.entries)) dn.entries = [];
 					// If superseding an existing entry, remove it first
@@ -1059,7 +1059,7 @@ window.addEventListener('message', async (event: any) => {
 				} else if (action === 'remove') {
 					const noteId = String(message.noteId || '');
 					if (noteId) {
-						for (const dn of (window as any).__kustoDevNotesSections) {
+						for (const dn of window.__kustoDevNotesSections) {
 							if (dn && Array.isArray(dn.entries)) {
 								dn.entries = dn.entries.filter((e: any) => e && String(e.id) !== noteId);
 							}
@@ -1080,18 +1080,18 @@ window.addEventListener('message', async (event: any) => {
 		case 'favoritesData':
 			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			try {
-				if (typeof (window as any).__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-					(window as any).__kustoUpdateFavoritesUiForAllBoxes();
+				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+					window.__kustoUpdateFavoritesUiForAllBoxes();
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
-					(window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes();
+				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
+					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 				}
 			} catch { /* ignore */ }
 			try {
-				if (typeof (window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-					(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode();
+				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 				}
 			} catch { /* ignore */ }
 			// If this update came from an "Add favorite" action in a specific box, automatically
@@ -1099,16 +1099,16 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const boxId = message && typeof message.boxId === 'string' ? message.boxId : '';
 				if (boxId && Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0) {
-					if (typeof (window as any).__kustoEnterFavoritesModeForBox === 'function') {
-						(window as any).__kustoEnterFavoritesModeForBox(boxId);
+					if (typeof window.__kustoEnterFavoritesModeForBox === 'function') {
+						window.__kustoEnterFavoritesModeForBox(boxId);
 					}
 				}
 			} catch { /* ignore */ }
 			break;
 		case 'confirmRemoveFavoriteResult':
 			try {
-				if (typeof (window as any).__kustoOnConfirmRemoveFavoriteResult === 'function') {
-					(window as any).__kustoOnConfirmRemoveFavoriteResult(message);
+				if (typeof window.__kustoOnConfirmRemoveFavoriteResult === 'function') {
+					window.__kustoOnConfirmRemoveFavoriteResult(message);
 				}
 			} catch { /* ignore */ }
 			break;
@@ -1137,8 +1137,8 @@ window.addEventListener('message', async (event: any) => {
 						detail: `${String(message.documentUri || '')} ${sl}:${sc}-${el}:${ec} matchLen=${matchLen}`
 					});
 				} catch { /* ignore */ }
-				if (typeof (window as any).__kustoRevealTextRangeFromHost === 'function') {
-					(window as any).__kustoRevealTextRangeFromHost(message);
+				if (typeof window.__kustoRevealTextRangeFromHost === 'function') {
+					window.__kustoRevealTextRangeFromHost(message);
 					try {
 						(_win.vscode as any).postMessage({
 							type: 'debugMdSearchReveal',
@@ -1237,8 +1237,8 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				if (typeof _win.onDatabasesError === 'function') {
 					_win.onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
-				} else if (typeof (window as any).__kustoDisplayBoxError === 'function') {
-					(window as any).__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
+				} else if (typeof window.__kustoDisplayBoxError === 'function') {
+					window.__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
 				}
 			} catch {
 				// ignore
@@ -1265,7 +1265,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryResult':
 			try {
 				if (message.boxId) {
-					(window as any).lastExecutedBox = message.boxId;
+					window.lastExecutedBox = message.boxId;
 				}
 			} catch {
 				// ignore
@@ -1273,7 +1273,7 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				// Always target the concrete boxId when available (prevents races when
 				// multiple queries are running and keeps comparison summaries in sync).
-				if (message.boxId && (typeof _win.displayResultForBox === 'function' || typeof (window as any).displayResultForBox === 'function')) {
+				if (message.boxId && (typeof _win.displayResultForBox === 'function' || typeof window.displayResultForBox === 'function')) {
 					try {
 						if (typeof _win.setQueryExecuting === 'function') {
 							_win.setQueryExecuting(message.boxId, false);
@@ -1282,12 +1282,12 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof _win.displayResultForBox === 'function') {
 						_win.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 					} else {
-						(window as any).displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+						window.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 					}
 				} else if (typeof _win.displayResult === 'function') {
 					_win.displayResult(message.result);
-				} else if (typeof (window as any).displayResult === 'function') {
-					(window as any).displayResult(message.result);
+				} else if (typeof window.displayResult === 'function') {
+					window.displayResult(message.result);
 				} else {
 					console.error('Query result received, but no results renderer is available (displayResult/displayResultForBox).');
 				}
@@ -1334,22 +1334,22 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryError':
 			try {
 				if (message && message.boxId) {
-					(window as any).lastExecutedBox = message.boxId;
+					window.lastExecutedBox = message.boxId;
 				}
 			} catch {
 				// ignore
 			}
 			try {
-				const boxId = (message && message.boxId) ? String(message.boxId) : ((window as any).lastExecutedBox ? String((window as any).lastExecutedBox) : '');
+				const boxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
 				const err = (message && 'error' in message) ? message.error : 'Query execution failed.';
 				try {
 					if (boxId && typeof _win.setQueryExecuting === 'function') {
 						_win.setQueryExecuting(boxId, false);
 					}
 				} catch { /* ignore */ }
-				if (boxId && typeof (window as any).__kustoRenderErrorUx === 'function') {
+				if (boxId && typeof window.__kustoRenderErrorUx === 'function') {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
-					(window as any).__kustoRenderErrorUx(boxId, err, clientActivityId);
+					window.__kustoRenderErrorUx(boxId, err, clientActivityId);
 				} else if (typeof _win.displayError === 'function') {
 					_win.displayError(err);
 				} else {
@@ -1362,13 +1362,13 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryCancelled':
 			try {
 				if (message.boxId) {
-					(window as any).lastExecutedBox = message.boxId;
+					window.lastExecutedBox = message.boxId;
 				}
 			} catch {
 				// ignore
 			}
 			try {
-				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : ((window as any).lastExecutedBox ? String((window as any).lastExecutedBox) : '');
+				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
 				if (cancelledBoxId && typeof _win.setQueryExecuting === 'function') {
 					_win.setQueryExecuting(cancelledBoxId, false);
 				}
@@ -1410,8 +1410,8 @@ window.addEventListener('message', async (event: any) => {
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
-				if (tok && window && (window as any).__kustoSchemaRequestTokenByBoxId) {
-					const expected = (window as any).__kustoSchemaRequestTokenByBoxId[message.boxId];
+				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
+					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
 						break;
 					}
@@ -1461,7 +1461,7 @@ window.addEventListener('message', async (event: any) => {
 				
 				if (shouldUpdate) {
 					const applySchema = async () => {
-						if (typeof (window as any).__kustoSetMonacoKustoSchema === 'function') {
+						if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
 							// Schema/context state in monaco-kusto is tracked PER Monaco model URI.
 							// If we don't pass the model URI, monaco.js falls back to models[0], which can
 							// immediately put the wrong database in context for the active editor.
@@ -1480,11 +1480,11 @@ window.addEventListener('message', async (event: any) => {
 							}
 
 							// Set as context if this is the active box
-							await (window as any).__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri, isForceRefresh);
+							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri, isForceRefresh);
 							
 							// If this is the active box, trigger revalidation to reflect the new schema
-							if (isActiveBox && typeof (window as any).__kustoTriggerRevalidation === 'function') {
-								(window as any).__kustoTriggerRevalidation(message.boxId);
+							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {
+								window.__kustoTriggerRevalidation(message.boxId);
 							}
 							return true;
 						}
@@ -1517,8 +1517,8 @@ window.addEventListener('message', async (event: any) => {
 			
 			// NOTE: Custom diagnostics are disabled - monaco-kusto handles validation
 			// try {
-			// 	if (typeof (window as any).__kustoScheduleKustoDiagnostics === 'function') {
-			// 		(window as any).__kustoScheduleKustoDiagnostics(message.boxId, 0);
+			// 	if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
+			// 		window.__kustoScheduleKustoDiagnostics(message.boxId, 0);
 			// 	}
 			// } catch { /* ignore */ }
 			{
@@ -1565,8 +1565,8 @@ window.addEventListener('message', async (event: any) => {
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
-				if (tok && window && (window as any).__kustoSchemaRequestTokenByBoxId) {
-					const expected = (window as any).__kustoSchemaRequestTokenByBoxId[message.boxId];
+				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
+					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
 						break;
 					}
@@ -1594,8 +1594,8 @@ window.addEventListener('message', async (event: any) => {
 				} catch { /* ignore */ }
 			}
 			try {
-				if (typeof (window as any).__kustoDisplayBoxError === 'function') {
-					(window as any).__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
+				if (typeof window.__kustoDisplayBoxError === 'function') {
+					window.__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
 				}
 			} catch {
 				// ignore
@@ -1609,8 +1609,8 @@ window.addEventListener('message', async (event: any) => {
 				const database = message.database;
 				const rawSchemaJson = message.rawSchemaJson;
 				
-				if (rawSchemaJson && typeof (window as any).__kustoApplyCrossClusterSchema === 'function') {
-					(window as any).__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
+				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
+					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
 				}
 			} catch (e: any) {
 				console.error('[crossClusterSchemaData] Error:', e);
@@ -1624,8 +1624,8 @@ window.addEventListener('message', async (event: any) => {
 				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 				
 				// Mark as error so we don't keep retrying
-				if (typeof (window as any).__kustoCrossClusterSchemas !== 'undefined') {
-					(window as any).__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
+				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
+					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 				}
 			} catch {
 				// ignore
@@ -1635,7 +1635,7 @@ window.addEventListener('message', async (event: any) => {
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {
 					_win.connections = message.connections;
-					try { (window as any).connections = _win.connections; } catch { /* ignore */ }
+					try { window.connections = _win.connections; } catch { /* ignore */ }
 				}
 				if (message.lastConnectionId) {
 					_win.lastConnectionId = message.lastConnectionId;
@@ -1645,14 +1645,14 @@ window.addEventListener('message', async (event: any) => {
 				}
 				_win.updateConnectionSelects();
 				try {
-					if (typeof (window as any).__kustoOnConnectionsUpdated === 'function') {
-						(window as any).__kustoOnConnectionsUpdated();
+					if (typeof window.__kustoOnConnectionsUpdated === 'function') {
+						window.__kustoOnConnectionsUpdated();
 					}
 				} catch { /* ignore */ }
 				try {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {
-						const kwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(boxId) : null;
+						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
 						if (kwEl && typeof kwEl.setConnectionId === 'function') {
 							kwEl.setConnectionId(message.connectionId);
 							kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -1668,13 +1668,13 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotChatFirstTimeResult':
 			try {
 				// Update local flag so the dialog is never shown again.
-				(window as any).__kustoCopilotChatFirstTimeDismissed = true;
+				window.__kustoCopilotChatFirstTimeDismissed = true;
 				const action = String(message.action || '');
 				if (action === 'proceed') {
 					// User chose to use the embedded copilot chat; toggle it open.
 					const ftBoxId = String(message.boxId || '').trim();
-					if (ftBoxId && typeof (window as any).__kustoSetCopilotChatVisible === 'function') {
-						(window as any).__kustoSetCopilotChatVisible(ftBoxId, true);
+					if (ftBoxId && typeof window.__kustoSetCopilotChatVisible === 'function') {
+						window.__kustoSetCopilotChatVisible(ftBoxId, true);
 					}
 				}
 				// 'openedAgent' and 'dismissed': do nothing in webview (agent was opened or dialog dismissed).
@@ -1780,8 +1780,8 @@ window.addEventListener('message', async (event: any) => {
 					const nameEl = document.getElementById(sourceBoxId + '_name') as any;
 					if (nameEl) {
 						let sourceName = String(nameEl.value || '').trim();
-						if (!sourceName && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
-							sourceName = (window as any).__kustoPickNextAvailableSectionLetterName(sourceBoxId);
+						if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+							sourceName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
 							nameEl.value = sourceName;
 							try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 						}
@@ -1791,9 +1791,9 @@ window.addEventListener('message', async (event: any) => {
 					}
 				} catch { /* ignore */ }
 				// Fallback: if we still don't have a name (e.g. input missing), pick one.
-				if (!String(queryName || '').trim() && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
+				if (!String(queryName || '').trim() && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 					try {
-						queryName = (window as any).__kustoPickNextAvailableSectionLetterName(sourceBoxId);
+						queryName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
 					} catch { /* ignore */ }
 				}
 				const desiredOptimizedName = String(queryName || '').trim() ? (String(queryName || '').trim() + ' (optimized)') : '';
@@ -1801,8 +1801,8 @@ window.addEventListener('message', async (event: any) => {
 				const database = message.database || '';
 				let prettifiedOptimizedQuery = optimizedQuery;
 				try {
-					if (typeof (window as any).__kustoPrettifyKustoText === 'function') {
-						prettifiedOptimizedQuery = (window as any).__kustoPrettifyKustoText(optimizedQuery);
+					if (typeof window.__kustoPrettifyKustoText === 'function') {
+						prettifiedOptimizedQuery = window.__kustoPrettifyKustoText(optimizedQuery);
 					}
 				} catch { /* ignore */ }
 				
@@ -1903,7 +1903,7 @@ window.addEventListener('message', async (event: any) => {
 				} catch { /* ignore */ }
 				
 				// Set connection and database to match source
-				const compKwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(comparisonBoxId) : null;
+				const compKwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(comparisonBoxId) : null;
 				if (compKwEl) {
 					if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
 					if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
@@ -1977,8 +1977,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryOptions':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotApplyWriteQueryOptions === 'function') {
-					(window as any).__kustoCopilotApplyWriteQueryOptions(
+				if (boxId && typeof window.__kustoCopilotApplyWriteQueryOptions === 'function') {
+					window.__kustoCopilotApplyWriteQueryOptions(
 						boxId,
 						message.models || [],
 						message.selectedModelId || '',
@@ -1990,16 +1990,16 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryStatus':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotWriteQueryStatus === 'function') {
-					(window as any).__kustoCopilotWriteQueryStatus(boxId, message.status || '', message.detail || '', message.role || '');
+				if (boxId && typeof window.__kustoCopilotWriteQueryStatus === 'function') {
+					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '', message.detail || '', message.role || '');
 				}
 			} catch { /* ignore */ }
 			break;
 		case 'copilotWriteQuerySetQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotWriteQuerySetQuery === 'function') {
-					(window as any).__kustoCopilotWriteQuerySetQuery(boxId, message.query || '');
+				if (boxId && typeof window.__kustoCopilotWriteQuerySetQuery === 'function') {
+					window.__kustoCopilotWriteQuerySetQuery(boxId, message.query || '');
 				}
 			} catch { /* ignore */ }
 			break;
@@ -2015,8 +2015,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryToolResult':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotWriteQueryToolResult === 'function') {
-					(window as any).__kustoCopilotWriteQueryToolResult(
+				if (boxId && typeof window.__kustoCopilotWriteQueryToolResult === 'function') {
+					window.__kustoCopilotWriteQueryToolResult(
 						boxId,
 						message.tool || '',
 						message.label || '',
@@ -2029,8 +2029,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotExecutedQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendExecutedQuery === 'function') {
-					(window as any).__kustoCopilotAppendExecutedQuery(
+				if (boxId && typeof window.__kustoCopilotAppendExecutedQuery === 'function') {
+					window.__kustoCopilotAppendExecutedQuery(
 						boxId,
 						message.query || '',
 						message.resultSummary || '',
@@ -2044,8 +2044,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotGeneralQueryRulesLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendGeneralRulesLink === 'function') {
-					(window as any).__kustoCopilotAppendGeneralRulesLink(
+				if (boxId && typeof window.__kustoCopilotAppendGeneralRulesLink === 'function') {
+					window.__kustoCopilotAppendGeneralRulesLink(
 						boxId,
 						message.filePath || '',
 						message.preview || '',
@@ -2057,8 +2057,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotUserQuerySnapshot':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendQuerySnapshot === 'function') {
-					(window as any).__kustoCopilotAppendQuerySnapshot(
+				if (boxId && typeof window.__kustoCopilotAppendQuerySnapshot === 'function') {
+					window.__kustoCopilotAppendQuerySnapshot(
 						boxId,
 						message.queryText || '',
 						message.entryId || ''
@@ -2069,8 +2069,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNotesContextLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendDevNotesContext === 'function') {
-					(window as any).__kustoCopilotAppendDevNotesContext(
+				if (boxId && typeof window.__kustoCopilotAppendDevNotesContext === 'function') {
+					window.__kustoCopilotAppendDevNotesContext(
 						boxId,
 						message.preview || '',
 						message.entryId || ''
@@ -2081,11 +2081,11 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNoteToolCall':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendDevNoteToolCall === 'function') {
+				if (boxId && typeof window.__kustoCopilotAppendDevNoteToolCall === 'function') {
 					const detail = message.action === 'save'
 						? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
 						: ('Removed note: ' + (message.noteId || '') + (message.reason ? ' — ' + message.reason : ''));
-					(window as any).__kustoCopilotAppendDevNoteToolCall(
+					window.__kustoCopilotAppendDevNoteToolCall(
 						boxId,
 						message.action || 'save',
 						detail,
@@ -2098,8 +2098,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotClarifyingQuestion':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotAppendClarifyingQuestion === 'function') {
-					(window as any).__kustoCopilotAppendClarifyingQuestion(
+				if (boxId && typeof window.__kustoCopilotAppendClarifyingQuestion === 'function') {
+					window.__kustoCopilotAppendClarifyingQuestion(
 						boxId,
 						message.question || '',
 						message.entryId || ''
@@ -2110,8 +2110,8 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryDone':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof (window as any).__kustoCopilotWriteQueryDone === 'function') {
-					(window as any).__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
+				if (boxId && typeof window.__kustoCopilotWriteQueryDone === 'function') {
+					window.__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
 				}
 			} catch { /* ignore */ }
 			break;
@@ -2198,7 +2198,7 @@ window.addEventListener('message', async (event: any) => {
 								// Find connection by cluster URL
 								const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 								if (conn) {
-									const kwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(sectionId) : null;
+									const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
 									if (kwEl && typeof kwEl.setConnectionId === 'function') {
 										kwEl.setConnectionId(conn.id);
 										kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -2209,7 +2209,7 @@ window.addEventListener('message', async (event: any) => {
 								}
 							}
 							if (sectionId && input.database) {
-								const kwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(sectionId) : null;
+								const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
 								if (kwEl && typeof kwEl.setDatabase === 'function') {
 									kwEl.setDatabase(input.database);
 									kwEl.dispatchEvent(new CustomEvent('database-changed', {
@@ -2321,8 +2321,8 @@ window.addEventListener('message', async (event: any) => {
 				let success = false;
 				
 				try {
-					if (typeof (window as any).__kustoSetSectionExpanded === 'function') {
-						(window as any).__kustoSetSectionExpanded(sectionId, !collapsed);
+					if (typeof window.__kustoSetSectionExpanded === 'function') {
+						window.__kustoSetSectionExpanded(sectionId, !collapsed);
 						success = true;
 					} else {
 						// Fallback: toggle visibility directly
@@ -2423,7 +2423,7 @@ window.addEventListener('message', async (event: any) => {
 					if (input.clusterUrl) {
 						const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 						if (conn) {
-							const kwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(sectionId) : null;
+							const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
 							if (kwEl && typeof kwEl.setConnectionId === 'function') {
 								kwEl.setConnectionId(conn.id);
 								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -2454,7 +2454,7 @@ window.addEventListener('message', async (event: any) => {
 						if (input.clusterUrl) {
 							await new Promise((r: any) => setTimeout(r, 500));
 						}
-						const kwEl = (window as any).__kustoGetQuerySectionElement ? (window as any).__kustoGetQuerySectionElement(sectionId) : null;
+						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
 						if (kwEl && typeof kwEl.setDatabase === 'function') {
 							kwEl.setDatabase(input.database);
 							kwEl.dispatchEvent(new CustomEvent('database-changed', {
@@ -2562,11 +2562,11 @@ window.addEventListener('message', async (event: any) => {
 					const textValue = input.text ?? input.content;
 					if (textValue !== undefined) {
 						const textToSet = String(textValue);
-						(window as any).__kustoPendingMarkdownTextByBoxId = (window as any).__kustoPendingMarkdownTextByBoxId || {};
-						(window as any).__kustoPendingMarkdownTextByBoxId[sectionId] = textToSet;
+						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
+						window.__kustoPendingMarkdownTextByBoxId[sectionId] = textToSet;
 						
 						// Try to update existing editor (exposed on window from extraBoxes.js)
-						const editorInstance = (window as any).__kustoMarkdownEditors && (window as any).__kustoMarkdownEditors[sectionId];
+						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
 						if (editorInstance && typeof editorInstance.setValue === 'function') {
 							editorInstance.setValue(textToSet);
 							success = true;
@@ -2585,8 +2585,8 @@ window.addEventListener('message', async (event: any) => {
 							setTimeout(fitToContents, 300);
 							// If currently in Preview mode, re-render the viewer immediately
 							try {
-								if (typeof (window as any).__kustoApplyMarkdownEditorMode === 'function') {
-									(window as any).__kustoApplyMarkdownEditorMode(sectionId);
+								if (typeof window.__kustoApplyMarkdownEditorMode === 'function') {
+									window.__kustoApplyMarkdownEditorMode(sectionId);
 								}
 							} catch { /* ignore */ }
 						} else {
@@ -2596,8 +2596,8 @@ window.addEventListener('message', async (event: any) => {
 						}
 					}
 					
-					if (input.mode && typeof (window as any).__kustoSetMarkdownMode === 'function') {
-						(window as any).__kustoSetMarkdownMode(sectionId, input.mode);
+					if (input.mode && typeof window.__kustoSetMarkdownMode === 'function') {
+						window.__kustoSetMarkdownMode(sectionId, input.mode);
 						success = true;
 					}
 				} catch (err: any) {
@@ -2632,19 +2632,19 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// Apply chart configuration
-					if (typeof (window as any).__kustoConfigureChart === 'function') {
-						(window as any).__kustoConfigureChart(sectionId, input);
+					if (typeof window.__kustoConfigureChart === 'function') {
+						window.__kustoConfigureChart(sectionId, input);
 						success = true;
 					} else {
 						// Fallback: store in pending state
-						(window as any).__kustoPendingChartConfig = (window as any).__kustoPendingChartConfig || {};
-						(window as any).__kustoPendingChartConfig[sectionId] = input;
+						window.__kustoPendingChartConfig = window.__kustoPendingChartConfig || {};
+						window.__kustoPendingChartConfig[sectionId] = input;
 						success = true;
 					}
 					
 					// Get validation status to help agent verify configuration
-					if (typeof (window as any).__kustoGetChartValidationStatus === 'function') {
-						validationStatus = (window as any).__kustoGetChartValidationStatus(sectionId);
+					if (typeof window.__kustoGetChartValidationStatus === 'function') {
+						validationStatus = window.__kustoGetChartValidationStatus(sectionId);
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error configuring chart:', err);
@@ -2679,13 +2679,13 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// Apply transformation configuration
-					if (typeof (window as any).__kustoConfigureTransformation === 'function') {
-						(window as any).__kustoConfigureTransformation(sectionId, input);
+					if (typeof window.__kustoConfigureTransformation === 'function') {
+						window.__kustoConfigureTransformation(sectionId, input);
 						success = true;
 					} else {
 						// Fallback: store in pending state
-						(window as any).__kustoPendingTransformationConfig = (window as any).__kustoPendingTransformationConfig || {};
-						(window as any).__kustoPendingTransformationConfig[sectionId] = input;
+						window.__kustoPendingTransformationConfig = window.__kustoPendingTransformationConfig || {};
+						window.__kustoPendingTransformationConfig[sectionId] = input;
 						success = true;
 					}
 				} catch (err: any) {
@@ -2728,8 +2728,8 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// VALIDATE: Check that connection and database are configured on this section
-					const currentConnectionId = (window as any).__kustoGetConnectionId ? (window as any).__kustoGetConnectionId(sectionId) : '';
-					const currentDatabase = (window as any).__kustoGetDatabase ? (window as any).__kustoGetDatabase(sectionId) : '';
+					const currentConnectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(sectionId) : '';
+					const currentDatabase = window.__kustoGetDatabase ? window.__kustoGetDatabase(sectionId) : '';
 					
 					// Get cluster URL for context
 					let currentClusterUrl = '';
@@ -2778,15 +2778,15 @@ window.addEventListener('message', async (event: any) => {
 				} catch { /* ignore */ }
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
-				if (typeof (window as any).__kustoSetCopilotChatVisible === 'function') {
-					(window as any).__kustoSetCopilotChatVisible(sectionId, true);
-				} else if (typeof (window as any).__kustoToggleCopilotChatForBox === 'function') {
+				if (typeof window.__kustoSetCopilotChatVisible === 'function') {
+					window.__kustoSetCopilotChatVisible(sectionId, true);
+				} else if (typeof window.__kustoToggleCopilotChatForBox === 'function') {
 					// Check if already visible, if not toggle
-					const isVisible = typeof (window as any).__kustoGetCopilotChatVisible === 'function' 
-						? (window as any).__kustoGetCopilotChatVisible(sectionId) 
+					const isVisible = typeof window.__kustoGetCopilotChatVisible === 'function' 
+						? window.__kustoGetCopilotChatVisible(sectionId) 
 						: false;
 					if (!isVisible) {
-						(window as any).__kustoToggleCopilotChatForBox(sectionId);
+						window.__kustoToggleCopilotChatForBox(sectionId);
 					}
 				}
 				
@@ -2953,8 +2953,8 @@ window.addEventListener('message', async (event: any) => {
 						// Clear the Copilot chat "thinking..." state on timeout
 						// (unlike cancel/error, no regular handler will clear this)
 						try {
-							if (typeof (window as any).__kustoCopilotWriteQueryDone === 'function') {
-								(window as any).__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
+							if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
+								window.__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
 							}
 						} catch { /* ignore */ }
 						
@@ -2975,9 +2975,9 @@ window.addEventListener('message', async (event: any) => {
 				const sendButton = document.getElementById(sectionId + '_copilot_send') as any;
 				if (sendButton && !sendButton.disabled) {
 					sendButton.click();
-				} else if (typeof (window as any).__kustoCopilotWriteQuerySend === 'function') {
+				} else if (typeof window.__kustoCopilotWriteQuerySend === 'function') {
 					// Fallback: call the send function directly
-					(window as any).__kustoCopilotWriteQuerySend(sectionId);
+					window.__kustoCopilotWriteQuerySend(sectionId);
 				} else {
 					// Clean up and report error
 					clearTimeout(timeoutId);
@@ -3190,7 +3190,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			document.addEventListener('mousedown', (e: MouseEvent) => {
 				if (pending) return;
 				// Check compatibility mode
-				try { if ((window as any).__kustoCompatibilityMode) return; } catch { /* ignore */ }
+				try { if (window.__kustoCompatibilityMode) return; } catch { /* ignore */ }
 				// Find handle across shadow DOM
 				const path = e.composedPath?.() ?? [];
 				let handle: HTMLElement | null = null;
@@ -3216,7 +3216,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			ensureGlobalDnDGuards();
 			try {
 				// Only allow reordering in .kqlx mode.
-				if ((window as any).__kustoCompatibilityMode) {
+				if (window.__kustoCompatibilityMode) {
 					try { e.preventDefault(); } catch { /* ignore */ }
 					try { e.stopPropagation(); } catch { /* ignore */ }
 					return;
@@ -3400,7 +3400,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			bestEffortRelayoutMovedEditors(draggingId);
 			try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch { /* ignore */ }
 			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-			try { (window as any).__kustoRefreshAllDataSourceDropdowns && (window as any).__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
+			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 		});
@@ -3422,7 +3422,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						// users can drag back to the original ordering and clear the dirty state.
 						try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch { /* ignore */ }
 						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-						try { (window as any).__kustoRefreshAllDataSourceDropdowns && (window as any).__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
+						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
 					}
 				}
 			} catch {
@@ -3469,8 +3469,8 @@ function __kustoToggleAddSectionDropdown( event: any) {
 
 		// Close all other dropdowns first.
 		try {
-			if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.closeAllMenus === 'function') {
-				(window as any).__kustoDropdown.closeAllMenus();
+			if (window.__kustoDropdown && typeof window.__kustoDropdown.closeAllMenus === 'function') {
+				window.__kustoDropdown.closeAllMenus();
 			}
 		} catch { /* ignore */ }
 
@@ -3508,8 +3508,8 @@ function __kustoAddSectionFromDropdown( kind: any) {
 // Update dropdown item visibility based on allowed section kinds (mirrors __kustoApplyDocumentCapabilities logic).
 function __kustoUpdateAddSectionDropdownVisibility() {
 	try {
-		const allowed = Array.isArray((window as any).__kustoAllowedSectionKinds)
-			? (window as any).__kustoAllowedSectionKinds.map((v: any) => String(v))
+		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
+			? window.__kustoAllowedSectionKinds.map((v: any) => String(v))
 			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 
 		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
@@ -3557,10 +3557,10 @@ document.addEventListener('keydown', (event: any) => {
 });
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).__kustoGetFocusedMonacoEditor = __kustoGetFocusedMonacoEditor;
-(window as any).__kustoGetSelectionOrCurrentLineRange = __kustoGetSelectionOrCurrentLineRange;
-(window as any).__kustoCopyOrCutFocusedMonaco = __kustoCopyOrCutFocusedMonaco;
-(window as any).__kustoCopyOrCutMonacoEditorImpl = __kustoCopyOrCutMonacoEditorImpl;
-(window as any).__kustoToggleAddSectionDropdown = __kustoToggleAddSectionDropdown;
-(window as any).__kustoAddSectionFromDropdown = __kustoAddSectionFromDropdown;
-(window as any).__kustoUpdateAddSectionDropdownVisibility = __kustoUpdateAddSectionDropdownVisibility;
+window.__kustoGetFocusedMonacoEditor = __kustoGetFocusedMonacoEditor;
+window.__kustoGetSelectionOrCurrentLineRange = __kustoGetSelectionOrCurrentLineRange;
+window.__kustoCopyOrCutFocusedMonaco = __kustoCopyOrCutFocusedMonaco;
+window.__kustoCopyOrCutMonacoEditorImpl = __kustoCopyOrCutMonacoEditorImpl;
+window.__kustoToggleAddSectionDropdown = __kustoToggleAddSectionDropdown;
+window.__kustoAddSectionFromDropdown = __kustoAddSectionFromDropdown;
+window.__kustoUpdateAddSectionDropdownVisibility = __kustoUpdateAddSectionDropdownVisibility;

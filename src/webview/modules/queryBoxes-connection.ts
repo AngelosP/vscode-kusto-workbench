@@ -187,7 +187,7 @@ function updateMissingClustersForBox( boxId: any, queryText: any) {
 }
 
 // Called by Monaco (media/queryEditor/monaco.js) on content changes.
-(window as any).__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
+window.__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
 	const id = String(boxId || '').trim();
 	if (!id) {
 		return;
@@ -206,7 +206,7 @@ function updateMissingClustersForBox( boxId: any, queryText: any) {
 };
 
 // Called by main.js when the connections list changes.
-(window as any).__kustoOnConnectionsUpdated = function () {
+window.__kustoOnConnectionsUpdated = function () {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
 			updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || '');
@@ -227,8 +227,8 @@ function updateMissingClustersForBox( boxId: any, queryText: any) {
 		// ignore
 	}
 	try {
-		if (typeof (window as any).__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-			(window as any).__kustoUpdateFavoritesUiForAllBoxes();
+		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+			window.__kustoUpdateFavoritesUiForAllBoxes();
 		}
 	} catch { /* ignore */ }
 };
@@ -327,7 +327,7 @@ function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
 	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
 }
 
-(window as any).__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: any, database: any) {
+window.__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: any, database: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const c = String(clusterUrl || '').trim();
@@ -372,7 +372,7 @@ function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
 	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
 }
 
-(window as any).__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
+window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
 			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch { /* ignore */ }
@@ -385,7 +385,7 @@ function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
 // section in Favorites mode. If they have no favorites, keep the normal cluster/db selects.
 let __kustoDidDefaultFirstBoxToFavorites = false;
 
-(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
+window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 	try {
 		if (__kustoDidDefaultFirstBoxToFavorites) return;
 		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
@@ -438,7 +438,7 @@ let __kustoDidDefaultFirstBoxToFavorites = false;
 // Route confirmation via the extension host so we can use VS Code's native modal.
 let __kustoConfirmRemoveFavoriteCallbacksById = Object.create(null);
 
-(window as any).__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
+window.__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
 	try {
 		const m = (message && typeof message === 'object') ? message : {};
 		const requestId = String(m.requestId || '');
@@ -472,7 +472,7 @@ function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
 
 // For optimized/comparison boxes, execution inherits cluster/db from the source box.
 // Expose this so schema/autocomplete and favorites selection can follow the same path.
-(window as any).__kustoGetSelectionOwnerBoxId = function (boxId: any) {
+window.__kustoGetSelectionOwnerBoxId = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return '';
 	try {
@@ -512,8 +512,8 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 	// Apply to the effective selection owner (matches execution behavior).
 	let ownerId = id;
 	try {
-		ownerId = (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function')
-			? ((window as any).__kustoGetSelectionOwnerBoxId(id) || id)
+		ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
+			? (window.__kustoGetSelectionOwnerBoxId(id) || id)
 			: id;
 	} catch { ownerId = id; }
 
@@ -564,7 +564,7 @@ function __kustoUpdateFavoritesUiForBox( boxId: any) {
 	}
 }
 
-(window as any).__kustoUpdateFavoritesUiForAllBoxes = function () {
+window.__kustoUpdateFavoritesUiForAllBoxes = function () {
 	try {
 		_win.queryBoxes.forEach((id: any) =>  {
 			try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
@@ -619,7 +619,7 @@ function __kustoApplyFavoritesMode( boxId: any, enabled: any) {
 }
 
 // Called by main.js when a favorite was just added from a specific query box.
-(window as any).__kustoEnterFavoritesModeForBox = function (boxId: any) {
+window.__kustoEnterFavoritesModeForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
@@ -705,8 +705,8 @@ function updateConnectionSelects() {
 		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
 	});
 	try {
-		if (typeof (window as any).__kustoUpdateRunEnabledForAllBoxes === 'function') {
-			(window as any).__kustoUpdateRunEnabledForAllBoxes();
+		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {
+			window.__kustoUpdateRunEnabledForAllBoxes();
 		}
 	} catch { /* ignore */ }
 }
@@ -759,8 +759,8 @@ function __kustoClearDatabaseLoadError( boxId: any) {
 					_win.__kustoSetResultsVisible(bid, desiredVisible);
 				} else {
 					try {
-						if ((window as any).__kustoResultsVisibleByBoxId) {
-							(window as any).__kustoResultsVisibleByBoxId[bid] = desiredVisible;
+						if (window.__kustoResultsVisibleByBoxId) {
+							window.__kustoResultsVisibleByBoxId[bid] = desiredVisible;
 						}
 						if (typeof _win.__kustoApplyResultsVisibility === 'function') {
 							_win.__kustoApplyResultsVisibility(bid);
@@ -976,7 +976,7 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 				try { databaseSelect.value = ''; } catch { /* ignore */ }
 			}
 			databaseSelect.disabled = false;
-			try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.syncSelectBackedDropdown && (window as any).__kustoDropdown.syncSelectBackedDropdown(boxId + '_database'); } catch { /* ignore */ }
+			try { window.__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_database'); } catch { /* ignore */ }
 			try {
 				if (databaseSelect.dataset) {
 					delete databaseSelect.dataset.kustoRefreshInFlight;
@@ -1004,8 +1004,8 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 		// ignore
 	}
 	try {
-		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
-			(window as any).__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 	// Note: We no longer show inline errors in the results section for database load failures.
@@ -1057,48 +1057,48 @@ function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId:
 	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
-		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
-			(window as any).__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 }
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).formatClusterDisplayName = formatClusterDisplayName;
-(window as any).normalizeClusterUrlKey = normalizeClusterUrlKey;
-(window as any).formatClusterShortName = formatClusterShortName;
-(window as any).clusterShortNameKey = clusterShortNameKey;
-(window as any).extractClusterUrlsFromQueryText = extractClusterUrlsFromQueryText;
-(window as any).extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFromQueryText;
-(window as any).computeMissingClusterUrls = computeMissingClusterUrls;
-(window as any).renderMissingClustersBanner = renderMissingClustersBanner;
-(window as any).updateMissingClustersForBox = updateMissingClustersForBox;
-(window as any).__kustoFavoriteKey = __kustoFavoriteKey;
-(window as any).__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
-(window as any).__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
-(window as any).__kustoFindFavorite = __kustoFindFavorite;
-(window as any).__kustoGetFavoritesSorted = __kustoGetFavoritesSorted;
-(window as any).__kustoMarkNewBoxForFavoritesAutoEnter = __kustoMarkNewBoxForFavoritesAutoEnter;
-(window as any).__kustoTryAutoEnterFavoritesModeForNewBox = __kustoTryAutoEnterFavoritesModeForNewBox;
-(window as any).__kustoTryAutoEnterFavoritesModeForBox = __kustoTryAutoEnterFavoritesModeForBox;
-(window as any).__kustoFindConnectionIdForClusterUrl = __kustoFindConnectionIdForClusterUrl;
-(window as any).__kustoTryApplyPendingFavoriteSelectionForBox = __kustoTryApplyPendingFavoriteSelectionForBox;
-(window as any).__kustoSetElementDisplay = __kustoSetElementDisplay;
-(window as any).__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
-(window as any).toggleFavoriteForBox = toggleFavoriteForBox;
-(window as any).removeFavorite = removeFavorite;
-(window as any).closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
-(window as any).__kustoApplyFavoritesMode = __kustoApplyFavoritesMode;
-(window as any).__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
-(window as any).addMissingClusterConnections = addMissingClusterConnections;
-(window as any).updateConnectionSelects = updateConnectionSelects;
-(window as any).updateDatabaseField = updateDatabaseField;
-(window as any).__kustoClearDatabaseLoadError = __kustoClearDatabaseLoadError;
-(window as any).promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
-(window as any).importConnectionsFromXmlFile = importConnectionsFromXmlFile;
-(window as any).parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;
-(window as any).getChildText = getChildText;
-(window as any).parseKustoConnectionString = parseKustoConnectionString;
-(window as any).refreshDatabases = refreshDatabases;
-(window as any).onDatabasesError = onDatabasesError;
-(window as any).updateDatabaseSelect = updateDatabaseSelect;
+window.formatClusterDisplayName = formatClusterDisplayName;
+window.normalizeClusterUrlKey = normalizeClusterUrlKey;
+window.formatClusterShortName = formatClusterShortName;
+window.clusterShortNameKey = clusterShortNameKey;
+window.extractClusterUrlsFromQueryText = extractClusterUrlsFromQueryText;
+window.extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFromQueryText;
+window.computeMissingClusterUrls = computeMissingClusterUrls;
+window.renderMissingClustersBanner = renderMissingClustersBanner;
+window.updateMissingClustersForBox = updateMissingClustersForBox;
+window.__kustoFavoriteKey = __kustoFavoriteKey;
+window.__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
+window.__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
+window.__kustoFindFavorite = __kustoFindFavorite;
+window.__kustoGetFavoritesSorted = __kustoGetFavoritesSorted;
+window.__kustoMarkNewBoxForFavoritesAutoEnter = __kustoMarkNewBoxForFavoritesAutoEnter;
+window.__kustoTryAutoEnterFavoritesModeForNewBox = __kustoTryAutoEnterFavoritesModeForNewBox;
+window.__kustoTryAutoEnterFavoritesModeForBox = __kustoTryAutoEnterFavoritesModeForBox;
+window.__kustoFindConnectionIdForClusterUrl = __kustoFindConnectionIdForClusterUrl;
+window.__kustoTryApplyPendingFavoriteSelectionForBox = __kustoTryApplyPendingFavoriteSelectionForBox;
+window.__kustoSetElementDisplay = __kustoSetElementDisplay;
+window.__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
+window.toggleFavoriteForBox = toggleFavoriteForBox;
+window.removeFavorite = removeFavorite;
+window.closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
+window.__kustoApplyFavoritesMode = __kustoApplyFavoritesMode;
+window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
+window.addMissingClusterConnections = addMissingClusterConnections;
+window.updateConnectionSelects = updateConnectionSelects;
+window.updateDatabaseField = updateDatabaseField;
+window.__kustoClearDatabaseLoadError = __kustoClearDatabaseLoadError;
+window.promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
+window.importConnectionsFromXmlFile = importConnectionsFromXmlFile;
+window.parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;
+window.getChildText = getChildText;
+window.parseKustoConnectionString = parseKustoConnectionString;
+window.refreshDatabases = refreshDatabases;
+window.onDatabasesError = onDatabasesError;
+window.updateDatabaseSelect = updateDatabaseSelect;

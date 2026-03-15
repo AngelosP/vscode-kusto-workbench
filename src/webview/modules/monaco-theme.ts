@@ -233,8 +233,8 @@ export function startMonacoThemeObserver(monaco: any) {
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).isDarkTheme = isDarkTheme;
-(window as any).getVSCodeEditorBackground = getVSCodeEditorBackground;
-(window as any).defineCustomThemes = defineCustomThemes;
-(window as any).applyMonacoTheme = applyMonacoTheme;
-(window as any).startMonacoThemeObserver = startMonacoThemeObserver;
+window.isDarkTheme = isDarkTheme;
+window.getVSCodeEditorBackground = getVSCodeEditorBackground;
+window.defineCustomThemes = defineCustomThemes;
+window.applyMonacoTheme = applyMonacoTheme;
+window.startMonacoThemeObserver = startMonacoThemeObserver;

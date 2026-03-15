@@ -1125,8 +1125,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 
 
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoIsElementVisibleForSuggest = __kustoIsElementVisibleForSuggest;
-(window as any).__kustoGetWordNearCursor = __kustoGetWordNearCursor;
-(window as any).__kustoFindSuggestWidgetForEditor = __kustoFindSuggestWidgetForEditor;
-(window as any).__kustoRegisterGlobalSuggestMutationHandler = __kustoRegisterGlobalSuggestMutationHandler;
-(window as any).__kustoInstallSmartSuggestWidgetSizing = __kustoInstallSmartSuggestWidgetSizing;
+window.__kustoIsElementVisibleForSuggest = __kustoIsElementVisibleForSuggest;
+window.__kustoGetWordNearCursor = __kustoGetWordNearCursor;
+window.__kustoFindSuggestWidgetForEditor = __kustoFindSuggestWidgetForEditor;
+window.__kustoRegisterGlobalSuggestMutationHandler = __kustoRegisterGlobalSuggestMutationHandler;
+window.__kustoInstallSmartSuggestWidgetSizing = __kustoInstallSmartSuggestWidgetSizing;

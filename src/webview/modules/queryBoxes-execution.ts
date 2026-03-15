@@ -6,10 +6,10 @@ const _win = window;
 
 function __kustoSetResultsVisible( boxId: any, visible: any) {
 	try {
-		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
-			(window as any).__kustoResultsVisibleByBoxId = {};
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
 		}
-		(window as any).__kustoResultsVisibleByBoxId[boxId] = !!visible;
+		window.__kustoResultsVisibleByBoxId[boxId] = !!visible;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
@@ -520,7 +520,7 @@ function __kustoUpdateQueryResultsToggleButton( boxId: any) {
 	}
 	let visible = true;
 	try {
-		visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
@@ -535,7 +535,7 @@ function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
 	}
 	let visible = true;
 	try {
-		visible = !((window as any).__kustoComparisonSummaryVisibleByBoxId && (window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
@@ -550,7 +550,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 		// without the surrounding *_results_wrapper.
 		let visible = true;
 		try {
-			visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
+			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
 		} catch { /* ignore */ }
 		try {
 			const body = document.getElementById(boxId + '_results_body') as any;
@@ -576,7 +576,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 	}
 	let visible = true;
 	try {
-		visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	// Only show wrapper when there's content.
 	const resultsDiv = document.getElementById(boxId + '_results') as any;
@@ -593,7 +593,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		let visible = true;
 		try {
-			visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[boxId] === false);
+			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
 		} catch { /* ignore */ }
 		if (!visible) {
 			// Collapsed: header-only height, hide resizer.
@@ -705,24 +705,24 @@ function __kustoApplyComparisonSummaryVisibility( boxId: any) {
 	} catch { /* ignore */ }
 	let visible = true;
 	try {
-		visible = !((window as any).__kustoComparisonSummaryVisibleByBoxId && (window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	banner.style.display = visible ? '' : 'none';
 }
 
 function toggleQueryResultsVisibility( boxId: any) {
 	try {
-		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
-			(window as any).__kustoResultsVisibleByBoxId = {};
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
 		}
-		const current = !((window as any).__kustoResultsVisibleByBoxId[boxId] === false);
-		(window as any).__kustoResultsVisibleByBoxId[boxId] = !current;
+		const current = !(window.__kustoResultsVisibleByBoxId[boxId] === false);
+		window.__kustoResultsVisibleByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
 	try {
-		if (typeof (window as any).__kustoOnResultsVisibilityToggled === 'function') {
-			(window as any).__kustoOnResultsVisibilityToggled(boxId);
+		if (typeof window.__kustoOnResultsVisibilityToggled === 'function') {
+			window.__kustoOnResultsVisibilityToggled(boxId);
 		}
 	} catch { /* ignore */ }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
@@ -736,11 +736,11 @@ function toggleComparisonSummaryVisibility( boxId: any) {
 		}
 	} catch { /* ignore */ }
 	try {
-		if (!(window as any).__kustoComparisonSummaryVisibleByBoxId || typeof (window as any).__kustoComparisonSummaryVisibleByBoxId !== 'object') {
-			(window as any).__kustoComparisonSummaryVisibleByBoxId = {};
+		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			window.__kustoComparisonSummaryVisibleByBoxId = {};
 		}
-		const current = !((window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
-		(window as any).__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
+		const current = !(window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
+		window.__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch { /* ignore */ }
 	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch { /* ignore */ }
@@ -748,10 +748,10 @@ function toggleComparisonSummaryVisibility( boxId: any) {
 }
 
 function __kustoEnsureCacheBackupMap() {
-	if (!(window as any).__kustoCacheBackupByBoxId || typeof (window as any).__kustoCacheBackupByBoxId !== 'object') {
-		(window as any).__kustoCacheBackupByBoxId = {};
+	if (!window.__kustoCacheBackupByBoxId || typeof window.__kustoCacheBackupByBoxId !== 'object') {
+		window.__kustoCacheBackupByBoxId = {};
 	}
-	return (window as any).__kustoCacheBackupByBoxId;
+	return window.__kustoCacheBackupByBoxId;
 }
 
 function __kustoBackupCacheSettings( boxId: any) {
@@ -827,10 +827,10 @@ function __kustoRestoreCacheSettings( boxId: any) {
 }
 
 function __kustoEnsureRunModeBackupMap() {
-	if (!(window as any).__kustoRunModeBackupByBoxId || typeof (window as any).__kustoRunModeBackupByBoxId !== 'object') {
-		(window as any).__kustoRunModeBackupByBoxId = {};
+	if (!window.__kustoRunModeBackupByBoxId || typeof window.__kustoRunModeBackupByBoxId !== 'object') {
+		window.__kustoRunModeBackupByBoxId = {};
 	}
-	return (window as any).__kustoRunModeBackupByBoxId;
+	return window.__kustoRunModeBackupByBoxId;
 }
 
 function __kustoBackupRunMode( boxId: any) {
@@ -1050,7 +1050,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 	let onlyBCount = 0;
 	let countsLabel = '';
 	try {
-		const dv = (window && (window as any).__kustoDiffView) ? (window as any).__kustoDiffView : null;
+		const dv = (window && window.__kustoDiffView) ? window.__kustoDiffView : null;
 		if (dv && typeof dv.buildModelFromResultsStates === 'function') {
 			const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
 			const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
@@ -1208,10 +1208,10 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 
 function __kustoEnsureOptimizePrepByBoxId() {
 	try {
-		if (!(window as any).__kustoOptimizePrepByBoxId || typeof (window as any).__kustoOptimizePrepByBoxId !== 'object') {
-			(window as any).__kustoOptimizePrepByBoxId = {};
+		if (!window.__kustoOptimizePrepByBoxId || typeof window.__kustoOptimizePrepByBoxId !== 'object') {
+			window.__kustoOptimizePrepByBoxId = {};
 		}
-		return (window as any).__kustoOptimizePrepByBoxId;
+		return window.__kustoOptimizePrepByBoxId;
 	} catch {
 		return {};
 	}
@@ -1243,8 +1243,8 @@ function __kustoHideOptimizePromptForBox( boxId: any) {
 		__kustoSetOptimizeInProgress(boxId, false, '');
 	} catch { /* ignore */ }
 	try {
-		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
-			(window as any).__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch { /* ignore */ }
 }
@@ -1455,8 +1455,8 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	// - The optimized section will then use "<source name> (optimized)"
 	try {
 		let sourceName = _win.__kustoGetSectionName(boxId);
-		if (!sourceName && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
-			sourceName = (window as any).__kustoPickNextAvailableSectionLetterName(boxId);
+		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
 			_win.__kustoSetSectionName(boxId, sourceName);
 			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		}
@@ -1566,8 +1566,8 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 		try {
 			const nameInput = null;
 			sourceNameForOptimize = _win.__kustoGetSectionName(boxId);
-			if (!sourceNameForOptimize && typeof (window as any).__kustoPickNextAvailableSectionLetterName === 'function') {
-				sourceNameForOptimize = (window as any).__kustoPickNextAvailableSectionLetterName(boxId);
+			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
+				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
 				_win.__kustoSetSectionName(boxId, sourceNameForOptimize);
 				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 			}
@@ -1599,8 +1599,8 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try {
-					if (typeof (window as any).__kustoPrettifyKustoText === 'function') {
-						nextComparisonQuery = (window as any).__kustoPrettifyKustoText(nextComparisonQuery);
+					if (typeof window.__kustoPrettifyKustoText === 'function') {
+						nextComparisonQuery = window.__kustoPrettifyKustoText(nextComparisonQuery);
 					}
 				} catch { /* ignore */ }
 				try { comparisonEditor.setValue(nextComparisonQuery); } catch { /* ignore */ }
@@ -1677,8 +1677,8 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 	// If a query override is provided, compare source query vs the provided query.
 	let comparisonQuery = overrideText.trim() ? overrideText : query;
 	try {
-		if (typeof (window as any).__kustoPrettifyKustoText === 'function') {
-			comparisonQuery = (window as any).__kustoPrettifyKustoText(comparisonQuery);
+		if (typeof window.__kustoPrettifyKustoText === 'function') {
+			comparisonQuery = window.__kustoPrettifyKustoText(comparisonQuery);
 		}
 	} catch { /* ignore */ }
 
@@ -1788,8 +1788,8 @@ function __kustoGetEffectiveSelectionOwnerIdForRun( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return '';
 	try {
-		if (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function') {
-			return String((window as any).__kustoGetSelectionOwnerBoxId(id) || id).trim();
+		if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
+			return String(window.__kustoGetSelectionOwnerBoxId(id) || id).trim();
 		}
 	} catch { /* ignore */ }
 	return id;
@@ -1882,7 +1882,7 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 	}
 }
 
-(window as any).__kustoUpdateRunEnabledForBox = function (boxId: any) {
+window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const runBtn = document.getElementById(id + '_run_btn') as any;
@@ -1916,10 +1916,10 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 	if (runToggle) runToggle.disabled = false;
 };
 
-(window as any).__kustoUpdateRunEnabledForAllBoxes = function () {
+window.__kustoUpdateRunEnabledForAllBoxes = function () {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
-			try { (window as any).__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
+			try { window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
 		}
 	} catch { /* ignore */ }
 };
@@ -1982,8 +1982,8 @@ function setQueryExecuting( boxId: any, executing: any) {
 	}
 
 	try {
-		if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') {
-			(window as any).__kustoUpdateRunEnabledForBox(boxId);
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
 		} else {
 			if (runBtn) {
 				runBtn.disabled = false;
@@ -2028,14 +2028,14 @@ function cancelQuery( boxId: any) {
 function executeQuery( boxId: any, mode?: any) {
 	const effectiveMode = mode || _win.getRunMode(boxId);
 	try {
-		if (typeof (window as any).__kustoClearAutoFindInQueryEditor === 'function') {
-			(window as any).__kustoClearAutoFindInQueryEditor(boxId);
+		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {
+			window.__kustoClearAutoFindInQueryEditor(boxId);
 		}
 	} catch { /* ignore */ }
 	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try {
-			if (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function') {
-				return (window as any).__kustoExtractStatementTextAtCursor(editor);
+			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+				return window.__kustoExtractStatementTextAtCursor(editor);
 			}
 		} catch { /* ignore */ }
 		try {
@@ -2133,8 +2133,8 @@ function executeQuery( boxId: any, mode?: any) {
 	try {
 		if (editor) {
 			const model = editor.getModel && editor.getModel();
-			const blocks = (model && typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
-				? (window as any).__kustoGetStatementBlocksFromModel(model)
+			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+				? window.__kustoGetStatementBlocksFromModel(model)
 				: [];
 			const hasMultipleStatements = blocks && blocks.length > 1;
 			if (hasMultipleStatements) {
@@ -2195,13 +2195,13 @@ function executeQuery( boxId: any, mode?: any) {
 	// false mismatches when queries are otherwise unchanged.
 	try {
 		if (isComparisonBox && sourceBoxIdForComparison) {
-			const cacheMap = (window as any).__kustoLastRunCacheEnabledByBoxId;
+			const cacheMap = window.__kustoLastRunCacheEnabledByBoxId;
 			const sourceLastRunUsedCaching = !!(cacheMap && typeof cacheMap === 'object' && cacheMap[sourceBoxIdForComparison]);
 			if (sourceLastRunUsedCaching) {
 				// Prevent transient comparisons against stale cached source results.
 				try {
-					if ((window as any).__kustoResultsByBoxId && typeof (window as any).__kustoResultsByBoxId === 'object') {
-						delete (window as any).__kustoResultsByBoxId[sourceBoxIdForComparison];
+					if (window.__kustoResultsByBoxId && typeof window.__kustoResultsByBoxId === 'object') {
+						delete window.__kustoResultsByBoxId[sourceBoxIdForComparison];
 					}
 				} catch { /* ignore */ }
 				try {
@@ -2257,14 +2257,14 @@ function executeQuery( boxId: any, mode?: any) {
 	// When caching is enabled, the extension injects an extra (hidden) first line,
 	// so error line numbers need to be adjusted for the visible editor.
 	try {
-		if (!(window as any).__kustoLastRunCacheEnabledByBoxId || typeof (window as any).__kustoLastRunCacheEnabledByBoxId !== 'object') {
-			(window as any).__kustoLastRunCacheEnabledByBoxId = {};
+		if (!window.__kustoLastRunCacheEnabledByBoxId || typeof window.__kustoLastRunCacheEnabledByBoxId !== 'object') {
+			window.__kustoLastRunCacheEnabledByBoxId = {};
 		}
-		(window as any).__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
+		window.__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
 	} catch { /* ignore */ }
 
 	// Store the last executed box for result display
-	(window as any).lastExecutedBox = boxId;
+	window.lastExecutedBox = boxId;
 
 	(_win.vscode as any).postMessage({
 		type: 'executeQuery',
@@ -2280,56 +2280,56 @@ function executeQuery( boxId: any, mode?: any) {
 }
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).__kustoSetResultsVisible = __kustoSetResultsVisible;
-(window as any).__kustoLockCacheForBenchmark = __kustoLockCacheForBenchmark;
-(window as any).__kustoNormalizeCellForComparison = __kustoNormalizeCellForComparison;
-(window as any).__kustoRowKeyForComparison = __kustoRowKeyForComparison;
-(window as any).__kustoNormalizeColumnNameForComparison = __kustoNormalizeColumnNameForComparison;
-(window as any).__kustoGetNormalizedColumnNameList = __kustoGetNormalizedColumnNameList;
-(window as any).__kustoDoColumnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch;
-(window as any).__kustoGetColumnDifferences = __kustoGetColumnDifferences;
-(window as any).__kustoDoColumnOrderMatch = __kustoDoColumnOrderMatch;
-(window as any).__kustoDoRowOrderMatch = __kustoDoRowOrderMatch;
-(window as any).__kustoBuildColumnIndexMapForNames = __kustoBuildColumnIndexMapForNames;
-(window as any).__kustoBuildNameBasedColumnMapping = __kustoBuildNameBasedColumnMapping;
-(window as any).__kustoRowKeyForComparisonWithColumnMapping = __kustoRowKeyForComparisonWithColumnMapping;
-(window as any).__kustoRowKeyForComparisonIgnoringColumnOrder = __kustoRowKeyForComparisonIgnoringColumnOrder;
-(window as any).__kustoAreResultsEquivalentWithDetails = __kustoAreResultsEquivalentWithDetails;
-(window as any).__kustoAreResultsEquivalent = __kustoAreResultsEquivalent;
-(window as any).__kustoDoResultHeadersMatch = __kustoDoResultHeadersMatch;
-(window as any).__kustoUpdateAcceptOptimizationsButton = __kustoUpdateAcceptOptimizationsButton;
-(window as any).acceptOptimizations = acceptOptimizations;
-(window as any).__kustoUpdateQueryResultsToggleButton = __kustoUpdateQueryResultsToggleButton;
-(window as any).__kustoUpdateComparisonSummaryToggleButton = __kustoUpdateComparisonSummaryToggleButton;
-(window as any).__kustoApplyResultsVisibility = __kustoApplyResultsVisibility;
-(window as any).__kustoApplyComparisonSummaryVisibility = __kustoApplyComparisonSummaryVisibility;
-(window as any).toggleQueryResultsVisibility = toggleQueryResultsVisibility;
-(window as any).toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;
-(window as any).__kustoEnsureCacheBackupMap = __kustoEnsureCacheBackupMap;
-(window as any).__kustoBackupCacheSettings = __kustoBackupCacheSettings;
-(window as any).__kustoRestoreCacheSettings = __kustoRestoreCacheSettings;
-(window as any).__kustoEnsureRunModeBackupMap = __kustoEnsureRunModeBackupMap;
-(window as any).__kustoBackupRunMode = __kustoBackupRunMode;
-(window as any).__kustoRestoreRunMode = __kustoRestoreRunMode;
-(window as any).__kustoSetLinkedOptimizationMode = __kustoSetLinkedOptimizationMode;
-(window as any).displayComparisonSummary = displayComparisonSummary;
-(window as any).__kustoEnsureOptimizePrepByBoxId = __kustoEnsureOptimizePrepByBoxId;
-(window as any).__kustoHideOptimizePromptForBox = __kustoHideOptimizePromptForBox;
-(window as any).__kustoSetOptimizeInProgress = __kustoSetOptimizeInProgress;
-(window as any).__kustoUpdateOptimizeStatus = __kustoUpdateOptimizeStatus;
-(window as any).__kustoCancelOptimizeQuery = __kustoCancelOptimizeQuery;
-(window as any).__kustoShowOptimizePromptLoading = __kustoShowOptimizePromptLoading;
-(window as any).__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
-(window as any).__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
-(window as any).__kustoApplyOptimizeQueryOptions = __kustoApplyOptimizeQueryOptions;
-(window as any).__kustoRunOptimizeQueryWithOverrides = __kustoRunOptimizeQueryWithOverrides;
-(window as any).optimizeQueryWithCopilot = optimizeQueryWithCopilot;
-(window as any).__kustoIsValidConnectionIdForRun = __kustoIsValidConnectionIdForRun;
-(window as any).__kustoGetEffectiveSelectionOwnerIdForRun = __kustoGetEffectiveSelectionOwnerIdForRun;
-(window as any).__kustoIsRunSelectionReady = __kustoIsRunSelectionReady;
-(window as any).__kustoHasValidFavoriteSelection = __kustoHasValidFavoriteSelection;
-(window as any).__kustoClearSchemaSummaryIfNoSelection = __kustoClearSchemaSummaryIfNoSelection;
-(window as any).formatElapsed = formatElapsed;
-(window as any).setQueryExecuting = setQueryExecuting;
-(window as any).cancelQuery = cancelQuery;
-(window as any).executeQuery = executeQuery;
+window.__kustoSetResultsVisible = __kustoSetResultsVisible;
+window.__kustoLockCacheForBenchmark = __kustoLockCacheForBenchmark;
+window.__kustoNormalizeCellForComparison = __kustoNormalizeCellForComparison;
+window.__kustoRowKeyForComparison = __kustoRowKeyForComparison;
+window.__kustoNormalizeColumnNameForComparison = __kustoNormalizeColumnNameForComparison;
+window.__kustoGetNormalizedColumnNameList = __kustoGetNormalizedColumnNameList;
+window.__kustoDoColumnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch;
+window.__kustoGetColumnDifferences = __kustoGetColumnDifferences;
+window.__kustoDoColumnOrderMatch = __kustoDoColumnOrderMatch;
+window.__kustoDoRowOrderMatch = __kustoDoRowOrderMatch;
+window.__kustoBuildColumnIndexMapForNames = __kustoBuildColumnIndexMapForNames;
+window.__kustoBuildNameBasedColumnMapping = __kustoBuildNameBasedColumnMapping;
+window.__kustoRowKeyForComparisonWithColumnMapping = __kustoRowKeyForComparisonWithColumnMapping;
+window.__kustoRowKeyForComparisonIgnoringColumnOrder = __kustoRowKeyForComparisonIgnoringColumnOrder;
+window.__kustoAreResultsEquivalentWithDetails = __kustoAreResultsEquivalentWithDetails;
+window.__kustoAreResultsEquivalent = __kustoAreResultsEquivalent;
+window.__kustoDoResultHeadersMatch = __kustoDoResultHeadersMatch;
+window.__kustoUpdateAcceptOptimizationsButton = __kustoUpdateAcceptOptimizationsButton;
+window.acceptOptimizations = acceptOptimizations;
+window.__kustoUpdateQueryResultsToggleButton = __kustoUpdateQueryResultsToggleButton;
+window.__kustoUpdateComparisonSummaryToggleButton = __kustoUpdateComparisonSummaryToggleButton;
+window.__kustoApplyResultsVisibility = __kustoApplyResultsVisibility;
+window.__kustoApplyComparisonSummaryVisibility = __kustoApplyComparisonSummaryVisibility;
+window.toggleQueryResultsVisibility = toggleQueryResultsVisibility;
+window.toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;
+window.__kustoEnsureCacheBackupMap = __kustoEnsureCacheBackupMap;
+window.__kustoBackupCacheSettings = __kustoBackupCacheSettings;
+window.__kustoRestoreCacheSettings = __kustoRestoreCacheSettings;
+window.__kustoEnsureRunModeBackupMap = __kustoEnsureRunModeBackupMap;
+window.__kustoBackupRunMode = __kustoBackupRunMode;
+window.__kustoRestoreRunMode = __kustoRestoreRunMode;
+window.__kustoSetLinkedOptimizationMode = __kustoSetLinkedOptimizationMode;
+window.displayComparisonSummary = displayComparisonSummary;
+window.__kustoEnsureOptimizePrepByBoxId = __kustoEnsureOptimizePrepByBoxId;
+window.__kustoHideOptimizePromptForBox = __kustoHideOptimizePromptForBox;
+window.__kustoSetOptimizeInProgress = __kustoSetOptimizeInProgress;
+window.__kustoUpdateOptimizeStatus = __kustoUpdateOptimizeStatus;
+window.__kustoCancelOptimizeQuery = __kustoCancelOptimizeQuery;
+window.__kustoShowOptimizePromptLoading = __kustoShowOptimizePromptLoading;
+window.__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
+window.__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
+window.__kustoApplyOptimizeQueryOptions = __kustoApplyOptimizeQueryOptions;
+window.__kustoRunOptimizeQueryWithOverrides = __kustoRunOptimizeQueryWithOverrides;
+window.optimizeQueryWithCopilot = optimizeQueryWithCopilot;
+window.__kustoIsValidConnectionIdForRun = __kustoIsValidConnectionIdForRun;
+window.__kustoGetEffectiveSelectionOwnerIdForRun = __kustoGetEffectiveSelectionOwnerIdForRun;
+window.__kustoIsRunSelectionReady = __kustoIsRunSelectionReady;
+window.__kustoHasValidFavoriteSelection = __kustoHasValidFavoriteSelection;
+window.__kustoClearSchemaSummaryIfNoSelection = __kustoClearSchemaSummaryIfNoSelection;
+window.formatElapsed = formatElapsed;
+window.setQueryExecuting = setQueryExecuting;
+window.cancelQuery = cancelQuery;
+window.executeQuery = executeQuery;

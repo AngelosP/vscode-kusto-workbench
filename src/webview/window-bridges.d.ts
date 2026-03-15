@@ -234,6 +234,16 @@ declare global {
 		__kustoLog: (_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) => void;
 		fullyQualifyTablesInEditor: (boxId: any) => Promise<void>;
 		toggleCacheControls: (boxId: any) => void;
+		qualifyTablesInTextPriority: (text: string, boxId: string) => string;
+		qualifyTablesInText: (text: string, boxId: string) => string;
+		__kustoIndexToAlphaName: (index: number) => string;
+		__kustoGetUsedSectionNamesUpper: () => Set<string>;
+		__kustoAutoSizeResults: (boxId: string) => void;
+		__kustoUpdateQueryVisibilityToggleButton: (boxId: string) => void;
+		__kustoApplyQueryBoxVisibility: (boxId: string) => void;
+		toggleCachePill: (boxId: string) => void;
+		toggleCachePopup: (boxId: string) => void;
+		__kustoComparisonSummaryVisibleByBoxId?: Record<string, boolean>;
 
 		// =====================================================================
 		// queryBoxes-connection.ts
@@ -280,6 +290,25 @@ declare global {
 		setFavorites: (boxId: any, favorites: any) => void;
 		setFavoritesMode: (boxId: any, enabled: any) => void;
 		setSectionName: (boxId: any, name: any) => void;
+		normalizeClusterUrlKey: (url: any) => string;
+		clusterShortNameKey: (clusterUrl: any) => string;
+		extractClusterUrlsFromQueryText: (queryText: any) => string[];
+		extractClusterDatabaseHintsFromQueryText: (queryText: any) => Record<string, string>;
+		computeMissingClusterUrls: (detectedClusterUrls: any) => string[];
+		renderMissingClustersBanner: (boxId: any, missingClusterUrls: any) => void;
+		updateMissingClustersForBox: (boxId: any, queryText: any) => void;
+		updateDatabaseField: (boxId: any) => void;
+		addMissingClusterConnections: (boxId: any) => void;
+		getChildText: (node: any, localName: any) => string;
+		parseKustoConnectionString: (cs: any) => { dataSource: string; initialCatalog: string };
+		__kustoFavoriteKey: (clusterUrl: any, database: any) => string;
+		__kustoGetFavoritesSorted: () => any[];
+		__kustoTryAutoEnterFavoritesModeForBox: (boxId: any) => void;
+		__kustoFindConnectionIdForClusterUrl: (clusterUrl: any) => string;
+		__kustoTryApplyPendingFavoriteSelectionForBox: (boxId: any) => boolean;
+		__kustoSetElementDisplay: (el: any, display: any) => void;
+		__kustoApplyFavoritesMode: (boxId: any, enabled: any) => void;
+		__kustoClearDatabaseLoadError: (boxId: any) => void;
 
 		// =====================================================================
 		// queryBoxes-toolbar.ts
@@ -295,6 +324,34 @@ declare global {
 		__kustoHideOptimizePromptForBox: (boxId: string) => void;
 		__kustoSetLinkedOptimizationMode: (sourceBoxId: string, comparisonBoxId: string, active: boolean) => void;
 		__kustoApplyOptimizeQueryOptions: (boxId: any, models: any, selectedModelId: any, promptText: any) => void;
+		updateCaretDocsToggleButtons: () => void;
+		updateAutoTriggerAutocompleteToggleButtons: () => void;
+		toggleAutoTriggerAutocompleteEnabled: () => void;
+		updateCopilotInlineCompletionsToggleButtons: () => void;
+		toggleCopilotInlineCompletionsEnabled: () => void;
+		toggleCaretDocsEnabled: () => void;
+		onQueryEditorToolbarAction: (boxId: string, action: string) => void;
+		copyQueryAsAdeLink: (boxId: string) => void;
+		__kustoShareCopyToClipboard: () => void;
+		setToolbarActionBusy: (boxId: string, action: string, busy: boolean) => void;
+		closeToolsDropdown: (boxId: string) => void;
+		initRunButtonResponsive: (boxId: string) => void;
+		updateRunButtonResponsive: (boxId: string) => void;
+		updateToolbarOverflow: (boxId: string) => void;
+		toggleToolbarOverflow: (boxId: string) => void;
+		toggleOverflowSubmenu: (element: HTMLElement, event: Event) => void;
+		closeToolbarOverflow: (boxId: string) => void;
+		closeAllToolbarOverflowMenus: () => void;
+		renderToolbarOverflowMenu: (boxId: string) => void;
+		toggleToolsDropdown: (boxId: string) => void;
+		renderToolsMenuForBox: (boxId: string) => void;
+		runMonacoAction: (boxId: string, actionId: string) => void;
+		replaceAllInEditor: (boxId: string, from: string, to: string) => void;
+		exportQueryToPowerBI: (boxId: string) => Promise<void>;
+		__kustoApplyRunModeFromMenu: (boxId: string, mode: string) => void;
+		getRunModeLabelText: (mode: string) => string;
+		closeRunMenu: (boxId: string) => void;
+		toggleRunMenu: (boxId: string) => void;
 
 		// =====================================================================
 		// queryBoxes-execution.ts
@@ -313,6 +370,40 @@ declare global {
 		__kustoUpdateComparisonSummaryToggleButton: (boxId: any) => void;
 		displayComparisonSummary: (sourceBoxId: any, comparisonBoxId: any) => void;
 		toggleQueryResultsVisibility: (boxId: any) => void;
+		toggleComparisonSummaryVisibility: (boxId: any) => void;
+		cancelQuery: (boxId: any) => void;
+		formatElapsed: (ms: any) => string;
+		acceptOptimizations: (comparisonBoxId: any) => void;
+		__kustoLockCacheForBenchmark: (boxId: any) => void;
+		__kustoNormalizeCellForComparison: (cell: any) => any;
+		__kustoGetNormalizedColumnNameList: (state: any) => string[];
+		__kustoDoColumnHeaderNamesMatch: (sourceState: any, comparisonState: any) => boolean;
+		__kustoGetColumnDifferences: (sourceState: any, comparisonState: any) => { onlyInA: string[]; onlyInB: string[] };
+		__kustoDoColumnOrderMatch: (sourceState: any, comparisonState: any) => boolean;
+		__kustoDoRowOrderMatch: (sourceState: any, comparisonState: any) => boolean;
+		__kustoBuildColumnIndexMapForNames: (state: any) => Map<string, number[]>;
+		__kustoAreResultsEquivalentWithDetails: (sourceState: any, comparisonState: any) => any;
+		__kustoAreResultsEquivalent: (sourceState: any, comparisonState: any) => boolean;
+		__kustoDoResultHeadersMatch: (sourceState: any, comparisonState: any) => boolean;
+		__kustoUpdateAcceptOptimizationsButton: (comparisonBoxId: any, enabled: any, tooltip: any) => void;
+		__kustoIsValidConnectionIdForRun: (connectionId: any) => boolean;
+		__kustoGetEffectiveSelectionOwnerIdForRun: (boxId: any) => string;
+		__kustoHasValidFavoriteSelection: (ownerBoxId: any) => boolean;
+		__kustoClearSchemaSummaryIfNoSelection: (boxId: any) => void;
+		__kustoUpdateRunEnabledForAllBoxes: () => void;
+		__kustoEnsureCacheBackupMap: () => Record<string, any>;
+		__kustoBackupCacheSettings: (boxId: any) => void;
+		__kustoRestoreCacheSettings: (boxId: any) => void;
+		__kustoEnsureRunModeBackupMap: () => Record<string, any>;
+		__kustoBackupRunMode: (boxId: any) => void;
+		__kustoRestoreRunMode: (boxId: any) => void;
+		__kustoEnsureOptimizePrepByBoxId: () => Record<string, any>;
+		__kustoShowOptimizePromptLoading: (boxId: any) => void;
+		__kustoCancelOptimizeQuery: (boxId: any) => void;
+		__kustoRunOptimizeQueryWithOverrides: (boxId: any) => void;
+		__kustoCacheBackupByBoxId?: Record<string, any>;
+		__kustoRunModeBackupByBoxId?: Record<string, any>;
+		__kustoOptimizePrepByBoxId?: Record<string, any>;
 
 		// =====================================================================
 		// resultsTable.ts
@@ -450,8 +541,10 @@ declare global {
 		__kustoGetSelectionOwnerBoxId: (boxId: any) => string;
 		ensureMonaco: () => Promise<any>;
 		initQueryEditor: (boxId: any, container?: any) => Promise<void>;
-		__kustoAutoTriggerAutocompleteEnabledUserSet: (enabled?: boolean) => boolean | undefined;
-		__kustoCaretDocsEnabledUserSet: (enabled?: boolean) => boolean | undefined;
+		__kustoGetColumnsByTable?: (boxId?: string) => Record<string, string[]>;
+		__kustoAutoTriggerAutocompleteEnabledUserSet: boolean;
+		__kustoCaretDocsEnabledUserSet: boolean;
+		__kustoCopilotInlineCompletionsEnabledUserSet: boolean;
 		__kustoSuggestDebug: (mode?: string) => void;
 		__kustoDiagLog: (...args: any[]) => void;
 		__kustoControlCommandEntries: any;
@@ -474,6 +567,7 @@ declare global {
 		// =====================================================================
 		// monaco-writable.ts
 		// =====================================================================
+		__kustoNormalizeTextareasWritable: () => void;
 		__kustoForceEditorWritable: (editor: any) => void;
 		__kustoInstallWritableGuard: (editor: any) => void;
 		__kustoEnsureEditorWritableSoon: (editor: any) => void;
@@ -529,6 +623,21 @@ declare global {
 		__kustoToggleAddSectionDropdown: () => void;
 		__kustoAddSectionFromDropdown: (sectionType: string) => void;
 		__kustoUpdateAddSectionDropdownVisibility: () => void;
+		__kustoWheelPassthroughInstalled?: boolean;
+		closeColumnFilterPopover?: () => void;
+		closeSortDialog?: (boxId?: string) => void;
+		__kustoCloseShareModal?: () => void;
+		__kustoDisplayBoxError?: (boxId: string, errorMsg: string, clientActivityId?: string) => void;
+		__kustoEnterFavoritesModeForBox?: (boxId: string) => void;
+		__kustoOnConfirmRemoveFavoriteResult?: (message: any) => void;
+		__kustoMaybeDefaultFirstBoxToFavoritesMode?: () => void;
+		__kustoOnConnectionsUpdated?: () => void;
+		__kustoPendingChartConfig?: Record<string, any>;
+		__kustoPendingTransformationConfig?: Record<string, any>;
+		__kustoSetSectionExpanded?: (boxId: string, expanded: boolean) => void;
+		__kustoDevNotesEnabled?: boolean;
+		__kustoRequestKqlDiagnostics?: (args: any) => Promise<any>;
+		__kustoRequestKqlTableReferences?: (args: any) => Promise<any>;
 
 		// =====================================================================
 		// copilotQueryBoxes.ts
@@ -577,9 +686,8 @@ declare global {
 		__kustoRefreshAllDataSourceDropdowns: () => void;
 		__kustoGetChartValidationStatus: (boxId: string) => any;
 		__kustoGetChartDatasetsInDomOrder: () => any[];
-		__kustoConfigureChartFromTool: (config: any) => any;
-		__kustoConfigureChart: (config: any) => any;
-		__kustoGetRawCellValueForChart: (cell: any) => any;
+		__kustoConfigureChartFromTool: (boxId: any, config: any) => any;
+		__kustoConfigureChart: (boxId: any, config: any) => any;
 		__kustoCellToChartString: (cell: any) => string;
 		__kustoCellToChartNumber: (cell: any) => number | null;
 		__kustoCellToChartTimeMs: (cell: any) => number | null;
@@ -596,6 +704,7 @@ declare global {
 		setPythonOutput: (boxId: string, output: string) => void;
 		runPythonBox: (boxId: string) => void;
 		removeUrlBox: (boxId: string) => void;
+		__kustoRefreshDependentExtraBoxes?: (boxId: string) => void;
 
 		// =====================================================================
 		// extraBoxes-chart.ts
@@ -703,7 +812,7 @@ declare global {
 		// extraBoxes-transformation.ts
 		// =====================================================================
 		__kustoTransformationBoxes: any[];
-		__kustoConfigureTransformation: (config: any) => any;
+		__kustoConfigureTransformation: (boxId: any, config: any) => any;
 		__kustoRenderTransformation: (boxId: any) => void;
 		removeTransformationBox: (boxId: string) => void;
 		toggleTransformationBoxVisibility: (boxId: string) => void;
@@ -727,6 +836,40 @@ declare global {
 		__kustoOnTransformationAggChanged: (boxId: string) => void;
 		__kustoAddTransformationAgg: (boxId: string) => void;
 		__kustoRemoveTransformationAgg: (boxId: string, index: number) => void;
+		__kustoOnGroupByColumnChanged?: (boxId: string) => void;
+		__kustoAddGroupByColumn?: (boxId: string) => void;
+		__kustoRemoveGroupByColumn?: (boxId: string, index: number) => void;
+		__kustoOnGroupByDragStart?: (boxId: string, index: number) => void;
+		__kustoClearGroupByDropIndicators?: (boxId: string) => void;
+		__kustoOnGroupByDragOver?: (boxId: string, event: any) => void;
+		__kustoOnGroupByDragEnd?: (boxId: string) => void;
+		__kustoOnGroupByDrop?: (boxId: string) => void;
+		__kustoOnAggDragStart?: (boxId: string, index: number) => void;
+		__kustoClearAggDropIndicators?: (boxId: string) => void;
+		__kustoOnAggDragOver?: (boxId: string, event: any) => void;
+		__kustoOnAggDrop?: (boxId: string) => void;
+		__kustoOnAggDragEnd?: (boxId: string) => void;
+		__kustoOnCalculatedColumnChanged?: (boxId: string, index: number) => void;
+		__kustoAddCalculatedColumn?: (boxId: string) => void;
+		__kustoRemoveCalculatedColumn?: (boxId: string, index: number) => void;
+		__kustoOnDeriveDragStart?: (boxId: string, index: number) => void;
+		__kustoClearDeriveDropIndicators?: (boxId: string) => void;
+		__kustoOnDeriveDragOver?: (boxId: string, event: any) => void;
+		__kustoOnDeriveDrop?: (boxId: string) => void;
+		__kustoOnDeriveDragEnd?: (boxId: string) => void;
+		__kustoOnTransformationPivotChanged?: (boxId: string) => void;
+		__kustoGroupByDragState?: any;
+		__kustoAggDragState?: any;
+		__kustoDeriveDragState?: any;
+		__kustoOnResultsVisibilityToggled?: ((boxId?: any) => void) | null;
+		__kustoConfigureTransformationFromTool?: (boxId: any, config: any) => any;
+		__kustoRenderTransformationError?: (boxId: string, error: any) => void;
+		__kustoEnsureTransformationAutoExpandWhenResultsAppear?: (boxId: string) => void;
+		__kustoShowExpressionHelpTooltip?: (boxId: string, event: any) => void;
+		__kustoHideExpressionHelpTooltip?: () => void;
+		__kustoHideExpressionHelpTooltipImmediate?: () => void;
+		__kustoFormatDate?: (date: any) => string;
+		__kustoTryParseDate?: (v: any) => number | null;
 
 		// =====================================================================
 		// extraBoxes-markdown.ts (state — lazy-initialized)
@@ -753,7 +896,6 @@ declare global {
 		// =====================================================================
 		// resultsTable.ts (additional)
 		// =====================================================================
-		__kustoNormalizeCellForComparison?: (cell: any) => unknown[];
 		__kustoSetResultsState?: (boxId: string, state: any) => void;
 		__kustoGetRawCellValueForTransform?: (cell: any) => any;
 		__kustoTryParseFiniteNumber?: (v: any) => number | null;

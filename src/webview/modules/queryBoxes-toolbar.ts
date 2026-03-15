@@ -30,7 +30,7 @@ function updateAutoTriggerAutocompleteToggleButtons() {
 
 function toggleAutoTriggerAutocompleteEnabled() {
 	_win.autoTriggerAutocompleteEnabled = !_win.autoTriggerAutocompleteEnabled;
-	try { (window as any).__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch { /* ignore */ }
+	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch { /* ignore */ }
 	updateAutoTriggerAutocompleteToggleButtons();
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
@@ -43,8 +43,8 @@ function toggleAutoTriggerAutocompleteEnabled() {
 	if (_win.autoTriggerAutocompleteEnabled) {
 		try {
 			const boxId = (typeof _win.activeQueryEditorBoxId === 'string') ? _win.activeQueryEditorBoxId : null;
-			if (boxId && typeof (window as any).__kustoTriggerAutocompleteForBoxId === 'function') {
-				(window as any).__kustoTriggerAutocompleteForBoxId(boxId);
+			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
 			}
 		} catch { /* ignore */ }
 	}
@@ -63,7 +63,7 @@ function updateCopilotInlineCompletionsToggleButtons() {
 
 function toggleCopilotInlineCompletionsEnabled() {
 	_win.copilotInlineCompletionsEnabled = !_win.copilotInlineCompletionsEnabled;
-	try { (window as any).__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch { /* ignore */ }
+	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch { /* ignore */ }
 	updateCopilotInlineCompletionsToggleButtons();
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 	try {
@@ -178,8 +178,8 @@ function onQueryEditorToolbarAction( boxId: any, action: any) {
 	}
 	if (action === 'prettify') {
 		try {
-			if (typeof (window as any).__kustoPrettifyQueryForBoxId === 'function') {
-				(window as any).__kustoPrettifyQueryForBoxId(boxId);
+			if (typeof window.__kustoPrettifyQueryForBoxId === 'function') {
+				window.__kustoPrettifyQueryForBoxId(boxId);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -188,8 +188,8 @@ function onQueryEditorToolbarAction( boxId: any, action: any) {
 	}
 	if (action === 'singleLine') {
 		try {
-			if (typeof (window as any).__kustoCopySingleLineQueryForBoxId === 'function') {
-				(window as any).__kustoCopySingleLineQueryForBoxId(boxId);
+			if (typeof window.__kustoCopySingleLineQueryForBoxId === 'function') {
+				window.__kustoCopySingleLineQueryForBoxId(boxId);
 				return;
 			}
 		} catch { /* ignore */ }
@@ -197,8 +197,8 @@ function onQueryEditorToolbarAction( boxId: any, action: any) {
 	}
 	if (action === 'autocomplete') {
 		try {
-			if (typeof (window as any).__kustoTriggerAutocompleteForBoxId === 'function') {
-				(window as any).__kustoTriggerAutocompleteForBoxId(boxId);
+			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
 				return;
 			}
 		} catch {
@@ -243,8 +243,8 @@ function onQueryEditorToolbarAction( boxId: any, action: any) {
 function copyQueryAsAdeLink( boxId: any) {
 	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try {
-			if (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function') {
-				return (window as any).__kustoExtractStatementTextAtCursor(editor);
+			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
+				return window.__kustoExtractStatementTextAtCursor(editor);
 			}
 		} catch { /* ignore */ }
 		try {
@@ -338,8 +338,8 @@ function copyQueryAsAdeLink( boxId: any) {
 	try {
 		if (editor) {
 			const model = editor.getModel && editor.getModel();
-			const blocks = (model && typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
-				? (window as any).__kustoGetStatementBlocksFromModel(model)
+			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+				? window.__kustoGetStatementBlocksFromModel(model)
 				: [];
 			const hasMultipleStatements = blocks && blocks.length > 1;
 			if (hasMultipleStatements) {
@@ -685,8 +685,8 @@ function closeToolsDropdown( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
-		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.closeMenuDropdown === 'function') {
-			(window as any).__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
+			window.__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
 			return;
 		}
 	} catch { /* ignore */ }
@@ -905,7 +905,7 @@ function toggleToolbarOverflow( boxId: any) {
 		} catch { /* ignore */ }
 
 		// Wire keyboard nav if available
-		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.wireMenuInteractions && (window as any).__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+		try { window.__kustoDropdown?.wireMenuInteractions?.(menu); } catch { /* ignore */ }
 	}
 }
 
@@ -1107,8 +1107,8 @@ function toggleToolsDropdown( boxId: any) {
 	if (!menu || !btn) return;
 
 	try {
-		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.toggleMenuDropdown === 'function') {
-			(window as any).__kustoDropdown.toggleMenuDropdown({
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
+			window.__kustoDropdown.toggleMenuDropdown({
 				buttonId: id + '_tools_btn',
 				menuId: id + '_tools_menu',
 				beforeOpen: () => {
@@ -1139,7 +1139,7 @@ function toggleToolsDropdown( boxId: any) {
 		}
 	} catch { /* ignore */ }
 	if (next === 'block') {
-		try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.wireMenuInteractions && (window as any).__kustoDropdown.wireMenuInteractions(menu); } catch { /* ignore */ }
+		try { window.__kustoDropdown?.wireMenuInteractions?.(menu); } catch { /* ignore */ }
 		try { menu.focus(); } catch { /* ignore */ }
 	}
 }
@@ -1190,8 +1190,8 @@ function renderToolsMenuForBox( boxId: any) {
 	];
 
 	try {
-		if ((window as any).__kustoDropdown && typeof (window as any).__kustoDropdown.renderMenuItemsHtml === 'function') {
-			menu.innerHTML = (window as any).__kustoDropdown.renderMenuItemsHtml(items, {
+		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
+			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
 				dropdownId: id + '_tools',
 				onSelectJs: (keyEnc: any) => {
 					return (
@@ -1270,13 +1270,13 @@ async function exportQueryToPowerBI( boxId: any) {
 	let query = model.getValue() || '';
 	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
-		const blocks = (typeof (window as any).__kustoGetStatementBlocksFromModel === 'function')
-			? (window as any).__kustoGetStatementBlocksFromModel(model)
+		const blocks = (typeof window.__kustoGetStatementBlocksFromModel === 'function')
+			? window.__kustoGetStatementBlocksFromModel(model)
 			: [];
 		const hasMultipleStatements = blocks && blocks.length > 1;
 		if (hasMultipleStatements) {
-			const statement = (typeof (window as any).__kustoExtractStatementTextAtCursor === 'function')
-				? (window as any).__kustoExtractStatementTextAtCursor(editor)
+			const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
+				? window.__kustoExtractStatementTextAtCursor(editor)
 				: null;
 			if (statement) {
 				query = statement;
@@ -1457,7 +1457,7 @@ document.addEventListener('click', (ev: any) => {
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch { /* ignore */ }
-	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	try { window.__kustoDropdown?.closeAllMenus?.(); } catch { /* ignore */ }
 });
 
 // Close dropdowns on scroll/wheel so they don't float detached from their buttons.
@@ -1476,8 +1476,8 @@ document.addEventListener('scroll', (ev: any) => {
 	// Legacy dropdown module (used by tools, cache settings, etc.) — close with threshold
 	try {
 		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - (typeof (window as any).__kustoToolbarScrollAtOpen === 'number' ? (window as any).__kustoToolbarScrollAtOpen : 0)) > 20) {
-			(window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus();
+		if (Math.abs(scrollY - (typeof window.__kustoToolbarScrollAtOpen === 'number' ? window.__kustoToolbarScrollAtOpen : 0)) > 20) {
+			window.__kustoDropdown?.closeAllMenus?.();
 		}
 	} catch { /* ignore */ }
 }, true); // Use capture to catch scroll events on nested scrollable elements
@@ -1488,41 +1488,41 @@ document.addEventListener('wheel', (ev: any) => {
 	// Run menus are ephemeral — close immediately on wheel
 	closeAllRunMenus();
 	// Legacy dropdown menus also close on wheel (users expect wheel to dismiss)
-	try { (window as any).__kustoDropdown && (window as any).__kustoDropdown.closeAllMenus && (window as any).__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+	try { window.__kustoDropdown?.closeAllMenus?.(); } catch { /* ignore */ }
 }, { passive: true });
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
-(window as any).updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;
-(window as any).toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabled;
-(window as any).updateCopilotInlineCompletionsToggleButtons = updateCopilotInlineCompletionsToggleButtons;
-(window as any).toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
-(window as any).toggleCaretDocsEnabled = toggleCaretDocsEnabled;
-(window as any).onQueryEditorToolbarAction = onQueryEditorToolbarAction;
-(window as any).copyQueryAsAdeLink = copyQueryAsAdeLink;
-(window as any).__kustoOpenShareModal = __kustoOpenShareModal;
-(window as any).__kustoCloseShareModal = __kustoCloseShareModal;
-(window as any).__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
-(window as any).setToolbarActionBusy = setToolbarActionBusy;
-(window as any).closeToolsDropdown = closeToolsDropdown;
-(window as any).initToolbarOverflow = initToolbarOverflow;
-(window as any).initRunButtonResponsive = initRunButtonResponsive;
-(window as any).updateRunButtonResponsive = updateRunButtonResponsive;
-(window as any).updateToolbarOverflow = updateToolbarOverflow;
-(window as any).toggleToolbarOverflow = toggleToolbarOverflow;
-(window as any).toggleOverflowSubmenu = toggleOverflowSubmenu;
-(window as any).closeToolbarOverflow = closeToolbarOverflow;
-(window as any).closeAllToolbarOverflowMenus = closeAllToolbarOverflowMenus;
-(window as any).renderToolbarOverflowMenu = renderToolbarOverflowMenu;
-(window as any).toggleToolsDropdown = toggleToolsDropdown;
-(window as any).renderToolsMenuForBox = renderToolsMenuForBox;
-(window as any).runMonacoAction = runMonacoAction;
-(window as any).replaceAllInEditor = replaceAllInEditor;
-(window as any).exportQueryToPowerBI = exportQueryToPowerBI;
-(window as any).__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
-(window as any).getRunMode = getRunMode;
-(window as any).getRunModeLabelText = getRunModeLabelText;
-(window as any).setRunMode = setRunMode;
-(window as any).closeRunMenu = closeRunMenu;
-(window as any).closeAllRunMenus = closeAllRunMenus;
-(window as any).toggleRunMenu = toggleRunMenu;
+window.updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
+window.updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;
+window.toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabled;
+window.updateCopilotInlineCompletionsToggleButtons = updateCopilotInlineCompletionsToggleButtons;
+window.toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
+window.toggleCaretDocsEnabled = toggleCaretDocsEnabled;
+window.onQueryEditorToolbarAction = onQueryEditorToolbarAction;
+window.copyQueryAsAdeLink = copyQueryAsAdeLink;
+window.__kustoOpenShareModal = __kustoOpenShareModal;
+window.__kustoCloseShareModal = __kustoCloseShareModal;
+window.__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
+window.setToolbarActionBusy = setToolbarActionBusy;
+window.closeToolsDropdown = closeToolsDropdown;
+window.initToolbarOverflow = initToolbarOverflow;
+window.initRunButtonResponsive = initRunButtonResponsive;
+window.updateRunButtonResponsive = updateRunButtonResponsive;
+window.updateToolbarOverflow = updateToolbarOverflow;
+window.toggleToolbarOverflow = toggleToolbarOverflow;
+window.toggleOverflowSubmenu = toggleOverflowSubmenu;
+window.closeToolbarOverflow = closeToolbarOverflow;
+window.closeAllToolbarOverflowMenus = closeAllToolbarOverflowMenus;
+window.renderToolbarOverflowMenu = renderToolbarOverflowMenu;
+window.toggleToolsDropdown = toggleToolsDropdown;
+window.renderToolsMenuForBox = renderToolsMenuForBox;
+window.runMonacoAction = runMonacoAction;
+window.replaceAllInEditor = replaceAllInEditor;
+window.exportQueryToPowerBI = exportQueryToPowerBI;
+window.__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
+window.getRunMode = getRunMode;
+window.getRunModeLabelText = getRunModeLabelText;
+window.setRunMode = setRunMode;
+window.closeRunMenu = closeRunMenu;
+window.closeAllRunMenus = closeAllRunMenus;
+window.toggleRunMenu = toggleRunMenu;

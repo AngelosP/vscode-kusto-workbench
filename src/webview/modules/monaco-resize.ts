@@ -174,4 +174,4 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoAttachAutoResizeToContent = __kustoAttachAutoResizeToContent;
+window.__kustoAttachAutoResizeToContent = __kustoAttachAutoResizeToContent;

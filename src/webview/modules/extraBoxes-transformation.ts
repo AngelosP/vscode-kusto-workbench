@@ -5,10 +5,10 @@ const _win = window;
 
 // Access shared transformation state from window (set by extraBoxes.ts).
 // Initialize on window if not already present, so load order doesn't matter.
-(window as any).transformationStateByBoxId = (window as any).transformationStateByBoxId || {};
-let transformationStateByBoxId = (window as any).transformationStateByBoxId;
-(window as any).__kustoTransformationBoxes = (window as any).__kustoTransformationBoxes || [];
-let transformationBoxes: any[] = (window as any).__kustoTransformationBoxes;
+window.transformationStateByBoxId = window.transformationStateByBoxId || {};
+let transformationStateByBoxId = window.transformationStateByBoxId;
+window.__kustoTransformationBoxes = window.__kustoTransformationBoxes || [];
+let transformationBoxes: any[] = window.__kustoTransformationBoxes;
 export function __kustoConfigureTransformationFromTool( boxId: any, config: any) {
 	try {
 		const id = String(boxId || '');
@@ -94,7 +94,7 @@ export function __kustoConfigureTransformationFromTool( boxId: any, config: any)
 }
 
 // Expose for tool calls from main.js
-try { (window as any).__kustoConfigureTransformation = __kustoConfigureTransformationFromTool; } catch { /* ignore */ }
+try { window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool; } catch { /* ignore */ }
 
 
 // ================================
@@ -1390,7 +1390,7 @@ export function __kustoOnGroupByDragStart( boxId: any, index: any, event: any) {
 		const id = String(boxId || '');
 		const i = Number(index);
 		if (!id || !Number.isFinite(i)) return;
-		(window as any).__kustoGroupByDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		window.__kustoGroupByDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
 		try {
 			const e = event;
 			if (e && e.dataTransfer) {
@@ -1421,7 +1421,7 @@ export function __kustoClearGroupByDropIndicators( boxId: any) {
 export function __kustoOnGroupByDragOver( boxId: any, index: any, event: any) {
 	try {
 		const e = event;
-		const state = (window as any).__kustoGroupByDragState;
+		const state = window.__kustoGroupByDragState;
 		if (!state || state.boxId !== boxId) return;
 		if (e && typeof e.preventDefault === 'function') e.preventDefault();
 		const id = String(boxId || '');
@@ -1446,7 +1446,7 @@ export function __kustoOnGroupByDragEnd( boxId: any, event: any) {
 		const host = document.getElementById(id + '_tf_groupby_rows') as any;
 		if (host) host.classList.remove('is-dragging');
 		__kustoClearGroupByDropIndicators(id);
-		(window as any).__kustoGroupByDragState = null;
+		window.__kustoGroupByDragState = null;
 	} catch { /* ignore */ }
 }
 
@@ -1454,7 +1454,7 @@ export function __kustoOnGroupByDrop( boxId: any, index: any, event: any) {
 	try {
 		const e = event;
 		if (e && typeof e.preventDefault === 'function') e.preventDefault();
-		const state = (window as any).__kustoGroupByDragState;
+		const state = window.__kustoGroupByDragState;
 		if (!state || state.boxId !== boxId) return;
 		const id = String(boxId || '');
 		const fromIdx = state.fromIndex;
@@ -1484,7 +1484,7 @@ export function __kustoOnAggDragStart( boxId: any, index: any, event: any) {
 		const id = String(boxId || '');
 		const i = Number(index);
 		if (!id || !Number.isFinite(i)) return;
-		(window as any).__kustoAggDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		window.__kustoAggDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
 		try {
 			const e = event;
 			if (e && e.dataTransfer) {
@@ -1524,7 +1524,7 @@ export function __kustoOnAggDragOver( boxId: any, overIndex: any, event: any) {
 		if (!id || !Number.isFinite(idx) || !e) return;
 		try { e.preventDefault(); } catch { /* ignore */ }
 		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
-		const drag = (window as any).__kustoAggDragState;
+		const drag = window.__kustoAggDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		let insertAfter = false;
 		try {
@@ -1554,7 +1554,7 @@ export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
 		const to = Number(toIndex);
 		if (!id || !Number.isFinite(to)) return;
 		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
-		const drag = (window as any).__kustoAggDragState;
+		const drag = window.__kustoAggDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		const from = Number(drag.fromIndex);
 		if (!Number.isFinite(from)) return;
@@ -1582,7 +1582,7 @@ export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
 export function __kustoOnAggDragEnd( boxId: any, event: any) {
 	try {
 		const id = String(boxId || '');
-		(window as any).__kustoAggDragState = null;
+		window.__kustoAggDragState = null;
 		try {
 			const host = document.getElementById(id + '_tf_aggs') as any;
 			if (host) host.classList.remove('is-dragging');
@@ -1707,7 +1707,7 @@ export function __kustoOnDeriveDragStart( boxId: any, index: any, event: any) {
 		const id = String(boxId || '');
 		const i = Number(index);
 		if (!id || !Number.isFinite(i)) return;
-		(window as any).__kustoDeriveDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
+		window.__kustoDeriveDragState = { boxId: id, fromIndex: Math.floor(i), overIndex: null, insertAfter: false };
 		try {
 			const e = event;
 			if (e && e.dataTransfer) {
@@ -1747,7 +1747,7 @@ export function __kustoOnDeriveDragOver( boxId: any, overIndex: any, event: any)
 		if (!id || !Number.isFinite(idx) || !e) return;
 		try { e.preventDefault(); } catch { /* ignore */ }
 		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
-		const drag = (window as any).__kustoDeriveDragState;
+		const drag = window.__kustoDeriveDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		let insertAfter = false;
 		try {
@@ -1777,7 +1777,7 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 		const to = Number(toIndex);
 		if (!id || !Number.isFinite(to)) return;
 		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
-		const drag = (window as any).__kustoDeriveDragState;
+		const drag = window.__kustoDeriveDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		const from = Number(drag.fromIndex);
 		if (!Number.isFinite(from)) return;
@@ -1810,7 +1810,7 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 export function __kustoOnDeriveDragEnd( boxId: any, event: any) {
 	try {
 		const id = String(boxId || '');
-		(window as any).__kustoDeriveDragState = null;
+		window.__kustoDeriveDragState = null;
 		try {
 			const host = document.getElementById(id + '_tf_derive_rows') as any;
 			if (host) host.classList.remove('is-dragging');
@@ -2733,8 +2733,8 @@ export function __kustoEnsureTransformationAutoExpandWhenResultsAppear( boxId: a
 
 // Hook into the shared results visibility toggle so Transformations shrink/grow like query boxes.
 try {
-	const prev = (typeof (window as any).__kustoOnResultsVisibilityToggled === 'function') ? (window as any).__kustoOnResultsVisibilityToggled : null;
-	(window as any).__kustoOnResultsVisibilityToggled = (boxId: any) => {
+	const prev = (typeof window.__kustoOnResultsVisibilityToggled === 'function') ? window.__kustoOnResultsVisibilityToggled : null;
+	window.__kustoOnResultsVisibilityToggled = (boxId: any) => {
 		try { if (prev) prev(boxId); } catch { /* ignore */ }
 		try {
 			const id = String(boxId || '');
@@ -2745,7 +2745,7 @@ try {
 			if (!wrapper) return;
 			let visible = true;
 			try {
-				visible = !((window as any).__kustoResultsVisibleByBoxId && (window as any).__kustoResultsVisibleByBoxId[id] === false);
+				visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
 			} catch { /* ignore */ }
 			if (!visible) {
 				// Mirror query-box collapse: hug content when results hidden.
@@ -2832,65 +2832,65 @@ export function addTransformationBox( options: any) {
 	return id;
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-(window as any).__kustoGetTransformationState = __kustoGetTransformationState;
-(window as any).__kustoGetTransformationMinResizeHeight = __kustoGetTransformationMinResizeHeight;
-(window as any).__kustoUpdateTransformationModeButtons = __kustoUpdateTransformationModeButtons;
-(window as any).__kustoApplyTransformationMode = __kustoApplyTransformationMode;
-(window as any).__kustoSetTransformationMode = __kustoSetTransformationMode;
-(window as any).__kustoUpdateTransformationVisibilityToggleButton = __kustoUpdateTransformationVisibilityToggleButton;
-(window as any).__kustoApplyTransformationBoxVisibility = __kustoApplyTransformationBoxVisibility;
-(window as any).toggleTransformationBoxVisibility = toggleTransformationBoxVisibility;
-(window as any).__kustoMaximizeTransformationBox = __kustoMaximizeTransformationBox;
-(window as any).__kustoComputeTransformationFitHeightPx = __kustoComputeTransformationFitHeightPx;
-(window as any).__kustoMaybeAutoFitTransformationBox = __kustoMaybeAutoFitTransformationBox;
-(window as any).removeTransformationBox = removeTransformationBox;
-(window as any).__kustoSetTransformationType = __kustoSetTransformationType;
-(window as any).__kustoOnTransformationDataSourceChanged = __kustoOnTransformationDataSourceChanged;
-(window as any).__kustoSetCheckboxDropdownText = __kustoSetCheckboxDropdownText;
-(window as any).__kustoBuildCheckboxMenuHtml = __kustoBuildCheckboxMenuHtml;
-(window as any).__kustoToggleGroupByColumn = __kustoToggleGroupByColumn;
-(window as any).__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
-(window as any).__kustoOnTransformationDistinctChanged = __kustoOnTransformationDistinctChanged;
-(window as any).__kustoOnTransformationAggChanged = __kustoOnTransformationAggChanged;
-(window as any).__kustoAddTransformationAgg = __kustoAddTransformationAgg;
-(window as any).__kustoRemoveTransformationAgg = __kustoRemoveTransformationAgg;
-(window as any).__kustoOnGroupByColumnChanged = __kustoOnGroupByColumnChanged;
-(window as any).__kustoAddGroupByColumn = __kustoAddGroupByColumn;
-(window as any).__kustoRemoveGroupByColumn = __kustoRemoveGroupByColumn;
-(window as any).__kustoOnGroupByDragStart = __kustoOnGroupByDragStart;
-(window as any).__kustoClearGroupByDropIndicators = __kustoClearGroupByDropIndicators;
-(window as any).__kustoOnGroupByDragOver = __kustoOnGroupByDragOver;
-(window as any).__kustoOnGroupByDragEnd = __kustoOnGroupByDragEnd;
-(window as any).__kustoOnGroupByDrop = __kustoOnGroupByDrop;
-(window as any).__kustoOnAggDragStart = __kustoOnAggDragStart;
-(window as any).__kustoClearAggDropIndicators = __kustoClearAggDropIndicators;
-(window as any).__kustoOnAggDragOver = __kustoOnAggDragOver;
-(window as any).__kustoOnAggDrop = __kustoOnAggDrop;
-(window as any).__kustoOnAggDragEnd = __kustoOnAggDragEnd;
-(window as any).__kustoOnCalculatedColumnChanged = __kustoOnCalculatedColumnChanged;
-(window as any).__kustoAddCalculatedColumn = __kustoAddCalculatedColumn;
-(window as any).__kustoRemoveCalculatedColumn = __kustoRemoveCalculatedColumn;
-(window as any).__kustoOnDeriveDragStart = __kustoOnDeriveDragStart;
-(window as any).__kustoClearDeriveDropIndicators = __kustoClearDeriveDropIndicators;
-(window as any).__kustoOnDeriveDragOver = __kustoOnDeriveDragOver;
-(window as any).__kustoOnDeriveDrop = __kustoOnDeriveDrop;
-(window as any).__kustoOnDeriveDragEnd = __kustoOnDeriveDragEnd;
-(window as any).__kustoOnTransformationPivotChanged = __kustoOnTransformationPivotChanged;
-(window as any).__kustoTryParseFiniteNumber = __kustoTryParseFiniteNumber;
-(window as any).__kustoTryParseDate = __kustoTryParseDate;
-(window as any).__kustoFormatDate = __kustoFormatDate;
-(window as any).__kustoGetRawCellValueForTransform = __kustoGetRawCellValueForTransform;
-(window as any).__kustoTokenizeExpr = __kustoTokenizeExpr;
-(window as any).__kustoParseExprToRpn = __kustoParseExprToRpn;
-(window as any).__kustoEvalRpn = __kustoEvalRpn;
-(window as any).__kustoRenderTransformationError = __kustoRenderTransformationError;
-(window as any).__kustoRenderTransformation = __kustoRenderTransformation;
-(window as any).__kustoEnsureTransformationAutoExpandWhenResultsAppear = __kustoEnsureTransformationAutoExpandWhenResultsAppear;
-(window as any).addTransformationBox = addTransformationBox;
-(window as any).__kustoConfigureTransformationFromTool = __kustoConfigureTransformationFromTool;
-(window as any).__kustoShowExpressionHelpTooltip = __kustoShowExpressionHelpTooltip;
-(window as any).__kustoHideExpressionHelpTooltip = __kustoHideExpressionHelpTooltip;
-(window as any).__kustoHideExpressionHelpTooltipImmediate = __kustoHideExpressionHelpTooltipImmediate;
+window.__kustoGetTransformationState = __kustoGetTransformationState;
+window.__kustoGetTransformationMinResizeHeight = __kustoGetTransformationMinResizeHeight;
+window.__kustoUpdateTransformationModeButtons = __kustoUpdateTransformationModeButtons;
+window.__kustoApplyTransformationMode = __kustoApplyTransformationMode;
+window.__kustoSetTransformationMode = __kustoSetTransformationMode;
+window.__kustoUpdateTransformationVisibilityToggleButton = __kustoUpdateTransformationVisibilityToggleButton;
+window.__kustoApplyTransformationBoxVisibility = __kustoApplyTransformationBoxVisibility;
+window.toggleTransformationBoxVisibility = toggleTransformationBoxVisibility;
+window.__kustoMaximizeTransformationBox = __kustoMaximizeTransformationBox;
+window.__kustoComputeTransformationFitHeightPx = __kustoComputeTransformationFitHeightPx;
+window.__kustoMaybeAutoFitTransformationBox = __kustoMaybeAutoFitTransformationBox;
+window.removeTransformationBox = removeTransformationBox;
+window.__kustoSetTransformationType = __kustoSetTransformationType;
+window.__kustoOnTransformationDataSourceChanged = __kustoOnTransformationDataSourceChanged;
+window.__kustoSetCheckboxDropdownText = __kustoSetCheckboxDropdownText;
+window.__kustoBuildCheckboxMenuHtml = __kustoBuildCheckboxMenuHtml;
+window.__kustoToggleGroupByColumn = __kustoToggleGroupByColumn;
+window.__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
+window.__kustoOnTransformationDistinctChanged = __kustoOnTransformationDistinctChanged;
+window.__kustoOnTransformationAggChanged = __kustoOnTransformationAggChanged;
+window.__kustoAddTransformationAgg = __kustoAddTransformationAgg;
+window.__kustoRemoveTransformationAgg = __kustoRemoveTransformationAgg;
+window.__kustoOnGroupByColumnChanged = __kustoOnGroupByColumnChanged;
+window.__kustoAddGroupByColumn = __kustoAddGroupByColumn;
+window.__kustoRemoveGroupByColumn = __kustoRemoveGroupByColumn;
+window.__kustoOnGroupByDragStart = __kustoOnGroupByDragStart;
+window.__kustoClearGroupByDropIndicators = __kustoClearGroupByDropIndicators;
+window.__kustoOnGroupByDragOver = __kustoOnGroupByDragOver;
+window.__kustoOnGroupByDragEnd = __kustoOnGroupByDragEnd;
+window.__kustoOnGroupByDrop = __kustoOnGroupByDrop;
+window.__kustoOnAggDragStart = __kustoOnAggDragStart;
+window.__kustoClearAggDropIndicators = __kustoClearAggDropIndicators;
+window.__kustoOnAggDragOver = __kustoOnAggDragOver;
+window.__kustoOnAggDrop = __kustoOnAggDrop;
+window.__kustoOnAggDragEnd = __kustoOnAggDragEnd;
+window.__kustoOnCalculatedColumnChanged = __kustoOnCalculatedColumnChanged;
+window.__kustoAddCalculatedColumn = __kustoAddCalculatedColumn;
+window.__kustoRemoveCalculatedColumn = __kustoRemoveCalculatedColumn;
+window.__kustoOnDeriveDragStart = __kustoOnDeriveDragStart;
+window.__kustoClearDeriveDropIndicators = __kustoClearDeriveDropIndicators;
+window.__kustoOnDeriveDragOver = __kustoOnDeriveDragOver;
+window.__kustoOnDeriveDrop = __kustoOnDeriveDrop;
+window.__kustoOnDeriveDragEnd = __kustoOnDeriveDragEnd;
+window.__kustoOnTransformationPivotChanged = __kustoOnTransformationPivotChanged;
+window.__kustoTryParseFiniteNumber = __kustoTryParseFiniteNumber;
+window.__kustoTryParseDate = __kustoTryParseDate;
+window.__kustoFormatDate = __kustoFormatDate;
+window.__kustoGetRawCellValueForTransform = __kustoGetRawCellValueForTransform;
+window.__kustoTokenizeExpr = __kustoTokenizeExpr;
+window.__kustoParseExprToRpn = __kustoParseExprToRpn;
+window.__kustoEvalRpn = __kustoEvalRpn;
+window.__kustoRenderTransformationError = __kustoRenderTransformationError;
+window.__kustoRenderTransformation = __kustoRenderTransformation;
+window.__kustoEnsureTransformationAutoExpandWhenResultsAppear = __kustoEnsureTransformationAutoExpandWhenResultsAppear;
+window.addTransformationBox = addTransformationBox;
+window.__kustoConfigureTransformationFromTool = __kustoConfigureTransformationFromTool;
+window.__kustoShowExpressionHelpTooltip = __kustoShowExpressionHelpTooltip;
+window.__kustoHideExpressionHelpTooltip = __kustoHideExpressionHelpTooltip;
+window.__kustoHideExpressionHelpTooltipImmediate = __kustoHideExpressionHelpTooltipImmediate;
 
 
 

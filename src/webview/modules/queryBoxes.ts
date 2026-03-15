@@ -9,7 +9,7 @@ const _win = window;
 
 // Diagnostics logging — no-op (was removed from original source, callers remain).
 function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }
-(window as any).__kustoLog = __kustoLog;
+window.__kustoLog = __kustoLog;
 
 function __kustoIndexToAlphaName( index: any) {
 	// Excel-like column naming: 0->A, 25->Z, 26->AA, ...
@@ -89,8 +89,8 @@ function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 
 // Expose for persistence + extra box types.
 try {
-	(window as any).__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
-	(window as any).__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
+	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
+	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
 } catch { /* ignore */ }
 
 // ── Global accessor helpers for query section connection/database ──────────
@@ -131,10 +131,10 @@ function __kustoGetQuerySectionElement( boxId: any) {
 
 // Expose globally for other modules (main.js, monaco.js, schema.js, copilotQueryBoxes.js).
 try {
-	(window as any).__kustoGetConnectionId = __kustoGetConnectionId;
-	(window as any).__kustoGetDatabase = __kustoGetDatabase;
-	(window as any).__kustoGetClusterUrl = __kustoGetClusterUrl;
-	(window as any).__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
+	window.__kustoGetConnectionId = __kustoGetConnectionId;
+	window.__kustoGetDatabase = __kustoGetDatabase;
+	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
+	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
 } catch { /* ignore */ }
 
 function __kustoGetSectionName( boxId: any) {
@@ -153,8 +153,8 @@ function __kustoSetSectionName( boxId: any, name: any) {
 }
 
 try {
-	(window as any).__kustoGetSectionName = __kustoGetSectionName;
-	(window as any).__kustoSetSectionName = __kustoSetSectionName;
+	window.__kustoGetSectionName = __kustoGetSectionName;
+	window.__kustoSetSectionName = __kustoSetSectionName;
 } catch { /* ignore */ }
 
 function addQueryBox( options: any) {
@@ -211,8 +211,8 @@ function addQueryBox( options: any) {
 
 	const copilotLogoUri = (() => {
 		try {
-			return ((window as any).__kustoQueryEditorConfig && (window as any).__kustoQueryEditorConfig.copilotLogoUri)
-				? String((window as any).__kustoQueryEditorConfig.copilotLogoUri)
+			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
+				? String(window.__kustoQueryEditorConfig.copilotLogoUri)
 				: '';
 		} catch {
 			return '';
@@ -405,7 +405,7 @@ function addQueryBox( options: any) {
 			try { delete _win.schemaByBoxId[boxId]; } catch { /* ignore */ }
 			try { if (_win.schemaFetchInFlightByBoxId) _win.schemaFetchInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
 			try { if (_win.lastSchemaRequestAtByBoxId) _win.lastSchemaRequestAtByBoxId[boxId] = 0; } catch { /* ignore */ }
-			try { if ((window as any).__kustoSchemaRequestTokenByBoxId) delete (window as any).__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
+			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
 			try { if (typeof _win.setSchemaLoading === 'function') _win.setSchemaLoading(boxId, false); } catch { /* ignore */ }
 			// Persist selection.
 			try {
@@ -442,7 +442,7 @@ function addQueryBox( options: any) {
 				} catch { /* ignore */ }
 			}
 			try { _win.__kustoUpdateFavoritesUiForBox(boxId); } catch { /* ignore */ }
-			try { if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') (window as any).__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
 			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
 		kwEl.addEventListener('database-changed', (e: any) => {
@@ -476,7 +476,7 @@ function addQueryBox( options: any) {
 			const boxId = detail.boxId || id;
 			// connection-changed already fires before this event and handles getDatabases + schema clearing.
 			// This handler only needs to persist and update UI state.
-			try { if (typeof (window as any).__kustoUpdateRunEnabledForBox === 'function') (window as any).__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
 			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
 		});
 		kwEl.addEventListener('favorite-removed', (e: any) => {
@@ -554,31 +554,31 @@ function addQueryBox( options: any) {
 	// If this is the first section and the user has favorites, default to Favorites mode.
 	// (Otherwise, keep the normal cluster+database dropdowns visible.)
 	try {
-		if (isFirstBox && typeof (window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-			(window as any).__kustoMaybeDefaultFirstBoxToFavoritesMode();
+		if (isFirstBox && typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
+			window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 		}
 	} catch { /* ignore */ }
 	_win.initQueryEditor(id);
 
 	// Default visibility state (results + comparison summary)
 	try {
-		if (!(window as any).__kustoResultsVisibleByBoxId || typeof (window as any).__kustoResultsVisibleByBoxId !== 'object') {
-			(window as any).__kustoResultsVisibleByBoxId = {};
+		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
+			window.__kustoResultsVisibleByBoxId = {};
 		}
-		(window as any).__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
+		window.__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
 	} catch { /* ignore */ }
 	// Default section visibility state (expanded/collapsed)
 	try {
-		if (!(window as any).__kustoQueryExpandedByBoxId || typeof (window as any).__kustoQueryExpandedByBoxId !== 'object') {
-			(window as any).__kustoQueryExpandedByBoxId = {};
+		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
+			window.__kustoQueryExpandedByBoxId = {};
 		}
-		(window as any).__kustoQueryExpandedByBoxId[id] = defaultExpanded;
+		window.__kustoQueryExpandedByBoxId[id] = defaultExpanded;
 	} catch { /* ignore */ }
 	try {
-		if (!(window as any).__kustoComparisonSummaryVisibleByBoxId || typeof (window as any).__kustoComparisonSummaryVisibleByBoxId !== 'object') {
-			(window as any).__kustoComparisonSummaryVisibleByBoxId = {};
+		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
+			window.__kustoComparisonSummaryVisibleByBoxId = {};
 		}
-		(window as any).__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
+		window.__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
 	} catch { /* ignore */ }
 	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch { /* ignore */ }
 	try { __kustoApplyQueryBoxVisibility(id); } catch { /* ignore */ }
@@ -693,8 +693,8 @@ function addQueryBox( options: any) {
 					document.body.style.userSelect = previousUserSelect;
 					try {
 						// Ensure we never leave slack after a drag on error-only content.
-						if (typeof (window as any).__kustoClampResultsWrapperHeight === 'function') {
-							(window as any).__kustoClampResultsWrapperHeight(id);
+						if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
+							window.__kustoClampResultsWrapperHeight(id);
 						}
 					} catch { /* ignore */ }
 					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
@@ -720,8 +720,8 @@ function addQueryBox( options: any) {
 	// This avoids blank slack below short error messages while still allowing the user to
 	// resize smaller than contents (scrolling).
 	try {
-		if (typeof (window as any).__kustoClampResultsWrapperHeight !== 'function') {
-			(window as any).__kustoClampResultsWrapperHeight = function (boxId: any) {
+		if (typeof window.__kustoClampResultsWrapperHeight !== 'function') {
+			window.__kustoClampResultsWrapperHeight = function (boxId: any) {
 				try {
 					const bid = String(boxId || '').trim();
 					if (!bid) return;
@@ -777,8 +777,8 @@ function addQueryBox( options: any) {
 	// picks it up reliably during async initialization (instead of a fragile setTimeout).
 	if (initialQuery) {
 		try {
-			(window as any).__kustoPendingQueryTextByBoxId = (window as any).__kustoPendingQueryTextByBoxId || {};
-			(window as any).__kustoPendingQueryTextByBoxId[id] = initialQuery;
+			window.__kustoPendingQueryTextByBoxId = window.__kustoPendingQueryTextByBoxId || {};
+			window.__kustoPendingQueryTextByBoxId[id] = initialQuery;
 		} catch { /* ignore */ }
 	}
 	
@@ -966,7 +966,7 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 	if (!kwEl) return;
 	let expanded = true;
 	try {
-		expanded = !((window as any).__kustoQueryExpandedByBoxId && (window as any).__kustoQueryExpandedByBoxId[boxId] === false);
+		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
 	} catch { /* ignore */ }
 	if (typeof kwEl.setExpanded === 'function') {
 		kwEl.setExpanded(expanded);
@@ -980,8 +980,8 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-					if (typeof (window as any).__kustoUpdateSchemaForFocusedBox === 'function') {
-						(window as any).__kustoUpdateSchemaForFocusedBox(boxId, false);
+					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
 				} catch { /* ignore */ }
 			}, 0);
@@ -991,11 +991,11 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 
 function toggleQueryBoxVisibility( boxId: any) {
 	try {
-		if (!(window as any).__kustoQueryExpandedByBoxId || typeof (window as any).__kustoQueryExpandedByBoxId !== 'object') {
-			(window as any).__kustoQueryExpandedByBoxId = {};
+		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
+			window.__kustoQueryExpandedByBoxId = {};
 		}
-		const current = !((window as any).__kustoQueryExpandedByBoxId[boxId] === false);
-		(window as any).__kustoQueryExpandedByBoxId[boxId] = !current;
+		const current = !(window.__kustoQueryExpandedByBoxId[boxId] === false);
+		window.__kustoQueryExpandedByBoxId[boxId] = !current;
 	} catch { /* ignore */ }
 	try { __kustoApplyQueryBoxVisibility(boxId); } catch { /* ignore */ }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
@@ -1076,8 +1076,8 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 	// Prefer language service to find true table-reference ranges (instead of regex/lexer guessing).
 	let candidates = [];
 	try {
-		if (typeof (window as any).__kustoRequestKqlTableReferences === 'function') {
-			const res = await (window as any).__kustoRequestKqlTableReferences({
+		if (typeof window.__kustoRequestKqlTableReferences === 'function') {
+			const res = await window.__kustoRequestKqlTableReferences({
 				text,
 				connectionId: opts.connectionId,
 				database: opts.currentDatabase,
@@ -1224,8 +1224,8 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 
 	const requestSchema = async (connectionId: any, database: any) => {
 		try {
-			if (typeof (window as any).__kustoRequestSchema === 'function') {
-				const sch = await (window as any).__kustoRequestSchema(connectionId, database, false);
+			if (typeof window.__kustoRequestSchema === 'function') {
+				const sch = await window.__kustoRequestSchema(connectionId, database, false);
 				try {
 					const cid = String(connectionId || '').trim();
 					const db = String(database || '').trim();
@@ -1243,8 +1243,8 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 
 	const requestDatabases = async (connectionId: any, forceRefresh: any) => {
 		try {
-			if (typeof (window as any).__kustoRequestDatabases === 'function') {
-				return await (window as any).__kustoRequestDatabases(connectionId, !!forceRefresh);
+			if (typeof window.__kustoRequestDatabases === 'function') {
+				return await window.__kustoRequestDatabases(connectionId, !!forceRefresh);
 			}
 		} catch {
 			// ignore
@@ -1573,8 +1573,8 @@ function qualifyTablesInText( text: any, tables: any, clusterUrl: any, database:
 function removeQueryBox( boxId: any) {
 	// Dispose Copilot chat state for this query box (if present).
 	try {
-		if (typeof (window as any).__kustoDisposeCopilotQueryBox === 'function') {
-			(window as any).__kustoDisposeCopilotQueryBox(boxId);
+		if (typeof window.__kustoDisposeCopilotQueryBox === 'function') {
+			window.__kustoDisposeCopilotQueryBox(boxId);
 		}
 	} catch { /* ignore */ }
 
@@ -1601,8 +1601,8 @@ function removeQueryBox( boxId: any) {
 	_win.setQueryExecuting(boxId, false);
 	delete _win.runModesByBoxId[boxId];
 	try {
-		if ((window as any).__kustoQueryResultJsonByBoxId) {
-			delete (window as any).__kustoQueryResultJsonByBoxId[boxId];
+		if (window.__kustoQueryResultJsonByBoxId) {
+			delete window.__kustoQueryResultJsonByBoxId[boxId];
 		}
 	} catch {
 		// ignore
@@ -1654,11 +1654,11 @@ function removeQueryBox( boxId: any) {
 	} catch { /* ignore */ }
 
 	// Clear any global pointers if they reference this box
-	if ((window as any).lastExecutedBox === boxId) {
-		(window as any).lastExecutedBox = null;
+	if (window.lastExecutedBox === boxId) {
+		window.lastExecutedBox = null;
 	}
-	if ((window as any).currentResult && (window as any).currentResult.boxId === boxId) {
-		(window as any).currentResult = null;
+	if (window.currentResult && window.currentResult.boxId === boxId) {
+		window.currentResult = null;
 	}
 
 	// Remove DOM node
@@ -1757,19 +1757,19 @@ function toggleCacheControls( boxId: any) {
 // ── Window bridges for remaining legacy callers ──
 // Execution, comparison, and optimization bridges are in queryBoxes-execution.ts.
 // Connection, favorites, cluster helpers, and database bridges are in queryBoxes-connection.ts.
-(window as any).fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
-(window as any).qualifyTablesInTextPriority = qualifyTablesInTextPriority;
-(window as any).__kustoIndexToAlphaName = __kustoIndexToAlphaName;
-(window as any).__kustoGetUsedSectionNamesUpper = __kustoGetUsedSectionNamesUpper;
-(window as any).addQueryBox = addQueryBox;
-(window as any).__kustoAutoSizeEditor = __kustoAutoSizeEditor;
-(window as any).__kustoAutoSizeResults = __kustoAutoSizeResults;
-(window as any).__kustoMaximizeQueryBox = __kustoMaximizeQueryBox;
-(window as any).__kustoUpdateQueryVisibilityToggleButton = __kustoUpdateQueryVisibilityToggleButton;
-(window as any).__kustoApplyQueryBoxVisibility = __kustoApplyQueryBoxVisibility;
-(window as any).toggleQueryBoxVisibility = toggleQueryBoxVisibility;
-(window as any).qualifyTablesInText = qualifyTablesInText;
-(window as any).removeQueryBox = removeQueryBox;
-(window as any).toggleCachePill = toggleCachePill;
-(window as any).toggleCachePopup = toggleCachePopup;
-(window as any).toggleCacheControls = toggleCacheControls;
+window.fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
+window.qualifyTablesInTextPriority = qualifyTablesInTextPriority;
+window.__kustoIndexToAlphaName = __kustoIndexToAlphaName;
+window.__kustoGetUsedSectionNamesUpper = __kustoGetUsedSectionNamesUpper;
+window.addQueryBox = addQueryBox;
+window.__kustoAutoSizeEditor = __kustoAutoSizeEditor;
+window.__kustoAutoSizeResults = __kustoAutoSizeResults;
+window.__kustoMaximizeQueryBox = __kustoMaximizeQueryBox;
+window.__kustoUpdateQueryVisibilityToggleButton = __kustoUpdateQueryVisibilityToggleButton;
+window.__kustoApplyQueryBoxVisibility = __kustoApplyQueryBoxVisibility;
+window.toggleQueryBoxVisibility = toggleQueryBoxVisibility;
+window.qualifyTablesInText = qualifyTablesInText;
+window.removeQueryBox = removeQueryBox;
+window.toggleCachePill = toggleCachePill;
+window.toggleCachePopup = toggleCachePopup;
+window.toggleCacheControls = toggleCacheControls;

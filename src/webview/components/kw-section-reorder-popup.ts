@@ -517,7 +517,7 @@ export class KwSectionReorderPopup extends LitElement {
 	}
 
 	private _syncAndPersist(movedId: string): void {
-		const _win = window as any;
+		const _win = window;
 		try {
 			const container = document.getElementById('queries-container');
 			if (container) {

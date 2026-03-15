@@ -8494,6 +8494,6 @@ function initQueryEditor(boxId: any) {
 }
 
 // ── Window bridges for remaining legacy callers ──
-(window as any).__kustoGetColumnsByTable = __kustoGetColumnsByTable;
-(window as any).ensureMonaco = ensureMonaco;
-(window as any).initQueryEditor = initQueryEditor;
+window.__kustoGetColumnsByTable = __kustoGetColumnsByTable;
+window.ensureMonaco = ensureMonaco;
+window.initQueryEditor = initQueryEditor;
