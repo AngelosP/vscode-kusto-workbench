@@ -16,15 +16,6 @@
 				"${workspaceFolder}/dist/**/*.js"
 			],
 			"preLaunchTask": "${defaultBuildTask}"
-    },
-    {
-      "name": "Extension E2E Tests",
-      "type": "extensionHost",
-      "request": "launch",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
-      ],
-      "preLaunchTask": "vscode-ext-test: run"
     }
 	]
 }
