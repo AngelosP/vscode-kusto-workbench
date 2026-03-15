@@ -22,6 +22,8 @@
         "/^node -c media/queryEditor/queryBoxes\\.js 2>&1 \\| Select-Object -First 5$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "mkdir": true,
+        "vscode-ext-test": true
     }
 }
