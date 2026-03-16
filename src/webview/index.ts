@@ -17,6 +17,8 @@ import './modules/copilotQueryBoxes.js';
 import './modules/resultsTable.js';
 import './modules/queryBoxes.js';
 import './modules/extraBoxes.js';
+import './modules/monaco-diagnostics.js'; // Before monaco — sets utility window bridges
+import './modules/monaco-completions.js'; // Before monaco — sets completion provider bridges
 import './modules/monaco.js';
 import './modules/main.js'; // Must be last — message dispatcher
 import './components/kw-object-viewer.js';

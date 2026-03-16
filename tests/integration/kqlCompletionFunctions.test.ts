@@ -368,11 +368,21 @@ suite('KQL completions - functions list', () => {
 			.replace(/as HTMLElement\)/g, ')')
 			.replace(/ as string\b/g, '')
 			.replace(/ as any\b/g, '');
+		const monacoCompletionsPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-completions.ts');
+		let completionsSource = fs.readFileSync(monacoCompletionsPath, 'utf8');
+		completionsSource = completionsSource
+			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*any\b(\[\])?/g, '')
+			.replace(/\(\w+ as any\)/g, (m) => m.slice(1, m.indexOf(' ')))
+			.replace(/\b_win\./g, 'window.')
+			.replace(/as HTMLElement\)/g, ')')
+			.replace(/ as string\b/g, '')
+			.replace(/ as any\b/g, '');
 		const generatedFunctionsPath = path.join(repoRoot, 'src', 'webview', 'modules', 'functions.generated.js');
 		const generatedFunctionsSource = fs.readFileSync(generatedFunctionsPath, 'utf8');
 
 		const fnDocsSrc = extractConstObjectAssignment(monacoSource, 'KUSTO_FUNCTION_DOCS');
-		const providerSrc = extractConstObjectAssignment(monacoSource, '__kustoCompletionProvider');
+		const providerSrc = extractConstObjectAssignment(completionsSource, '__kustoCompletionProvider');
 
 		const sandbox: any = {
 			exports: {},

@@ -205,7 +205,7 @@ class FakeModel {
 suite('KQL completions - columns inside function args', () => {
 	const createCompletionProvider = () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco.ts');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-completions.ts');
 		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
 		// Strip TypeScript annotations so the source can run in a JS VM sandbox
 		monacoSource = monacoSource
