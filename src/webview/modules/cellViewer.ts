@@ -2,8 +2,9 @@
 // Window bridge exports at bottom for remaining inline onclick callers.
 export {};
 
+import { buildSearchRegex, type SearchMode } from '../components/search-utils.js';
+
 declare const escapeHtml: (s: string) => string;
-declare const escapeRegex: (s: string) => string;
 declare const __kustoGetResultsState: ((boxId: string) => {
 	columns: any[];
 	rows: any[][];
@@ -299,11 +300,7 @@ function __kustoRenderCellViewerContent(): void {
 
 	let built: any = { regex: null, error: null };
 	try {
-		if (typeof (_win.__kustoTryBuildSearchRegex) === 'function') {
-			built = (_win.__kustoTryBuildSearchRegex as any)(searchTerm, searchMode);
-		} else {
-			built = { regex: new RegExp(escapeRegex(String(searchTerm).trim()), 'gi'), error: null };
-		}
+		built = buildSearchRegex(searchTerm, (searchMode === 'regex' ? 'regex' : 'wildcard') as SearchMode);
 	} catch {
 		built = { regex: null, error: 'Invalid regex. Please fix the pattern.' };
 	}

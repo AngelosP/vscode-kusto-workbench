@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-object-viewer.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
+import { buildSearchRegex, navigateMatch, type SearchMode } from './search-utils.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -14,9 +15,6 @@ function escapeHtml(s: unknown): string {
 	return str;
 }
 
-function escapeRegex(str: string): string {
-	return String(str || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-}
 
 function parseMaybeJson(value: unknown): unknown {
 	if (typeof value !== 'string') return value;
@@ -97,8 +95,6 @@ interface StackFrame {
 	value: unknown;
 }
 
-type SearchMode = 'wildcard' | 'regex';
-
 // ─── Copy-to-clipboard helper ─────────────────────────────────────────────────
 
 function writeTextToClipboard(text: string, vscodePostMessage?: (msg: unknown) => void): void {
@@ -163,7 +159,7 @@ export class KwObjectViewer extends LitElement {
 		const formatted = formatJson(frame.value);
 
 		// Build search regex
-		const { regex, error: searchError } = this._buildSearchRegex();
+		const { regex, error: searchError } = buildSearchRegex(this._searchQuery, this._searchMode);
 		const matchCount = regex ? this._countMatches(regex, rawStr) : 0;
 		this._matchCount = matchCount;
 
@@ -324,25 +320,6 @@ export class KwObjectViewer extends LitElement {
 		this._currentMatchIndex = 0;
 	}
 
-	private _buildSearchRegex(): { regex: RegExp | null; error: string | null } {
-		const q = this._searchQuery.trim();
-		if (!q) return { regex: null, error: null };
-		let pattern: string;
-		if (this._searchMode === 'regex') {
-			pattern = q;
-		} else {
-			pattern = q.split('*').map(escapeRegex).join('.*?');
-		}
-		try {
-			const regex = new RegExp(pattern, 'gi');
-			const nonGlobal = new RegExp(regex.source, regex.flags.replace(/g/g, ''));
-			if (nonGlobal.test('')) return { regex: null, error: 'Pattern matches empty text' };
-			return { regex, error: null };
-		} catch {
-			return { regex: null, error: 'Invalid regex' };
-		}
-	}
-
 	private _countMatches(regex: RegExp, text: string): number {
 		regex.lastIndex = 0;
 		let count = 0;
@@ -432,13 +409,13 @@ export class KwObjectViewer extends LitElement {
 
 	private _navigateNextMatch(): void {
 		if (this._matchCount < 2) return;
-		this._currentMatchIndex = (this._currentMatchIndex + 1) % this._matchCount;
+		this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'next');
 		this._scrollToCurrentMatch();
 	}
 
 	private _navigatePrevMatch(): void {
 		if (this._matchCount < 2) return;
-		this._currentMatchIndex = (this._currentMatchIndex - 1 + this._matchCount) % this._matchCount;
+		this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'prev');
 		this._scrollToCurrentMatch();
 	}
 

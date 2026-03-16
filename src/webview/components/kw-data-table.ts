@@ -7,6 +7,7 @@ import type { KwObjectViewer } from './kw-object-viewer.js';
 import { rowMatchesFilterSpec, isColumnFiltered, getFilterSpecForColumn, type ColumnFilterSpec } from './kw-filter-dialog.js';
 import './kw-filter-dialog.js';
 import './kw-sort-dialog.js';
+import { buildSearchRegex, createDebouncedSearch, navigateMatch, createRegexCache, type SearchMode } from './search-utils.js';
 
 export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
@@ -204,12 +205,6 @@ function fmtCell(cell: CellValue): string {
 	return getCellDisplayValue(cell);
 }
 function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-function escRx(s: string): string { return s.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'); }
-function buildRx(q: string, mode: 'wildcard' | 'regex'): RegExp | null {
-	const t = q.trim(); if (!t) return null;
-	const p = mode === 'regex' ? t : t.split('*').map(escRx).join('.*?');
-	try { const r = new RegExp(p, 'gi'); if (new RegExp(r.source, r.flags.replace(/g/g, '')).test('')) return null; return r; } catch { return null; }
-}
 function inRange(range: CellRange | null, row: number, col: number): boolean {
 	return !!range && row >= range.rowMin && row <= range.rowMax && col >= range.colMin && col <= range.colMax;
 }
@@ -264,7 +259,9 @@ export class KwDataTable extends LitElement {
 	private _selectionAnchor: { row: number; col: number } | null = null;
 	@state() private _searchVisible = false;
 	@state() private _searchQuery = '';
-	@state() private _searchMode: 'wildcard' | 'regex' = 'wildcard';
+	@state() private _searchMode: SearchMode = 'wildcard';
+	private _debouncedSearch = createDebouncedSearch(() => this._execSearch());
+	private _regexCache = createRegexCache();
 	@state() private _searchMatches: Array<{ row: number; col: number }> = [];
 	@state() private _currentMatchIndex = 0;
 	@state() private _columnMenuOpen: number | null = null;
@@ -370,6 +367,7 @@ export class KwDataTable extends LitElement {
 	}
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
+		this._debouncedSearch.cancel();
 		this._resizeObs?.disconnect();
 		this._viewportResizeObs?.disconnect();
 		this._virtualizerCleanup?.();
@@ -668,7 +666,7 @@ export class KwDataTable extends LitElement {
 	// ── Search ──
 
 	private _execSearch(): void {
-		const rx = buildRx(this._searchQuery, this._searchMode);
+		const { regex: rx } = this._regexCache.get(this._searchQuery, this._searchMode);
 		if (!rx || !this._table) { this._searchMatches = []; this._currentMatchIndex = 0; return; }
 		const matches: Array<{ row: number; col: number }> = [];
 		const rows = this._table.getRowModel().rows;
@@ -701,8 +699,8 @@ export class KwDataTable extends LitElement {
 			if (cell) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 		});
 	}
-	private _nextMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = (this._currentMatchIndex + 1) % this._searchMatches.length; this._goToMatch(this._currentMatchIndex); }
-	private _prevMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = (this._currentMatchIndex - 1 + this._searchMatches.length) % this._searchMatches.length; this._goToMatch(this._currentMatchIndex); }
+	private _nextMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._searchMatches.length, 'next'); this._goToMatch(this._currentMatchIndex); }
+	private _prevMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._searchMatches.length, 'prev'); this._goToMatch(this._currentMatchIndex); }
 	private _isMatch(r: number, c: number): boolean { return this._searchMatches.some(m => m.row === r && m.col === c); }
 	private _isCurMatch(r: number, c: number): boolean { const m = this._searchMatches[this._currentMatchIndex]; return !!m && m.row === r && m.col === c; }
 
@@ -1076,7 +1074,7 @@ this.requestUpdate();
 			<div class="sc">
 				<svg class="sc-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>
 				<input type="text" class="sinp search-inp" placeholder="Search..." autocomplete="off" spellcheck="false" .value=${this._searchQuery}
-					@input=${(e: Event) => { this._searchQuery = (e.target as HTMLInputElement).value; this._execSearch(); }}
+					@input=${(e: Event) => { this._searchQuery = (e.target as HTMLInputElement).value; this._debouncedSearch.trigger(); }}
 					@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') { e.shiftKey ? this._prevMatch() : this._nextMatch(); e.preventDefault(); } if (e.key === 'Escape') { this._toggleSearch(); e.preventDefault(); } }} />
 				${statusText ? html`<span class="sc-status">${statusText}</span>` : nothing}
 				<button class="sc-mode" title="${this._searchMode === 'regex' ? 'Regex' : 'Wildcard'}" @click=${() => { this._searchMode = this._searchMode === 'regex' ? 'wildcard' : 'regex'; this._execSearch(); }}><span class="ml">${this._searchMode === 'regex' ? '.*' : '*'}</span></button>
@@ -1266,7 +1264,7 @@ this.requestUpdate();
 
 	// ── Actions ──
 
-	private _toggleSearch(): void { this._searchVisible = !this._searchVisible; if (this._searchVisible) requestAnimationFrame(() => { const i = this.shadowRoot?.querySelector('.search-inp') as HTMLInputElement; i?.focus(); i?.select(); }); else { this._searchMatches = []; this._searchQuery = ''; } }
+	private _toggleSearch(): void { this._searchVisible = !this._searchVisible; if (this._searchVisible) requestAnimationFrame(() => { const i = this.shadowRoot?.querySelector('.search-inp') as HTMLInputElement; i?.focus(); i?.select(); }); else { this._debouncedSearch.cancel(); this._searchMatches = []; this._searchQuery = ''; } }
 	private _toggleRowJump(totalRows: number): void {
 		this._rowJumpVisible = !this._rowJumpVisible;
 		if (this._rowJumpVisible) {
