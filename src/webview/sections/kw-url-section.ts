@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-url-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,9 @@ export class KwUrlSection extends LitElement {
 	@state() private _imageMenuOpen = false;
 
 	private _userResized = false;
+	private _autoFitPending = false;
 	private _csvResizeObs: ResizeObserver | null = null;
+	private _fetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -120,6 +123,16 @@ export class KwUrlSection extends LitElement {
 		super.updated(changed);
 		if (changed.has('_fetchState')) {
 			this._renderUrlContent();
+			// Auto-fit after content finishes loading (non-image types).
+			// Images already handle auto-size via __autoSizeImagePending in _renderImage.
+			if (this._autoFitPending) {
+				this._autoFitPending = false;
+				// Wait for the full render cycle (e.g. <kw-data-table> for CSV)
+				// then a layout frame so scrollHeight is correct.
+				this.updateComplete.then(() =>
+					requestAnimationFrame(() => this._fitToContents())
+				);
+			}
 		}
 	}
 
@@ -132,56 +145,35 @@ export class KwUrlSection extends LitElement {
 	override render() {
 		return html`
 			<div class="section-root">
-				<div class="section-header-row url-section-header">
-					<div class="query-name-group">
-						<button type="button" class="section-drag-handle" draggable="true"
-							title="Drag to reorder" aria-label="Reorder section"
-							@dragstart=${this._onDragStart}>
-							<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
+				<kw-section-shell
+					.name=${this._name}
+					.expanded=${this._fetchState.expanded}
+					box-id=${this.boxId}
+					name-placeholder="URL name (optional)"
+					@name-change=${this._onShellNameChange}
+					@toggle-visibility=${this._toggleVisibility}
+					@fit-to-contents=${this._fitToContents}>
+					${this._fetchState.expanded && this._isImageContent() ? html`
+					<div slot="header-buttons" class="img-menu-anchor">
+						<button class="unified-btn-secondary md-tab"
+							type="button" @click=${this._toggleImageMenu}
+							title="Image display" aria-label="Image display">
+							${KwUrlSection._imageIcon}
 						</button>
-						<input type="text" class="query-name url-name"
-						placeholder="URL name (optional)"
-						.value=${this._name}
-							@input=${this._onNameInput} />
+						${this._imageMenuOpen ? this._renderImageMenu() : nothing}
 					</div>
-					<input type="text" class="url-input"
+					` : nothing}
+					<input slot="header-extra" type="text" class="url-input"
 						placeholder="https://example.com"
 						.value=${this._url}
 						@input=${this._onUrlInput} />
-					<div class="section-actions">
-						<div class="md-tabs" role="tablist" aria-label="URL visibility">
-							${this._fetchState.expanded && this._isImageContent() ? html`
-							<div class="img-menu-anchor">
-								<button class="unified-btn-secondary md-tab"
-									type="button" @click=${this._toggleImageMenu}
-									title="Image display" aria-label="Image display">
-									${KwUrlSection._imageIcon}
-								</button>
-								${this._imageMenuOpen ? this._renderImageMenu() : nothing}
-							</div>
-							` : nothing}
-							<button class="unified-btn-secondary md-tab md-max-btn"
-								type="button" @click=${this._fitToContents}
-								title="Fit to contents" aria-label="Fit to contents">
-								${KwUrlSection._maximizeIcon}
-							</button>
-							<button class="unified-btn-secondary md-tab ${this._fetchState.expanded ? 'is-active' : ''}"
-								type="button" role="tab"
-								aria-selected=${this._fetchState.expanded ? 'true' : 'false'}
-								@click=${this._toggleVisibility}
-								title=${this._fetchState.expanded ? 'Hide' : 'Show'}
-								aria-label=${this._fetchState.expanded ? 'Hide' : 'Show'}>
-								${KwUrlSection._previewIcon}
-							</button>
-						</div>
-						<button class="unified-btn-secondary unified-btn-icon-only close-btn"
-							type="button" @click=${this._requestRemove}
-							title="Remove" aria-label="Remove">
-							${KwUrlSection._closeIcon}
-						</button>
-					</div>
-				</div>
-				<div class="output-wrapper" id="output-wrapper" data-kusto-no-editor-focus="true">
+					${this._fetchState.loading ? html`
+						<div class="url-status-msg">Loading…</div>
+					` : this._fetchState.error ? html`
+						<div class="url-status-msg url-error-msg">${this._fetchState.error}</div>
+					` : nothing}
+					${this._url.trim() && this._fetchState.loaded ? html`
+					<div class="output-wrapper" id="output-wrapper" data-kusto-no-editor-focus="true">
 					<div class="url-output ${this._imageOutputClasses()}" id="url-content" aria-label="URL content"
 						style="display:${this._csvActive ? 'none' : ''}"></div>
 					${this._csvActive ? html`
@@ -207,25 +199,14 @@ export class KwUrlSection extends LitElement {
 						title="Drag to resize"
 						@mousedown=${this._onResizerMouseDown}
 						@dblclick=${this._fitToContents}></div>
-				</div>
+					</div>
+					` : nothing}
+				</kw-section-shell>
 			</div>
 		`;
 	}
 
 	// ── SVG Icons (static) ────────────────────────────────────────────────────
-
-	private static _closeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M4 4l8 8"/><path d="M12 4L4 12"/>
-		</svg>`;
-
-	private static _previewIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
-			<circle cx="8" cy="8" r="2.1" />
-		</svg>`;
 
 	private static _imageIcon = html`
 		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
@@ -233,13 +214,6 @@ export class KwUrlSection extends LitElement {
 			<rect x="2" y="3" width="12" height="10" rx="1.5"/>
 			<circle cx="5.5" cy="6.5" r="1.2"/>
 			<path d="M2 10.5l3-3 2.5 2.5 2-1.5L14 12"/>
-		</svg>`;
-
-	private static _maximizeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 6V3h3"/><path d="M13 10v3h-3"/>
-			<path d="M3 3l4 4"/><path d="M13 13l-4-4"/>
 		</svg>`;
 
 	// ── URL Content Rendering ─────────────────────────────────────────────────
@@ -267,14 +241,10 @@ export class KwUrlSection extends LitElement {
 		contentEl.style.flexDirection = '';
 
 		if (st.loading) {
-			contentEl.style.whiteSpace = 'pre-wrap';
-			contentEl.textContent = 'Loading…';
 			return;
 		}
 
 		if (st.error) {
-			contentEl.style.whiteSpace = 'pre-wrap';
-			contentEl.textContent = st.error;
 			return;
 		}
 
@@ -635,9 +605,8 @@ export class KwUrlSection extends LitElement {
 
 	// ── Actions ───────────────────────────────────────────────────────────────
 
-	private _onNameInput(e: Event): void {
-		const input = e.target as HTMLInputElement;
-		this._name = input.value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._name = e.detail.name;
 		this._autoSizeNameInput();
 		this._schedulePersist();
 		// Refresh Data dropdowns in Chart/Transformation sections.
@@ -668,8 +637,13 @@ export class KwUrlSection extends LitElement {
 		st.__autoSizedImageOnce = false;
 		this._fetchState = { ...st };
 		this._renderUrlContent();
+		// Debounce fetch to avoid firing on every keystroke.
+		if (this._fetchDebounceTimer) clearTimeout(this._fetchDebounceTimer);
 		if (st.expanded && url) {
-			this._requestFetch();
+			this._fetchDebounceTimer = setTimeout(() => {
+				this._fetchDebounceTimer = null;
+				this._requestFetch();
+			}, 200);
 		}
 		this._schedulePersist();
 	}
@@ -711,7 +685,8 @@ export class KwUrlSection extends LitElement {
 	}
 
 	private _autoSizeNameInput(): void {
-		const input = this.shadowRoot?.querySelector('.query-name') as HTMLInputElement | null;
+		const shell = this.shadowRoot?.querySelector('kw-section-shell');
+		const input = shell?.shadowRoot?.querySelector('.query-name') as HTMLInputElement | null;
 		if (!input) return;
 		const v = this._name.trim();
 		const minPx = v ? 25 : 140;
@@ -766,6 +741,10 @@ export class KwUrlSection extends LitElement {
 				}
 			}
 			st.content = st.body || '';
+			// Schedule auto-fit for non-image content (images use __autoSizeImagePending).
+			if (st.kind !== 'image') {
+				this._autoFitPending = true;
+			}
 			this._fetchState = st;
 		}
 
@@ -971,6 +950,10 @@ export class KwUrlSection extends LitElement {
 
 	// ── Public API (for legacy integration) ───────────────────────────────────
 
+	public getName(): string {
+		return this._name;
+	}
+
 	/** Set name programmatically (e.g. from restore). */
 	public setName(name: string): void {
 		this._name = name;
@@ -1025,7 +1008,7 @@ export class KwUrlSection extends LitElement {
 	private static _newFetchState(): UrlFetchState {
 		return {
 			url: '',
-			expanded: false,
+			expanded: true,
 			loading: false,
 			loaded: false,
 			content: '',

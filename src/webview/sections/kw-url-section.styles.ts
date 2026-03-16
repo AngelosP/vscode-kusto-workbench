@@ -33,78 +33,11 @@ export const styles = css`
 			padding-bottom: 0;
 		}
 
-		.section-header-row {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			justify-content: space-between;
-			margin-bottom: 8px;
-		}
-
-		.query-name-group {
-			display: inline-flex;
-			align-items: center;
-			gap: 0;
-			min-width: 0;
-			flex: 0 1 auto;
-		}
-
-		.section-drag-handle {
-			opacity: 1;
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-descriptionForeground);
-			border-radius: 4px;
-			margin: 0;
-			width: 12px;
-			height: 24px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			cursor: grab;
-			flex: 0 0 auto;
-		}
-		.section-drag-handle:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-		.section-drag-handle:active { cursor: grabbing; }
-		.section-drag-handle:focus-visible {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-		.section-drag-handle-glyph {
-			font-size: 14px;
-			line-height: 1;
-			letter-spacing: -1px;
-		}
-
-		.query-name {
-			font-size: 12px;
-			color: var(--vscode-foreground);
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			padding: 2px 6px;
-			outline: none;
-			min-width: 0;
-			flex: 0 1 auto;
-			font-family: inherit;
-		}
-		.query-name::placeholder {
-			color: var(--vscode-input-placeholderForeground);
-		}
-		.query-name:hover {
-			border-color: var(--vscode-input-border);
-		}
-		.query-name:focus {
-			border-color: var(--vscode-focusBorder);
-		}
+		/* ── URL input (slotted into shell header-extra) ──────────────── */
 
 		.url-input {
-			flex: 1 1 420px;
+			flex: 1 1 auto;
+			width: 100%;
 			min-width: 25px;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
@@ -114,28 +47,27 @@ export const styles = css`
 			font-size: 12px;
 			font-family: inherit;
 			outline: none;
+			margin-bottom: 10px;
 		}
 		.url-input:focus {
 			border-color: var(--vscode-focusBorder);
 		}
 
-		.section-actions {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			flex: 0 0 auto;
+		/* ── Status / error messages ──────────────────────────────────── */
+
+		.url-status-msg {
+			font-size: 12px;
+			padding: 6px 2px;
+			color: var(--vscode-descriptionForeground);
+			white-space: pre-wrap;
+		}
+		.url-error-msg {
+			color: var(--vscode-errorForeground, var(--vscode-editorError-foreground, #f44));
 		}
 
-		.md-tabs {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			border: none;
-			border-radius: 0;
-			overflow: visible;
-			margin: 0;
-			background: transparent;
-		}
+		/* ── Image menu button (slotted into shell header-buttons) ───── */
+
+		.img-menu-anchor { position: relative; }
 
 		.unified-btn-secondary {
 			background: transparent;
@@ -155,15 +87,6 @@ export const styles = css`
 		.unified-btn-secondary:hover:not(:disabled) {
 			background: var(--vscode-list-hoverBackground);
 		}
-		.unified-btn-icon-only {
-			width: 28px;
-			height: 28px;
-			min-width: 28px;
-			padding: 0;
-		}
-		.unified-btn-icon-only svg {
-			display: block;
-		}
 
 		.md-tab {
 			background: transparent;
@@ -179,32 +102,11 @@ export const styles = css`
 			justify-content: center;
 			line-height: 0;
 		}
-		.md-tab svg {
-			display: block;
-		}
-		.md-tab:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-		.md-tab.md-max-btn {
-			margin-right: 6px;
-		}
-		.md-tab.is-active {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-		}
+		.md-tab svg { display: block; }
+		.md-tab:hover { background: var(--vscode-list-hoverBackground); }
 
-		.close-btn {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			border-radius: 4px;
-			cursor: pointer;
-		}
-		.close-btn:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
+		/* ── Output wrapper ───────────────────────────────────────────── */
 
-		/* Output wrapper — contains the URL content and the resize handle */
 		.output-wrapper {
 			position: relative;
 			width: 100%;

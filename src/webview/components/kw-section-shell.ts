@@ -1,5 +1,5 @@
 import { LitElement, html, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-section-shell.styles.js';
 
 // ─── SVG icon constants (matching kw-chart-section.ts) ────────────────────────
@@ -42,6 +42,8 @@ export class KwSectionShell extends LitElement {
 	@property({ type: String, attribute: 'name-placeholder' })
 	namePlaceholder = 'Section name';
 
+	@state() private _hasHeaderButtons = false;
+
 	static override styles = styles;
 
 	override render() {
@@ -60,13 +62,15 @@ export class KwSectionShell extends LitElement {
 				</div>
 				<div class="section-actions">
 					<div class="md-tabs" role="tablist" aria-label="Section tools">
-						<slot name="header-buttons"></slot>
-						<span class="md-tabs-divider" aria-hidden="true"></span>
+						${this.expanded ? html`
+						<slot name="header-buttons" @slotchange=${this._onHeaderButtonsSlotChange}></slot>
+						${this._hasHeaderButtons ? html`<span class="md-tabs-divider" aria-hidden="true"></span>` : nothing}
 						<button class="unified-btn-secondary md-tab md-max-btn"
 							type="button" @click=${this._onFitToContents}
 							title="Fit to contents" aria-label="Fit to contents">
 							<span .innerHTML=${SVG_FIT}></span>
 						</button>
+						` : nothing}
 						<button class="unified-btn-secondary md-tab ${this.expanded ? 'is-active' : ''}"
 							type="button" role="tab"
 							aria-selected=${this.expanded ? 'true' : 'false'}
@@ -83,14 +87,19 @@ export class KwSectionShell extends LitElement {
 					</button>
 				</div>
 			</div>
-			<slot name="header-extra"></slot>
 			${this.expanded ? html`
+				<slot name="header-extra"></slot>
 				<slot></slot>
 			` : nothing}
 		`;
 	}
 
 	// ── Event handlers ────────────────────────────────────────────────────────
+
+	private _onHeaderButtonsSlotChange(e: Event): void {
+		const slot = e.target as HTMLSlotElement;
+		this._hasHeaderButtons = (slot.assignedElements().length > 0);
+	}
 
 	private _onDragStart(e: DragEvent): void {
 		if (e.dataTransfer) {

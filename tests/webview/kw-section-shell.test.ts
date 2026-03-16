@@ -185,6 +185,31 @@ describe('kw-section-shell', () => {
 		expect((assigned[0] as HTMLElement).textContent).toBe('Custom');
 	});
 
+	it('divider hidden when no header-buttons slotted', async () => {
+		const el = createShell();
+		await el.updateComplete;
+
+		const divider = el.shadowRoot!.querySelector('.md-tabs-divider');
+		expect(divider).toBeNull();
+	});
+
+	it('divider visible when header-buttons slotted', async () => {
+		const el = createShell({}, {
+			headerButtons: html`<button slot="header-buttons">Btn</button>`
+		});
+		await el.updateComplete;
+
+		// happy-dom may not fire slotchange — simulate it by checking the slot
+		const slot = el.shadowRoot!.querySelector('slot[name="header-buttons"]') as HTMLSlotElement;
+		expect(slot).toBeTruthy();
+		// Manually trigger what slotchange would do
+		slot.dispatchEvent(new Event('slotchange'));
+		await el.updateComplete;
+
+		const divider = el.shadowRoot!.querySelector('.md-tabs-divider');
+		expect(divider).toBeTruthy();
+	});
+
 	it('header-extra slot renders below header row', async () => {
 		const el = createShell({}, {
 			headerExtra: html`<div slot="header-extra" class="extra-content">Extra</div>`
