@@ -30,6 +30,22 @@ describe('buildSearchRegex', () => {
 		expect(regex!.test('fileTtxt')).toBe(false);
 	});
 
+	it('wildcard: multiple stars', () => {
+		const { regex } = buildSearchRegex('a*b*c', 'wildcard');
+		expect(regex).not.toBeNull();
+		expect(regex!.test('aXbYc')).toBe(true);
+		regex!.lastIndex = 0;
+		expect(regex!.test('abc')).toBe(true);
+		regex!.lastIndex = 0;
+		expect(regex!.test('ac')).toBe(false);
+	});
+
+	it('wildcard: lone star returns error (matches empty)', () => {
+		const result = buildSearchRegex('*', 'wildcard');
+		expect(result.regex).toBeNull();
+		expect(result.error).toBe('Pattern matches empty text');
+	});
+
 	it('regex mode: digit pattern', () => {
 		const { regex } = buildSearchRegex('\\d+', 'regex');
 		expect(regex).not.toBeNull();
@@ -59,6 +75,18 @@ describe('buildSearchRegex', () => {
 		const result = buildSearchRegex('.*', 'regex');
 		expect(result.regex).toBeNull();
 		expect(result.error).toBe('Pattern matches empty text');
+	});
+
+	it('regex: ^$ matches empty text returns error', () => {
+		const result = buildSearchRegex('^$', 'regex');
+		expect(result.regex).toBeNull();
+		expect(result.error).toBe('Pattern matches empty text');
+	});
+
+	it('regex mode: case insensitive', () => {
+		const { regex } = buildSearchRegex('Hello', 'regex');
+		expect(regex).not.toBeNull();
+		expect(regex!.test('HELLO world')).toBe(true);
 	});
 
 	it('case insensitive', () => {
@@ -102,6 +130,18 @@ describe('createDebouncedSearch', () => {
 		expect(fn).toHaveBeenCalledOnce();
 	});
 
+	it('multiple rapid triggers with gaps still fire once', () => {
+		const fn = vi.fn();
+		const { trigger } = createDebouncedSearch(fn, 200);
+		for (let i = 0; i < 5; i++) {
+			trigger();
+			vi.advanceTimersByTime(50);
+		}
+		expect(fn).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(200);
+		expect(fn).toHaveBeenCalledOnce();
+	});
+
 	it('cancel prevents firing', () => {
 		const fn = vi.fn();
 		const { trigger, cancel } = createDebouncedSearch(fn, 200);
@@ -119,6 +159,17 @@ describe('createDebouncedSearch', () => {
 		expect(fn).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(200);
 		expect(fn).toHaveBeenCalledOnce();
+	});
+
+	it('immediate re-trigger after fire', () => {
+		const fn = vi.fn();
+		const { trigger } = createDebouncedSearch(fn, 200);
+		trigger();
+		vi.advanceTimersByTime(200);
+		expect(fn).toHaveBeenCalledTimes(1);
+		trigger();
+		vi.advanceTimersByTime(200);
+		expect(fn).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -150,6 +201,10 @@ describe('navigateMatch', () => {
 	it('matchCount 1 always returns 0', () => {
 		expect(navigateMatch(0, 1, 'next')).toBe(0);
 		expect(navigateMatch(0, 1, 'prev')).toBe(0);
+	});
+
+	it('next: wraps from last index', () => {
+		expect(navigateMatch(2, 3, 'next')).toBe(0);
 	});
 });
 
@@ -190,5 +245,21 @@ describe('createRegexCache', () => {
 		const r = cache.get('[bad', 'regex');
 		expect(r.regex).toBeNull();
 		expect(r.error).toBe('Invalid regex');
+	});
+
+	it('invalid regex returns same cached result on repeat call', () => {
+		const cache = createRegexCache();
+		const r1 = cache.get('[bad', 'regex');
+		const r2 = cache.get('[bad', 'regex');
+		expect(r1).toBe(r2);
+	});
+
+	it('empty query returns cached result on repeat call', () => {
+		const cache = createRegexCache();
+		const r1 = cache.get('', 'wildcard');
+		const r2 = cache.get('', 'wildcard');
+		expect(r1).toBe(r2);
+		expect(r1.regex).toBeNull();
+		expect(r1.error).toBeNull();
 	});
 });
