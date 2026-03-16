@@ -28,46 +28,6 @@ export const styles = css`
 		/* Search */
 		.search-area { display: flex; gap: 8px; align-items: center; flex: 1; margin: 0 16px; }
 		.search-results { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
-		.search-control {
-			position: relative; display: inline-flex; align-items: center;
-			flex: 1 1 auto; min-width: 0; width: 100%; max-width: 350px;
-		}
-		.search-icon {
-			position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
-			pointer-events: none; color: var(--vscode-input-placeholderForeground); opacity: 0.7;
-			display: inline-flex; align-items: center; z-index: 1;
-		}
-		.search-input {
-			flex: 1 1 auto; min-width: 0;
-			padding: 4px 8px 4px 26px; padding-right: 98px;
-			background: var(--vscode-input-background);
-			color: var(--vscode-input-foreground);
-			border: 1px solid var(--vscode-input-border);
-			border-radius: 2px; font-family: inherit;
-		}
-		.search-input::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 1; }
-		.mode-toggle {
-			position: absolute; right: 49px; top: 50%; transform: translateY(-50%);
-			width: 20px; height: 18px; padding: 0; border: none;
-			background: transparent; color: var(--vscode-input-foreground); opacity: 0.7;
-			cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 2px;
-		}
-		.mode-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
-		.nav-divider {
-			position: absolute; right: 48px; top: 50%; transform: translateY(-50%);
-			width: 1px; height: 14px; background: var(--vscode-input-foreground); opacity: 0.25; pointer-events: none;
-		}
-		.nav-btn {
-			position: absolute; top: 50%; transform: translateY(-50%);
-			width: 20px; height: 18px; padding: 0; border: none;
-			background: transparent; color: var(--vscode-input-foreground); opacity: 0.7;
-			cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 2px;
-		}
-		.nav-btn:hover:not(:disabled) { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
-		.nav-btn:disabled { opacity: 0.35; cursor: default; }
-		.nav-btn svg { display: block; }
-		.nav-prev { right: 26px; }
-		.nav-next { right: 4px; }
 
 		/* Buttons */
 		.close-btn {
@@ -84,13 +44,10 @@ export const styles = css`
 		}
 		.back-btn:hover { background: var(--vscode-button-hoverBackground); }
 
-		.view-btn {
-			margin: 0; padding: 2px 6px; font-size: 11px;
-			background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; cursor: pointer;
-			display: inline-flex; align-items: center; vertical-align: baseline;
+		.view-link {
+			color: var(--vscode-textLink-foreground); text-decoration: none; font-size: 11px; cursor: pointer;
 		}
-		.view-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+		.view-link:hover { text-decoration: underline; color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
 
 		.tool-btn {
 			background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
@@ -135,11 +92,12 @@ export const styles = css`
 		.props-table td { padding: 6px 10px; border-top: 1px solid var(--vscode-panel-border); vertical-align: top; word-break: break-word; user-select: text; }
 		.props-table td:first-child { width: 35%; max-width: 360px; font-family: var(--vscode-editor-font-family); color: var(--vscode-descriptionForeground); }
 		.props-table td:last-child { font-family: var(--vscode-editor-font-family); vertical-align: middle; }
-		.prop-key-cell { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+		.prop-key-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
 		.prop-key-text { flex: 1; min-width: 0; word-break: break-word; }
-		.prop-copy-btn { opacity: 0; pointer-events: none; }
+		.prop-copy-btn { opacity: 0; pointer-events: none; flex-shrink: 0; }
 		.props-table tr:hover .prop-copy-btn { opacity: 1; pointer-events: auto; }
-		.props-table tr.search-match td { background: var(--vscode-editor-findMatchHighlightBackground); outline: 1px solid var(--vscode-editor-findMatchHighlightBorder); outline-offset: -1px; }
+		.props-table td.search-match { background: var(--vscode-list-filterMatchHighlightBackground, rgba(234, 92, 0, 0.3)); }
+		mark.hl{all:unset;color:var(--vscode-list-highlightForeground);font-weight:600;border-radius:1px}
 
 		/* Raw JSON */
 		.raw-actions { display: inline-flex; gap: 4px; align-items: center; }
@@ -150,6 +108,6 @@ export const styles = css`
 		.json-number { color: var(--vscode-symbolIcon-numberForeground); }
 		.json-boolean { color: var(--vscode-symbolIcon-booleanForeground); }
 		.json-null { color: var(--vscode-symbolIcon-nullForeground); }
-		.json-highlight { background: var(--vscode-editor-findMatchHighlightBackground); border-radius: 2px; }
-		.json-highlight-active { background: var(--vscode-editor-findMatchBackground); outline: 1px solid var(--vscode-editor-findMatchBorder); }
+		.json-highlight { background: var(--vscode-list-filterMatchHighlightBackground, rgba(234, 92, 0, 0.3)); border-radius: 2px; color: var(--vscode-list-highlightForeground); font-weight: 600; }
+		.json-highlight-active { background: var(--vscode-editor-findMatchBackground); outline: 2px solid var(--vscode-list-filterMatchHighlightBorder, var(--vscode-editor-findMatchBorder)); }
 `;

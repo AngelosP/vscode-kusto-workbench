@@ -18,17 +18,15 @@ export const styles = css`
 		.hidden-hint:hover{color:var(--vscode-foreground);text-decoration:underline}
 
 		/* Search bar */
-		.sbar{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:12px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-editor-background);flex-shrink:0}
+		.sbar{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:12px;background:var(--vscode-editor-background);flex-shrink:0}
 		.sc{position:relative;display:flex;align-items:center;flex:1;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:2px}
 		.sc:focus-within{border-color:var(--vscode-focusBorder)}
 		.sc-icon{position:absolute;left:6px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--vscode-input-placeholderForeground);opacity:.7;flex-shrink:0}
 		.sinp{flex:1;padding:4px 8px 4px 26px;font-size:12px;font-family:inherit;background:transparent;color:var(--vscode-input-foreground);border:none;outline:none;min-width:0}.sinp::placeholder{color:var(--vscode-input-placeholderForeground)}
 		.sc-status{font-size:11px;color:var(--vscode-descriptionForeground);white-space:nowrap;padding:0 4px;flex-shrink:0;pointer-events:none}
 		.sc-status.err{color:var(--vscode-errorForeground)}
-		.sc-mode{width:20px;height:18px;padding:0;border:none;background:transparent;color:var(--vscode-input-foreground);opacity:.7;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;font-size:11px;flex-shrink:0}.sc-mode:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground)}.ml{font-family:monospace;font-weight:bold}
-		.sc-div{width:1px;height:14px;background:var(--vscode-input-foreground);opacity:.25;flex-shrink:0;margin:0 2px}
-		.sc-nav{width:20px;height:18px;padding:0;border:none;background:transparent;color:var(--vscode-input-foreground);opacity:.7;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;flex-shrink:0}.sc-nav:hover:not(:disabled){opacity:1;background:var(--vscode-toolbar-hoverBackground)}.sc-nav:disabled{opacity:.35;cursor:default}
-		.nb{width:22px;height:22px;padding:0;border:none;background:transparent;color:var(--vscode-foreground);cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:2px}.nb:hover:not(:disabled){background:var(--vscode-toolbar-hoverBackground)}.nb:disabled{opacity:.35;cursor:default}
+		.close-mini{width:22px;height:22px;padding:0;border:1px solid transparent;background:transparent;color:var(--vscode-foreground);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;flex-shrink:0}.close-mini:hover:not(:disabled){background:var(--vscode-list-hoverBackground)}.close-mini:disabled{opacity:.35;cursor:default}
+		.cj-close{align-self:flex-start;margin-top:2px}
 
 		/* Column jump — searchable dropdown */
 		.cj-wrap{flex:1;position:relative;display:flex;flex-direction:column;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:2px}
@@ -65,8 +63,8 @@ export const styles = css`
 		.rn:hover{background:var(--vscode-list-hoverBackground);opacity:.8}
 
 		/* Object View button */
-		.obj-btn{padding:2px 8px;font-size:11px;background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);border:1px solid var(--vscode-button-border,transparent);border-radius:3px;cursor:pointer;font-family:inherit}.obj-btn:hover{background:var(--vscode-button-secondaryHoverBackground)}
-		.obj-cell{text-align:center}
+		.obj-link{color:var(--vscode-textLink-foreground);text-decoration:none;font-size:11px;cursor:pointer}.obj-link:hover{text-decoration:underline;color:var(--vscode-textLink-activeForeground,var(--vscode-textLink-foreground))}
+		.obj-cell{text-align:left}
 
 		/* Column menu */
 		.cm{position:fixed;z-index:10000;background:var(--vscode-menu-background,var(--vscode-editor-background));border:1px solid var(--vscode-menu-border,var(--vscode-panel-border));border-radius:0;padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translateX(-100%)}
@@ -81,8 +79,10 @@ export const styles = css`
 		.sel-row .rn{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground);opacity:1}
 		.cr{background:var(--vscode-list-activeSelectionBackground)!important;color:var(--vscode-list-activeSelectionForeground)}
 		.cf{background:var(--vscode-list-activeSelectionBackground)!important;color:var(--vscode-list-activeSelectionForeground);outline:2px solid var(--vscode-focusBorder);outline-offset:-2px}
-		.mh{background:var(--vscode-editor-findMatchHighlightBackground)!important}
-		.mc{background:var(--vscode-editor-findMatchBackground)!important;outline:1px solid var(--vscode-editor-findMatchBorder)}
+		.mh{background:var(--vscode-list-filterMatchHighlightBackground, rgba(234, 92, 0, 0.3))!important}
+		.mc{background:var(--vscode-editor-findMatchBackground)!important;outline:2px solid var(--vscode-list-filterMatchHighlightBorder, var(--vscode-editor-findMatchBorder))}
+		mark.hl,mark.hl-cur{all:unset;color:var(--vscode-list-highlightForeground);font-weight:600;border-radius:1px}
+		mark.hl-cur{background:var(--vscode-editor-findMatchBackground);outline:2px solid var(--vscode-list-filterMatchHighlightBorder, var(--vscode-editor-findMatchBorder))}
 
 		.empty,.empty-body,.hidden-msg{padding:16px;text-align:center;opacity:.7;font-size:12px}
 

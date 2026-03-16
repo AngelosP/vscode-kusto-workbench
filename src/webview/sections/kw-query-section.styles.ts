@@ -145,20 +145,6 @@ export const styles = css`
 			display: flex;
 			align-items: center;
 		}
-		.select-wrapper.has-icon .select-icon {
-			position: absolute;
-			left: 8px;
-			top: 50%;
-			transform: translateY(-50%);
-			pointer-events: none;
-			z-index: 1;
-			opacity: 0.95;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			width: 16px;
-			height: 16px;
-		}
 		.select-wrapper.half-width {
 			flex: 1 1 210px;
 			width: auto;
@@ -170,166 +156,6 @@ export const styles = css`
 			width: auto;
 			max-width: 448px;
 			min-width: 40px;
-		}
-		/* Hide icon in favorites dropdown in normal mode */
-		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon {
-			display: none;
-		}
-		.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn {
-			padding-left: 8px;
-		}
-
-		/* ── Dropdown button ────────────────────────────────────────── */
-		.kusto-dropdown-btn {
-			width: 100%;
-			display: inline-flex;
-			align-items: center;
-			justify-content: flex-start;
-			position: relative;
-			background-color: var(--vscode-dropdown-background);
-			color: var(--vscode-dropdown-foreground);
-			border: 1px solid var(--vscode-dropdown-border);
-			border-radius: 2px;
-			padding: 6px 24px 6px 8px;
-			min-height: 27px;
-			font-size: 12px;
-			cursor: pointer;
-			text-align: left;
-			font-family: inherit;
-		}
-		.select-wrapper.has-icon .kusto-dropdown-btn {
-			padding-left: 28px;
-		}
-		.kusto-dropdown-btn:hover {
-			background-color: var(--vscode-dropdown-background);
-			border-color: var(--vscode-dropdown-border);
-		}
-		.kusto-dropdown-btn:focus {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-		.kusto-dropdown-btn:disabled {
-			opacity: 0.5;
-			cursor: not-allowed;
-		}
-		.kusto-dropdown-btn-text {
-			display: inline-flex;
-			align-items: baseline;
-			gap: 6px;
-			flex: 1 1 auto;
-			min-width: 0;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-		.kusto-dropdown-btn-caret {
-			position: absolute;
-			right: 3px;
-			top: 50%;
-			transform: translateY(-50%);
-			pointer-events: none;
-			width: 16px;
-			height: 16px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-		}
-		.kusto-dropdown-btn-caret svg {
-			width: 16px;
-			height: 16px;
-			fill: currentColor;
-			color: var(--vscode-foreground);
-			opacity: 0.8;
-		}
-
-		/* ── Dropdown menu ──────────────────────────────────────────── */
-		.kusto-dropdown-menu {
-			position: fixed;
-			left: 0;
-			top: 0;
-			width: max-content;
-			min-width: 100%;
-			max-width: 350px;
-			max-height: 280px;
-			overflow: auto;
-			z-index: 100000;
-			background: var(--vscode-dropdown-background);
-			border: 1px solid var(--vscode-dropdown-border);
-			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
-			box-sizing: border-box;
-		}
-		.kusto-dropdown-item {
-			padding: 4px 8px;
-			cursor: pointer;
-			font-size: 12px;
-			line-height: 1.4;
-			user-select: none;
-			white-space: nowrap;
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			color: var(--vscode-dropdown-foreground);
-		}
-		.kusto-dropdown-item:hover,
-		.kusto-dropdown-item.is-active {
-			background: var(--vscode-list-hoverBackground);
-			color: var(--vscode-foreground);
-		}
-		.kusto-dropdown-item.is-disabled {
-			cursor: default;
-			color: var(--vscode-descriptionForeground);
-			background: transparent;
-		}
-		.kusto-dropdown-item:focus { outline: none; }
-		.kusto-dropdown-item:focus-visible {
-			outline: 1px solid var(--vscode-focusBorder);
-			outline-offset: -1px;
-		}
-		.kusto-dropdown-item-main {
-			flex: 1 1 auto;
-			min-width: 0;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-		.kusto-dropdown-empty {
-			padding: 8px;
-			font-size: 12px;
-			color: var(--vscode-descriptionForeground);
-		}
-
-		/* Favorites item styling */
-		.kusto-favorites-primary {
-			color: var(--vscode-dropdown-foreground);
-			font-weight: 600;
-		}
-		.kusto-favorites-secondary {
-			color: var(--vscode-descriptionForeground);
-		}
-		.kusto-dropdown-trash {
-			flex: 0 0 auto;
-			width: 24px;
-			height: 24px;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			color: var(--vscode-descriptionForeground);
-			padding: 0;
-			visibility: hidden;
-			pointer-events: none;
-			cursor: pointer;
-		}
-		.kusto-dropdown-item:hover .kusto-dropdown-trash,
-		.kusto-dropdown-item.is-active .kusto-dropdown-trash {
-			visibility: visible;
-			pointer-events: auto;
-		}
-		.kusto-dropdown-trash:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
 		}
 
 		/* ── Icon buttons ───────────────────────────────────────────── */
@@ -491,24 +317,12 @@ export const styles = css`
 				min-width: 32px;
 				max-width: 32px;
 			}
-			.select-wrapper.half-width .kusto-dropdown-btn-text { display: none; }
-			.select-wrapper.half-width .kusto-dropdown-btn-caret { display: none; }
-			.select-wrapper.half-width .kusto-dropdown-btn { padding: 4px; justify-content: center; }
-			.select-wrapper.half-width.has-icon .kusto-dropdown-btn { padding: 4px; }
-			.select-wrapper.half-width.has-icon .select-icon {
-				left: 50%;
-				transform: translate(-50%, -50%);
-			}
 			.select-wrapper.kusto-favorites-combo {
 				flex: 0 0 32px;
 				width: 32px;
 				min-width: 32px;
 				max-width: 32px;
 			}
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn .select-icon { display: inline-flex; }
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-text { display: none; }
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn-caret { display: none; }
-			.select-wrapper.kusto-favorites-combo .kusto-dropdown-btn { padding: 4px; justify-content: center; }
 		}
 		@container (max-width: 200px) {
 			.refresh-btn-wrap { display: none !important; }

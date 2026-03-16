@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
+import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -190,6 +191,11 @@ export class KwChartSection extends LitElement {
 	private _closeAxisPopupBound = this._closeAxisPopupOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
 	private _scrollAtPopupOpen = 0;
+
+	// Stable dismiss callbacks for dismiss stack
+	private _dismissAxisPopup = (): void => { this._closeAxisPopup(); };
+	private _dismissDropdown = (): void => { this._openDropdownId = ''; document.removeEventListener('mousedown', this._closeDropdownBound); };
+	private _dismissModeDropdown = (): void => { this._modeDropdownOpen = false; };
 	private _themeObserver: MutationObserver | null = null;
 	private _lastThemeDark: boolean | null = null;
 
@@ -221,6 +227,9 @@ export class KwChartSection extends LitElement {
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		document.removeEventListener('mousedown', this._closeAxisPopupBound);
 		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
+		removeDismissable(this._dismissAxisPopup);
+		removeDismissable(this._dismissDropdown);
+		removeDismissable(this._dismissModeDropdown);
 		this._themeObserver?.disconnect();
 		this._themeObserver = null;
 	}
@@ -250,6 +259,20 @@ export class KwChartSection extends LitElement {
 
 		if (changed.has('_expanded')) {
 			this._updateHostClasses();
+		}
+
+		// Manage dismiss stack for popups/dropdowns
+		if (changed.has('_openAxisPopup')) {
+			if (this._openAxisPopup) pushDismissable(this._dismissAxisPopup);
+			else removeDismissable(this._dismissAxisPopup);
+		}
+		if (changed.has('_openDropdownId')) {
+			if (this._openDropdownId) pushDismissable(this._dismissDropdown);
+			else removeDismissable(this._dismissDropdown);
+		}
+		if (changed.has('_modeDropdownOpen')) {
+			if (this._modeDropdownOpen) pushDismissable(this._dismissModeDropdown);
+			else removeDismissable(this._dismissModeDropdown);
 		}
 
 		// Re-render chart when key properties change

@@ -289,6 +289,11 @@ export class KwTransformationSection extends LitElement {
 							});
 						}
 					}}
+					@chrome-height-change=${() => {
+						requestAnimationFrame(() => {
+							this._wrapperHeight = this._computeFitHeight();
+						});
+					}}
 				></kw-data-table>
 			</div>
 		`;
@@ -705,28 +710,12 @@ export class KwTransformationSection extends LitElement {
 			}
 		}
 
-		// Compute data-table content height from row count
+		// Use kw-data-table.getContentHeight() which accounts for all internal
+		// chrome (header bar, thead, search bar, row-jump, col-jump, rows).
 		const dataTable = this.shadowRoot?.querySelector('kw-data-table') as any;
-		if (dataTable) {
-			const rowCount = Array.isArray(dataTable.rows) ? dataTable.rows.length : 0;
-
-			const dtShadow = dataTable.shadowRoot;
-			let headerH = 0;
-			const hbar = dtShadow?.querySelector('.hbar') as HTMLElement | null;
-			const thead = dtShadow?.querySelector('thead') as HTMLElement | null;
-			if (hbar) headerH += Math.ceil(hbar.getBoundingClientRect().height);
-			if (thead) headerH += Math.ceil(thead.getBoundingClientRect().height);
-
-			// Measure actual row height from a rendered row instead of guessing
-			let rowH = (dataTable.options?.compact ?? false) ? 22 : 28;
-			const firstRow = dtShadow?.querySelector('tbody tr') as HTMLElement | null;
-			if (firstRow) {
-				rowH = Math.ceil(firstRow.getBoundingClientRect().height);
-			}
-
-			// 2px slack for container border
-			const tableH = headerH + (rowCount * rowH) + 2;
-			nonTableH += Math.max(60, tableH);
+		if (dataTable && typeof dataTable.getContentHeight === 'function') {
+			const contentH = dataTable.getContentHeight();
+			nonTableH += Math.max(60, contentH);
 		} else {
 			const resultsArea = wrapper?.querySelector('.results-area') as HTMLElement | null;
 			if (resultsArea) {

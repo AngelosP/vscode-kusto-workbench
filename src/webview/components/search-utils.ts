@@ -1,5 +1,7 @@
 // Shared search utilities used by kw-data-table, kw-object-viewer, and cellViewer.
 
+import { html, type TemplateResult } from 'lit';
+
 export type SearchMode = 'wildcard' | 'regex';
 export type SearchMatch = { row: number; col: number };
 
@@ -70,4 +72,26 @@ export function createRegexCache(): { get: (query: string, mode: SearchMode) => 
 			return result;
 		},
 	};
+}
+
+/**
+ * Render text with regex matches wrapped in <mark> elements.
+ * Returns a Lit TemplateResult with highlighted substrings.
+ * `cls` is the CSS class applied to each <mark> element.
+ */
+export function highlightMatches(text: string, regex: RegExp, cls: string): TemplateResult {
+	regex.lastIndex = 0;
+	const parts: TemplateResult[] = [];
+	let lastIndex = 0;
+	let m: RegExpExecArray | null;
+	while ((m = regex.exec(text)) !== null) {
+		if (!m[0]) { regex.lastIndex++; continue; }
+		if (m.index > lastIndex) parts.push(html`${text.slice(lastIndex, m.index)}`);
+		const matched = m[0];
+		parts.push(html`<mark class="${cls}">${matched}</mark>`);
+		lastIndex = m.index + matched.length;
+	}
+	if (lastIndex < text.length) parts.push(html`${text.slice(lastIndex)}`);
+	if (parts.length === 0) return html`${text}`;
+	return html`${parts}`;
 }

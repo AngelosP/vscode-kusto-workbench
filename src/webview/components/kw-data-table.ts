@@ -7,7 +7,9 @@ import type { KwObjectViewer } from './kw-object-viewer.js';
 import { rowMatchesFilterSpec, isColumnFiltered, getFilterSpecForColumn, type ColumnFilterSpec } from './kw-filter-dialog.js';
 import './kw-filter-dialog.js';
 import './kw-sort-dialog.js';
-import { buildSearchRegex, createDebouncedSearch, navigateMatch, createRegexCache, type SearchMode } from './search-utils.js';
+import { buildSearchRegex, createDebouncedSearch, navigateMatch, createRegexCache, highlightMatches, type SearchMode } from './search-utils.js';
+import { pushDismissable, removeDismissable } from './dismiss-stack.js';
+import './kw-search-bar.js';
 
 export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
@@ -238,8 +240,8 @@ const ICON = {
 	copy: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="2" ry="2"/><path d="M3 11V4a2 2 0 0 1 2-2h7"/></svg>`,
 	trash: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h10"/><path d="M6 5V3.8c0-.4.3-.8.8-.8h2.4c.4 0 .8.3.8.8V5"/><path d="M5.2 5l.6 8.2c0 .5.4.8.8.8h3c.5 0 .8-.4.8-.8l.6-8.2"/><path d="M7 7.4v4.6"/><path d="M9 7.4v4.6"/></svg>`,
 	eye: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z"/><circle cx="8" cy="8" r="2.1"/></svg>`,
-	close: html`<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>`,
-	closeLarge: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>`,
+	close: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>`,
+	closeLarge: html`<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>`,
 	plus: html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9"/><path d="M3.5 8h9"/></svg>`,
 	up: html`<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 5.5L3.5 10l.707.707L8 6.914l3.793 3.793.707-.707L8 5.5z"/></svg>`,
 	down: html`<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 10.5l4.5-4.5-.707-.707L8 9.086 4.207 5.293 3.5 6 8 10.5z"/></svg>`,
@@ -264,6 +266,7 @@ export class KwDataTable extends LitElement {
 	private _regexCache = createRegexCache();
 	@state() private _searchMatches: Array<{ row: number; col: number }> = [];
 	@state() private _currentMatchIndex = 0;
+	private get _searchRegex(): RegExp | null { return this._regexCache.get(this._searchQuery, this._searchMode).regex; }
 	@state() private _columnMenuOpen: number | null = null;
 	private _columnMenuPos: { x: number; y: number } = { x: 0, y: 0 };
 	@state() private _sortDialogOpen = false;
@@ -326,8 +329,12 @@ export class KwDataTable extends LitElement {
 		const rowH = rowSample ? rowSample.getBoundingClientRect().height : this._estimatedRowHeight();
 		const totalRows = this.getVisibleRowCount();
 		const allRowsH = totalRows * (rowH + 1);
-		const searchBarH = this._searchVisible ? ((sr.querySelector('.sbar') as HTMLElement | null)?.getBoundingClientRect().height ?? 0) : 0;
-		return Math.ceil(hbarH + headH + searchBarH + allRowsH + 25);
+		// Measure ALL visible toolbars (search, row-jump, col-jump — each is a .sbar).
+		let toolbarsH = 0;
+		for (const bar of sr.querySelectorAll('.sbar')) {
+			toolbarsH += (bar as HTMLElement).getBoundingClientRect().height;
+		}
+		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + 25);
 	}
 
 	// ── Lifecycle ──
@@ -349,6 +356,14 @@ export class KwDataTable extends LitElement {
 		document.addEventListener('keydown', this._onDocumentKeydown, true);
 		document.addEventListener('scroll', this._onDocumentScrollDismiss, { capture: true, passive: true });
 	}
+	// Stable dismiss callbacks for the dismiss stack
+	private _dismissSearch = (): void => { this._toggleSearch(); };
+	private _dismissRowJump = (): void => { this._toggleRowJump(this._table?.getRowModel().rows.length ?? 0); };
+	private _dismissColJump = (): void => { this._colJumpOpen = false; this._colJumpQuery = ''; };
+	private _dismissColumnMenu = (): void => { this._closeColumnMenu(); };
+	private _dismissSortDialog = (): void => { this._sortDialogOpen = false; };
+	private _dismissFilterDialog = (): void => { this._closeFilterDialog(); };
+
 	protected updated(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) this._initVirtualizer();
 		// When body becomes visible again after being hidden, the scroll container
@@ -358,11 +373,39 @@ export class KwDataTable extends LitElement {
 		this._syncHeaderScroll();
 		// Capture scroll position when a popup opens (for threshold-based dismiss)
 		if ((changed.has('_columnMenuOpen') && this._columnMenuOpen !== null) ||
-			(changed.has('_colJumpOpen') && this._colJumpOpen) ||
 			(changed.has('_sortDialogOpen') && this._sortDialogOpen) ||
-			(changed.has('_filterDialogOpen') && this._filterDialogOpen) ||
-			(changed.has('_rowJumpVisible') && this._rowJumpVisible)) {
+			(changed.has('_filterDialogOpen') && this._filterDialogOpen)) {
 			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		}
+		// Manage dismiss stack: push when opening, remove when closing
+		if (changed.has('_searchVisible')) {
+			if (this._searchVisible) pushDismissable(this._dismissSearch);
+			else removeDismissable(this._dismissSearch);
+		}
+		if (changed.has('_rowJumpVisible')) {
+			if (this._rowJumpVisible) pushDismissable(this._dismissRowJump);
+			else removeDismissable(this._dismissRowJump);
+		}
+		if (changed.has('_colJumpOpen')) {
+			if (this._colJumpOpen) pushDismissable(this._dismissColJump);
+			else removeDismissable(this._dismissColJump);
+		}
+		if (changed.has('_columnMenuOpen')) {
+			if (this._columnMenuOpen !== null) pushDismissable(this._dismissColumnMenu);
+			else removeDismissable(this._dismissColumnMenu);
+		}
+		if (changed.has('_sortDialogOpen')) {
+			if (this._sortDialogOpen) pushDismissable(this._dismissSortDialog);
+			else removeDismissable(this._dismissSortDialog);
+		}
+		if (changed.has('_filterDialogOpen')) {
+			if (this._filterDialogOpen) pushDismissable(this._dismissFilterDialog);
+			else removeDismissable(this._dismissFilterDialog);
+		}
+		// Notify parent when tabular chrome (search, row-jump, col-jump) toggles
+		// so it can adapt its container height.
+		if (changed.has('_searchVisible') || changed.has('_rowJumpVisible') || changed.has('_colJumpOpen')) {
+			this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
 		}
 	}
 	disconnectedCallback(): void {
@@ -373,6 +416,13 @@ export class KwDataTable extends LitElement {
 		this._virtualizerCleanup?.();
 		this._virtualizerCleanup = null;
 		this._virtualizer = null;
+		// Clean up dismiss stack
+		removeDismissable(this._dismissSearch);
+		removeDismissable(this._dismissRowJump);
+		removeDismissable(this._dismissColJump);
+		removeDismissable(this._dismissColumnMenu);
+		removeDismissable(this._dismissSortDialog);
+		removeDismissable(this._dismissFilterDialog);
 		document.removeEventListener('mouseup', this._onMouseUp);
 		document.removeEventListener('mousemove', this._onMouseMove);
 		document.removeEventListener('mousedown', this._onDocMouseDown);
@@ -883,9 +933,10 @@ this.requestUpdate();
 								let cls = isFocus ? 'cf' : isInRng ? 'cr' : '';
 								if (isCM) cls += ' mc'; else if (isM) cls += ' mh';
 								if (isObj) {
-									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><button class="obj-btn" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</button></td>`;
+									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><a class="obj-link" href="#" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</a></td>`;
 								}
-								return html`<td class="${cls}" title="${escHtml(getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${display}</td>`;
+								const cellContent = isM && this._searchRegex ? highlightMatches(display, this._searchRegex, isCM ? 'hl-cur' : 'hl') : display;
+								return html`<td class="${cls}" title="${escHtml(getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${cellContent}</td>`;
 								})}
 							</tr>`;
 						})}
@@ -939,15 +990,22 @@ this.requestUpdate();
 
 	// ── Metadata tooltip (Client Activity ID + Server Stats) ──
 
+	private _metaShowTimer: ReturnType<typeof setTimeout> | null = null;
+
 	private _showMetaTooltip(e: MouseEvent): void {
 		if (this._metaHideTimer) { clearTimeout(this._metaHideTimer); this._metaHideTimer = null; }
+		if (this._metaTooltipVisible) return;
 		const el = e.currentTarget as HTMLElement;
-		const rect = el.getBoundingClientRect();
-		this._metaTooltipPos = { top: rect.bottom + 4, left: rect.left };
-		this._metaTooltipVisible = true;
+		this._metaShowTimer = setTimeout(() => {
+			this._metaShowTimer = null;
+			const rect = el.getBoundingClientRect();
+			this._metaTooltipPos = { top: rect.bottom + 4, left: rect.left };
+			this._metaTooltipVisible = true;
+		}, 500);
 	}
 
 	private _scheduleHideMetaTooltip = (): void => {
+		if (this._metaShowTimer) { clearTimeout(this._metaShowTimer); this._metaShowTimer = null; }
 		if (this._metaHideTimer) clearTimeout(this._metaHideTimer);
 		this._metaHideTimer = setTimeout(() => { this._metaTooltipVisible = false; }, 120);
 	};
@@ -1059,30 +1117,28 @@ this.requestUpdate();
 					@input=${(e: Event) => { this._rowJumpQuery = (e.target as HTMLInputElement).value; this._execRowJump(totalRows); }}
 					@keydown=${(e: KeyboardEvent) => {
 						if (e.key === 'Enter') { e.shiftKey ? this._prevRowTarget() : this._nextRowTarget(); e.preventDefault(); }
-						if (e.key === 'Escape') { this._toggleRowJump(totalRows); e.preventDefault(); }
 					}} />
 				<span class="${statusClass}">${statusText}</span>
 			</div>
-			<button class="nb" title="Close" @click=${() => this._toggleRowJump(totalRows)}>${ICON.close}</button>
+			<button class="close-mini" title="Close" @click=${() => this._toggleRowJump(totalRows)}>${ICON.closeLarge}</button>
 		</div>`;
 	}
 
 	private _renderSearch(): TemplateResult {
-		const mc = this._searchMatches.length;
-		const statusText = this._searchQuery.trim() ? (mc > 0 ? `(${this._currentMatchIndex + 1}/${mc})` : 'No matches') : '';
 		return html`<div class="sbar">
-			<div class="sc">
-				<svg class="sc-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>
-				<input type="text" class="sinp search-inp" placeholder="Search..." autocomplete="off" spellcheck="false" .value=${this._searchQuery}
-					@input=${(e: Event) => { this._searchQuery = (e.target as HTMLInputElement).value; this._debouncedSearch.trigger(); }}
-					@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') { e.shiftKey ? this._prevMatch() : this._nextMatch(); e.preventDefault(); } if (e.key === 'Escape') { this._toggleSearch(); e.preventDefault(); } }} />
-				${statusText ? html`<span class="sc-status">${statusText}</span>` : nothing}
-				<button class="sc-mode" title="${this._searchMode === 'regex' ? 'Regex' : 'Wildcard'}" @click=${() => { this._searchMode = this._searchMode === 'regex' ? 'wildcard' : 'regex'; this._execSearch(); }}><span class="ml">${this._searchMode === 'regex' ? '.*' : '*'}</span></button>
-				<span class="sc-div"></span>
-				<button class="sc-nav" title="Previous" ?disabled=${mc < 2} @click=${this._prevMatch}>${ICON.up}</button>
-				<button class="sc-nav" title="Next" ?disabled=${mc < 2} @click=${this._nextMatch}>${ICON.down}</button>
-			</div>
-			<button class="nb" title="Close" @click=${() => this._toggleSearch()}>${ICON.close}</button>
+			<kw-search-bar
+				.query=${this._searchQuery}
+				.mode=${this._searchMode}
+				.matchCount=${this._searchMatches.length}
+				.currentMatch=${this._currentMatchIndex}
+				.showClose=${true}
+				.showStatus=${true}
+				@search-input=${(e: CustomEvent) => { this._searchQuery = e.detail.query; this._debouncedSearch.trigger(); }}
+				@search-mode-change=${(e: CustomEvent) => { this._searchMode = e.detail.mode; this._execSearch(); }}
+				@search-next=${() => this._nextMatch()}
+				@search-prev=${() => this._prevMatch()}
+				@search-close=${() => this._toggleSearch()}
+			></kw-search-bar>
 		</div>`;
 	}
 
@@ -1094,7 +1150,6 @@ this.requestUpdate();
 				<input type="text" class="cj-inp" placeholder="Scroll to column..." autocomplete="off" spellcheck="false" .value=${this._colJumpQuery}
 					@input=${(e: Event) => { this._colJumpQuery = (e.target as HTMLInputElement).value; }}
 					@keydown=${(e: KeyboardEvent) => {
-						if (e.key === 'Escape') { this._colJumpOpen = false; e.preventDefault(); }
 						if (e.key === 'Enter' && filtered.length > 0) { this._scrollToCol(filtered[0].idx); this._colJumpOpen = false; e.preventDefault(); }
 						if (e.key === 'ArrowDown') { const first = this.shadowRoot?.querySelector('.cj-item') as HTMLElement; first?.focus(); e.preventDefault(); }
 					}} />
@@ -1104,7 +1159,7 @@ this.requestUpdate();
 						@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') { this._scrollToCol(c.idx); this._colJumpOpen = false; e.preventDefault(); } }}>${c.name}</div>`) : html`<div class="cj-empty">No columns match</div>`}
 				</div>
 			</div>
-			<button class="nb" title="Close" @click=${() => { this._colJumpOpen = false; }}>${ICON.close}</button>
+			<button class="close-mini cj-close" title="Close" @click=${() => { this._colJumpOpen = false; }}>${ICON.closeLarge}</button>
 		</div>`;
 	}
 
@@ -1264,7 +1319,18 @@ this.requestUpdate();
 
 	// ── Actions ──
 
-	private _toggleSearch(): void { this._searchVisible = !this._searchVisible; if (this._searchVisible) requestAnimationFrame(() => { const i = this.shadowRoot?.querySelector('.search-inp') as HTMLInputElement; i?.focus(); i?.select(); }); else { this._debouncedSearch.cancel(); this._searchMatches = []; this._searchQuery = ''; } }
+	private _toggleSearch(): void {
+		this._searchVisible = !this._searchVisible;
+		if (this._searchVisible) {
+			this.updateComplete.then(() => {
+				this.shadowRoot?.querySelector('kw-search-bar')?.focus();
+			});
+		} else {
+			this._debouncedSearch.cancel();
+			this._searchMatches = [];
+			this._searchQuery = '';
+		}
+	}
 	private _toggleRowJump(totalRows: number): void {
 		this._rowJumpVisible = !this._rowJumpVisible;
 		if (this._rowJumpVisible) {
@@ -1363,14 +1429,12 @@ this.requestUpdate();
 	}
 
 	private _onDocumentScrollDismiss = (): void => {
-		if (!this._columnMenuOpen && this._columnMenuOpen !== 0 && !this._colJumpOpen && !this._sortDialogOpen && !this._filterDialogOpen && !this._rowJumpVisible) return;
+		if (!this._columnMenuOpen && this._columnMenuOpen !== 0 && !this._sortDialogOpen && !this._filterDialogOpen) return;
 		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
 		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		this._columnMenuOpen = null;
-		this._colJumpOpen = false;
 		this._sortDialogOpen = false;
 		this._filterDialogOpen = false;
-		this._rowJumpVisible = false;
 	};
 
 	private _onDocumentCopy = (e: ClipboardEvent): void => {
@@ -1389,59 +1453,12 @@ this.requestUpdate();
 	};
 
 	private _onDocumentKeydown = (e: KeyboardEvent): void => {
-		if (e.key === 'Escape' && this._isKeyboardEventInsideThisTable(e)) {
-			if (this._closeAllPopups()) {
-				e.preventDefault();
-				e.stopPropagation();
-			}
-			return;
-		}
 		if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'c') return;
 		if (!this._isSelectionInThisTable()) return;
 		e.preventDefault();
 		e.stopPropagation();
 		this._copy();
 	};
-
-	private _isKeyboardEventInsideThisTable(e: KeyboardEvent): boolean {
-		try {
-			const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-			if (Array.isArray(path) && path.includes(this)) return true;
-		} catch { /* ignore */ }
-		const active = document.activeElement as HTMLElement | null;
-		if (active && this.contains(active)) return true;
-		return false;
-	}
-
-	private _closeAllPopups(): boolean {
-		let closedAny = false;
-		if (this._columnMenuOpen !== null) {
-			this._closeColumnMenu();
-			closedAny = true;
-		}
-		if (this._sortDialogOpen) {
-			this._sortDialogOpen = false;
-			closedAny = true;
-		}
-		if (this._filterDialogOpen) {
-			this._closeFilterDialog();
-			closedAny = true;
-		}
-		if (this._searchVisible) {
-			this._toggleSearch();
-			closedAny = true;
-		}
-		if (this._rowJumpVisible) {
-			this._toggleRowJump(this._table?.getRowModel().rows.length ?? 0);
-			closedAny = true;
-		}
-		if (this._colJumpOpen) {
-			this._colJumpOpen = false;
-			this._colJumpQuery = '';
-			closedAny = true;
-		}
-		return closedAny;
-	}
 
 	private _isSelectionInThisTable(): boolean {
 		if (!this._selectedCell && !this._selectionRange) return false;

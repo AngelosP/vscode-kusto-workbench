@@ -2,6 +2,9 @@ import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-query-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
+import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
+import '../components/kw-dropdown.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,13 +70,9 @@ const favoritesListIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16
 
 const schemaInfoIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 12.5c-3.04 0-5.5-2.46-5.5-5.5S4.96 2.5 8 2.5s5.5 2.46 5.5 5.5-2.46 5.5-5.5 5.5zM7.25 5h1.5v1.5h-1.5V5zm0 2.5h1.5v4h-1.5v-4z"/></svg>`;
 
-const chevronDownSvg = html`<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>`;
-
 const spinnerSvg = html`<span class="query-spinner" aria-hidden="true"></span>`;
 
 const clusterPickerIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><ellipse cx="8" cy="4" rx="5" ry="2" /><path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4" /><path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" /></svg>`;
-
-const trashIconSvg = html`<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6 2.5h4" /><path d="M3.5 4.5h9" /><path d="M5 4.5l.7 9h4.6l.7-9" /><path d="M6.6 7v4.8" /><path d="M9.4 7v4.8" /></svg>`;
 
 const shareIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 3zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M4 6a2 2 0 1 1-.001 4.001A2 2 0 0 1 4 6zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M12 9a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 9zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M5.5 7.5l5-2.5M5.5 8.5l5 2.5" stroke="currentColor" stroke-width="1" fill="none"/></svg>`;
 
@@ -84,10 +83,6 @@ const previewIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill
 const closeIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function escapeHtml(str: string): string {
-	return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 
 function normalizeClusterUrlKey(url: string): string {
 	let u = String(url || '').trim();
@@ -176,16 +171,16 @@ export class KwQuerySection extends LitElement {
 	@state() private _name = '';
 	@state() private _expanded = true;
 
-	// Dropdown open state
-	@state() private _clusterMenuOpen = false;
-	@state() private _databaseMenuOpen = false;
-	@state() private _favoritesMenuOpen = false;
+	// Schema popover open state (dropdowns now managed by <kw-dropdown>)
 	@state() private _schemaPopoverOpen = false;
 
-	// Bound handler for close-on-outside-click
-	private _closeAllBound = this._closeAllDropdowns.bind(this);
-	// Bound handler for close-on-scroll
-	private _closeOnScrollBound = this._closeOnScroll.bind(this);
+	// Bound handler for close-on-outside-click (schema popover)
+	private _closeSchemaPopoverBound = this._closeSchemaPopoverOnOutsideClick.bind(this);
+
+	// Dismiss stack callback for schema popover
+	private _dismissSchemaPopover = (): void => { this._schemaPopoverOpen = false; };
+	// Bound handler for close-on-scroll (schema popover)
+	private _closeSchemaPopoverOnScrollBound = this._closeSchemaPopoverOnScroll.bind(this);
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
@@ -195,21 +190,21 @@ export class KwQuerySection extends LitElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
-		document.addEventListener('mousedown', this._closeAllBound);
-		document.addEventListener('scroll', this._closeOnScrollBound, true);
+		document.addEventListener('mousedown', this._closeSchemaPopoverBound);
+		document.addEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		document.removeEventListener('mousedown', this._closeAllBound);
-		document.removeEventListener('scroll', this._closeOnScrollBound, true);
+		document.removeEventListener('mousedown', this._closeSchemaPopoverBound);
+		document.removeEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
 	}
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render(): TemplateResult {
 		return html`
-			<div class="header-group">
+			<div class="header-group" @dropdown-opened=${this._onDropdownOpened}>
 				${this._renderHeaderRow()}
 				${this._renderConnectionRow()}
 			</div>
@@ -296,116 +291,77 @@ export class KwQuerySection extends LitElement {
 		const sorted = [...this._connections].sort((a, b) =>
 			formatClusterDisplayName(a).toLowerCase().localeCompare(formatClusterDisplayName(b).toLowerCase())
 		);
-		const selectedLabel = this._getSelectedClusterLabel();
+		const clusterItems: DropdownItem[] = sorted.map(c => ({
+			id: c.id,
+			label: formatClusterDisplayName(c),
+		}));
+		const clusterActions: DropdownAction[] = [
+			{ id: '__enter_new__', label: 'Enter new cluster…' },
+			{ id: '__import_xml__', label: 'Import from .xml file…' },
+		];
 		return html`
-			<div class="select-wrapper has-icon half-width" title="Kusto Cluster">
-				<span class="select-icon" aria-hidden="true">${clusterIconSvg}</span>
-				<button type="button" class="kusto-dropdown-btn"
-					aria-haspopup="listbox" aria-expanded="${this._clusterMenuOpen ? 'true' : 'false'}"
-					title="${selectedLabel || ''}"
-					@click=${this._toggleClusterMenu}
-					@mousedown=${(e: Event) => e.stopPropagation()}>
-					<span class="kusto-dropdown-btn-text">${selectedLabel || 'Select Cluster...'}</span>
-					<span class="kusto-dropdown-btn-caret" aria-hidden="true">${chevronDownSvg}</span>
-				</button>
-				${this._clusterMenuOpen ? html`
-					<div class="kusto-dropdown-menu" role="listbox" tabindex="-1"
-						@mousedown=${(e: Event) => e.stopPropagation()}
-						@keydown=${this._onMenuKeydown}>
-						<div class="kusto-dropdown-item" role="option" tabindex="-1"
-							@click=${() => this._onClusterAction('__enter_new__')}>Enter new cluster…</div>
-						<div class="kusto-dropdown-item" role="option" tabindex="-1"
-							@click=${() => this._onClusterAction('__import_xml__')}>Import from .xml file…</div>
-						${sorted.map(c => html`
-							<div class="kusto-dropdown-item ${c.id === this._connectionId ? 'is-active' : ''}"
-								role="option" tabindex="-1"
-								aria-selected="${c.id === this._connectionId ? 'true' : 'false'}"
-								@click=${() => this._onClusterSelected(c.id)}>
-								${escapeHtml(formatClusterDisplayName(c))}
-							</div>
-						`)}
-						${!sorted.length ? html`<div class="kusto-dropdown-empty">No connections.</div>` : nothing}
-					</div>
-				` : nothing}
+			<div class="select-wrapper half-width" title="Kusto Cluster">
+				<kw-dropdown
+					.items=${clusterItems}
+					.actions=${clusterActions}
+					.selectedId=${this._connectionId}
+					.placeholder=${'Select Cluster...'}
+					.emptyText=${'No connections.'}
+					.buttonIcon=${clusterIconSvg}
+					@dropdown-select=${this._onClusterSelected}
+					@dropdown-action=${this._onClusterAction}
+				></kw-dropdown>
 			</div>
 		`;
 	}
 
 	private _renderDatabaseDropdown(): TemplateResult {
-		const selectedLabel = this._database || (this._databasesLoading ? 'Loading databases...' : 'Select Database...');
+		const dbItems: DropdownItem[] = (this._databases || []).map(db => ({ id: db, label: db }));
 		return html`
-			<div class="select-wrapper has-icon half-width" title="Kusto Database">
-				<span class="select-icon" aria-hidden="true">${databaseIconSvg}</span>
-				<button type="button" class="kusto-dropdown-btn"
-					aria-haspopup="listbox" aria-expanded="${this._databaseMenuOpen ? 'true' : 'false'}"
+			<div class="select-wrapper half-width" title="Kusto Database">
+				<kw-dropdown
+					.items=${dbItems}
+					.selectedId=${this._database}
+					.placeholder=${'Select Database...'}
+					.emptyText=${this._databasesLoading ? 'Loading...' : 'No databases.'}
 					?disabled=${!this._connectionId}
-					title="${this._database || ''}"
-					@click=${this._toggleDatabaseMenu}
-					@mousedown=${(e: Event) => e.stopPropagation()}>
-					<span class="kusto-dropdown-btn-text">${selectedLabel}</span>
-					<span class="kusto-dropdown-btn-caret" aria-hidden="true">${chevronDownSvg}</span>
-				</button>
-				${this._databaseMenuOpen ? html`
-					<div class="kusto-dropdown-menu" role="listbox" tabindex="-1"
-						@mousedown=${(e: Event) => e.stopPropagation()}
-						@keydown=${this._onMenuKeydown}>
-						${this._databases.map(db => html`
-							<div class="kusto-dropdown-item ${db === this._database ? 'is-active' : ''}"
-								role="option" tabindex="-1"
-								aria-selected="${db === this._database ? 'true' : 'false'}"
-								@click=${() => this._onDatabaseSelected(db)}>
-								${escapeHtml(db)}
-							</div>
-						`)}
-						${!this._databases.length ? html`<div class="kusto-dropdown-empty">${this._databasesLoading ? 'Loading...' : 'No databases.'}</div>` : nothing}
-					</div>
-				` : nothing}
+					?loading=${this._databasesLoading}
+					.loadingText=${'Loading databases...'}
+					.buttonIcon=${databaseIconSvg}
+					@dropdown-select=${this._onDatabaseSelected}
+				></kw-dropdown>
 			</div>
 		`;
 	}
 
 	private _renderFavoritesDropdown(): TemplateResult {
-		const current = this._getCurrentFavorite();
-		const display = current ? formatFavoriteDisplay(current) : null;
+		const favItems: DropdownItem[] = (this._favorites || []).map((f, i) => {
+			const d = formatFavoriteDisplay(f);
+			return {
+				id: String(i),
+				label: d.primary,
+				secondary: d.suffix || undefined,
+			};
+		});
+		const selectedFavIdx = this._getSelectedFavoriteIndex();
+		const favActions: DropdownAction[] = [
+			{ id: '__other__', label: 'Other...', position: 'bottom' },
+		];
 		return html`
 			<div class="select-wrapper kusto-favorites-combo" title="Favorites">
-				<button type="button" class="kusto-dropdown-btn"
-					aria-haspopup="listbox" aria-expanded="${this._favoritesMenuOpen ? 'true' : 'false'}"
-					@click=${this._toggleFavoritesMenu}
-					@mousedown=${(e: Event) => e.stopPropagation()}>
-					<span class="select-icon" aria-hidden="true">${favoritesListIconSvg}</span>
-					<span class="kusto-dropdown-btn-text">${display
-						? html`<span class="kusto-favorites-primary">${display.primary}</span>${display.suffix ? html` <span class="kusto-favorites-secondary">${display.suffix}</span>` : nothing}`
-						: 'Select favorite...'}</span>
-					<span class="kusto-dropdown-btn-caret" aria-hidden="true">${chevronDownSvg}</span>
-				</button>
-				${this._favoritesMenuOpen ? html`
-					<div class="kusto-dropdown-menu" role="listbox" tabindex="-1"
-						@mousedown=${(e: Event) => e.stopPropagation()}
-						@keydown=${this._onMenuKeydown}>
-						${this._favorites.map((fav, idx) => {
-							const d = formatFavoriteDisplay(fav);
-							return html`
-								<div class="kusto-dropdown-item" role="option" tabindex="-1"
-									@click=${() => this._onFavoriteSelected(fav)}>
-									<span class="kusto-dropdown-item-main">
-										<span class="kusto-favorites-primary">${d.primary}</span>
-										${d.suffix ? html` <span class="kusto-favorites-secondary">${d.suffix}</span>` : nothing}
-									</span>
-									<button type="button" class="kusto-dropdown-trash" title="Remove from favorites"
-										aria-label="Remove from favorites" @click=${(e: Event) => { e.stopPropagation(); this._onFavoriteRemoved(idx); }}>
-										${trashIconSvg}
-									</button>
-								</div>
-							`;
-						})}
-						<div class="kusto-dropdown-item" role="option" tabindex="-1"
-							@click=${this._onFavoriteOther}>
-							<span class="kusto-dropdown-item-main"><span class="kusto-favorites-primary">Other...</span></span>
-						</div>
-						${!this._favorites.length ? html`<div class="kusto-dropdown-empty">No favorites yet.</div>` : nothing}
-					</div>
-				` : nothing}
+				<kw-dropdown
+					.items=${favItems}
+					.actions=${favActions}
+					.selectedId=${selectedFavIdx >= 0 ? String(selectedFavIdx) : ''}
+					.placeholder=${'Select favorite...'}
+					.emptyText=${'No favorites yet.'}
+					.showDelete=${true}
+					.buttonIcon=${favoritesListIconSvg}
+					.compactIconOnly=${true}
+					@dropdown-select=${this._onFavoriteSelected}
+					@dropdown-action=${this._onFavoriteAction}
+					@dropdown-item-delete=${this._onFavoriteRemoved}
+				></kw-dropdown>
 			</div>
 		`;
 	}
@@ -496,46 +452,18 @@ export class KwQuerySection extends LitElement {
 		`;
 	}
 
-	// ── Dropdown positioning ──────────────────────────────────────────────────
+	// ── Schema popover positioning ───────────────────────────────────────────
 
 	override updated(changedProps: Map<string, unknown>): void {
 		super.updated(changedProps);
-		// Position any freshly opened dropdown menu under its button.
-		if (this._clusterMenuOpen || this._databaseMenuOpen || this._favoritesMenuOpen) {
-			this._positionOpenMenus();
-		}
 		if (this._schemaPopoverOpen) {
 			this._positionSchemaPopover();
 		}
-	}
-
-	private _positionOpenMenus(): void {
-		const root = this.shadowRoot;
-		if (!root) return;
-		const menus = root.querySelectorAll('.kusto-dropdown-menu');
-		menus.forEach(menu => {
-			const menuEl = menu as HTMLElement;
-			const wrapper = menuEl.closest('.select-wrapper');
-			const btn = wrapper?.querySelector('.kusto-dropdown-btn') as HTMLElement | null;
-			if (!btn) return;
-			const rect = btn.getBoundingClientRect();
-			menuEl.style.minWidth = rect.width + 'px';
-			menuEl.style.left = rect.left + 'px';
-			menuEl.style.top = rect.bottom + 'px';
-			// Clamp within viewport
-			requestAnimationFrame(() => {
-				const vw = window.innerWidth || 0;
-				const vh = window.innerHeight || 0;
-				const mr = menuEl.getBoundingClientRect();
-				if (vw > 0 && mr.right > vw) {
-					menuEl.style.left = Math.max(0, rect.left - (mr.right - vw)) + 'px';
-				}
-				if (vh > 0 && mr.bottom > vh) {
-					const aboveTop = rect.top - mr.height;
-					menuEl.style.top = Math.max(0, aboveTop) + 'px';
-				}
-			});
-		});
+		// Manage dismiss stack for schema popover
+		if (changedProps.has('_schemaPopoverOpen')) {
+			if (this._schemaPopoverOpen) pushDismissable(this._dismissSchemaPopover);
+			else removeDismissable(this._dismissSchemaPopover);
+		}
 	}
 
 	private _positionSchemaPopover(): void {
@@ -600,100 +528,62 @@ export class KwQuerySection extends LitElement {
 
 	// ── Dropdown events ───────────────────────────────────────────────────────
 
-	// Scroll position when a dropdown was last opened (for threshold dismiss)
-	private _scrollAtDropdownOpen = 0;
+	// Scroll position when schema popover was last opened (for threshold dismiss)
+	private _scrollAtSchemaOpen = 0;
 
-	private _closeAllDropdowns(): void {
-		if (this._clusterMenuOpen || this._databaseMenuOpen || this._favoritesMenuOpen || this._schemaPopoverOpen) {
-			this._clusterMenuOpen = false;
-			this._databaseMenuOpen = false;
-			this._favoritesMenuOpen = false;
+	/** Close all <kw-dropdown> instances in this section + schema popover. */
+	private _closeAllPopups(): void {
+		this._schemaPopoverOpen = false;
+		const dropdowns = this.shadowRoot?.querySelectorAll('kw-dropdown');
+		dropdowns?.forEach(dd => (dd as any).close());
+	}
+
+	/** When any <kw-dropdown> opens, close others + schema popover. */
+	private _onDropdownOpened(e: Event): void {
+		// Close schema popover
+		this._schemaPopoverOpen = false;
+		// Close all OTHER dropdowns (the one that just opened handles itself)
+		const source = e.target;
+		const dropdowns = this.shadowRoot?.querySelectorAll('kw-dropdown');
+		dropdowns?.forEach(dd => {
+			if (dd !== source) (dd as any).close();
+		});
+	}
+
+	private _closeSchemaPopoverOnOutsideClick(e: MouseEvent): void {
+		if (!this._schemaPopoverOpen) return;
+		const path = e.composedPath();
+		if (path.includes(this)) return;
+		this._schemaPopoverOpen = false;
+	}
+
+	private _closeSchemaPopoverOnScroll(e: Event): void {
+		if (!this._schemaPopoverOpen) return;
+		// Don't dismiss if scrolling inside the popover itself
+		const target = e.target as Element | null;
+		if (target && this.shadowRoot) {
+			const popover = this.shadowRoot.querySelector('.schema-info-popover');
+			if (popover && popover.contains(target)) return;
+		}
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - this._scrollAtSchemaOpen) > 20) {
 			this._schemaPopoverOpen = false;
 		}
-	}
-
-	private _closeOnScroll(e: Event): void {
-		// Nothing to close
-		if (!this._clusterMenuOpen && !this._databaseMenuOpen && !this._favoritesMenuOpen && !this._schemaPopoverOpen) return;
-		// Don't dismiss if scrolling inside the popover itself
-		if (this._schemaPopoverOpen) {
-			const target = e.target as Element | null;
-			if (target && this.shadowRoot) {
-				const popover = this.shadowRoot.querySelector('.schema-info-popover');
-				if (popover && popover.contains(target)) return;
-			}
-		}
-		// Threshold: close when scroll exceeds 20px from open position
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtDropdownOpen) > 20) {
-			this._closeAllDropdowns();
-		}
-	}
-
-	private _captureScrollPosition(): void {
-		this._scrollAtDropdownOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
-	}
-
-	private _toggleClusterMenu(e: Event): void {
-		e.stopPropagation();
-		const wasOpen = this._clusterMenuOpen;
-		this._closeAllDropdowns();
-		if (!wasOpen) { this._clusterMenuOpen = true; this._captureScrollPosition(); }
-	}
-
-	private _toggleDatabaseMenu(e: Event): void {
-		e.stopPropagation();
-		const wasOpen = this._databaseMenuOpen;
-		this._closeAllDropdowns();
-		if (!wasOpen) { this._databaseMenuOpen = true; this._captureScrollPosition(); }
-	}
-
-	private _toggleFavoritesMenu(e: Event): void {
-		e.stopPropagation();
-		const wasOpen = this._favoritesMenuOpen;
-		this._closeAllDropdowns();
-		if (!wasOpen) { this._favoritesMenuOpen = true; this._captureScrollPosition(); }
 	}
 
 	private _toggleSchemaPopover(e: Event): void {
 		e.stopPropagation();
 		const wasOpen = this._schemaPopoverOpen;
-		this._closeAllDropdowns();
-		if (!wasOpen) { this._schemaPopoverOpen = true; this._captureScrollPosition(); }
-	}
-
-	private _onMenuKeydown(e: KeyboardEvent): void {
-		const key = e.key;
-		if (key === 'Escape') {
-			e.preventDefault();
-			this._closeAllDropdowns();
-			return;
-		}
-		const menu = e.currentTarget as HTMLElement;
-		const items = Array.from(menu.querySelectorAll('.kusto-dropdown-item:not(.is-disabled)')) as HTMLElement[];
-		if (!items.length) return;
-		const activeIdx = items.findIndex(it => it.classList.contains('is-active'));
-		if (key === 'ArrowDown') {
-			e.preventDefault();
-			const next = (activeIdx + 1) % items.length;
-			items.forEach(it => it.classList.remove('is-active'));
-			items[next].classList.add('is-active');
-			items[next].scrollIntoView({ block: 'nearest' });
-		} else if (key === 'ArrowUp') {
-			e.preventDefault();
-			const next = (activeIdx - 1 + items.length) % items.length;
-			items.forEach(it => it.classList.remove('is-active'));
-			items[next].classList.add('is-active');
-			items[next].scrollIntoView({ block: 'nearest' });
-		} else if (key === 'Enter' || key === ' ') {
-			e.preventDefault();
-			const active = items[Math.max(0, activeIdx)];
-			active?.click();
+		// Close all popups (including dropdowns)
+		this._closeAllPopups();
+		if (!wasOpen) {
+			this._schemaPopoverOpen = true;
+			this._scrollAtSchemaOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 		}
 	}
 
-	private _onClusterAction(action: string): void {
-		this._closeAllDropdowns();
+	private _onClusterAction(e: CustomEvent): void {
+		const action = e.detail?.id;
 		if (action === '__enter_new__') {
 			try { window.promptAddConnectionFromDropdown?.(this.boxId); } catch { /* ignore */ }
 		} else if (action === '__import_xml__') {
@@ -701,11 +591,11 @@ export class KwQuerySection extends LitElement {
 		}
 	}
 
-	private _onClusterSelected(connectionId: string): void {
-		this._closeAllDropdowns();
+	private _onClusterSelected(e: CustomEvent): void {
+		const connectionId = e.detail?.id;
+		if (!connectionId) return;
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
-		// Update desiredClusterUrl from the newly selected connection
 		const conn = this._connections.find(c => c.id === connectionId);
 		if (conn) this._desiredClusterUrl = conn.clusterUrl || '';
 		if (prev !== connectionId) {
@@ -718,8 +608,9 @@ export class KwQuerySection extends LitElement {
 		}
 	}
 
-	private _onDatabaseSelected(database: string): void {
-		this._closeAllDropdowns();
+	private _onDatabaseSelected(e: CustomEvent): void {
+		const database = e.detail?.id;
+		if (!database) return;
 		const prev = this._database;
 		this._database = database;
 		if (prev !== database) {
@@ -752,13 +643,14 @@ export class KwQuerySection extends LitElement {
 		}));
 	}
 
-	private _onFavoriteSelected(fav: KustoFavorite): void {
-		this._closeAllDropdowns();
+	private _onFavoriteSelected(e: CustomEvent): void {
+		const index = parseInt(e.detail?.id, 10);
+		const fav = this._favorites[index];
+		if (!fav) return;
 		// Find the connection that matches this favorite's clusterUrl
 		const target = normalizeClusterUrlKey(fav.clusterUrl);
 		const conn = this._connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
 		if (conn) {
-			const prevConnectionId = this._connectionId;
 			this._connectionId = conn.id;
 			this._desiredClusterUrl = conn.clusterUrl;
 			this._desiredDatabase = fav.database;
@@ -778,7 +670,8 @@ export class KwQuerySection extends LitElement {
 		}
 	}
 
-	private _onFavoriteRemoved(index: number): void {
+	private _onFavoriteRemoved(e: CustomEvent): void {
+		const index = parseInt(e.detail?.id, 10);
 		const fav = this._favorites[index];
 		if (!fav) return;
 		this.dispatchEvent(new CustomEvent('favorite-removed', {
@@ -787,14 +680,16 @@ export class KwQuerySection extends LitElement {
 		}));
 	}
 
-	private _onFavoriteOther(): void {
-		this._closeAllDropdowns();
-		// Switch back to cluster/database mode so the user can pick manually.
-		this._favoritesMode = false;
-		this.dispatchEvent(new CustomEvent('favorites-mode-changed', {
-			detail: { boxId: this.boxId, favoritesMode: false },
-			bubbles: true, composed: true,
-		}));
+	private _onFavoriteAction(e: CustomEvent): void {
+		const action = e.detail?.id;
+		if (action === '__other__') {
+			// Switch back to cluster/database mode so the user can pick manually.
+			this._favoritesMode = false;
+			this.dispatchEvent(new CustomEvent('favorites-mode-changed', {
+				detail: { boxId: this.boxId, favoritesMode: false },
+				bubbles: true, composed: true,
+			}));
+		}
 	}
 
 	private _onSchemaRefresh(): void {
@@ -1011,12 +906,6 @@ export class KwQuerySection extends LitElement {
 
 	// ── Private helpers ───────────────────────────────────────────────────────
 
-	private _getSelectedClusterLabel(): string {
-		if (!this._connectionId) return '';
-		const conn = this._connections.find(c => c.id === this._connectionId);
-		return conn ? formatClusterDisplayName(conn) : '';
-	}
-
 	private _isFavorited(): boolean {
 		if (!this._connectionId || !this._database) return false;
 		const clusterUrl = this.getClusterUrl();
@@ -1028,17 +917,18 @@ export class KwQuerySection extends LitElement {
 		);
 	}
 
-	private _getCurrentFavorite(): KustoFavorite | null {
-		if (!this._connectionId) return null;
+	/** Find the index of the favorite matching the current connection+database. Returns -1 if none. */
+	private _getSelectedFavoriteIndex(): number {
+		if (!this._connectionId) return -1;
 		const db = this._database || this._desiredDatabase;
-		if (!db) return null;
+		if (!db) return -1;
 		const clusterUrl = this.getClusterUrl();
-		if (!clusterUrl) return null;
+		if (!clusterUrl) return -1;
 		const target = normalizeClusterUrlKey(clusterUrl);
 		const dbLower = db.toLowerCase();
-		return this._favorites.find(f =>
+		return this._favorites.findIndex(f =>
 			normalizeClusterUrlKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
-		) || null;
+		);
 	}
 
 	// ── Results via <kw-data-table> ───────────────────────────────────────────
@@ -1146,6 +1036,23 @@ export class KwQuerySection extends LitElement {
 			// Show/hide the resize grip.
 			if (resizer) resizer.style.display = visible ? '' : 'none';
 			try { window.schedulePersist?.(); } catch { /* ignore */ }
+		});
+
+		// Adjust wrapper height when data-table chrome (search bar, row-jump, etc.) toggles.
+		dt.addEventListener('chrome-height-change', () => {
+			if (!resultsWrapper) return;
+			// Skip if collapsed or hidden.
+			const curH = parseInt(resultsWrapper.style.height, 10);
+			if (!curH || curH <= 40) return;
+			requestAnimationFrame(() => {
+				if (typeof dt.getContentHeight !== 'function') return;
+				const contentH = dt.getContentHeight();
+				if (contentH <= 0) return;
+				const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+				const desiredH = contentH + resizerH + 1;
+				// Grow or shrink the wrapper to fit, capped to 900px.
+				resultsWrapper.style.height = Math.max(120, Math.min(900, desiredH)) + 'px';
+			});
 		});
 
 		resultsDiv.appendChild(dt);

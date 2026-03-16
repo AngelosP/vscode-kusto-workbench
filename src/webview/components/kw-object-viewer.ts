@@ -1,7 +1,9 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-object-viewer.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import { buildSearchRegex, navigateMatch, type SearchMode } from './search-utils.js';
+import { buildSearchRegex, navigateMatch, highlightMatches, type SearchMode } from './search-utils.js';
+import { pushDismissable, removeDismissable } from './dismiss-stack.js';
+import './kw-search-bar.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -131,6 +133,8 @@ export class KwObjectViewer extends LitElement {
 
 	// ── Public API ────────────────────────────────────────────────────────────
 
+	private _dismissCb = (): void => { this.hide(); };
+
 	show(title: string, jsonText: string, options?: { searchQuery?: string; searchMode?: SearchMode }): void {
 		this.title = title;
 		this.jsonText = jsonText;
@@ -142,11 +146,13 @@ export class KwObjectViewer extends LitElement {
 		this._currentMatchIndex = 0;
 		this._matchCount = 0;
 		this.open = true;
+		pushDismissable(this._dismissCb);
 	}
 
 	hide(): void {
 		this.open = false;
 		this._stack = [];
+		removeDismissable(this._dismissCb);
 	}
 
 	// ── Render ────────────────────────────────────────────────────────────────
@@ -203,13 +209,20 @@ export class KwObjectViewer extends LitElement {
 									${entries.map(([key, parsedVal]) => {
 										const keyStr = String(key);
 										const valueStr = stringifyForSearch(parsedVal);
-										const isMatch = regex && !searchError && (this._regexTest(regex, keyStr) || this._regexTest(regex, valueStr));
+										const keyMatch = regex && !searchError && this._regexTest(regex, keyStr);
+										const valMatch = regex && !searchError && this._regexTest(regex, valueStr);
 										return html`
-											<tr class="${isMatch ? 'search-match' : ''}">
-												<td>
+											<tr>
+												<td class="${keyMatch ? 'search-match' : ''}">
 													<div class="prop-key-cell">
-														<span class="prop-key-text">${keyStr}</span>
-														<button class="copy-btn prop-copy-btn" type="button" title="Copy value to clipboard" aria-label="Copy value to clipboard"
+														<button class="copy-btn prop-copy-btn" type="button" title="Copy name" aria-label="Copy property name"
+															@click=${() => { writeTextToClipboard(keyStr, this.copyCallback); }}>
+															<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+																<rect x="5" y="5" width="9" height="9" rx="2" /><path d="M3 11V4c0-1.1.9-2 2-2h7" />
+															</svg>
+														</button>
+														<span class="prop-key-text">${keyMatch && regex ? highlightMatches(keyStr, regex, 'hl') : keyStr}</span>
+														<button class="copy-btn prop-copy-btn" type="button" title="Copy value" aria-label="Copy value to clipboard"
 															@click=${() => this._copyValue(parsedVal)}>
 															<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
 																<rect x="5" y="5" width="9" height="9" rx="2" /><path d="M3 11V4c0-1.1.9-2 2-2h7" />
@@ -217,10 +230,10 @@ export class KwObjectViewer extends LitElement {
 														</button>
 													</div>
 												</td>
-												<td>
+												<td class="${valMatch ? 'search-match' : ''}">
 													${isComplexValue(parsedVal)
-														? html`<button class="view-btn" type="button" @click=${() => this._navigateInto(key)}>${'View'}</button>`
-														: formatScalarForTable(parsedVal)
+														? html`<a class="view-link" href="#" @click=${(e: MouseEvent) => { e.preventDefault(); this._navigateInto(key); }}>View</a>`
+														: (valMatch && regex ? highlightMatches(formatScalarForTable(parsedVal), regex, 'hl') : formatScalarForTable(parsedVal))
 													}
 												</td>
 											</tr>`;
@@ -267,57 +280,18 @@ export class KwObjectViewer extends LitElement {
 	// ── Search ────────────────────────────────────────────────────────────────
 
 	private _renderSearchControl(): TemplateResult {
-		const isRegex = this._searchMode === 'regex';
-		return html`
-			<div class="search-control">
-				<span class="search-icon" aria-hidden="true">
-					<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 6.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zm-.82 4.12a5 5 0 1 1 .707-.707l3.536 3.536-.707.707-3.536-3.536z"/></svg>
-				</span>
-				<input type="text" class="search-input" placeholder="Search..." autocomplete="off" spellcheck="false"
-					.value=${this._searchQuery}
-					@input=${this._onSearchInput}
-					@keydown=${this._onSearchKeydown} />
-				<button type="button" class="mode-toggle" title="${isRegex ? 'Regex mode (click to switch to Wildcard)' : 'Wildcard mode (click to switch to Regex)'}"
-					@click=${this._toggleSearchMode}>
-					${isRegex
-						? html`<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><text x="1" y="12" font-size="10" font-weight="bold" font-family="monospace">.*</text></svg>`
-						: html`<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><text x="3" y="12" font-size="11" font-weight="bold" font-family="monospace">*</text></svg>`
-					}
-				</button>
-				<span class="nav-divider" aria-hidden="true"></span>
-				<button type="button" class="nav-btn nav-prev" title="Previous match (Shift+Enter)" aria-label="Previous match"
-					?disabled=${this._matchCount < 2}
-					@click=${this._navigatePrevMatch}>
-					<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 5.5L3.5 10l.707.707L8 6.914l3.793 3.793.707-.707L8 5.5z"/></svg>
-				</button>
-				<button type="button" class="nav-btn nav-next" title="Next match (Enter)" aria-label="Next match"
-					?disabled=${this._matchCount < 2}
-					@click=${this._navigateNextMatch}>
-					<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 10.5l4.5-4.5-.707-.707L8 9.086 4.207 5.293 3.5 6 8 10.5z"/></svg>
-				</button>
-			</div>
-		`;
-	}
-
-	private _onSearchInput(e: Event): void {
-		this._searchQuery = (e.target as HTMLInputElement).value;
-		this._currentMatchIndex = 0;
-	}
-
-	private _onSearchKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Enter') {
-			if (e.shiftKey) {
-				this._navigatePrevMatch();
-			} else {
-				this._navigateNextMatch();
-			}
-			e.preventDefault();
-		}
-	}
-
-	private _toggleSearchMode(): void {
-		this._searchMode = this._searchMode === 'regex' ? 'wildcard' : 'regex';
-		this._currentMatchIndex = 0;
+		return html`<kw-search-bar
+			.query=${this._searchQuery}
+			.mode=${this._searchMode}
+			.matchCount=${this._matchCount}
+			.currentMatch=${this._currentMatchIndex}
+			.showClose=${false}
+			.showStatus=${false}
+			@search-input=${(e: CustomEvent) => { this._searchQuery = e.detail.query; this._currentMatchIndex = 0; }}
+			@search-mode-change=${(e: CustomEvent) => { this._searchMode = e.detail.mode; this._currentMatchIndex = 0; }}
+			@search-next=${() => this._navigateNextMatch()}
+			@search-prev=${() => this._navigatePrevMatch()}
+		></kw-search-bar>`;
 	}
 
 	private _countMatches(regex: RegExp, text: string): number {
