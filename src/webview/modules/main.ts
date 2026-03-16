@@ -3444,7 +3444,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 // This is more reliable than JS-based measurement which could race with layout
 // when new sections are added (causing incorrect minimal/ultra-compact states).
 //
-// See queryEditor.css for the @container rules that handle:
+// See queryEditor*.css for the @container rules that handle:
 //   - Minimal mode: dropdowns collapse to icon-only at <= 420px
 //   - Ultra-compact: hide refresh/favorite/schema buttons at <= 200px
 //

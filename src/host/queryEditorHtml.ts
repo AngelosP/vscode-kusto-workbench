@@ -28,6 +28,24 @@ export async function getQueryEditorHtml(
 	const queryEditorCssUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.css')).toString()
 	);
+	const buttonsCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-buttons.css')).toString()
+	);
+	const addControlsCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-add-controls.css')).toString()
+	);
+	const copilotChatCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-copilot-chat.css')).toString()
+	);
+	const chartBuilderCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-chart-builder.css')).toString()
+	);
+	const resultsCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-results.css')).toString()
+	);
+	const modalsCssUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-modals.css')).toString()
+	);
 	const toastUiEditorCssUri = withCacheBuster(
 		webview
 			.asWebviewUri(
@@ -134,6 +152,12 @@ export async function getQueryEditorHtml(
 
 	return template
 		.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
+		.replaceAll('{{buttonsCssUri}}', buttonsCssUri)
+		.replaceAll('{{addControlsCssUri}}', addControlsCssUri)
+		.replaceAll('{{copilotChatCssUri}}', copilotChatCssUri)
+		.replaceAll('{{chartBuilderCssUri}}', chartBuilderCssUri)
+		.replaceAll('{{resultsCssUri}}', resultsCssUri)
+		.replaceAll('{{modalsCssUri}}', modalsCssUri)
 		.replaceAll('{{toastUiEditorCssUri}}', toastUiEditorCssUri)
 		.replaceAll('{{toastUiEditorDarkCssUri}}', toastUiEditorDarkCssUri)
 		.replaceAll('{{toastUiEditorColorSyntaxCssUri}}', toastUiEditorColorSyntaxCssUri)

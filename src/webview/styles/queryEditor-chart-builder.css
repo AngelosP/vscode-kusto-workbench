@@ -1,0 +1,1598 @@
+/* queryEditor-chart-builder.css — Chart and transformation section builder styles (split from queryEditor.css) */
+
+		/* Chart section builder */
+		.chart-box .query-editor {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			min-height: 0;
+			background: transparent;
+			color: var(--vscode-foreground);
+			/* Allow edit-mode control background to bleed into the section padding. */
+			overflow: visible;
+		}
+
+		/* Charts: keep the left label column aligned across rows/fields */
+		.chart-box {
+			--kusto-chart-label-width: 54px;
+		}
+
+		/* Transformation section builder */
+		.transformation-box .query-editor {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			min-height: 0;
+			background: transparent;
+			color: var(--vscode-foreground);
+			/* Allow edit-mode control background to bleed into the section padding. */
+			overflow: visible;
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+		}
+
+		/* Transformations: keep the left label column aligned across rows */
+		.transformation-box {
+			--kusto-transform-label-width: 48px;
+		}
+
+		.transformation-box .kusto-chart-row label,
+		.transformation-box .kusto-chart-mapping-row label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+		}
+
+		/* Pivot labels that follow a dropdown need extra left margin for visual spacing
+		   and extra width to fit longer labels like "Aggregation" */
+		.transformation-box label.kusto-pivot-label-spaced {
+			margin-left: 14px;
+			flex: 0 0 calc(var(--kusto-transform-label-width) + 25px);
+			min-width: calc(var(--kusto-transform-label-width) + 25px);
+		}
+
+		.chart-box .query-editor-wrapper {
+			border: none;
+			overflow: visible;
+			/* Let the wrapper size to its content (controls + canvas) instead of the
+			   base fixed height. This prevents overflow when no data source is selected. */
+			height: auto;
+			min-height: 0;
+		}
+
+		.transformation-box .query-editor-wrapper {
+			border: none;
+			overflow: visible;
+			height: auto;
+			min-height: 0;
+		}
+
+		.kusto-chart-builder {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			padding: 8px;
+			min-height: 0;
+			height: 100%;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			overflow: hidden;
+		}
+
+		/* Charts: allow edit controls background to bleed to the section edge */
+		.chart-box .kusto-chart-edit-mode .kusto-chart-builder {
+			overflow: visible;
+			gap: 0;
+			/* Remove padding and background so the controls can bleed edge-to-edge. */
+			padding: 0;
+			background: transparent;
+		}
+
+		/* Transformations: let controls size to content; results fill remaining height */
+		.transformation-box .kusto-chart-builder {
+			height: auto;
+			flex: 0 0 auto;
+			overflow: visible;
+			/* Remove padding and background so the controls can bleed edge-to-edge. */
+			padding: 0;
+			gap: 0;
+			background: transparent;
+		}
+
+		.transformation-box .results-wrapper {
+			flex: 1 1 auto;
+			min-height: 0;
+			margin-top: 0;
+			border-top: none;
+		}
+
+		.transformation-box.is-preview .results-wrapper {
+			margin-top: 0;
+		}
+
+		.kusto-chart-controls {
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
+			overflow: visible;
+			flex-shrink: 0;
+		}
+
+		/* Edit controls get a subtle full-width background (solid, no border).
+		   This targets only the controls region (which is hidden in Preview mode). */
+		.chart-box .kusto-chart-controls,
+		.transformation-box .kusto-chart-controls {
+			/* Solid surface (no gradients, no borders). */
+			background: var(--vscode-editor-background);
+			/* True full-bleed:
+			   Background does NOT paint into margins, so we must expand the element's own box.
+			   Bleed to section border: query-box padding (12px) */
+			position: relative;
+			left: -12px;
+			width: calc(100% + 24px);
+			/* Top/side padding only; bottom padding moves to scroll wrapper so scrollbar sits at bottom edge. */
+			padding: 16px 16px 0 16px;
+			/* 20px gap between background and chart preview (margin is outside the background,
+			   and disappears in Preview mode since the controls are hidden). */
+			margin-bottom: 20px;
+			/* Gap is handled by inner scroll wrapper, not this container. */
+			gap: 0;
+		}
+
+		/* Transformation boxes have a smaller gap between controls and results (no chart preview). */
+		.transformation-box .kusto-chart-controls {
+			margin-bottom: 5px;
+		}
+
+		/* Inner scroll wrapper for controls - enables horizontal scrolling at narrow widths
+		   while keeping the background bleed effect on the outer container. */
+		.chart-box .kusto-chart-controls-scroll,
+		.transformation-box .kusto-chart-controls-scroll {
+			overflow-x: auto;
+			overflow-y: visible;
+			/* Bottom padding here so scrollbar appears at bottom edge of background. */
+			padding-bottom: 16px;
+		}
+
+		/* Scrollbar styling for controls. */
+		.chart-box .kusto-chart-controls-scroll,
+		.transformation-box .kusto-chart-controls-scroll {
+			scrollbar-width: thin; /* Firefox - 'thin' typically has no arrows */
+			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar {
+			height: 8px;
+			background: transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-track,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-track {
+			background: transparent;
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb {
+			background: var(--vscode-scrollbarSlider-background);
+		}
+		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover,
+		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover {
+			background: var(--vscode-scrollbarSlider-hoverBackground);
+		}
+
+		/* Minimum width for the scrollable content area to ensure controls remain functional. */
+		.chart-box .kusto-chart-controls-scroll-content,
+		.transformation-box .kusto-chart-controls-scroll-content {
+			min-width: 480px;
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
+		}
+
+		/* Theme-aware tint so the surface is visible even when VS Code theme tokens
+		   are very close to the editor background (common in dark themes). */
+		.chart-box .kusto-chart-controls::before,
+		.transformation-box .kusto-chart-controls::before {
+			content: '';
+			position: absolute;
+			inset: 0;
+			pointer-events: none;
+			/* default (light-ish): subtle dark tint */
+			background: rgba(0, 0, 0, 0.035);
+		}
+
+		body.vscode-dark .chart-box .kusto-chart-controls::before,
+		body.vscode-high-contrast .chart-box .kusto-chart-controls::before,
+		body.vscode-dark .transformation-box .kusto-chart-controls::before,
+		body.vscode-high-contrast .transformation-box .kusto-chart-controls::before {
+			/* dark-ish: subtle light tint */
+			background: rgba(255, 255, 255, 0.04);
+		}
+
+		.kusto-chart-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		/* Controls rows should not wrap - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-row,
+		.transformation-box .kusto-chart-controls .kusto-chart-row {
+			flex-wrap: nowrap;
+		}
+
+		/* Let the Data dropdown span the full row width for all chart types. */
+		.chart-box .kusto-chart-row:not(.kusto-chart-row-type) .select-wrapper {
+			flex: 1 1 auto;
+		}
+
+		.chart-box .kusto-chart-row > label {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
+		}
+
+		.chart-box .kusto-chart-field-group > label {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
+		}
+
+		.kusto-chart-row label,
+		.kusto-chart-mapping-row label {
+			font-size: 12px;
+			white-space: nowrap;
+			min-width: 40px;
+		}
+
+		/* Legend label doesn't need the extra width for alignment */
+		.kusto-chart-mapping-row label.kusto-chart-label-legend {
+			min-width: auto;
+		}
+
+		.kusto-chart-row-type {
+			margin-bottom: 0;
+		}
+
+		.kusto-chart-row-type > label {
+			align-self: center;
+		}
+
+		/* Align X/Y mapping row labels with Data label above */
+		.kusto-chart-mapping-row > label:first-child {
+			min-width: 32px;
+		}
+
+		.kusto-chart-row select,
+		.kusto-chart-mapping-row select {
+			min-width: 140px;
+		}
+
+		.kusto-transform-input,
+		.kusto-transform-textarea,
+		.kusto-transform-select {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 4px 6px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+		}
+
+		.kusto-transform-input:focus,
+		.kusto-transform-textarea:focus,
+		.kusto-transform-select:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.kusto-transform-textarea {
+			resize: vertical;
+			min-height: 28px;
+			line-height: 1.35;
+		}
+
+		/* Transformations: Data dropdown height */
+		.transformation-box button.kusto-dropdown-btn[id$="_tf_ds_btn"] {
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-top: 0;
+		}
+
+		.kusto-transform-summarize-stack {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			flex: 1 1 auto;
+			min-width: 260px;
+			width: 100%;
+		}
+
+		.kusto-transform-summarize-row {
+			display: flex;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-transform-summarize-row > label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.kusto-transform-summarize-row-summarize {
+			align-items: flex-start;
+		}
+
+		.kusto-transform-summarize-row-summarize > label {
+			padding-top: 0;
+			margin-top: 4px;
+		}
+
+		/* Summarize: make the By dropdown match native control height */
+		.kusto-transform-summarize-row-by .kusto-checkbox-dropdown .kusto-dropdown-btn {
+			height: 28px;
+			min-height: 28px;
+			padding-top: 0;
+			padding-bottom: 0;
+			align-items: center;
+		}
+
+		.kusto-transform-summarize-aggs {
+			flex: 1 1 auto;
+			min-width: 260px;
+		}
+
+		.kusto-transform-summarize-row-by {
+			align-items: flex-start;
+		}
+
+		.kusto-transform-summarize-row-by > label {
+			padding-top: 0;
+			margin-top: 4px;
+		}
+
+		.kusto-transform-summarize-row-by .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 220px;
+		}
+
+		.kusto-transform-agg-row {
+			display: grid;
+			grid-template-columns: 200px auto 140px 1fr auto;
+			gap: 8px;
+			align-items: center;
+			border: none;
+			border-radius: 0;
+			padding: 0;
+			background: transparent;
+			box-shadow: none;
+			transition: background 0.12s ease;
+			position: relative;
+		}
+
+		.kusto-transform-agg-row .kusto-transform-select {
+			border-radius: 0;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-name {
+			border-radius: 0;
+			min-width: 150px;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-agg-eq {
+			opacity: 0.75;
+			font-size: 12px;
+			padding: 0 2px;
+			user-select: none;
+		}
+
+		.kusto-transform-agg-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-agg-row-actions {
+			align-self: center;
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			justify-content: flex-end;
+		}
+
+		.kusto-transform-agg-rows.is-dragging .kusto-transform-agg-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-agg-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-agg-row.is-drop-before::before,
+		.kusto-transform-agg-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-agg-row.is-drop-before::before {
+			top: -1px;
+		}
+
+		.kusto-transform-agg-row.is-drop-after::after {
+			bottom: -1px;
+		}
+
+		/* Transformation: Group-by rows for Summarize */
+		.kusto-transform-groupby-body {
+			display: flex;
+			flex-direction: column;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.kusto-transform-groupby-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.kusto-transform-groupby-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			position: relative;
+		}
+
+		.kusto-transform-groupby-select {
+			flex: 1;
+			min-width: 120px;
+			border-radius: 0;
+			height: 28px;
+			min-height: 28px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-groupby-row-actions {
+			align-self: center;
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			justify-content: flex-end;
+		}
+
+		.kusto-transform-groupby-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-groupby-rows.is-dragging .kusto-transform-groupby-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-groupby-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-groupby-row.is-drop-before::before,
+		.kusto-transform-groupby-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-groupby-row.is-drop-before::before {
+			top: -1px;
+		}
+
+		.kusto-transform-groupby-row.is-drop-after::after {
+			bottom: -1px;
+		}
+
+		/* Transformation: Calculated columns (derive) */
+		.kusto-transform-derive-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding: 6px 8px;
+			border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border));
+			border-radius: 8px;
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-editor-foreground) 8%);
+		}
+
+		.kusto-transform-derive-title {
+			font-size: 12px;
+			font-weight: 600;
+			opacity: 0.95;
+		}
+
+		.kusto-transform-derive-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-top: 0;
+		}
+
+		.kusto-transform-derive-stack {
+			display: flex;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-transform-derive-stack > label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+			margin-top: 4px;
+		}
+
+		.kusto-transform-derive-body {
+			flex: 1 1 auto;
+			min-width: 260px;
+		}
+
+		.kusto-transform-derive-row {
+			display: grid;
+			grid-template-columns: minmax(150px, 220px) auto 1fr auto;
+			gap: 8px;
+			align-items: center;
+			border: none;
+			border-radius: 0;
+			padding: 0;
+			background: transparent;
+			box-shadow: none;
+			transition: background 0.12s ease;
+			position: relative;
+		}
+
+		.kusto-transform-derive-eq {
+			opacity: 0.75;
+			font-size: 12px;
+			padding: 0 2px;
+			user-select: none;
+		}
+
+
+		.kusto-transform-derive-row .kusto-transform-input,
+		.kusto-transform-derive-row .kusto-transform-textarea {
+			border-radius: 0;
+		}
+
+		.kusto-transform-derive-drag-handle {
+			align-self: center;
+			margin-right: 0;
+			width: 28px;
+			height: 28px;
+			min-width: 28px;
+			min-height: 28px;
+		}
+
+		.kusto-transform-derive-row-actions {
+			align-self: center;
+		}
+
+		.kusto-transform-derive-rows.is-dragging .kusto-transform-derive-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+
+		.kusto-transform-derive-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+
+		.kusto-transform-derive-row.is-drop-before::before,
+		.kusto-transform-derive-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+
+		.kusto-transform-derive-row.is-drop-before::before {
+			top: -2px;
+		}
+
+		.kusto-transform-derive-row.is-drop-after::after {
+			bottom: -2px;
+		}
+
+		.kusto-transform-derive-row:hover {
+			background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-list-hoverBackground) 4%);
+		}
+
+		.kusto-transform-derive-row-actions {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
+
+		.kusto-transform-mini-btn {
+			min-width: 28px;
+			height: 28px;
+			padding: 2px 6px;
+			line-height: 1;
+			border-radius: 6px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-transform-mini-btn svg {
+			width: 16px;
+			height: 16px;
+		}
+
+		.kusto-transform-derive-name {
+			height: 28px;
+			min-height: 28px;
+			min-width: 150px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+
+		.kusto-transform-derive-expr {
+			min-height: 28px;
+			min-width: 150px;
+			padding-top: 7px;
+			padding-bottom: 2px;
+		}
+
+		/* Expression help tooltip - sleek compact design */
+		.kusto-transform-expr-help-tooltip-container {
+			position: fixed;
+			z-index: 10000;
+			width: 340px;
+			overflow: hidden;
+			background: var(--vscode-editorHoverWidget-background, #1e1e1e);
+			border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+			border-radius: 0;
+			box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+			padding: 0;
+			display: none;
+			pointer-events: auto;
+		}
+
+		.kusto-transform-expr-help-tooltip-container.is-visible {
+			display: block;
+		}
+
+		.kusto-transform-expr-help-tooltip {
+			padding: 0;
+		}
+
+		.kusto-transform-expr-help-header {
+			padding: 10px 14px;
+			background: linear-gradient(135deg, rgba(79, 193, 255, 0.12) 0%, rgba(79, 193, 255, 0.04) 100%);
+			border-bottom: 1px solid rgba(79, 193, 255, 0.2);
+		}
+
+		.kusto-transform-expr-help-title {
+			font-size: 11px;
+			font-weight: 600;
+			color: var(--vscode-textLink-foreground, #4fc1ff);
+			text-transform: uppercase;
+			letter-spacing: 0.8px;
+		}
+
+		.kusto-transform-expr-help-grid {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0;
+		}
+
+		.kusto-transform-expr-help-col {
+			padding: 10px 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+		}
+
+		.kusto-transform-expr-help-col:first-child {
+			border-right: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+		}
+
+		.kusto-transform-expr-help-group {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+
+		.kusto-transform-expr-help-label {
+			font-size: 9px;
+			font-weight: 600;
+			color: color-mix(in srgb, var(--vscode-foreground) 50%, transparent);
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+		}
+
+		.kusto-transform-expr-help-item {
+			font-size: 11px;
+			color: color-mix(in srgb, var(--vscode-foreground) 85%, transparent);
+		}
+
+		.kusto-transform-expr-help-ops {
+			display: flex;
+			gap: 4px;
+			flex-wrap: wrap;
+		}
+
+		.kusto-transform-expr-help-ops code {
+			padding: 2px 6px;
+			min-width: 20px;
+			text-align: center;
+		}
+
+		.kusto-transform-expr-help-funcs {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 3px;
+		}
+
+		.kusto-transform-expr-help-tooltip code {
+			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+			font-size: 10px;
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 12%, transparent);
+			color: var(--vscode-foreground);
+			padding: 1px 5px;
+			border-radius: 0;
+			border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 20%, transparent);
+			transition: background 0.15s ease;
+			cursor: pointer;
+		}
+
+		.kusto-transform-expr-help-tooltip code:hover {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 28%, transparent);
+		}
+
+		.kusto-transform-expr-help-tooltip code:active {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 40%, transparent);
+		}
+
+		.kusto-transform-expr-help-examples {
+			display: flex;
+			align-items: center;
+			padding: 10px 12px;
+			background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+			border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+			min-height: 36px;
+			gap: 8px;
+		}
+
+		.kusto-transform-expr-help-example-text {
+			font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+			font-size: 11px;
+			color: var(--vscode-textPreformat-foreground, #d7ba7d);
+			word-break: break-all;
+			flex: 1;
+		}
+
+		.kusto-transform-expr-help-inject-btn {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 24px;
+			height: 24px;
+			padding: 0;
+			border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 30%, transparent);
+			border-radius: 0;
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 15%, transparent);
+			color: var(--vscode-textLink-foreground, #4fc1ff);
+			cursor: pointer;
+			transition: background 0.15s ease, border-color 0.15s ease;
+			flex-shrink: 0;
+		}
+
+		.kusto-transform-expr-help-inject-btn:hover {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 30%, transparent);
+			border-color: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 50%, transparent);
+		}
+
+		.kusto-transform-expr-help-inject-btn:active {
+			background: color-mix(in srgb, var(--vscode-textLink-foreground, #4fc1ff) 45%, transparent);
+		}
+
+		.kusto-transform-expr-help-inject-btn svg {
+			display: block;
+		}
+
+		.kusto-transform-expr-help-example-flash {
+			animation: kusto-example-flash 0.3s ease-out;
+		}
+
+		@keyframes kusto-example-flash {
+			0% { color: var(--vscode-textLink-foreground, #4fc1ff); }
+			100% { color: var(--vscode-textPreformat-foreground, #d7ba7d); }
+		}
+
+
+
+		.kusto-transform-field {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.kusto-transform-field label {
+			font-size: 12px;
+			opacity: 0.85;
+		}
+
+		.kusto-transform-help {
+			opacity: 0.78;
+			font-size: 12px;
+			margin-top: 4px;
+			line-height: 1.35;
+		}
+
+		.kusto-transform-help code {
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			background: var(--vscode-textCodeBlock-background);
+			padding: 1px 4px;
+			border-radius: 4px;
+		}
+
+		.kusto-chart-row .select-wrapper,
+		.kusto-chart-mapping-row .select-wrapper {
+			min-width: 140px;
+		}
+
+		.kusto-chart-mapping {
+			margin-top: 0;
+		}
+
+		/* Pivot mapping contains multiple chart-rows that need vertical spacing */
+		.transformation-box .kusto-chart-mapping {
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
+		}
+
+		.kusto-chart-mapping-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		/* Chart mapping layout: two-row grid (X/Y/Legend on row 1; Tooltip/Labels on row 2) */
+		.kusto-chart-mapping-grid {
+			display: grid;
+			grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr);
+			column-gap: 24px;
+			row-gap: 14px;
+			align-items: center;
+		}
+
+		/* Pie + Funnel + Scatter feel visually tighter because of different control composition.
+		   Add +2px so their perceived row spacing matches Area/Bar/Line. */
+		.kusto-chart-mapping[data-chart-type="pie"] .kusto-chart-mapping-grid,
+		.kusto-chart-mapping[data-chart-type="funnel"] .kusto-chart-mapping-grid,
+		.kusto-chart-mapping[data-chart-type="scatter"] .kusto-chart-mapping-grid {
+			row-gap: 16px;
+		}
+
+		/* Also add a tiny bit more space between the "Data" row and the first mapping row
+		   (Data → Label for Pie/Funnel, Data → X for Scatter). */
+		.kusto-chart-mapping[data-chart-type="pie"],
+		.kusto-chart-mapping[data-chart-type="funnel"],
+		.kusto-chart-mapping[data-chart-type="scatter"] {
+			margin-top: 3px;
+		}
+
+		.kusto-chart-mapping-grid .kusto-chart-field-group {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			width: 100%;
+			min-width: 0;
+		}
+
+		.kusto-chart-mapping-grid .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-legend-inline {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			width: 100%;
+			min-width: 0;
+		}
+
+		.kusto-chart-legend-inline .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-legend-pos-btn {
+			flex-shrink: 0;
+			width: 30px;
+			height: 30px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-chart-labels-toggle {
+			display: inline-flex;
+			align-items: center;
+			gap: 10px;
+			cursor: pointer;
+			user-select: none;
+			width: 100%;
+		}
+
+		.kusto-chart-labels-toggle-track {
+			position: relative;
+			width: 36px;
+			height: 20px;
+			background: var(--vscode-input-background);
+			border: 1px solid var(--vscode-input-border, var(--vscode-contrastBorder, transparent));
+			border-radius: 10px;
+			transition: background 0.15s ease, border-color 0.15s ease;
+		}
+
+		.kusto-chart-labels-toggle-thumb {
+			position: absolute;
+			top: 2px;
+			left: 2px;
+			width: 14px;
+			height: 14px;
+			background: var(--vscode-foreground);
+			border-radius: 50%;
+			transition: transform 0.15s ease, background 0.15s ease;
+			opacity: 0.6;
+		}
+
+		.kusto-chart-labels-toggle.is-active .kusto-chart-labels-toggle-track {
+			background: var(--vscode-button-background);
+			border-color: var(--vscode-button-background);
+		}
+
+		.kusto-chart-labels-toggle.is-active .kusto-chart-labels-toggle-thumb {
+			transform: translateX(16px);
+			background: var(--vscode-button-foreground);
+			opacity: 1;
+		}
+
+		.kusto-chart-labels-toggle:hover .kusto-chart-labels-toggle-track {
+			border-color: var(--vscode-focusBorder);
+		}
+
+		/* Match dropdown label alignment (so the toggle track lines up with dropdowns above). */
+		.chart-box .kusto-chart-labels-toggle-text {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+			opacity: 0.85;
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-chart-grid-spacer {
+			display: block;
+		}
+
+		/* Funnel Sort control styles */
+		.kusto-chart-funnel-sort-group {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			width: 100%;
+		}
+
+		.kusto-chart-funnel-sort-control {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		/* When no sort column is selected, dropdown takes full width */
+		.kusto-chart-funnel-sort-group:not(.has-sort-column) .kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+		}
+
+		/* When sort column is selected, make room for direction button */
+		.kusto-chart-funnel-sort-group.has-sort-column .kusto-chart-funnel-sort-control .select-wrapper {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn {
+			flex: 0 0 auto;
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 3px;
+		}
+
+		/* Hide direction button when no sort column is selected */
+		.kusto-chart-funnel-sort-group:not(.has-sort-column) .kusto-chart-funnel-sort-dir-btn {
+			display: none;
+		}
+
+		/* Sort direction icons - show/hide based on state */
+		.kusto-chart-funnel-sort-dir-btn .kusto-sort-asc-icon,
+		.kusto-chart-funnel-sort-dir-btn .kusto-sort-desc-icon {
+			display: none;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn.is-asc .kusto-sort-asc-icon {
+			display: block;
+		}
+
+		.kusto-chart-funnel-sort-dir-btn.is-desc .kusto-sort-desc-icon {
+			display: block;
+		}
+
+		/* Keep label + dropdown together as a unit when wrapping */
+		.kusto-chart-field-group {
+			display: inline-flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: nowrap;
+			position: relative;
+		}
+
+		/* Clickable axis labels - hover shows underline like a link */
+		.kusto-chart-field-group > label.kusto-axis-label-clickable {
+			cursor: pointer;
+			text-decoration: none;
+			transition: text-decoration 0.1s ease;
+		}
+
+		.kusto-chart-field-group > label.kusto-axis-label-clickable:hover {
+			text-decoration: underline;
+			color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+		}
+
+		/* Indicator dot when axis has custom settings */
+		.kusto-chart-field-group > label.kusto-axis-label-clickable.has-settings::after {
+			content: '';
+			display: inline-block;
+			width: 5px;
+			height: 5px;
+			background: var(--vscode-focusBorder, #007fd4);
+			border-radius: 50%;
+			margin-left: 4px;
+			vertical-align: middle;
+		}
+
+		/* Indicator dot when Labels has custom settings */
+		.kusto-chart-labels-toggle-text.has-settings::after {
+			content: '';
+			display: inline-block;
+			width: 5px;
+			height: 5px;
+			background: var(--vscode-focusBorder, #007fd4);
+			border-radius: 50%;
+			margin-left: 4px;
+			vertical-align: middle;
+		}
+
+		/* Axis settings popup */
+		.kusto-axis-settings-popup {
+			position: fixed;
+			z-index: 10000;
+			min-width: 280px;
+			max-width: 360px;
+			background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+			border: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-radius: 6px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+			padding: 0;
+			display: none;
+			flex-direction: column;
+		}
+
+		.kusto-axis-settings-popup.is-open {
+			display: flex;
+		}
+
+		/* Arrow pointer indicating the popup belongs to the label */
+		.kusto-axis-settings-popup::before {
+			content: '';
+			position: absolute;
+			top: -6px;
+			left: 12px;
+			width: 10px;
+			height: 10px;
+			background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+			border-left: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			transform: rotate(45deg);
+		}
+
+		/* Arrow pointer when popup is positioned above the label */
+		.kusto-axis-settings-popup.is-above::before {
+			top: auto;
+			bottom: -6px;
+			border-left: none;
+			border-top: none;
+			border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+			border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+		}
+
+		.kusto-axis-settings-popup-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+			font-weight: 600;
+			font-size: 12px;
+		}
+
+		.kusto-axis-settings-popup-close {
+			background: transparent;
+			border: none;
+			padding: 2px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 4px;
+		}
+
+		.kusto-axis-settings-popup-close:hover {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-axis-settings-popup-content {
+			padding: 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 14px;
+		}
+
+		.kusto-axis-settings-row {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.kusto-axis-settings-row > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-row > input[type="text"] {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 0;
+			padding: 3px 8px;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+			width: 100%;
+			box-sizing: border-box;
+		}
+
+		.kusto-axis-settings-row > input[type="text"]:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.kusto-axis-settings-row > input[type="text"]::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+
+		/* Unified dropdown styling inside axis settings popup */
+		.kusto-axis-settings-dropdown {
+			width: 100%;
+		}
+
+		.kusto-axis-settings-dropdown .kusto-dropdown-btn {
+			width: 100%;
+			justify-content: space-between;
+		}
+
+		.kusto-axis-settings-dropdown .kusto-dropdown-menu {
+			min-width: 100%;
+		}
+
+		/* Checkbox row for show/hide label */
+		.kusto-axis-settings-checkbox-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-checkbox-row > input[type="checkbox"] {
+			width: 16px;
+			height: 16px;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+			margin: 0;
+		}
+
+		.kusto-axis-settings-checkbox-row > label {
+			font-size: 12px;
+			cursor: pointer;
+		}
+
+		/* Slider row for label density */
+		.kusto-axis-settings-slider-row {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-slider-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+
+		.kusto-axis-settings-slider-header > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-slider-value {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			min-width: 32px;
+			text-align: right;
+		}
+
+		.kusto-axis-settings-slider-container {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-slider-label-left,
+		.kusto-axis-settings-slider-label-right {
+			font-size: 10px;
+			color: var(--vscode-descriptionForeground);
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-slider {
+			flex: 1;
+			height: 4px;
+			-webkit-appearance: none;
+			appearance: none;
+			background: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.4));
+			border-radius: 2px;
+			cursor: pointer;
+		}
+
+		.kusto-axis-settings-slider::-webkit-slider-thumb {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			background: var(--vscode-focusBorder);
+			cursor: pointer;
+			border: none;
+		}
+
+		.kusto-axis-settings-slider::-moz-range-thumb {
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			background: var(--vscode-focusBorder);
+			cursor: pointer;
+			border: none;
+		}
+
+		.kusto-axis-settings-slider:focus {
+			outline: none;
+		}
+
+		.kusto-axis-settings-slider:focus::-webkit-slider-thumb {
+			box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+		}
+
+		.kusto-axis-settings-minmax-row {
+			display: flex;
+			gap: 12px;
+		}
+
+		.kusto-axis-settings-minmax-field {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			flex: 1;
+		}
+
+		.kusto-axis-settings-minmax-field > label {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+
+		.kusto-axis-settings-minmax-field > input {
+			width: 100%;
+			padding: 4px 8px;
+			font-size: 12px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 0;
+			box-sizing: border-box;
+		}
+
+		.kusto-axis-settings-minmax-field > input:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+
+		.kusto-axis-settings-minmax-field > input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+
+		.kusto-axis-settings-popup-footer {
+			display: flex;
+			justify-content: flex-end;
+			gap: 8px;
+			padding: 10px 12px;
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+		}
+
+		.kusto-axis-settings-popup-footer button {
+			padding: 4px 12px;
+			border-radius: 4px;
+			font-size: 12px;
+			cursor: pointer;
+			border: 1px solid transparent;
+		}
+
+		.kusto-axis-settings-reset-btn {
+			background: transparent;
+			color: var(--vscode-foreground);
+			border-color: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.3)) !important;
+		}
+
+		.kusto-axis-settings-reset-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.2));
+		}
+
+		/* Series colors section in Y-axis settings */
+		.kusto-axis-settings-colors-section {
+			margin-top: 8px;
+			padding-top: 8px;
+			border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.15)));
+		}
+
+		.kusto-axis-settings-colors-header {
+			font-size: 11px;
+			font-weight: 500;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+			margin-bottom: 8px;
+		}
+
+		.kusto-axis-settings-colors-list {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.kusto-axis-settings-color-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.kusto-axis-settings-color-input {
+			width: 28px;
+			height: 22px;
+			padding: 0;
+			border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.3));
+			border-radius: 3px;
+			cursor: pointer;
+			background: transparent;
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-color-input::-webkit-color-swatch-wrapper {
+			padding: 2px;
+		}
+
+		.kusto-axis-settings-color-input::-webkit-color-swatch {
+			border: none;
+			border-radius: 2px;
+		}
+
+		.kusto-axis-settings-color-label {
+			font-size: 11px;
+			color: var(--vscode-foreground);
+			flex: 1;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-axis-settings-color-reset {
+			background: transparent;
+			border: none;
+			padding: 2px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			opacity: 0.5;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			flex-shrink: 0;
+		}
+
+		.kusto-axis-settings-color-reset:hover {
+			opacity: 1;
+		}
+
+		/* Chart dropdown menus need position:fixed to escape the overflow:hidden container */
+		.kusto-chart-controls .kusto-dropdown-menu {
+			position: fixed;
+		}
+
+		.kusto-chart-canvas {
+			width: 100%;
+			height: 100%;
+			flex: 1 1 auto;
+			min-height: 0;
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			overflow: hidden;
+		}
+
+		/* Error/placeholder messages in chart and transformation sections.
+		   Use VS Code UI font (not monospace) to match transformation section styling. */
+		.kusto-chart-canvas .error-message,
+		.results .error-message {
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+			color: var(--vscode-foreground);
+			padding: 12px;
+		}
+
+		/* Chart type picker with icons */
+		.kusto-chart-type-picker {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 4px;
+			align-items: center;
+		}
+
+		/* In controls, prevent type picker from wrapping - parent scroll wrapper handles overflow. */
+		.chart-box .kusto-chart-controls .kusto-chart-type-picker,
+		.transformation-box .kusto-chart-controls .kusto-chart-type-picker {
+			flex-wrap: nowrap;
+		}
+
+		.kusto-chart-type-btn {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 2px;
+			padding: 4px 6px;
+			min-width: 44px;
+			border: 1px solid transparent;
+			border-radius: 4px;
+			background: transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			transition: all 0.1s ease;
+		}
+
+		.kusto-chart-type-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-chart-type-btn.is-active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+			border-color: transparent;
+		}
+
+		.kusto-chart-type-btn svg {
+			width: 32px;
+			height: 32px;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+		}
+
+		.kusto-chart-type-btn:hover svg {
+			opacity: 0.9;
+		}
+
+		.kusto-chart-type-btn.is-active svg {
+			opacity: 1;
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-chart-type-btn span {
+			font-size: 10px;
+			text-align: center;
+			white-space: nowrap;
+		}
+
+		/* Data labels toggle */
+		.kusto-chart-toggle-label {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			cursor: pointer;
+			user-select: none;
+			padding: 4px 8px;
+			border-radius: 4px;
+			margin-left: 8px;
+		}
+
+		.kusto-chart-toggle-label:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-chart-toggle-label span {
+			font-size: 12px;
+			white-space: nowrap;
+		}
+
+		.kusto-chart-toggle {
+			width: 16px;
+			height: 16px;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+		}
+

@@ -1,0 +1,2363 @@
+/* queryEditor-results.css — Results table, filter dialog, sort modal, column analysis, object viewer, cell viewer (split from queryEditor.css) */
+
+		.results-wrapper {
+			position: relative;
+			width: 100%;
+			min-height: 0;
+			margin: 0;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			background: transparent;
+			/* Separator line between actions and results header */
+			border-top: 1px solid var(--vscode-panel-border);
+			border-radius: 0;
+		}
+
+		.results-wrapper .results {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			border: none;
+			border-radius: 0;
+			background: transparent;
+		}
+
+		/* Query results: the table container is the single scroller (avoid double scrollbars). */
+		.results-wrapper .table-container {
+			display: block;
+			flex: 1 1 auto;
+			min-height: 0;
+			min-width: 0;
+			width: 100%;
+			max-width: 100%;
+			max-height: none;
+			overflow-x: auto;
+			overflow-y: auto;
+			border: none;
+			border-radius: 0;
+			margin-bottom: 0;
+		}
+
+		/* Add a bit of breathing room above the grabber. */
+		.results-wrapper .query-editor-resizer {
+			margin-top: 0;
+		}
+
+		/* Put the grip at the very bottom for results resizing */
+		.results-wrapper .query-editor-resizer::after {
+			top: 100%;
+			transform: translate(-50%, -100%);
+		}
+
+		.results {
+			background: var(--vscode-editor-background);
+			border: none;
+			border-top: 1px solid var(--vscode-panel-border);
+			padding: 8px 0;
+			margin-top: 6px;
+			border-radius: 0;
+			display: none;
+			max-width: 100%;
+		}
+
+		.results.visible {
+			display: flex;
+			flex-direction: column;
+			flex: 1 1 auto;
+			min-height: 0;
+			min-width: 0;
+			overflow: hidden;
+		}
+
+		/* Constrain the results body so the table container can scroll inside it.
+		   This is required anywhere the reusable tabular control is embedded, not just
+		   inside .results-wrapper. */
+		.results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
+
+		.results-body > .data-search,
+		.results-body > .column-search {
+			flex: 0 0 auto;
+		}
+
+		.results-body > .table-container {
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
+		/* Query results inside our resizable wrapper use flex layout and the wrapper owns the separator line. */
+		.results-wrapper .results,
+		.results-wrapper .results.visible {
+			display: flex;
+			flex-direction: column;
+			min-height: 0;
+			min-width: 0;
+			overflow: hidden;
+			background: transparent;
+			border-top: none;
+			margin-top: 0;
+			padding: 8px 0 0;
+		}
+
+		/* Constrain the results body so the table container can scroll inside it. */
+		.results-wrapper .results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.results-wrapper .results-body > .data-search,
+		.results-wrapper .results-body > .column-search {
+			flex: 0 0 auto;
+		}
+
+		.results-wrapper .results-body > .table-container {
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
+		.results-header {
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 6px;
+			padding-bottom: 0;
+			border-bottom: none;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 8px;
+		}
+
+		/* Add a bit of space under the error UX so it doesn't visually collide with the bottom edge/handle. */
+		.results-header.kusto-error-ux {
+			margin-bottom: 10px;
+			flex-direction: column;
+			align-items: flex-start;
+		}
+
+		.results-title-row {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			flex-wrap: wrap;
+			min-width: 0;
+		}
+
+		.results-tools-row {
+			display: inline-flex;
+			align-items: center;
+			justify-content: flex-end;
+			gap: 4px;
+			flex-wrap: wrap;
+			margin-left: auto;
+		}
+
+		.results-sep {
+			display: inline-block;
+			width: 0;
+			height: 18px;
+			border-left: 1px solid var(--vscode-panel-border);
+			margin: 0;
+			opacity: 0.9;
+		}
+
+		/* Clickable error locations (line/column) */
+		.kusto-error-location {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			padding: 2px 8px;
+			border-radius: 999px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			border: 1px solid var(--vscode-button-border);
+			text-decoration: none;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			line-height: 18px;
+			cursor: pointer;
+			user-select: none;
+		}
+
+		.kusto-error-location:hover {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.kusto-error-location:focus-visible {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: 2px;
+		}
+
+		.results-visibility-toggle {
+			margin-left: 6px;
+		}
+
+		.results-tools {
+			display: flex;
+			gap: 4px;
+		}
+
+		.tool-toggle-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			font-size: 14px;
+		}
+
+		.tool-toggle-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.tool-toggle-btn.is-active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+		}
+
+		/* Keep .active for backwards compatibility */
+		.tool-toggle-btn.active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+		}
+
+		.tool-toggle-btn.active:hover,
+		.tool-toggle-btn.is-active:hover {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+		}
+
+		/* Results show/hide toggle: icon-button style */
+		.tool-toggle-btn.results-visibility-toggle {
+			background: transparent;
+			border: 1px solid transparent;
+			padding: 0;
+			width: 28px;
+			height: 28px;
+		}
+
+		.tool-toggle-btn.results-visibility-toggle:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.tool-toggle-btn.results-visibility-toggle.is-active,
+		.tool-toggle-btn.results-visibility-toggle.active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+			color: var(--vscode-foreground);
+		}
+
+		.tool-toggle-btn.results-visibility-toggle.is-active:hover,
+		.tool-toggle-btn.results-visibility-toggle.active:hover {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+		}
+
+		.kusto-split-btn {
+			display: inline-flex;
+			align-items: stretch;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn {
+			border-radius: 0;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn:first-child {
+			border-top-left-radius: 2px;
+			border-bottom-left-radius: 2px;
+		}
+
+		.kusto-split-btn.kusto-split-single > .tool-toggle-btn:first-child {
+			border-top-right-radius: 2px;
+			border-bottom-right-radius: 2px;
+		}
+
+		.kusto-split-btn > .tool-toggle-btn:last-child {
+			border-top-right-radius: 2px;
+			border-bottom-right-radius: 2px;
+			border-left: none;
+			padding-left: 6px;
+			padding-right: 6px;
+			min-width: 22px;
+			font-size: 12px;
+		}
+
+		.kusto-split-menu {
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+			padding: 4px;
+			display: inline-block;
+			width: max-content;
+			max-width: calc(100vw - 16px);
+		}
+
+		.kusto-split-menu-item {
+			display: block;
+			width: auto;
+			text-align: left;
+			background: transparent;
+			color: inherit;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			padding: 6px 8px;
+			cursor: pointer;
+			font-size: 12px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.kusto-split-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-split-menu-item:focus-visible {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		/* Reusable search control (input + embedded mode toggle). */
+		.kusto-search-control {
+			position: relative;
+			display: inline-flex;
+			align-items: center;
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.kusto-search-host {
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.kusto-search-control input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 1;
+		}
+
+		.kusto-search-control input {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		/*
+		 * Ensure container-specific input rules (e.g. .data-search input { padding: ... })
+		 * don't override the spacing needed for embedded icons/buttons.
+		 */
+		.kusto-search-control .kusto-search-input {
+			padding-left: 26px !important;
+			padding-right: 98px !important;
+		}
+
+		/* Magnifying glass icon on left side of input. */
+		.kusto-search-icon {
+			position: absolute;
+			left: 6px;
+			top: 50%;
+			transform: translateY(-50%);
+			pointer-events: none;
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 0.7;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			z-index: 1;
+		}
+
+		.kusto-search-icon svg {
+			display: block;
+		}
+
+		/* Match status (e.g. "3 / 12") inside search control. */
+		.kusto-search-status {
+			position: absolute;
+			right: 71px;
+			top: 50%;
+			transform: translateY(-50%);
+			display: inline-flex;
+			align-items: center;
+			line-height: 1;
+			font-size: inherit;
+			color: var(--vscode-descriptionForeground);
+			pointer-events: none;
+			white-space: nowrap;
+			user-select: none;
+		}
+
+		.kusto-search-status-error {
+			color: var(--vscode-errorForeground);
+		}
+
+		.kusto-search-mode-toggle {
+			position: absolute;
+			right: 49px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+
+		.kusto-search-mode-toggle:hover {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-search-mode-toggle svg {
+			display: block;
+		}
+
+		/* Visual divider before navigation buttons. */
+		.kusto-search-nav-divider {
+			position: absolute;
+			right: 48px;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 1px;
+			height: 14px;
+			background: var(--vscode-input-foreground);
+			opacity: 0.25;
+			pointer-events: none;
+		}
+
+		/* Navigation buttons (prev/next) inside search control. */
+		.kusto-search-nav-btn {
+			position: absolute;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 20px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			background: transparent;
+			color: var(--vscode-input-foreground);
+			opacity: 0.7;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 2px;
+		}
+
+		.kusto-search-nav-btn:hover:not(:disabled) {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.kusto-search-nav-btn:disabled {
+			opacity: 0.35;
+			cursor: default;
+		}
+
+		.kusto-search-nav-btn svg {
+			display: block;
+		}
+
+		.kusto-search-prev {
+			right: 26px;
+		}
+
+		.kusto-search-next {
+			right: 4px;
+		}
+
+		.data-search {
+			display: flex;
+			align-items: center;
+			min-width: 300px;
+			margin-bottom: 6px;
+			padding: 6px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+			position: relative;
+			/* Keep tool UI above sticky table headers/first column (see th.row-selector z-index: 100). */
+			z-index: 2000;
+		}
+
+		.data-search input {
+			flex: 1;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+		}
+
+		.data-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.column-search {
+			position: relative;
+			/* Keep tool UI above sticky table headers/first column (see th.row-selector z-index: 100). */
+			z-index: 2000;
+			min-width: 200px;
+			margin-bottom: 8px;
+			padding: 8px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+		}
+
+		.column-search input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 100%;
+		}
+
+		.column-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.column-autocomplete {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			right: 0;
+			max-height: 200px;
+			overflow-y: auto;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-top: none;
+			border-radius: 0 0 4px 4px;
+			/* Above the tool container, and above sticky table cells. */
+			z-index: 2001;
+			display: none;
+		}
+
+		.column-autocomplete.visible {
+			display: block;
+		}
+
+		.column-autocomplete-item {
+			padding: 6px 8px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		.column-autocomplete-item:hover,
+		.column-autocomplete-item.selected {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.table-container {
+			overflow: auto;
+			max-width: 100%;
+			max-height: none;
+			min-height: 0;
+			position: relative;
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 2px;
+			margin-top: 5px;
+		}
+
+		.table-container:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+		}
+
+		table {
+			width: max-content;
+			min-width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+			user-select: none;
+		}
+
+		th, td {
+			text-align: left;
+			padding: 6px 8px;
+			border-right: 1px solid var(--vscode-panel-border);
+			border-bottom: 1px solid var(--vscode-panel-border);
+			white-space: nowrap;
+			position: relative;
+			max-width: 75ch;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		td {
+			background: var(--vscode-editor-background);
+		}
+
+		th {
+			font-weight: 600;
+			background: var(--vscode-list-hoverBackground);
+			position: sticky;
+			top: 0;
+			z-index: 2;
+			/* No border-top: the container already provides the top border */
+		}
+
+		th:not(.row-selector) {
+			/* Intentionally do not override `th { position: sticky; }`.
+			   This keeps all headers (including non-# columns) consistent while scrolling. */
+			--kusto-noop: 0;
+		}
+
+		.column-header-content {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 4px;
+		}
+
+		.column-header-left {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.column-name {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-sort-indicator {
+			font-size: 11px;
+			opacity: 0.85;
+			line-height: 1;
+			user-select: none;
+		}
+
+		.kusto-filter-link-host {
+			margin-left: 6px;
+			min-width: 0;
+		}
+
+		.kusto-filtered-link {
+			color: var(--vscode-textLink-foreground);
+			text-decoration: none;
+			font-size: 11px;
+			opacity: 0.95;
+		}
+
+		.kusto-filtered-link:hover {
+			text-decoration: underline;
+		}
+
+		.kusto-filtered-link:active {
+			color: var(--vscode-textLink-activeForeground);
+		}
+
+		.kusto-sort-priority {
+			margin-left: 2px;
+			font-size: 10px;
+			opacity: 0.9;
+		}
+
+		.kusto-sort-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-sort-modal.visible {
+			display: flex;
+		}
+
+		.kusto-sort-dialog {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 520px;
+			max-width: calc(100% - 24px);
+			max-height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.kusto-sort-header {
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			align-items: center;
+			justify-content: flex-start;
+			gap: 8px;
+		}
+
+		.kusto-sort-close {
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			color: var(--vscode-errorForeground);
+			cursor: pointer;
+		}
+
+		.kusto-sort-close:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-input-border);
+		}
+
+		.kusto-sort-close svg {
+			display: block;
+		}
+
+		.kusto-sort-body {
+			padding: 10px 12px;
+			overflow: auto;
+		}
+
+		.kusto-sort-empty {
+			color: var(--vscode-descriptionForeground);
+			font-size: 12px;
+			padding: 6px 2px;
+		}
+
+		.kusto-sort-row {
+			display: grid;
+			grid-template-columns: 24px 28px 26px 1fr 140px;
+			gap: 8px;
+			align-items: center;
+			padding: 6px 4px;
+			border-radius: 4px;
+		}
+
+		.kusto-sort-row:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-sort-row.kusto-sort-drop {
+			outline: 1px dashed var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.kusto-sort-row.kusto-sort-dragging {
+			opacity: 0.6;
+		}
+
+		.kusto-sort-grab {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-descriptionForeground);
+			border-radius: 4px;
+			width: 24px;
+			height: 28px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			cursor: grab;
+			font-size: 14px;
+			line-height: 1;
+			letter-spacing: -2px;
+			user-select: none;
+		}
+
+		.kusto-sort-grab:hover {
+			background: var(--vscode-editor-background);
+			border-color: var(--vscode-input-border);
+			color: var(--vscode-foreground);
+		}
+
+		.kusto-sort-grab:active {
+			cursor: grabbing;
+		}
+
+		.kusto-sort-order {
+			text-align: right;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-sort-col,
+		.kusto-sort-dir {
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+			padding: 4px 6px;
+			font-size: 12px;
+		}
+
+		.kusto-sort-remove,
+		.kusto-sort-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 2px;
+			padding: 4px 8px;
+			cursor: pointer;
+			font-size: 12px;
+		}
+
+		.kusto-sort-remove {
+			padding: 0;
+			width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border-color: transparent;
+			color: var(--vscode-errorForeground);
+		}
+
+		.kusto-sort-remove:hover,
+		.kusto-sort-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-sort-remove:hover {
+			border-color: var(--vscode-input-border);
+		}
+
+		.kusto-sort-remove svg {
+			display: block;
+		}
+
+		.kusto-sort-add-row {
+			display: grid;
+			grid-template-columns: 1fr 1fr 140px 32px;
+			gap: 8px;
+			align-items: center;
+			padding: 8px 4px 4px 4px;
+			border-top: 1px solid var(--vscode-panel-border);
+			margin-top: 6px;
+		}
+
+		.kusto-sort-add-label {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.kusto-sort-add-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 4px;
+			width: 32px;
+			height: 28px;
+			cursor: pointer;
+			font-size: 16px;
+			line-height: 1;
+			padding: 0;
+		}
+
+		.kusto-sort-add-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-sort-footer {
+			display: none;
+		}
+
+		.column-menu-btn {
+			padding: 2px 6px;
+			height: 18px;
+			background: var(--vscode-button-secondaryBackground);
+			border: 1px solid transparent;
+			color: var(--vscode-button-secondaryForeground);
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 11px;
+			font-weight: normal;
+			border-radius: 3px;
+			opacity: 0.7;
+		}
+
+		.column-menu-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.column-menu {
+			position: fixed;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 4px;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+			z-index: 10000;
+			min-width: 200px;
+			display: none;
+		}
+
+		.column-menu.visible {
+			display: block;
+		}
+
+		.column-menu-item {
+			padding: 8px 12px;
+			cursor: pointer;
+			font-size: 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.column-menu-item:last-child {
+			border-bottom: none;
+		}
+
+		.column-menu-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-filter-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10002;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-filter-modal.visible {
+			display: flex;
+		}
+
+		.kusto-filter-dialog {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 6px;
+			width: 760px;
+			max-width: calc(100% - 24px);
+			height: 490px;
+			max-height: 85vh;
+			overflow: hidden;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+			display: flex;
+			flex-direction: column;
+		}
+
+		.kusto-filter-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 10px 10px 8px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.kusto-filter-title {
+			font-size: 12px;
+			font-weight: 600;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			padding-right: 8px;
+		}
+
+		.kusto-filter-close {
+			background: transparent;
+			border: 1px solid transparent;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			width: 24px;
+			height: 24px;
+			border-radius: 4px;
+			font-size: 16px;
+			line-height: 1;
+		}
+
+		.kusto-filter-close-btn {
+			min-width: 28px;
+			width: 28px;
+			height: 28px;
+			margin: 0;
+		}
+
+		.kusto-filter-modes {
+			display: flex;
+			gap: 0;
+			padding: 8px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			align-items: center;
+			justify-content: flex-start;
+		}
+
+		.kusto-filter-modes-bar {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			padding-right: 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.kusto-filter-modes-bar .kusto-filter-modes {
+			padding-right: 0;
+			border-bottom: none;
+		}
+
+		.kusto-filter-rules-combine {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			flex: 0 0 auto;
+			min-height: 28px;
+		}
+
+		.kusto-filter-rules-combine-label {
+			font-size: 12px;
+			opacity: 0.9;
+			user-select: none;
+		}
+
+		.kusto-filter-pill-toggle {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 999px;
+			padding: 4px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.9;
+			min-width: 52px;
+			text-align: center;
+		}
+
+		.kusto-filter-pill-toggle:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-pill-toggle.on {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-pill-toggle.on:hover {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.kusto-filter-mode-btn {
+			flex: 0 0 auto;
+			min-width: 120px;
+			color: var(--vscode-button-secondaryForeground);
+			background-color: transparent;
+			border: 0px;
+			border-radius: 0;
+			padding: 6px 8px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.85;
+		}
+
+		.kusto-filter-mode-btn:first-child {
+			border-top-left-radius: 0;
+			border-bottom-left-radius: 0;
+		}
+
+		.kusto-filter-mode-btn:last-child {
+			border-top-right-radius: 0;
+			border-bottom-right-radius: 0;
+			border-left: none;
+		}
+
+		.kusto-filter-mode-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-mode-btn.active {
+			opacity: 1;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-body {
+			padding: 10px;
+			flex: 1;
+			overflow: auto;
+			max-height: none;
+		}
+
+		.kusto-filter-section {
+			display: flex;
+			gap: 10px;
+			flex-wrap: wrap;
+			margin-bottom: 10px;
+		}
+
+		.kusto-filter-rules-toolbar {
+			align-items: center;
+			justify-content: flex-start;
+		}
+
+		.kusto-filter-rules-join {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: nowrap;
+		}
+
+		.kusto-filter-rules-join-label {
+			font-size: 12px;
+			opacity: 0.9;
+			user-select: none;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-seg {
+			display: inline-flex;
+			align-items: stretch;
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 999px;
+			overflow: hidden;
+		}
+
+		.kusto-filter-seg-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: none;
+			padding: 4px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			opacity: 0.9;
+		}
+
+		.kusto-filter-seg-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-seg-btn.active {
+			opacity: 1;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-inline {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			user-select: none;
+		}
+
+		.kusto-filter-search {
+			width: 100%;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 0;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-values-toolbar {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 8px;
+		}
+
+		.kusto-filter-searchbox {
+			position: relative;
+			display: block;
+		}
+
+		.kusto-filter-search-icon {
+			position: absolute;
+			left: 8px;
+			top: 50%;
+			transform: translateY(-50%);
+			opacity: 0.7;
+			pointer-events: none;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-filter-search-icon svg {
+			display: block;
+			width: 14px;
+			height: 14px;
+		}
+
+		.kusto-filter-search-with-icon {
+			padding-left: 28px;
+		}
+
+		.kusto-filter-values-actions-row {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+			align-items: center;
+		}
+
+		.kusto-filter-values-search {
+			flex: 1;
+			min-width: 50px;
+		}
+
+		.kusto-filter-mini-btn {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 6px;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			opacity: 0.85;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-mini-btn:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-mini-btn-icon {
+			display: inline-flex;
+		}
+
+		.kusto-filter-values {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			max-height: 220px;
+			overflow: auto;
+		}
+
+		.kusto-filter-values-columns {
+			display: grid;
+			grid-template-columns: 16px 1fr auto;
+			align-items: center;
+			gap: 8px;
+			padding: 0 6px;
+			font-size: 11px;
+			font-weight: bold;
+			opacity: 0.85;
+			user-select: none;
+			margin-bottom: 5px;
+			margin-top:20px;
+		}
+
+		.kusto-filter-values-columns-count {
+			text-align: right;
+			padding-left: 8px;
+		}
+
+		.kusto-filter-value {
+			display: grid;
+			grid-template-columns: 16px 1fr auto;
+			align-items: center;
+			gap: 8px;
+			padding: 4px 6px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 12px;
+			user-select: none;
+		}
+
+		.kusto-filter-value:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.kusto-filter-value-text {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.kusto-filter-value-count {
+			font-size: 11px;
+			opacity: 0.75;
+			padding-left: 8px;
+		}
+
+		.kusto-filter-note {
+			font-size: 11px;
+			opacity: 0.8;
+			margin-top: 6px;
+		}
+
+		.kusto-filter-rule select,
+		.kusto-filter-rule input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-rules {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-row select,
+		.kusto-filter-rule-row input {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 4px;
+			padding: 6px 8px;
+			font-size: 12px;
+		}
+
+		.kusto-filter-rule-op {
+			min-width: 210px;
+		}
+
+		.kusto-filter-rule-inputs {
+			display: flex;
+			gap: 8px;
+			flex: 1;
+			align-items: center;
+			flex-wrap: wrap;
+		}
+
+		.kusto-filter-rule-last {
+			display: inline-flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.kusto-filter-rule-del,
+		.kusto-filter-rule-del-spacer {
+			width: 28px;
+			min-width: 28px;
+			height: 28px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.kusto-filter-rule-del {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			cursor: pointer;
+			padding: 0;
+			opacity: 0.85;
+		}
+
+		.kusto-filter-rule-del:hover {
+			opacity: 1;
+			background: var(--vscode-button-secondaryHoverBackground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.kusto-filter-rule {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.kusto-filter-rule-inputs {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.kusto-filter-last {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.kusto-filter-footer {
+			display: flex;
+			gap: 8px;
+			padding: 10px;
+			border-top: 1px solid var(--vscode-panel-border);
+			justify-content: flex-end;
+		}
+
+		.kusto-filter-btn {
+			flex: 0 0 auto;
+			min-width: 115px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+			border-radius: 4px;
+			padding: 6px 10px;
+			font-size: 12px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+		}
+
+		.kusto-filter-btn-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 0;
+		}
+
+		.kusto-filter-btn-icon svg {
+			display: block;
+		}
+
+		.kusto-filter-btn:hover {
+			background: var(--vscode-button-hoverBackground);
+			color: var(--vscode-button-foreground);
+		}
+
+		.kusto-filter-btn.secondary {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+		}
+
+		.kusto-filter-btn.secondary:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.kusto-filter-btn.danger {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid transparent;
+		}
+
+		.kusto-filter-btn.danger:hover {
+			background: var(--vscode-inputValidation-errorBackground);
+			color: var(--vscode-inputValidation-errorForeground);
+			border-color: var(--vscode-inputValidation-errorBorder);
+			opacity: 0.95;
+		}
+
+		.column-analysis-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.column-analysis-modal.visible {
+			display: flex;
+		}
+
+		.column-analysis-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 60%;
+			max-width: 800px;
+			max-height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.column-analysis-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.column-analysis-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+		}
+
+		.column-analysis-close {
+			/* Reuse the shared icon-button styling (see .refresh-btn). */
+			background: transparent;
+		}
+
+		.column-analysis-close:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-analysis-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+		}
+
+		.column-analysis-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+		}
+
+		.column-analysis-table th,
+		.column-analysis-table td {
+			text-align: left;
+			padding: 8px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+
+		.column-analysis-table th {
+			font-weight: 600;
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-analysis-table .total-row {
+			border-top: 2px solid var(--vscode-panel-border);
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.column-analysis-table .total-row td {
+			font-weight: 600;
+		}
+
+		.column-picker {
+			margin-bottom: 16px;
+		}
+
+		.column-picker label {
+			display: block;
+			margin-bottom: 4px;
+			font-weight: 600;
+			font-size: 12px;
+		}
+
+		.column-picker select {
+			width: 100%;
+			padding: 4px 8px;
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			border: 1px solid var(--vscode-dropdown-border);
+			border-radius: 2px;
+		}
+
+		.row-selector {
+			width: 40px;
+			min-width: 40px;
+			max-width: 40px;
+			text-align: center;
+			background: var(--vscode-editor-background);
+			cursor: pointer;
+			position: sticky;
+			left: 0;
+			z-index: 10;
+			user-select: none;
+			border-left: 1px solid var(--vscode-panel-border);
+			border-right: 2px solid var(--vscode-panel-border);
+		}
+
+		th.row-selector {
+			z-index: 100;
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		td.selected-cell {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		td.selected-cell-focus {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: -2px;
+		}
+
+		.kusto-context-menu {
+			position: absolute;
+			z-index: 100000;
+			background: var(--vscode-menu-background);
+			color: var(--vscode-menu-foreground);
+			border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+			border-radius: 4px;
+			padding: 4px;
+			min-width: 120px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+		}
+
+		.kusto-context-menu-item {
+			width: 100%;
+			display: block;
+			text-align: left;
+			background: transparent;
+			color: inherit;
+			border: none;
+			padding: 6px 10px;
+			font: inherit;
+			cursor: pointer;
+		}
+
+		.kusto-context-menu-item:hover {
+			background: var(--vscode-menu-selectionBackground);
+			color: var(--vscode-menu-selectionForeground);
+		}
+
+		td.search-match {
+			background: var(--vscode-editor-findMatchBackground);
+			outline: 1px solid var(--vscode-editor-findMatchBorder);
+		}
+
+		td.search-match-current {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			outline: 2px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -2px;
+		}
+
+		.object-view-btn {
+			margin-left: 0;
+			margin-top: 0;
+			margin-right: 0;
+			margin-bottom: 0;
+			padding: 2px 6px;
+			font-size: 11px;
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			border: 1px solid var(--vscode-button-border);
+			border-radius: 3px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			vertical-align: baseline;
+		}
+
+		.object-view-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground);
+		}
+
+		.object-viewer-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.object-viewer-modal.visible {
+			display: flex;
+		}
+
+		.object-viewer-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 80%;
+			max-width: 1200px;
+			height: 80%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.object-viewer-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.object-viewer-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+		}
+
+		.object-viewer-search {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex: 1;
+			margin: 0 16px;
+		}
+
+		.object-viewer-search input {
+			flex: 1;
+			max-width: 300px;
+			padding: 4px 8px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 2px;
+		}
+
+		.object-viewer-search-results {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.object-viewer-close {
+			/* Reuse shared icon-button styling (.refresh-btn). */
+			--kusto-noop: 0;
+		}
+
+		.object-viewer-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+		}
+
+		/* Diff view CSS is now in kw-diff-view shadow DOM. */
+
+		.object-viewer-section {
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			background: var(--vscode-editor-background);
+			margin-bottom: 12px;
+		}
+
+		.object-viewer-section-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			padding: 10px 12px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+		}
+
+		.object-viewer-props-section .object-viewer-section-header {
+			justify-content: flex-start;
+		}
+
+		.object-viewer-props-section .object-viewer-section-title {
+			flex: 1;
+		}
+
+		.object-viewer-section-title {
+			font-size: 12px;
+			font-weight: 600;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.object-viewer-back-btn {
+			padding: 4px 8px;
+			min-width: 28px;
+			height: 28px;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border-color: var(--vscode-button-border);
+		}
+
+		.object-viewer-back-btn:hover {
+			background: var(--vscode-button-hoverBackground);
+		}
+
+		.object-viewer-props-section .object-viewer-section-title {
+			white-space: normal;
+			overflow: visible;
+			text-overflow: clip;
+		}
+
+		.object-viewer-crumb {
+			background: transparent;
+			border: none;
+			padding: 0;
+			margin: 0;
+			font: inherit;
+			color: var(--vscode-textLink-foreground);
+			cursor: pointer;
+			text-decoration: none;
+		}
+
+		.object-viewer-crumb:hover {
+			background: transparent;
+			text-decoration: underline;
+		}
+
+		.object-viewer-crumb:focus {
+			outline: none;
+			background: transparent;
+		}
+
+		.object-viewer-crumb:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 2px;
+			background: transparent;
+		}
+
+		.object-viewer-crumb:disabled {
+			color: var(--vscode-foreground);
+			cursor: default;
+			text-decoration: none;
+			opacity: 0.9;
+		}
+
+		.object-viewer-crumb-sep {
+			color: var(--vscode-descriptionForeground);
+			padding: 0 6px;
+			user-select: none;
+		}
+
+		.object-viewer-props-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+			user-select: text;
+		}
+
+		.object-viewer-props-table td {
+			padding: 6px 10px;
+			border-top: 1px solid var(--vscode-panel-border);
+			vertical-align: top;
+			word-break: break-word;
+			user-select: text;
+		}
+
+		.object-viewer-prop-key-cell {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			min-width: 0;
+		}
+
+		.object-viewer-prop-key-text {
+			flex: 1;
+			min-width: 0;
+			word-break: break-word;
+		}
+
+		.object-viewer-prop-copy-btn {
+			min-width: 22px;
+			width: 22px;
+			height: 22px;
+			opacity: 0;
+			pointer-events: none;
+			user-select: none;
+		}
+
+		.object-viewer-props-table tr:hover .object-viewer-prop-copy-btn,
+		.object-viewer-props-table tr:focus-within .object-viewer-prop-copy-btn {
+			opacity: 1;
+			pointer-events: auto;
+		}
+
+		.object-viewer-raw-actions {
+			display: inline-flex;
+			gap: 4px;
+			align-items: center;
+		}
+
+		.object-viewer-props-table td:first-child {
+			width: 35%;
+			max-width: 360px;
+			font-family: var(--vscode-editor-font-family);
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.object-viewer-props-table td:last-child {
+			font-family: var(--vscode-editor-font-family);
+			vertical-align: middle;
+		}
+
+		.object-viewer-props-table tr.search-match td {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			outline: 1px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -1px;
+		}
+
+		.object-viewer-raw-body {
+			padding: 10px 12px;
+		}
+
+		.object-viewer-json {
+			font-family: var(--vscode-editor-font-family);
+			font-size: var(--vscode-editor-font-size);
+			white-space: pre;
+			line-height: 1.6;
+		}
+
+		.object-viewer-json-wrap {
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-x: hidden;
+		}
+
+		.json-key {
+			color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe);
+		}
+
+		.json-string {
+			color: var(--vscode-symbolIcon-stringForeground, #ce9178);
+		}
+
+		.json-number {
+			color: var(--vscode-symbolIcon-numberForeground, #b5cea8);
+		}
+
+		.json-boolean {
+			color: var(--vscode-symbolIcon-booleanForeground, #569cd6);
+		}
+
+		.json-null {
+			color: var(--vscode-symbolIcon-nullForeground, #569cd6);
+		}
+
+		.json-highlight {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			border-radius: 2px;
+		}
+
+		/* Cell Viewer Modal */
+		.cell-viewer-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.cell-viewer-modal.visible {
+			display: flex;
+		}
+
+		.cell-viewer-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 4px;
+			width: 90%;
+			max-width: 1400px;
+			height: 85%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.cell-viewer-header {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			gap: 12px;
+		}
+
+		.cell-viewer-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			min-width: 0;
+		}
+
+		.cell-viewer-search {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.cell-viewer-search input {
+			flex: 1;
+			max-width: 400px;
+			padding: 6px 10px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+			font-size: 13px;
+		}
+
+		.cell-viewer-search input:focus {
+			outline: none;
+			border-color: var(--vscode-focusBorder);
+		}
+
+		.cell-viewer-actions {
+			display: inline-flex;
+			gap: 4px;
+			align-items: center;
+		}
+
+		.cell-viewer-close {
+			flex-shrink: 0;
+		}
+
+		.cell-viewer-body {
+			flex: 1;
+			overflow: auto;
+			padding: 16px;
+			min-height: 0;
+		}
+
+		.cell-viewer-value {
+			font-family: var(--vscode-editor-font-family);
+			font-size: var(--vscode-editor-font-size);
+			line-height: 1.6;
+			white-space: pre-wrap;
+			word-break: break-word;
+			user-select: text;
+			color: var(--vscode-editor-foreground);
+		}
+
+		.cell-viewer-highlight {
+			background: var(--vscode-editor-findMatchHighlightBackground);
+			border-radius: 2px;
+			outline: 1px solid var(--vscode-editor-findMatchHighlightBorder);
+			outline-offset: -1px;
+		}
+
+		.cell-viewer-highlight-current {
+			background: var(--vscode-editor-findMatchBackground);
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: -2px;
+		}
+
+		tr.selected-row {
+			background: var(--vscode-list-inactiveSelectionBackground);
+		}
+
+		tr.selected-row td {
+			background: var(--vscode-list-inactiveSelectionBackground);
+		}
+
+		tr.selected-row .row-selector {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
+
+		/* ============================================
+		   Responsive Results Header
+		   Uses container queries to progressively collapse UI elements
+		   ============================================ */
+
+		/* Make the results-header a container for size queries */
+		.results-header {
+			container-type: inline-size;
+			container-name: results-header;
+		}
+
+		/* Wrap the collapsible execution info in a span for targeting */
+		.results-exec-info {
+			display: inline;
+		}
+
+		/* Collapsed Tools dropdown - hidden by default, shown when width is too narrow */
+		.results-tools-dropdown {
+			display: none;
+			position: relative;
+		}
+
+		.results-tools-dropdown-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 2px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			padding: 4px 6px;
+			font-size: 12px;
+		}
+
+		.results-tools-dropdown-btn:hover {
+			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+		}
+
+		.results-tools-dropdown-btn .codicon {
+			font-size: 14px;
+		}
+
+		.results-tools-dropdown-btn .results-tools-dropdown-caret {
+			opacity: 0.8;
+		}
+
+		.results-tools-dropdown-menu {
+			position: fixed;
+			left: 0;
+			top: 0;
+			min-width: 150px;
+			max-width: 250px;
+			max-height: 300px;
+			overflow: auto;
+			z-index: 100000;
+			background: var(--vscode-dropdown-background);
+			border: 1px solid var(--vscode-dropdown-border);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+			box-sizing: border-box;
+			display: none;
+		}
+
+		.results-tools-dropdown-menu.is-open {
+			display: block;
+		}
+
+		.results-tools-dropdown-item {
+			padding: 6px 10px;
+			cursor: pointer;
+			font-size: 12px;
+			line-height: 1.4;
+			user-select: none;
+			white-space: nowrap;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			color: var(--vscode-dropdown-foreground);
+		}
+
+		.results-tools-dropdown-item:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.results-tools-dropdown-item.is-active {
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
+		}
+
+		.results-tools-dropdown-item.is-active:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.results-tools-dropdown-item svg {
+			width: 16px;
+			height: 16px;
+			flex-shrink: 0;
+		}
+
+		.results-tools-dropdown-sep {
+			height: 1px;
+			background: var(--vscode-panel-border);
+			margin: 4px 8px;
+		}
+
+		/* Individual tool buttons wrapper - visible by default */
+		.results-tools-individual {
+			display: inline-flex;
+			align-items: center;
+			gap: 0;
+		}
+
+		/* Collapsible row/column info in results header */
+		.results-row-col-info {
+			display: inline;
+		}
+
+		/* First breakpoint: Hide execution info when container is narrow (< 480px) */
+		@container results-header (max-width: 480px) {
+			.results-exec-info {
+				display: none;
+			}
+		}
+
+		/* Second breakpoint: Also hide row/column counts (< 360px) */
+		@container results-header (max-width: 360px) {
+			.results-row-col-info {
+				display: none;
+			}
+		}
+
+		/* Third breakpoint: Collapse tools into dropdown when very narrow (< 220px) */
+		@container results-header (max-width: 240px) {
+			.results-tools-individual {
+				display: none;
+			}
+
+			.results-tools-dropdown {
+				display: inline-flex;
+			}
+		}
+
+		/* Fourth breakpoint: Hide visibility toggle button when ultra-narrow (< 150px) */
+		@container results-header (max-width: 150px) {
+			.results-visibility-toggle {
+				display: none;
+			}
+		}
+
+		/* Visibility toggle item in dropdown - hidden by default, shown via JS class when ultra-narrow */
+		.results-tools-dropdown-item.results-visibility-item {
+			display: none;
+		}
+
+		.results-tools-dropdown-menu.show-visibility-item .results-tools-dropdown-item.results-visibility-item {
+			display: flex;
+		}
+
+		.results-tools-dropdown-menu.show-visibility-item .results-tools-dropdown-sep.results-visibility-item {
+			display: block;
+		}
+
+		/* ── Results label tooltip (Client Activity ID + Server Stats) ── */
+		.results-label-tooltip-anchor {
+			position: relative;
+			cursor: default;
+		}
+
+		.results-label-tooltip {
+			display: none;
+			position: fixed;
+			z-index: 1000;
+			background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background, #2d2d2d));
+			color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground, #ccc));
+			border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-editorWidget-border, #454545));
+			border-radius: 4px;
+			padding: 8px 10px;
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+			flex-direction: column;
+			gap: 4px;
+			font-size: 12px;
+			font-weight: normal;
+			user-select: text;
+			pointer-events: auto;
+			max-width: 520px;
+			white-space: nowrap;
+		}
+
+		.results-label-tooltip-row {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-height: 20px;
+		}
+
+		.results-label-tooltip-stat-row {
+			gap: 8px;
+		}
+
+		.results-label-tooltip-separator {
+			border-top: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-editorWidget-border, #454545));
+			margin: 2px 0;
+		}
+
+		.results-label-tooltip.is-visible {
+			display: flex;
+		}
+
+		.results-label-tooltip-title {
+			color: var(--vscode-descriptionForeground, #888);
+			font-size: 11px;
+			font-weight: 500;
+			margin-right: 2px;
+		}
+
+		.results-label-tooltip-value {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 11px;
+			user-select: all;
+		}
+
+		.results-label-tooltip-copy {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: none;
+			color: var(--vscode-descriptionForeground, #888);
+			cursor: pointer;
+			padding: 2px 4px;
+			border-radius: 3px;
+			flex-shrink: 0;
+		}
+
+		.results-label-tooltip-copy:hover {
+			color: var(--vscode-foreground);
+			background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+		}
+
+		.results-label-tooltip-copy svg {
+			width: 13px;
+			height: 13px;
+		}
+
+		.results-label-tooltip-copy.results-footer-copy-done {
+			color: var(--vscode-terminal-ansiGreen, #89d185);
+		}
+
+		/* ── Inline Client Activity ID (shown in error UX) ── */
+		.kusto-error-activity-id {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 6px;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground, #888);
+			user-select: text;
+		}
+
+		.kusto-error-activity-id-label {
+			white-space: nowrap;
+			font-weight: 500;
+		}
+
+		.kusto-error-activity-id-value {
+			font-family: var(--vscode-editor-font-family, monospace);
+			font-size: 11px;
+			user-select: all;
+		}
+

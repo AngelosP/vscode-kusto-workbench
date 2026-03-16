@@ -1,0 +1,303 @@
+/* queryEditor-modals.css — Cache controls popup, share modal (split from queryEditor.css) */
+
+		.cache-controls {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-top: 8px;
+			margin-bottom: 8px;
+			font-size: 12px;
+			position: relative;
+			flex-wrap: nowrap;
+			flex-shrink: 0;
+		}
+
+		/* Hide cache controls when container is too narrow */
+		@container (max-width: 215px) {
+			.cache-controls {
+				display: none;
+			}
+		}
+
+		.cache-checkbox {
+			cursor: pointer;
+			width: 14px;
+			height: 14px;
+			margin: 0;
+			flex-shrink: 0;
+		}
+
+		/* Cache label */
+		.cache-label {
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			font-size: 12px;
+			user-select: none;
+			transition: color 0.15s ease;
+		}
+
+		.cache-label:hover {
+			text-decoration: underline;
+			color: var(--vscode-textLink-foreground);
+		}
+
+		.cache-label.disabled {
+			color: var(--vscode-disabledForeground);
+		}
+
+		.cache-label.disabled:hover {
+			text-decoration: underline;
+		}
+
+		/* Cache popup */
+		.cache-popup {
+			position: absolute;
+			top: 100%;
+			right: 0;
+			margin-top: 4px;
+			background: var(--vscode-editorWidget-background);
+			border: 1px solid var(--vscode-editorWidget-border);
+			border-radius: 4px;
+			box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+			z-index: 100;
+			display: none;
+			min-width: 200px;
+		}
+
+		.cache-popup.open {
+			display: block;
+		}
+
+		.cache-popup-content {
+			padding: 12px;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.cache-popup-label {
+			color: var(--vscode-foreground);
+			font-size: 12px;
+		}
+
+		.cache-popup-inputs {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
+
+
+		.query-actions .cache-controls {
+			margin: 0;
+			margin-left: auto;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+			align-items: center;
+		}
+
+
+
+		.cache-controls select {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 4px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 70px;
+		}
+
+		.cache-controls input[type="number"] {
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			padding: 5px 8px;
+			font-size: 12px;
+			border-radius: 2px;
+			width: 70px;
+		}
+
+		.cache-controls select:disabled,
+		.cache-controls input[type="number"]:disabled {
+			opacity: 0.6;
+			cursor: not-allowed;
+		}
+
+		.cache-info {
+			color: var(--vscode-descriptionForeground);
+			font-size: 11px;
+		}
+
+
+		/* ── Share Modal ── */
+
+		.share-modal {
+			display: none;
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 0, 0, 0.6);
+			z-index: 10000;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.share-modal.visible {
+			display: flex;
+		}
+
+		.share-modal-content {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 6px;
+			width: 420px;
+			max-width: 90%;
+			display: flex;
+			flex-direction: column;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.share-modal-header {
+			padding: 14px 16px 10px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			border-radius: 6px 6px 0 0;
+		}
+
+		.share-modal-header h3 {
+			margin: 0;
+			font-size: 14px;
+			font-weight: 600;
+		}
+
+		.share-modal-close {
+			background: transparent;
+		}
+
+		.share-modal-close:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.share-modal-body {
+			padding: 16px;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+		}
+
+		.share-modal-description {
+			font-size: 12px;
+			color: var(--vscode-descriptionForeground, #888);
+			margin-bottom: 4px;
+			line-height: 1.4;
+		}
+
+		.share-modal-option {
+			display: flex;
+			align-items: flex-start;
+			gap: 10px;
+			padding: 8px 10px;
+			border-radius: 4px;
+			cursor: pointer;
+			transition: background-color 0.1s;
+		}
+
+		.share-modal-option:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.share-modal-option input[type="checkbox"] {
+			margin-top: 2px;
+			accent-color: var(--vscode-focusBorder);
+			cursor: pointer;
+			flex-shrink: 0;
+		}
+
+		.share-modal-option-text {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+		}
+
+		.share-modal-option-name {
+			font-size: 13px;
+			font-weight: 500;
+		}
+
+		.share-modal-option-subtitle {
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground, #888);
+		}
+
+		.share-modal-option-disabled {
+			opacity: 0.5;
+			cursor: default;
+		}
+
+		.share-modal-option-disabled:hover {
+			background: none;
+		}
+
+		.share-modal-row-limit {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			font-size: 11px;
+			color: var(--vscode-descriptionForeground);
+			margin-top: 2px;
+		}
+
+		.share-modal-row-limit label {
+			white-space: nowrap;
+			cursor: default;
+		}
+
+		.share-modal-row-limit-input {
+			width: 52px;
+			padding: 1px 4px;
+			border-radius: 3px;
+			border: 1px solid var(--vscode-input-border, #3c3c3c);
+			background: var(--vscode-input-background, #1e1e1e);
+			color: var(--vscode-input-foreground, #ccc);
+			font-size: 11px;
+			text-align: center;
+			-moz-appearance: textfield;
+		}
+
+		.share-modal-row-limit-input::-webkit-inner-spin-button,
+		.share-modal-row-limit-input::-webkit-outer-spin-button {
+			opacity: 1;
+		}
+
+		.share-modal-row-limit-input:focus {
+			outline: 1px solid var(--vscode-focusBorder);
+		}
+
+		.share-modal-footer {
+			padding: 12px 16px;
+			border-top: 1px solid var(--vscode-panel-border);
+			display: flex;
+			justify-content: flex-end;
+		}
+
+		.share-modal-copy-btn {
+			padding: 6px 16px;
+			border-radius: 4px;
+			font-size: 13px;
+			font-weight: 500;
+			cursor: pointer;
+			border: none;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+
+		.share-modal-copy-btn:hover {
+			background: var(--vscode-button-hoverBackground);
+		}
+	
+
