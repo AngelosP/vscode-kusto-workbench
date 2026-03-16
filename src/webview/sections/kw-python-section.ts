@@ -1,6 +1,7 @@
 import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,17 +68,31 @@ export class KwPythonSection extends LitElement {
 	private _editor: MonacoEditor | null = null;
 	private _initRetryCount = 0;
 	private _userResized = false;
+	/** Saved editor content across DOM moves (disconnect → reconnect). */
+	private _savedCode: string | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		window.addEventListener('message', this._onMessage);
+		// Re-create editor after a DOM move (reorder). firstUpdated only fires once,
+		// so we need to re-init here when reconnecting with saved content.
+		if (this._savedCode !== null) {
+			this.updateComplete.then(() => this._initEditor());
+		}
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		// Save content before destroying so it can be restored on reconnect.
+		if (this._editor) {
+			try {
+				const model = this._editor.getModel();
+				if (model) this._savedCode = model.getValue();
+			} catch { /* ignore */ }
+		}
 		this._disposeEditor();
 	}
 
@@ -102,103 +117,58 @@ export class KwPythonSection extends LitElement {
 	override render() {
 		return html`
 			<div class="section-root">
-			<div class="section-header-row">
-				<div class="query-name-group">
-					<button type="button" class="section-drag-handle" draggable="true"
-						title="Drag to reorder" aria-label="Reorder section"
-						@dragstart=${this._onDragStart}>
-						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-					</button>
-					<input type="text" class="query-name"
-						placeholder="Python Name (optional)"
-						.value=${this._title}
-						@input=${this._onTitleInput} />
-				</div>
-				<div class="section-actions">
-					<div class="header-tabs" role="tablist" aria-label="Python controls">
-						<button class="header-tab run-btn" type="button"
-							@click=${this._run} title="Run Python (Ctrl+Enter)"
-							aria-label="Run Python"
-							?disabled=${this._running}>
-							${KwPythonSection._runIcon}
-							<span class="run-label">Run</span>
+			<kw-section-shell
+				.name=${this._title}
+				.expanded=${this._expanded}
+				box-id=${this.boxId}
+				name-placeholder="Python Name (optional)"
+				@name-change=${this._onShellNameChange}
+				@toggle-visibility=${this._toggleVisibility}
+				@fit-to-contents=${this._fitToContents}>
+				<button slot="header-buttons" class="header-tab run-btn" type="button"
+					@click=${this._run} title="Run Python (Ctrl+Enter)"
+					aria-label="Run Python"
+					?disabled=${this._running}>
+					${KwPythonSection._runIcon}
+					<span class="run-label">Run</span>
+				</button>
+				<div class="editor-wrapper" id="editor-wrapper">
+					<div class="python-toolbar">
+						<button class="py-toolbar-btn" type="button" title="Comment/Uncomment (Ctrl+/)"
+							aria-label="Toggle comment" @click=${this._toggleComment}>
+							<span class="qe-icon">${KwPythonSection._commentIcon}</span>
 						</button>
-						<button class="header-tab" type="button"
-							@click=${this._fitToContents}
-							title="Fit to contents" aria-label="Fit to contents">
-							${KwPythonSection._maximizeIcon}
+						<button class="py-toolbar-btn" type="button" title="Indent (Tab)"
+							aria-label="Indent" @click=${this._indent}>
+							<span class="qe-icon">${KwPythonSection._indentIcon}</span>
 						</button>
-						<button class="header-tab ${this._expanded ? 'is-active' : ''}" type="button"
-							role="tab" aria-selected="${this._expanded ? 'true' : 'false'}"
-							title="${this._expanded ? 'Hide' : 'Show'}"
-							aria-label="${this._expanded ? 'Hide' : 'Show'}"
-							@click=${this._toggleVisibility}>
-							${KwPythonSection._previewIcon}
+						<button class="py-toolbar-btn" type="button" title="Outdent (Shift+Tab)"
+							aria-label="Outdent" @click=${this._outdent}>
+							<span class="qe-icon">${KwPythonSection._outdentIcon}</span>
+						</button>
+						<span class="py-toolbar-sep" aria-hidden="true"></span>
+						<button class="py-toolbar-btn" type="button" title="Undo (Ctrl+Z)"
+							aria-label="Undo" @click=${this._undo}>
+							<span class="qe-icon">${KwPythonSection._undoIcon}</span>
+						</button>
+						<button class="py-toolbar-btn" type="button" title="Redo (Ctrl+Y)"
+							aria-label="Redo" @click=${this._redo}>
+							<span class="qe-icon">${KwPythonSection._redoIcon}</span>
 						</button>
 					</div>
-					<button class="close-btn" type="button"
-						title="Remove" aria-label="Remove"
-						@click=${this._requestRemove}>
-						${KwPythonSection._closeIcon}
-					</button>
+					<slot name="editor"></slot>
+					<div class="resizer"
+						title="Drag to resize editor\nDouble-click to fit to contents"
+						@mousedown=${this._onResizerMouseDown}
+						@dblclick=${this._fitToContents}></div>
 				</div>
-			</div>
-			<div class="editor-wrapper" id="editor-wrapper">
-				<div class="python-toolbar">
-					<button class="py-toolbar-btn" type="button" title="Comment/Uncomment (Ctrl+/)"
-						aria-label="Toggle comment" @click=${this._toggleComment}>
-						<span class="qe-icon">${KwPythonSection._commentIcon}</span>
-					</button>
-					<button class="py-toolbar-btn" type="button" title="Indent (Tab)"
-						aria-label="Indent" @click=${this._indent}>
-						<span class="qe-icon">${KwPythonSection._indentIcon}</span>
-					</button>
-					<button class="py-toolbar-btn" type="button" title="Outdent (Shift+Tab)"
-						aria-label="Outdent" @click=${this._outdent}>
-						<span class="qe-icon">${KwPythonSection._outdentIcon}</span>
-					</button>
-					<span class="py-toolbar-sep" aria-hidden="true"></span>
-					<button class="py-toolbar-btn" type="button" title="Undo (Ctrl+Z)"
-						aria-label="Undo" @click=${this._undo}>
-						<span class="qe-icon">${KwPythonSection._undoIcon}</span>
-					</button>
-					<button class="py-toolbar-btn" type="button" title="Redo (Ctrl+Y)"
-						aria-label="Redo" @click=${this._redo}>
-						<span class="qe-icon">${KwPythonSection._redoIcon}</span>
-					</button>
-				</div>
-				<slot name="editor"></slot>
-				<div class="resizer"
-					title="Drag to resize editor\nDouble-click to fit to contents"
-					@mousedown=${this._onResizerMouseDown}
-					@dblclick=${this._fitToContents}></div>
-			</div>
-			${this._output ? html`<div class="python-output" aria-label="Python output">${this._output}</div>` : ''}
+				${this._output ? html`<div class="python-output" aria-label="Python output">${this._output}</div>` : ''}
+			</kw-section-shell>
 			</div>
 		`;
 	}
 
 	// ── SVG Icons (static) ────────────────────────────────────────────────────
-
-	private static _closeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M4 4l8 8"/><path d="M12 4L4 12"/>
-		</svg>`;
-
-	private static _maximizeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 6V3h3"/><path d="M13 10v3h-3"/>
-			<path d="M3 3l4 4"/><path d="M13 13l-4-4"/>
-		</svg>`;
-
-	private static _previewIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
-			<circle cx="8" cy="8" r="2.1" />
-		</svg>`;
 
 	private static _runIcon = html`
 		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -274,7 +244,7 @@ export class KwPythonSection extends LitElement {
 			slotted.style.minWidth = '0';
 
 			const editor = monaco.editor.create(slotted, {
-				value: this.initialCode || '',
+				value: this._savedCode ?? this.initialCode ?? '',
 				language: 'python',
 				readOnly: false,
 				domReadOnly: false,
@@ -409,28 +379,8 @@ export class KwPythonSection extends LitElement {
 		}
 	}
 
-	private _requestRemove(): void {
-		this.dispatchEvent(new CustomEvent('section-remove', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true
-		}));
-	}
-
-	private _onDragStart(e: DragEvent): void {
-		if (e.dataTransfer) {
-			e.dataTransfer.setData('text/plain', this.boxId);
-			e.dataTransfer.effectAllowed = 'move';
-		}
-		this.dispatchEvent(new CustomEvent('section-drag-start', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true
-		}));
-	}
-
-	private _onTitleInput(e: Event): void {
-		this._title = (e.target as HTMLInputElement).value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._title = e.detail.name;
 		this._schedulePersist();
 	}
 
@@ -681,6 +631,10 @@ export class KwPythonSection extends LitElement {
 
 	public setTitle(title: string): void {
 		this._title = title;
+	}
+
+	public getName(): string {
+		return this._title;
 	}
 
 	public setExpanded(expanded: boolean): void {

@@ -29,126 +29,27 @@ export const styles = css`
 			padding-bottom: 5px;
 		}
 
-		.section-header-row {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			justify-content: space-between;
-			margin-bottom: 8px;
-		}
+		/* ── Run button (slotted into kw-section-shell header-buttons) ──── */
 
-		.query-name-group {
-			display: inline-flex;
-			align-items: center;
-			gap: 0;
-			min-width: 0;
-			flex: 1 1 auto;
-		}
-
-		.section-drag-handle {
-			opacity: 1;
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-descriptionForeground);
-			border-radius: 4px;
-			margin: 0;
-			width: 12px;
-			height: 24px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			cursor: grab;
-			flex: 0 0 auto;
-		}
-		.section-drag-handle:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-		.section-drag-handle:active { cursor: grabbing; }
-		.section-drag-handle:focus-visible {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-		.section-drag-handle-glyph {
-			font-size: 14px;
-			line-height: 1;
-			letter-spacing: -1px;
-		}
-
-		.query-name {
-			font-size: 12px;
-			color: var(--vscode-foreground);
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			padding: 2px 6px;
-			outline: none;
-			min-width: 0;
-			flex: 1 1 auto;
-			font-family: inherit;
-		}
-		.query-name::placeholder {
-			color: var(--vscode-input-placeholderForeground);
-		}
-		.query-name:hover {
-			border-color: var(--vscode-input-border);
-		}
-		.query-name:focus {
-			border-color: var(--vscode-focusBorder);
-		}
-
-		.section-actions {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			flex: 0 0 auto;
-		}
-
-		.header-tabs {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			border: none;
-			border-radius: 0;
-			overflow: visible;
-			margin: 0;
-			background: transparent;
-		}
-
-		.header-tab {
+		.header-tab.run-btn {
 			background: transparent;
 			border: 1px solid transparent;
 			color: var(--vscode-foreground);
 			cursor: pointer;
-			padding: 0;
-			width: 28px;
-			height: 28px;
 			border-radius: 4px;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			line-height: 0;
-		}
-		.header-tab svg {
-			display: block;
-		}
-		.header-tab:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-		.header-tab.is-active {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-		}
-
-		.header-tab.run-btn {
 			width: auto;
 			padding: 0 10px;
 			gap: 4px;
 			font-size: 12px;
 			line-height: 1;
 			height: 28px;
+		}
+		.header-tab.run-btn:hover:not(:disabled) {
+			background: var(--vscode-list-hoverBackground);
 		}
 		.header-tab.run-btn svg {
 			width: 12px;
@@ -160,27 +61,6 @@ export const styles = css`
 		.header-tab.run-btn:disabled {
 			opacity: 0.5;
 			cursor: default;
-		}
-
-		.close-btn {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			border-radius: 4px;
-			cursor: pointer;
-			width: 28px;
-			height: 28px;
-			min-width: 28px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-		}
-		.close-btn svg {
-			display: block;
-		}
-		.close-btn:hover {
-			background: var(--vscode-list-hoverBackground);
 		}
 
 		/* ── Python toolbar (inside editor wrapper, above Monaco) ────── */

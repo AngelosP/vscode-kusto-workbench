@@ -1,0 +1,143 @@
+import { LitElement, html, nothing } from 'lit';
+import { customElement, property } from 'lit/decorators.js';
+import { styles } from './kw-section-shell.styles.js';
+
+// ─── SVG icon constants (matching kw-chart-section.ts) ────────────────────────
+
+const SVG_CLOSE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>';
+const SVG_EYE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z"/><circle cx="8" cy="8" r="2.1"/></svg>';
+const SVG_FIT = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6V3h3"/><path d="M13 10v3h-3"/><path d="M3 3l4 4"/><path d="M13 13l-4-4"/></svg>';
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+/**
+ * `<kw-section-shell>` — Reusable section chrome wrapper.
+ *
+ * Provides the common header UI (drag handle, name input, show/hide toggle, close
+ * button) with named slots for section-specific header buttons and body content.
+ *
+ * This component is PURE UI — it dispatches events and sections handle all logic.
+ *
+ * Slots:
+ * - `header-buttons` — placed inside the header actions area, before the divider
+ * - `header-extra` — rendered below the header row
+ * - (default) — main body content, hidden when collapsed
+ */
+@customElement('kw-section-shell')
+export class KwSectionShell extends LitElement {
+
+	/** Section name displayed in the header input. */
+	@property({ type: String })
+	name = '';
+
+	/** Whether the body content is visible. */
+	@property({ type: Boolean })
+	expanded = true;
+
+	/** Section identifier, included in event details. */
+	@property({ type: String, attribute: 'box-id' })
+	boxId = '';
+
+	/** Placeholder text for the name input. */
+	@property({ type: String, attribute: 'name-placeholder' })
+	namePlaceholder = 'Section name';
+
+	static override styles = styles;
+
+	override render() {
+		return html`
+			<div class="section-header">
+				<div class="query-name-group">
+					<button type="button" class="section-drag-handle" draggable="true"
+						title="Drag to reorder" aria-label="Reorder section"
+						@dragstart=${this._onDragStart}>
+						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
+					</button>
+					<input type="text" class="query-name"
+						.value=${this.name}
+						placeholder=${this.namePlaceholder}
+						@input=${this._onNameInput} />
+				</div>
+				<div class="section-actions">
+					<div class="md-tabs" role="tablist" aria-label="Section tools">
+						<slot name="header-buttons"></slot>
+						<span class="md-tabs-divider" aria-hidden="true"></span>
+						<button class="unified-btn-secondary md-tab md-max-btn"
+							type="button" @click=${this._onFitToContents}
+							title="Fit to contents" aria-label="Fit to contents">
+							<span .innerHTML=${SVG_FIT}></span>
+						</button>
+						<button class="unified-btn-secondary md-tab ${this.expanded ? 'is-active' : ''}"
+							type="button" role="tab"
+							aria-selected=${this.expanded ? 'true' : 'false'}
+							@click=${this._onToggle}
+							title=${this.expanded ? 'Hide' : 'Show'}
+							aria-label=${this.expanded ? 'Hide' : 'Show'}>
+							<span .innerHTML=${SVG_EYE}></span>
+						</button>
+					</div>
+					<button class="unified-btn-secondary unified-btn-icon-only close-btn"
+						type="button" @click=${this._onClose}
+						title="Remove" aria-label="Remove">
+						<span .innerHTML=${SVG_CLOSE}></span>
+					</button>
+				</div>
+			</div>
+			<slot name="header-extra"></slot>
+			${this.expanded ? html`
+				<slot></slot>
+			` : nothing}
+		`;
+	}
+
+	// ── Event handlers ────────────────────────────────────────────────────────
+
+	private _onDragStart(e: DragEvent): void {
+		if (e.dataTransfer) {
+			e.dataTransfer.setData('text/plain', this.boxId);
+			e.dataTransfer.effectAllowed = 'move';
+		}
+		this.dispatchEvent(new CustomEvent('section-drag-start', {
+			detail: { boxId: this.boxId },
+			bubbles: true,
+			composed: true,
+		}));
+	}
+
+	private _onNameInput(e: Event): void {
+		const val = (e.target as HTMLInputElement).value;
+		this.dispatchEvent(new CustomEvent('name-change', {
+			detail: { name: val },
+			bubbles: true,
+			composed: true,
+		}));
+	}
+
+	private _onToggle(): void {
+		this.dispatchEvent(new CustomEvent('toggle-visibility', {
+			bubbles: true,
+			composed: true,
+		}));
+	}
+
+	private _onClose(): void {
+		this.dispatchEvent(new CustomEvent('section-remove', {
+			detail: { boxId: this.boxId },
+			bubbles: true,
+			composed: true,
+		}));
+	}
+
+	private _onFitToContents(): void {
+		this.dispatchEvent(new CustomEvent('fit-to-contents', {
+			bubbles: true,
+			composed: true,
+		}));
+	}
+}
+
+declare global {
+	interface HTMLElementTagNameMap {
+		'kw-section-shell': KwSectionShell;
+	}
+}

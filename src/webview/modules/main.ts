@@ -3150,12 +3150,19 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			const MOVE_THRESHOLD = 3; // px — avoid opening on accidental clicks
 
 			const findSectionFromHandle = (handle: HTMLElement): HTMLElement | null => {
-				// Walk from the handle's shadow host up to find a direct child of container
+				// Walk from the handle's shadow host up to find a direct child of container.
+				// Supports nested shadow DOM (e.g. handle inside kw-section-shell inside kw-python-section).
 				try {
 					let el: any = (handle.getRootNode?.() as any)?.host;
 					while (el) {
 						if (el.parentElement === container && el.id) return el;
-						el = el.parentElement;
+						if (el.parentElement) {
+							el = el.parentElement;
+						} else {
+							// Cross shadow boundary: parentElement is null when inside
+							// another shadow root — walk to the outer host.
+							el = (el.getRootNode?.() as any)?.host ?? null;
+						}
 					}
 				} catch { /* ignore */ }
 				return null;
@@ -3263,7 +3270,11 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 							box = el;
 							break;
 						}
-						el = el.parentElement;
+						if (el.parentElement) {
+							el = el.parentElement;
+						} else {
+							el = (el.getRootNode?.() as any)?.host ?? null;
+						}
 					}
 				} catch { /* ignore */ }
 			}
