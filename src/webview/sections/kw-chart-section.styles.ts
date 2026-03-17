@@ -19,10 +19,8 @@ export const styles = css`
 		:host(.is-collapsed) .chart-wrapper {
 			display: none !important;
 		}
-		:host(.is-collapsed) .md-max-btn,
 		:host(.is-collapsed) .mode-btn,
-		:host(.is-collapsed) .mode-dropdown,
-		:host(.is-collapsed) .md-tabs-divider {
+		:host(.is-collapsed) .chart-mode-buttons {
 			display: none !important;
 		}
 
@@ -31,84 +29,12 @@ export const styles = css`
 			padding-bottom: 0;
 		}
 
-		/* ── Header ──────────────────────────────────────────────────────── */
+		/* ── Mode buttons (slotted into shell header-buttons) ── */
 
-		.section-header {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			justify-content: space-between;
-			margin-bottom: 8px;
-		}
-
-		.query-name-group {
-			display: inline-flex;
-			align-items: center;
-			gap: 0;
-			min-width: 0;
-			flex: 0 1 auto;
-		}
-
-		.section-drag-handle {
-			opacity: 1;
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-descriptionForeground);
-			border-radius: 4px;
-			margin: 0;
-			width: 12px;
-			height: 24px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			cursor: grab;
-			flex: 0 0 auto;
-		}
-		.section-drag-handle:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-		.section-drag-handle:active { cursor: grabbing; }
-		.section-drag-handle-glyph {
-			font-size: 14px;
-			line-height: 1;
-			letter-spacing: -1px;
-		}
-
-		.query-name {
-			font-size: 12px;
-			color: var(--vscode-foreground);
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			padding: 2px 6px;
-			outline: none;
-			min-width: 0;
-			flex: 0 1 auto;
-			font-family: inherit;
-		}
-		.query-name::placeholder { color: var(--vscode-input-placeholderForeground); }
-		.query-name:hover { border-color: var(--vscode-input-border); }
-		.query-name:focus { border-color: var(--vscode-focusBorder); }
-
-		.section-actions {
+		.chart-mode-buttons {
 			display: inline-flex;
 			gap: 2px;
 			align-items: center;
-			flex: 0 0 auto;
-		}
-
-		.md-tabs {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			border: none;
-			border-radius: 0;
-			overflow: visible;
-			margin: 0;
-			background: transparent;
 		}
 
 		.unified-btn-secondary {
@@ -155,7 +81,6 @@ export const styles = css`
 		}
 		.md-tab svg { display: block; }
 		.md-tab:hover { background: var(--vscode-list-hoverBackground); }
-		.md-tab.md-max-btn { margin-right: 6px; }
 		.md-tab.is-active {
 			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 			color: var(--vscode-foreground);
@@ -171,55 +96,6 @@ export const styles = css`
 			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 			color: var(--vscode-foreground);
 		}
-
-		.mode-dropdown {
-			position: relative;
-		}
-		.mode-dropdown-btn {
-			font-size: 12px;
-			width: auto;
-			padding: 4px 8px;
-			gap: 2px;
-		}
-		.mode-dropdown-btn .caret {
-			display: inline-flex;
-		}
-		.mode-dropdown-menu {
-			position: absolute;
-			top: 100%;
-			right: 0;
-			z-index: 100;
-			min-width: 100px;
-			background: var(--vscode-menu-background, var(--vscode-editor-background));
-			color: var(--vscode-menu-foreground, var(--vscode-foreground));
-			border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
-			border-radius: 4px;
-			padding: 4px 0;
-			box-shadow: 0 4px 12px rgba(0,0,0,.35);
-			font-size: 12px;
-		}
-		.mode-dropdown-item {
-			padding: 4px 12px;
-			cursor: pointer;
-			white-space: nowrap;
-		}
-		.mode-dropdown-item:hover { background: var(--vscode-list-hoverBackground); }
-
-		.md-tabs-divider {
-			width: 1px;
-			height: 16px;
-			background: var(--vscode-input-border, rgba(128,128,128,0.3));
-			margin: 0 2px;
-		}
-
-		.close-btn {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			border-radius: 4px;
-			cursor: pointer;
-		}
-		.close-btn:hover { background: var(--vscode-list-hoverBackground); }
 
 		/* ── Chart wrapper ───────────────────────────────────────────────── */
 

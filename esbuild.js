@@ -119,6 +119,19 @@ async function main() {
 			path.join(toastuiSrcDir, 'toastui-editor.css'),
 			path.join(toastuiDestDir, 'toastui-editor.css')
 		);
+
+		// Post-copy patches for toastui-editor.css (override upstream defaults).
+		{
+			const cssPath = path.join(toastuiDestDir, 'toastui-editor.css');
+			let css = await fs.promises.readFile(cssPath, 'utf8');
+			// Remove default paragraph margin — our notebook sections manage spacing.
+			css = css.replace(
+				/\.toastui-editor-contents p \{\s*margin:\s*10px 0;/,
+				'.toastui-editor-contents p {\n  margin: 0px 0;'
+			);
+			await fs.promises.writeFile(cssPath, css, 'utf8');
+		}
+
 		await fs.promises.copyFile(
 			path.join(toastuiSrcDir, 'theme', 'toastui-editor-dark.css'),
 			path.join(toastuiDestDir, 'toastui-editor-dark.css')

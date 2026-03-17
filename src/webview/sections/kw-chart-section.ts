@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -117,8 +118,6 @@ const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 const LEGEND_CYCLE: LegendPosition[] = ['top', 'right', 'bottom', 'left'];
 
 const SVG_CLOSE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>';
-const SVG_EYE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z"/><circle cx="8" cy="8" r="2.1"/></svg>';
-const SVG_FIT = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6V3h3"/><path d="M13 10v3h-3"/><path d="M3 3l4 4"/><path d="M13 13l-4-4"/></svg>';
 const SVG_CARET = '<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -303,48 +302,22 @@ export class KwChartSection extends LitElement {
 
 		return html`
 			<div class="section-root">
-				<!-- Header -->
-				<div class="section-header">
-					<div class="query-name-group">
-						<button type="button" class="section-drag-handle" draggable="true"
-							title="Drag to reorder" aria-label="Reorder section"
-							@dragstart=${this._onDragStart}>
-							<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-						</button>
-						<input type="text" class="query-name"
-							placeholder="Chart name (optional)"
-							.value=${this._name}
-							@input=${this._onNameInput} />
+				<kw-section-shell
+					.name=${this._name}
+					.expanded=${this._expanded}
+					box-id=${this.boxId}
+					name-placeholder="Chart name (optional)"
+					@name-change=${this._onShellNameChange}
+					@toggle-visibility=${this._toggleVisibility}
+					@fit-to-contents=${this._onFitToContents}>
+					<div slot="header-buttons" class="chart-mode-buttons">
+						<button class="unified-btn-secondary md-tab md-mode-btn mode-btn ${this._mode === 'edit' ? 'is-active' : ''}"
+							type="button" role="tab" aria-selected=${this._mode === 'edit' ? 'true' : 'false'}
+							@click=${() => this._setMode('edit')} title="Edit">Edit</button>
+						<button class="unified-btn-secondary md-tab md-mode-btn mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
+							type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
+							@click=${() => this._setMode('preview')} title="Preview">Preview</button>
 					</div>
-					<div class="section-actions">
-						<div class="md-tabs" role="tablist" aria-label="Chart tools">
-							<button class="unified-btn-secondary md-tab md-mode-btn mode-btn ${this._mode === 'edit' ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._mode === 'edit' ? 'true' : 'false'}
-								@click=${() => this._setMode('edit')} title="Edit">Edit</button>
-							<button class="unified-btn-secondary md-tab md-mode-btn mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
-								@click=${() => this._setMode('preview')} title="Preview">Preview</button>
-							<span class="md-tabs-divider" aria-hidden="true"></span>
-							<button class="unified-btn-secondary md-tab md-max-btn"
-								type="button" @click=${this._onFitToContents}
-								title="Fit to contents" aria-label="Fit to contents">
-								<span .innerHTML=${SVG_FIT}></span>
-							</button>
-							<button class="unified-btn-secondary md-tab ${this._expanded ? 'is-active' : ''}"
-								type="button" role="tab"
-								aria-selected=${this._expanded ? 'true' : 'false'}
-								@click=${this._toggleVisibility}
-								title=${this._expanded ? 'Hide' : 'Show'} aria-label=${this._expanded ? 'Hide' : 'Show'}>
-								<span .innerHTML=${SVG_EYE}></span>
-							</button>
-						</div>
-						<button class="unified-btn-secondary unified-btn-icon-only close-btn"
-							type="button" @click=${this._requestRemove}
-							title="Remove" aria-label="Remove">
-							<span .innerHTML=${SVG_CLOSE}></span>
-						</button>
-					</div>
-				</div>
 
 				<!-- Chart content: wrapper + canvases + resizer in light DOM -->
 				<div class="chart-wrapper" id="chart-wrapper">
@@ -399,6 +372,7 @@ export class KwChartSection extends LitElement {
 					<!-- Light-DOM wrapper/canvases/resizer via slot -->
 					<slot name="chart-content"></slot>
 				</div>
+				</kw-section-shell>
 			</div>
 		`;
 	}
@@ -734,21 +708,9 @@ export class KwChartSection extends LitElement {
 
 	// ── Event handlers ─────────────────────────────────────────────────────────
 
-	private _onNameInput(e: Event): void {
-		this._name = (e.target as HTMLInputElement).value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._name = e.detail.name;
 		this._schedulePersist();
-	}
-
-	private _onDragStart(e: DragEvent): void {
-		if (e.dataTransfer) {
-			e.dataTransfer.setData('text/plain', this.boxId);
-			e.dataTransfer.effectAllowed = 'move';
-		}
-		this.dispatchEvent(new CustomEvent('section-drag-start', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true,
-		}));
 	}
 
 	private _captureScrollPosition(): void {
@@ -867,13 +829,7 @@ export class KwChartSection extends LitElement {
 		} catch { /* ignore */ }
 	}
 
-	private _requestRemove(): void {
-		this.dispatchEvent(new CustomEvent('section-remove', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true,
-		}));
-	}
+
 
 	private _selectChartType(t: ChartType): void {
 		this._chartType = t;
@@ -1397,6 +1353,11 @@ export class KwChartSection extends LitElement {
 		if (!h || h === 'auto') return undefined;
 		const m = h.match(/^(\d+)px$/i);
 		return m ? parseInt(m[1], 10) : undefined;
+	}
+
+	/** Get section name. */
+	public getName(): string {
+		return this._name;
 	}
 }
 

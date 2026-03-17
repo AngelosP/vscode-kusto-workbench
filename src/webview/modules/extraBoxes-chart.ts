@@ -3247,7 +3247,7 @@ export function addChartBox( options: any) {
 	const resizerEl = document.createElement('div');
 	resizerEl.id = id + '_chart_resizer';
 	resizerEl.className = 'query-editor-resizer';
-	resizerEl.title = 'Drag to resize';
+	resizerEl.title = 'Drag to resize\nDouble-click to fit to contents';
 	chartWrapper.appendChild(resizerEl);
 
 	litEl.appendChild(chartWrapper);
@@ -3271,6 +3271,9 @@ export function addChartBox( options: any) {
 	// Set up drag-resize on the light-DOM resizer
 	try {
 		if (chartWrapper && resizerEl) {
+			resizerEl.addEventListener('dblclick', () => {
+				try { __kustoMaximizeChartBox(id); } catch { /* ignore */ }
+			});
 			resizerEl.addEventListener('mousedown', (e: any) => {
 				try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
 				try { chartWrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }

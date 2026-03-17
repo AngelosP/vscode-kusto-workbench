@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-transformation-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,9 +51,7 @@ interface DatasetEntry {
 
 // ─── SVG icon constants ───────────────────────────────────────────────────────
 
-const SVG_CLOSE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>';
-const SVG_EYE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z"/><circle cx="8" cy="8" r="2.1"/></svg>';
-const SVG_FIT = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6V3h3"/><path d="M13 10v3h-3"/><path d="M3 3l4 4"/><path d="M13 13l-4-4"/></svg>';
+
 const SVG_PLUS = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M8 3.2v9.6"/><path d="M3.2 8h9.6"/></svg>';
 const SVG_TRASH = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 5h10"/><path d="M6 5V3.8c0-.4.3-.8.8-.8h2.4c.4 0 .8.3.8.8V5"/><path d="M5.2 5l.6 8.2c0 .5.4.8.8.8h3c.5 0 .8-.4.8-.8l.6-8.2"/><path d="M7 7.4v4.6"/><path d="M9 7.4v4.6"/></svg>';
 
@@ -199,38 +198,15 @@ export class KwTransformationSection extends LitElement {
 	override render(): TemplateResult {
 		return html`
 			<div class="section-root">
-				${this._renderHeader()}
-				<div class="tf-wrapper-host ${this._expanded ? '' : 'is-hidden'}" id="tf-wrapper"
-					style="height:${this._wrapperHeight}px">
-					${this._mode === 'edit' ? this._renderControls() : nothing}
-					${this._renderResults()}
-					<div class="resizer"
-						title="Drag to resize"
-						@mousedown=${this._onResizerMouseDown}
-						@dblclick=${this._onFitToContents}></div>
-				</div>
-			</div>
-		`;
-	}
-
-	// ── Sub-templates ─────────────────────────────────────────────────────────
-
-	private _renderHeader(): TemplateResult {
-		return html`
-			<div class="section-header">
-				<div class="query-name-group">
-					<button type="button" class="section-drag-handle" draggable="true" title="Drag to reorder" aria-label="Reorder section">
-						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-					</button>
-					<input type="text"
-						class="query-name"
-						placeholder="Transformation name (optional)"
-						.value=${this._name}
-						@input=${this._onNameInput}
-					/>
-				</div>
-				<div class="section-actions">
-					<div class="md-tabs" role="tablist" aria-label="Transformation tools">
+				<kw-section-shell
+					.name=${this._name}
+					.expanded=${this._expanded}
+					box-id=${this.boxId}
+					name-placeholder="Transformation name (optional)"
+					@name-change=${this._onShellNameChange}
+					@toggle-visibility=${this._toggleExpanded}
+					@fit-to-contents=${this._onFitToContents}>
+					<div slot="header-buttons" class="tf-mode-buttons">
 						<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'edit' ? 'is-active' : ''}"
 							type="button" role="tab"
 							aria-selected="${this._mode === 'edit' ? 'true' : 'false'}"
@@ -241,27 +217,17 @@ export class KwTransformationSection extends LitElement {
 							aria-selected="${this._mode === 'preview' ? 'true' : 'false'}"
 							@click=${() => this._setMode('preview')}
 							title="Preview" aria-label="Preview">Preview</button>
-						<span class="md-tabs-divider" aria-hidden="true"></span>
-						<button class="unified-btn-secondary md-tab md-max-btn" type="button"
-							@click=${this._onFitToContents}
-							title="Fit to contents" aria-label="Fit to contents">
-							<span .innerHTML=${SVG_FIT}></span>
-						</button>
-						<button class="unified-btn-secondary md-tab ${this._expanded ? 'is-active' : ''}"
-							type="button" role="tab"
-							aria-selected="${this._expanded ? 'true' : 'false'}"
-							@click=${this._toggleExpanded}
-							title="${this._expanded ? 'Hide' : 'Show'}"
-							aria-label="${this._expanded ? 'Hide' : 'Show'}">
-							<span .innerHTML=${SVG_EYE}></span>
-						</button>
 					</div>
-					<button class="unified-btn-secondary unified-btn-icon-only close-btn" type="button"
-						@click=${this._onRemove}
-						title="Remove" aria-label="Remove">
-						<span .innerHTML=${SVG_CLOSE}></span>
-					</button>
-				</div>
+					<div class="tf-wrapper-host ${this._expanded ? '' : 'is-hidden'}" id="tf-wrapper"
+						style="height:${this._wrapperHeight}px">
+						${this._mode === 'edit' ? this._renderControls() : nothing}
+						${this._renderResults()}
+						<div class="resizer"
+							title="Drag to resize"
+							@mousedown=${this._onResizerMouseDown}
+							@dblclick=${this._onFitToContents}></div>
+					</div>
+				</kw-section-shell>
 			</div>
 		`;
 	}
@@ -652,8 +618,8 @@ export class KwTransformationSection extends LitElement {
 
 	// ── Event handlers ────────────────────────────────────────────────────────
 
-	private _onNameInput(e: Event): void {
-		this._name = (e.target as HTMLInputElement).value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._name = e.detail.name;
 		this._schedulePersist();
 	}
 
@@ -772,13 +738,7 @@ export class KwTransformationSection extends LitElement {
 		document.addEventListener('mouseup', onUp, true);
 	}
 
-	private _onRemove(): void {
-		this.dispatchEvent(new CustomEvent('section-remove', {
-			bubbles: true,
-			composed: true,
-			detail: { boxId: this.boxId },
-		}));
-	}
+
 
 	private _setTransformationType(type: TransformationType): void {
 		this._transformationType = type;
@@ -1740,6 +1700,11 @@ export class KwTransformationSection extends LitElement {
 		if (typeof options.editorHeightPx === 'number' && options.editorHeightPx > 0) {
 			this._wrapperHeight = Math.round(options.editorHeightPx as number);
 		}
+	}
+
+	/** Get section name. */
+	public getName(): string {
+		return this._name;
 	}
 
 	/** Public refresh — called by cross-section dependency refresh loops. */

@@ -18,9 +18,8 @@ export const styles = css`
 			display: none !important;
 		}
 		:host(.is-collapsed) .md-mode-btn,
-		:host(.is-collapsed) .md-tabs-divider,
-		:host(.is-collapsed) .md-max-btn,
-		:host(.is-collapsed) .md-mode-dropdown {
+		:host(.is-collapsed) .md-mode-dropdown,
+		:host(.is-collapsed) .md-mode-buttons {
 			display: none !important;
 		}
 		:host(.is-collapsed) {
@@ -31,9 +30,6 @@ export const styles = css`
 			border: none;
 			background: transparent;
 			margin-top: 0;
-		}
-		:host(.is-md-preview) .section-header-row {
-			margin-bottom: 2px;
 		}
 		:host(.is-md-preview) {
 			margin-bottom: 20px;
@@ -52,100 +48,12 @@ export const styles = css`
 			padding-bottom: 5px;
 		}
 
-		.section-header-row {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			justify-content: space-between;
-			margin-bottom: 8px;
-		}
+		/* ── Mode buttons container (slotted into shell header-buttons) ── */
 
-		.query-name-group {
-			display: inline-flex;
-			align-items: center;
-			gap: 0;
-			min-width: 0;
-			flex: 1 1 auto;
-		}
-
-		.section-drag-handle {
-			opacity: 1;
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-descriptionForeground);
-			border-radius: 4px;
-			margin: 0;
-			width: 12px;
-			height: 24px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			cursor: grab;
-			flex: 0 0 auto;
-		}
-		.section-drag-handle:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-		.section-drag-handle:active { cursor: grabbing; }
-		.section-drag-handle:focus-visible {
-			outline: none;
-			border-color: var(--vscode-focusBorder);
-		}
-		.section-drag-handle-glyph {
-			font-size: 14px;
-			line-height: 1;
-			letter-spacing: -1px;
-		}
-
-		.query-name {
-			font-size: 12px;
-			color: var(--vscode-foreground);
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			padding: 2px 6px;
-			outline: none;
-			min-width: 0;
-			flex: 1 1 auto;
-			font-family: inherit;
-		}
-		.query-name::placeholder {
-			color: var(--vscode-input-placeholderForeground);
-		}
-		.query-name:hover {
-			border-color: var(--vscode-input-border);
-		}
-		.query-name:focus {
-			border-color: var(--vscode-focusBorder);
-		}
-
-		.section-actions {
+		.md-mode-buttons {
 			display: inline-flex;
 			gap: 2px;
 			align-items: center;
-			flex: 0 0 auto;
-		}
-
-		.md-tabs {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-			border: none;
-			border-radius: 0;
-			overflow: visible;
-			margin: 0;
-			background: transparent;
-		}
-
-		.md-tabs-divider {
-			width: 1px;
-			height: 16px;
-			background: var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.35))));
-			margin: 0 4px;
-			opacity: 0.9;
 		}
 
 		.unified-btn-secondary {
@@ -165,15 +73,6 @@ export const styles = css`
 		}
 		.unified-btn-secondary:hover:not(:disabled) {
 			background: var(--vscode-list-hoverBackground);
-		}
-		.unified-btn-icon-only {
-			width: 28px;
-			height: 28px;
-			min-width: 28px;
-			padding: 0;
-		}
-		.unified-btn-icon-only svg {
-			display: block;
 		}
 
 		.md-tab {
@@ -195,9 +94,6 @@ export const styles = css`
 		}
 		.md-tab:hover {
 			background: var(--vscode-list-hoverBackground);
-		}
-		.md-tab.md-max-btn {
-			margin-right: 6px;
 		}
 
 		.md-tab.md-mode-btn {
@@ -254,8 +150,7 @@ export const styles = css`
 		:host(.is-md-narrow:not([plain-md])) .md-mode-dropdown {
 			display: inline-flex;
 		}
-		:host(.is-md-very-narrow) .md-mode-dropdown,
-		:host(.is-md-very-narrow) .md-tabs-divider {
+		:host(.is-md-very-narrow) .md-mode-dropdown {
 			display: none !important;
 		}
 
@@ -314,7 +209,8 @@ export const styles = css`
 			border-radius: 0;
 		}
 
-		/* Editor wrapper — slotted TOAST UI content lives in light DOM */
+		/* ── Editor wrapper — slotted TOAST UI content lives in light DOM ── */
+
 		.editor-wrapper {
 			position: relative;
 			width: 100%;
@@ -392,17 +288,6 @@ export const styles = css`
 		.resizer:hover::after { opacity: 0.85; }
 		.resizer.is-dragging { background: var(--vscode-list-hoverBackground); }
 
-		.close-btn {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			border-radius: 4px;
-			cursor: pointer;
-		}
-		.close-btn:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-
 		/* ── Plain .md mode (single-section, no chrome) ────────────── */
 
 		:host([plain-md]) {
@@ -422,51 +307,34 @@ export const styles = css`
 			height: 100%;
 		}
 
-		:host([plain-md]) .section-header-row {
+		:host([plain-md]) .plain-md-header {
 			flex: 0 0 auto;
 			margin-bottom: 0;
 		}
 
-		/* Hide name input, drag handle, close button, maximize, resizer, dropdown, divider */
-		:host([plain-md]) .query-name-group {
-			display: none !important;
-		}
-		:host([plain-md]) .close-btn {
-			display: none !important;
-		}
-		:host([plain-md]) .section-drag-handle {
-			display: none !important;
-		}
-		:host([plain-md]) .md-tab.md-max-btn {
-			display: none !important;
-		}
-		:host([plain-md]) .resizer {
-			display: none !important;
-		}
-		:host([plain-md]) .md-tabs-divider {
-			display: none !important;
-		}
+		/* In plain-md, always show mode buttons (no dropdown swap) */
 		:host([plain-md]) .md-mode-dropdown {
 			display: none !important;
 		}
 
-		/* Show/hide toggle not needed in single-section */
-		:host([plain-md]) .md-tab[aria-label="Show"],
-		:host([plain-md]) .md-tab[aria-label="Hide"] {
+		:host([plain-md]) .resizer {
 			display: none !important;
 		}
 
 		/* Align mode buttons left edge with toolbar left border */
 		:host([plain-md]) .md-tabs {
+			display: inline-flex;
+			gap: 2px;
+			align-items: center;
+			border: none;
+			border-radius: 0;
+			overflow: visible;
+			margin: 0;
 			margin-left: 0;
 			padding-left: 1px;
 			padding-top: 10px;
 			padding-bottom: 10px;
-		}
-
-		/* In plain-md, never swap to dropdown — always show icon-only buttons */
-		:host([plain-md]) .md-mode-dropdown {
-			display: none !important;
+			background: transparent;
 		}
 
 		/* Editor takes remaining space */

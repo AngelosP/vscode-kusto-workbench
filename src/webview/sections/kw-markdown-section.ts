@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -123,110 +124,117 @@ export class KwMarkdownSection extends LitElement {
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render() {
-		const modeLabels: Record<MarkdownMode, string> = { wysiwyg: 'WYSIWYG', markdown: 'Markdown', preview: 'Preview' };
-
+		if (this.plainMd) {
+			return this._renderPlainMd();
+		}
 		return html`
 			<div class="section-root">
-				<div class="section-header-row">
-					<div class="query-name-group">
-						<button type="button" class="section-drag-handle" draggable="true"
-							title="Drag to reorder" aria-label="Reorder section"
-							@dragstart=${this._onDragStart}>
-							<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-						</button>
-						<input type="text" class="query-name"
-							placeholder="Markdown Name (optional)"
-							.value=${this._title}
-							@input=${this._onTitleInput} />
+				<kw-section-shell
+					.name=${this._title}
+					.expanded=${this._expanded}
+					box-id=${this.boxId}
+					name-placeholder="Markdown Name (optional)"
+					@name-change=${this._onShellNameChange}
+					@toggle-visibility=${this._toggleVisibility}
+					@fit-to-contents=${this._fitToContents}>
+					${this._renderModeButtons('header-buttons')}
+					<div class="editor-wrapper" id="editor-wrapper">
+						<slot name="editor"></slot>
+						<slot name="viewer"></slot>
+						<div class="resizer"
+							title="Drag to resize\nDouble-click to fit to contents"
+							@mousedown=${this._onResizerMouseDown}
+							@dblclick=${this._fitToContents}></div>
 					</div>
-					<div class="section-actions">
-						<div class="md-tabs" role="tablist" aria-label="Markdown visibility">
-							<!-- Mode dropdown (narrow) -->
-							<div class="md-mode-dropdown">
-								<button class="unified-btn-secondary md-tab md-mode-dropdown-btn"
-									type="button" aria-haspopup="listbox"
-									aria-expanded=${this._dropdownOpen ? 'true' : 'false'}
-									@click=${this._toggleDropdown}
-									title="Editor mode" aria-label="Editor mode">
-									<span class="md-mode-dropdown-text">${modeLabels[this._mode]}</span>
-									<svg class="md-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-										<path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/>
-									</svg>
-								</button>
-								${this._dropdownOpen ? html`
-									<div class="md-mode-dropdown-menu" role="listbox">
-										<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('wysiwyg')}>WYSIWYG</div>
-										<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('markdown')}>Markdown</div>
-										<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('preview')}>Preview</div>
-									</div>
-								` : nothing}
-							</div>
-							<!-- Mode buttons (wide) -->
-							<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'wysiwyg' ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._mode === 'wysiwyg' ? 'true' : 'false'}
-								@click=${() => this._setMode('wysiwyg')} title="WYSIWYG" aria-label="WYSIWYG">
-								<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._wysiwygIcon}</span>
-								<span class="md-mode-label">WYSIWYG</span>
-							</button>
-							<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'markdown' ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._mode === 'markdown' ? 'true' : 'false'}
-								@click=${() => this._setMode('markdown')} title="Markdown" aria-label="Markdown">
-								<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._markdownIcon}</span>
-								<span class="md-mode-label">Markdown</span>
-							</button>
-							<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
-								@click=${() => this._setMode('preview')} title="Preview" aria-label="Preview">
-								<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._previewModeIcon}</span>
-								<span class="md-mode-label">Preview</span>
-							</button>
-							<span class="md-tabs-divider" aria-hidden="true"></span>
-							<button class="unified-btn-secondary md-tab md-max-btn"
-								type="button" @click=${this._fitToContents}
-								title="Fit to contents" aria-label="Fit to contents">
-								${KwMarkdownSection._maximizeIcon}
-							</button>
-							<button class="unified-btn-secondary md-tab ${this._expanded ? 'is-active' : ''}"
-								type="button" role="tab" aria-selected=${this._expanded ? 'true' : 'false'}
-								@click=${this._toggleVisibility}
-								title=${this._expanded ? 'Hide' : 'Show'}
-								aria-label=${this._expanded ? 'Hide' : 'Show'}>
-								${KwMarkdownSection._previewIcon}
-							</button>
-						</div>
-						<button class="unified-btn-secondary unified-btn-icon-only close-btn"
-							type="button" @click=${this._requestRemove}
-							title="Remove" aria-label="Remove">
-							${KwMarkdownSection._closeIcon}
+				</kw-section-shell>
+			</div>
+		`;
+	}
+
+	/** Plain .md mode — no section chrome, just mode buttons + editor. */
+	private _renderPlainMd() {
+		const modeLabels: Record<MarkdownMode, string> = { wysiwyg: 'WYSIWYG', markdown: 'Markdown', preview: 'Preview' };
+		return html`
+			<div class="section-root">
+				<div class="plain-md-header">
+					<div class="md-tabs" role="tablist" aria-label="Markdown mode">
+						<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'wysiwyg' ? 'is-active' : ''}"
+							type="button" role="tab" aria-selected=${this._mode === 'wysiwyg' ? 'true' : 'false'}
+							@click=${() => this._setMode('wysiwyg')} title="WYSIWYG" aria-label="WYSIWYG">
+							<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._wysiwygIcon}</span>
+							<span class="md-mode-label">WYSIWYG</span>
+						</button>
+						<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'markdown' ? 'is-active' : ''}"
+							type="button" role="tab" aria-selected=${this._mode === 'markdown' ? 'true' : 'false'}
+							@click=${() => this._setMode('markdown')} title="Markdown" aria-label="Markdown">
+							<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._markdownIcon}</span>
+							<span class="md-mode-label">Markdown</span>
+						</button>
+						<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
+							type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
+							@click=${() => this._setMode('preview')} title="Preview" aria-label="Preview">
+							<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._previewModeIcon}</span>
+							<span class="md-mode-label">Preview</span>
 						</button>
 					</div>
 				</div>
 				<div class="editor-wrapper" id="editor-wrapper">
 					<slot name="editor"></slot>
 					<slot name="viewer"></slot>
-					<div class="resizer"
-						title="Drag to resize\nDouble-click to fit to contents"
-						@mousedown=${this._onResizerMouseDown}
-						@dblclick=${this._fitToContents}></div>
 				</div>
 			</div>
 		`;
 	}
 
+	/** Render mode buttons — reused in both shell and plain-md modes. */
+	private _renderModeButtons(slot?: string) {
+		const modeLabels: Record<MarkdownMode, string> = { wysiwyg: 'WYSIWYG', markdown: 'Markdown', preview: 'Preview' };
+		return html`
+			<div slot=${slot ?? nothing} class="md-mode-buttons">
+				<!-- Mode dropdown (narrow) -->
+				<div class="md-mode-dropdown">
+					<button class="unified-btn-secondary md-tab md-mode-dropdown-btn"
+						type="button" aria-haspopup="listbox"
+						aria-expanded=${this._dropdownOpen ? 'true' : 'false'}
+						@click=${this._toggleDropdown}
+						title="Editor mode" aria-label="Editor mode">
+						<span class="md-mode-dropdown-text">${modeLabels[this._mode]}</span>
+						<svg class="md-mode-dropdown-caret" width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+							<path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/>
+						</svg>
+					</button>
+					${this._dropdownOpen ? html`
+						<div class="md-mode-dropdown-menu" role="listbox">
+							<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('wysiwyg')}>WYSIWYG</div>
+							<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('markdown')}>Markdown</div>
+							<div class="md-mode-dropdown-item" role="option" @click=${() => this._setModeAndCloseDropdown('preview')}>Preview</div>
+						</div>
+					` : nothing}
+				</div>
+				<!-- Mode buttons (wide) -->
+				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'wysiwyg' ? 'is-active' : ''}"
+					type="button" role="tab" aria-selected=${this._mode === 'wysiwyg' ? 'true' : 'false'}
+					@click=${() => this._setMode('wysiwyg')} title="WYSIWYG" aria-label="WYSIWYG">
+					<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._wysiwygIcon}</span>
+					<span class="md-mode-label">WYSIWYG</span>
+				</button>
+				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'markdown' ? 'is-active' : ''}"
+					type="button" role="tab" aria-selected=${this._mode === 'markdown' ? 'true' : 'false'}
+					@click=${() => this._setMode('markdown')} title="Markdown" aria-label="Markdown">
+					<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._markdownIcon}</span>
+					<span class="md-mode-label">Markdown</span>
+				</button>
+				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
+					type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
+					@click=${() => this._setMode('preview')} title="Preview" aria-label="Preview">
+					<span class="md-mode-icon" aria-hidden="true">${KwMarkdownSection._previewModeIcon}</span>
+					<span class="md-mode-label">Preview</span>
+				</button>
+			</div>
+		`;
+	}
+
 	// ── SVG Icons (static) ────────────────────────────────────────────────────
-
-	private static _closeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M4 4l8 8"/><path d="M12 4L4 12"/>
-		</svg>`;
-
-	private static _previewIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" />
-			<circle cx="8" cy="8" r="2.1" />
-		</svg>`;
 
 	/* WYSIWYG mode icon — pencil on document */
 	private static _wysiwygIcon = html`
@@ -253,12 +261,7 @@ export class KwMarkdownSection extends LitElement {
 			<circle cx="8" cy="8" r="2.1" />
 		</svg>`;
 
-	private static _maximizeIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 6V3h3"/><path d="M13 10v3h-3"/>
-			<path d="M3 3l4 4"/><path d="M13 13l-4-4"/>
-		</svg>`;
+
 
 	// ── TOAST UI Editor Init ──────────────────────────────────────────────────
 
@@ -802,24 +805,10 @@ export class KwMarkdownSection extends LitElement {
 		}
 	};
 
-	// ── Drag ──────────────────────────────────────────────────────────────────
+	// ── Shell event handlers ──────────────────────────────────────────────────
 
-	private _onDragStart(e: DragEvent): void {
-		if (e.dataTransfer) {
-			e.dataTransfer.setData('text/plain', this.boxId);
-			e.dataTransfer.effectAllowed = 'move';
-		}
-		this.dispatchEvent(new CustomEvent('section-drag-start', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true
-		}));
-	}
-
-	// ── Title ─────────────────────────────────────────────────────────────────
-
-	private _onTitleInput(e: Event): void {
-		this._title = (e.target as HTMLInputElement).value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._title = e.detail.name;
 		this._schedulePersist();
 	}
 
@@ -1098,16 +1087,6 @@ export class KwMarkdownSection extends LitElement {
 		return this.querySelector('.markdown-viewer') as HTMLElement | null;
 	}
 
-	// ── Actions ───────────────────────────────────────────────────────────────
-
-	private _requestRemove(): void {
-		this.dispatchEvent(new CustomEvent('section-remove', {
-			detail: { boxId: this.boxId },
-			bubbles: true,
-			composed: true
-		}));
-	}
-
 	// ── Persistence ───────────────────────────────────────────────────────────
 
 	private _schedulePersist(): void {
@@ -1211,6 +1190,11 @@ export class KwMarkdownSection extends LitElement {
 	/** Get the TOAST UI editor API (for legacy markdownEditors[boxId] compatibility). */
 	public getEditorApi(): ToastEditorApi | null {
 		return this._editorApi;
+	}
+
+	/** Get section name. */
+	public getName(): string {
+		return this._title;
 	}
 }
 
