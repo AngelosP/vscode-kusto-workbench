@@ -284,7 +284,7 @@ export class KwMarkdownSection extends LitElement {
 		if (this._editorApi) {
 			const attached = !!editorContainer.querySelector('.toastui-editor-defaultUI');
 			if (attached) return;
-			try { this._editorApi.dispose(); } catch { /* ignore */ }
+			try { this._editorApi.dispose(); } catch (e) { console.error('[kusto]', e); }
 			this._editorApi = null;
 		}
 
@@ -297,9 +297,9 @@ export class KwMarkdownSection extends LitElement {
 			const pending = window.__kustoPendingMarkdownTextByBoxId?.[this.boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch { /* ignore */ }
+				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Clean mount point.
 		editorContainer.textContent = '';
@@ -312,10 +312,10 @@ export class KwMarkdownSection extends LitElement {
 		let toastEditorRef: any = null;
 		const undoButton = this._createToolbarButton('Undo', 'Undo (Ctrl+Z)',
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>',
-			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.undo?.(); } catch { /* ignore */ } });
+			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); } });
 		const redoButton = this._createToolbarButton('Redo', 'Redo (Ctrl+Y)',
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>',
-			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.redo?.(); } catch { /* ignore */ } });
+			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } });
 
 		const getToastUiPlugins = typeof window.getToastUiPlugins === 'function'
 			? window.getToastUiPlugins
@@ -358,7 +358,7 @@ export class KwMarkdownSection extends LitElement {
 							if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
 								window.__kustoRewriteToastUiImagesInContainer(editorContainer);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			};
@@ -368,7 +368,7 @@ export class KwMarkdownSection extends LitElement {
 			toastEditor = new ToastEditor(editorOptions);
 			toastEditorRef = toastEditor;
 		} catch (e) {
-			try { console.error('Failed to initialize TOAST UI Editor.', e); } catch { /* ignore */ }
+			try { console.error('Failed to initialize TOAST UI Editor.', e); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -380,7 +380,7 @@ export class KwMarkdownSection extends LitElement {
 			if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
 				window.__kustoRewriteToastUiImagesInContainer(editorContainer);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Build and store API.
 		const api: ToastEditorApi = {
@@ -388,7 +388,7 @@ export class KwMarkdownSection extends LitElement {
 				try { return toastEditor?.getMarkdown?.() ?? ''; } catch { return ''; }
 			},
 			setValue: (value: string) => {
-				try { toastEditor?.setMarkdown?.(String(value || '')); } catch { /* ignore */ }
+				try { toastEditor?.setMarkdown?.(String(value || '')); } catch (e) { console.error('[kusto]', e); }
 			},
 			layout: () => {
 				try {
@@ -400,11 +400,11 @@ export class KwMarkdownSection extends LitElement {
 					if (resizerEl) h -= resizerEl.getBoundingClientRect().height;
 					h = Math.max(120, h);
 					toastEditor.setHeight(Math.round(h) + 'px');
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			},
 			dispose: () => {
-				try { toastEditor?.destroy?.(); } catch { /* ignore */ }
-				try { editorContainer.textContent = ''; } catch { /* ignore */ }
+				try { toastEditor?.destroy?.(); } catch (e) { console.error('[kusto]', e); }
+				try { editorContainer.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 			},
 			_toastui: toastEditor
 		};
@@ -416,16 +416,16 @@ export class KwMarkdownSection extends LitElement {
 			const win = window;
 			win.__kustoMarkdownEditors = win.__kustoMarkdownEditors || {};
 			win.__kustoMarkdownEditors[this.boxId] = api;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Check for late-arriving pending text.
 		try {
 			const latePending = window.__kustoPendingMarkdownTextByBoxId?.[this.boxId];
 			if (typeof latePending === 'string') {
 				api.setValue(latePending);
-				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch { /* ignore */ }
+				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Apply mode.
 		this._applyEditorMode();
@@ -435,7 +435,7 @@ export class KwMarkdownSection extends LitElement {
 			if (typeof window.__kustoTryApplyPendingMarkdownReveal === 'function') {
 				window.__kustoTryApplyPendingMarkdownReveal(this.boxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Fix border issues.
 		try {
@@ -459,7 +459,7 @@ export class KwMarkdownSection extends LitElement {
 					toolbar.style.setProperty('border-radius', '0', 'important');
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Theme observer.
 		try {
@@ -469,10 +469,10 @@ export class KwMarkdownSection extends LitElement {
 			if (typeof window.__kustoApplyToastUiThemeAll === 'function') {
 				window.__kustoApplyToastUiThemeAll();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Initial sizing.
-		try { api.layout(); } catch { /* ignore */ }
+		try { api.layout(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _editorInitRetryCount = 0;
@@ -481,7 +481,7 @@ export class KwMarkdownSection extends LitElement {
 		const delays = [50, 250, 1000, 2000, 4000];
 		if (this._editorInitRetryCount > delays.length) return;
 		const delay = delays[this._editorInitRetryCount - 1];
-		setTimeout(() => { try { this._initEditor(); } catch { /* ignore */ } }, delay);
+		setTimeout(() => { try { this._initEditor(); } catch (e) { console.error('[kusto]', e); } }, delay);
 	}
 
 	// ── TOAST UI Viewer Init ──────────────────────────────────────────────────
@@ -497,7 +497,7 @@ export class KwMarkdownSection extends LitElement {
 				this._viewerApi.setValue(initialValue);
 				return;
 			}
-			try { this._viewerApi.dispose(); } catch { /* ignore */ }
+			try { this._viewerApi.dispose(); } catch (e) { console.error('[kusto]', e); }
 			this._viewerApi = null;
 		}
 
@@ -535,7 +535,7 @@ export class KwMarkdownSection extends LitElement {
 							if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
 								window.__kustoRewriteToastUiImagesInContainer(viewerContainer);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			};
@@ -546,7 +546,7 @@ export class KwMarkdownSection extends LitElement {
 				? ToastEditor.factory(opts)
 				: new ToastEditor(opts);
 		} catch (e) {
-			try { console.error('Failed to initialize TOAST UI viewer.', e); } catch { /* ignore */ }
+			try { console.error('Failed to initialize TOAST UI viewer.', e); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -554,7 +554,7 @@ export class KwMarkdownSection extends LitElement {
 			if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
 				window.__kustoRewriteToastUiImagesInContainer(viewerContainer);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Strip TOAST UI viewer chrome (border, padding) for cleaner preview rendering.
 		try {
@@ -580,14 +580,14 @@ export class KwMarkdownSection extends LitElement {
 					el.style.setProperty('box-shadow', 'none', 'important');
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		this._viewerApi = {
 			setValue: (value: string) => {
-				try { instance?.setMarkdown?.(String(value || '')); } catch { /* ignore */ }
+				try { instance?.setMarkdown?.(String(value || '')); } catch (e) { console.error('[kusto]', e); }
 			},
 			dispose: () => {
-				try { instance?.destroy?.(); } catch { /* ignore */ }
+				try { instance?.destroy?.(); } catch (e) { console.error('[kusto]', e); }
 			}
 		};
 
@@ -599,7 +599,7 @@ export class KwMarkdownSection extends LitElement {
 			if (typeof window.__kustoApplyToastUiThemeAll === 'function') {
 				window.__kustoApplyToastUiThemeAll();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _viewerInitRetryCount = 0;
@@ -608,7 +608,7 @@ export class KwMarkdownSection extends LitElement {
 		const delays = [50, 250, 1000, 2000, 4000];
 		if (this._viewerInitRetryCount > delays.length) return;
 		const delay = delays[this._viewerInitRetryCount - 1];
-		setTimeout(() => { try { this._initViewer(initialValue); } catch { /* ignore */ } }, delay);
+		setTimeout(() => { try { this._initViewer(initialValue); } catch (e) { console.error('[kusto]', e); } }, delay);
 	}
 
 	// ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -648,26 +648,26 @@ export class KwMarkdownSection extends LitElement {
 							bubbles: true, cancelable: true
 						});
 						document.dispatchEvent(newEvent);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
 				// Ctrl+Z → undo
 				if (key === 'z' && !ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.undo?.(); } catch { /* ignore */ }
+					try { toastEditor.getCurrentModeEditor?.()?.commands?.undo?.(); } catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 				// Ctrl+Shift+Z → redo
 				if (key === 'z' && ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch { /* ignore */ }
+					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 				// Ctrl+Y → redo
 				if (key === 'y' && !ev.shiftKey) {
 					ev.stopPropagation(); ev.stopImmediatePropagation(); ev.preventDefault();
-					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch { /* ignore */ }
+					try { toastEditor.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -679,7 +679,7 @@ export class KwMarkdownSection extends LitElement {
 				if (key === 'v' || key === 'x') {
 					ev.stopPropagation();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}, true);
 	}
 
@@ -706,7 +706,7 @@ export class KwMarkdownSection extends LitElement {
 			const win = window;
 			win.__kustoMarkdownModeByBoxId = win.__kustoMarkdownModeByBoxId || {};
 			win.__kustoMarkdownModeByBoxId[this.boxId] = mode;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		this._applyEditorMode();
 		this._scheduleMdAutoExpand();
 		this._schedulePersist();
@@ -766,9 +766,9 @@ export class KwMarkdownSection extends LitElement {
 		// Editor modes (WYSIWYG / Markdown).
 		const toastEditor = this._editorApi?._toastui;
 		if (toastEditor && typeof toastEditor.changeMode === 'function') {
-			try { toastEditor.changeMode(this._mode, true); } catch { /* ignore */ }
+			try { toastEditor.changeMode(this._mode, true); } catch (e) { console.error('[kusto]', e); }
 		}
-		try { this._editorApi?.layout(); } catch { /* ignore */ }
+		try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Visibility (expand/collapse) ──────────────────────────────────────────
@@ -782,10 +782,10 @@ export class KwMarkdownSection extends LitElement {
 			const win = window;
 			win.__kustoMarkdownExpandedByBoxId = win.__kustoMarkdownExpandedByBoxId || {};
 			win.__kustoMarkdownExpandedByBoxId[this.boxId] = this._expanded;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		if (this._expanded) {
-			setTimeout(() => { try { this._editorApi?.layout(); } catch { /* ignore */ } }, 0);
+			setTimeout(() => { try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); } }, 0);
 		}
 		this._schedulePersist();
 	}
@@ -795,7 +795,7 @@ export class KwMarkdownSection extends LitElement {
 	private _toggleDropdown(e: Event): void {
 		e.stopPropagation();
 		// Close any global dropdowns first.
-		try { window.__kustoDropdown?.closeAllMenus?.(); } catch { /* ignore */ }
+		try { window.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
 		this._dropdownOpen = !this._dropdownOpen;
 	}
 
@@ -861,7 +861,7 @@ export class KwMarkdownSection extends LitElement {
 								const cs = getComputedStyle(el);
 								mt = parseFloat(cs.marginTop || '0') || 0;
 								mb = parseFloat(cs.marginBottom || '0') || 0;
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							minTop = Math.min(minTop, Math.max(0, top - mt));
 							maxBottom = Math.max(maxBottom, Math.max(0, top + h + mb));
 						}
@@ -872,7 +872,7 @@ export class KwMarkdownSection extends LitElement {
 						try {
 							const cs = getComputedStyle(prose);
 							docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						if (docH && Number.isFinite(docH)) contentH = Math.ceil(docH);
 					}
 					if (!contentH) {
@@ -905,8 +905,8 @@ export class KwMarkdownSection extends LitElement {
 				const FIT_SLACK_PX = 5;
 				const desired = Math.max(120, Math.ceil(toolbarH + contentH + resizerH + padding + FIT_SLACK_PX));
 				wrapper.style.height = desired + 'px';
-			} catch { /* ignore */ }
-			try { this._editorApi?.layout(); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
 		};
 
 		applyOnce();
@@ -926,9 +926,9 @@ export class KwMarkdownSection extends LitElement {
 			if (String(window.__kustoDocumentKind || '') !== 'md') return;
 			if (this._autoExpandTimer) clearTimeout(this._autoExpandTimer);
 			this._autoExpandTimer = setTimeout(() => {
-				try { this._autoExpandToContent(); } catch { /* ignore */ }
+				try { this._autoExpandToContent(); } catch (e) { console.error('[kusto]', e); }
 			}, 80);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _autoExpandToContent(): void {
@@ -969,8 +969,8 @@ export class KwMarkdownSection extends LitElement {
 
 				const desired = Math.max(120, Math.ceil(toolbarH + contentH + 18));
 				wrapper.style.height = Math.round(desired) + 'px';
-				try { this._editorApi?.layout(); } catch { /* ignore */ }
-			} catch { /* ignore */ }
+				try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		apply();
@@ -1009,12 +1009,12 @@ export class KwMarkdownSection extends LitElement {
 				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
 					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
 			const nextHeight = Math.max(120, startHeight + delta);
 			wrapper.style.height = nextHeight + 'px';
-			try { this._editorApi?.layout(); } catch { /* ignore */ }
+			try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
 		};
 
 		const onUp = () => {
@@ -1093,7 +1093,7 @@ export class KwMarkdownSection extends LitElement {
 		try {
 			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/**
@@ -1111,7 +1111,7 @@ export class KwMarkdownSection extends LitElement {
 				if (pending && typeof pending[this.boxId] === 'string') {
 					text = pending[this.boxId];
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		const tab: 'edit' | 'preview' = this._mode === 'preview' ? 'preview' : 'edit';

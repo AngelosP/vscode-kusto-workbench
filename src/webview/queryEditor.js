@@ -54,9 +54,7 @@
 			if (document.currentScript && document.currentScript.src) {
 				return new URL('.', document.currentScript.src);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		const scripts = document.getElementsByTagName('script');
 		const last = scripts[scripts.length - 1];
 		return new URL('.', last && last.src ? last.src : window.location.href);
@@ -129,17 +127,13 @@
 						if (window.define && window.define.amd) {
 							window.define.amd = undefined;
 						}
-					} catch {
-						// ignore
-					}
+					} catch (e) { console.error('[kusto]', e); }
 
 					// Also clear CommonJS detection for these bundles.
 					try {
 						window.module = undefined;
 						window.exports = undefined;
-					} catch {
-						// ignore
-					}
+					} catch (e) { console.error('[kusto]', e); }
 
 					restore = () => {
 						try {
@@ -149,9 +143,7 @@
 							}
 							window.module = saved.module;
 							window.exports = saved.exports;
-						} catch {
-							// ignore
-						}
+						} catch (e) { console.error('[kusto]', e); }
 					};
 				} catch {
 					restore = null;
@@ -160,11 +152,11 @@
 
 			el.src = url.toString();
 			el.onload = () => {
-				try { if (restore) restore(); } catch { /* ignore */ }
+				try { if (restore) restore(); } catch (e) { console.error('[kusto]', e); }
 				resolve();
 			};
 			el.onerror = () => {
-				try { if (restore) restore(); } catch { /* ignore */ }
+				try { if (restore) restore(); } catch (e) { console.error('[kusto]', e); }
 				reject(new Error(`Failed to load ${relativePath}`));
 			};
 			(document.head || document.documentElement).appendChild(el);

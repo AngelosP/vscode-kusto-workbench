@@ -91,7 +91,7 @@ export class KwPythonSection extends LitElement {
 			try {
 				const model = this._editor.getModel();
 				if (model) this._savedCode = model.getValue();
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		this._disposeEditor();
 	}
@@ -236,7 +236,7 @@ export class KwPythonSection extends LitElement {
 					const dom = this._editor.getDomNode();
 					if (dom && dom.isConnected && slotted.contains(dom)) return;
 					this._editor.dispose();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				this._editor = null;
 			}
 
@@ -262,14 +262,14 @@ export class KwPythonSection extends LitElement {
 			// Track active editor for global key handlers.
 			try {
 				editor.onDidFocusEditorText(() => {
-					try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { window.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 					this._forceWritable(editor);
 				});
 				editor.onDidFocusEditorWidget(() => {
-					try { window.activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { window.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 					this._forceWritable(editor);
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			this._editor = editor;
 
@@ -279,34 +279,34 @@ export class KwPythonSection extends LitElement {
 				if (typeof window.__kustoEnsureEditorWritableSoon === 'function') {
 					window.__kustoEnsureEditorWritableSoon(editor);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoInstallWritableGuard === 'function') {
 					window.__kustoInstallWritableGuard(editor);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Mousedown force-writable.
 			try {
 				slotted.addEventListener('mousedown', () => {
 					this._forceWritable(editor);
-					try { editor.focus(); } catch { /* ignore */ }
+					try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
 				}, true);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Auto-resize.
 			try {
 				if (typeof window.__kustoAttachAutoResizeToContent === 'function') {
 					window.__kustoAttachAutoResizeToContent(editor, slotted);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Persist on content change.
 			try {
 				editor.onDidChangeModelContent(() => {
 					this._schedulePersist();
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Restore persisted height.
 			if (this.editorHeightPx && this.editorHeightPx > 0) {
@@ -330,13 +330,13 @@ export class KwPythonSection extends LitElement {
 		if (this._initRetryCount > delays.length) return;
 		const delay = delays[this._initRetryCount - 1];
 		setTimeout(() => {
-			try { this._initEditor(); } catch { /* ignore */ }
+			try { this._initEditor(); } catch (e) { console.error('[kusto]', e); }
 		}, delay);
 	}
 
 	private _disposeEditor(): void {
 		if (this._editor) {
-			try { this._editor.dispose(); } catch { /* ignore */ }
+			try { this._editor.dispose(); } catch (e) { console.error('[kusto]', e); }
 			this._editor = null;
 		}
 	}
@@ -346,7 +346,7 @@ export class KwPythonSection extends LitElement {
 			if (typeof window.__kustoForceEditorWritable === 'function') {
 				window.__kustoForceEditorWritable(editor);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/** Get the slotted editor container element from light DOM. */
@@ -388,7 +388,7 @@ export class KwPythonSection extends LitElement {
 		this._expanded = !this._expanded;
 		this.classList.toggle('is-collapsed', !this._expanded);
 		if (this._expanded) {
-			setTimeout(() => { try { this._editor?.layout(); } catch { /* ignore */ } }, 0);
+			setTimeout(() => { try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); } }, 0);
 		}
 		this._schedulePersist();
 	}
@@ -397,27 +397,27 @@ export class KwPythonSection extends LitElement {
 
 	private _toggleComment(): void {
 		if (!this._editor) return;
-		try { (this._editor as any).getAction?.('editor.action.commentLine')?.run?.(); } catch { /* ignore */ }
+		try { (this._editor as any).getAction?.('editor.action.commentLine')?.run?.(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _indent(): void {
 		if (!this._editor) return;
-		try { (this._editor as any).getAction?.('editor.action.indentLines')?.run?.(); } catch { /* ignore */ }
+		try { (this._editor as any).getAction?.('editor.action.indentLines')?.run?.(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _outdent(): void {
 		if (!this._editor) return;
-		try { (this._editor as any).getAction?.('editor.action.outdentLines')?.run?.(); } catch { /* ignore */ }
+		try { (this._editor as any).getAction?.('editor.action.outdentLines')?.run?.(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _undo(): void {
 		if (!this._editor) return;
-		try { (this._editor as any).trigger?.('toolbar', 'undo', null); } catch { /* ignore */ }
+		try { (this._editor as any).trigger?.('toolbar', 'undo', null); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _redo(): void {
 		if (!this._editor) return;
-		try { (this._editor as any).trigger?.('toolbar', 'redo', null); } catch { /* ignore */ }
+		try { (this._editor as any).trigger?.('toolbar', 'redo', null); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Fit to contents ───────────────────────────────────────────────────────
@@ -432,7 +432,7 @@ export class KwPythonSection extends LitElement {
 			try {
 				const ch = this._editor.getContentHeight();
 				if (ch && Number.isFinite(ch) && ch > 0) contentHeight = ch;
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!contentHeight) return;
 
 			// Measure non-editor chrome inside wrapper.
@@ -443,7 +443,7 @@ export class KwPythonSection extends LitElement {
 				try {
 					const cs = getComputedStyle(child);
 					if (cs.display === 'none') continue;
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				chrome += child.getBoundingClientRect().height || 0;
 			}
 			// Also count the slotted editor container's siblings within the wrapper
@@ -451,13 +451,13 @@ export class KwPythonSection extends LitElement {
 				const csw = getComputedStyle(wrapper);
 				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
 			wrapper.style.height = desired + 'px';
 			wrapper.style.minHeight = '0';
 			this._userResized = true;
-			try { this._editor!.layout(); } catch { /* ignore */ }
+			try { this._editor!.layout(); } catch (e) { console.error('[kusto]', e); }
 		};
 
 		apply();
@@ -496,12 +496,12 @@ export class KwPythonSection extends LitElement {
 				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
 					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
 			const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
 			wrapper.style.height = nextHeight + 'px';
-			try { this._editor?.layout(); } catch { /* ignore */ }
+			try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); }
 		};
 
 		const onUp = () => {
@@ -550,7 +550,7 @@ export class KwPythonSection extends LitElement {
 		try {
 			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/**
@@ -570,7 +570,7 @@ export class KwPythonSection extends LitElement {
 				if (pending && typeof pending[this.boxId] === 'string') {
 					code = pending[this.boxId];
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		const data: PythonSectionData = {

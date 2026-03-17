@@ -21,7 +21,7 @@ export function __kustoConfigureTransformationFromTool( boxId: any, config: any)
 			if (el && typeof el.configure === 'function') {
 				return el.configure(config);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		
 		// Ensure state object exists
 		const st = __kustoGetTransformationState(id);
@@ -78,13 +78,13 @@ export function __kustoConfigureTransformationFromTool( boxId: any, config: any)
 		}
 		
 		// Update the UI to reflect new state
-		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 		
 		// Re-render the transformation
-		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 		
 		// Persist changes
-		try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+		try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		return true;
 	} catch (err: any) {
@@ -94,7 +94,7 @@ export function __kustoConfigureTransformationFromTool( boxId: any, config: any)
 }
 
 // Expose for tool calls from main.js
-try { window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool; } catch { /* ignore */ }
+try { window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool; } catch (e) { console.error('[kusto]', e); }
 
 
 // ================================
@@ -431,7 +431,7 @@ export function __kustoGetTransformationState( boxId: any) {
 				const e = (typeof st.deriveExpression === 'string') ? st.deriveExpression : '';
 				st.deriveColumns = [{ name: n || '', expression: e || '' }];
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return transformationStateByBoxId[id];
 	} catch {
 		return { mode: 'edit', expanded: true };
@@ -491,9 +491,7 @@ export function __kustoUpdateTransformationModeButtons( boxId: any) {
 		if (dropdownText) {
 			dropdownText.textContent = mode === 'preview' ? 'Preview' : 'Edit';
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyTransformationMode( boxId: any) {
@@ -506,14 +504,12 @@ export function __kustoApplyTransformationMode( boxId: any) {
 				boxEl.classList.toggle('is-preview', mode === 'preview');
 				boxEl.classList.toggle('is-edit', mode === 'edit');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const controlsHost = document.getElementById(boxId + '_tf_controls') as any;
 		if (controlsHost) controlsHost.style.display = (mode === 'edit') ? '' : 'none';
 		__kustoUpdateTransformationModeButtons(boxId);
-		try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { __kustoRenderTransformation(boxId); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetTransformationMode( boxId: any, mode: any) {
@@ -523,7 +519,7 @@ export function __kustoSetTransformationMode( boxId: any, mode: any) {
 	if (m !== 'edit' && m !== 'preview') return;
 	const st = __kustoGetTransformationState(id);
 	st.mode = m;
-	try { __kustoApplyTransformationMode(id); } catch { /* ignore */ }
+	try { __kustoApplyTransformationMode(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (m === 'preview') {
 			const w = document.getElementById(id + '_tf_wrapper') as any;
@@ -536,12 +532,12 @@ export function __kustoSetTransformationMode( boxId: any, mode: any) {
 					if (resultsWrapper) void resultsWrapper.offsetHeight;
 					const controlsHost = document.getElementById(id + '_tf_controls') as any;
 					if (controlsHost) void controlsHost.offsetHeight;
-				} catch { /* ignore */ }
-				try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateTransformationVisibilityToggleButton( boxId: any) {
@@ -554,9 +550,7 @@ export function __kustoUpdateTransformationVisibilityToggleButton( boxId: any) {
 		btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
 		btn.title = expanded ? 'Hide' : 'Show';
 		btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyTransformationBoxVisibility( boxId: any) {
@@ -578,11 +572,9 @@ export function __kustoApplyTransformationBoxVisibility( boxId: any) {
 		if (maxBtn) maxBtn.style.display = expanded ? '' : 'none';
 		__kustoUpdateTransformationVisibilityToggleButton(boxId);
 		if (expanded) {
-			try { __kustoRenderTransformation(boxId); } catch { /* ignore */ }
+			try { __kustoRenderTransformation(boxId); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function toggleTransformationBoxVisibility( boxId: any) {
@@ -590,9 +582,9 @@ export function toggleTransformationBoxVisibility( boxId: any) {
 	if (!id) return;
 	const st = __kustoGetTransformationState(id);
 	st.expanded = !st.expanded;
-	try { __kustoApplyTransformationBoxVisibility(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoApplyTransformationBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizeTransformationBox( boxId: any) {
@@ -602,12 +594,10 @@ export function __kustoMaximizeTransformationBox( boxId: any) {
 		const desired = __kustoComputeTransformationFitHeightPx(boxId);
 		if (!desired) return;
 		wrapper.style.height = desired + 'px';
-		try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoComputeTransformationFitHeightPx( boxId: any) {
@@ -633,7 +623,7 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 					resultsWrapperBoxExtra += (parseFloat(rsw.paddingTop || '0') || 0) + (parseFloat(rsw.paddingBottom || '0') || 0);
 					resultsWrapperBoxExtra += (parseFloat(rsw.borderTopWidth || '0') || 0) + (parseFloat(rsw.borderBottomWidth || '0') || 0);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const addVisibleRectHeight = (el: any) => {
 				try {
@@ -646,9 +636,9 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 						try {
 							margin += parseFloat(cs.marginTop || '0') || 0;
 							margin += parseFloat(cs.marginBottom || '0') || 0;
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						return Math.max(0, Math.ceil(h + margin));
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
 					return Math.max(0, Math.ceil(h));
 				} catch {
@@ -668,7 +658,7 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 						const cse = getComputedStyle(activeHost);
 						h += (parseFloat(cse.paddingTop || '0') || 0) + (parseFloat(cse.paddingBottom || '0') || 0);
 						h += (parseFloat(cse.borderTopWidth || '0') || 0) + (parseFloat(cse.borderBottomWidth || '0') || 0);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return Math.max(0, Math.ceil(h));
 				} catch {
 					return 0;
@@ -684,7 +674,7 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 						const csr = getComputedStyle(resultsEl);
 						resultsContentH += (parseFloat(csr.paddingTop || '0') || 0) + (parseFloat(csr.paddingBottom || '0') || 0);
 						resultsContentH += (parseFloat(csr.borderTopWidth || '0') || 0) + (parseFloat(csr.borderBottomWidth || '0') || 0);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 
 					const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
 					resultsContentH += addVisibleRectHeight(headerEl);
@@ -695,7 +685,7 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 							const csb = getComputedStyle(bodyEl);
 							resultsContentH += (parseFloat(csb.paddingTop || '0') || 0) + (parseFloat(csb.paddingBottom || '0') || 0);
 							resultsContentH += (parseFloat(csb.borderTopWidth || '0') || 0) + (parseFloat(csb.borderBottomWidth || '0') || 0);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 
 						const dataSearch = bodyEl.querySelector ? bodyEl.querySelector('.data-search') : null;
 						const colSearch = bodyEl.querySelector ? bodyEl.querySelector('.column-search') : null;
@@ -723,19 +713,19 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 										if (rowCount <= 1) {
 											tableSlackPx = Math.max(tableSlackPx, 2);
 										}
-									} catch { /* ignore */ }
+									} catch (e) { console.error('[kusto]', e); }
 
 									const oh = (typeof tableEl.offsetHeight === 'number') ? tableEl.offsetHeight : 0;
 									if (oh && Number.isFinite(oh)) tableH = Math.max(tableH, oh);
 									const rh = (tableEl.getBoundingClientRect ? (tableEl.getBoundingClientRect().height || 0) : 0);
 									if (rh && Number.isFinite(rh)) tableH = Math.max(tableH, rh);
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							if (!tableH) {
 								try {
 									const sh = (typeof tableContainer.scrollHeight === 'number') ? tableContainer.scrollHeight : 0;
 									if (sh && Number.isFinite(sh)) tableH = Math.max(tableH, sh);
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}
 							if (!tableH) {
 								tableH = addVisibleRectHeight(tableContainer);
@@ -746,21 +736,21 @@ export function __kustoComputeTransformationFitHeightPx( boxId: any) {
 								for (const child of Array.from(bodyEl.children || []) as any[]) {
 									resultsContentH += addVisibleRectHeight(child);
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					} else {
 						try {
 							for (const child of Array.from(resultsEl.children || []) as any[]) {
 								resultsContentH += addVisibleRectHeight(child);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const extraPad = hasTable ? 38 : 18;
 			desired = Math.ceil(Math.max(0, controlsH) + resultsWrapperMargins + resultsWrapperBoxExtra + Math.max(0, resultsContentH) + extraPad + tableSlackPx);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		if (!desired || !Number.isFinite(desired)) {
 			desired = Math.ceil(activeHost.scrollHeight + 19);
 		}
@@ -784,41 +774,41 @@ export function __kustoMaybeAutoFitTransformationBox( boxId: any) {
 		const allowShrink = String(wrapper.dataset.kustoAutoFitAllowShrink || '') === 'true';
 		// If the user has the section at least "fit" size, keep auto-fit active.
 		if (!active && current >= desired - 2) {
-			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
+			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch (e) { console.error('[kusto]', e); }
 		}
 		const nowActive = String(wrapper.dataset.kustoAutoFitActive || '') === 'true';
 		if (!nowActive) return;
 		// Default is grow-only to avoid jitter while editing; allowShrink is a one-shot override.
 		if (desired > current + 2 || (allowShrink && desired < current - 2)) {
 			wrapper.style.height = desired + 'px';
-			try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (allowShrink) {
-			try { delete wrapper.dataset.kustoAutoFitAllowShrink; } catch { /* ignore */ }
+			try { delete wrapper.dataset.kustoAutoFitAllowShrink; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function removeTransformationBox( boxId: any) {
 	const id = String(boxId || '');
 	if (!id) return;
-	try { _win.__kustoCleanupSectionModeResizeObserver(id); } catch { /* ignore */ }
+	try { _win.__kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const el = document.getElementById(id) as any;
 		if (el && el.parentElement) {
 			el.parentElement.removeChild(el);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		transformationBoxes = Array.isArray(transformationBoxes) ? transformationBoxes.filter((x: any) => x !== id) : [];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (transformationStateByBoxId && typeof transformationStateByBoxId === 'object') {
 			delete transformationStateByBoxId[id];
 		}
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetTransformationType( boxId: any, type: any) {
@@ -828,8 +818,8 @@ export function __kustoSetTransformationType( boxId: any, type: any) {
 	if (!(t in __kustoTransformationTypeLabels)) return;
 	const st = __kustoGetTransformationState(id);
 	st.transformationType = t;
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	// Changing transformation types can significantly change the controls height.
 	// If the section is in auto-fit mode (Fit to contents), re-measure after the DOM updates.
 	try {
@@ -850,15 +840,15 @@ export function __kustoSetTransformationType( boxId: any, type: any) {
 						if (resultsWrapper) void resultsWrapper.offsetHeight;
 						const controlsHost = document.getElementById(id + '_tf_controls') as any;
 						if (controlsHost) void controlsHost.offsetHeight;
-					} catch { /* ignore */ }
-					try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		setTimeout(runFit, 0);
 		setTimeout(runFit, 80);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationDataSourceChanged( boxId: any) {
@@ -868,10 +858,10 @@ export function __kustoOnTransformationDataSourceChanged( boxId: any) {
 		const sel = document.getElementById(id + '_tf_ds') as any;
 		const st = __kustoGetTransformationState(id);
 		st.dataSourceId = sel ? String(sel.value || '') : '';
-	} catch { /* ignore */ }
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetCheckboxDropdownText( btnTextEl: any, selectedValues: any) {
@@ -880,13 +870,13 @@ export function __kustoSetCheckboxDropdownText( btnTextEl: any, selectedValues: 
 		const vals = Array.isArray(selectedValues) ? selectedValues.filter((v: any) => v) : [];
 		if (!vals.length) {
 			btnTextEl.textContent = '(none)';
-			try { btnTextEl.title = '(none)'; } catch { /* ignore */ }
+			try { btnTextEl.title = '(none)'; } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
 		const all = vals.map((v: any) => String(v)).filter((v: any) => v).join(', ');
 		btnTextEl.textContent = all;
-		try { btnTextEl.title = all; } catch { /* ignore */ }
+		try { btnTextEl.title = all; } catch (e) { console.error('[kusto]', e); }
 
 		// If it doesn't fit, include as many values as will fit and add an ellipsis.
 		try {
@@ -918,8 +908,8 @@ export function __kustoSetCheckboxDropdownText( btnTextEl: any, selectedValues: 
 				btnTextEl.textContent = shown ? (shown + '…') : (next + '…');
 				break;
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoBuildCheckboxMenuHtml( boxId: any, options: any, selectedSet: any) {
@@ -951,9 +941,9 @@ export function __kustoToggleGroupByColumn( boxId: any, columnName: any) {
 	const set = new Set(st.groupByColumns.map((c: any) => String(c)));
 	if (set.has(col)) set.delete(col); else set.add(col);
 	st.groupByColumns = Array.from(set);
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateTransformationBuilderUI( boxId: any) {
@@ -964,7 +954,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 	try {
 		const el = document.getElementById(id) as any;
 		if (el && typeof el.refresh === 'function') return;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const st = __kustoGetTransformationState(id);
 
@@ -977,10 +967,10 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 				try {
 					const t = String(b.getAttribute('data-type') || '');
 					b.classList.toggle('is-active', t && t === String(st.transformationType || ''));
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Data source dropdown
 	const datasets = _win.__kustoGetChartDatasetsInDomOrder();
@@ -1002,9 +992,9 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 					const selected = String(dsSelect.value || '');
 					txt.textContent = (selected && labelMap[selected]) ? labelMap[selected] : (selected || '(select)');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Config sections
 	try {
@@ -1016,7 +1006,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 		if (sumHost) sumHost.style.display = (st.transformationType === 'summarize') ? '' : 'none';
 		if (distinctHost) distinctHost.style.display = (st.transformationType === 'distinct') ? '' : 'none';
 		if (pivotHost) pivotHost.style.display = (st.transformationType === 'pivot') ? '' : 'none';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Column-dependent controls
 	const ds = datasets.find((d: any) => String(d.id) === String(st.dataSourceId || ''));
@@ -1053,7 +1043,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 			}
 			host.innerHTML = html;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Summarize: group-by rows (multiple columns with add/remove)
 	try {
@@ -1086,7 +1076,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 			}
 			host.innerHTML = html;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Summarize: aggregations list
 	try {
@@ -1135,7 +1125,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 			}
 			host.innerHTML = html;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Pivot selects
 	try {
@@ -1157,8 +1147,8 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 			if (valTxt && valSel) valTxt.textContent = String(valSel.value || '') || '(select)';
 			const aggTxt = document.getElementById(id + '_tf_pivot_agg_text') as any;
 			if (aggTxt && aggSel) aggTxt.textContent = String(aggSel.value || '') || 'sum';
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Distinct select
 	try {
@@ -1171,9 +1161,9 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 					const selected = String(sel.value || '');
 					txt.textContent = selected || '(select)';
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// If the section is already fit-sized, keep content visible as UI grows.
 	try {
@@ -1183,10 +1173,10 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
 					w.dataset.kustoAutoFitActive = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationDistinctChanged( boxId: any) {
@@ -1195,8 +1185,8 @@ export function __kustoOnTransformationDistinctChanged( boxId: any) {
 	const st = __kustoGetTransformationState(id);
 	try {
 		st.distinctColumn = String(((document.getElementById(id + '_tf_distinct_col') as any || {}).value || ''));
-	} catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	// When the distinct column changes, the results can vary significantly in content and width.
 	// Allow the section to shrink/grow to fit the new contents.
 	try {
@@ -1209,13 +1199,13 @@ export function __kustoOnTransformationDistinctChanged( boxId: any) {
 					w.dataset.kustoAutoFitActive = 'true';
 					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		};
 		setTimeout(runFit, 0);
 		setTimeout(runFit, 80);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationAggChanged( boxId: any, index: any, newFn: any, newCol: any, newName: any) {
@@ -1234,12 +1224,12 @@ export function __kustoOnTransformationAggChanged( boxId: any, index: any, newFn
 		if (String(st.aggregations[i].function || '') === 'count') {
 			st.aggregations[i].column = '';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// IMPORTANT: Editing the aggregation name is a keystroke-heavy interaction.
 	// Avoid rebuilding the summarize UI on every keypress (it steals focus).
 	if (!nameOnlyChange) {
-		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 		try {
 			setTimeout(() => {
 				try {
@@ -1247,12 +1237,12 @@ export function __kustoOnTransformationAggChanged( boxId: any, index: any, newFn
 					if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
 						w.dataset.kustoAutoFitActive = 'true';
 					}
-				} catch { /* ignore */ }
-				try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddTransformationAgg( boxId: any) {
@@ -1269,24 +1259,24 @@ export function __kustoAddTransformationAgg( boxId: any) {
 		st.aggregations.push({ name: '', function: 'count', column: '' });
 		insertedIndex = st.aggregations.length - 1;
 	}
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		setTimeout(() => {
 			try {
 				const el = document.getElementById(id + '_tf_agg_name_' + insertedIndex) as any;
 				if (el && typeof el.focus === 'function') el.focus();
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const w = document.getElementById(id + '_tf_wrapper') as any;
 				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
 					w.dataset.kustoAutoFitActive = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
@@ -1297,8 +1287,8 @@ export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
 	if (!Array.isArray(st.aggregations)) st.aggregations = [];
 	if (st.aggregations.length <= 1) return;
 	st.aggregations.splice(i, 1);
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		// When removing aggregations, shrink-to-fit (one-shot) if auto-fit is enabled.
 		setTimeout(() => {
@@ -1308,8 +1298,8 @@ export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
 					w.dataset.kustoAutoFitActive = 'true';
 					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 		setTimeout(() => {
 			try {
@@ -1318,11 +1308,11 @@ export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
 					w.dataset.kustoAutoFitActive = 'true';
 					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 80);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Group-by column handlers for Summarize
@@ -1335,8 +1325,8 @@ export function __kustoOnGroupByColumnChanged( boxId: any, index: any, value: an
 	if (i >= 0 && i < st.groupByColumns.length) {
 		st.groupByColumns[i] = String(value || '');
 	}
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddGroupByColumn( boxId: any, insertAfterIndex: any) {
@@ -1352,18 +1342,18 @@ export function __kustoAddGroupByColumn( boxId: any, insertAfterIndex: any) {
 		st.groupByColumns.push('');
 		insertedIndex = st.groupByColumns.length - 1;
 	}
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		setTimeout(() => {
 			try {
 				const el = document.getElementById(id + '_tf_groupby_col_' + insertedIndex) as any;
 				if (el && typeof el.focus === 'function') el.focus();
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveGroupByColumn( boxId: any, index: any) {
@@ -1374,14 +1364,14 @@ export function __kustoRemoveGroupByColumn( boxId: any, index: any) {
 	if (!Array.isArray(st.groupByColumns)) st.groupByColumns = [''];
 	if (st.groupByColumns.length <= 1) return;
 	st.groupByColumns.splice(i, 1);
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		setTimeout(() => {
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Group-by drag and drop handlers
@@ -1395,15 +1385,15 @@ export function __kustoOnGroupByDragStart( boxId: any, index: any, event: any) {
 			const e = event;
 			if (e && e.dataTransfer) {
 				e.dataTransfer.effectAllowed = 'move';
-				try { e.dataTransfer.setData('text/plain', 'kusto-groupby'); } catch { /* ignore */ }
+				try { e.dataTransfer.setData('text/plain', 'kusto-groupby'); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const host = document.getElementById(id + '_tf_groupby_rows') as any;
 			if (host) host.classList.add('is-dragging');
-		} catch { /* ignore */ }
-		try { __kustoClearGroupByDropIndicators(id); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearGroupByDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoClearGroupByDropIndicators( boxId: any) {
@@ -1415,7 +1405,7 @@ export function __kustoClearGroupByDropIndicators( boxId: any) {
 				r.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
 			});
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnGroupByDragOver( boxId: any, index: any, event: any) {
@@ -1437,7 +1427,7 @@ export function __kustoOnGroupByDragOver( boxId: any, index: any, event: any) {
 		state.insertAfter = insertAfter;
 		row.classList.add('is-drop-target');
 		row.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnGroupByDragEnd( boxId: any, event: any) {
@@ -1447,7 +1437,7 @@ export function __kustoOnGroupByDragEnd( boxId: any, event: any) {
 		if (host) host.classList.remove('is-dragging');
 		__kustoClearGroupByDropIndicators(id);
 		window.__kustoGroupByDragState = null;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnGroupByDrop( boxId: any, index: any, event: any) {
@@ -1473,10 +1463,10 @@ export function __kustoOnGroupByDrop( boxId: any, index: any, event: any) {
 		const item = arr.splice(fromIdx, 1)[0];
 		arr.splice(toIdx, 0, item);
 		__kustoOnGroupByDragEnd(id, e);
-		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnAggDragStart( boxId: any, index: any, event: any) {
@@ -1489,15 +1479,15 @@ export function __kustoOnAggDragStart( boxId: any, index: any, event: any) {
 			const e = event;
 			if (e && e.dataTransfer) {
 				e.dataTransfer.effectAllowed = 'move';
-				try { e.dataTransfer.setData('text/plain', 'kusto-agg'); } catch { /* ignore */ }
+				try { e.dataTransfer.setData('text/plain', 'kusto-agg'); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const host = document.getElementById(id + '_tf_aggs') as any;
 			if (host) host.classList.add('is-dragging');
-		} catch { /* ignore */ }
-		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearAggDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoClearAggDropIndicators( boxId: any) {
@@ -1511,9 +1501,9 @@ export function __kustoClearAggDropIndicators( boxId: any) {
 				r.classList.remove('is-drop-target');
 				r.classList.remove('is-drop-before');
 				r.classList.remove('is-drop-after');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnAggDragOver( boxId: any, overIndex: any, event: any) {
@@ -1522,8 +1512,8 @@ export function __kustoOnAggDragOver( boxId: any, overIndex: any, event: any) {
 		const idx = Number(overIndex);
 		const e = event;
 		if (!id || !Number.isFinite(idx) || !e) return;
-		try { e.preventDefault(); } catch { /* ignore */ }
-		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+		try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch (e) { console.error('[kusto]', e); }
 		const drag = window.__kustoAggDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		let insertAfter = false;
@@ -1534,7 +1524,7 @@ export function __kustoOnAggDragOver( boxId: any, overIndex: any, event: any) {
 				const y = e.clientY;
 				insertAfter = y >= (rect.top + rect.height / 2);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		drag.overIndex = Math.floor(idx);
 		drag.insertAfter = !!insertAfter;
 		try {
@@ -1544,8 +1534,8 @@ export function __kustoOnAggDragOver( boxId: any, overIndex: any, event: any) {
 				rowEl.classList.add('is-drop-target');
 				rowEl.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
@@ -1553,7 +1543,7 @@ export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
 		const id = String(boxId || '');
 		const to = Number(toIndex);
 		if (!id || !Number.isFinite(to)) return;
-		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+		try { event && event.preventDefault && event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 		const drag = window.__kustoAggDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		const from = Number(drag.fromIndex);
@@ -1566,17 +1556,17 @@ export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
 		let insertion = overIdx + (insertAfter ? 1 : 0);
 		insertion = Math.max(0, Math.min(st.aggregations.length, insertion));
 		if (insertion === fromIdx || insertion === fromIdx + 1) {
-			try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
+			try { __kustoClearAggDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		const moved = st.aggregations.splice(fromIdx, 1)[0];
 		const toInsert = fromIdx < insertion ? (insertion - 1) : insertion;
 		st.aggregations.splice(toInsert, 0, moved);
-		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearAggDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnAggDragEnd( boxId: any, event: any) {
@@ -1586,10 +1576,10 @@ export function __kustoOnAggDragEnd( boxId: any, event: any) {
 		try {
 			const host = document.getElementById(id + '_tf_aggs') as any;
 			if (host) host.classList.remove('is-dragging');
-		} catch { /* ignore */ }
-		try { __kustoClearAggDropIndicators(id); } catch { /* ignore */ }
-		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearAggDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+		try { event && event.preventDefault && event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnCalculatedColumnChanged( boxId: any, index: any, field: any, value: any) {
@@ -1610,8 +1600,8 @@ export function __kustoOnCalculatedColumnChanged( boxId: any, index: any, field:
 			st.deriveColumnName = String(st.deriveColumns[0].name || '');
 			st.deriveExpression = String(st.deriveColumns[0].expression || '');
 		}
-	} catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		setTimeout(() => {
 			try {
@@ -1619,11 +1609,11 @@ export function __kustoOnCalculatedColumnChanged( boxId: any, index: any, field:
 				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
 					w.dataset.kustoAutoFitActive = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddCalculatedColumn( boxId: any) {
@@ -1642,23 +1632,23 @@ export function __kustoAddCalculatedColumn( boxId: any) {
 		st.deriveColumns.push({ name: '', expression: '' });
 		insertedIndex = st.deriveColumns.length - 1;
 	}
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		setTimeout(() => {
 			try {
 				const el = document.getElementById(id + '_tf_derive_name_' + insertedIndex) as any;
 				if (el && typeof el.focus === 'function') el.focus();
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const w = document.getElementById(id + '_tf_wrapper') as any;
 				if (w && !(w.dataset && w.dataset.kustoUserResized === 'true')) {
 					w.dataset.kustoAutoFitActive = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
@@ -1673,9 +1663,9 @@ export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
 		const first = st.deriveColumns[0] || { name: '', expression: '' };
 		st.deriveColumnName = String(first.name || '');
 		st.deriveExpression = String(first.expression || '');
-	} catch { /* ignore */ }
-	try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		// When removing columns, shrink-to-fit (one-shot) if auto-fit is enabled.
 		setTimeout(() => {
@@ -1685,8 +1675,8 @@ export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
 					w.dataset.kustoAutoFitActive = 'true';
 					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 		setTimeout(() => {
 			try {
@@ -1695,11 +1685,11 @@ export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
 					w.dataset.kustoAutoFitActive = 'true';
 					w.dataset.kustoAutoFitAllowShrink = 'true';
 				}
-			} catch { /* ignore */ }
-			try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 80);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnDeriveDragStart( boxId: any, index: any, event: any) {
@@ -1712,15 +1702,15 @@ export function __kustoOnDeriveDragStart( boxId: any, index: any, event: any) {
 			const e = event;
 			if (e && e.dataTransfer) {
 				e.dataTransfer.effectAllowed = 'move';
-				try { e.dataTransfer.setData('text/plain', 'kusto-derive'); } catch { /* ignore */ }
+				try { e.dataTransfer.setData('text/plain', 'kusto-derive'); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const host = document.getElementById(id + '_tf_derive_rows') as any;
 			if (host) host.classList.add('is-dragging');
-		} catch { /* ignore */ }
-		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearDeriveDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoClearDeriveDropIndicators( boxId: any) {
@@ -1734,9 +1724,9 @@ export function __kustoClearDeriveDropIndicators( boxId: any) {
 				r.classList.remove('is-drop-target');
 				r.classList.remove('is-drop-before');
 				r.classList.remove('is-drop-after');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnDeriveDragOver( boxId: any, overIndex: any, event: any) {
@@ -1745,8 +1735,8 @@ export function __kustoOnDeriveDragOver( boxId: any, overIndex: any, event: any)
 		const idx = Number(overIndex);
 		const e = event;
 		if (!id || !Number.isFinite(idx) || !e) return;
-		try { e.preventDefault(); } catch { /* ignore */ }
-		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+		try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+		try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } catch (e) { console.error('[kusto]', e); }
 		const drag = window.__kustoDeriveDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		let insertAfter = false;
@@ -1757,7 +1747,7 @@ export function __kustoOnDeriveDragOver( boxId: any, overIndex: any, event: any)
 				const y = e.clientY;
 				insertAfter = y >= (rect.top + rect.height / 2);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		drag.overIndex = Math.floor(idx);
 		drag.insertAfter = !!insertAfter;
 		try {
@@ -1767,8 +1757,8 @@ export function __kustoOnDeriveDragOver( boxId: any, overIndex: any, event: any)
 				rowEl.classList.add('is-drop-target');
 				rowEl.classList.add(insertAfter ? 'is-drop-after' : 'is-drop-before');
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
@@ -1776,7 +1766,7 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 		const id = String(boxId || '');
 		const to = Number(toIndex);
 		if (!id || !Number.isFinite(to)) return;
-		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
+		try { event && event.preventDefault && event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 		const drag = window.__kustoDeriveDragState;
 		if (!drag || String(drag.boxId || '') !== id) return;
 		const from = Number(drag.fromIndex);
@@ -1789,7 +1779,7 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 		let insertion = overIdx + (insertAfter ? 1 : 0);
 		insertion = Math.max(0, Math.min(st.deriveColumns.length, insertion));
 		if (insertion === fromIdx || insertion === fromIdx + 1) {
-			try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
+			try { __kustoClearDeriveDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		const moved = st.deriveColumns.splice(fromIdx, 1)[0];
@@ -1799,12 +1789,12 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 			const first = st.deriveColumns[0] || { name: '', expression: '' };
 			st.deriveColumnName = String(first.name || '');
 			st.deriveExpression = String(first.expression || '');
-		} catch { /* ignore */ }
-		try { __kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-		try { __kustoRenderTransformation(id); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearDeriveDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnDeriveDragEnd( boxId: any, event: any) {
@@ -1814,10 +1804,10 @@ export function __kustoOnDeriveDragEnd( boxId: any, event: any) {
 		try {
 			const host = document.getElementById(id + '_tf_derive_rows') as any;
 			if (host) host.classList.remove('is-dragging');
-		} catch { /* ignore */ }
-		try { __kustoClearDeriveDropIndicators(id); } catch { /* ignore */ }
-		try { event && event.preventDefault && event.preventDefault(); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoClearDeriveDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
+		try { event && event.preventDefault && event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationPivotChanged( boxId: any) {
@@ -1845,9 +1835,9 @@ export function __kustoOnTransformationPivotChanged( boxId: any) {
 			if (valTxt) valTxt.textContent = st.pivotValueColumn || '(select)';
 			const aggTxt = document.getElementById(id + '_tf_pivot_agg_text') as any;
 			if (aggTxt) aggTxt.textContent = st.pivotAggregation || 'sum';
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
-	try { __kustoRenderTransformation(id); } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 	// When pivot settings change, the results can vary significantly in content and width.
 	// Allow the section to shrink/grow to fit the new contents.
 	try {
@@ -1859,11 +1849,11 @@ export function __kustoOnTransformationPivotChanged( boxId: any) {
 				w.dataset.kustoAutoFitAllowShrink = 'true';
 				__kustoMaybeAutoFitTransformationBox(id);
 				w.dataset.kustoAutoFitAllowShrink = '';
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		setTimeout(runFit, 0);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoTryParseFiniteNumber( v: any) {
@@ -1915,13 +1905,13 @@ export function __kustoFormatDate( d: any, fmt: any) {
 }
 
 export function __kustoGetRawCellValueForTransform( cell: any) {
-	try { return _win.__kustoGetRawCellValueForChart(cell); } catch { /* ignore */ }
+	try { return _win.__kustoGetRawCellValueForChart(cell); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (cell && typeof cell === 'object') {
 			if ('full' in cell) return cell.full;
 			if ('display' in cell) return cell.display;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return cell;
 }
 
@@ -2364,7 +2354,7 @@ export function __kustoRenderTransformationError( boxId: any, message: any) {
 		if (resultsDiv) {
 			resultsDiv.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof _win.escapeHtml === 'function') ? _win.escapeHtml(String(message || '')) : String(message || '')) + '</div>';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRenderTransformation( boxId: any) {
@@ -2378,7 +2368,7 @@ export function __kustoRenderTransformation( boxId: any) {
 			el.refresh();
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const st = __kustoGetTransformationState(id);
 	if (st && st.expanded === false) return;
@@ -2440,9 +2430,9 @@ export function __kustoRenderTransformation( boxId: any) {
 				try {
 					const wrapper = document.getElementById(id + '_results_wrapper') as any;
 					if (wrapper) wrapper.style.display = '';
-				} catch { /* ignore */ }
-				try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
-				try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
+				try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 
@@ -2483,9 +2473,9 @@ export function __kustoRenderTransformation( boxId: any) {
 			try {
 				const wrapper = document.getElementById(id + '_results_wrapper') as any;
 				if (wrapper) wrapper.style.display = '';
-			} catch { /* ignore */ }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2574,9 +2564,9 @@ export function __kustoRenderTransformation( boxId: any) {
 			try {
 				const wrapper = document.getElementById(id + '_results_wrapper') as any;
 				if (wrapper) wrapper.style.display = '';
-			} catch { /* ignore */ }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2662,9 +2652,9 @@ export function __kustoRenderTransformation( boxId: any) {
 			try {
 				const wrapper = document.getElementById(id + '_results_wrapper') as any;
 				if (wrapper) wrapper.style.display = '';
-			} catch { /* ignore */ }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2705,9 +2695,9 @@ export function __kustoRenderTransformation( boxId: any) {
 			try {
 				const wrapper = document.getElementById(id + '_results_wrapper') as any;
 				if (wrapper) wrapper.style.display = '';
-			} catch { /* ignore */ }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch { /* ignore */ }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2727,15 +2717,15 @@ export function __kustoEnsureTransformationAutoExpandWhenResultsAppear( boxId: a
 		// when results appear, expand to fit so they're visible.
 		const userResized = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
 		if (userResized) return;
-		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Hook into the shared results visibility toggle so Transformations shrink/grow like query boxes.
 try {
 	const prev = (typeof window.__kustoOnResultsVisibilityToggled === 'function') ? window.__kustoOnResultsVisibilityToggled : null;
 	window.__kustoOnResultsVisibilityToggled = (boxId: any) => {
-		try { if (prev) prev(boxId); } catch { /* ignore */ }
+		try { if (prev) prev(boxId); } catch (e) { console.error('[kusto]', e); }
 		try {
 			const id = String(boxId || '');
 			if (!id) return;
@@ -2746,16 +2736,16 @@ try {
 			let visible = true;
 			try {
 				visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!visible) {
 				// Mirror query-box collapse: hug content when results hidden.
-				try { wrapper.dataset.kustoAutoFitActive = 'false'; } catch { /* ignore */ }
+				try { wrapper.dataset.kustoAutoFitActive = 'false'; } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (wrapper.style && typeof wrapper.style.height === 'string' && wrapper.style.height && wrapper.style.height !== 'auto') {
 						wrapper.dataset.kustoPrevHeight = wrapper.style.height;
 					}
-				} catch { /* ignore */ }
-				try { wrapper.style.height = 'auto'; } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { wrapper.style.height = 'auto'; } catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 			// Showing results again: restore previous height if any; otherwise auto-expand.
@@ -2764,12 +2754,12 @@ try {
 				if (prevH && prevH !== 'auto') {
 					wrapper.style.height = prevH;
 				}
-			} catch { /* ignore */ }
-			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch { /* ignore */ }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch { /* ignore */ } }, 0); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	};
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 export function addTransformationBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('transformation_' + Date.now());
@@ -2788,13 +2778,13 @@ export function addTransformationBox( options: any) {
 			const e = (typeof options.deriveExpression === 'string') ? String(options.deriveExpression) : '';
 			st.deriveColumns = [{ name: n, expression: e }];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Keep legacy fields in sync (used by older persistence/safety nets)
 	try {
 		const first = Array.isArray(st.deriveColumns) && st.deriveColumns.length ? st.deriveColumns[0] : { name: '', expression: '' };
 		st.deriveColumnName = String((first && first.name) || '');
 		st.deriveExpression = String((first && first.expression) || '');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	st.groupByColumns = (options && Array.isArray(options.groupByColumns)) ? options.groupByColumns.filter((c: any) => c) : (Array.isArray(st.groupByColumns) ? st.groupByColumns : []);
 	st.aggregations = (options && Array.isArray(options.aggregations)) ? options.aggregations : (Array.isArray(st.aggregations) ? st.aggregations : [{ function: 'count', column: '' }]);
 	st.pivotRowKeyColumn = (options && typeof options.pivotRowKeyColumn === 'string') ? String(options.pivotRowKeyColumn) : (st.pivotRowKeyColumn || '');
@@ -2824,7 +2814,7 @@ export function addTransformationBox( options: any) {
 			const detail = e && e.detail ? e.detail : {};
 			const removeId = detail.boxId || id;
 			removeTransformationBox(removeId);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	});
 
 	container.insertAdjacentElement('beforeend', litEl);

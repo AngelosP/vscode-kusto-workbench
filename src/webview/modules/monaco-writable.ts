@@ -16,16 +16,14 @@ export function __kustoNormalizeTextareasWritable(root: any) {
 		}
 		for (const ta of textareas) {
 			if (!ta) continue;
-			try { ta.readOnly = false; } catch { /* ignore */ }
-			try { ta.disabled = false; } catch { /* ignore */ }
-			try { ta.removeAttribute && ta.removeAttribute('readonly'); } catch { /* ignore */ }
-			try { ta.removeAttribute && ta.removeAttribute('disabled'); } catch { /* ignore */ }
+			try { ta.readOnly = false; } catch (e) { console.error('[kusto]', e); }
+			try { ta.disabled = false; } catch (e) { console.error('[kusto]', e); }
+			try { ta.removeAttribute && ta.removeAttribute('readonly'); } catch (e) { console.error('[kusto]', e); }
+			try { ta.removeAttribute && ta.removeAttribute('disabled'); } catch (e) { console.error('[kusto]', e); }
 			// Some environments can set aria-disabled; clear it to avoid AT/DOM locking.
-			try { ta.removeAttribute && ta.removeAttribute('aria-disabled'); } catch { /* ignore */ }
+			try { ta.removeAttribute && ta.removeAttribute('aria-disabled'); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoForceEditorWritable(editor: any) {
@@ -35,21 +33,15 @@ export function __kustoForceEditorWritable(editor: any) {
 			if (typeof editor.updateOptions === 'function') {
 				editor.updateOptions({ readOnly: false, domReadOnly: false });
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
 			if (!dom) return;
 			// Monaco can have multiple textareas (inputarea, find widget, etc.).
 			// Ensure none of them are stuck readonly/disabled.
 			__kustoNormalizeTextareasWritable(dom);
-		} catch {
-			// ignore
-		}
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoInstallWritableGuard(editor: any) {
@@ -70,7 +62,7 @@ export function __kustoInstallWritableGuard(editor: any) {
 			pending = true;
 			setTimeout(() => {
 				pending = false;
-				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
+				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
 		};
 
@@ -86,9 +78,7 @@ export function __kustoInstallWritableGuard(editor: any) {
 						return;
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		});
 
 		observer.observe(dom, {
@@ -101,9 +91,7 @@ export function __kustoInstallWritableGuard(editor: any) {
 		}
 		// Run once right away.
 		schedule();
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoEnsureEditorWritableSoon(editor: any) {
@@ -112,13 +100,11 @@ export function __kustoEnsureEditorWritableSoon(editor: any) {
 		const delays = [0, 50, 250, 1000];
 		for (const d of delays) {
 			setTimeout(() => {
-				try { __kustoForceEditorWritable(editor); } catch { /* ignore */ }
+				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			}, d);
 		}
-		try { __kustoInstallWritableGuard(editor); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { __kustoInstallWritableGuard(editor); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoEnsureAllEditorsWritableSoon() {
@@ -126,27 +112,23 @@ export function __kustoEnsureAllEditorsWritableSoon() {
 		const maps = [];
 		try {
 			if (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) maps.push(_win.queryEditors);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoMarkdownEditors !== 'undefined' && _win.__kustoMarkdownEditors) maps.push(_win.__kustoMarkdownEditors);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoPythonEditors !== 'undefined' && _win.__kustoPythonEditors) maps.push(_win.__kustoPythonEditors);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		for (const m of maps) {
 			try {
 				for (const ed of Object.values(m || {})) {
 					if (!ed) continue;
-					try { __kustoEnsureEditorWritableSoon(ed); } catch { /* ignore */ }
+					try { __kustoEnsureEditorWritableSoon(ed); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────

@@ -91,7 +91,7 @@ function __kustoTrySyncSearchAffordancesVerticalPositionToInput(input: HTMLEleme
 				bt = parseFloat(cs.borderTopWidth) || 0;
 				bb = parseFloat(cs.borderBottomWidth) || 0;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const yTopOuter = (rInput.top - rWrap.top);
 		const innerHeight = rInput.height - bt - bb;
@@ -103,7 +103,7 @@ function __kustoTrySyncSearchAffordancesVerticalPositionToInput(input: HTMLEleme
 			el.style.top = centerY + 'px';
 			el.style.transform = 'translateY(-50%)';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoTrySyncStatusVerticalPositionToInput(input: HTMLElement | null, statusEl: HTMLElement | null): void {
@@ -129,7 +129,7 @@ function __kustoTrySyncStatusVerticalPositionToInput(input: HTMLElement | null, 
 						pt = parseFloat(cs.paddingTop) || 0;
 						pb = parseFloat(cs.paddingBottom) || 0;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const yTopOuter = (rInput.top - rWrap.top);
 				const innerHeight = rInput.height - bt - bb;
@@ -150,7 +150,7 @@ function __kustoTrySyncStatusVerticalPositionToInput(input: HTMLElement | null, 
 							} else if (cs.fontSize) {
 								statusEl.style.fontSize = cs.fontSize;
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						statusEl.style.paddingTop = cs.paddingTop;
 						statusEl.style.paddingBottom = cs.paddingBottom;
 						// Use a numeric line-height matching the input's inner content height.
@@ -169,11 +169,11 @@ function __kustoTrySyncStatusVerticalPositionToInput(input: HTMLElement | null, 
 						statusEl.style.fontWeight = cs.fontWeight;
 						statusEl.style.letterSpacing = cs.letterSpacing;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback: best-effort from computed styles.
 	try {
@@ -189,7 +189,7 @@ function __kustoTrySyncStatusVerticalPositionToInput(input: HTMLElement | null, 
 		const y = borderTop + paddingTop + (lineHeight / 2);
 		statusEl.style.top = y + 'px';
 		statusEl.style.transform = 'translateY(-50%)';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 interface SearchControlOptions {
@@ -213,7 +213,7 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 	const modeId = String(opts.modeId || '').trim();
 	if (!inputId || !modeId) return null;
 
-	try { hostEl.textContent = ''; } catch { /* ignore */ }
+	try { hostEl.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 
 	const wrapper = document.createElement('div');
 	wrapper.className = 'kusto-search-control';
@@ -230,12 +230,12 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 	input.className = 'kusto-search-input ' + String(opts.inputClass || '').trim();
 	input.placeholder = 'Search...';
 	input.autocomplete = 'off';
-	try { input.spellcheck = false; } catch { /* ignore */ }
+	try { input.spellcheck = false; } catch (e) { console.error('[kusto]', e); }
 	if (opts.ariaLabel) {
-		try { input.setAttribute('aria-label', String(opts.ariaLabel)); } catch { /* ignore */ }
+		try { input.setAttribute('aria-label', String(opts.ariaLabel)); } catch (e) { console.error('[kusto]', e); }
 	}
 	if (opts.title) {
-		try { input.title = String(opts.title); } catch { /* ignore */ }
+		try { input.title = String(opts.title); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Match status indicator (e.g. "3 / 12").
@@ -278,10 +278,10 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 	const onNext = (typeof opts.onNext === 'function') ? opts.onNext : null;
 
 	if (onInput) {
-		try { input.addEventListener('input', onInput); } catch { /* ignore */ }
+		try { input.addEventListener('input', onInput); } catch (e) { console.error('[kusto]', e); }
 	}
 	if (onKeyDown) {
-		try { input.addEventListener('keydown', onKeyDown); } catch { /* ignore */ }
+		try { input.addEventListener('keydown', onKeyDown); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	toggleBtn.addEventListener('click', function () {
@@ -290,18 +290,18 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 		toggleBtn.dataset.mode = next;
 		__kustoUpdateSearchModeToggle(toggleBtn, next);
 		if (onInput) {
-			try { onInput(); } catch { /* ignore */ }
+			try { onInput(); } catch (e) { console.error('[kusto]', e); }
 		}
 	});
 
 	if (onPrev) {
 		prevBtn.addEventListener('click', function () {
-			try { onPrev(); } catch { /* ignore */ }
+			try { onPrev(); } catch (e) { console.error('[kusto]', e); }
 		});
 	}
 	if (onNext) {
 		nextBtn.addEventListener('click', function () {
-			try { onNext(); } catch { /* ignore */ }
+			try { onNext(); } catch (e) { console.error('[kusto]', e); }
 		});
 	}
 
@@ -329,7 +329,7 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 		try {
 			__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
 			__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Keep it aligned if fonts/layout change.
@@ -341,13 +341,13 @@ function __kustoCreateSearchControl(hostEl: HTMLElement | null, options?: Search
 			});
 			ro.observe(input);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		window.addEventListener('resize', function () {
 			__kustoTrySyncStatusVerticalPositionToInput(input, statusEl);
 			__kustoTrySyncSearchAffordancesVerticalPositionToInput(input, [toggleBtn, navDivider, prevBtn, nextBtn]);
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	return { wrapper, input, toggleBtn, statusEl, prevBtn, nextBtn };
 }
@@ -387,7 +387,7 @@ function __kustoTryBuildSearchRegex(query: string, mode: string): { regex: RegEx
 			if (nonGlobal.test('')) {
 				return { regex: null, error: 'Search pattern matches empty text. Please refine it.', mode: m };
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return { regex, error: null, mode: m };
 	} catch {
 		return { regex: null, error: 'Invalid regex. Please fix the pattern.', mode: m };
@@ -420,7 +420,7 @@ function __kustoCountRegexMatches(regex: RegExp | null, text: string, maxMatches
 				regex.lastIndex = regex.lastIndex + 1;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return count;
 }
 
@@ -481,7 +481,7 @@ function __kustoHighlightElementTextNodes(rootEl: HTMLElement | null, regex: Reg
 	try {
 		let node;
 		while ((node = walker.nextNode())) nodes.push(node);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	for (const n of nodes) {
 		try {
@@ -516,7 +516,7 @@ function __kustoHighlightElementTextNodes(rootEl: HTMLElement | null, regex: Reg
 				n.parentNode.insertBefore(frag, n);
 				n.parentNode.removeChild(n);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	return total;
 }

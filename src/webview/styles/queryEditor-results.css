@@ -72,6 +72,17 @@
 			overflow: hidden;
 		}
 
+		/* Stale results: grey out + subtle blur while a new query is running */
+		.results.is-stale {
+			position: relative;
+			pointer-events: none;
+		}
+		.results.is-stale > * {
+			opacity: 0.45;
+			filter: blur(0.5px) grayscale(30%);
+			transition: opacity 0.25s ease, filter 0.25s ease;
+		}
+
 		/* Constrain the results body so the table container can scroll inside it.
 		   This is required anywhere the reusable tabular control is embedded, not just
 		   inside .results-wrapper. */
@@ -1633,7 +1644,10 @@
 
 		.kusto-context-menu-item {
 			width: 100%;
-			display: block;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 24px;
 			text-align: left;
 			background: transparent;
 			color: inherit;
@@ -1641,11 +1655,30 @@
 			padding: 6px 10px;
 			font: inherit;
 			cursor: pointer;
+			white-space: nowrap;
 		}
 
-		.kusto-context-menu-item:hover {
+		.kusto-context-menu-item.disabled {
+			opacity: 0.4;
+			cursor: default;
+			pointer-events: none;
+		}
+
+		.kusto-context-menu-item:hover:not(.disabled) {
 			background: var(--vscode-menu-selectionBackground);
 			color: var(--vscode-menu-selectionForeground);
+		}
+
+		.kusto-context-menu-shortcut {
+			font-size: 0.85em;
+			opacity: 0.7;
+			margin-left: auto;
+		}
+
+		.kusto-context-menu-separator {
+			height: 1px;
+			margin: 4px 0;
+			background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
 		}
 
 		td.search-match {

@@ -50,10 +50,10 @@ function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
 						const v = String(input.value || '').trim();
 						if (v) used.add(v.toUpperCase());
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return used;
 }
 
@@ -66,9 +66,7 @@ function __kustoPickNextAvailableSectionLetterName( excludeBoxId: any) {
 				return candidate;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return 'A';
 }
 
@@ -80,7 +78,7 @@ function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 		if (current) return current;
 		const next = __kustoPickNextAvailableSectionLetterName(id);
 		__kustoSetSectionName(id, next);
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		return next;
 	} catch {
 		return '';
@@ -91,7 +89,7 @@ function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 try {
 	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
 	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 // ── Global accessor helpers for query section connection/database ──────────
 // These functions abstract access to the connection/database state,
@@ -101,7 +99,7 @@ function __kustoGetConnectionId( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el.getConnectionId();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -109,7 +107,7 @@ function __kustoGetDatabase( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getDatabase === 'function') return el.getDatabase();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -117,7 +115,7 @@ function __kustoGetClusterUrl( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getClusterUrl === 'function') return el.getClusterUrl();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -125,7 +123,7 @@ function __kustoGetQuerySectionElement( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return null;
 }
 
@@ -135,13 +133,13 @@ try {
 	window.__kustoGetDatabase = __kustoGetDatabase;
 	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
 	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 function __kustoGetSectionName( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getName === 'function') return el.getName();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -149,13 +147,13 @@ function __kustoSetSectionName( boxId: any, name: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.setName === 'function') { el.setName(String(name || '')); return; }
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 try {
 	window.__kustoGetSectionName = __kustoGetSectionName;
 	window.__kustoSetSectionName = __kustoSetSectionName;
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 function addQueryBox( options: any) {
 	const isFirstBox = !(Array.isArray(_win.queryBoxes) && _win.queryBoxes.length > 0);
@@ -392,7 +390,7 @@ function addQueryBox( options: any) {
 
 	container.insertAdjacentHTML('beforeend', boxHtml);
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
-	try { _win.updateCaretDocsToggleButtons(); } catch { /* ignore */ }
+	try { _win.updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 	_win.setRunMode(id, 'take100');
 
 	// ── Wire up <kw-query-section> event listeners ──
@@ -402,11 +400,11 @@ function addQueryBox( options: any) {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			// Clear schema so it doesn't mismatch.
-			try { delete _win.schemaByBoxId[boxId]; } catch { /* ignore */ }
-			try { if (_win.schemaFetchInFlightByBoxId) _win.schemaFetchInFlightByBoxId[boxId] = false; } catch { /* ignore */ }
-			try { if (_win.lastSchemaRequestAtByBoxId) _win.lastSchemaRequestAtByBoxId[boxId] = 0; } catch { /* ignore */ }
-			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch { /* ignore */ }
-			try { if (typeof _win.setSchemaLoading === 'function') _win.setSchemaLoading(boxId, false); } catch { /* ignore */ }
+			try { delete _win.schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { if (_win.schemaFetchInFlightByBoxId) _win.schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
+			try { if (_win.lastSchemaRequestAtByBoxId) _win.lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
+			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof _win.setSchemaLoading === 'function') _win.setSchemaLoading(boxId, false); } catch (e) { console.error('[kusto]', e); }
 			// Persist selection.
 			try {
 				if (!_win.__kustoRestoreInProgress) {
@@ -416,7 +414,7 @@ function addQueryBox( options: any) {
 						database: ''
 					});
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			// Load database list.
 			if (detail.connectionId) {
 				try {
@@ -434,32 +432,32 @@ function addQueryBox( options: any) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
 						// Background refresh
 						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
-						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch { /* ignore */ }
+						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
 					} else {
 						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
 						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
-			try { _win.__kustoUpdateFavoritesUiForBox(boxId); } catch { /* ignore */ }
-			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { _win.__kustoUpdateFavoritesUiForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('database-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.onDatabaseChanged(boxId); } catch { /* ignore */ }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { _win.onDatabaseChanged(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('refresh-databases', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.refreshDatabases(boxId); } catch { /* ignore */ }
+			try { _win.refreshDatabases(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('favorite-toggle', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.toggleFavoriteForBox(boxId); } catch { /* ignore */ }
+			try { _win.toggleFavoriteForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('favorites-mode-changed', (e: any) => {
 			const detail = e.detail || {};
@@ -468,25 +466,25 @@ function addQueryBox( options: any) {
 				if (typeof _win.favoritesModeByBoxId === 'object') {
 					_win.favoritesModeByBoxId[boxId] = !!detail.favoritesMode;
 				}
-			} catch { /* ignore */ }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('favorite-selected', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
 			// connection-changed already fires before this event and handles getDatabases + schema clearing.
 			// This handler only needs to persist and update UI state.
-			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch { /* ignore */ }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('favorite-removed', (e: any) => {
 			const detail = e.detail || {};
-			try { _win.removeFavorite(detail.clusterUrl, detail.database); } catch { /* ignore */ }
+			try { _win.removeFavorite(detail.clusterUrl, detail.database); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('schema-refresh', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.refreshSchema(boxId); } catch { /* ignore */ }
+			try { _win.refreshSchema(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 	}
 
@@ -515,7 +513,7 @@ function addQueryBox( options: any) {
 					try {
 						const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '') === prevConnId) : null;
 						prevClusterUrl = conn ? String(conn.clusterUrl || '') : '';
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					if (prevClusterUrl && kwEl && typeof kwEl.setDesiredClusterUrl === 'function') {
 						kwEl.setDesiredClusterUrl(prevClusterUrl);
 					}
@@ -525,7 +523,7 @@ function addQueryBox( options: any) {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Apply desired cluster/database from options BEFORE updateConnectionSelects(),
 	// because setConnections() → connection-changed → cached DB load → setDatabases()
@@ -540,7 +538,7 @@ function addQueryBox( options: any) {
 				kwEl.setDesiredDatabase(String(options.database));
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	_win.updateConnectionSelects();
 	// For newly added sections, if the prefilled cluster+db matches an existing favorite,
@@ -550,14 +548,14 @@ function addQueryBox( options: any) {
 			_win.__kustoMarkNewBoxForFavoritesAutoEnter(id);
 			_win.__kustoTryAutoEnterFavoritesModeForNewBox(id);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// If this is the first section and the user has favorites, default to Favorites mode.
 	// (Otherwise, keep the normal cluster+database dropdowns visible.)
 	try {
 		if (isFirstBox && typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
 			window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	_win.initQueryEditor(id);
 
 	// Default visibility state (results + comparison summary)
@@ -566,26 +564,26 @@ function addQueryBox( options: any) {
 			window.__kustoResultsVisibleByBoxId = {};
 		}
 		window.__kustoResultsVisibleByBoxId[id] = defaultResultsVisible;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Default section visibility state (expanded/collapsed)
 	try {
 		if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
 			window.__kustoQueryExpandedByBoxId = {};
 		}
 		window.__kustoQueryExpandedByBoxId[id] = defaultExpanded;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
 			window.__kustoComparisonSummaryVisibleByBoxId = {};
 		}
 		window.__kustoComparisonSummaryVisibleByBoxId[id] = isComparison ? true : defaultComparisonSummaryVisible;
-	} catch { /* ignore */ }
-	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch { /* ignore */ }
-	try { __kustoApplyQueryBoxVisibility(id); } catch { /* ignore */ }
-	try { _win.__kustoUpdateQueryResultsToggleButton(id); } catch { /* ignore */ }
-	try { _win.__kustoUpdateComparisonSummaryToggleButton(id); } catch { /* ignore */ }
-	try { _win.__kustoApplyResultsVisibility(id); } catch { /* ignore */ }
-	try { _win.__kustoApplyComparisonSummaryVisibility(id); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyQueryBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoUpdateQueryResultsToggleButton(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoUpdateComparisonSummaryToggleButton(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoApplyResultsVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoApplyComparisonSummaryVisibility(id); } catch (e) { console.error('[kusto]', e); }
 
 	// Drag handle resize for results output.
 	try {
@@ -615,7 +613,7 @@ function addQueryBox( options: any) {
 									maxHeight = Math.max(minHeight, Math.min(900, contentH + resizerH + 1));
 								}
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						return { minHeight, maxHeight };
 					}
 					if (!resultsEl) {
@@ -637,9 +635,9 @@ function addQueryBox( options: any) {
 									const cs = getComputedStyle(child);
 									margin += parseFloat(cs.marginTop || '0') || 0;
 									margin += parseFloat(cs.marginBottom || '0') || 0;
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 								contentPx += rectH + Math.ceil(margin);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					} else {
 						const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
@@ -649,7 +647,7 @@ function addQueryBox( options: any) {
 					const desiredPx = Math.max(0, Math.ceil(overheadPx + contentPx + 8));
 					maxHeight = Math.min(900, desiredPx);
 					minHeight = Math.min(maxHeight, Math.max(24, Math.ceil(overheadPx + 8)));
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return { minHeight, maxHeight };
 			};
 
@@ -657,10 +655,8 @@ function addQueryBox( options: any) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-				} catch {
-					// ignore
-				}
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 
 				resizer.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;
@@ -676,7 +672,7 @@ function addQueryBox( options: any) {
 						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
 							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					const bounds = computeResizeBounds();
@@ -696,8 +692,8 @@ function addQueryBox( options: any) {
 						if (typeof window.__kustoClampResultsWrapperHeight === 'function') {
 							window.__kustoClampResultsWrapperHeight(id);
 						}
-					} catch { /* ignore */ }
-					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -708,13 +704,11 @@ function addQueryBox( options: any) {
 			resizer.addEventListener('dblclick', () => {
 				try {
 					__kustoAutoSizeResults(id);
-				} catch { /* ignore */ }
-				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			});
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Clamp the query results output wrapper height so it cannot be taller than its contents.
 	// This avoids blank slack below short error messages while still allowing the user to
@@ -746,9 +740,9 @@ function addQueryBox( options: any) {
 									const cs = getComputedStyle(child);
 									margin += parseFloat(cs.marginTop || '0') || 0;
 									margin += parseFloat(cs.marginBottom || '0') || 0;
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 								contentPx += rectH + Math.ceil(margin);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					} else {
 						const headerEl = resultsEl.querySelector ? resultsEl.querySelector('.results-header') : null;
@@ -764,14 +758,12 @@ function addQueryBox( options: any) {
 							if (w.dataset && w.dataset.kustoUserResized === 'true') {
 								w.dataset.kustoPrevHeight = w.style.height;
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
-				} catch {
-					// ignore
-				}
+				} catch (e) { console.error('[kusto]', e); }
 			};
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	
 	// Set initial query text if provided — use the pending-text map so the Monaco editor
 	// picks it up reliably during async initialization (instead of a fragile setTimeout).
@@ -779,7 +771,7 @@ function addQueryBox( options: any) {
 		try {
 			window.__kustoPendingQueryTextByBoxId = window.__kustoPendingQueryTextByBoxId || {};
 			window.__kustoPendingQueryTextByBoxId[id] = initialQuery;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	
 	// Check Copilot availability for this box
@@ -788,17 +780,15 @@ function addQueryBox( options: any) {
 			type: 'checkCopilotAvailability',
 			boxId: id
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
 			controls.scrollIntoView({ block: 'end' });
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 }
 
@@ -817,7 +807,7 @@ function __kustoAutoSizeEditor( boxId: any) {
 			try {
 				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
 				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
 
 			const addVisibleRectHeight = (el: any) => {
@@ -827,18 +817,18 @@ function __kustoAutoSizeEditor( boxId: any) {
 					if (cs && cs.display === 'none') return 0;
 					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
 					let margin = 0;
-					try { margin += parseFloat(cs.marginTop || '0') || 0; margin += parseFloat(cs.marginBottom || '0') || 0; } catch { /* ignore */ }
+					try { margin += parseFloat(cs.marginTop || '0') || 0; margin += parseFloat(cs.marginBottom || '0') || 0; } catch (e) { console.error('[kusto]', e); }
 					return Math.max(0, Math.ceil(h + margin));
 				} catch { return 0; }
 			};
 
 			let chrome = 0;
-			try { chrome += addVisibleRectHeight(wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null); } catch { /* ignore */ }
+			try { chrome += addVisibleRectHeight(wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const csw = getComputedStyle(wrapper);
 				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			let clipExtras = 0;
 			try {
@@ -854,23 +844,23 @@ function __kustoAutoSizeEditor( boxId: any) {
 					clipExtras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
 					clipExtras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
 			wrapper.style.height = desired + 'px';
 			wrapper.style.minHeight = '0';
-			try { if (wrapper.dataset) { wrapper.dataset.kustoUserResized = 'true'; try { delete wrapper.dataset.kustoAutoResized; } catch { /* ignore */ } } } catch { /* ignore */ }
+			try { if (wrapper.dataset) { wrapper.dataset.kustoUserResized = 'true'; try { delete wrapper.dataset.kustoAutoResized; } catch (e) { console.error('[kusto]', e); } } } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (!_win.__kustoManualQueryEditorHeightPxByBoxId || typeof _win.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
 					_win.__kustoManualQueryEditorHeightPxByBoxId = {};
 				}
 				_win.__kustoManualQueryEditorHeightPxByBoxId[id] = desired;
-			} catch { /* ignore */ }
-			try { if (typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { if (typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	};
-	const applyAndPersist = () => { apply(); try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ } };
-	try { applyAndPersist(); setTimeout(applyAndPersist, 50); setTimeout(applyAndPersist, 150); } catch { /* ignore */ }
+	const applyAndPersist = () => { apply(); try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); } };
+	try { applyAndPersist(); setTimeout(applyAndPersist, 50); setTimeout(applyAndPersist, 150); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoAutoSizeResults( boxId: any) {
@@ -879,7 +869,7 @@ function __kustoAutoSizeResults( boxId: any) {
 	const w = document.getElementById(id + '_results_wrapper') as any;
 	const resultsEl = document.getElementById(id + '_results') as any;
 	if (!w || !resultsEl) return;
-	try { if (getComputedStyle(w).display === 'none') return; } catch { /* ignore */ }
+	try { if (getComputedStyle(w).display === 'none') return; } catch (e) { console.error('[kusto]', e); }
 
 	const dataTableEl = resultsEl.querySelector ? resultsEl.querySelector('kw-data-table') : null;
 	if (dataTableEl && typeof dataTableEl.getContentHeight === 'function') {
@@ -897,7 +887,7 @@ function __kustoAutoSizeResults( boxId: any) {
 			const MAX_AUTO_H = TABLE_CHROME + (MAX_AUTO_ROWS * ROW_H);
 			w.style.height = Math.max(120, Math.min(MAX_AUTO_H, Math.ceil(desiredPx))) + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 		}
 		return;
 	}
@@ -908,15 +898,15 @@ function __kustoAutoSizeResults( boxId: any) {
 		try {
 			for (const child of Array.from(w.children || []) as any[]) {
 				if (!child || child === resultsEl) continue;
-				try { if (getComputedStyle(child).display === 'none') continue; } catch { /* ignore */ }
+				try { if (getComputedStyle(child).display === 'none') continue; } catch (e) { console.error('[kusto]', e); }
 				chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const csw = getComputedStyle(w);
 			chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 			chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		let contentH = 0;
 		try {
@@ -927,18 +917,18 @@ function __kustoAutoSizeResults( boxId: any) {
 					const h = child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0;
 					const margin = (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
 					contentH += Math.ceil(h + margin);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		if (contentH > 0) {
 			const desiredPx = Math.max(24, Math.min(900, Math.ceil(chrome + contentH + 8)));
 			w.style.height = desiredPx + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoMaximizeQueryBox( boxId: any) {
@@ -953,7 +943,7 @@ function __kustoMaximizeQueryBox( boxId: any) {
 	setTimeout(() => __kustoAutoSizeResults(id), 50);
 	setTimeout(() => __kustoAutoSizeResults(id), 150);
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateQueryVisibilityToggleButton( boxId: any) {
@@ -967,7 +957,7 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 	let expanded = true;
 	try {
 		expanded = !(window.__kustoQueryExpandedByBoxId && window.__kustoQueryExpandedByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (typeof kwEl.setExpanded === 'function') {
 		kwEl.setExpanded(expanded);
 	}
@@ -983,9 +973,9 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
 						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -996,9 +986,9 @@ function toggleQueryBoxVisibility( boxId: any) {
 		}
 		const current = !(window.__kustoQueryExpandedByBoxId[boxId] === false);
 		window.__kustoQueryExpandedByBoxId[boxId] = !current;
-	} catch { /* ignore */ }
-	try { __kustoApplyQueryBoxVisibility(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyQueryBoxVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Result visibility, comparison, optimization, and execution functions
@@ -1016,17 +1006,17 @@ async function fullyQualifyTablesInEditor( boxId: any) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1034,8 +1024,8 @@ async function fullyQualifyTablesInEditor( boxId: any) {
 	const currentTables = currentSchema && Array.isArray(currentSchema.tables) ? currentSchema.tables : null;
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
-		try { _win.ensureSchemaForBox(boxId); } catch { /* ignore */ }
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch { /* ignore */ }
+		try { _win.ensureSchemaForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1053,9 +1043,7 @@ async function fullyQualifyTablesInEditor( boxId: any) {
 	try {
 		editor.executeEdits('toolbar', [{ range: model.getFullModelRange(), text: next }]);
 		editor.focus();
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 async function qualifyTablesInTextPriority( text: any, opts: any) {
@@ -1090,9 +1078,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 					.filter((r: any) => r.value && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start);
 			}
 		}
-	} catch {
-		// ignore and fall back
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback: previous best-effort lexer (kept for resilience).
 	if (!candidates.length) {
@@ -1232,12 +1218,10 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 					if (cid && db && sch) {
 						_win.schemaByConnDb[cid + '|' + db] = sch;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return sch;
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		return null;
 	};
 
@@ -1246,9 +1230,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 			if (typeof window.__kustoRequestDatabases === 'function') {
 				return await window.__kustoRequestDatabases(connectionId, !!forceRefresh);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const cid = String(connectionId || '').trim();
 			let clusterKey = '';
@@ -1266,7 +1248,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 						clusterKey = String(clusterUrl || '').trim().toLowerCase();
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const cached = _win.cachedDatabases && _win.cachedDatabases[String(clusterKey || '').trim()];
 			return Array.isArray(cached) ? cached : [];
 		} catch {
@@ -1327,7 +1309,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 				if (!dbName) continue;
 				list.push({ database: dbName, schema: _win.schemaByConnDb[key] });
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		list.sort((a: any, b: any) => String(a.database).toLowerCase().localeCompare(String(b.database).toLowerCase()));
 		return list;
 	};
@@ -1349,7 +1331,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 					connById.set(String(c.id), c);
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Deterministic: iterate connections sorted by display clusterUrl.
 		const otherConns = Array.from(connById.entries())
@@ -1397,7 +1379,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 					connById.set(String(c.id), c);
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const otherConns = Array.from(connById.entries())
 			.filter(([id]) => id !== String(opts.connectionId || '').trim())
 			.map(([id, c]) => ({ cid: id, clusterUrl: String((c && c.clusterUrl) || '').trim() }))
@@ -1576,7 +1558,7 @@ function removeQueryBox( boxId: any) {
 		if (typeof window.__kustoDisposeCopilotQueryBox === 'function') {
 			window.__kustoDisposeCopilotQueryBox(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// If removing a linked optimized box, exit linked optimization mode and restore cache settings.
 	try {
@@ -1584,18 +1566,18 @@ function removeQueryBox( boxId: any) {
 			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = meta.sourceBoxId;
-					try { _win.__kustoSetLinkedOptimizationMode(sourceBoxId, boxId, false); } catch { /* ignore */ }
-				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
-				try { delete _win.optimizationMetadataByBoxId[sourceBoxId]; } catch { /* ignore */ }
+					try { _win.__kustoSetLinkedOptimizationMode(sourceBoxId, boxId, false); } catch (e) { console.error('[kusto]', e); }
+				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete _win.optimizationMetadataByBoxId[sourceBoxId]; } catch (e) { console.error('[kusto]', e); }
 			} else if (meta && meta.comparisonBoxId) {
 				// If removing the source box, remove the comparison box too.
 				const comparisonBoxId = meta.comparisonBoxId;
-					try { _win.__kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, false); } catch { /* ignore */ }
-				try { removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
-				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch { /* ignore */ }
+					try { _win.__kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
+				try { removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+				try { delete _win.optimizationMetadataByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Stop any running timer/spinner for this box
 	_win.setQueryExecuting(boxId, false);
@@ -1604,54 +1586,48 @@ function removeQueryBox( boxId: any) {
 		if (window.__kustoQueryResultJsonByBoxId) {
 			delete window.__kustoQueryResultJsonByBoxId[boxId];
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Disconnect any resize observer
 	if (_win.queryEditorResizeObservers[boxId]) {
 		try {
 			_win.queryEditorResizeObservers[boxId].disconnect();
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		delete _win.queryEditorResizeObservers[boxId];
 	}
 
 	// Disconnect any visibility observers
 	try {
 		if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers && _win.queryEditorVisibilityObservers[boxId]) {
-			try { _win.queryEditorVisibilityObservers[boxId].disconnect(); } catch { /* ignore */ }
+			try { _win.queryEditorVisibilityObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
 			delete _win.queryEditorVisibilityObservers[boxId];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers && _win.queryEditorVisibilityMutationObservers[boxId]) {
-			try { _win.queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch { /* ignore */ }
+			try { _win.queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
 			delete _win.queryEditorVisibilityMutationObservers[boxId];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Dispose editor if present
 	if (_win.queryEditors[boxId]) {
 		try {
 			_win.queryEditors[boxId].dispose();
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		delete _win.queryEditors[boxId];
 	}
 
 	// Remove from tracked list
 	_win.queryBoxes = _win.queryBoxes.filter((id: any) => id !== boxId);
-	try { delete _win.lastQueryTextByBoxId[boxId]; } catch { /* ignore */ }
-	try { delete _win.missingClusterUrlsByBoxId[boxId]; } catch { /* ignore */ }
+	try { delete _win.lastQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete _win.missingClusterUrlsByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (_win.missingClusterDetectTimersByBoxId && _win.missingClusterDetectTimersByBoxId[boxId]) {
 			clearTimeout(_win.missingClusterDetectTimersByBoxId[boxId]);
 			delete _win.missingClusterDetectTimersByBoxId[boxId];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Clear any global pointers if they reference this box
 	if (window.lastExecutedBox === boxId) {
@@ -1666,7 +1642,7 @@ function removeQueryBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleCachePill( boxId: any) {
@@ -1675,7 +1651,7 @@ function toggleCachePill( boxId: any) {
 	if (label) {
 		label.classList.toggle('disabled', !checkbox.checked);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleCachePopup( boxId: any) {
@@ -1728,7 +1704,7 @@ function toggleCachePopup( boxId: any) {
 			if (Math.abs(scrollY - scrollAtOpen) > 20) {
 				closePopup();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	const wheelHandler = (e: any) => {

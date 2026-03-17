@@ -20,15 +20,13 @@ export function __kustoTryApplyPendingMarkdownReveal( boxId: any) {
 		if (!pending) {
 			return;
 		}
-		try { delete __kustoPendingMarkdownRevealByBoxId[boxId]; } catch { /* ignore */ }
+		try { delete __kustoPendingMarkdownRevealByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
 				window.__kustoRevealMarkdownRangeInBox(boxId, pending);
 			}
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Called by main.js when the extension host asks us to reveal a range.
@@ -66,7 +64,7 @@ try {
 								detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
 							});
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					__kustoPendingMarkdownRevealByBoxId[boxId] = payload;
 					return;
 				}
@@ -78,18 +76,14 @@ try {
 							detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText ? matchText.length : 0}`
 						});
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (typeof window.__kustoRevealMarkdownRangeInBox === 'function') {
 					window.__kustoRevealMarkdownRangeInBox(boxId, payload);
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 	}
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 // Reveal a markdown range inside a specific markdown box, by switching to markdown mode
 // (so line/character mapping is stable) and then using ToastUI's selection API.
@@ -114,7 +108,7 @@ try {
 				if (boxEl && typeof boxEl.scrollIntoView === 'function') {
 					boxEl.scrollIntoView({ block: 'center' });
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const api = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
 			const toast = api && api._toastui ? api._toastui : null;
@@ -137,12 +131,12 @@ try {
 					if (typeof toast.getMarkdown === 'function') {
 						return String(toast.getMarkdown() || '');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof api.getValue === 'function') {
 						return String(api.getValue() || '');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return '';
 			})();
 
@@ -243,31 +237,29 @@ try {
 													sel.removeAllRanges();
 													sel.addRange(range);
 												}
-											} catch { /* ignore */ }
+											} catch (e) { console.error('[kusto]', e); }
 											try {
 												const el2 = range.startContainer && range.startContainer.parentElement ? range.startContainer.parentElement : null;
 												if (el2 && typeof el2.scrollIntoView === 'function') {
 													el2.scrollIntoView({ block: 'center' });
 												}
-											} catch { /* ignore */ }
+											} catch (e) { console.error('[kusto]', e); }
 											return true;
 										}
 										seen++;
 										i = at + Math.max(1, findText.length);
 									}
 								}
-							} catch {
-								// ignore
-							}
+							} catch (e) { console.error('[kusto]', e); }
 							return false;
 						};
 						setTimeout(() => {
 							const ok = selectInPreviewByOccurrence();
 							if (!ok) {
-								try { window.find && window.find(findText); } catch { /* ignore */ }
+								try { window.find && window.find(findText); } catch (e) { console.error('[kusto]', e); }
 							}
 						}, 0);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -286,13 +278,13 @@ try {
 									to = converted[1];
 								}
 							}
-						} catch { /* ignore */ }
-						try { toast.setSelection(from, to); } catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
+						try { toast.setSelection(from, to); } catch (e) { console.error('[kusto]', e); }
 					} else {
-						try { toast.setSelection(mdStart, mdEnd); } catch { /* ignore */ }
+						try { toast.setSelection(mdStart, mdEnd); } catch (e) { console.error('[kusto]', e); }
 					}
-				} catch { /* ignore */ }
-				try { if (typeof toast.focus === 'function') toast.focus(); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { if (typeof toast.focus === 'function') toast.focus(); } catch (e) { console.error('[kusto]', e); }
 			};
 
 			// Apply now, and retry a couple times in case the editor is still settling.
@@ -300,10 +292,10 @@ try {
 				applySelectionNow();
 				setTimeout(applySelectionNow, 50);
 				setTimeout(applySelectionNow, 150);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const applySelectionInDesiredMode = () => {
 				const mode = (desiredUiMode === 'markdown' || desiredUiMode === 'wysiwyg') ? desiredUiMode : 'wysiwyg';
-				try { toast.changeMode(mode, true); } catch { /* ignore */ }
+				try { toast.changeMode(mode, true); } catch (e) { console.error('[kusto]', e); }
 				try {
 					setTimeout(() => {
 						try {
@@ -318,15 +310,15 @@ try {
 											to = converted[1];
 										}
 									}
-								} catch { /* ignore */ }
-								try { toast.setSelection(from, to); } catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
+								try { toast.setSelection(from, to); } catch (e) { console.error('[kusto]', e); }
 							} else {
-								try { toast.setSelection(mdStart, mdEnd); } catch { /* ignore */ }
+								try { toast.setSelection(mdStart, mdEnd); } catch (e) { console.error('[kusto]', e); }
 							}
-						} catch { /* ignore */ }
-						try { if (typeof toast.focus === 'function') toast.focus(); } catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
+						try { if (typeof toast.focus === 'function') toast.focus(); } catch (e) { console.error('[kusto]', e); }
 					}, 0);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			try {
@@ -334,13 +326,11 @@ try {
 				if (desiredUiMode === 'preview' && typeof window.__kustoSetMarkdownMode === 'function') {
 					window.__kustoSetMarkdownMode(id, 'wysiwyg');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			applySelectionInDesiredMode();
 		};
 	}
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 let toastUiThemeObserverStarted = false;
 let lastAppliedToastUiIsDarkTheme: any = null;
@@ -359,9 +349,7 @@ export function __kustoIsDarkTheme() {
 				return true;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fall back to luminance of the editor background.
 	const parseCssColorToRgb = (value: any) => {
@@ -416,11 +404,9 @@ export function __kustoApplyToastUiThemeToHost( hostEl: any, isDark: any) {
 				if (el && el.classList) {
 					el.classList.toggle('toastui-editor-dark', !!isDark);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyToastUiThemeAll() {
@@ -438,9 +424,7 @@ export function __kustoApplyToastUiThemeAll() {
 			__kustoApplyToastUiThemeToHost(editorHost, isDark);
 			__kustoApplyToastUiThemeToHost(viewerHost, isDark);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoStartToastUiThemeObserver() {
@@ -450,7 +434,7 @@ export function __kustoStartToastUiThemeObserver() {
 	toastUiThemeObserverStarted = true;
 
 	// Apply once now.
-	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+	try { __kustoApplyToastUiThemeAll(); } catch (e) { console.error('[kusto]', e); }
 
 	let pending = false;
 	const schedule = () => {
@@ -458,7 +442,7 @@ export function __kustoStartToastUiThemeObserver() {
 		pending = true;
 		setTimeout(() => {
 			pending = false;
-			try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+			try { __kustoApplyToastUiThemeAll(); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	};
 
@@ -470,9 +454,7 @@ export function __kustoStartToastUiThemeObserver() {
 		if (document && document.documentElement) {
 			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizeMarkdownBox( boxId: any) {
@@ -516,10 +498,10 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 									const cs = getComputedStyle(child);
 									mt = parseFloat(cs.marginTop || '0') || 0;
 									mb = parseFloat(cs.marginBottom || '0') || 0;
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 								minTop = Math.min(minTop, Math.max(0, top - mt));
 								maxBottom = Math.max(maxBottom, Math.max(0, top + h + mb));
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 						let docH = 0;
 						if (Number.isFinite(minTop) && maxBottom > minTop) {
@@ -528,11 +510,11 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 						try {
 							const cs = getComputedStyle(prose);
 							docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						if (docH && Number.isFinite(docH)) {
 							contentH = Math.max(contentH, Math.ceil(docH));
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					// Fallback: only use scrollHeight if it actually indicates overflow content;
 					// otherwise it will just mirror the viewport height and create a feedback loop.
 					if (!contentH) {
@@ -542,7 +524,7 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 									contentH = Math.max(contentH, prose.scrollHeight);
 								}
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				}
 				// Fallback: if ProseMirror isn't found, use any contents node's scrollHeight.
@@ -562,11 +544,11 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 					try {
 						const oh = (typeof cmSizer.offsetHeight === 'number') ? cmSizer.offsetHeight : 0;
 						if (oh && Number.isFinite(oh)) contentH = Math.max(contentH, oh);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const rh = cmSizer.getBoundingClientRect ? (cmSizer.getBoundingClientRect().height || 0) : 0;
 						if (rh && Number.isFinite(rh)) contentH = Math.max(contentH, rh);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				// Fallback to scrollHeight if the sizer isn't available.
 				if (!contentH) {
@@ -606,19 +588,19 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 		try {
 			wrapper.style.height = '';
 			if (wrapper.dataset) {
-				try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
-				try { delete wrapper.dataset.kustoPrevHeightMd; } catch { /* ignore */ }
+				try { delete wrapper.dataset.kustoUserResized; } catch (e) { console.error('[kusto]', e); }
+				try { delete wrapper.dataset.kustoPrevHeightMd; } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
-		try { __kustoUpdateMarkdownPreviewSizing(id); } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoUpdateMarkdownPreviewSizing(id); } catch (e) { console.error('[kusto]', e); }
 		try {
 			// Ensure viewer is up-to-date before measuring/laying out.
 			if (viewerHost && viewerHost.style && viewerHost.style.display !== 'none') {
 				const md = markdownEditors && markdownEditors[id] ? String(markdownEditors[id].getValue() || '') : '';
 				initMarkdownViewer(id, md);
 			}
-		} catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -636,13 +618,13 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 				// Fallback: if we can't measure, do not change height (avoid runaway growth).
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const ed = markdownEditors && markdownEditors[id] ? markdownEditors[id] : null;
 			if (ed && typeof ed.layout === 'function') {
 				ed.layout();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 	// WYSIWYG layout/scrollHeight can settle a tick later; retry a few times.
 	try {
@@ -650,9 +632,9 @@ export function __kustoMaximizeMarkdownBox( boxId: any) {
 		setTimeout(applyOnce, 50);
 		setTimeout(applyOnce, 150);
 		setTimeout(applyOnce, 350);
-	} catch { /* ignore */ }
-	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
@@ -687,7 +669,7 @@ export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 									const cr = child.getBoundingClientRect ? child.getBoundingClientRect() : null;
 									const b = cr ? (cr.bottom || 0) : 0;
 									if (b && Number.isFinite(b)) maxBottom = Math.max(maxBottom, b);
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}
 							let docH = 0;
 							if (maxBottom > top) {
@@ -696,17 +678,17 @@ export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 							try {
 								const cs = getComputedStyle(prose);
 								docH += (parseFloat(cs.paddingTop || '0') || 0) + (parseFloat(cs.paddingBottom || '0') || 0);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							if (docH && Number.isFinite(docH)) {
 								contentH = Math.max(contentH, Math.ceil(docH));
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						if (!contentH) {
 							try {
 								if (typeof prose.scrollHeight === 'number') {
 									contentH = Math.max(contentH, prose.scrollHeight);
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					}
 					if (!contentH) {
@@ -721,11 +703,11 @@ export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 						try {
 							const oh = (typeof cmSizer.offsetHeight === 'number') ? cmSizer.offsetHeight : 0;
 							if (oh && Number.isFinite(oh)) contentH = Math.max(contentH, oh);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							const rh = cmSizer.getBoundingClientRect ? (cmSizer.getBoundingClientRect().height || 0) : 0;
 							if (rh && Number.isFinite(rh)) contentH = Math.max(contentH, rh);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 					if (!contentH) {
 						const cmScroll = ui.querySelector('.toastui-editor-md-container .CodeMirror .CodeMirror-scroll');
@@ -763,18 +745,16 @@ export function __kustoAutoExpandMarkdownBoxToContent( boxId: any) {
 						if (ed && typeof ed.layout === 'function') {
 							ed.layout();
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		apply();
 		setTimeout(apply, 50);
 		setTimeout(apply, 150);
 		setTimeout(apply, 350);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoScheduleMdAutoExpand( boxId: any) {
@@ -787,14 +767,12 @@ export function __kustoScheduleMdAutoExpand( boxId: any) {
 		window.__kustoMdAutoExpandTimersByBoxId = window.__kustoMdAutoExpandTimersByBoxId || {};
 		const map = window.__kustoMdAutoExpandTimersByBoxId;
 		if (map[id]) {
-			try { clearTimeout(map[id]); } catch { /* ignore */ }
+			try { clearTimeout(map[id]); } catch (e) { console.error('[kusto]', e); }
 		}
 		map[id] = setTimeout(() => {
-			try { __kustoAutoExpandMarkdownBoxToContent(id); } catch { /* ignore */ }
+			try { __kustoAutoExpandMarkdownBoxToContent(id); } catch (e) { console.error('[kusto]', e); }
 		}, 80);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizePythonBox( boxId: any) {
@@ -814,7 +792,7 @@ export function __kustoMaximizePythonBox( boxId: any) {
 			try {
 				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
 				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
 
 			let chrome = 0;
@@ -824,32 +802,32 @@ export function __kustoMaximizePythonBox( boxId: any) {
 					try {
 						const cs = getComputedStyle(child);
 						if (cs && cs.display === 'none') continue;
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					chrome += (child.getBoundingClientRect ? (child.getBoundingClientRect().height || 0) : 0);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const csw = getComputedStyle(wrapper);
 				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
 			try {
 				wrapper.style.height = desired + 'px';
 				wrapper.style.minHeight = '0';
-			} catch { /* ignore */ }
-			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
-			try { if (typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	try {
 		applyFitToContent();
 		setTimeout(applyFitToContent, 50);
 		setTimeout(applyFitToContent, 150);
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoEnsureMarkdownModeMap() {
@@ -857,9 +835,7 @@ export function __kustoEnsureMarkdownModeMap() {
 		if (!window.__kustoMarkdownModeByBoxId || typeof window.__kustoMarkdownModeByBoxId !== 'object') {
 			window.__kustoMarkdownModeByBoxId = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return window.__kustoMarkdownModeByBoxId;
 }
 
@@ -870,9 +846,7 @@ export function __kustoGetMarkdownMode( boxId: any) {
 		if (v === 'preview' || v === 'markdown' || v === 'wysiwyg') {
 			return v;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return 'wysiwyg';
 }
 
@@ -885,12 +859,10 @@ export function __kustoSetMarkdownMode( boxId: any, mode: any) {
 	try {
 		const map = __kustoEnsureMarkdownModeMap();
 		map[boxId] = m;
-	} catch {
-		// ignore
-	}
-	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
-	try { __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyMarkdownEditorMode(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoScheduleMdAutoExpand(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateMarkdownModeButtons( boxId: any) {
@@ -904,8 +876,8 @@ export function __kustoUpdateMarkdownModeButtons( boxId: any) {
 		const btn = document.getElementById(ids[key]) as any;
 		if (!btn) continue;
 		const active = key === mode;
-		try { btn.classList.toggle('is-active', active); } catch { /* ignore */ }
-		try { btn.setAttribute('aria-selected', active ? 'true' : 'false'); } catch { /* ignore */ }
+		try { btn.classList.toggle('is-active', active); } catch (e) { console.error('[kusto]', e); }
+		try { btn.setAttribute('aria-selected', active ? 'true' : 'false'); } catch (e) { console.error('[kusto]', e); }
 	}
 	// Update the dropdown text for narrow widths
 	try {
@@ -914,7 +886,7 @@ export function __kustoUpdateMarkdownModeButtons( boxId: any) {
 			const labels = { wysiwyg: 'WYSIWYG', markdown: 'Markdown', preview: 'Preview' };
 			dropdownText.textContent = labels[mode] || 'Mode';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Toggle the markdown mode dropdown menu visibility
@@ -929,7 +901,7 @@ export function __kustoToggleMdModeDropdown( boxId: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
-		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 		if (isOpen) {
 			menu.style.display = 'none';
 			btn.setAttribute('aria-expanded', 'false');
@@ -937,7 +909,7 @@ export function __kustoToggleMdModeDropdown( boxId: any, ev: any) {
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close the markdown mode dropdown menu
@@ -947,7 +919,7 @@ export function __kustoCloseMdModeDropdown( boxId: any) {
 		const btn = document.getElementById(boxId + '_md_mode_dropdown_btn') as any;
 		if (menu) menu.style.display = 'none';
 		if (btn) btn.setAttribute('aria-expanded', 'false');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close all md-mode dropdowns when clicking outside
@@ -963,15 +935,15 @@ try {
 				const menus = document.querySelectorAll('.md-mode-dropdown-menu');
 				const btns = document.querySelectorAll('.md-mode-dropdown-btn');
 				for (const m of menus as any) {
-					try { m.style.display = 'none'; } catch { /* ignore */ }
+					try { m.style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
 				}
 				for (const b of btns) {
-					try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+					try { b.setAttribute('aria-expanded', 'false'); } catch (e) { console.error('[kusto]', e); }
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	});
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 // Width thresholds for responsive mode buttons
 const __kustoMdModeNarrowThreshold = 450;
@@ -990,7 +962,7 @@ export function __kustoUpdateMdModeResponsive( boxId: any) {
 		const isVeryNarrow = width > 0 && width < __kustoMdModeVeryNarrowThreshold;
 		box.classList.toggle('is-md-narrow', isNarrow);
 		box.classList.toggle('is-md-very-narrow', isVeryNarrow);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Set up ResizeObserver for a markdown section to handle responsive mode buttons
@@ -1001,13 +973,13 @@ export function __kustoSetupMdModeResizeObserver( boxId: any) {
 		if (!box) return;
 		if (typeof ResizeObserver === 'undefined') return;
 		const observer = new ResizeObserver(() => {
-			try { __kustoUpdateMdModeResponsive(boxId); } catch { /* ignore */ }
+			try { __kustoUpdateMdModeResponsive(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 		observer.observe(box);
 		__kustoMdModeResizeObservers[boxId] = observer;
 		// Initial check
 		__kustoUpdateMdModeResponsive(boxId);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Clean up ResizeObserver when a markdown section is removed
@@ -1018,7 +990,7 @@ export function __kustoCleanupMdModeResizeObserver( boxId: any) {
 			observer.disconnect();
 		}
 		delete __kustoMdModeResizeObservers[boxId];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ============================================================================
@@ -1035,8 +1007,8 @@ export function __kustoUpdateMarkdownPreviewSizing( boxId: any) {
 	}
 	const mode = __kustoGetMarkdownMode(boxId);
 	if (mode !== 'preview') {
-		try { box.classList.remove('is-md-preview-auto'); } catch { /* ignore */ }
-		try { box.classList.remove('is-md-preview-fixed'); } catch { /* ignore */ }
+		try { box.classList.remove('is-md-preview-auto'); } catch (e) { console.error('[kusto]', e); }
+		try { box.classList.remove('is-md-preview-fixed'); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	let wrapper = null;
@@ -1053,16 +1025,16 @@ export function __kustoUpdateMarkdownPreviewSizing( boxId: any) {
 	let hasInlinePx = false;
 	try {
 		userResized = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const h = String(wrapper.style && wrapper.style.height ? wrapper.style.height : '').trim();
 		hasInlinePx = /^\d+px$/i.test(h);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Treat an explicit inline px height as a fixed size (even if dataset isn't set yet).
 	const fixed = userResized || hasInlinePx;
-	try { box.classList.toggle('is-md-preview-fixed', fixed); } catch { /* ignore */ }
-	try { box.classList.toggle('is-md-preview-auto', !fixed); } catch { /* ignore */ }
+	try { box.classList.toggle('is-md-preview-fixed', fixed); } catch (e) { console.error('[kusto]', e); }
+	try { box.classList.toggle('is-md-preview-auto', !fixed); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyMarkdownEditorMode( boxId: any) {
@@ -1088,16 +1060,16 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 				let fixed = false;
 				try {
 					fixed = !!(wrapper.dataset && wrapper.dataset.kustoUserResized === 'true');
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (!fixed) {
 					try {
 						const h = String(wrapper.style.height || '').trim();
 						fixed = /^\d+px$/i.test(h);
 						// If it was set via restore or older flows, mark as user-resized so behavior stays consistent.
 						if (fixed) {
-							try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+							try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				if (!fixed) {
 					// Auto-expand: remove inline height so CSS can size to content.
@@ -1105,14 +1077,12 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 				}
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
-	try { box.classList.toggle('is-md-preview', isPreview); } catch { /* ignore */ }
-	try { viewerHost.style.display = isPreview ? '' : 'none'; } catch { /* ignore */ }
-	try { editorHost.style.display = isPreview ? 'none' : ''; } catch { /* ignore */ }
-	try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
+	try { box.classList.toggle('is-md-preview', isPreview); } catch (e) { console.error('[kusto]', e); }
+	try { viewerHost.style.display = isPreview ? '' : 'none'; } catch (e) { console.error('[kusto]', e); }
+	try { editorHost.style.display = isPreview ? 'none' : ''; } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch (e) { console.error('[kusto]', e); }
 
 	if (isPreview) {
 		let md = '';
@@ -1121,7 +1091,7 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 		} catch {
 			md = '';
 		}
-		try { initMarkdownViewer(boxId, md); } catch { /* ignore */ }
+		try { initMarkdownViewer(boxId, md); } catch (e) { console.error('[kusto]', e); }
 
 		// After switching to Preview, auto-run "Fit to contents" so the user
 		// immediately sees the full rendered markdown without needing to click.
@@ -1132,13 +1102,13 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 					if (typeof __kustoMaximizeMarkdownBox === 'function') {
 						__kustoMaximizeMarkdownBox(boxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			fitToContents();
 			setTimeout(fitToContents, 50);
 			setTimeout(fitToContents, 150);
 			setTimeout(fitToContents, 350);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// In .md files, reset scroll position to prevent layout shift.
 		try {
@@ -1146,7 +1116,7 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 				document.body.scrollTop = 0;
 				document.documentElement.scrollTop = 0;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1162,12 +1132,12 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 	}
 	try {
 		toastEditor.changeMode(mode, true);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (markdownEditors[boxId] && typeof markdownEditors[boxId].layout === 'function') {
 			markdownEditors[boxId].layout();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// In .md files, the body shouldn't scroll but Toast UI's changeMode may trigger
 	// scrollIntoView internally. Reset scroll position to prevent layout shift.
@@ -1176,7 +1146,7 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 			document.body.scrollTop = 0;
 			document.documentElement.scrollTop = 0;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function isLikelyDarkTheme() {
@@ -1225,9 +1195,7 @@ export function getToastUiPlugins( ToastEditor: any) {
 		if (colorSyntax) {
 			return [[colorSyntax, {}]];
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return [];
 }
 
@@ -1239,9 +1207,7 @@ export function ensureMarkedGlobal() {
 		if (typeof (_win.marked as any) !== 'undefined' && (_win.marked as any)) {
 			return Promise.resolve((_win.marked as any));
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (markdownMarkedResolvePromise) {
 		return markdownMarkedResolvePromise;
@@ -1258,18 +1224,14 @@ export function ensureMarkedGlobal() {
 								// Best-effort: make it available as a global for the existing renderer.
 								window.marked = m;
 							}
-						} catch {
-							// ignore
-						}
+						} catch (e) { console.error('[kusto]', e); }
 						resolve(m);
 					},
 					() => resolve(null)
 				);
 				return;
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		resolve(null);
 	});
 
@@ -1287,9 +1249,7 @@ export function addMarkdownBox( options: any) {
 			const map = __kustoEnsureMarkdownModeMap();
 			map[id] = rawMode;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Ensure initial markdown text is available before TOAST UI initializes.
 	try {
@@ -1298,9 +1258,7 @@ export function addMarkdownBox( options: any) {
 			window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
 			window.__kustoPendingMarkdownTextByBoxId[id] = initialText;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	const container = document.getElementById('queries-container') as any;
 	if (!container) {
@@ -1316,7 +1274,7 @@ export function addMarkdownBox( options: any) {
 		if (String(window.__kustoDocumentKind || '') === 'md' || (options && options.mdAutoExpand)) {
 			litEl.setAttribute('plain-md', '');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Pass initial text if available.
 	const pendingText = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[id];
@@ -1340,7 +1298,7 @@ export function addMarkdownBox( options: any) {
 
 	// Handle remove event from the Lit component.
 	litEl.addEventListener('section-remove', function (e: any) {
-		try { removeMarkdownBox(e.detail.boxId); } catch { /* ignore */ }
+		try { removeMarkdownBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
 	container.appendChild(litEl);
@@ -1352,7 +1310,7 @@ export function addMarkdownBox( options: any) {
 		if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
 			litEl.setAttribute('editor-height-px', String(h));
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Apply persisted mode.
 	try {
@@ -1362,9 +1320,9 @@ export function addMarkdownBox( options: any) {
 				litEl.setMarkdownMode(rawMode);
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
 		if (!isPlainMd) {
@@ -1373,9 +1331,7 @@ export function addMarkdownBox( options: any) {
 				controls.scrollIntoView({ block: 'end' });
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 }
 
@@ -1395,7 +1351,7 @@ export function __kustoAutoFitMarkdownBoxHeight( boxId: any) {
 				if (wrapper.dataset && wrapper.dataset.kustoUserResized === 'true') {
 					return true;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const ui = container.querySelector('.toastui-editor-defaultUI');
 			if (!ui) {
@@ -1427,7 +1383,7 @@ export function __kustoAutoFitMarkdownBoxHeight( boxId: any) {
 					if (vh > 0) {
 						return Math.max(240, Math.min(640, Math.floor(vh * 0.7)));
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return 520;
 			})();
 
@@ -1455,34 +1411,32 @@ export function __kustoAutoFitMarkdownBoxHeight( boxId: any) {
 		}
 		try {
 			setTimeout(step, delays[attempt]);
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	};
 	step();
 }
 
 export function removeMarkdownBox( boxId: any) {
 	if (markdownEditors[boxId]) {
-		try { markdownEditors[boxId].dispose(); } catch { /* ignore */ }
+		try { markdownEditors[boxId].dispose(); } catch (e) { console.error('[kusto]', e); }
 		delete markdownEditors[boxId];
 	}
 	if (markdownViewers[boxId]) {
-		try { markdownViewers[boxId].dispose(); } catch { /* ignore */ }
+		try { markdownViewers[boxId].dispose(); } catch (e) { console.error('[kusto]', e); }
 		delete markdownViewers[boxId];
 	}
-	try { __kustoCleanupMdModeResizeObserver(boxId); } catch { /* ignore */ }
+	try { __kustoCleanupMdModeResizeObserver(boxId); } catch (e) { console.error('[kusto]', e); }
 	markdownBoxes = markdownBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
 			delete window.__kustoMarkdownModeByBoxId[boxId];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateMarkdownVisibilityToggleButton( boxId: any) {
@@ -1493,7 +1447,7 @@ export function __kustoUpdateMarkdownVisibilityToggleButton( boxId: any) {
 	let expanded = true;
 	try {
 		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	btn.classList.toggle('is-active', expanded);
 	btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
 	btn.title = expanded ? 'Hide' : 'Show';
@@ -1508,10 +1462,10 @@ export function __kustoApplyMarkdownBoxVisibility( boxId: any) {
 	let expanded = true;
 	try {
 		expanded = !(window.__kustoMarkdownExpandedByBoxId && window.__kustoMarkdownExpandedByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		box.classList.toggle('is-collapsed', !expanded);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (expanded) {
 		try {
 			setTimeout(() => {
@@ -1520,9 +1474,9 @@ export function __kustoApplyMarkdownBoxVisibility( boxId: any) {
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -1533,10 +1487,10 @@ export function toggleMarkdownBoxVisibility( boxId: any) {
 		}
 		const current = !(window.__kustoMarkdownExpandedByBoxId[boxId] === false);
 		window.__kustoMarkdownExpandedByBoxId[boxId] = !current;
-	} catch { /* ignore */ }
-	try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch { /* ignore */ }
-	try { __kustoApplyMarkdownBoxVisibility(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateMarkdownVisibilityToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyMarkdownBoxVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function initMarkdownViewer( boxId: any, initialValue: any) {
@@ -1552,16 +1506,14 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 			const attached = !!(container.querySelector && container.querySelector('.toastui-editor-contents'));
 			if (attached) {
 				if (typeof initialValue === 'string' && typeof existing.setValue === 'function') {
-					try { existing.setValue(initialValue); } catch { /* ignore */ }
+					try { existing.setValue(initialValue); } catch (e) { console.error('[kusto]', e); }
 				}
 				return;
 			}
-			try { existing.dispose && existing.dispose(); } catch { /* ignore */ }
-			try { delete markdownViewers[boxId]; } catch { /* ignore */ }
+			try { existing.dispose && existing.dispose(); } catch (e) { console.error('[kusto]', e); }
+			try { delete markdownViewers[boxId]; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	let ToastEditor = null;
 	try {
@@ -1586,19 +1538,17 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 		if (attempt <= delays.length) {
 			try {
 				setTimeout(() => {
-					try { initMarkdownViewer(boxId, initialValue); } catch { /* ignore */ }
+					try { initMarkdownViewer(boxId, initialValue); } catch (e) { console.error('[kusto]', e); }
 				}, delay);
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		} else {
-			try { console.error('TOAST UI Editor is not available (markdown viewer).'); } catch { /* ignore */ }
+			try { console.error('TOAST UI Editor is not available (markdown viewer).'); } catch (e) { console.error('[kusto]', e); }
 		}
 		return;
 	}
 
 	// Ensure a clean mount point.
-	try { container.textContent = ''; } catch { /* ignore */ }
+	try { container.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 
 	let instance = null;
 	try {
@@ -1608,7 +1558,7 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 			plugins: getToastUiPlugins(ToastEditor),
 			events: {
 				afterPreviewRender: () => {
-					try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
+					try { __kustoRewriteToastUiImagesInContainer(container); } catch (e) { console.error('[kusto]', e); }
 				}
 			}
 		};
@@ -1617,11 +1567,11 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 		}
 		instance = (typeof ToastEditor.factory === 'function') ? ToastEditor.factory(opts) : new ToastEditor(opts);
 	} catch (e: any) {
-		try { console.error('Failed to initialize TOAST UI Editor (markdown viewer).', e); } catch { /* ignore */ }
+		try { console.error('Failed to initialize TOAST UI Editor (markdown viewer).', e); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
-	try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
+	try { __kustoRewriteToastUiImagesInContainer(container); } catch (e) { console.error('[kusto]', e); }
 
 	markdownViewers[boxId] = {
 		setValue: (value: any) => {
@@ -1629,24 +1579,20 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 				if (instance && typeof instance.setMarkdown === 'function') {
 					instance.setMarkdown(String(value || ''));
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		},
 		dispose: () => {
 			try {
 				if (instance && typeof instance.destroy === 'function') {
 					instance.destroy();
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	};
 
 	// Ensure theme switches (dark/light) are reflected without recreating the viewer.
-	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }
-	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+	try { __kustoStartToastUiThemeObserver(); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyToastUiThemeAll(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function initMarkdownEditor( boxId: any) {
@@ -1702,12 +1648,10 @@ export function initMarkdownEditor( boxId: any) {
 			if (attached) {
 				return;
 			}
-			try { existing.dispose && existing.dispose(); } catch { /* ignore */ }
-			try { delete markdownEditors[boxId]; } catch { /* ignore */ }
+			try { existing.dispose && existing.dispose(); } catch (e) { console.error('[kusto]', e); }
+			try { delete markdownEditors[boxId]; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	let ToastEditor = null;
 	try {
@@ -1732,13 +1676,11 @@ export function initMarkdownEditor( boxId: any) {
 		if (attempt <= delays.length) {
 			try {
 				setTimeout(() => {
-					try { initMarkdownEditor(boxId); } catch { /* ignore */ }
+					try { initMarkdownEditor(boxId); } catch (e) { console.error('[kusto]', e); }
 				}, delay);
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		} else {
-			try { console.error('TOAST UI Editor is not available (markdown editor).'); } catch { /* ignore */ }
+			try { console.error('TOAST UI Editor is not available (markdown editor).'); } catch (e) { console.error('[kusto]', e); }
 		}
 		return;
 	}
@@ -1752,18 +1694,14 @@ export function initMarkdownEditor( boxId: any) {
 		const pending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
 		if (typeof pending === 'string') {
 			initialValue = pending;
-			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		// Ensure a clean mount point.
 		container.textContent = '';
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Create undo/redo toolbar button elements.
 	// These are custom toolbar items that trigger ProseMirror's undo/redo commands.
@@ -1787,7 +1725,7 @@ export function initMarkdownEditor( boxId: any) {
 						modeEditor.commands.undo();
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		});
 
 		// Redo button
@@ -1806,9 +1744,9 @@ export function initMarkdownEditor( boxId: any) {
 						modeEditor.commands.redo();
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	let toastEditor = null;
 	try {
@@ -1844,11 +1782,11 @@ export function initMarkdownEditor( boxId: any) {
 			plugins: getToastUiPlugins(ToastEditor),
 			events: {
 				change: () => {
-					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-					try { __kustoScheduleMdAutoExpand && __kustoScheduleMdAutoExpand(boxId); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { __kustoScheduleMdAutoExpand && __kustoScheduleMdAutoExpand(boxId); } catch (e) { console.error('[kusto]', e); }
 				},
 				afterPreviewRender: () => {
-					try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
+					try { __kustoRewriteToastUiImagesInContainer(container); } catch (e) { console.error('[kusto]', e); }
 				}
 			}
 		};
@@ -1863,7 +1801,7 @@ export function initMarkdownEditor( boxId: any) {
 		// Set the reference so toolbar buttons can access the editor
 		toastEditorRef = toastEditor;
 	} catch (e: any) {
-		try { console.error('Failed to initialize TOAST UI Editor (markdown editor).', e); } catch { /* ignore */ }
+		try { console.error('Failed to initialize TOAST UI Editor (markdown editor).', e); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1956,7 +1894,7 @@ export function initMarkdownEditor( boxId: any) {
 							cancelable: true
 						});
 						document.dispatchEvent(newEvent);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -1971,7 +1909,7 @@ export function initMarkdownEditor( boxId: any) {
 						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.undo === 'function') {
 							modeEditor.commands.undo();
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -1986,7 +1924,7 @@ export function initMarkdownEditor( boxId: any) {
 						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
 							modeEditor.commands.redo();
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -2002,7 +1940,7 @@ export function initMarkdownEditor( boxId: any) {
 						if (modeEditor && modeEditor.commands && typeof modeEditor.commands.redo === 'function') {
 							modeEditor.commands.redo();
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -2021,12 +1959,12 @@ export function initMarkdownEditor( boxId: any) {
 				if (key === 'v' || key === 'x') {
 					ev.stopPropagation();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}, true); // capture phase - fires before propagation to parent (VS Code)
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Initial pass (in case the preview has already rendered by the time the hook is attached).
-	try { __kustoRewriteToastUiImagesInContainer(container); } catch { /* ignore */ }
+	try { __kustoRewriteToastUiImagesInContainer(container); } catch (e) { console.error('[kusto]', e); }
 
 	const api = {
 		getValue: () => {
@@ -2037,7 +1975,7 @@ export function initMarkdownEditor( boxId: any) {
 				if (toastEditor && typeof toastEditor.setMarkdown === 'function') {
 					toastEditor.setMarkdown(String(value || ''));
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		},
 		// Undo the last edit in the ToastUI editor.
 		// Calls the ProseMirror undo command directly via ToastUI's commands API.
@@ -2084,18 +2022,18 @@ export function initMarkdownEditor( boxId: any) {
 					if (resizer) {
 						h -= resizer.getBoundingClientRect().height;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				h = Math.max(120, h);
 				toastEditor.setHeight(Math.round(h) + 'px');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		},
 		dispose: () => {
 			try {
 				if (toastEditor && typeof toastEditor.destroy === 'function') {
 					toastEditor.destroy();
 				}
-			} catch { /* ignore */ }
-			try { container.textContent = ''; } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { container.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 		},
 		_toastui: toastEditor
 	};
@@ -2108,12 +2046,12 @@ export function initMarkdownEditor( boxId: any) {
 		const latePending = window.__kustoPendingMarkdownTextByBoxId && window.__kustoPendingMarkdownTextByBoxId[boxId];
 		if (typeof latePending === 'string') {
 			api.setValue(latePending);
-			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch { /* ignore */ }
+			try { delete window.__kustoPendingMarkdownTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	
-	try { __kustoApplyMarkdownEditorMode(boxId); } catch { /* ignore */ }
-	try { __kustoTryApplyPendingMarkdownReveal(boxId); } catch { /* ignore */ }
+	try { __kustoApplyMarkdownEditorMode(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoTryApplyPendingMarkdownReveal(boxId); } catch (e) { console.error('[kusto]', e); }
 
 	// For multi-section files (.kqlx, .mdx), fix the double-border issue by removing
 	// the Toast UI's border (the section wrapper already provides the border).
@@ -2135,8 +2073,8 @@ export function initMarkdownEditor( boxId: any) {
 	} catch (e: any) { /* ignore border fix error */ }
 
 	// Ensure theme switches (dark/light) are reflected without recreating the editor.
-	try { __kustoStartToastUiThemeObserver(); } catch { /* ignore */ }
-	try { __kustoApplyToastUiThemeAll(); } catch { /* ignore */ }
+	try { __kustoStartToastUiThemeObserver(); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyToastUiThemeAll(); } catch (e) { console.error('[kusto]', e); }
 
 	// Drag handle resize (same pattern as the KQL editor).
 	try {
@@ -2147,10 +2085,8 @@ export function initMarkdownEditor( boxId: any) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-				} catch {
-					// ignore
-				}
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 
 				resizer.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;
@@ -2166,7 +2102,7 @@ export function initMarkdownEditor( boxId: any) {
 						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
 							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					let nextHeight = 0;
@@ -2181,8 +2117,8 @@ export function initMarkdownEditor( boxId: any) {
 						nextHeight = Math.max(120, startHeight + delta);
 					}
 					wrapper.style.height = nextHeight + 'px';
-					try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch { /* ignore */ }
-					try { api.layout(); } catch { /* ignore */ }
+					try { __kustoUpdateMarkdownPreviewSizing(boxId); } catch (e) { console.error('[kusto]', e); }
+					try { api.layout(); } catch (e) { console.error('[kusto]', e); }
 				};
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
@@ -2190,7 +2126,7 @@ export function initMarkdownEditor( boxId: any) {
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
-					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -2207,15 +2143,13 @@ export function initMarkdownEditor( boxId: any) {
 					if (typeof __kustoMaximizeMarkdownBox === 'function') {
 						__kustoMaximizeMarkdownBox(boxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			});
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Ensure correct initial sizing.
-	try { api.layout(); } catch { /* ignore */ }
+	try { api.layout(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
@@ -2263,12 +2197,12 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 					if (img.dataset && img.dataset.kustoResolvedSrc === src) {
 						continue;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const key = baseUri + '::' + src;
 				if (cache && typeof cache[key] === 'string' && cache[key]) {
 					img.setAttribute('src', cache[key]);
-					try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch { /* ignore */ }
+					try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch (e) { console.error('[kusto]', e); }
 					continue;
 				}
 
@@ -2285,16 +2219,12 @@ export function __kustoRewriteToastUiImagesInContainer( rootEl: any) {
 						}
 						cache[key] = resolved;
 						img.setAttribute('src', resolved);
-						try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch { /* ignore */ }
-					} catch { /* ignore */ }
+						try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch (e) { console.error('[kusto]', e); }
+					} catch (e) { console.error('[kusto]', e); }
 				});
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────

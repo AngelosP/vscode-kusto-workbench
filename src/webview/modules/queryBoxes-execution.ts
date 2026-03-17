@@ -10,9 +10,9 @@ function __kustoSetResultsVisible( boxId: any, visible: any) {
 			window.__kustoResultsVisibleByBoxId = {};
 		}
 		window.__kustoResultsVisibleByBoxId[boxId] = !!visible;
-	} catch { /* ignore */ }
-	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
-	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyResultsVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoLockCacheForBenchmark( boxId: any) {
@@ -30,7 +30,7 @@ function __kustoLockCacheForBenchmark( boxId: any) {
 				if (label) {
 					label.title = msg;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		if (valueInput) {
 			valueInput.disabled = true;
@@ -40,11 +40,9 @@ function __kustoLockCacheForBenchmark( boxId: any) {
 			unitSelect.disabled = true;
 			unitSelect.title = msg;
 		}
-		try { _win.toggleCacheControls(boxId); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoNormalizeCellForComparison( cell: any) {
@@ -431,7 +429,7 @@ function __kustoAreResultsEquivalentWithDetails( sourceState: any, comparisonSta
 			let firstMissingKey = '';
 			try {
 				for (const k of counts.keys()) { firstMissingKey = k; break; }
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return {
 				dataMatches,
 				rowOrderMatches,
@@ -496,11 +494,11 @@ function acceptOptimizations( comparisonBoxId: any) {
 		}
 		if (_win.queryEditors[sourceBoxId] && typeof _win.queryEditors[sourceBoxId].setValue === 'function') {
 			_win.queryEditors[sourceBoxId].setValue(optimizedQuery);
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
-		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch { /* ignore */ }
+		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
 		// Remove comparison box and clear metadata links.
-		try { _win.removeQueryBox(comparisonBoxId); } catch { /* ignore */ }
+		try { _win.removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
 				delete _win.optimizationMetadataByBoxId[comparisonBoxId];
@@ -508,11 +506,9 @@ function acceptOptimizations( comparisonBoxId: any) {
 					delete _win.optimizationMetadataByBoxId[sourceBoxId];
 				}
 			}
-		} catch { /* ignore */ }
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateQueryResultsToggleButton( boxId: any) {
@@ -523,7 +519,7 @@ function __kustoUpdateQueryResultsToggleButton( boxId: any) {
 	let visible = true;
 	try {
 		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
 	btn.title = visible ? 'Hide results' : 'Show results';
@@ -538,7 +534,7 @@ function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
 	let visible = true;
 	try {
 		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
 	btn.title = visible ? 'Hide comparison summary' : 'Show comparison summary';
@@ -553,19 +549,19 @@ function __kustoApplyResultsVisibility( boxId: any) {
 		let visible = true;
 		try {
 			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const body = document.getElementById(boxId + '_results_body') as any;
 			if (body) {
 				body.style.display = visible ? '' : 'none';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const resultsDiv = document.getElementById(boxId + '_results') as any;
 			if (resultsDiv && resultsDiv.classList) {
 				resultsDiv.classList.toggle('is-results-hidden', !visible);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoSetResultsToolsVisible === 'function') {
 				_win.__kustoSetResultsToolsVisible(boxId, visible);
@@ -573,20 +569,20 @@ function __kustoApplyResultsVisibility( boxId: any) {
 			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
 				_win.__kustoHideResultsTools(boxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	let visible = true;
 	try {
 		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Only show wrapper when there's content.
 	const resultsDiv = document.getElementById(boxId + '_results') as any;
 	const hasContent = !!(resultsDiv && String(resultsDiv.innerHTML || '').trim());
 	let hasTable = false;
 	try {
 		hasTable = !!(resultsDiv && resultsDiv.querySelector && (resultsDiv.querySelector('.table-container') || resultsDiv.querySelector('kw-data-table')));
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// <kw-data-table> manages its own show/hide internally.
 	// Respect the persisted visibility state; don't unconditionally show everything.
@@ -596,13 +592,13 @@ function __kustoApplyResultsVisibility( boxId: any) {
 		let visible = true;
 		try {
 			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		if (!visible) {
 			// Collapsed: header-only height, hide resizer.
 			// Preserve the current height so toggling results back on restores it.
 			const curH = wrapper.style.height;
 			if (curH && curH !== 'auto' && curH !== '40px') {
-				try { wrapper.dataset.kustoPreviousHeight = curH; } catch { /* ignore */ }
+				try { wrapper.dataset.kustoPreviousHeight = curH; } catch (e) { console.error('[kusto]', e); }
 			}
 			wrapper.style.height = '40px';
 			wrapper.style.overflow = 'hidden';
@@ -614,7 +610,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 			if (prev) {
 				wrapper.style.height = prev;
 				wrapper.style.overflow = '';
-				try { delete wrapper.dataset.kustoPreviousHeight; } catch { /* ignore */ }
+				try { delete wrapper.dataset.kustoPreviousHeight; } catch (e) { console.error('[kusto]', e); }
 			} else if (!wrapper.style.height || wrapper.style.height === 'auto') {
 				wrapper.style.height = '300px';
 			}
@@ -635,7 +631,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
 				_win.__kustoHideResultsTools(boxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		if (resizer) {
 			// Cleaner UI: only show the resize handle when a successful results table is rendered.
@@ -655,7 +651,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 					if (wrapper.style.height && wrapper.style.height !== 'auto') {
 						wrapper.dataset.kustoPrevSuccessHeight = wrapper.style.height;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				wrapper.style.height = 'auto';
 				wrapper.style.minHeight = '0';
 			} else {
@@ -684,9 +680,9 @@ function __kustoApplyResultsVisibility( boxId: any) {
 							}
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -704,11 +700,11 @@ function __kustoApplyComparisonSummaryVisibility( boxId: any) {
 			banner.style.display = '';
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	let visible = true;
 	try {
 		visible = !(window.__kustoComparisonSummaryVisibleByBoxId && window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	banner.style.display = visible ? '' : 'none';
 }
 
@@ -719,15 +715,15 @@ function toggleQueryResultsVisibility( boxId: any) {
 		}
 		const current = !(window.__kustoResultsVisibleByBoxId[boxId] === false);
 		window.__kustoResultsVisibleByBoxId[boxId] = !current;
-	} catch { /* ignore */ }
-	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch { /* ignore */ }
-	try { __kustoApplyResultsVisibility(boxId); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyResultsVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoOnResultsVisibilityToggled === 'function') {
 			window.__kustoOnResultsVisibilityToggled(boxId);
 		}
-	} catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleComparisonSummaryVisibility( boxId: any) {
@@ -736,17 +732,17 @@ function toggleComparisonSummaryVisibility( boxId: any) {
 			// Optimized sections always show summary.
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (!window.__kustoComparisonSummaryVisibleByBoxId || typeof window.__kustoComparisonSummaryVisibleByBoxId !== 'object') {
 			window.__kustoComparisonSummaryVisibleByBoxId = {};
 		}
 		const current = !(window.__kustoComparisonSummaryVisibleByBoxId[boxId] === false);
 		window.__kustoComparisonSummaryVisibleByBoxId[boxId] = !current;
-	} catch { /* ignore */ }
-	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch { /* ignore */ }
-	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureCacheBackupMap() {
@@ -773,9 +769,7 @@ function __kustoBackupCacheSettings( boxId: any) {
 			value: valueEl ? (parseInt(valueEl.value) || 1) : 1,
 			unit: unitEl ? String(unitEl.value || 'days') : 'days'
 		};
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRestoreCacheSettings( boxId: any) {
@@ -793,8 +787,8 @@ function __kustoRestoreCacheSettings( boxId: any) {
 			if (enabledEl) { enabledEl.disabled = false; enabledEl.title = ''; }
 			if (valueEl) { valueEl.disabled = false; valueEl.title = ''; }
 			if (unitEl) { unitEl.disabled = false; unitEl.title = ''; }
-			try { _win.toggleCacheControls(boxId); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	try {
@@ -808,7 +802,7 @@ function __kustoRestoreCacheSettings( boxId: any) {
 			try {
 				const label = enabledEl.closest('label');
 				if (label) { label.title = ''; }
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		if (valueEl) {
 			valueEl.value = String(backup.value || 1);
@@ -820,12 +814,10 @@ function __kustoRestoreCacheSettings( boxId: any) {
 			unitEl.disabled = false;
 			unitEl.title = '';
 		}
-		try { _win.toggleCacheControls(boxId); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
-	try { delete map[boxId]; } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+		try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
+	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureRunModeBackupMap() {
@@ -858,8 +850,8 @@ function __kustoRestoreRunMode( boxId: any) {
 	}
 	try {
 		_win.setRunMode(boxId, String(backup.mode || 'take100'));
-	} catch { /* ignore */ }
-	try { delete map[boxId]; } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: any, active: any) {
@@ -868,14 +860,14 @@ function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: an
 		const el = document.getElementById(id) as any;
 		if (!el) continue;
 		if (active) {
-			try { __kustoBackupCacheSettings(id); } catch { /* ignore */ }
-			try { __kustoBackupRunMode(id); } catch { /* ignore */ }
-			try { _win.setRunMode(id, 'plain'); } catch { /* ignore */ }
+			try { __kustoBackupCacheSettings(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoBackupRunMode(id); } catch (e) { console.error('[kusto]', e); }
+			try { _win.setRunMode(id, 'plain'); } catch (e) { console.error('[kusto]', e); }
 			el.classList.add('has-linked-optimization');
 		} else {
 			el.classList.remove('has-linked-optimization');
-			try { __kustoRestoreCacheSettings(id); } catch { /* ignore */ }
-			try { __kustoRestoreRunMode(id); } catch { /* ignore */ }
+			try { __kustoRestoreCacheSettings(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoRestoreRunMode(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
 }
@@ -1072,7 +1064,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 				')';
 			rowsMatch = (onlyACount === 0 && onlyBCount === 0);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Data matches only if both columns AND rows match.
 	const dataMatches = columnHeaderNamesMatch && rowsMatch;
@@ -1194,8 +1186,8 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 				: 'Results match. Accept optimizations.')
 			: 'Results differ. Accept optimizations is enabled — review the diff before accepting.';
 		__kustoUpdateAcceptOptimizationsButton(comparisonBoxId, true, acceptTooltip);
-	} catch { /* ignore */ }
-	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyComparisonSummaryVisibility(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 
 	// Notify the extension backend so it can coordinate validation retries.
 	try {
@@ -1208,7 +1200,7 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 			rowOrderMatches: !!rowOrderMatches,
 			columnOrderMatches: !!columnOrderMatches
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureOptimizePrepByBoxId() {
@@ -1231,7 +1223,7 @@ function __kustoHideOptimizePromptForBox( boxId: any) {
 	try {
 		const pending = __kustoEnsureOptimizePrepByBoxId();
 		delete pending[boxId];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
@@ -1242,16 +1234,16 @@ function __kustoHideOptimizePromptForBox( boxId: any) {
 				delete optimizeBtn.dataset.originalContent;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		__kustoSetOptimizeInProgress(boxId, false, '');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
 			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: any) {
@@ -1272,7 +1264,7 @@ function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: 
 					delete optimizeBtn.dataset.kustoOptimizeInProgress;
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		statusEl.style.display = on ? '' : 'none';
 		cancelBtn.style.display = on ? '' : 'none';
 		if (on) {
@@ -1290,7 +1282,7 @@ function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: 
 					optimizeBtn.dataset.kustoOptimizeSpinnerActive = '1';
 					optimizeBtn.innerHTML = '<span class="query-spinner" aria-hidden="true"></span>';
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		} else {
 			statusEl.textContent = '';
 			cancelBtn.disabled = false;
@@ -1302,11 +1294,9 @@ function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: 
 						delete optimizeBtn.dataset.originalContent;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateOptimizeStatus( boxId: any, statusText: any) {
@@ -1314,7 +1304,7 @@ function __kustoUpdateOptimizeStatus( boxId: any, statusText: any) {
 		const statusEl = document.getElementById(boxId + '_optimize_status') as any;
 		if (!statusEl) return;
 		statusEl.textContent = String(statusText || '');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoCancelOptimizeQuery( boxId: any) {
@@ -1324,13 +1314,13 @@ function __kustoCancelOptimizeQuery( boxId: any) {
 		if (cancelBtn) {
 			cancelBtn.disabled = true;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		(_win.vscode as any).postMessage({
 			type: 'cancelOptimizeQuery',
 			boxId: String(boxId || '')
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoShowOptimizePromptLoading( boxId: any) {
@@ -1356,10 +1346,10 @@ function __kustoGetLastOptimizeModelId() {
 		if (state && state.lastOptimizeModelId) {
 			return String(state.lastOptimizeModelId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		return String(localStorage.getItem(__kustoOptimizeModelStorageKey) || '');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -1371,12 +1361,12 @@ function __kustoSetLastOptimizeModelId( modelId: any) {
 		if (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).setState) {
 			(_win.vscode as any).setState(state);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (id) {
 			localStorage.setItem(__kustoOptimizeModelStorageKey, id);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoApplyOptimizeQueryOptions( boxId: any, models: any, selectedModelId: any, promptText: any) {
@@ -1450,7 +1440,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	const pending = __kustoEnsureOptimizePrepByBoxId();
 	const req = pending[boxId];
 	if (!req) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch (e) { console.error('[kusto]', e); }
 		__kustoHideOptimizePromptForBox(boxId);
 		return;
 	}
@@ -1463,18 +1453,18 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
 			_win.__kustoSetSectionName(boxId, sourceName);
-			try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (sourceName) {
 			req.queryName = sourceName;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const modelId = (document.getElementById(boxId + '_optimize_model') as any || {}).value || '';
 	const promptText = (document.getElementById(boxId + '_optimize_prompt') as any || {}).value || '';
 	try {
 		__kustoSetLastOptimizeModelId(modelId);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Close prompt UI and show spinner on the main optimize button
 	try {
@@ -1483,7 +1473,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 			host.style.display = 'none';
 			host.innerHTML = '';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 	if (optimizeBtn) {
@@ -1493,7 +1483,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	}
 	try {
 		__kustoSetOptimizeInProgress(boxId, true, 'Starting optimization…');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		(_win.vscode as any).postMessage({
@@ -1509,7 +1499,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 		delete pending[boxId];
 	} catch (err: any) {
 		console.error('Error sending optimization request:', err);
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch (e) { console.error('[kusto]', e); }
 		// Restore button state
 		if (optimizeBtn) {
 			optimizeBtn.disabled = false;
@@ -1539,22 +1529,22 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 	// optimize (LLM) prompt state. If the optimize prompt was open or pending from
 	// earlier, clear it so the diff view remains strictly non-LLM.
 	if (isManualCompareOnly) {
-		try { __kustoHideOptimizePromptForBox(boxId); } catch { /* ignore */ }
-		try { __kustoSetOptimizeInProgress(boxId, false, ''); } catch { /* ignore */ }
+		try { __kustoHideOptimizePromptForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { __kustoSetOptimizeInProgress(boxId, false, ''); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Hide results to keep the UI focused during comparison setup.
-	try { __kustoSetResultsVisible(boxId, false); } catch { /* ignore */ }
+	try { __kustoSetResultsVisible(boxId, false); } catch (e) { console.error('[kusto]', e); }
 
 	const query = model.getValue() || '';
 	if (!query.trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
 	// eslint-disable-next-line eqeqeq
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	// Optimization naming rule (applies when we are creating an "optimized" comparison section):
@@ -1577,22 +1567,22 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
 				_win.__kustoSetSectionName(boxId, sourceNameForOptimize);
-				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			}
 			if (sourceNameForOptimize) {
 				desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	
 	const connectionId = _win.__kustoGetConnectionId(boxId);
 	const database = _win.__kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 
@@ -1610,8 +1600,8 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 					if (typeof window.__kustoPrettifyKustoText === 'function') {
 						nextComparisonQuery = window.__kustoPrettifyKustoText(nextComparisonQuery);
 					}
-				} catch { /* ignore */ }
-				try { comparisonEditor.setValue(nextComparisonQuery); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { comparisonEditor.setValue(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
 						_win.optimizationMetadataByBoxId[existingComparisonBoxId] = _win.optimizationMetadataByBoxId[existingComparisonBoxId] || {};
@@ -1622,17 +1612,17 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 						_win.optimizationMetadataByBoxId[boxId] = _win.optimizationMetadataByBoxId[boxId] || {};
 						_win.optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof __kustoSetLinkedOptimizationMode === 'function') {
 						__kustoSetLinkedOptimizationMode(boxId, existingComparisonBoxId, true);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// Set the comparison box name.
 				try {
 					if (desiredOptimizedName) {
 						_win.__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
-						try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+						try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					} else {
 						const currentName = _win.__kustoGetSectionName(existingComparisonBoxId);
 						let shouldReplace = !currentName;
@@ -1644,23 +1634,23 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 						}
 						if (shouldReplace) {
 							_win.__kustoSetSectionName(existingComparisonBoxId, _win.__kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
-							try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof __kustoSetResultsVisible === 'function') {
 						__kustoSetResultsVisible(boxId, false);
 						__kustoSetResultsVisible(existingComparisonBoxId, false);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (shouldExecute) {
 					try {
 						executeQuery(boxId);
 						setTimeout(() => {
-							try { executeQuery(existingComparisonBoxId); } catch { /* ignore */ }
+							try { executeQuery(existingComparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 						}, 100);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				return existingComparisonBoxId;
 			}
@@ -1670,9 +1660,9 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 					delete _win.optimizationMetadataByBoxId[boxId];
 					delete _win.optimizationMetadataByBoxId[existingComparisonBoxId];
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Do not auto-name the source section for plain comparisons.
 	// For optimization scenarios, we already ensured a name above.
@@ -1688,7 +1678,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 		if (typeof window.__kustoPrettifyKustoText === 'function') {
 			comparisonQuery = window.__kustoPrettifyKustoText(comparisonQuery);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	let comparisonBoxId = '';
 	try {
@@ -1700,7 +1690,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 		});
 	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 
@@ -1709,12 +1699,12 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 			__kustoSetResultsVisible(boxId, false);
 			__kustoSetResultsVisible(comparisonBoxId, false);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof __kustoSetLinkedOptimizationMode === 'function') {
 			__kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, true);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Store comparison metadata (reuses the existing optimization comparison flow).
 	try {
@@ -1729,7 +1719,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 				comparisonBoxId: comparisonBoxId
 			};
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Position the comparison box right after the source box.
 	try {
@@ -1738,7 +1728,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 		if (sourceBox && comparisonBox && sourceBox.parentNode) {
 			sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Set connection and database to match source.
 	try {
@@ -1753,10 +1743,10 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 			setTimeout(() => {
 				try {
 					if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, 100);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Set the query name.
 	try {
@@ -1768,16 +1758,16 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 				_win.__kustoSetSectionName(comparisonBoxId, _win.__kustoPickNextAvailableSectionLetterName(comparisonBoxId));
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (shouldExecute) {
 		// Execute both queries for comparison.
 		try {
 			executeQuery(boxId);
 			setTimeout(() => {
-				try { executeQuery(comparisonBoxId); } catch { /* ignore */ }
+				try { executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 			}, 100);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	return comparisonBoxId;
@@ -1799,7 +1789,7 @@ function __kustoGetEffectiveSelectionOwnerIdForRun( boxId: any) {
 		if (typeof window.__kustoGetSelectionOwnerBoxId === 'function') {
 			return String(window.__kustoGetSelectionOwnerBoxId(id) || id).trim();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 }
 
@@ -1816,7 +1806,7 @@ function __kustoIsRunSelectionReady( boxId: any) {
 		if (pending1 || pending2) {
 			return false;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const connectionId = _win.__kustoGetConnectionId(ownerId);
 	const database = _win.__kustoGetDatabase(ownerId);
@@ -1829,10 +1819,10 @@ function __kustoIsRunSelectionReady( boxId: any) {
 		const dbEl: any = null; // Legacy: never defined, kept for safety
 		const desiredPending = !!(dbEl && dbEl.dataset && String(dbEl.dataset.desired || '').trim());
 		if (desiredPending) return false;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (false) return false; // Legacy: dbEl was never defined in this function
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	return true;
 }
@@ -1874,19 +1864,19 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 		if (btn) {
 			btn.style.display = shouldClear ? 'none' : '';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (shouldClear) {
 		try {
 			if (_win.schemaByBoxId) {
 				delete _win.schemaByBoxId[id];
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.setSchemaLoadedSummary === 'function') {
 				_win.setSchemaLoadedSummary(id, '', '', false);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -1904,10 +1894,10 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 			if (runToggle) runToggle.disabled = true;
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Also keep schema summary in sync with selection state.
-	try { __kustoClearSchemaSummaryIfNoSelection(id); } catch { /* ignore */ }
+	try { __kustoClearSchemaSummaryIfNoSelection(id); } catch (e) { console.error('[kusto]', e); }
 
 	const enabled = __kustoIsRunSelectionReady(id);
 	if (runBtn) {
@@ -1918,7 +1908,7 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 			runBtn.title = enabled ? modeLabel : (modeLabel + '\n' + disabledTooltip);
 			// Also keep ARIA label helpful when disabled.
 			runBtn.setAttribute('aria-label', enabled ? modeLabel : disabledTooltip);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	// Keep the split dropdown usable so users can change run mode even before selection is ready.
 	if (runToggle) runToggle.disabled = false;
@@ -1927,9 +1917,9 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 window.__kustoUpdateRunEnabledForAllBoxes = function () {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
-			try { window.__kustoUpdateRunEnabledForBox(id); } catch { /* ignore */ }
+			try { window.__kustoUpdateRunEnabledForBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 function formatElapsed( ms: any) {
@@ -1970,15 +1960,14 @@ function setQueryExecuting( boxId: any, executing: any) {
 			elapsed.textContent = '0:00';
 		}
 
-		// Clear stale results/errors from the previous query so the user
-		// doesn't see an old error while a new query is running.
+		// If results are already visible, grey them out while the new query runs
+		// so the user has visual context. If results are not visible, leave them hidden.
 		try {
 			const resultsDiv = document.getElementById(boxId + '_results') as any;
-			if (resultsDiv) {
-				resultsDiv.innerHTML = '';
-				resultsDiv.classList.remove('visible');
+			if (resultsDiv && resultsDiv.innerHTML.trim()) {
+				resultsDiv.classList.add('is-stale');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const start = performance.now();
 		_win.queryExecutionTimers[boxId] = setInterval(() => {
@@ -2015,6 +2004,14 @@ function setQueryExecuting( boxId: any, executing: any) {
 	if (status) {
 		status.style.display = 'none';
 	}
+
+	// Remove stale overlay — execution finished (results or error will replace content).
+	try {
+		const resultsDiv = document.getElementById(boxId + '_results') as any;
+		if (resultsDiv) {
+			resultsDiv.classList.remove('is-stale');
+		}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function cancelQuery( boxId: any) {
@@ -2023,14 +2020,10 @@ function cancelQuery( boxId: any) {
 		if (cancelBtn) {
 			cancelBtn.disabled = true;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		(_win.vscode as any).postMessage({ type: 'cancelQuery', boxId: boxId });
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function executeQuery( boxId: any, mode?: any) {
@@ -2039,13 +2032,13 @@ function executeQuery( boxId: any, mode?: any) {
 		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {
 			window.__kustoClearAutoFindInQueryEditor(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try {
 			if (typeof window.__kustoExtractStatementTextAtCursor === 'function') {
 				return window.__kustoExtractStatementTextAtCursor(editor);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') {
 				return null;
@@ -2156,12 +2149,12 @@ function executeQuery( boxId: any, mode?: any) {
 							type: 'showInfo',
 							message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
 						});
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	let connectionId = _win.__kustoGetConnectionId(boxId);
 	let database = _win.__kustoGetDatabase(boxId);
 	let cacheEnabled = (document.getElementById(boxId + '_cache_enabled') as any).checked;
@@ -2195,7 +2188,7 @@ function executeQuery( boxId: any, mode?: any) {
 				cacheEnabled = false;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Cache consistency policy for comparisons:
 	// If the source box was last executed with caching enabled, rerun it once with caching disabled
@@ -2211,19 +2204,19 @@ function executeQuery( boxId: any, mode?: any) {
 					if (window.__kustoResultsByBoxId && typeof window.__kustoResultsByBoxId === 'object') {
 						delete window.__kustoResultsByBoxId[sourceBoxIdForComparison];
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					_win.__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
 						sourceBoxId: sourceBoxIdForComparison
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					// This run will inherit the linked-optimization behavior and force cacheEnabled=false.
 					executeQuery(sourceBoxIdForComparison, effectiveMode);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Safety: if a favorites switch is still pending/applying, do not run.
 	try {
@@ -2239,21 +2232,21 @@ function executeQuery( boxId: any, mode?: any) {
 				connectionId,
 				database
 			}, 'warn');
-			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch { /* ignore */ }
+			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (!query.trim()) {
 		return;
 	}
 
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	_win.__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
@@ -2269,7 +2262,7 @@ function executeQuery( boxId: any, mode?: any) {
 			window.__kustoLastRunCacheEnabledByBoxId = {};
 		}
 		window.__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Store the last executed box for result display
 	window.lastExecutedBox = boxId;

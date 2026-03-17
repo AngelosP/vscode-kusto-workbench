@@ -803,7 +803,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					for (const pm of paramText.matchAll(/([A-Za-z_][\w-]*)\s*:\s*\(/g)) {
 						if (pm && pm[1]) names.add(String(pm[1]).toLowerCase());
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (!names.size) continue;
 				let bodyStart = -1;
 				for (let j = closeParen + 1; j < s.length; j++) {
@@ -870,7 +870,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Candidates for unknown-table suggestions: schema tables + declared `let` variables.
 	const __kustoTabularNameCandidates = (() => {
@@ -896,7 +896,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			for (const t of tables) {
 				tablesByLower[String(t).toLowerCase()] = String(t);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const letSources: any = {};
 		const extractSourceLower = (rhsText: any) => {
 			const rhs = String(rhsText || '').trim();
@@ -904,11 +904,11 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			try {
 				const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 				if (m && m[1]) return String(m[1]).toLowerCase();
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 				if (m && m[1]) return String(m[1]).toLowerCase();
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
 				return (m && m[1]) ? String(m[1]).toLowerCase() : null;
@@ -932,7 +932,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 				if (!srcLower) continue;
 				letSources[letNameLower] = srcLower;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return (nameLower: any) => {
 			let cur = String(nameLower || '').toLowerCase();
 			for (let depth = 0; depth < 8; depth++) {
@@ -999,7 +999,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			if (first.startsWith('.')) {
 				continue;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// First identifier on a statement line (best-effort).
 		try {
@@ -1030,7 +1030,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 											runningOffset += line.length + 1;
 											continue;
 										}
-									} catch { /* ignore */ }
+									} catch (e) { console.error('[kusto]', e); }
 				const m = line.match(/^\s*([A-Za-z_][\w-]*)\b/);
 				if (m && m[1]) {
 					const name = m[1];
@@ -1068,7 +1068,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 												if (fq2) {
 													return { handled: true, ok: true };
 												}
-											} catch { /* ignore */ }
+											} catch (e) { console.error('[kusto]', e); }
 											const mSrc = rhs.match(/^([A-Za-z_][\w-]*)\b/);
 											if (!mSrc || !mSrc[1]) return { handled: true, ok: true };
 											const srcName = String(mSrc[1]);
@@ -1076,7 +1076,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 											try {
 												const after = rhs.slice(mSrc[0].length);
 												if (/^\s*\(/.test(after)) return { handled: true, ok: true };
-											} catch { /* ignore */ }
+											} catch (e) { console.error('[kusto]', e); }
 											// Let-declared names are always valid identifiers.
 											if (__kustoDeclaredLetNames.has(srcName.toLowerCase())) return { handled: true, ok: true };
 											if (__kustoResolveTabularLetToTable(srcName.toLowerCase())) return { handled: true, ok: true };
@@ -1105,7 +1105,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 								runningOffset += line.length + 1;
 								continue;
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						const resolvedLet = __kustoResolveTabularLetToTable(name.toLowerCase());
 						if (!resolvedLet) {
 							if (tables.length && !tables.some((t: any) => String(t).toLowerCase() === name.toLowerCase())) {
@@ -1130,7 +1130,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 				}
 				runningOffset += line.length + 1;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Basic syntax-ish check: once a statement has started piping, any subsequent non-empty line
 		// should either start with '|' or be a continuation of a multiline operator.
@@ -1234,7 +1234,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 				}
 				runningOffset += line.length + 1;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			const extractJoinOrLookupRightTable = (seg: any) => {
@@ -1280,7 +1280,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 											if (__kustoParseFullyQualifiedTableExpr(seg)) {
 												continue;
 											}
-										} catch { /* ignore */ }
+										} catch (e) { console.error('[kusto]', e); }
 					if (__kustoDeclaredLetNames.has(String(name).toLowerCase())) continue;
 					try {
 						const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
@@ -1288,7 +1288,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 						if (__kustoIsTabularParamInScope(String(name).toLowerCase(), startOffset)) {
 							continue;
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				if (__kustoResolveTabularLetToTable(String(name).toLowerCase())) continue;
 				if (tables.length && !tables.some((t: any) => String(t).toLowerCase() === String(name).toLowerCase())) {
 					const localStart = seg.toLowerCase().indexOf(String(name).toLowerCase());
@@ -1296,7 +1296,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					reportUnknownName('KW_UNKNOWN_TABLE', name, startOffset, startOffset + String(name).length, __kustoTabularNameCandidates, 'table');
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Column checks: best-effort pipeline simulation at top-level (depth 0).
@@ -1337,7 +1337,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
 				if (m && m[2]) letNames.add(String(m[2]).toLowerCase());
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 							const kw = new Set([
 								'let','set','declare','print','range','datatable','externaldata',
@@ -1376,7 +1376,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 						start = i;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			let stringRangeIdx = 0;
 			const isInStringLiteral = (localOffset: any) => {
 				while (stringRangeIdx < stringRanges.length && stringRanges[stringRangeIdx][1] <= localOffset) {
@@ -1496,7 +1496,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			if (op === 'extend') {
 				// Add assigned columns: Name =
 				for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
-					try { colSet.add(m[1]); } catch { /* ignore */ }
+					try { colSet.add(m[1]); } catch (e) { console.error('[kusto]', e); }
 				}
 			}
 			if (op === 'project') {
@@ -1577,10 +1577,10 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 								if (mBin && mBin[1]) { const name = String(mBin[1]); if (!inputColSet || inputColSet.has(name)) next.add(name); continue; }
 							}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// assigned aggregates
 				for (const m of clauseText.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) {
-					try { next.add(m[1]); } catch { /* ignore */ }
+					try { next.add(m[1]); } catch (e) { console.error('[kusto]', e); }
 				}
 				nextColSet = next;
 			}
@@ -1604,7 +1604,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 						try {
 							const afterLocal = clauseText.slice((typeof m.index === 'number' ? m.index : 0) + name.length);
 							if (/^\s*=/.test(afterLocal)) continue;
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 						// Skip if it's inside a string literal (statement-local offsets).
 						const localOffset = clauseStart + (typeof m.index === 'number' ? m.index : 0);
@@ -1619,7 +1619,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					if (/^\s*\(/.test(after)) {
 						continue;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// Allow `dynamicColumn.any.property.chain` when the root is a known dynamic column.
 				try {
 					const localIndex = (typeof m.index === 'number') ? m.index : 0;
@@ -1627,7 +1627,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					if (root && validateSet && validateSet.has(root) && dynamicRootCols.has(root)) {
 						continue;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 						if (validateSet && !validateSet.has(name)) {
 							reportUnknownColumn(name, localOffset, localOffset + name.length, currentColumns());
 				}

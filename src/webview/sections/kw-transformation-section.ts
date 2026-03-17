@@ -719,7 +719,7 @@ export class KwTransformationSection extends LitElement {
 				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
 					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
 			this._wrapperHeight = Math.max(minH, Math.min(maxH, Math.ceil(startHeight + delta)));
@@ -836,7 +836,7 @@ export class KwTransformationSection extends LitElement {
 		this._deriveDragState = { fromIndex: index, overIndex: null, insertAfter: false };
 		if (e.dataTransfer) {
 			e.dataTransfer.effectAllowed = 'move';
-			try { e.dataTransfer.setData('text/plain', 'kusto-derive'); } catch { /* ignore */ }
+			try { e.dataTransfer.setData('text/plain', 'kusto-derive'); } catch (e) { console.error('[kusto]', e); }
 		}
 		this.requestUpdate();
 	}
@@ -923,8 +923,8 @@ export class KwTransformationSection extends LitElement {
 							el.syncFromGlobalState();
 						}
 						// Refresh legacy UI.
-						try { w.__kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
-						try { w.__kustoRenderChart(id); } catch { /* ignore */ }
+						try { w.__kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+						try { w.__kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 					}
 					continue;
 				}
@@ -956,12 +956,12 @@ export class KwTransformationSection extends LitElement {
 						if (typeof el.syncFromGlobalState === 'function') {
 							el.syncFromGlobalState();
 						}
-						try { w.__kustoUpdateTransformationBuilderUI(id); } catch { /* ignore */ }
-						try { w.__kustoRenderTransformation(id); } catch { /* ignore */ }
+						try { w.__kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+						try { w.__kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Aggregation handlers ──────────────────────────────────────────────────
@@ -1007,7 +1007,7 @@ export class KwTransformationSection extends LitElement {
 		this._aggDragState = { fromIndex: index, overIndex: null, insertAfter: false };
 		if (e.dataTransfer) {
 			e.dataTransfer.effectAllowed = 'move';
-			try { e.dataTransfer.setData('text/plain', 'kusto-agg'); } catch { /* ignore */ }
+			try { e.dataTransfer.setData('text/plain', 'kusto-agg'); } catch (e) { console.error('[kusto]', e); }
 		}
 		this.requestUpdate();
 	}
@@ -1084,7 +1084,7 @@ export class KwTransformationSection extends LitElement {
 		this._groupByDragState = { fromIndex: index, overIndex: null, insertAfter: false };
 		if (e.dataTransfer) {
 			e.dataTransfer.effectAllowed = 'move';
-			try { e.dataTransfer.setData('text/plain', 'kusto-groupby'); } catch { /* ignore */ }
+			try { e.dataTransfer.setData('text/plain', 'kusto-groupby'); } catch (e) { console.error('[kusto]', e); }
 		}
 		this.requestUpdate();
 	}
@@ -1229,7 +1229,7 @@ export class KwTransformationSection extends LitElement {
 				const all = fn() || [];
 				this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _getColumnNames(): string[] {
@@ -1274,7 +1274,7 @@ export class KwTransformationSection extends LitElement {
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				});
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _computeTransformationImpl(): void {
@@ -1607,7 +1607,7 @@ export class KwTransformationSection extends LitElement {
 		try {
 			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/**

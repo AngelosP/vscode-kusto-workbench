@@ -130,7 +130,7 @@ const __kustoCompletionProvider = {
 								if (g.signature) signature = String(g.signature);
 								if (g.docUrl) docUrl = String(g.docUrl);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 
 						KUSTO_FUNCTION_DOCS[fn] = {
 							args,
@@ -142,9 +142,7 @@ const __kustoCompletionProvider = {
 					}
 				}
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		const suggestions: any[] = [];
 		const seen = new Set();
 
@@ -213,7 +211,7 @@ const __kustoCompletionProvider = {
 				call = findEnclosingFunctionCall(model, off + 1);
 			}
 			__kustoIsInFunctionArgs = !!call;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Prefer a range that includes '-' so mv-expand/project-away suggestions replace the whole token.
 		let replaceRange = null;
@@ -256,7 +254,7 @@ const __kustoCompletionProvider = {
 						detail = d.signature ? String(d.signature) : undefined;
 						documentation = d.description ? { value: String(d.description) } : undefined;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				pushSuggestion({
 					label: op.label,
 					kind: monaco.languages.CompletionItemKind.Keyword,
@@ -297,9 +295,7 @@ const __kustoCompletionProvider = {
 			if (model && model.uri) {
 				boxId = _win.queryEditorBoxByModelUri[model.uri.toString()] || null;
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		if (!boxId) {
 			boxId = _win.activeQueryEditorBoxId;
 		}
@@ -339,7 +335,7 @@ const __kustoCompletionProvider = {
 						range: replaceRange
 					}, 'let:' + nl);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Still provide function suggestions so Ctrl+Space isn't empty while schema loads.
 			if (shouldSuggestFunctions) {
@@ -428,7 +424,7 @@ const __kustoCompletionProvider = {
 						return String(c.id);
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return null;
 		};
 
@@ -442,17 +438,17 @@ const __kustoCompletionProvider = {
 					if (_win.schemaByConnDb && _win.schemaByConnDb[key]) {
 						return _win.schemaByConnDb[key];
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (typeof _win.__kustoRequestSchema === 'function') {
 					const sch = await _win.__kustoRequestSchema(cid, db, false);
 					try {
 						if (sch && _win.schemaByConnDb) {
 							_win.schemaByConnDb[key] = sch;
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return sch;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return null;
 		};
 
@@ -463,7 +459,7 @@ const __kustoCompletionProvider = {
 				for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
 					tablesByLower[String(t).toLowerCase()] = String(t);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const letSources: any = {};
 			const extractSourceLower = (rhsText: any) => {
 				const rhs = String(rhsText || '').trim();
@@ -471,11 +467,11 @@ const __kustoCompletionProvider = {
 				try {
 					const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 					if (m && m[1]) return String(m[1]).toLowerCase();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 					if (m && m[1]) return String(m[1]).toLowerCase();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
 					return (m && m[1]) ? String(m[1]).toLowerCase() : null;
@@ -499,7 +495,7 @@ const __kustoCompletionProvider = {
 					if (!srcLower) continue;
 					letSources[letNameLower] = srcLower;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const resolve = (name: any) => {
 				let cur = String(name || '').toLowerCase();
 				for (let depth = 0; depth < 8; depth++) {
@@ -599,7 +595,7 @@ const __kustoCompletionProvider = {
 					if (right) refs.push(right);
 				}
 				if (refs.length > 0) return refs[refs.length - 1];
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Handle `let Name = <tabular>` by looking at the RHS after '='.
 			try {
@@ -612,7 +608,7 @@ const __kustoCompletionProvider = {
 						return src[1];
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Otherwise, find the first "source" line (not a pipe/operator line).
 			const lines = text.split(/\r?\n/);
@@ -652,7 +648,7 @@ const __kustoCompletionProvider = {
 		// Normalize to the canonical schema table name when possible.
 		try {
 			activeTable = __kustoFindSchemaTableName(activeTable) || activeTable;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const __kustoSplitCommaList = (s: any) => {
 			if (!s) return [];
@@ -759,7 +755,7 @@ const __kustoCompletionProvider = {
 					const rhs = String(m[2] || '').replace(/;\s*$/g, '').trim();
 					__kustoLetRhsByLower.set(nameLower, rhs);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const __kustoLetColsMemo = new Map();
 			const __kustoLetInProgress = new Set();
@@ -830,7 +826,7 @@ const __kustoCompletionProvider = {
 									for (const c of otherCols) set.add(c);
 								}
 								cols = Array.from(set);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							continue;
 						}
 					if (/^distinct\b/i.test(lower)) {
@@ -894,7 +890,7 @@ const __kustoCompletionProvider = {
 									if (m && m[1]) set.add(String(m[1]));
 								}
 								cols = Array.from(set);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							continue;
 						}
 						if (/^parse(-where)?\b/i.test(lower)) {
@@ -913,7 +909,7 @@ const __kustoCompletionProvider = {
 									}
 								}
 								cols = Array.from(set);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							continue;
 						}
 						if (/^mv-expand\b/i.test(lower)) {
@@ -926,7 +922,7 @@ const __kustoCompletionProvider = {
 									if (mAssign && mAssign[1]) set.add(mAssign[1]);
 								}
 								cols = Array.from(set);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							continue;
 						}
 						if (/^make-series\b/i.test(lower)) {
@@ -947,7 +943,7 @@ const __kustoCompletionProvider = {
 									}
 								}
 								if (next.size > 0) cols = Array.from(next);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							continue;
 						}
 						if (/^summarize\b/i.test(lower)) {
@@ -1021,7 +1017,7 @@ const __kustoCompletionProvider = {
 					for (const t of (schema && Array.isArray(schema.tables) ? schema.tables : [])) {
 						tablesByLower[String(t).toLowerCase()] = String(t);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const letSources: any = {};
 				const extractSourceLower = (rhsText: any) => {
@@ -1032,15 +1028,15 @@ const __kustoCompletionProvider = {
 						if (fq) {
 							return { tableLower: String(fq.table).toLowerCase(), cluster: fq.cluster, database: fq.database, table: fq.table };
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 						if (m && m[1]) return { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) };
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
 						if (m && m[1]) return { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) };
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
 						return (m && m[1]) ? { tableLower: String(m[1]).toLowerCase(), cluster: null, database: null, table: String(m[1]) } : null;
@@ -1064,7 +1060,7 @@ const __kustoCompletionProvider = {
 						if (!src) continue;
 						letSources[letNameLower] = src;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const resolveToContext = async (name: any) => {
 					let cur = String(name || '').toLowerCase();
@@ -1113,7 +1109,7 @@ const __kustoCompletionProvider = {
 					if (srcName && resolveTabularNameToContext) {
 						resolvedCtx = await resolveTabularNameToContext(srcName);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			if (!resolvedCtx) {
 				// Final fallback: current schema + canonical table name
@@ -1136,7 +1132,7 @@ const __kustoCompletionProvider = {
 				if (letCols && Array.isArray(letCols) && letCols.length) {
 					cols = Array.from(letCols);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!cols) {
 				return null;
 			}
@@ -1298,7 +1294,7 @@ const __kustoCompletionProvider = {
 							}
 						}
 						cols = Array.from(set);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					continue;
 				}
 
@@ -1313,7 +1309,7 @@ const __kustoCompletionProvider = {
 							if (mAssign && mAssign[1]) set.add(mAssign[1]);
 						}
 						cols = Array.from(set);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					continue;
 				}
 
@@ -1338,7 +1334,7 @@ const __kustoCompletionProvider = {
 							}
 						}
 						if (next.size > 0) cols = Array.from(next);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					continue;
 				}
 
@@ -1399,7 +1395,7 @@ const __kustoCompletionProvider = {
 					const lower = original.toLowerCase();
 					if (!byLower.has(lower)) byLower.set(lower, original);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			__kustoLetNamesByLower = byLower;
 		} catch {
 			__kustoLetNamesByLower = null;
@@ -1446,7 +1442,7 @@ const __kustoCompletionProvider = {
 						for (const c of rightCols) set.add(c);
 					}
 					columns = Array.from(set);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			if (!columns && activeTable) {
 				const resolved = __kustoFindSchemaTableName(activeTable);
@@ -1487,7 +1483,7 @@ const __kustoCompletionProvider = {
 						}, 'let:' + nl);
 					}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 		}
 
 		if (shouldSuggestFunctionsOrJoinOn) {
@@ -1544,7 +1540,7 @@ const __kustoCompletionProvider = {
 					}, 'let:' + nl);
 				}
 			}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			for (const t of schema.tables) {
 				pushSuggestion({
 					label: t,

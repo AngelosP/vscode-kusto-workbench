@@ -35,7 +35,7 @@ window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
 let markdownEditors = window.__kustoMarkdownEditors;
 let markdownViewers: any = {};
 let pythonEditors: any = {};
-try { window.__kustoPythonEditors = pythonEditors; } catch { /* ignore */ }
+try { window.__kustoPythonEditors = pythonEditors; } catch (e) { console.error('[kusto]', e); }
 
 // Chart UI state keyed by boxId.
 // - mode: 'edit' | 'preview'
@@ -90,12 +90,12 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 						if (ds !== sourceId) continue;
 						if (visitedTransformations.has(boxId)) continue;
 						visitedTransformations.add(boxId);
-						try { _win.__kustoUpdateTransformationBuilderUI(boxId); } catch { /* ignore */ }
-						try { _win.__kustoRenderTransformation(boxId); } catch { /* ignore */ }
+						try { _win.__kustoUpdateTransformationBuilderUI(boxId); } catch (e) { console.error('[kusto]', e); }
+						try { _win.__kustoRenderTransformation(boxId); } catch (e) { console.error('[kusto]', e); }
 						queue.push(boxId);
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Refresh charts that directly depend on this source.
 			try {
@@ -104,11 +104,11 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 						if (!st || typeof st !== 'object') continue;
 						const ds = (typeof (st as any).dataSourceId === 'string') ? String((st as any).dataSourceId) : '';
 						if (ds !== sourceId) continue;
-						try { _win.__kustoUpdateChartBuilderUI(boxId); } catch { /* ignore */ }
-						try { _win.__kustoRenderChart(boxId); } catch { /* ignore */ }
+						try { _win.__kustoUpdateChartBuilderUI(boxId); } catch (e) { console.error('[kusto]', e); }
+						try { _win.__kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	} finally {
 		__kustoIsRefreshingDependents = false;
@@ -130,16 +130,16 @@ try {
 				const pending = Array.from(__kustoPendingDependentRefreshIds);
 				__kustoPendingDependentRefreshIds = new Set();
 				for (const rootId of pending) {
-					try { __kustoRefreshDependentExtraBoxes(rootId); } catch { /* ignore */ }
+					try { __kustoRefreshDependentExtraBoxes(rootId); } catch (e) { console.error('[kusto]', e); }
 				}
 				// After dependent sections are refreshed, update all data-source dropdowns
 				// so newly-available sources (e.g. a transformation that just produced results)
 				// appear in chart/transformation pickers.
-				try { __kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
+				try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 // SVG icons for chart types
 function __kustoGetChartDatasetsInDomOrder() {
@@ -167,7 +167,7 @@ function __kustoGetChartDatasetsInDomOrder() {
 				let name = '';
 				try {
 					name = String(((document.getElementById(id + '_name') as any || {}).value || '')).trim();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// Format: "<Name> [section #N]" if named, "Unnamed [section #N]" if not
 				const label = name
 					? name + ' [section #' + sectionIndex + ']'
@@ -178,11 +178,9 @@ function __kustoGetChartDatasetsInDomOrder() {
 					columns: cols,
 					rows
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return out;
 }
 
@@ -204,13 +202,13 @@ function __kustoRefreshAllDataSourceDropdowns() {
 				} else if (id.startsWith('transformation_')) {
 					_win.__kustoUpdateTransformationBuilderUI(id);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Expose globally for use by main.js reorder logic
-try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch { /* ignore */ }
+try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch (e) { console.error('[kusto]', e); }
 
 /**
  * Configure a chart section programmatically (used by LLM tools).
@@ -279,11 +277,11 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		}
 		
 		// Update the UI dropdowns to reflect new state and re-render the chart
-		try { _win.__kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
-		try { _win.__kustoRenderChart(id); } catch { /* ignore */ }
+		try { _win.__kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.__kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 		
 		// Persist changes
-		try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+		try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		return true;
 	} catch (err: any) {
@@ -293,7 +291,7 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 }
 
 // Expose for tool calls from main.js
-try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch { /* ignore */ }
+try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch (e) { console.error('[kusto]', e); }
 
 /**
  * Validate a chart's configuration and return detailed status for tools.
@@ -348,7 +346,7 @@ function __kustoGetChartValidationStatus( boxId: any) {
 						issues.push(`Data source "${dataSourceId}" not found or has no results. Make sure the query has been executed.`);
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		
 		// Check column configuration based on chart type
@@ -411,7 +409,7 @@ function __kustoGetChartValidationStatus( boxId: any) {
 }
 
 // Expose for tool calls
-try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch { /* ignore */ }
+try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch (e) { console.error('[kusto]', e); }
 
 /**
  * Configure a transformation section programmatically (used by LLM tools).
@@ -435,13 +433,13 @@ function __kustoGetRawCellValueForChart( cell: any) {
 		if (typeof _win.__kustoGetRawCellValue === 'function') {
 			return _win.__kustoGetRawCellValue(cell);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (cell && typeof cell === 'object') {
 			if ('full' in cell && cell.full !== undefined && cell.full !== null) return cell.full;
 			if ('display' in cell && cell.display !== undefined && cell.display !== null) return cell.display;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return cell;
 }
 
@@ -517,7 +515,7 @@ function __kustoNormalizeResultsColumnName( c: any) {
 			if (typeof c.name === 'string') return c.name;
 			if (typeof c.columnName === 'string') return c.columnName;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -541,9 +539,7 @@ function __kustoSetSelectOptions( selectEl: any, values: any, selectedValue: any
 		}
 		selectEl.innerHTML = html;
 		selectEl.value = selected;
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoPickFirstNonEmpty( arr: any) {
@@ -552,7 +548,7 @@ function __kustoPickFirstNonEmpty( arr: any) {
 			const s = String(v || '');
 			if (s) return s;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -568,7 +564,7 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
-		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch { /* ignore */ }
+		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 		if (isOpen) {
 			menu.style.display = 'none';
 			btn.setAttribute('aria-expanded', 'false');
@@ -576,7 +572,7 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close the section mode dropdown menu
@@ -586,7 +582,7 @@ function __kustoCloseSectionModeDropdown( boxId: any, prefix: any) {
 		const btn = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_btn') as any;
 		if (menu) menu.style.display = 'none';
 		if (btn) btn.setAttribute('aria-expanded', 'false');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Track ResizeObservers for chart/transformation sections
@@ -602,7 +598,7 @@ function __kustoUpdateSectionModeResponsive( boxId: any) {
 		const isVeryNarrow = width > 0 && width < 250;
 		box.classList.toggle('is-section-narrow', isNarrow);
 		box.classList.toggle('is-section-very-narrow', isVeryNarrow);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Set up ResizeObserver for a chart/transformation section
@@ -613,13 +609,13 @@ function __kustoSetupSectionModeResizeObserver( boxId: any) {
 		if (!box) return;
 		if (typeof ResizeObserver === 'undefined') return;
 		const observer = new ResizeObserver(() => {
-			try { __kustoUpdateSectionModeResponsive(boxId); } catch { /* ignore */ }
+			try { __kustoUpdateSectionModeResponsive(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 		observer.observe(box);
 		__kustoSectionModeResizeObservers[boxId] = observer;
 		// Initial check
 		__kustoUpdateSectionModeResponsive(boxId);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Clean up ResizeObserver when a chart/transformation section is removed
@@ -630,7 +626,7 @@ function __kustoCleanupSectionModeResizeObserver( boxId: any) {
 			observer.disconnect();
 		}
 		delete __kustoSectionModeResizeObservers[boxId];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close all section-mode dropdowns when clicking outside
@@ -644,15 +640,15 @@ try {
 				const menus = document.querySelectorAll('.section-mode-dropdown-menu');
 				const btns = document.querySelectorAll('.section-mode-dropdown-btn');
 				for (const m of menus as any) {
-					try { m.style.display = 'none'; } catch { /* ignore */ }
+					try { m.style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
 				}
 				for (const b of btns) {
-					try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
+					try { b.setAttribute('aria-expanded', 'false'); } catch (e) { console.error('[kusto]', e); }
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	});
-} catch { /* ignore */ }
+} catch (e) { console.error('[kusto]', e); }
 
 function addPythonBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
@@ -682,27 +678,25 @@ function addPythonBox( options: any) {
 
 	// Handle remove event from the Lit component.
 	litEl.addEventListener('section-remove', function (e: any) {
-		try { removePythonBox(e.detail.boxId); } catch { /* ignore */ }
+		try { removePythonBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
 	container.appendChild(litEl);
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
 			controls.scrollIntoView({ block: 'end' });
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 }
 
 function removePythonBox( boxId: any) {
 	// Legacy editor cleanup (for any old-style boxes still in DOM).
 	if (pythonEditors[boxId]) {
-		try { pythonEditors[boxId].dispose(); } catch { /* ignore */ }
+		try { pythonEditors[boxId].dispose(); } catch (e) { console.error('[kusto]', e); }
 		delete pythonEditors[boxId];
 	}
 	pythonBoxes = pythonBoxes.filter((id: any) => id !== boxId);
@@ -710,7 +704,7 @@ function removePythonBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function initPythonEditor( boxId: any) {
@@ -729,12 +723,10 @@ function initPythonEditor( boxId: any) {
 				if (attached) {
 					return;
 				}
-				try { existing.dispose(); } catch { /* ignore */ }
-				try { delete pythonEditors[boxId]; } catch { /* ignore */ }
+				try { existing.dispose(); } catch (e) { console.error('[kusto]', e); }
+				try { delete pythonEditors[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		container.style.minHeight = '0';
 		container.style.minWidth = '0';
@@ -745,11 +737,9 @@ function initPythonEditor( boxId: any) {
 			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch { /* ignore */ }
+				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		const editor = monaco.editor.create(container, {
 			value: initialValue,
@@ -771,27 +761,25 @@ function initPythonEditor( boxId: any) {
 		try {
 			if (typeof editor.onDidFocusEditorText === 'function') {
 				editor.onDidFocusEditorText(() => {
-					try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 					try {
 						if (typeof _win.__kustoForceEditorWritable === 'function') {
 							_win.__kustoForceEditorWritable(editor);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				});
 			}
 			if (typeof editor.onDidFocusEditorWidget === 'function') {
 				editor.onDidFocusEditorWidget(() => {
-					try { _win.activeMonacoEditor = editor; } catch { /* ignore */ }
+					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 					try {
 						if (typeof _win.__kustoForceEditorWritable === 'function') {
 							_win.__kustoForceEditorWritable(editor);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				});
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		pythonEditors[boxId] = editor;
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
@@ -799,16 +787,12 @@ function initPythonEditor( boxId: any) {
 			if (typeof _win.__kustoEnsureEditorWritableSoon === 'function') {
 				_win.__kustoEnsureEditorWritableSoon(editor);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoInstallWritableGuard === 'function') {
 				_win.__kustoInstallWritableGuard(editor);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		// If the editor is stuck non-interactive on click, force writable before focusing.
 		try {
 			container.addEventListener('mousedown', () => {
@@ -816,27 +800,21 @@ function initPythonEditor( boxId: any) {
 					if (typeof _win.__kustoForceEditorWritable === 'function') {
 						_win.__kustoForceEditorWritable(editor);
 					}
-				} catch { /* ignore */ }
-				try { editor.focus(); } catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+				try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
 			}, true);
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		// Auto-resize editor to show full content, until the user manually resizes.
 		try {
 			if (typeof _win.__kustoAttachAutoResizeToContent === 'function') {
 				_win.__kustoAttachAutoResizeToContent(editor, container);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			editor.onDidChangeModelContent(() => {
-				try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			});
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Ctrl+Enter / Ctrl+Shift+Enter runs the Python code (not the Kusto query).
 		// addCommand prevents the event from reaching the global Ctrl+Enter handler
@@ -848,13 +826,11 @@ function initPythonEditor( boxId: any) {
 					if (el && typeof el._run === 'function') {
 						el._run();
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
 			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Drag handle resize (copied from KQL editor behavior).
 		try {
@@ -865,10 +841,8 @@ function initPythonEditor( boxId: any) {
 					try {
 						e.preventDefault();
 						e.stopPropagation();
-					} catch {
-						// ignore
-					}
-					try { wrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 
 					resizer.classList.add('is-dragging');
 					const previousCursor = document.body.style.cursor;
@@ -884,12 +858,12 @@ function initPythonEditor( boxId: any) {
 								if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
 									_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 							const delta = pageY - startPageY;
 						const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
 						wrapper.style.height = nextHeight + 'px';
-						try { editor.layout(); } catch { /* ignore */ }
+						try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
 					};
 					const onUp = () => {
 						document.removeEventListener('mousemove', onMove, true);
@@ -897,7 +871,7 @@ function initPythonEditor( boxId: any) {
 						resizer.classList.remove('is-dragging');
 						document.body.style.cursor = previousCursor;
 						document.body.style.userSelect = previousUserSelect;
-						try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+						try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					};
 
 					document.addEventListener('mousemove', onMove, true);
@@ -913,20 +887,16 @@ function initPythonEditor( boxId: any) {
 						if (typeof _win.__kustoMaximizePythonBox === 'function') {
 							_win.__kustoMaximizePythonBox(boxId);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				});
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}).catch((e: any) => {
 		try {
 			if (pythonEditors && pythonEditors[boxId]) {
 				return;
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		let attempt = 0;
 		try {
@@ -940,16 +910,14 @@ function initPythonEditor( boxId: any) {
 		const delays = [50, 250, 1000, 2000, 4000];
 		const delay = delays[Math.min(attempt - 1, delays.length - 1)];
 		if (attempt > delays.length) {
-			try { console.error('Monaco init failed (python editor).', e); } catch { /* ignore */ }
+			try { console.error('Monaco init failed (python editor).', e); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		try {
 			setTimeout(() => {
-				try { initPythonEditor(boxId); } catch { /* ignore */ }
+				try { initPythonEditor(boxId); } catch (e) { console.error('[kusto]', e); }
 			}, delay);
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	});
 }
 
@@ -1036,20 +1004,18 @@ function addUrlBox( options: any) {
 	}
 
 	litEl.addEventListener('section-remove', function (e: any) {
-		try { removeUrlBox(e.detail.boxId); } catch { /* ignore */ }
+		try { removeUrlBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
 	container.appendChild(litEl);
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
 			controls.scrollIntoView({ block: 'end' });
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	return id;
 }
@@ -1060,7 +1026,7 @@ function removeUrlBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // (Legacy URL helpers removed — now handled by <kw-url-section> Lit component.)

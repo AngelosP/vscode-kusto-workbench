@@ -109,7 +109,7 @@ function writeTextToClipboard(text: string, vscodePostMessage?: (msg: unknown) =
 			void navigator.clipboard.writeText(text);
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -403,7 +403,7 @@ export class KwObjectViewer extends LitElement {
 		const target = highlights[this._currentMatchIndex];
 		if (!target) return;
 		target.classList.add('json-highlight-active');
-		try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { try { target.scrollIntoView(true); } catch { /* ignore */ } }
+		try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { try { target.scrollIntoView(true); } catch (e) { console.error('[kusto]', e); } }
 	}
 
 	private _copyValue(value: unknown): void {

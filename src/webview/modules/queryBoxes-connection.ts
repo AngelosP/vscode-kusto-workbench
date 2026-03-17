@@ -19,9 +19,7 @@ function formatClusterDisplayName( connection: any) {
 				return hostname.slice(0, hostname.length - '.kusto.windows.net'.length);
 			}
 			return hostname || url;
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	return String(connection.name || connection.clusterUrl || '').trim();
 }
@@ -84,9 +82,7 @@ function extractClusterUrlsFromQueryText( queryText: any) {
 			const u = String(m[2] || '').trim();
 			if (u) urls.push(u);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	// Unique by cluster short-name key (case-insensitive)
 	const seen = new Set();
 	const out = [];
@@ -119,9 +115,7 @@ function extractClusterDatabaseHintsFromQueryText( queryText: any) {
 				map[key] = database;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return map;
 }
 
@@ -137,9 +131,7 @@ function computeMissingClusterUrls( detectedClusterUrls: any) {
 			const key = clusterShortNameKey(c.clusterUrl || '');
 			if (key) existingKeys.add(key);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	const missing = [];
 	for (const u of detected) {
 		const key = clusterShortNameKey(u);
@@ -176,13 +168,13 @@ function renderMissingClustersBanner( boxId: any, missingClusterUrls: any) {
 function updateMissingClustersForBox( boxId: any, queryText: any) {
 	try {
 		_win.lastQueryTextByBoxId[boxId] = String(queryText || '');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		_win.suggestedDatabaseByClusterKeyByBoxId[boxId] = extractClusterDatabaseHintsFromQueryText(queryText);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const detected = extractClusterUrlsFromQueryText(queryText);
 	const missing = computeMissingClusterUrls(detected);
-	try { _win.missingClusterUrlsByBoxId[boxId] = missing; } catch { /* ignore */ }
+	try { _win.missingClusterUrlsByBoxId[boxId] = missing; } catch (e) { console.error('[kusto]', e); }
 	renderMissingClustersBanner(boxId, missing);
 }
 
@@ -192,17 +184,15 @@ window.__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
 	if (!id) {
 		return;
 	}
-	try { _win.lastQueryTextByBoxId[id] = String(queryText || ''); } catch { /* ignore */ }
+	try { _win.lastQueryTextByBoxId[id] = String(queryText || ''); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (_win.missingClusterDetectTimersByBoxId[id]) {
 			clearTimeout(_win.missingClusterDetectTimersByBoxId[id]);
 		}
 		_win.missingClusterDetectTimersByBoxId[id] = setTimeout(() => {
-			try { updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || ''); } catch { /* ignore */ }
+			try { updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || ''); } catch (e) { console.error('[kusto]', e); }
 		}, 260);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Called by main.js when the connections list changes.
@@ -211,9 +201,7 @@ window.__kustoOnConnectionsUpdated = function () {
 		for (const id of (_win.queryBoxes || [])) {
 			updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || '');
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	// Apply any pending favorite selections now that connections may exist.
 	try {
 		for (const id of (_win.queryBoxes || [])) {
@@ -221,16 +209,14 @@ window.__kustoOnConnectionsUpdated = function () {
 				if (_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]) {
 					__kustoTryApplyPendingFavoriteSelectionForBox(id);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
 			window.__kustoUpdateFavoritesUiForAllBoxes();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 function __kustoFavoriteKey( clusterUrl: any, database: any) {
@@ -284,11 +270,11 @@ function __kustoMarkNewBoxForFavoritesAutoEnter( boxId: any) {
 		if (typeof _win.__kustoRestoreInProgress === 'boolean' && _win.__kustoRestoreInProgress) {
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		__kustoAutoEnterFavoritesForNewBoxByBoxId = __kustoAutoEnterFavoritesForNewBoxByBoxId || Object.create(null);
 		__kustoAutoEnterFavoritesForNewBoxByBoxId[id] = true;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
@@ -303,10 +289,10 @@ function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
 	// Don't override an explicit choice for this box.
 	try {
 		if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
-			try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
+			try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Wait until favorites are available.
 	const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
@@ -322,9 +308,9 @@ function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
 			__kustoApplyFavoritesMode(id, true);
 			__kustoUpdateFavoritesUiForBox(id);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Either way, we've reached a stable selection; only do this once.
-	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch { /* ignore */ }
+	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 }
 
 window.__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: any, database: any) {
@@ -336,7 +322,7 @@ window.__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: an
 	try {
 		__kustoAutoEnterFavoritesByBoxId = __kustoAutoEnterFavoritesByBoxId || Object.create(null);
 		__kustoAutoEnterFavoritesByBoxId[id] = { clusterUrl: c, database: d };
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
@@ -363,22 +349,22 @@ function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
 			if (isInFavMode) {
 				__kustoApplyFavoritesMode(id, false);
 			}
-		} catch { /* ignore */ }
-		try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
-	try { __kustoApplyFavoritesMode(id, true); } catch { /* ignore */ }
-	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch { /* ignore */ }
+	try { __kustoApplyFavoritesMode(id, true); } catch (e) { console.error('[kusto]', e); }
+	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 }
 
 window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
-			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch { /* ignore */ }
-			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch { /* ignore */ }
+			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Default behavior for blank/new docs: if the user has any favorites, start the first
@@ -399,7 +385,7 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 			if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// If the box has a stashed desired connection that doesn't match any favorite,
 		// don't enter favorites mode — let the cluster/database dropdowns show instead.
@@ -426,12 +412,12 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 					return;
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		__kustoApplyFavoritesMode(id, true);
-		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
+		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 		__kustoDidDefaultFirstBoxToFavorites = true;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Webviews are sandboxed; confirm()/alert() may be blocked unless allow-modals is set.
@@ -445,13 +431,11 @@ window.__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
 		const ok = !!m.ok;
 		if (!requestId) return;
 		const cb = __kustoConfirmRemoveFavoriteCallbacksById && __kustoConfirmRemoveFavoriteCallbacksById[requestId];
-		try { delete __kustoConfirmRemoveFavoriteCallbacksById[requestId]; } catch { /* ignore */ }
+		try { delete __kustoConfirmRemoveFavoriteCallbacksById[requestId]; } catch (e) { console.error('[kusto]', e); }
 		if (typeof cb === 'function') {
-			try { cb(ok); } catch { /* ignore */ }
+			try { cb(ok); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
@@ -464,9 +448,7 @@ function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
 				return String(c.id || '').trim();
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return '';
 }
 
@@ -482,7 +464,7 @@ window.__kustoGetSelectionOwnerBoxId = function (boxId: any) {
 				return String(meta.sourceBoxId || '').trim() || id;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 };
 
@@ -494,13 +476,13 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 		pending = _win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]
 			? _win.pendingFavoriteSelectionByBoxId[id]
 			: null;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (!pending) return false;
 
 	const clusterUrl = String(pending.clusterUrl || '').trim();
 	const database = String(pending.database || '').trim();
 	if (!clusterUrl || !database) {
-		try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+		try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 		return false;
 	}
 
@@ -525,7 +507,7 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 		try {
 			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(clusterUrl);
 			if (typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(database);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (connectionId && typeof kwEl.setConnectionId === 'function') {
 				kwEl.setConnectionId(connectionId);
@@ -535,7 +517,7 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 				detail: { boxId: tid, connectionId: connectionId, clusterUrl: clusterUrl },
 				bubbles: true, composed: true,
 			}));
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	applyToBox(ownerId);
@@ -544,7 +526,7 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 		applyToBox(id);
 	}
 
-	try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch { /* ignore */ }
+	try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	return true;
 }
 
@@ -552,7 +534,7 @@ function __kustoSetElementDisplay( el: any, display: any) {
 	try {
 		if (!el) return;
 		el.style.display = display;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateFavoritesUiForBox( boxId: any) {
@@ -567,9 +549,9 @@ function __kustoUpdateFavoritesUiForBox( boxId: any) {
 window.__kustoUpdateFavoritesUiForAllBoxes = function () {
 	try {
 		_win.queryBoxes.forEach((id: any) =>  {
-			try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
+			try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Toggle the current cluster+database as a favorite for a given query box.
@@ -627,7 +609,7 @@ window.__kustoEnterFavoritesModeForBox = function (boxId: any) {
 		if (!hasAny) return;
 		__kustoApplyFavoritesMode(id, true);
 		__kustoUpdateFavoritesUiForBox(id);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 function __kustoGetTrashIconSvg() {
@@ -681,18 +663,14 @@ function addMissingClusterConnections( boxId: any) {
 			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(chosenClusterUrl);
 			if (chosenDb && typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(chosenDb);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		(_win.vscode as any).postMessage({
 			type: 'addConnectionsForClusters',
 			boxId: id,
 			clusterUrls: clusters
 		});
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function updateConnectionSelects() {
@@ -702,13 +680,13 @@ function updateConnectionSelects() {
 			// Delegate to the Lit element — it handles desired/current/last resolution internally.
 			el.setConnections(_win.connections || [], { lastConnectionId: _win.lastConnectionId || '' });
 		}
-		try { __kustoUpdateFavoritesUiForBox(id); } catch { /* ignore */ }
+		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 	});
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {
 			window.__kustoUpdateRunEnabledForAllBoxes();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function updateDatabaseField( boxId: any) {
@@ -718,7 +696,7 @@ function updateDatabaseField( boxId: any) {
 		if (typeof __kustoClearDatabaseLoadError === 'function') {
 			__kustoClearDatabaseLoadError(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const connectionId = _win.__kustoGetConnectionId(boxId);
 	if (!connectionId) return;
@@ -765,25 +743,23 @@ function __kustoClearDatabaseLoadError( boxId: any) {
 						if (typeof _win.__kustoApplyResultsVisibility === 'function') {
 							_win.__kustoApplyResultsVisibility(bid);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	} finally {
 		try {
 			delete resultsDiv.dataset.kustoDbLoadErrorActive;
 			delete resultsDiv.dataset.kustoDbLoadErrorPrevHtml;
 			delete resultsDiv.dataset.kustoDbLoadErrorPrevVisible;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
 function promptAddConnectionFromDropdown( boxId: any) {
 	try {
 		(_win.vscode as any).postMessage({ type: 'promptAddConnection', boxId: boxId });
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function importConnectionsFromXmlFile( boxId: any) {
@@ -791,7 +767,7 @@ function importConnectionsFromXmlFile( boxId: any) {
 		// Use the extension host's file picker so we can default to the user's Kusto Explorer folder.
 		(_win.vscode as any).postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
 	} catch (e: any) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -812,9 +788,7 @@ function parseKustoExplorerConnectionsXml( xmlText: any) {
 		if (err && err.length) {
 			return [];
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	const nodes = Array.from(doc.getElementsByTagName('ServerDescriptionBase'));
 	const results = [];
@@ -932,13 +906,13 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 						if (typeof prev === 'string' && prev) {
 							refreshBtn.innerHTML = prev;
 						}
-						try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
-						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
+						try { delete refreshBtn.dataset.kustoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch (e) { console.error('[kusto]', e); }
+						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch (e) { console.error('[kusto]', e); }
 					}
 					refreshBtn.removeAttribute('aria-busy');
 					refreshBtn.disabled = false;
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			return;
 		}
@@ -957,7 +931,7 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 			if (isEnotfound) {
 				// Cluster is unreachable/invalid: show failure message
 				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
-				try { databaseSelect.value = ''; } catch { /* ignore */ }
+				try { databaseSelect.value = ''; } catch (e) { console.error('[kusto]', e); }
 			} else if (hadPreviousContent) {
 				// Restore previous dropdown contents/value if we snapshotted them (manual refresh case).
 				try {
@@ -969,21 +943,21 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 					if (typeof prevValue === 'string') {
 						databaseSelect.value = prevValue;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			} else {
 				// No previous content (initial load failed): show failure message
 				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
-				try { databaseSelect.value = ''; } catch { /* ignore */ }
+				try { databaseSelect.value = ''; } catch (e) { console.error('[kusto]', e); }
 			}
 			databaseSelect.disabled = false;
-			try { window.__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_database'); } catch { /* ignore */ }
+			try { window.__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_database'); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (databaseSelect.dataset) {
 					delete databaseSelect.dataset.kustoRefreshInFlight;
 					delete databaseSelect.dataset.kustoPrevHtml;
 					delete databaseSelect.dataset.kustoPrevValue;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		if (refreshBtn) {
 			try {
@@ -992,22 +966,20 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 					if (typeof prev === 'string' && prev) {
 						refreshBtn.innerHTML = prev;
 					}
-					try { delete refreshBtn.dataset.kustoPrevHtml; } catch { /* ignore */ }
-					try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch { /* ignore */ }
-					try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch { /* ignore */ }
+					try { delete refreshBtn.dataset.kustoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+					try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch (e) { console.error('[kusto]', e); }
+					try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch (e) { console.error('[kusto]', e); }
 				}
 				refreshBtn.removeAttribute('aria-busy');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			refreshBtn.disabled = false;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
 			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Note: We no longer show inline errors in the results section for database load failures.
 	// The extension now uses VS Code notifications instead for a consistent experience.
 }
@@ -1044,7 +1016,7 @@ function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId:
 				if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
 				try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		_win.cachedDatabases[String(clusterKey || '').trim()] = list;
 	}
 
@@ -1054,13 +1026,13 @@ function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId:
 		kwEl.setRefreshLoading(false);
 	}
 
-	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
 			window.__kustoUpdateRunEnabledForBox(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Window bridges for remaining legacy callers ──

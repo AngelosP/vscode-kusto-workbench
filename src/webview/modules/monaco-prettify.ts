@@ -325,7 +325,7 @@ export function __kustoPrettifyKusto(input: any) {
 	// back into separate lines before applying the rule-based formatter.
 	try {
 		raw = __kustoExplodePipesToLines(raw);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const lines = raw.split('\n').map((l) => String(l).replace(/[ \t]+$/g, ''));
 
 	const out = [];
@@ -638,7 +638,7 @@ export function __kustoPrettifyKusto(input: any) {
 				inPipeline = false;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Trim leading/trailing blank lines.
 	while (out.length && !String(out[0]).trim()) out.shift();

@@ -348,12 +348,12 @@ export class KwSectionReorderPopup extends LitElement {
 		try {
 			const input = el.shadowRoot?.querySelector<HTMLInputElement>('.query-name');
 			if (input?.value) return input.value;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Try _name property
 		try {
 			const n = (el as any)._name;
 			if (typeof n === 'string' && n) return n;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Fallback to type label
 		return '';
 	}
@@ -419,7 +419,7 @@ export class KwSectionReorderPopup extends LitElement {
 		this._dropIndex = -1;
 		if (e.dataTransfer) {
 			e.dataTransfer.effectAllowed = 'move';
-			try { e.dataTransfer.setData('text/plain', s.id); } catch { /* ignore */ }
+			try { e.dataTransfer.setData('text/plain', s.id); } catch (e) { console.error('[kusto]', e); }
 		}
 		// Snapshot card positions for FLIP
 		this._snapshotCardPositions();
@@ -527,12 +527,12 @@ export class KwSectionReorderPopup extends LitElement {
 				const ids = Array.from(container.children)
 					.map((el: any) => el?.id ? String(el.id) : '')
 					.filter(Boolean);
-				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch { /* ignore */ }
-				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch { /* ignore */ }
-				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch { /* ignore */ }
-				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch { /* ignore */ }
+				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Re-layout moved editors
 		try {
@@ -543,14 +543,14 @@ export class KwSectionReorderPopup extends LitElement {
 			if (editors.length) {
 				setTimeout(() => {
 					for (const ed of editors) {
-						try { if (ed && typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
+						try { if (ed && typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}, 0);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
-		try { _win.schedulePersist?.('reorder'); } catch { /* ignore */ }
-		try { _win.__kustoRefreshAllDataSourceDropdowns?.(); } catch { /* ignore */ }
+		try { _win.schedulePersist?.('reorder'); } catch (e) { console.error('[kusto]', e); }
+		try { _win.__kustoRefreshAllDataSourceDropdowns?.(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── FLIP animation ──────────────────────────────────────────────────────

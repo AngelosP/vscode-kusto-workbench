@@ -807,7 +807,7 @@ export class KwChartSection extends LitElement {
 		try {
 			const fn = window.__kustoMaximizeChartBox;
 			if (typeof fn === 'function') fn(this.boxId);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 
@@ -1002,7 +1002,7 @@ export class KwChartSection extends LitElement {
 			const isDark = this._isDarkTheme();
 			if (this._lastThemeDark !== isDark) {
 				this._lastThemeDark = isDark;
-				try { window.__kustoDisposeChartEcharts?.(this.boxId); } catch { /* ignore */ }
+				try { window.__kustoDisposeChartEcharts?.(this.boxId); } catch (e) { console.error('[kusto]', e); }
 				this._renderChart();
 			}
 		});
@@ -1146,7 +1146,7 @@ export class KwChartSection extends LitElement {
 			if (typeof fn === 'function') {
 				this._datasets = fn() || [];
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Prune stale column references that no longer exist in the current dataset.
 		this._pruneStaleColumns();
 	}
@@ -1199,7 +1199,7 @@ export class KwChartSection extends LitElement {
 			if (typeof fn === 'function') {
 				fn(this.boxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Host class management ─────────────────────────────────────────────────
@@ -1214,7 +1214,7 @@ export class KwChartSection extends LitElement {
 		try {
 			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/**
@@ -1279,7 +1279,7 @@ export class KwChartSection extends LitElement {
 				const vs = fn(this.boxId);
 				if (vs) data.validation = vs;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		return data;
 	}

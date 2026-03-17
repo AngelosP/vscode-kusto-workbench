@@ -9,14 +9,14 @@ export function __kustoIsElementVisibleForSuggest(el: any) {
 		try {
 			const ariaHidden = String((el.getAttribute && el.getAttribute('aria-hidden')) || '').toLowerCase();
 			if (ariaHidden === 'true') return false;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(el) : null;
 			if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) return false;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (el.getClientRects && el.getClientRects().length === 0) return false;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return true;
 	} catch {
 		return false;
@@ -78,7 +78,7 @@ export function __kustoGetWordNearCursor(ed: any) {
 					while (j < line.length && /\s/.test(String(line[j] || '')) && (j - idx) < 24) j++;
 					if (j < line.length) idx = j;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// If char under idx isn't a word char but the left char is, treat it as end-of-word.
 			if (!isWordCh(line[idx]) && idx > 0 && isWordCh(line[idx - 1])) {
@@ -131,7 +131,7 @@ export function __kustoFindSuggestWidgetForEditor(ed: any, opts: any) {
 				anchorX = r.left + rel.left + 8;
 				anchorY = r.top + rel.top + (typeof rel.height === 'number' ? rel.height : 0) + 2;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// IMPORTANT:
 		// With multiple editors on the same page, querying the whole document can pick the wrong
@@ -160,7 +160,7 @@ export function __kustoFindSuggestWidgetForEditor(ed: any, opts: any) {
 					const wHost = w.closest('.monaco-editor');
 					if (wHost && wHost !== editorHost) continue;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (requireVisible && !__kustoIsElementVisibleForSuggest(w)) continue;
 			const rect = w.getBoundingClientRect();
 			// distance from point to rect (0 if inside)
@@ -201,9 +201,9 @@ export function __kustoRegisterGlobalSuggestMutationHandler(doc: any, handler: a
 						hub.scheduled = false;
 						try {
 							for (const h of Array.from(hub.handlers)) {
-								try { (h as any)(); } catch { /* ignore */ }
+								try { (h as any)(); } catch (e) { console.error('[kusto]', e); }
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					};
 					try {
 						requestAnimationFrame(run);
@@ -227,17 +227,17 @@ export function __kustoRegisterGlobalSuggestMutationHandler(doc: any, handler: a
 		}
 
 		const hub = win.__kustoSuggestMutationHub;
-		try { hub.handlers.add(handler); } catch { /* ignore */ }
-		try { hub.schedule(); } catch { /* ignore */ }
+		try { hub.handlers.add(handler); } catch (e) { console.error('[kusto]', e); }
+		try { hub.schedule(); } catch (e) { console.error('[kusto]', e); }
 
 		return () => {
-			try { hub.handlers.delete(handler); } catch { /* ignore */ }
+			try { hub.handlers.delete(handler); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (hub.handlers.size === 0 && hub.mo) {
 					hub.mo.disconnect();
 					hub.mo = null;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 	} catch {
 		return () => { };
@@ -259,7 +259,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					if (result && typeof result.then === 'function') {
 						result.catch(() => { /* ignore */ });
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			const getEditorDomMinimal = () => {
@@ -271,10 +271,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 			};
 
 			// Keep existing call sites safe, but intentionally no-op.
-			try { editor.__kustoScheduleSuggestClamp = () => { }; } catch { /* ignore */ }
+			try { editor.__kustoScheduleSuggestClamp = () => { }; } catch (e) { console.error('[kusto]', e); }
 			// IMPORTANT: keep existing call sites safe, but prevent preselect from being
 			// retriggered on arrow/cursor navigation.
-			try { editor.__kustoScheduleSuggestPreselect = () => { }; } catch { /* ignore */ }
+			try { editor.__kustoScheduleSuggestPreselect = () => { }; } catch (e) { console.error('[kusto]', e); }
 
 			let didPreselectThisOpen = false;
 			let lastVisible = false;
@@ -337,11 +337,11 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				// Do a few delayed sweeps, but stop as soon as we succeed.
 				try {
 					if (didPreselectThisOpen) return;
-					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 60);
-					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 160);
-					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 320);
-					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch { /* ignore */ } }, 650);
-				} catch { /* ignore */ }
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch (e) { console.error('[kusto]', e); } }, 60);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch (e) { console.error('[kusto]', e); } }, 160);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch (e) { console.error('[kusto]', e); } }, 320);
+					setTimeout(() => { try { if (!didPreselectThisOpen) tryPreselectNow(); } catch (e) { console.error('[kusto]', e); } }, 650);
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			const checkSuggestVisibilityTransition = () => {
@@ -363,7 +363,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						schedulePreselectAttempt();
 						scheduleDelayedPreselectSweep();
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			const scheduleHideSuggestIfTrulyBlurred = () => {
@@ -373,18 +373,18 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 							const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
 							const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
 							if (hasWidgetFocus || hasTextFocus) return;
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						safeTrigger(editor, 'hideSuggestWidget');
 					}, 150);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			let disposables: any[] = [];
 			const safeOn = (fn: any) => {
-				try { if (fn && typeof fn.dispose === 'function') disposables.push(fn); } catch { /* ignore */ }
+				try { if (fn && typeof fn.dispose === 'function') disposables.push(fn); } catch (e) { console.error('[kusto]', e); }
 			};
-			try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
-			try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
+			try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch (e) { console.error('[kusto]', e); }
+			try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch (e) { console.error('[kusto]', e); }
 
 			// Helper to check if the suggest widget is showing "No suggestions" message
 			const isSuggestWidgetShowingNoSuggestions = () => {
@@ -409,7 +409,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					if (isSuggestWidgetShowingNoSuggestions()) {
 						safeTrigger(editor, 'hideSuggestWidget');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			// Attach interaction listeners to dismiss "No suggestions" quickly
@@ -423,7 +423,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						root.addEventListener('keydown', hideNoSuggestionsOnInteraction, true);
 						root.addEventListener('mousedown', hideNoSuggestionsOnInteraction, true);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			const detachInteractionListeners = () => {
 				if (!interactionListenersAttached) return;
@@ -434,10 +434,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						root.removeEventListener('keydown', hideNoSuggestionsOnInteraction, true);
 						root.removeEventListener('mousedown', hideNoSuggestionsOnInteraction, true);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			// Attach once on setup
-			try { attachInteractionListeners(); } catch { /* ignore */ }
+			try { attachInteractionListeners(); } catch (e) { console.error('[kusto]', e); }
 
 			let mo: any = null;
 			let unregister: any = null;
@@ -450,7 +450,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				unregister = null;
 			}
 
-			try { checkSuggestVisibilityTransition(); } catch { /* ignore */ }
+			try { checkSuggestVisibilityTransition(); } catch (e) { console.error('[kusto]', e); }
 
 			// Dismiss suggest widgets on outer (notebook/body) scroll — ephemeral per dismiss-on-scroll policy.
 			try {
@@ -465,7 +465,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 									if (target.closest && (target.closest('.monaco-editor') || target.closest('.suggest-widget'))) {
 										return;
 									}
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}
 							// Outer scroll — dismiss all suggest widgets.
 							if (typeof _win.queryEditors === 'undefined' || !_win.queryEditors) return;
@@ -475,34 +475,34 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								try {
 									const r = ed.trigger('keyboard', 'hideSuggestWidget', {});
 									if (r && typeof r.then === 'function') r.catch(() => { /* ignore */ });
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}, true);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const dispose = () => {
-				try { if (mo) mo.disconnect(); } catch { /* ignore */ }
-				try { mo = null; } catch { /* ignore */ }
-				try { if (typeof unregister === 'function') unregister(); } catch { /* ignore */ }
-				try { unregister = null; } catch { /* ignore */ }
-				try { detachInteractionListeners(); } catch { /* ignore */ }
+				try { if (mo) mo.disconnect(); } catch (e) { console.error('[kusto]', e); }
+				try { mo = null; } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof unregister === 'function') unregister(); } catch (e) { console.error('[kusto]', e); }
+				try { unregister = null; } catch (e) { console.error('[kusto]', e); }
+				try { detachInteractionListeners(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					for (const d of disposables) {
-						try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
+						try { d && d.dispose && d.dispose(); } catch (e) { console.error('[kusto]', e); }
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				disposables = [];
-				try { delete editor.__kustoScheduleSuggestClamp; } catch { /* ignore */ }
-				try { delete editor.__kustoScheduleSuggestPreselect; } catch { /* ignore */ }
+				try { delete editor.__kustoScheduleSuggestClamp; } catch (e) { console.error('[kusto]', e); }
+				try { delete editor.__kustoScheduleSuggestPreselect; } catch (e) { console.error('[kusto]', e); }
 			};
 
 			try {
 				if (typeof editor.onDidDispose === 'function') {
 					editor.onDidDispose(() => dispose());
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			return dispose;
 		})();
@@ -520,9 +520,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				if (result && typeof result.then === 'function') {
 					result.catch(() => { /* ignore */ });
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		const getEditorDom = () => {
 			try {
@@ -544,7 +542,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				if (typeof editor.getContainerDomNode === 'function') {
 					return editor.getContainerDomNode();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const dom = getEditorDom();
 			return dom ? (dom.parentElement || dom) : null;
 		};
@@ -562,9 +560,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					const lh = Math.round(parseFloat(cs.height || cs.lineHeight || '0') || 0);
 					if (lh > 0) return lh;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			// Monaco defaults are typically ~22px per row; keep a safe fallback.
 			return 22;
 		};
@@ -593,10 +589,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 							(el as any).style.maxHeight = '';
 							(el as any).style.overflowY = '';
 							delete (el as any).dataset.kustoSuggestClamp;
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
-				} catch { /* ignore */ }
-			} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const applyDomClampFallback = (suggest: any, availablePx: any) => {
@@ -611,10 +607,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				suggest.style.overflow = '';
 				try {
 					if (suggest.dataset) suggest.dataset.kustoSuggestClamp = '1';
-				} catch { /* ignore */ }
-			} catch {
-				// ignore
-			}
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const applyListViewportClampFallback = (suggest: any, availablePx: any) => {
@@ -638,10 +632,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				if (!list) return;
 				list.style.height = h + 'px';
 				list.style.maxHeight = h + 'px';
-				try { if (list.dataset) list.dataset.kustoSuggestClamp = '1'; } catch { /* ignore */ }
-			} catch {
-				// ignore
-			}
+				try { if (list.dataset) list.dataset.kustoSuggestClamp = '1'; } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const scheduleHideSuggestIfTrulyBlurred = () => {
@@ -654,14 +646,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						if (hasWidgetFocus || hasTextFocus) {
 							return;
 						}
-					} catch {
-						// ignore
-					}
+					} catch (e) { console.error('[kusto]', e); }
 					__kustoSafeEditorTrigger(editor, 'hideSuggestWidget');
 				}, 150);
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		let lastSuggestVisible = false;
@@ -677,9 +665,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				const enabled = !!(window && (_win.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
 				if (!enabled) return;
 				console.debug('[kusto][suggest]', String(eventName || ''), data || {}, { boxId: editor && editor.__kustoBoxId });
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		const normalizeSuggestLabel = (s: any) => {
 			try {
@@ -707,11 +693,11 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					if (labelName && typeof labelName.textContent === 'string') {
 						label = labelName.textContent;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (!label) {
 					try {
 						label = String((row.getAttribute && row.getAttribute('aria-label')) || '');
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				label = normalizeSuggestLabel(label);
 				return String(label || '').toLowerCase();
@@ -744,9 +730,9 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						const did = !!editor.__kustoPreselectExactWordInSuggestIfPresent();
 						if (did) {
 							// Refresh focused label cache after we changed it.
-							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch { /* ignore */ }
+							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch (e) { console.error('[kusto]', e); }
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				});
 			} catch {
 				suggestPreselectRaf = false;
@@ -759,13 +745,13 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						}
 						const did = !!editor.__kustoPreselectExactWordInSuggestIfPresent();
 						if (did) {
-							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch { /* ignore */ }
+							try { lastPreselectFocusedLower = getFocusedSuggestRowLabelLower(); } catch (e) { console.error('[kusto]', e); }
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}, 0);
 			}
 		};
-		try { editor.__kustoScheduleSuggestPreselect = scheduleSuggestPreselect; } catch { /* ignore */ }
+		try { editor.__kustoScheduleSuggestPreselect = scheduleSuggestPreselect; } catch (e) { console.error('[kusto]', e); }
 
 		const tryRelayoutSuggestWidget = (availablePx: any) => {
 			// Best-effort poke of Monaco internals so keyboard navigation uses the updated height.
@@ -774,17 +760,17 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				const now = Date.now();
 				if (now - lastRelayoutAt < 16) return;
 				lastRelayoutAt = now;
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (!editor || typeof editor.getContribution !== 'function') return;
 				const ctrl = editor.getContribution('editor.contrib.suggestController');
 				if (!ctrl) return;
 
 				const candidates = [];
-				try { if (ctrl._widget) candidates.push(ctrl._widget); } catch { /* ignore */ }
-				try { if (ctrl.widget) candidates.push(ctrl.widget); } catch { /* ignore */ }
-				try { if (ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch { /* ignore */ }
-				try { if (ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch { /* ignore */ }
+				try { if (ctrl._widget) candidates.push(ctrl._widget); } catch (e) { console.error('[kusto]', e); }
+				try { if (ctrl.widget) candidates.push(ctrl.widget); } catch (e) { console.error('[kusto]', e); }
+				try { if (ctrl._suggestWidget) candidates.push(ctrl._suggestWidget); } catch (e) { console.error('[kusto]', e); }
+				try { if (ctrl.suggestWidget) candidates.push(ctrl.suggestWidget); } catch (e) { console.error('[kusto]', e); }
 
 				const avail = Math.max(0, Math.floor(Number(availablePx) || 0));
 				for (const w0 of candidates) {
@@ -793,19 +779,17 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					try {
 						if (typeof w.layout === 'function') {
 							// Some implementations accept (dimension) or no args.
-							try { w.layout(); } catch { /* ignore */ }
-							try { if (avail) w.layout({ height: avail }); } catch { /* ignore */ }
-							try { if (avail) w.layout(avail); } catch { /* ignore */ }
+							try { w.layout(); } catch (e) { console.error('[kusto]', e); }
+							try { if (avail) w.layout({ height: avail }); } catch (e) { console.error('[kusto]', e); }
+							try { if (avail) w.layout(avail); } catch (e) { console.error('[kusto]', e); }
 						}
-					} catch { /* ignore */ }
-					try { if (typeof w._layout === 'function') w._layout(); } catch { /* ignore */ }
-					try { if (typeof w._resize === 'function') w._resize(); } catch { /* ignore */ }
-					try { if (w._tree && typeof w._tree.layout === 'function' && avail) w._tree.layout(avail); } catch { /* ignore */ }
-					try { if (w._list && typeof w._list.layout === 'function' && avail) w._list.layout(avail); } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { if (typeof w._layout === 'function') w._layout(); } catch (e) { console.error('[kusto]', e); }
+					try { if (typeof w._resize === 'function') w._resize(); } catch (e) { console.error('[kusto]', e); }
+					try { if (w._tree && typeof w._tree.layout === 'function' && avail) w._tree.layout(avail); } catch (e) { console.error('[kusto]', e); }
+					try { if (w._list && typeof w._list.layout === 'function' && avail) w._list.layout(avail); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const applyMaxVisibleSuggestions = (maxVisible: any) => {
@@ -818,9 +802,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				// Monaco supports nested updateOptions for suggest.
 				// Keep other suggest config untouched.
 				editor.updateOptions({ suggest: { maxVisibleSuggestions: mv } });
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const computeMaxVisibleFromAvailablePx = (availablePx: any, rowHeightPx: any) => {
@@ -868,7 +850,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								const reduceByTop = Math.max(1, Math.ceil(topOverflow / Math.max(1, rowHeight)));
 								next = Math.max(1, next - reduceByTop);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						applyMaxVisibleSuggestions(next);
 						// If Monaco still overflows, apply DOM clamp and relayout as a fallback.
 						try {
@@ -883,8 +865,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								applyDomClampFallback(suggest, availablePx);
 								tryRelayoutSuggestWidget(availablePx);
 							}
-						} catch { /* ignore */ }
-					} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
+					} catch (e) { console.error('[kusto]', e); }
 				}, 0);
 			} catch {
 				pendingAdjustTimer = null;
@@ -905,9 +887,9 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				const ariaHidden = String((suggest.getAttribute && suggest.getAttribute('aria-hidden')) || '').toLowerCase();
 				const isVisible = ariaHidden !== 'true';
 				if (!isVisible) {
-					try { lastSuggestVisible = false; } catch { /* ignore */ }
-					try { if (suggestListObserver) suggestListObserver.disconnect(); } catch { /* ignore */ }
-					try { suggestListObserver = null; } catch { /* ignore */ }
+					try { lastSuggestVisible = false; } catch (e) { console.error('[kusto]', e); }
+					try { if (suggestListObserver) suggestListObserver.disconnect(); } catch (e) { console.error('[kusto]', e); }
+					try { suggestListObserver = null; } catch (e) { console.error('[kusto]', e); }
 					// When hidden, clear any fallback styles we may have applied.
 					clearInjectedSuggestStyles(suggest);
 					// When hidden, keep lastApplied.maxVisible; we'll recompute on next open.
@@ -918,8 +900,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				try {
 					if (!lastSuggestVisible) {
 						lastSuggestVisible = true;
-						try { lastPreselectTargetLower = ''; } catch { /* ignore */ }
-						try { lastPreselectFocusedLower = ''; } catch { /* ignore */ }
+						try { lastPreselectTargetLower = ''; } catch (e) { console.error('[kusto]', e); }
+						try { lastPreselectFocusedLower = ''; } catch (e) { console.error('[kusto]', e); }
 						scheduleSuggestPreselect();
 					}
 					// Observe list population/updates while visible; preselect is throttled + guarded.
@@ -930,7 +912,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						// Watch for list population/updates; avoid attribute watching to prevent hover flicker.
 						suggestListObserver.observe(suggest, { subtree: true, childList: true });
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				// Clear any fallback styles only if we previously applied them.
 				try {
@@ -939,7 +921,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					if (hadClamp) {
 						clearInjectedSuggestStyles(suggest);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const boundsRect = boundsDom.getBoundingClientRect();
 				const suggestRect = suggest.getBoundingClientRect();
@@ -970,7 +952,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 							tryRelayoutSuggestWidget(availablePx);
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const rowHeightPx = getRowHeightPx(suggest);
 				const maxVisible = computeMaxVisibleFromAvailablePx(availablePx, rowHeightPx);
@@ -986,12 +968,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 						applyDomClampFallback(suggest, availablePx);
 						tryRelayoutSuggestWidget(availablePx);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// After Monaco applies the option, validate we didn't still overflow and reduce if needed.
 				schedulePostLayoutAdjust(root, boundsDom, suggest);
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const scheduleClamp = () => {
@@ -1020,10 +1000,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 		const safeOn = (fn: any) => {
 			try {
 				if (fn && typeof fn.dispose === 'function') disposables.push(fn);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
-		try { safeOn(editor.onDidLayoutChange(() => scheduleClamp())); } catch { /* ignore */ }
-		try { safeOn(editor.onDidScrollChange(() => scheduleClamp())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidLayoutChange(() => scheduleClamp())); } catch (e) { console.error('[kusto]', e); }
+		try { safeOn(editor.onDidScrollChange(() => scheduleClamp())); } catch (e) { console.error('[kusto]', e); }
 		try {
 			safeOn(editor.onDidChangeCursorPosition(() => {
 				try {
@@ -1040,16 +1020,16 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 							const ariaHidden = String((widget && widget.getAttribute && widget.getAttribute('aria-hidden')) || '').toLowerCase();
 							const isVisible = widget && ariaHidden !== 'true';
 							if (isVisible) scheduleClamp();
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}, 120);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}));
-		} catch { /* ignore */ }
-		try { safeOn(editor.onDidFocusEditorWidget(() => scheduleClamp())); } catch { /* ignore */ }
-		try { safeOn(editor.onDidFocusEditorText(() => scheduleClamp())); } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { safeOn(editor.onDidFocusEditorWidget(() => scheduleClamp())); } catch (e) { console.error('[kusto]', e); }
+		try { safeOn(editor.onDidFocusEditorText(() => scheduleClamp())); } catch (e) { console.error('[kusto]', e); }
 		// Prevent a suggest widget in one editor from lingering and stealing clicks/focus.
-		try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
-		try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch { /* ignore */ }
+		try { safeOn(editor.onDidBlurEditorText(() => scheduleHideSuggestIfTrulyBlurred())); } catch (e) { console.error('[kusto]', e); }
+		try { safeOn(editor.onDidBlurEditorWidget(() => scheduleHideSuggestIfTrulyBlurred())); } catch (e) { console.error('[kusto]', e); }
 
 		// Install one global viewport listener to update all visible suggest widgets across editors.
 		try {
@@ -1064,57 +1044,55 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								ed.__kustoScheduleSuggestClamp();
 							}
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				};
 				window.addEventListener('resize', () => {
-					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
 				});
 				window.addEventListener('scroll', () => {
-					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch { /* ignore */ }
+					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
 				}, true);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Expose per-editor scheduler so the global listener can update all editors.
-		try { editor.__kustoScheduleSuggestClamp = scheduleClamp; } catch { /* ignore */ }
+		try { editor.__kustoScheduleSuggestClamp = scheduleClamp; } catch (e) { console.error('[kusto]', e); }
 		// Clamp once soon (handles cases where suggest widget is already open).
 		scheduleClamp();
 
 		const dispose = () => {
-			try { if (mo) mo.disconnect(); } catch { /* ignore */ }
-			try { mo = null; } catch { /* ignore */ }
-			try { if (suggestListObserver) suggestListObserver.disconnect(); } catch { /* ignore */ }
-			try { suggestListObserver = null; } catch { /* ignore */ }
+			try { if (mo) mo.disconnect(); } catch (e) { console.error('[kusto]', e); }
+			try { mo = null; } catch (e) { console.error('[kusto]', e); }
+			try { if (suggestListObserver) suggestListObserver.disconnect(); } catch (e) { console.error('[kusto]', e); }
+			try { suggestListObserver = null; } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (cursorClampTimer) {
 					clearTimeout(cursorClampTimer);
 					cursorClampTimer = null;
 				}
-			} catch { /* ignore */ }
-			try { lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null }; } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { lastApplied = { availablePx: null, rowHeightPx: null, maxVisible: null }; } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (pendingAdjustTimer) {
 					clearTimeout(pendingAdjustTimer);
 					pendingAdjustTimer = null;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				for (const d of disposables) {
-					try { d && d.dispose && d.dispose(); } catch { /* ignore */ }
+					try { d && d.dispose && d.dispose(); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			disposables = [];
-			try { delete editor.__kustoScheduleSuggestClamp; } catch { /* ignore */ }
-			try { delete editor.__kustoScheduleSuggestPreselect; } catch { /* ignore */ }
+			try { delete editor.__kustoScheduleSuggestClamp; } catch (e) { console.error('[kusto]', e); }
+			try { delete editor.__kustoScheduleSuggestPreselect; } catch (e) { console.error('[kusto]', e); }
 		};
 
 		try {
 			if (typeof editor.onDidDispose === 'function') {
 				editor.onDidDispose(() => dispose());
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		return dispose;
 	} catch {

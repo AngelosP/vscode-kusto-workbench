@@ -13,9 +13,7 @@ export function isDarkTheme() {
 				return true;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	const parseCssColorToRgb = (value: any) => {
 		const v = String(value || '').trim();
@@ -130,7 +128,7 @@ export function getVSCodeEditorBackground() {
 	try {
 		const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
 		if (bg) return bg;
-	} catch {}
+	} catch (e) { console.error('[kusto]', e); }
 	return null;
 }
 
@@ -193,9 +191,7 @@ export function applyMonacoTheme(monaco: any) {
 			// Fall back to original kusto themes if custom theme definition failed
 			monaco.editor.setTheme(dark ? 'kusto-dark' : 'kusto-light');
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function startMonacoThemeObserver(monaco: any) {
@@ -227,9 +223,7 @@ export function startMonacoThemeObserver(monaco: any) {
 		if (document && document.documentElement) {
 			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────

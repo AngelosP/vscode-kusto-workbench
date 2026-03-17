@@ -99,7 +99,7 @@ function getClusterLabelMap(connections: Array<{ clusterUrl: string; name?: stri
 					labelByCluster[host] = String(c.clusterUrl || host);
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	return labelByCluster;
 }
@@ -236,7 +236,7 @@ export class KwCachedValues extends LitElement {
 		if (this._requestPending) return;
 		try {
 			if (document.visibilityState !== 'visible') return;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		this._requestPending = true;
 		this._vscode.postMessage({ type: 'requestSnapshot' });
 	}

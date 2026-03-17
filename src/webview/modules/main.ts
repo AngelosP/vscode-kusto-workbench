@@ -17,9 +17,7 @@ document.addEventListener('keydown', async (event: any) => {
 		if (target && target.closest && (target.closest('.find-widget') || target.closest('.suggest-widget') || target.closest('.parameter-hints-widget'))) {
 			return;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Prefer whichever Monaco editor actually has focus.
 	// Only intercept paste when the editor TEXT area has focus, not widget focus.
@@ -32,9 +30,7 @@ document.addEventListener('keydown', async (event: any) => {
 				editor = _win.activeMonacoEditor;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback for older behavior: if a query editor is focused, use it.
 	if (!editor && _win.activeQueryEditorBoxId) {
@@ -46,9 +42,7 @@ document.addEventListener('keydown', async (event: any) => {
 					editor = qe;
 				}
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	if (!editor) {
@@ -107,17 +101,13 @@ try {
 				const dy = (typeof event.deltaY === 'number' && Number.isFinite(event.deltaY)) ? event.deltaY : 0;
 				const dx = (typeof event.deltaX === 'number' && Number.isFinite(event.deltaX)) ? event.deltaX : 0;
 				if (!dy && !dx) return;
-				try { window.scrollBy(dx, dy); } catch { /* ignore */ }
-				try { event.preventDefault(); } catch { /* ignore */ }
-				try { event.stopPropagation(); } catch { /* ignore */ }
-			} catch {
-				// ignore
-			}
+				try { window.scrollBy(dx, dy); } catch (e) { console.error('[kusto]', e); }
+				try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+				try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		}, { capture: true, passive: false });
 	}
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 // Close open modal dialogs on Escape.
 // Only intercept Escape when a modal is visible, so we don't interfere with
@@ -138,7 +128,7 @@ document.addEventListener('keydown', (event: any) => {
 					handled = true;
 					diffView.close();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Object Viewer
@@ -152,7 +142,7 @@ document.addEventListener('keydown', (event: any) => {
 					modal.classList.remove('visible');
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Column Analysis
 		if (!handled) {
@@ -166,7 +156,7 @@ document.addEventListener('keydown', (event: any) => {
 						modal.classList.remove('visible');
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Column Filter popover
@@ -178,10 +168,10 @@ document.addEventListener('keydown', (event: any) => {
 					if (typeof window.closeColumnFilterPopover === 'function') {
 						window.closeColumnFilterPopover();
 					} else {
-						try { modal.remove(); } catch { /* ignore */ }
+						try { modal.remove(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Sort dialog (per-results box)
@@ -199,7 +189,7 @@ document.addEventListener('keydown', (event: any) => {
 						modal.classList.remove('visible');
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Share Modal
@@ -214,19 +204,17 @@ document.addEventListener('keydown', (event: any) => {
 						modal.classList.remove('visible');
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		if (!handled) {
 			return;
 		}
 
-		try { event.preventDefault(); } catch { /* ignore */ }
-		try { event.stopPropagation(); } catch { /* ignore */ }
-		try { event.stopImmediatePropagation(); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
 // VS Code can intercept Ctrl/Cmd+Space in webviews; provide a reliable autocomplete path for Monaco.
@@ -256,9 +244,9 @@ document.addEventListener('keydown', (event: any) => {
 		}
 
 		// We are handling it; avoid double-triggering Monaco keybindings.
-		try { event.preventDefault(); } catch { /* ignore */ }
-		try { event.stopPropagation(); } catch { /* ignore */ }
-		try { event.stopImmediatePropagation(); } catch { /* ignore */ }
+		try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
 
 		// Prefer the shared helper so we keep the "hide if no suggestions" behavior.
 		try {
@@ -267,17 +255,11 @@ document.addEventListener('keydown', (event: any) => {
 				window.__kustoTriggerAutocompleteForBoxId(boxId);
 				return;
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
-		} catch {
-			// ignore
-		}
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
 // --- KQL language service bridge (webview -> extension host) ---
@@ -301,14 +283,14 @@ try {
 			let timer: any = null;
 			try {
 				timer = setTimeout(() => {
-					try { delete __kustoResourceUriRequestResolversById[requestId]; } catch { /* ignore */ }
+					try { delete __kustoResourceUriRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
 					resolve(null);
 				}, 2000);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			__kustoResourceUriRequestResolversById[requestId] = {
 				resolve: (result: any) => {
-					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 					resolve(result);
 				}
 			};
@@ -321,15 +303,13 @@ try {
 					baseUri
 				});
 			} catch {
-				try { delete __kustoResourceUriRequestResolversById[requestId]; } catch { /* ignore */ }
-				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				try { delete __kustoResourceUriRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
+				try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 				resolve(null);
 			}
 		});
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 try {
 	window.__kustoRequestKqlDiagnostics = async function (args: any) {
@@ -345,14 +325,14 @@ try {
 			let timer: any = null;
 			try {
 				timer = setTimeout(() => {
-					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
 					resolve(null);
 				}, 1500);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			__kustoKqlLanguageRequestResolversById[requestId] = {
 				resolve: (result: any) => {
-					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 					resolve(result);
 				}
 			};
@@ -365,15 +345,13 @@ try {
 					params: { text, connectionId, database, boxId }
 				});
 			} catch {
-				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
-				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
+				try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 				resolve(null);
 			}
 		});
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 try {
 	window.__kustoRequestKqlTableReferences = async function (args: any) {
@@ -389,14 +367,14 @@ try {
 			let timer: any = null;
 			try {
 				timer = setTimeout(() => {
-					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
+					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
 					resolve(null);
 				}, 1500);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			__kustoKqlLanguageRequestResolversById[requestId] = {
 				resolve: (result: any) => {
-					try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+					try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 					resolve(result);
 				}
 			};
@@ -409,15 +387,13 @@ try {
 					params: { text, connectionId, database, boxId }
 				});
 			} catch {
-				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch { /* ignore */ }
-				try { if (timer) clearTimeout(timer); } catch { /* ignore */ }
+				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
+				try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
 				resolve(null);
 			}
 		});
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 function __kustoGetFocusedMonacoEditor() {
 	// Prefer whichever Monaco editor actually has focus.
@@ -430,9 +406,7 @@ function __kustoGetFocusedMonacoEditor() {
 				editor = _win.activeMonacoEditor;
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback for older behavior: if a query editor is focused, use it.
 	if (!editor && _win.activeQueryEditorBoxId) {
@@ -444,9 +418,7 @@ function __kustoGetFocusedMonacoEditor() {
 					editor = qe;
 				}
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	return editor;
 }
@@ -463,11 +435,11 @@ function __kustoGetFocusedMonacoEditor() {
 			const box = t ? t.closest('.query-box') : null;
 			const boxId = box && typeof box.id === 'string' ? box.id : '';
 			if (boxId && typeof _win.queryEditors === 'object' && _win.queryEditors && _win.queryEditors[boxId] && typeof _win.queryEditors[boxId].focus === 'function') {
-				try { _win.activeQueryEditorBoxId = boxId; } catch { /* ignore */ }
+				try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
 				_win.queryEditors[boxId].focus();
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Fallback: focus whichever Monaco editor is currently focused/active.
 		try {
@@ -475,7 +447,7 @@ function __kustoGetFocusedMonacoEditor() {
 			if (editor && typeof editor.focus === 'function') {
 				editor.focus();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	// Prevent mouse focus from moving onto toolbar buttons.
@@ -489,7 +461,7 @@ function __kustoGetFocusedMonacoEditor() {
 				// Prevent the browser from focusing the clicked element.
 				e.preventDefault();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 
 	// After toolbar clicks, return focus to Monaco.
@@ -513,7 +485,7 @@ function __kustoGetFocusedMonacoEditor() {
 			}
 
 			setTimeout(() => focusEditorForTarget(t), 0);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 })();
 
@@ -597,15 +569,13 @@ async function __kustoCopyOrCutMonacoEditorImpl( editor: any, eventOrNull: any, 
 			if (eventOrNull && typeof eventOrNull.stopImmediatePropagation === 'function') {
 				eventOrNull.stopImmediatePropagation();
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		if (isCut) {
 			try {
 				editor.executeEdits('clipboard', [{ range, text: '' }]);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-		try { editor.focus(); } catch { /* ignore */ }
+		try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
 		return true;
 	} catch {
 		// If clipboard write isn't permitted, fall back to default behavior.
@@ -619,9 +589,7 @@ try {
 	window.__kustoCopyOrCutMonacoEditor = async function (editor: any, isCut: any) {
 		return await __kustoCopyOrCutMonacoEditorImpl(editor, null, !!isCut);
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 // VS Code can intercept Ctrl/Cmd+X/C; provide reliable cut/copy paths for Monaco.
 document.addEventListener('keydown', (event: any) => {
@@ -686,7 +654,7 @@ document.addEventListener('keydown', (event: any) => {
 				return;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Also check event.target in case activeElement doesn't reflect the right element.
 	try {
 		const target = (event.target as HTMLElement);
@@ -695,7 +663,7 @@ document.addEventListener('keydown', (event: any) => {
 				return;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (activeEl && activeEl.id === _win.activeQueryEditorBoxId + '_copilot_input') {
 		event.preventDefault();
 		event.stopPropagation();
@@ -706,9 +674,7 @@ document.addEventListener('keydown', (event: any) => {
 			if (typeof _win.__kustoCopilotWriteQuerySend === 'function') {
 				_win.__kustoCopilotWriteQuerySend(_win.activeQueryEditorBoxId);
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -721,9 +687,7 @@ document.addEventListener('keydown', (event: any) => {
 	}
 	try {
 		_win.executeQuery(_win.activeQueryEditorBoxId);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
 // F1 should show the Monaco hover tooltip (docs) when inside the editor.
@@ -744,14 +708,10 @@ document.addEventListener('keydown', (event: any) => {
 		if (typeof event.stopImmediatePropagation === 'function') {
 			event.stopImmediatePropagation();
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		editor.trigger('keyboard', 'editor.action.showHover', {});
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
 // Escape hides the custom caret tooltip overlay (without interfering with Monaco default behavior).
@@ -766,9 +726,7 @@ document.addEventListener('keydown', (event: any) => {
 				overlay.hide();
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
 // If the webview loses focus, hide any visible caret tooltip.
@@ -780,9 +738,7 @@ window.addEventListener('blur', () => {
 				overlay.hide();
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	// Also reset any stuck resize-drag interaction state.
 	try {
 		if (document && document.body) {
@@ -795,10 +751,8 @@ window.addEventListener('blur', () => {
 		}
 		try {
 			(document.querySelectorAll('.query-editor-resizer.is-dragging') || []).forEach((el: any) => el.classList.remove('is-dragging'));
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 // When the webview becomes active again, Monaco can occasionally end up with its hidden
@@ -808,9 +762,7 @@ window.addEventListener('focus', () => {
 		if (typeof _win.__kustoEnsureAllEditorsWritableSoon === 'function') {
 			_win.__kustoEnsureAllEditorsWritableSoon();
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -818,9 +770,7 @@ document.addEventListener('visibilitychange', () => {
 		if (!document.hidden && typeof _win.__kustoEnsureAllEditorsWritableSoon === 'function') {
 			_win.__kustoEnsureAllEditorsWritableSoon();
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	// Reset any stuck drag state when the tab visibility changes.
 	try {
 		if (document && document.body) {
@@ -833,10 +783,8 @@ document.addEventListener('visibilitychange', () => {
 		}
 		try {
 			(document.querySelectorAll('.query-editor-resizer.is-dragging') || []).forEach((el: any) => el.classList.remove('is-dragging'));
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 window.addEventListener('message', async (event: any) => {
@@ -851,7 +799,7 @@ window.addEventListener('message', async (event: any) => {
 						if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
 							window.__kustoControlCommandDocCache = {};
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const ok = !!message.ok;
 						const syntax = ok && typeof message.syntax === 'string' ? String(message.syntax) : '';
@@ -861,21 +809,19 @@ window.addEventListener('message', async (event: any) => {
 							withArgs,
 							fetchedAt: Date.now()
 						};
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						if (window.__kustoControlCommandDocPending && typeof window.__kustoControlCommandDocPending === 'object') {
 							delete window.__kustoControlCommandDocPending[commandLower];
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
 							window.__kustoRefreshActiveCaretDocs();
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'ensureComparisonBox':
 			try {
@@ -890,7 +836,7 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof _win.optimizeQueryWithCopilot === 'function') {
 						comparisonBoxId = await _win.optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					(_win.vscode as any).postMessage({
 						type: 'comparisonBoxEnsured',
@@ -898,8 +844,8 @@ window.addEventListener('message', async (event: any) => {
 						sourceBoxId: boxId,
 						comparisonBoxId: String(comparisonBoxId || '')
 					});
-				} catch { /* ignore */ }
-			} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'persistenceMode':
 				try {
@@ -908,7 +854,7 @@ window.addEventListener('message', async (event: any) => {
 						if (typeof message.documentUri === 'string') {
 							window.__kustoDocumentUri = String(message.documentUri);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (typeof message.documentKind === 'string') {
 								window.__kustoDocumentKind = String(message.documentKind);
@@ -916,9 +862,9 @@ window.addEventListener('message', async (event: any) => {
 									if (document && document.body && document.body.dataset) {
 										document.body.dataset.kustoDocumentKind = String(message.documentKind);
 									}
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (Array.isArray(message.allowedSectionKinds)) {
 								window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
@@ -935,7 +881,7 @@ window.addEventListener('message', async (event: any) => {
 							if (typeof message.compatibilityTooltip === 'string') {
 								window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 							if (typeof _win.__kustoSetCompatibilityMode === 'function') {
 								_win.__kustoSetCompatibilityMode(!!message.compatibilityMode);
 							} else {
@@ -945,10 +891,8 @@ window.addEventListener('message', async (event: any) => {
 							if (typeof _win.__kustoApplyDocumentCapabilities === 'function') {
 								_win.__kustoApplyDocumentCapabilities();
 							}
-						} catch { /* ignore */ }
-				} catch {
-					// ignore
-				}
+						} catch (e) { console.error('[kusto]', e); }
+				} catch (e) { console.error('[kusto]', e); }
 				break;
 		case 'upgradedToKqlx':
 			// The extension host has upgraded the file format from .kql/.csl to .kqlx.
@@ -959,13 +903,13 @@ window.addEventListener('message', async (event: any) => {
 				} else {
 					window.__kustoCompatibilityMode = false;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const k = message && message.addKind ? String(message.addKind) : '';
 				if (k && typeof _win.__kustoRequestAddSection === 'function') {
 					_win.__kustoRequestAddSection(k);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'enabledKqlxSidecar':
 			// The extension host has enabled a companion .kqlx metadata file for a .kql/.csl document.
@@ -976,24 +920,24 @@ window.addEventListener('message', async (event: any) => {
 				} else {
 					window.__kustoCompatibilityMode = false;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const k = message && message.addKind ? String(message.addKind) : '';
 				if (k && typeof _win.__kustoRequestAddSection === 'function') {
 					_win.__kustoRequestAddSection(k);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
 			_win.connections = message.connections;
-			try { window.connections = _win.connections; } catch { /* ignore */ }
+			try { window.connections = _win.connections; } catch (e) { console.error('[kusto]', e); }
 			_win.lastConnectionId = message.lastConnectionId;
 			_win.lastDatabase = message.lastDatabase;
 			_win.cachedDatabases = message.cachedDatabases || {};
 			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			_win.leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
-			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch { /* ignore */ }
-			try { window.__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch { /* ignore */ }
+			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
+			try { window.__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
 			_win.caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			_win.autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			_win.copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
@@ -1001,37 +945,37 @@ window.addEventListener('message', async (event: any) => {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
 				// When true, document-level restore should not override this global preference.
 				window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			_win.updateConnectionSelects();
 			try {
 				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
 					window.__kustoUpdateFavoritesUiForAllBoxes();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
 					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
 					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
 					window.__kustoOnConnectionsUpdated();
 				}
-			} catch { /* ignore */ }
-			try { _win.updateCaretDocsToggleButtons(); } catch { /* ignore */ }
-			try { _win.updateAutoTriggerAutocompleteToggleButtons(); } catch { /* ignore */ }
-			try { _win.updateCopilotInlineCompletionsToggleButtons(); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { _win.updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { _win.updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { _win.updateCopilotInlineCompletionsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
@@ -1067,14 +1011,14 @@ window.addEventListener('message', async (event: any) => {
 					}
 				}
 				// Persist after mutation
-				try { _win.schedulePersist('devnotes-update'); } catch { /* ignore */ }
-			} catch { /* ignore */ }
+				try { _win.schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 			// Respond to extension host if a requestId was provided
 			try {
 				if (message.requestId) {
 					(_win.vscode as any).postMessage({ type: 'updateDevNotesResponse', requestId: message.requestId, success: true });
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		}
 		case 'favoritesData':
@@ -1083,17 +1027,17 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
 					window.__kustoUpdateFavoritesUiForAllBoxes();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
 					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
 					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			// If this update came from an "Add favorite" action in a specific box, automatically
 			// switch that box into Favorites mode.
 			try {
@@ -1103,23 +1047,21 @@ window.addEventListener('message', async (event: any) => {
 						window.__kustoEnterFavoritesModeForBox(boxId);
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'confirmRemoveFavoriteResult':
 			try {
 				if (typeof window.__kustoOnConfirmRemoveFavoriteResult === 'function') {
 					window.__kustoOnConfirmRemoveFavoriteResult(message);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'documentData':
 			try {
 				if (typeof _win.handleDocumentDataMessage === 'function') {
 					_win.handleDocumentDataMessage(message);
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'revealTextRange':
 			try {
@@ -1136,7 +1078,7 @@ window.addEventListener('message', async (event: any) => {
 						phase: 'revealTextRange(received)',
 						detail: `${String(message.documentUri || '')} ${sl}:${sc}-${el}:${ec} matchLen=${matchLen}`
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (typeof window.__kustoRevealTextRangeFromHost === 'function') {
 					window.__kustoRevealTextRangeFromHost(message);
 					try {
@@ -1145,11 +1087,9 @@ window.addEventListener('message', async (event: any) => {
 							phase: 'revealTextRange(dispatched)',
 							detail: `${String(message.documentUri || '')}`
 						});
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'resolveResourceUriResult':
 			try {
@@ -1157,10 +1097,10 @@ window.addEventListener('message', async (event: any) => {
 				const r = __kustoResourceUriRequestResolversById && __kustoResourceUriRequestResolversById[reqId];
 				if (r && typeof r.resolve === 'function') {
 					const uri = (message && message.ok && typeof message.uri === 'string') ? String(message.uri) : null;
-					try { r.resolve(uri); } catch { /* ignore */ }
-					try { delete __kustoResourceUriRequestResolversById[reqId]; } catch { /* ignore */ }
+					try { r.resolve(uri); } catch (e) { console.error('[kusto]', e); }
+					try { delete __kustoResourceUriRequestResolversById[reqId]; } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'kqlLanguageResponse':
 			try {
@@ -1169,10 +1109,10 @@ window.addEventListener('message', async (event: any) => {
 				if (r && typeof r.resolve === 'function') {
 					try {
 						r.resolve(message.ok ? (message.result || null) : null);
-					} catch { /* ignore */ }
-					try { delete __kustoKqlLanguageRequestResolversById[reqId]; } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { delete __kustoKqlLanguageRequestResolversById[reqId]; } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'databasesData':
 			// Resolve pending database list request if this was a synthetic request id.
@@ -1188,7 +1128,7 @@ window.addEventListener('message', async (event: any) => {
 							const parts = rest.split('__');
 							cid = parts && parts.length ? decodeURIComponent(parts[0]) : '';
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const list = (Array.isArray(message.databases) ? message.databases : [])
 						.map((d: any) => String(d || '').trim())
 						.filter(Boolean)
@@ -1210,17 +1150,17 @@ window.addEventListener('message', async (event: any) => {
 										clusterKey = String(clusterUrl || '').trim().toLowerCase();
 									}
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							if (clusterKey) {
 								_win.cachedDatabases[clusterKey] = list;
 							}
 						}
-					} catch { /* ignore */ }
-					try { r.resolve(list); } catch { /* ignore */ }
-					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
+					try { r.resolve(list); } catch (e) { console.error('[kusto]', e); }
+					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			_win.updateDatabaseSelect(message.boxId, message.databases, message.connectionId);
 			break;
@@ -1229,20 +1169,18 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const r = _win.databasesRequestResolversByBoxId && _win.databasesRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.reject === 'function') {
-					try { r.reject(new Error(message && message.error ? String(message.error) : 'Failed to load databases.')); } catch { /* ignore */ }
-					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					try { r.reject(new Error(message && message.error ? String(message.error) : 'Failed to load databases.')); } catch (e) { console.error('[kusto]', e); }
+					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof _win.onDatabasesError === 'function') {
 					_win.onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
 				} else if (typeof window.__kustoDisplayBoxError === 'function') {
 					window.__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'importConnectionsXmlText':
 			try {
@@ -1251,25 +1189,23 @@ window.addEventListener('message', async (event: any) => {
 					? _win.parseKustoExplorerConnectionsXml(text)
 					: [];
 				if (!imported || !imported.length) {
-					try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch { /* ignore */ }
+					try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 				(_win.vscode as any).postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: message.boxId });
 			} catch (e: any) {
-				try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (e && e.message ? e.message : String(e)) }); } catch { /* ignore */ }
+				try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
 			}
 			break;
 		case 'importConnectionsXmlError':
-			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch { /* ignore */ }
+			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'queryResult':
 			try {
 				if (message.boxId) {
 					window.lastExecutedBox = message.boxId;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				// Always target the concrete boxId when available (prevents races when
 				// multiple queries are running and keeps comparison summaries in sync).
@@ -1278,7 +1214,7 @@ window.addEventListener('message', async (event: any) => {
 						if (typeof _win.setQueryExecuting === 'function') {
 							_win.setQueryExecuting(message.boxId, false);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					if (typeof _win.displayResultForBox === 'function') {
 						_win.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 					} else {
@@ -1298,9 +1234,7 @@ window.addEventListener('message', async (event: any) => {
 				if (message.boxId && typeof _win.__kustoOnQueryResult === 'function') {
 					_win.__kustoOnQueryResult(message.boxId, message.result);
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			// Check if this is a comparison box result
 			try {
 				if (message.boxId && _win.optimizationMetadataByBoxId[message.boxId]) {
@@ -1327,18 +1261,14 @@ window.addEventListener('message', async (event: any) => {
 						_win.displayComparisonSummary(message.boxId, comparisonBoxId);
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'queryError':
 			try {
 				if (message && message.boxId) {
 					window.lastExecutedBox = message.boxId;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const boxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
 				const err = (message && 'error' in message) ? message.error : 'Query execution failed.';
@@ -1346,7 +1276,7 @@ window.addEventListener('message', async (event: any) => {
 					if (boxId && typeof _win.setQueryExecuting === 'function') {
 						_win.setQueryExecuting(boxId, false);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (boxId && typeof window.__kustoRenderErrorUx === 'function') {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
 					window.__kustoRenderErrorUx(boxId, err, clientActivityId);
@@ -1364,15 +1294,13 @@ window.addEventListener('message', async (event: any) => {
 				if (message.boxId) {
 					window.lastExecutedBox = message.boxId;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
 				if (cancelledBoxId && typeof _win.setQueryExecuting === 'function') {
 					_win.setQueryExecuting(cancelledBoxId, false);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (typeof _win.displayCancelled === 'function') {
 				_win.displayCancelled();
 			} else {
@@ -1390,15 +1318,13 @@ window.addEventListener('message', async (event: any) => {
 						_win.__kustoEnsureResultsShownForTool(boxId);
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'pythonResult':
-			try { if (typeof _win.onPythonResult === 'function') _win.onPythonResult(message); } catch { /* ignore */ }
+			try { if (typeof _win.onPythonResult === 'function') _win.onPythonResult(message); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'pythonError':
-			try { if (typeof _win.onPythonError === 'function') _win.onPythonError(message); } catch { /* ignore */ }
+			try { if (typeof _win.onPythonError === 'function') _win.onPythonError(message); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'urlContent':
 			// Handled by <kw-url-section> Lit component via window message listener.
@@ -1416,7 +1342,7 @@ window.addEventListener('message', async (event: any) => {
 						break;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			
 			try {
 				const cid = String(message.connectionId || '').trim();
@@ -1424,17 +1350,17 @@ window.addEventListener('message', async (event: any) => {
 				if (cid && db) {
 					_win.schemaByConnDb[cid + '|' + db] = message.schema;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Resolve pending schema request if this was a synthetic request id.
 			try {
 				const r = _win.schemaRequestResolversByBoxId && _win.schemaRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.resolve === 'function') {
-					try { r.resolve(message.schema); } catch { /* ignore */ }
-					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					try { r.resolve(message.schema); } catch (e) { console.error('[kusto]', e); }
+					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
@@ -1472,7 +1398,7 @@ window.addEventListener('message', async (event: any) => {
 								if (model && model.uri) {
 									modelUri = model.uri.toString();
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 
 							// If we can't resolve a model URI yet (editor not ready), retry later.
 							if (!modelUri) {
@@ -1520,7 +1446,7 @@ window.addEventListener('message', async (event: any) => {
 			// 	if (typeof window.__kustoScheduleKustoDiagnostics === 'function') {
 			// 		window.__kustoScheduleKustoDiagnostics(message.boxId, 0);
 			// 	}
-			// } catch { /* ignore */ }
+			// } catch (e) { console.error('[kusto]', e); }
 			{
 				const meta = message.schemaMeta || {};
 				const tablesCount = meta.tablesCount ?? (message.schema?.tables?.length ?? 0);
@@ -1571,16 +1497,16 @@ window.addEventListener('message', async (event: any) => {
 						break;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			// Resolve pending schema request if this was a synthetic request id.
 			try {
 				const r = _win.schemaRequestResolversByBoxId && _win.schemaRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.reject === 'function') {
-					try { r.reject(new Error(message.error || 'Schema fetch failed')); } catch { /* ignore */ }
-					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch { /* ignore */ }
+					try { r.reject(new Error(message.error || 'Schema fetch failed')); } catch (e) { console.error('[kusto]', e); }
+					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
 			_win.setSchemaLoading(message.boxId, false);
 			try {
@@ -1591,15 +1517,13 @@ window.addEventListener('message', async (event: any) => {
 			} catch {
 				try {
 					_win.setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			try {
 				if (typeof window.__kustoDisplayBoxError === 'function') {
 					window.__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'crossClusterSchemaData':
 			// Handle cross-cluster schema response
@@ -1627,15 +1551,13 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
 					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 			case 'connectionAdded':
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {
 					_win.connections = message.connections;
-					try { window.connections = _win.connections; } catch { /* ignore */ }
+					try { window.connections = _win.connections; } catch (e) { console.error('[kusto]', e); }
 				}
 				if (message.lastConnectionId) {
 					_win.lastConnectionId = message.lastConnectionId;
@@ -1648,7 +1570,7 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof window.__kustoOnConnectionsUpdated === 'function') {
 						window.__kustoOnConnectionsUpdated();
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {
@@ -1661,9 +1583,7 @@ window.addEventListener('message', async (event: any) => {
 							}));
 						}
 					}
-				} catch {
-					// ignore
-				}
+				} catch (e) { console.error('[kusto]', e); }
 				break;
 		case 'copilotChatFirstTimeResult':
 			try {
@@ -1678,7 +1598,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 				}
 				// 'openedAgent' and 'dismissed': do nothing in webview (agent was opened or dialog dismissed).
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotAvailability':
 			try {
@@ -1691,13 +1611,13 @@ window.addEventListener('message', async (event: any) => {
 						const inProgress = !!(btn.dataset && btn.dataset.kustoCopilotChatInProgress === '1');
 						if (!available) {
 							btn.disabled = true;
-							try { if (btn.dataset) btn.dataset.kustoDisabledByCopilot = '1'; } catch { /* ignore */ }
+							try { if (btn.dataset) btn.dataset.kustoDisabledByCopilot = '1'; } catch (e) { console.error('[kusto]', e); }
 							btn.title = 'Copilot chat\n\nGitHub Copilot is required for this feature. Enable Copilot in VS Code to use Copilot-assisted query writing.';
 							btn.setAttribute('aria-disabled', 'true');
 						} else {
 							const disabledByCopilot = !!(btn.dataset && btn.dataset.kustoDisabledByCopilot === '1');
 							if (disabledByCopilot) {
-								try { if (btn.dataset) delete btn.dataset.kustoDisabledByCopilot; } catch { /* ignore */ }
+								try { if (btn.dataset) delete btn.dataset.kustoDisabledByCopilot; } catch (e) { console.error('[kusto]', e); }
 								if (!inProgress) {
 									btn.disabled = false;
 									btn.setAttribute('aria-disabled', 'false');
@@ -1715,7 +1635,7 @@ window.addEventListener('message', async (event: any) => {
 					} else {
 						applyToButton(document.getElementById(boxId + '_copilot_chat_toggle'));
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 				if (optimizeBtn) {
 					// The "Compare two queries" button does not require Copilot.
@@ -1724,7 +1644,7 @@ window.addEventListener('message', async (event: any) => {
 							delete optimizeBtn.dataset.kustoDisabledByCopilot;
 							delete optimizeBtn.dataset.kustoCopilotAvailable;
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					optimizeBtn.title = 'Compare two queries';
 					optimizeBtn.setAttribute('aria-label', 'Compare two queries');
 					// Do not forcibly enable if some other flow disabled it (e.g. query box is removed).
@@ -1733,9 +1653,9 @@ window.addEventListener('message', async (event: any) => {
 						if (optimizeBtn.disabled && optimizeBtn.dataset && optimizeBtn.dataset.kustoOptimizeInProgress !== '1') {
 							optimizeBtn.disabled = false;
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'optimizeQueryStatus':
 			try {
@@ -1747,8 +1667,8 @@ window.addEventListener('message', async (event: any) => {
 					} else if (typeof _win.__kustoUpdateOptimizeStatus === 'function') {
 						_win.__kustoUpdateOptimizeStatus(boxId, status);
 					}
-				} catch { /* ignore */ }
-			} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'compareQueryPerformanceWithQuery':
 			try {
@@ -1757,7 +1677,7 @@ window.addEventListener('message', async (event: any) => {
 				if (boxId && typeof _win.optimizeQueryWithCopilot === 'function') {
 					Promise.resolve(_win.optimizeQueryWithCopilot(boxId, query));
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'optimizeQueryReady':
 			try {
@@ -1766,12 +1686,12 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof _win.__kustoSetOptimizeInProgress === 'function') {
 						_win.__kustoSetOptimizeInProgress(sourceBoxId, false, '');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof _win.__kustoHideOptimizePromptForBox === 'function') {
 						_win.__kustoHideOptimizePromptForBox(sourceBoxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				const optimizedQuery = message.optimizedQuery || '';
 				let queryName = message.queryName || '';
 				// Ensure the source section has a name for optimization.
@@ -1783,18 +1703,18 @@ window.addEventListener('message', async (event: any) => {
 						if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 							sourceName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
 							nameEl.value = sourceName;
-							try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						}
 						if (sourceName) {
 							queryName = sourceName;
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				// Fallback: if we still don't have a name (e.g. input missing), pick one.
 				if (!String(queryName || '').trim() && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 					try {
 						queryName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				const desiredOptimizedName = String(queryName || '').trim() ? (String(queryName || '').trim() + ' (optimized)') : '';
 				const connectionId = message.connectionId || '';
@@ -1804,7 +1724,7 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof window.__kustoPrettifyKustoText === 'function') {
 						prettifiedOptimizedQuery = window.__kustoPrettifyKustoText(optimizedQuery);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				
 				// If a comparison box already exists for this source, reuse it.
 				if (_win.optimizationMetadataByBoxId[sourceBoxId] && _win.optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
@@ -1813,42 +1733,42 @@ window.addEventListener('message', async (event: any) => {
 					if (comparisonBoxId && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 						try {
 							comparisonEditor.setValue(prettifiedOptimizedQuery);
-							try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-						} catch { /* ignore */ }
+							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+						} catch (e) { console.error('[kusto]', e); }
 						// Name the optimized section "<source name> (optimized)".
 						try {
 							const nameEl = document.getElementById(comparisonBoxId + '_name') as any;
 							if (nameEl) {
 								if (desiredOptimizedName) {
 									nameEl.value = desiredOptimizedName;
-									try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+									try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 								}
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							_win.optimizationMetadataByBoxId[comparisonBoxId] = _win.optimizationMetadataByBoxId[comparisonBoxId] || {};
 							_win.optimizationMetadataByBoxId[comparisonBoxId].sourceBoxId = sourceBoxId;
 							_win.optimizationMetadataByBoxId[comparisonBoxId].isComparison = true;
 							_win.optimizationMetadataByBoxId[comparisonBoxId].originalQuery = _win.queryEditors[sourceBoxId] ? _win.queryEditors[sourceBoxId].getValue() : '';
 							_win.optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (typeof _win.__kustoSetLinkedOptimizationMode === 'function') {
 								_win.__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (typeof _win.__kustoSetResultsVisible === 'function') {
 								_win.__kustoSetResultsVisible(sourceBoxId, false);
 								_win.__kustoSetResultsVisible(comparisonBoxId, false);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						try {
 							_win.executeQuery(sourceBoxId);
 							setTimeout(() => {
-								try { _win.executeQuery(comparisonBoxId); } catch { /* ignore */ }
+								try { _win.executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 							}, 100);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 
 					// Restore the optimize button state on source box
@@ -1875,12 +1795,12 @@ window.addEventListener('message', async (event: any) => {
 						_win.__kustoSetResultsVisible(sourceBoxId, false);
 						_win.__kustoSetResultsVisible(comparisonBoxId, false);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof _win.__kustoSetLinkedOptimizationMode === 'function') {
 						_win.__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				
 				// Store optimization metadata
 				_win.optimizationMetadataByBoxId[comparisonBoxId] = {
@@ -1900,7 +1820,7 @@ window.addEventListener('message', async (event: any) => {
 					if (sourceBox && comparisonBox && sourceBox.parentNode && comparisonBox.parentNode) {
 						sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				
 				// Set connection and database to match source
 				const compKwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(comparisonBoxId) : null;
@@ -1949,7 +1869,7 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof _win.__kustoApplyOptimizeQueryOptions === 'function') {
 					_win.__kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'optimizeQueryError':
 			try {
@@ -1958,12 +1878,12 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof _win.__kustoSetOptimizeInProgress === 'function') {
 						_win.__kustoSetOptimizeInProgress(boxId, false, '');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof _win.__kustoHideOptimizePromptForBox === 'function') {
 						_win.__kustoHideOptimizePromptForBox(boxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 				if (optimizeBtn) {
 					optimizeBtn.disabled = false;
@@ -1972,7 +1892,7 @@ window.addEventListener('message', async (event: any) => {
 						delete optimizeBtn.dataset.originalContent;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQueryOptions':
 			try {
@@ -1985,7 +1905,7 @@ window.addEventListener('message', async (event: any) => {
 						message.tools || []
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQueryStatus':
 			try {
@@ -1993,7 +1913,7 @@ window.addEventListener('message', async (event: any) => {
 				if (boxId && typeof window.__kustoCopilotWriteQueryStatus === 'function') {
 					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '', message.detail || '', message.role || '');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQuerySetQuery':
 			try {
@@ -2001,7 +1921,7 @@ window.addEventListener('message', async (event: any) => {
 				if (boxId && typeof window.__kustoCopilotWriteQuerySetQuery === 'function') {
 					window.__kustoCopilotWriteQuerySetQuery(boxId, message.query || '');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQueryExecuting':
 			try {
@@ -2010,7 +1930,7 @@ window.addEventListener('message', async (event: any) => {
 				if (boxId && typeof _win.setQueryExecuting === 'function') {
 					_win.setQueryExecuting(boxId, executing);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQueryToolResult':
 			try {
@@ -2024,7 +1944,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotExecutedQuery':
 			try {
@@ -2039,7 +1959,7 @@ window.addEventListener('message', async (event: any) => {
 						message.result || null // Pass result for insert-with-results
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotGeneralQueryRulesLoaded':
 			try {
@@ -2052,7 +1972,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotUserQuerySnapshot':
 			try {
@@ -2064,7 +1984,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotDevNotesContextLoaded':
 			try {
@@ -2076,7 +1996,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotDevNoteToolCall':
 			try {
@@ -2093,7 +2013,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotClarifyingQuestion':
 			try {
@@ -2105,7 +2025,7 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || ''
 					);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQueryDone':
 			try {
@@ -2113,7 +2033,7 @@ window.addEventListener('message', async (event: any) => {
 				if (boxId && typeof window.__kustoCopilotWriteQueryDone === 'function') {
 					window.__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotInlineCompletionResult':
 			console.log('[Kusto] Received copilotInlineCompletionResult', message);
@@ -2150,7 +2070,7 @@ window.addEventListener('message', async (event: any) => {
 				console.error('[Kusto Tools] Error getting state:', err);
 				try {
 					(_win.vscode as any).postMessage({ type: 'toolStateResponse', requestId: message.requestId, sections: [] });
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			break;
 		
@@ -2176,7 +2096,7 @@ window.addEventListener('message', async (event: any) => {
 						const nameInput = document.getElementById(id + '_name') as any;
 						if (nameInput) {
 							nameInput.value = String(name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
 				};
@@ -2274,7 +2194,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -2306,7 +2226,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2337,7 +2257,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2385,7 +2305,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2408,7 +2328,7 @@ window.addEventListener('message', async (event: any) => {
 						const nameInput = document.getElementById(sectionId + '_name') as any;
 						if (nameInput) {
 							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
 							success = true;
 						}
 					}
@@ -2474,7 +2394,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2503,7 +2423,7 @@ window.addEventListener('message', async (event: any) => {
 							try {
 								const previewRows = rows.slice(0, 5);
 								preview = JSON.stringify({ columns, rows: previewRows, totalRows: rowCount }, null, 2);
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							
 							(_win.vscode as any).postMessage({ 
 								type: 'toolResponse', 
@@ -2518,7 +2438,7 @@ window.addEventListener('message', async (event: any) => {
 								result: { success: false, error: resultMsg.error || 'Query execution failed' }
 							});
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				};
 				
 				window.addEventListener('message', resultHandler);
@@ -2553,7 +2473,7 @@ window.addEventListener('message', async (event: any) => {
 						const nameInput = document.getElementById(sectionId + '_name') as any;
 						if (nameInput) {
 							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
 							success = true;
 						}
 					}
@@ -2577,7 +2497,7 @@ window.addEventListener('message', async (event: any) => {
 									if (typeof _win.__kustoMaximizeMarkdownBox === 'function') {
 										_win.__kustoMaximizeMarkdownBox(sectionId);
 									}
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							};
 							// Apply immediately and with delays to handle async editor layout
 							fitToContents();
@@ -2588,7 +2508,7 @@ window.addEventListener('message', async (event: any) => {
 								if (typeof window.__kustoApplyMarkdownEditorMode === 'function') {
 									window.__kustoApplyMarkdownEditorMode(sectionId);
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						} else {
 							// Editor not initialized yet - text will be applied when editor initializes
 							// from __kustoPendingMarkdownTextByBoxId
@@ -2605,7 +2525,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2626,7 +2546,7 @@ window.addEventListener('message', async (event: any) => {
 						const nameInput = document.getElementById(sectionId + '_name') as any;
 						if (nameInput) {
 							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
 							success = true;
 						}
 					}
@@ -2653,7 +2573,7 @@ window.addEventListener('message', async (event: any) => {
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2673,7 +2593,7 @@ window.addEventListener('message', async (event: any) => {
 						const nameInput = document.getElementById(sectionId + '_name') as any;
 						if (nameInput) {
 							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch { /* ignore */ }
+							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
 							success = true;
 						}
 					}
@@ -2693,7 +2613,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch { /* ignore */ }
+				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2738,7 +2658,7 @@ window.addEventListener('message', async (event: any) => {
 							const conn = _win.connections.find((c: any) => c && String(c.id || '') === currentConnectionId);
 							currentClusterUrl = conn ? String(conn.clusterUrl || '') : '';
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					
 					if (!currentConnectionId) {
 						(_win.vscode as any).postMessage({ 
@@ -2775,7 +2695,7 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof _win.setRunMode === 'function') {
 						_win.setRunMode(sectionId, 'plain');
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
 				if (typeof window.__kustoSetCopilotChatVisible === 'function') {
@@ -2820,7 +2740,7 @@ window.addEventListener('message', async (event: any) => {
 						if (editor && typeof editor.getValue === 'function') {
 							generatedQuery = editor.getValue() || generatedQuery;
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					
 					// Don't call __kustoCopilotWriteQueryDone here — the regular
 					// 'copilotWriteQueryDone' handler already does it.
@@ -2840,7 +2760,7 @@ window.addEventListener('message', async (event: any) => {
 								rowCount = rows.length;
 							}
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					
 					// Fallback to message data
 					if (columns.length === 0 && msg && msg.result && msg.result.primaryResults && msg.result.primaryResults.length > 0) {
@@ -2881,7 +2801,7 @@ window.addEventListener('message', async (event: any) => {
 							try {
 								const editor = _win.queryEditors && _win.queryEditors[sectionId];
 								generatedQuery = editor && typeof editor.getValue === 'function' ? editor.getValue() : '';
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 							
 							if (!msg.ok) {
 								responded = true;
@@ -2956,7 +2876,7 @@ window.addEventListener('message', async (event: any) => {
 							if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
 								window.__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						
 						(_win.vscode as any).postMessage({ 
 							type: 'toolResponse', 
@@ -3004,12 +2924,12 @@ window.addEventListener('message', async (event: any) => {
 						new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })
 					]).catch(() => {
 						// Fallback to plain text if HTML clipboard write fails.
-						try { navigator.clipboard.writeText(text); } catch { /* ignore */ }
+						try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); }
 					});
 				} else if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
 					navigator.clipboard.writeText(text);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 
 		case 'resetCopilotModelSelection':
@@ -3021,11 +2941,11 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).setState) {
 					(_win.vscode as any).setState(state);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				// Clear from localStorage
 				localStorage.removeItem('kusto.optimize.lastModelId');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 	}
 });
@@ -3035,9 +2955,9 @@ window.addEventListener('message', async (event: any) => {
 if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 	(_win.vscode as any).postMessage({ type: 'getConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
-	try { (_win.vscode as any).postMessage({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch { /* ignore */ }
+	try { (_win.vscode as any).postMessage({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }
 	// Request document state on load (.kqlx custom editor)
-	try { (_win.vscode as any).postMessage({ type: 'requestDocument' }); } catch { /* ignore */ }
+	try { (_win.vscode as any).postMessage({ type: 'requestDocument' }); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Initial content is now driven by the .kqlx document state.
@@ -3058,9 +2978,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			if (container.dataset) {
 				container.dataset.kustoSectionReorder = 'true';
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		let draggingId = '';
 		let draggingOriginalNextSibling: any = null;
@@ -3083,29 +3001,29 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 					};
 					document.addEventListener('dragenter', (e: any) => {
 						if (!draggingId) return;
-						try { e.preventDefault(); } catch { /* ignore */ }
+						try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 						// Only suppress drag events outside the container, so live reordering still works.
 						if (isInContainer(e.target)) return;
-						try { e.stopPropagation(); } catch { /* ignore */ }
-						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+						try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
 					}, true);
 				document.addEventListener('dragover', (e: any) => {
 					if (!draggingId) return;
-					try { e.preventDefault(); } catch { /* ignore */ }
+					try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 						// Allow container dragover to run so we can live-reorder.
 						if (isInContainer(e.target)) return;
-						try { e.stopPropagation(); } catch { /* ignore */ }
-						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+						try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
 				}, true);
 				document.addEventListener('drop', (e: any) => {
 					if (!draggingId) return;
 						// If the drop is inside the container, let the container's drop handler finish the reorder.
 						if (isInContainer(e.target)) return;
-						try { e.preventDefault(); } catch { /* ignore */ }
-						try { e.stopPropagation(); } catch { /* ignore */ }
-						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch { /* ignore */ }
+						try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+						try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+						try { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
 				}, true);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const resyncArraysFromDom = () => {
@@ -3113,13 +3031,11 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 				const ids = Array.from(container.children || [])
 					.map((el: any) => (el && el.id ? String(el.id) : ''))
 					.filter(Boolean);
-				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch { /* ignore */ }
-				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch { /* ignore */ }
-				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch { /* ignore */ }
-				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch { /* ignore */ }
-			} catch {
-				// ignore
-			}
+				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const bestEffortRelayoutMovedEditors = (boxId: any) => {
@@ -3131,12 +3047,10 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 				if (!editors.length) return;
 				setTimeout(() => {
 					for (const ed of editors) {
-						try { if (ed && typeof ed.layout === 'function') ed.layout(); } catch { /* ignore */ }
+						try { if (ed && typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}, 0);
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		// ── Reorder Popup: intercept drag-handle mousedown to open the minimap popup ──
@@ -3164,7 +3078,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 							el = (el.getRootNode?.() as any)?.host ?? null;
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				return null;
 			};
 
@@ -3180,7 +3094,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 					if (popup && typeof popup.open === 'function' && !popup.isOpen) {
 						popup.open(targetSectionId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 
 			const onMouseUp = () => {
@@ -3197,7 +3111,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			document.addEventListener('mousedown', (e: MouseEvent) => {
 				if (pending) return;
 				// Check compatibility mode
-				try { if (window.__kustoCompatibilityMode) return; } catch { /* ignore */ }
+				try { if (window.__kustoCompatibilityMode) return; } catch (e) { console.error('[kusto]', e); }
 				// Find handle across shadow DOM
 				const path = e.composedPath?.() ?? [];
 				let handle: HTMLElement | null = null;
@@ -3224,13 +3138,11 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			try {
 				// Only allow reordering in .kqlx mode.
 				if (window.__kustoCompatibilityMode) {
-					try { e.preventDefault(); } catch { /* ignore */ }
-					try { e.stopPropagation(); } catch { /* ignore */ }
+					try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+					try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 					return;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Check composedPath() first for shadow DOM drag handles, then fallback to e.target.closest.
 			let handle: any = null;
@@ -3242,7 +3154,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						break;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!handle) {
 				handle = e && e.target && e.target.closest ? e.target.closest('.section-drag-handle') : null;
 			}
@@ -3260,7 +3172,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						break;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			// Fallback: walk from the handle's host element
 			if (!box) {
 				try {
@@ -3276,14 +3188,14 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 							el = (el.getRootNode?.() as any)?.host ?? null;
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			if (!box || !box.id) {
 				return;
 			}
 
 			// Open the reorder popup instead of doing an inline drag.
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const popup = document.getElementById('sectionReorderPopup') as any;
 				if (popup && typeof popup.open === 'function') {
@@ -3292,7 +3204,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 					}
 					return;
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Fallback to legacy inline drag if popup is unavailable.
 			draggingId = String(box.id);
@@ -3307,12 +3219,10 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 				if (e.dataTransfer) {
 					e.dataTransfer.effectAllowed = 'move';
 					// Keep the text payload empty so dropping over an editor/input can't insert meaningful text.
-					try { e.dataTransfer.setData('text/plain', ''); } catch { /* ignore */ }
-					try { e.dataTransfer.setData('application/x-kusto-section-reorder', draggingId); } catch { /* ignore */ }
+					try { e.dataTransfer.setData('text/plain', ''); } catch (e) { console.error('[kusto]', e); }
+					try { e.dataTransfer.setData('application/x-kusto-section-reorder', draggingId); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		});
 
 		container.addEventListener('dragover', (e: any) => {
@@ -3324,9 +3234,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 				if (e.dataTransfer) {
 					e.dataTransfer.dropEffect = 'move';
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Live reorder as the mouse moves.
 			try {
@@ -3358,16 +3266,14 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						container.appendChild(dragged);
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		});
 
 		container.addEventListener('drop', (e: any) => {
 			if (!draggingId) {
 				return;
 			}
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			draggingDidDrop = true;
 			const dragged = document.getElementById(draggingId) as any;
 			if (!dragged) {
@@ -3404,14 +3310,14 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 					}
 				}
 			} catch {
-				try { container.appendChild(dragged); } catch { /* ignore */ }
+				try { container.appendChild(dragged); } catch (e) { console.error('[kusto]', e); }
 			}
 
 			resyncArraysFromDom();
 			bestEffortRelayoutMovedEditors(draggingId);
-			try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch { /* ignore */ }
+			try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
+			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 		});
@@ -3431,14 +3337,12 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						// Important: if the drop landed outside the container (e.g. over an editor/input),
 						// the container 'drop' handler may not fire. Persist the reverted DOM order so
 						// users can drag back to the original ordering and clear the dirty state.
-						try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch { /* ignore */ }
+						try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch { /* ignore */ }
+						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 			draggingDidDrop = false;
@@ -3483,7 +3387,7 @@ function __kustoToggleAddSectionDropdown( event: any) {
 			if (window.__kustoDropdown && typeof window.__kustoDropdown.closeAllMenus === 'function') {
 				window.__kustoDropdown.closeAllMenus();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) {
 			menu.style.display = 'none';
@@ -3497,7 +3401,7 @@ function __kustoToggleAddSectionDropdown( event: any) {
 		// Apply visibility based on allowed section kinds.
 		__kustoUpdateAddSectionDropdownVisibility();
 
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Called when a dropdown item is selected.
@@ -3513,7 +3417,7 @@ function __kustoAddSectionFromDropdown( kind: any) {
 		if (typeof _win.__kustoRequestAddSection === 'function') {
 			_win.__kustoRequestAddSection(kind);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Update dropdown item visibility based on allowed section kinds (mirrors __kustoApplyDocumentCapabilities logic).
@@ -3532,7 +3436,7 @@ function __kustoUpdateAddSectionDropdownVisibility() {
 				item.style.display = 'none';
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close dropdown when clicking outside.
@@ -3551,7 +3455,7 @@ document.addEventListener('click', (event: any) => {
 
 		menu.style.display = 'none';
 		if (btn) btn.setAttribute('aria-expanded', 'false');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 // Close dropdown on Escape key.
@@ -3564,7 +3468,7 @@ document.addEventListener('keydown', (event: any) => {
 
 		menu.style.display = 'none';
 		if (btn) btn.setAttribute('aria-expanded', 'false');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 // ── Window bridges for remaining legacy callers ──

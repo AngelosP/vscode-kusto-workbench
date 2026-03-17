@@ -22,7 +22,7 @@ const _win = window;
 			if (typeof (_win.escapeHtml) === 'function') {
 				return (_win.escapeHtml as any)(String(value ?? ''));
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return String(value ?? '')
 			.replace(/&/g, '&amp;')
 			.replace(/</g, '&lt;')
@@ -182,7 +182,7 @@ const _win = window;
 			if (typeof selectEl.closest === 'function') {
 				return selectEl.closest('.kusto-dropdown-wrapper') as HTMLElement | null;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return null;
 	};
 
@@ -190,14 +190,14 @@ const _win = window;
 		try {
 			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu, .md-mode-dropdown-menu, .section-mode-dropdown-menu, .add-controls-dropdown-menu'));
 			for (const m of menus) {
-				try { (m as HTMLElement).style.display = 'none'; } catch { /* ignore */ }
+				try { (m as HTMLElement).style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
 			}
 			const buttons = Array.from(document.querySelectorAll('.kusto-dropdown-btn, .kusto-favorites-btn, .qe-toolbar-dropdown-btn, .qe-toolbar-overflow-btn, .md-mode-dropdown-btn, .section-mode-dropdown-btn, .add-controls-dropdown-btn'));
 			for (const b of buttons) {
-				try { b.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
-				try { b.classList && b.classList.remove('is-active'); } catch { /* ignore */ }
+				try { b.setAttribute('aria-expanded', 'false'); } catch (e) { console.error('[kusto]', e); }
+				try { b.classList && b.classList.remove('is-active'); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.closeMenuDropdown = function (buttonId: string, menuId: string) {
@@ -207,14 +207,14 @@ const _win = window;
 		try {
 			const menu = document.getElementById(mid);
 			if (menu) (menu as HTMLElement).style.display = 'none';
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const btn = document.getElementById(bid);
 			if (btn) {
 				btn.setAttribute('aria-expanded', 'false');
-				try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
+				try { btn.classList && btn.classList.remove('is-active'); } catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.toggleMenuDropdown = function (opts: any) {
@@ -227,11 +227,11 @@ const _win = window;
 		if (!btn || !menu) return;
 		try {
 			if (btn.disabled) return;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { if (typeof (_win.closeAllRunMenus) === 'function') (_win.closeAllRunMenus as any)(); } catch { /* ignore */ }
-		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
+		try { if (typeof (_win.closeAllRunMenus) === 'function') (_win.closeAllRunMenus as any)(); } catch (e) { console.error('[kusto]', e); }
+		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) {
 			return;
@@ -241,15 +241,15 @@ const _win = window;
 			if (typeof o.beforeOpen === 'function') {
 				o.beforeOpen();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
-			try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+			try { btn.classList && btn.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
 			// Capture scroll position for threshold-based dismiss (see queryBoxes-toolbar.ts scroll handler)
-			try { _win.__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			try { _win.__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {
 			try {
@@ -283,7 +283,7 @@ const _win = window;
 
 				menuEl.style.left = left + 'px';
 				menuEl.style.top = top + 'px';
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		try {
@@ -291,27 +291,27 @@ const _win = window;
 			if (computedPos === 'fixed') {
 				positionFixedMenuUnderButton(btn, menu);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if (dd && typeof (dd.wireCloseOnFocusOut) === 'function') {
 				(dd.wireCloseOnFocusOut as any)(btn, menu);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if (dd && typeof (dd.wireMenuInteractions) === 'function') {
 				(dd.wireMenuInteractions as any)(menu);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if (typeof o.afterOpen === 'function') {
 				o.afterOpen();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
-		try { menu.focus(); } catch { /* ignore */ }
+		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.wireCloseOnFocusOut = function (buttonEl: HTMLElement, menuEl: HTMLElement) {
@@ -324,7 +324,7 @@ const _win = window;
 			if (typeof btn.closest === 'function') {
 				wrapper = btn.closest('.kusto-dropdown-wrapper') as HTMLElement || btn.closest('.select-wrapper') as HTMLElement;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		if (!wrapper) {
 			try { wrapper = menu.parentElement || null; } catch { wrapper = null; }
 		}
@@ -337,7 +337,7 @@ const _win = window;
 			if ((wrapper as any).dataset) {
 				(wrapper as any).dataset.kustoCloseOnBlurWired = '1';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		wrapper.addEventListener('focusout', () => {
 			try {
@@ -348,13 +348,13 @@ const _win = window;
 							return;
 						}
 						if (String(menu.style.display || '') === 'block') {
-							try { menu.style.display = 'none'; } catch { /* ignore */ }
-							try { btn.setAttribute('aria-expanded', 'false'); } catch { /* ignore */ }
-							try { btn.classList && btn.classList.remove('is-active'); } catch { /* ignore */ }
+							try { menu.style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
+							try { btn.setAttribute('aria-expanded', 'false'); } catch (e) { console.error('[kusto]', e); }
+							try { btn.classList && btn.classList.remove('is-active'); } catch (e) { console.error('[kusto]', e); }
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}, 0);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		});
 	};
 
@@ -382,18 +382,18 @@ const _win = window;
 		try {
 			const items = getMenuItems(menuEl);
 			for (const it of items) {
-				try { it.classList.remove('is-active'); } catch { /* ignore */ }
+				try { it.classList.remove('is-active'); } catch (e) { console.error('[kusto]', e); }
 			}
-			try { itemEl.classList.add('is-active'); } catch { /* ignore */ }
-			try { itemEl.focus(); } catch { /* ignore */ }
-			try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
+			try { itemEl.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
+			try { itemEl.focus(); } catch (e) { console.error('[kusto]', e); }
+			try { itemEl.scrollIntoView({ block: 'nearest' }); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const idx = items.indexOf(itemEl);
 				if (idx >= 0 && (menuEl as any).dataset) {
 					(menuEl as any).dataset.kustoActiveIndex = String(idx);
 				}
-			} catch { /* ignore */ }
-		} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	const getInitialActiveItem = (menuEl: HTMLElement): HTMLElement | null => {
@@ -405,9 +405,9 @@ const _win = window;
 					if (it.getAttribute && it.getAttribute('aria-selected') === 'true') {
 						return it;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return items[0];
 	};
 
@@ -423,30 +423,30 @@ const _win = window;
 				}
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if ((menuEl as any).dataset) {
 				(menuEl as any).dataset.kustoMenuWired = '1';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
-		try { menuEl.setAttribute('tabindex', '-1'); } catch { /* ignore */ }
+		try { menuEl.setAttribute('tabindex', '-1'); } catch (e) { console.error('[kusto]', e); }
 
 		try {
 			menuEl.addEventListener('mouseenter', (ev) => {
 				try {
 					const target = ev && ev.target ? (ev.target as HTMLElement).closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') as HTMLElement | null : null;
 					if (target) setActiveMenuItem(menuEl, target);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, true);
 			menuEl.addEventListener('focusin', (ev) => {
 				try {
 					const target = ev && ev.target ? (ev.target as HTMLElement).closest('.kusto-dropdown-item[role="option"], .kusto-favorites-item[role="option"]') as HTMLElement | null : null;
 					if (target) setActiveMenuItem(menuEl, target);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, true);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		menuEl.addEventListener('keydown', (ev) => {
 			const e = ev || window.event;
@@ -460,15 +460,15 @@ const _win = window;
 				if ((menuEl as any).dataset && typeof (menuEl as any).dataset.kustoActiveIndex === 'string') {
 					idx = parseInt((menuEl as any).dataset.kustoActiveIndex, 10);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			if (!(idx >= 0 && idx < items.length)) {
 				idx = Math.max(0, items.findIndex((it) => it.classList && it.classList.contains('is-active')));
 				if (idx < 0) idx = 0;
 			}
 
 			const prevent = () => {
-				try { e.preventDefault(); } catch { /* ignore */ }
-				try { e.stopPropagation(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+				try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 			};
 
 			switch (key) {
@@ -498,12 +498,12 @@ const _win = window;
 				case ' ': {
 					prevent();
 					const active = items[idx] || items[0];
-					try { active && active.click && active.click(); } catch { /* ignore */ }
+					try { active && active.click && active.click(); } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 				case 'Escape': {
 					prevent();
-					try { dd && (dd.closeAllMenus as any) && (dd.closeAllMenus as any)(); } catch { /* ignore */ }
+					try { dd && (dd.closeAllMenus as any) && (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 				default:
@@ -514,7 +514,7 @@ const _win = window;
 		try {
 			const initial = getInitialActiveItem(menuEl);
 			if (initial) setActiveMenuItem(menuEl, initial);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.syncSelectBackedDropdown = function (selectId: string) {
@@ -533,7 +533,7 @@ const _win = window;
 		try {
 			btn.disabled = !!select.disabled;
 			btn.setAttribute('aria-disabled', select.disabled ? 'true' : 'false');
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		let placeholderText = '';
 		try {
@@ -541,7 +541,7 @@ const _win = window;
 			if (ph && ph.disabled) {
 				placeholderText = String(ph.textContent || '').trim();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		let selectedLabel = '';
 		try {
@@ -550,12 +550,12 @@ const _win = window;
 				const shortLabel = opt.getAttribute('data-short-label');
 				selectedLabel = String(shortLabel || opt.textContent || '').trim();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		btnText.textContent = selectedLabel || placeholderText || 'Select...';
 		try {
 			btn.title = selectedLabel || '';
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const showLabelTooltips = (() => {
 			try {
@@ -587,7 +587,7 @@ const _win = window;
 					selected: !!o.selected
 				});
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		if (!items.length) {
 			menu.innerHTML = '<div class="kusto-dropdown-empty">No items.</div>';
@@ -617,7 +617,7 @@ const _win = window;
 
 		try {
 			select.value = nextValue;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			select.dispatchEvent(new Event('change', { bubbles: true }));
 		} catch {
@@ -625,10 +625,10 @@ const _win = window;
 				if (typeof select.onchange === 'function') {
 					(select as any).onchange();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-		try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
-		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
+		try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
+		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.toggleSelectMenu = function (selectId: string) {
@@ -648,14 +648,14 @@ const _win = window;
 				buttonId: btn.id,
 				menuId: menu.id,
 				beforeOpen: () => {
-					try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
+					try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
 				}
 			});
 		} catch {
-			try { (dd.syncSelectBackedDropdown as any)(id); } catch { /* ignore */ }
+			try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
-			try { menu.focus(); } catch { /* ignore */ }
+			try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 		}
 	};
 
@@ -771,13 +771,13 @@ const _win = window;
 		if (btn.disabled) return;
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { (dd.closeAllMenus as any)(); } catch { /* ignore */ }
+		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) return;
 
 		menu.style.display = 'block';
 		btn.setAttribute('aria-expanded', 'true');
-		try { btn.classList && btn.classList.add('is-active'); } catch { /* ignore */ }
+		try { btn.classList && btn.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
 
 		try {
 			const computedPos = window.getComputedStyle(menu).position;
@@ -813,23 +813,23 @@ const _win = window;
 
 					menu.style.left = left + 'px';
 					menu.style.top = top + 'px';
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if (!(menu as any).dataset.kustoStopPropagationWired) {
 				menu.addEventListener('click', (ev) => {
-					try { ev.stopPropagation(); } catch { /* ignore */ }
+					try { ev.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 				});
 				(menu as any).dataset.kustoStopPropagationWired = '1';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			(dd.wireCloseOnFocusOut as any)(btn, menu);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
-		try { menu.focus(); } catch { /* ignore */ }
+		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 	};
 })();

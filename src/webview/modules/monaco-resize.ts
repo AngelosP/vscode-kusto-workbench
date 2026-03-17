@@ -27,9 +27,9 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					try {
 						margin += parseFloat(cs.marginTop || '0') || 0;
 						margin += parseFloat(cs.marginBottom || '0') || 0;
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					return Math.max(0, Math.ceil(h + margin));
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
 				return Math.max(0, Math.ceil(h));
 			} catch {
@@ -48,9 +48,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					if (box && box.classList && box.classList.contains('is-md-preview')) {
 						return;
 					}
-				} catch {
-					// ignore
-				}
+				} catch (e) { console.error('[kusto]', e); }
 
 				// Skip auto-resize if Copilot chat is visible for this box.
 				// The chat panel adds content that would cause the section to keep growing;
@@ -63,9 +61,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 							return;
 						}
 					}
-				} catch {
-					// ignore
-				}
+				} catch (e) { console.error('[kusto]', e); }
 
 				// Skip auto-resize if the editor content is blank (empty or whitespace-only).
 				// This preserves the default height for newly created sections.
@@ -74,9 +70,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					if (!value || !value.trim()) {
 						return;
 					}
-				} catch {
-					// ignore
-				}
+				} catch (e) { console.error('[kusto]', e); }
 
 				const contentHeight = (typeof editor.getContentHeight === 'function') ? editor.getContentHeight() : 0;
 				if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) {
@@ -91,7 +85,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					const csw = getComputedStyle(wrapper);
 					chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 					chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				let extras = 0;
 				try {
@@ -103,20 +97,20 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 								if (!child || child === clip) continue;
 								chrome += addVisibleRectHeight(child);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						// Count visible clip children except the editor container (resizer, banners, placeholders).
 						try {
 							for (const child of Array.from(clip.children || [])) {
 								if (!child || child === containerEl) continue;
 								extras += addVisibleRectHeight(child);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						// Clip padding/borders.
 						try {
 							const csc = getComputedStyle(clip);
 							extras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
 							extras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					} else {
 						// No clip (e.g. Python box): count wrapper children other than the editor container.
 						try {
@@ -124,9 +118,9 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 								if (!child || child === containerEl) continue;
 								chrome += addVisibleRectHeight(child);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const next = Math.max(120, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX));
 
@@ -143,16 +137,12 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					if (wrapper.dataset) {
 						wrapper.dataset.kustoAutoResized = 'true';
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					// Ensure Monaco re-layouts after the container changes.
 					editor.layout();
-				} catch {
-					// ignore
-				}
-			} catch {
-				// ignore
-			}
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		// Apply once soon, and then on every content size change.
@@ -165,12 +155,8 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 			if (typeof editor.onDidContentSizeChange === 'function') {
 				editor.onDidContentSizeChange(() => apply());
 			}
-		} catch {
-			// ignore
-		}
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Window bridges ──────────────────────────────────────────────────────────

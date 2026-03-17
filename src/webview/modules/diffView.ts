@@ -38,7 +38,7 @@ const normalizeCell = (cell: any) => {
 		if (typeof _win.__kustoNormalizeCellForComparison === 'function') {
 			return _win.__kustoNormalizeCellForComparison(cell);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		// Very small fallback: stringify.
 		if (cell === null || cell === undefined) return ['n', null];
@@ -128,7 +128,7 @@ const buildColumnMappingByName = (state: any, canonicalNormalizedNames: any) => 
 		if (typeof (_win.__kustoBuildNameBasedColumnMapping) === 'function') {
 			return (_win.__kustoBuildNameBasedColumnMapping as any)(state, canonicalNormalizedNames);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback: exact normalized name match, first unused.
 	const cols = getColumns(state);
@@ -138,7 +138,7 @@ const buildColumnMappingByName = (state: any, canonicalNormalizedNames: any) => 
 			if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') {
 				return (_win.__kustoNormalizeColumnNameForComparison as any)(n);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const normalized = cols.map(normalizeName);
@@ -210,7 +210,7 @@ const buildCanonicalColumnsSorted = (aState: any, bState: any) => {
 			if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') {
 				return (_win.__kustoNormalizeColumnNameForComparison as any)(n);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 
@@ -412,9 +412,9 @@ const renderUsingSharedResultsTable = (hostEl: any, boxId: any, label: any, colu
 			if (body) {
 				body.style.display = '';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	} catch {
-		try { hostEl.innerHTML = '<div class="diff-empty">Failed to render table.</div>'; } catch { /* ignore */ }
+		try { hostEl.innerHTML = '<div class="diff-empty">Failed to render table.</div>'; } catch (e) { console.error('[kusto]', e); }
 	}
 };
 
@@ -451,9 +451,7 @@ const clampSharedResultsTableToMaxRows = (resultsHostEl: any, maxRows: any) => {
 		const capPx = headerH + rowsH + extra;
 		tableContainer.style.maxHeight = String(capPx) + 'px';
 		tableContainer.style.overflow = 'auto';
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 const getCellFromState = (state: any, rowIndex: any, colIndex: any) => {
@@ -566,7 +564,7 @@ const buildDiffModelFromStates = (aState: any, bState: any, labels: any) => {
 			if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') {
 				return (_win.__kustoNormalizeColumnNameForComparison as any)(n);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aSet = new Set(aCols.map(normalizeName));
@@ -691,7 +689,7 @@ const renderInto = (containerEl: any, model: any, options: any) => {
 		const join = buildInnerJoinResult(m, joinColumnKey || (columns[0] ? columns[0].key : ''));
 		renderUsingSharedResultsTable(joinHost, diffKeyPrefix + '_join', 'Inner join: only in ' + String(m.aLabel || 'A') + ' ⨝ only in ' + String(m.bLabel || 'B'), join.columns, join.rows);
 		clampSharedResultsTableToMaxRows(joinHost, 10);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 const ensureModalHookups = () => {
@@ -708,9 +706,9 @@ const ensureModalHookups = () => {
 				if (typeof (_win.closeDiffView) === 'function') {
 					(_win.closeDiffView as any)();
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 _win.closeDiffView = function () {
@@ -719,7 +717,7 @@ _win.closeDiffView = function () {
 		if (modal && modal.classList) {
 			modal.classList.remove('visible');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 _win.openDiffViewModal = function (args: any) {
@@ -738,13 +736,13 @@ _win.openDiffViewModal = function (args: any) {
 			aState = (_win.__kustoGetResultsState as any)(aBoxId);
 			bState = (_win.__kustoGetResultsState as any)(bBoxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (!aState || !bState) {
 		try {
 			if ((_win.vscode) && typeof (_win.vscode as any).postMessage === 'function') {
 				(_win.vscode as any).postMessage({ type: 'showInfo', message: 'No results available to diff yet. Run both queries first.' });
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -755,7 +753,7 @@ _win.openDiffViewModal = function (args: any) {
 	const titleEl = document.getElementById('diffViewTitle');
 	const bodyEl = document.getElementById('diffViewBody');
 	if (!modal || !bodyEl) return;
-	try { if (titleEl) titleEl.textContent = 'Diff: ' + aLabel + ' vs ' + bLabel; } catch { /* ignore */ }
+	try { if (titleEl) titleEl.textContent = 'Diff: ' + aLabel + ' vs ' + bLabel; } catch (e) { console.error('[kusto]', e); }
 
 	let joinColumnKey = '';
 
@@ -780,18 +778,18 @@ _win.openDiffViewModal = function (args: any) {
 				try {
 					const cols = model && Array.isArray(model.columns) ? model.columns : [];
 					joinColumnKey = cols && cols.length ? String(cols[0].key || '') : '';
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			renderInto(bodyEl, model, readOptions());
 			const selectEl = document.getElementById('diffJoinColumnSelect');
 			if (selectEl) {
-				try { (selectEl as HTMLInputElement).value = joinColumnKey || ''; } catch { /* ignore */ }
+				try { (selectEl as HTMLInputElement).value = joinColumnKey || ''; } catch (e) { console.error('[kusto]', e); }
 				selectEl.onchange = () => {
 					try { joinColumnKey = String((selectEl as HTMLInputElement).value || ''); } catch { joinColumnKey = ''; }
 					rerender();
 				};
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 
 	rerender();
@@ -803,7 +801,7 @@ _win.openDiffViewModal = function (args: any) {
 		if (closeBtn && typeof closeBtn.focus === 'function') {
 			closeBtn.focus();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Expose a reusable renderer API for non-modal hosts.

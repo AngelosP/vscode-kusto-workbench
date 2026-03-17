@@ -21,7 +21,7 @@ const normalizeCell = (cell: unknown): unknown[] => {
 		if (typeof _win.__kustoNormalizeCellForComparison === 'function') {
 			return _win.__kustoNormalizeCellForComparison(cell);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (cell === null || cell === undefined) return ['n', null];
 	if (typeof cell === 'number') return ['num', isFinite(cell) ? cell : String(cell)];
 	if (typeof cell === 'boolean') return ['bool', cell ? 1 : 0];
@@ -67,11 +67,11 @@ const buildColumnMappingByName = (state: any, canonicalNormalizedNames: string[]
 		if (typeof (_win.__kustoBuildNameBasedColumnMapping) === 'function') {
 			return _win.__kustoBuildNameBasedColumnMapping(state, canonicalNormalizedNames);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const cols = getColumns(state);
 	const used = new Set<number>();
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const normalized = cols.map(normName);
@@ -89,7 +89,7 @@ const buildCanonicalColumnsSorted = (aState: any, bState: any): { columns: Canon
 	const aCols = getColumns(aState);
 	const bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aNorm = aCols.map(normName);
@@ -192,7 +192,7 @@ const buildDiffModelFromStates = (aState: any, bState: any, labels: any): DiffMo
 
 	const aCols = getColumns(aState), bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch { /* ignore */ }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aSet = new Set(aCols.map(normName)), bSet = new Set(bCols.map(normName));
@@ -307,14 +307,14 @@ export class KwDiffView extends LitElement {
 				aState = _win.__kustoGetResultsState!(aBoxId);
 				bState = _win.__kustoGetResultsState!(bBoxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		if (!aState || !bState) {
 			try {
 				if (_win.vscode && typeof _win.vscode?.postMessage === 'function') {
 					_win.vscode?.postMessage({ type: 'showInfo', message: 'No results available to diff yet. Run both queries first.' });
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -541,14 +541,14 @@ window.closeDiffView = function () {
 		// Legacy fallback
 		const modal = document.getElementById('diffViewModal');
 		if (modal?.classList) modal.classList.remove('visible');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 window.openDiffViewModal = function (args: any) {
 	try {
 		const el = document.querySelector('kw-diff-view') as KwDiffView | null;
 		if (el) { el.open(args); return; }
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Expose the model builder for queryBoxes-execution.ts (counts matching/unmatching rows)

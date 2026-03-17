@@ -40,7 +40,7 @@ function __kustoCellToClipboardString(cell: any) {
 			s = s.replace(/\t/g, ' ');
 			return s;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const raw = _win.__kustoGetRawCellValue(cell);
 	if (raw === null || raw === undefined) return '';
@@ -88,7 +88,7 @@ function __kustoGetResultsAsCsv(boxId: any, mode: any) {
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) return '';
 
-	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch (e) { console.error('[kusto]', e); }
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
@@ -132,7 +132,7 @@ function __kustoSaveResultsToCsvFile(boxId: any, sectionLabel: any, mode: any) {
 	try {
 		const csv = (mode === 'visible') ? __kustoGetVisibleResultsAsCsv(boxId) : __kustoGetAllResultsAsCsv(boxId);
 		if (!csv || !csv.trim()) {
-			try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch { /* ignore */ }
+			try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'No results to save.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		if (typeof _win.vscode === 'undefined' || !_win.vscode || typeof _win.vscode.postMessage !== 'function') {
@@ -147,7 +147,7 @@ function __kustoSaveResultsToCsvFile(boxId: any, sectionLabel: any, mode: any) {
 		});
 	} catch (err) {
 		console.error('Failed to prepare CSV:', err);
-		try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch { /* ignore */ }
+		try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Failed to save results to file.' }); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -224,8 +224,8 @@ function __kustoHideSplitMenu() {
 		if (_win.__kustoSplitMenuEl) {
 			_win.__kustoSplitMenuEl.remove();
 		}
-	} catch { /* ignore */ }
-	try { _win.__kustoSplitMenuEl = null; } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoSplitMenuEl = null; } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoShowSplitMenu(anchorEl: any, label: any, onClick: any) {
@@ -233,7 +233,7 @@ function __kustoShowSplitMenu(anchorEl: any, label: any, onClick: any) {
 }
 
 function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
-	try { __kustoHideSplitMenu(); } catch { /* ignore */ }
+	try { __kustoHideSplitMenu(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (!anchorEl) return;
 		const safeItems = Array.isArray(items) ? items : [];
@@ -255,9 +255,9 @@ function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 			btn.className = 'kusto-split-menu-item';
 			btn.textContent = it.label;
 			btn.addEventListener('click', (ev: any) => {
-				try { ev.preventDefault(); ev.stopPropagation(); } catch { /* ignore */ }
-				try { __kustoHideSplitMenu(); } catch { /* ignore */ }
-				try { it.onClick && it.onClick(); } catch { /* ignore */ }
+				try { ev.preventDefault(); ev.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoHideSplitMenu(); } catch (e) { console.error('[kusto]', e); }
+				try { it.onClick && it.onClick(); } catch (e) { console.error('[kusto]', e); }
 			});
 			el.appendChild(btn);
 		}
@@ -280,8 +280,8 @@ function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 			}
 			if (left < margin) left = margin;
 			el.style.left = String(left) + 'px';
-		} catch { /* ignore */ }
-		try { el.style.visibility = ''; } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { el.style.visibility = ''; } catch (e) { console.error('[kusto]', e); }
 		setTimeout(() => {
 			try {
 				document.addEventListener('mousedown', function __kustoSplitMenuDismiss(ev) {
@@ -293,11 +293,11 @@ function __kustoShowSplitMenuItems(anchorEl: any, items: any) {
 						if (_win.__kustoSplitMenuEl.contains(ev.target as HTMLElement) || anchorEl.contains(ev.target as HTMLElement)) return;
 						__kustoHideSplitMenu();
 						document.removeEventListener('mousedown', __kustoSplitMenuDismiss);
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}, 0);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoSetSplitCaretsVisible(boxId: any, visible: any) {
@@ -312,7 +312,7 @@ function __kustoSetSplitCaretsVisible(boxId: any, visible: any) {
 		// When carets are hidden, make the primary button look like a normal (non-split) button.
 		if (saveSplit) saveSplit.classList.toggle('kusto-split-single', !visible);
 		if (copySplit) copySplit.classList.toggle('kusto-split-single', !visible);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateSplitButtonState(boxId: any) {
@@ -321,7 +321,7 @@ function __kustoUpdateSplitButtonState(boxId: any) {
 		const filtered = __kustoIsResultsFiltered(state);
 		__kustoSetSplitCaretsVisible(boxId, filtered);
 		if (!filtered) {
-			try { __kustoHideSplitMenu(); } catch { /* ignore */ }
+			try { __kustoHideSplitMenu(); } catch (e) { console.error('[kusto]', e); }
 		}
 
 		const saveBtn = document.getElementById(boxId + '_results_save_btn');
@@ -330,7 +330,7 @@ function __kustoUpdateSplitButtonState(boxId: any) {
 		const copyTooltip = filtered ? 'Copy filtered results to clipboard' : 'Copy results to clipboard';
 		if (saveBtn) { saveBtn.title = saveTooltip; saveBtn.setAttribute('aria-label', saveTooltip); }
 		if (copyBtn) { copyBtn.title = copyTooltip; copyBtn.setAttribute('aria-label', copyTooltip); }
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoOnSaveMenu(boxId: any, sectionLabel: any, anchor: any) {
@@ -341,7 +341,7 @@ function __kustoOnSaveMenu(boxId: any, sectionLabel: any, anchor: any) {
 			{ label: 'Save filtered results', onClick: () => __kustoSaveResultsToCsvFile(boxId, sectionLabel, 'visible') },
 			{ label: 'Save all results', onClick: () => __kustoSaveResultsToCsvFile(boxId, sectionLabel, 'all') }
 		]);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Drag selection support: allow mouse-drag to select a rectangular range of cells.
@@ -380,7 +380,7 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 					if (t && t.closest && t.closest('button, a, input, textarea, select')) {
 						return;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				const cell = getCellFromEvent(ev);
 				// Always focus the container on mousedown, even if not clicking a cell.
 				// This ensures the table container receives focus for keyboard navigation and copy.
@@ -404,7 +404,7 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 						isSyntheticDoubleClick = true;
 					}
 					state.__kustoLastCellMouseDown = { row: cell.row, col: cell.col, t: now };
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				// If clicking on an already selected single cell (not extending with shift), deselect it.
 				const isClickedCellFocused = state.selectedCell &&
@@ -425,7 +425,7 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 						} else {
 							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						return;
 					}
 
@@ -435,8 +435,8 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 					state.cellSelectionRange = null;
 					anchorCell = null;
 					isDragging = false;
-					try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
-					try { _win.__kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+					try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
+					try { _win.__kustoRerenderResultsTable(boxId); } catch (e) { console.error('[kusto]', e); }
 					return;
 				}
 
@@ -466,9 +466,9 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 						} else {
 							console.warn('[kusto-query-editor] openCellViewer() not available (did cellViewer.js load?)');
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const onMouseMove = (ev: any) => {
@@ -484,7 +484,7 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 				}
 				_win.__kustoSetCellSelectionState(boxId, state, cell.row, cell.col, { extend: true });
 				_win.__kustoRerenderResultsTable(boxId);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const onMouseUp = (ev: any) => {
@@ -494,8 +494,8 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 				const state = _win.__kustoGetResultsState(boxId);
 				if (!state) return;
 				// final selection already applied in mousemove/mousedown; ensure focus
-				try { const containerEl = document.getElementById(boxId + '_table_container'); if (containerEl) containerEl.focus(); } catch { }
-			} catch { /* ignore */ }
+				try { const containerEl = document.getElementById(boxId + '_table_container'); if (containerEl) containerEl.focus(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		// Attach on the container and document for global mouseup
@@ -506,7 +506,7 @@ function __kustoEnsureDragSelectionHandlers(boxId: any) {
 		// Mark installed and keep references for possible cleanup.
 		(container as any).__kustoDragHandlersInstalled = true;
 		(container as any).__kustoDragHandlers = { onMouseDown, onMouseMove, onMouseUp };
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRemoveDragSelectionHandlers(boxId: any) {
@@ -520,7 +520,7 @@ function __kustoRemoveDragSelectionHandlers(boxId: any) {
 		if (h.onMouseUp) document.removeEventListener('mouseup', h.onMouseUp);
 		(container as any).__kustoDragHandlersInstalled = false;
 		(container as any).__kustoDragHandlers = null;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function copyVisibleResultsToClipboard(boxId: any) {
@@ -535,7 +535,7 @@ function __kustoCopyResultsToClipboard(boxId: any, mode: any) {
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch (e) { console.error('[kusto]', e); }
 	const cols = Array.isArray(state.columns) ? state.columns : [];
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const disp = Array.isArray(state.displayRowIndices) ? state.displayRowIndices : null;
@@ -573,14 +573,14 @@ function __kustoOnCopyMenu(boxId: any, anchor: any) {
 			{ label: 'Copy filtered results to clipboard', onClick: () => __kustoCopyResultsToClipboard(boxId, 'visible') },
 			{ label: 'Copy all results to clipboard', onClick: () => __kustoCopyResultsToClipboard(boxId, 'all') }
 		]);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function copySelectionToClipboard(boxId: any) {
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) { return; }
 
-	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	try { _win.__kustoEnsureDisplayRowIndexMaps(state); } catch (e) { console.error('[kusto]', e); }
 
 	const columns = Array.isArray(state.columns) ? state.columns : [];
 
@@ -644,8 +644,8 @@ function __kustoHideContextMenu() {
 		if (_win.__kustoContextMenuEl) {
 			_win.__kustoContextMenuEl.remove();
 		}
-	} catch { /* ignore */ }
-	try { _win.__kustoContextMenuEl = null; } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoContextMenuEl = null; } catch (e) { console.error('[kusto]', e); }
 }
 
 function handleTableContextMenu(event: any, boxId: any) {
@@ -653,10 +653,33 @@ function handleTableContextMenu(event: any, boxId: any) {
 		if (!event) return;
 		event.preventDefault();
 		event.stopPropagation();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) { return; }
+
+	// If right-clicking a column header, open the column menu at the cursor.
+	try {
+		const th = event.target && event.target.closest ? event.target.closest('th[data-col]') : null;
+		if (th) {
+			const colIdx = parseInt(th.getAttribute('data-col'), 10);
+			if (isFinite(colIdx) && typeof _win.toggleColumnMenu === 'function') {
+				// Close any open column menu first, then open at the right-clicked column.
+				try { if (typeof _win.__kustoCloseAllColumnMenus === 'function') _win.__kustoCloseAllColumnMenus(); } catch (e) { console.error('[kusto]', e); }
+				_win.toggleColumnMenu(colIdx, boxId);
+				// Reposition the menu to the cursor instead of the ☰ button.
+				try {
+					const menuEl = document.getElementById(boxId + '_col_menu_' + colIdx);
+					if (menuEl) {
+						menuEl.style.position = 'fixed';
+						menuEl.style.left = (event.clientX || 0) + 'px';
+						menuEl.style.top = (event.clientY || 0) + 'px';
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			}
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// If right-clicking a cell, make it the focus cell first.
 	try {
@@ -695,10 +718,10 @@ function handleTableContextMenu(event: any, boxId: any) {
 					if (!clickedInsideRange) {
 						_win.selectCell(event, r, c, boxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	__kustoHideContextMenu();
 
@@ -712,14 +735,14 @@ function handleTableContextMenu(event: any, boxId: any) {
 	const btn = menu.querySelector('button') as any;
 	if (btn) {
 		btn.addEventListener('click', (e: any) => {
-			try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+			try { e.preventDefault(); e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 			copySelectionToClipboard(boxId);
 			__kustoHideContextMenu();
 		});
 	}
 
 	document.body.appendChild(menu);
-	try { _win.__kustoContextMenuEl = menu; } catch { /* ignore */ }
+	try { _win.__kustoContextMenuEl = menu; } catch (e) { console.error('[kusto]', e); }
 
 	setTimeout(() => {
 		try {
@@ -729,10 +752,10 @@ function handleTableContextMenu(event: any, boxId: any) {
 						__kustoHideContextMenu();
 						document.removeEventListener('mousedown', onDocMouseDown, true);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			document.addEventListener('mousedown', onDocMouseDown, true);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, 0);
 }
 

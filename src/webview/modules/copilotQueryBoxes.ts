@@ -15,9 +15,7 @@ function __kustoEnsureQueryBoxKindMap() {
 		if (!(_win.__kustoQueryBoxKindByBoxId as any) || typeof (_win.__kustoQueryBoxKindByBoxId as any) !== 'object') {
 			(_win.__kustoQueryBoxKindByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoQueryBoxKindByBoxId as any);
 }
 
@@ -26,9 +24,7 @@ function __kustoEnsureCopilotChatState() {
 		if (!(_win.__kustoCopilotChatStateByBoxId as any) || typeof (_win.__kustoCopilotChatStateByBoxId as any) !== 'object') {
 			(_win.__kustoCopilotChatStateByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoCopilotChatStateByBoxId as any);
 }
 
@@ -37,9 +33,7 @@ function __kustoEnsureCopilotToolResponseState() {
 		if (!(_win.__kustoCopilotToolResponsesByBoxId as any) || typeof (_win.__kustoCopilotToolResponsesByBoxId as any) !== 'object') {
 			(_win.__kustoCopilotToolResponsesByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoCopilotToolResponsesByBoxId as any);
 }
 
@@ -48,9 +42,7 @@ function __kustoEnsureCopilotToolSelectionState() {
 		if (!(_win.__kustoCopilotToolSelectionByBoxId as any) || typeof (_win.__kustoCopilotToolSelectionByBoxId as any) !== 'object') {
 			(_win.__kustoCopilotToolSelectionByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoCopilotToolSelectionByBoxId as any);
 }
 
@@ -59,9 +51,7 @@ function __kustoEnsureCopilotChatWidthState() {
 		if (!(_win.__kustoCopilotChatWidthPxByBoxId as any) || typeof (_win.__kustoCopilotChatWidthPxByBoxId as any) !== 'object') {
 			(_win.__kustoCopilotChatWidthPxByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoCopilotChatWidthPxByBoxId as any);
 }
 
@@ -70,9 +60,7 @@ function __kustoEnsureCopilotChatVisibilityState() {
 		if (!(_win.__kustoCopilotChatVisibleByBoxId as any) || typeof (_win.__kustoCopilotChatVisibleByBoxId as any) !== 'object') {
 			(_win.__kustoCopilotChatVisibleByBoxId as any) = {};
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return (_win.__kustoCopilotChatVisibleByBoxId as any);
 }
 
@@ -109,7 +97,7 @@ function __kustoCopilotAutoScrollToBottom(host: any) {
 					// If a programmatic scroll is in progress, skip the check.
 					if (host.__kustoAutoScrollProgrammatic) return;
 					host.__kustoAutoScrollPinned = __kustoIsNearBottom(host);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}, { passive: true });
 			host.__kustoAutoScrollInit = true;
 		}
@@ -121,10 +109,10 @@ function __kustoCopilotAutoScrollToBottom(host: any) {
 			// that fires synchronously from the assignment above is
 			// still treated as programmatic.
 			requestAnimationFrame(function () {
-				try { host.__kustoAutoScrollProgrammatic = false; } catch { /* ignore */ }
+				try { host.__kustoAutoScrollProgrammatic = false; } catch (e) { console.error('[kusto]', e); }
 			});
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Global tracker for currently visible tooltip to prevent overlaps
@@ -167,7 +155,7 @@ function __kustoSetupToolTooltip(wrapper: any, tooltip: any) {
 			}
 			tooltip.classList.add('is-visible');
 			__kustoCurrentVisibleTooltip = tooltip;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 	const cancelHide = () => {
 		try {
@@ -175,7 +163,7 @@ function __kustoSetupToolTooltip(wrapper: any, tooltip: any) {
 				clearTimeout(__kustoCurrentHideTimeout);
 				__kustoCurrentHideTimeout = null;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 	const hideTooltip = () => {
 		try {
@@ -185,7 +173,7 @@ function __kustoSetupToolTooltip(wrapper: any, tooltip: any) {
 					__kustoCurrentVisibleTooltip = null;
 				}
 			}, HIDE_DELAY);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
 	wrapper.addEventListener('mouseenter', showTooltip);
 	wrapper.addEventListener('mousemove', showTooltip);
@@ -201,7 +189,7 @@ function __kustoSetCopilotToggleButtonState(boxId: any, visible: any) {
 		if (!btn) return;
 		btn.classList.toggle('is-active', !!visible);
 		btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoCopilotLogoHtml() {
@@ -253,9 +241,7 @@ function __kustoCopilotChatHtml(boxId: any) {
 						"_copilot_model')}catch{}"
 				});
 			}
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		return (
 			'<div class="select-wrapper">' +
 				'<select id="' + boxId + '_copilot_model" aria-label="Copilot model"></select>' +
@@ -333,9 +319,9 @@ function __kustoSetCopilotToolsOptions(boxId: any, tools: any) {
 			stateByBox[id].enabledNext = (Array.isArray(stateByBox[id].enabledNext) ? stateByBox[id].enabledNext : [])
 				.map(String)
 				.filter((n: any) => n && known.has(String(n)));
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
-	try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+	try { __kustoRenderCopilotToolsPanel(id); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetEnabledToolsForNextMessage(boxId: any) {
@@ -357,7 +343,7 @@ function __kustoResetEnabledToolsForNextMessage(boxId: any) {
 	const tools = Array.isArray(st.tools) ? st.tools : [];
 	st.enabledNext = __kustoGetDefaultEnabledTools(tools);
 	stateByBox[id] = st;
-	try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+	try { __kustoRenderCopilotToolsPanel(id); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRenderCopilotToolsPanel(boxId: any) {
@@ -377,7 +363,7 @@ function __kustoRenderCopilotToolsPanel(boxId: any) {
 		'ask_user_clarifying_question'
 	]);
 
-	try { listHost.innerHTML = ''; } catch { /* ignore */ }
+	try { listHost.innerHTML = ''; } catch (e) { console.error('[kusto]', e); }
 
 	if (!tools || tools.length === 0) {
 		try {
@@ -388,7 +374,7 @@ function __kustoRenderCopilotToolsPanel(boxId: any) {
 			}
 			const panel = document.getElementById(id + '_copilot_tools_panel');
 			if (panel) panel.style.display = 'none';
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	try {
@@ -398,7 +384,7 @@ function __kustoRenderCopilotToolsPanel(boxId: any) {
 				toolsBtn.setAttribute('aria-pressed', 'false');
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	function appendGroupHeader(title: any, isFirst: any) {
 		const header = document.createElement('div');
@@ -435,7 +421,7 @@ function __kustoRenderCopilotToolsPanel(boxId: any) {
 				} else {
 					if (idx >= 0) arr.splice(idx, 1);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const textWrap = document.createElement('span');
@@ -496,7 +482,7 @@ function __kustoGetCopilotChatWidthPx(boxId: any) {
 		const map = __kustoEnsureCopilotChatWidthState();
 		const v = map[id];
 		if (typeof v === 'number' && Number.isFinite(v)) return v;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const pane = document.getElementById(id + '_copilot_chat_pane');
 		if (!pane) return undefined;
@@ -519,24 +505,24 @@ function __kustoSetCopilotChatWidthPx(boxId: any, widthPx: any) {
 				max = Math.max(MIN_CHAT_WIDTH_PX, total - MIN_EDITOR_WIDTH_PX);
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const next = __kustoClampNumber(widthPx, MIN_CHAT_WIDTH_PX, max);
 	try {
 		const pane = document.getElementById(id + '_copilot_chat_pane');
 		if (pane && pane.style) {
 			pane.style.flex = '0 1 ' + next + 'px';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const map = __kustoEnsureCopilotChatWidthState();
 		map[id] = next;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const editor = (_win.queryEditors as any) && (_win.queryEditors as any)[id];
 		if (editor && typeof editor.layout === 'function') {
 			editor.layout();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoAppendChatMessage(boxId: any, role: any, text: any, detail: any = '') {
@@ -558,9 +544,7 @@ function __kustoAppendChatMessage(boxId: any, role: any, text: any, detail: any 
 		}
 		host.appendChild(el);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoAppendCopilotTipMessage(boxId: any) {
@@ -575,15 +559,15 @@ function __kustoAppendCopilotTipMessage(boxId: any) {
 		link.title = 'Open the Kusto Workbench agent in VS Code Copilot Chat';
 		link.style.cursor = 'pointer';
 		link.addEventListener('click', (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
-			try { (_win.vscode as any).postMessage({ type: 'openCopilotAgent' }); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+			try { (_win.vscode as any).postMessage({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
 		});
 		el.appendChild(document.createTextNode('Tip: If the ask is very challenging or broad, use the '));
 		el.appendChild(link);
 		el.appendChild(document.createTextNode(' instead.'));
 		host.appendChild(el);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonText: any, entryId: any) {
@@ -642,7 +626,7 @@ function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonTe
 		viewIcon.className = 'codicon codicon-eye';
 		viewBtn.appendChild(viewIcon);
 		viewBtn.onclick = (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			try {
 				(_win.vscode as any).postMessage({
 					type: 'openToolResultInEditor',
@@ -651,7 +635,7 @@ function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonTe
 					label: safeLabel,
 					content: json
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		rightSide.appendChild(viewBtn);
 
@@ -665,7 +649,7 @@ function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonTe
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -674,7 +658,7 @@ function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonTe
 						boxId: boxId,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -706,9 +690,7 @@ function __kustoAppendToolResponse(boxId: any, toolName: any, label: any, jsonTe
 
 		host.appendChild(wrapper);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoSetCopilotChatRunning(boxId: any, running: any, statusText: any = '') {
@@ -716,7 +698,7 @@ function __kustoSetCopilotChatRunning(boxId: any, running: any, statusText: any 
 	try {
 		stateByBox[boxId] = stateByBox[boxId] || {};
 		stateByBox[boxId].running = !!running;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		const sendBtn = document.getElementById(boxId + '_copilot_send') as any;
@@ -724,7 +706,7 @@ function __kustoSetCopilotChatRunning(boxId: any, running: any, statusText: any 
 		const input = document.getElementById(boxId + '_copilot_input') as any;
 		const modelSel = document.getElementById(boxId + '_copilot_model') as any;
 		if (sendBtn) {
-			try { sendBtn.classList.toggle('is-running', !!running); } catch { /* ignore */ }
+			try { sendBtn.classList.toggle('is-running', !!running); } catch (e) { console.error('[kusto]', e); }
 			// When running, clicking the button should cancel instead of send.
 			if (running) {
 				sendBtn.title = 'Stop (Esc)';
@@ -743,8 +725,8 @@ function __kustoSetCopilotChatRunning(boxId: any, running: any, statusText: any 
 			if (modelSel && (_win.__kustoDropdown as any) && typeof (_win.__kustoDropdown as any).syncSelectBackedDropdown === 'function') {
 				(_win.__kustoDropdown as any).syncSelectBackedDropdown(boxId + '_copilot_model');
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (statusText) {
 		__kustoAppendChatMessage(boxId, 'notification', String(statusText));
@@ -764,7 +746,7 @@ function __kustoApplyModelOptions(boxId: any, models: any, selectedModelId: any)
 			ph.disabled = true;
 			ph.selected = true;
 			sel.appendChild(ph);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const safeModels = Array.isArray(models) ? models : [];
 		for (const m of safeModels as any[]) {
 			if (!m || !m.id) continue;
@@ -783,7 +765,7 @@ function __kustoApplyModelOptions(boxId: any, models: any, selectedModelId: any)
 			if (typeof (_win.__kustoGetLastOptimizeModelId as any) === 'function') {
 				preferred = String((_win.__kustoGetLastOptimizeModelId as any)() || '');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const hasPreferred = preferred && Array.from(sel.options).some((o: any) => o.value === preferred);
 		if (hasPreferred) {
@@ -801,12 +783,12 @@ function __kustoApplyModelOptions(boxId: any, models: any, selectedModelId: any)
 				if (typeof (_win.__kustoSetLastOptimizeModelId as any) === 'function') {
 					(_win.__kustoSetLastOptimizeModelId as any)(sel.value);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if ((_win.__kustoDropdown as any) && typeof (_win.__kustoDropdown as any).syncSelectBackedDropdown === 'function') {
 					(_win.__kustoDropdown as any).syncSelectBackedDropdown(boxId + '_copilot_model');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		// If we're using the menu-dropdown wrapper, sync it now.
@@ -814,10 +796,8 @@ function __kustoApplyModelOptions(boxId: any, models: any, selectedModelId: any)
 			if ((_win.__kustoDropdown as any) && typeof (_win.__kustoDropdown as any).syncSelectBackedDropdown === 'function') {
 				(_win.__kustoDropdown as any).syncSelectBackedDropdown(boxId + '_copilot_model');
 			}
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoSetQueryText(boxId: any, queryText: any) {
@@ -832,14 +812,12 @@ function __kustoSetQueryText(boxId: any, queryText: any) {
 			if (typeof (_win.__kustoPrettifyKustoText as any) === 'function') {
 				next = (_win.__kustoPrettifyKustoText as any)(next);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: next }]);
 		editor.focus();
-		try { (_win.schedulePersist as any) && (_win.schedulePersist as any)('copilotWriteQuery'); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { (_win.schedulePersist as any) && (_win.schedulePersist as any)('copilotWriteQuery'); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoInstallCopilotChat(boxId: any) {
@@ -872,11 +850,11 @@ function __kustoInstallCopilotChat(boxId: any) {
 		const editorPane = document.createElement('div');
 		editorPane.className = 'kusto-copilot-editor-pane';
 		for (const n of existingChildren) {
-			try { editorPane.appendChild(n); } catch { /* ignore */ }
+			try { editorPane.appendChild(n); } catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Rebuild wrapper.
-		try { editorWrapper.innerHTML = ''; } catch { /* ignore */ }
+		try { editorWrapper.innerHTML = ''; } catch (e) { console.error('[kusto]', e); }
 		// Order matters: editor (left) -> splitter -> chat (right).
 		split.appendChild(editorPane);
 		split.appendChild(splitter);
@@ -897,7 +875,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 			if (queryResizerEl) {
 				editorWrapper.appendChild(queryResizerEl);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Restore persisted width if available.
 		try {
@@ -905,7 +883,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 			if (typeof persisted === 'number' && Number.isFinite(persisted)) {
 				__kustoSetCopilotChatWidthPx(boxId, persisted);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Splitter drag behavior (reuses the same visual affordance as section resizers).
 		try {
@@ -913,7 +891,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				splitter.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;
@@ -925,7 +903,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 				let startW = DEFAULT_CHAT_WIDTH_PX;
 				try {
 					startW = Math.round(chatPane.getBoundingClientRect().width || DEFAULT_CHAT_WIDTH_PX);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				const onMove = (moveEvent: any) => {
 					// Chat is on the right. Dragging right shrinks the chat, dragging left grows it.
@@ -936,19 +914,19 @@ function __kustoInstallCopilotChat(boxId: any) {
 						if (total > 0) {
 							max = Math.max(MIN_CHAT_WIDTH_PX, total - MIN_EDITOR_WIDTH_PX);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const next = __kustoClampNumber(startW - delta, MIN_CHAT_WIDTH_PX, max);
 					try {
 						chatPane.style.flex = '0 1 ' + next + 'px';
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const map = __kustoEnsureCopilotChatWidthState();
 						map[boxId] = next;
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					try {
 						const editor = (_win.queryEditors as any) && (_win.queryEditors as any)[boxId];
 						if (editor && typeof editor.layout === 'function') editor.layout();
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				};
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
@@ -956,15 +934,13 @@ function __kustoInstallCopilotChat(boxId: any) {
 					splitter.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
-					try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch { /* ignore */ }
+					try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
 			});
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 
 		__kustoSetCopilotChatRunning(boxId, false);
 		__kustoAppendCopilotTipMessage(boxId);
@@ -972,7 +948,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 		// Ask extension for model list + default selection.
 		try {
 			(_win.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId || '') });
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Add Enter key handler to send message, Ctrl+Enter for newline
 		try {
@@ -988,12 +964,12 @@ function __kustoInstallCopilotChat(boxId: any) {
 							inputEl.value = inputEl.value.substring(0, start) + '\n' + inputEl.value.substring(end);
 							inputEl.selectionStart = inputEl.selectionEnd = start + 1;
 							inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						return;
 					}
 					// Enter without Shift sends the message
 					if (e.key === 'Enter' && !e.shiftKey) {
-						try { e.preventDefault(); } catch { /* ignore */ }
+						try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 						window.__kustoCopilotWriteQuerySend!(boxId);
 					}
 				});
@@ -1006,11 +982,11 @@ function __kustoInstallCopilotChat(boxId: any) {
 						inputEl.style.height = 'auto';
 						const scrollH = inputEl.scrollHeight;
 						inputEl.style.height = Math.max(minH, Math.min(maxH, scrollH + 4)) + 'px';
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				};
 				inputEl.addEventListener('input', autoGrow);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Chat input area resizer – drag to grow/shrink the textarea.
 		try {
@@ -1018,7 +994,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 			const chatTextarea = document.getElementById(boxId + '_copilot_input');
 			if (inputResizer && chatTextarea) {
 				inputResizer.addEventListener('mousedown', (e: any) => {
-					try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
+					try { e.preventDefault(); e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 					inputResizer.classList.add('is-dragging');
 					const prevCursor = document.body.style.cursor;
 					const prevUserSelect = document.body.style.userSelect;
@@ -1045,7 +1021,7 @@ function __kustoInstallCopilotChat(boxId: any) {
 					document.addEventListener('mouseup', onUp, true);
 				});
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// ResizeObserver: when the split container crosses the auto-hide threshold
 		// (320px = MIN_EDITOR_WIDTH + MIN_CHAT_WIDTH), the CSS container query
@@ -1066,17 +1042,15 @@ function __kustoInstallCopilotChat(boxId: any) {
 							editor.layout();
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			});
 			splitObserver.observe(split);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 // Expose get/set for persistence restore.
 (_win.__kustoGetCopilotChatWidthPx as any) = __kustoGetCopilotChatWidthPx;
 (_win.__kustoSetCopilotChatWidthPx as any) = __kustoSetCopilotChatWidthPx;
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetCopilotChatVisible(boxId: any) {
@@ -1087,7 +1061,7 @@ function __kustoGetCopilotChatVisible(boxId: any) {
 		if (typeof map[id] === 'boolean') {
 			return !!map[id];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Default: hidden unless explicitly enabled.
 	return false;
 }
@@ -1099,11 +1073,11 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 	try {
 		const map = __kustoEnsureCopilotChatVisibilityState();
 		map[id] = next;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Ensure UI exists before showing.
 	if (next) {
-		try { __kustoInstallCopilotChat(id); } catch { /* ignore */ }
+		try { __kustoInstallCopilotChat(id); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	try {
@@ -1111,7 +1085,7 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 		if (split && split.classList) {
 			split.classList.toggle(COPILOT_VISIBILITY_CLASS_HIDDEN, !next);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// When showing the chat, ensure the wrapper meets the min-height requirement.
 	if (next) {
@@ -1129,10 +1103,10 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 							(_win.__kustoManualQueryEditorHeightPxByBoxId as any) = {};
 						}
 						(_win.__kustoManualQueryEditorHeightPxByBoxId as any)[id] = minHeight;
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	__kustoSetCopilotToggleButtonState(id, next);
@@ -1142,8 +1116,8 @@ function __kustoSetCopilotChatVisible(boxId: any, visible: any) {
 		if (editor && typeof editor.layout === 'function') {
 			editor.layout();
 		}
-	} catch { /* ignore */ }
-	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { (_win.schedulePersist as any) && (_win.schedulePersist as any)(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Toolbar handler.
@@ -1155,7 +1129,7 @@ window.__kustoToggleCopilotChatForBox = function (boxId: any) {
 	if (!(_win.__kustoCopilotChatFirstTimeDismissed as any)) {
 		try {
 			(_win.vscode as any).postMessage({ type: 'copilotChatFirstTimeCheck', boxId: id });
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1172,11 +1146,11 @@ window.addCopilotQueryBox = function addCopilotQueryBox(options: any) {
 	try {
 		const kinds = __kustoEnsureQueryBoxKindMap();
 		kinds[id] = COPILOT_QUERY_KIND;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		__kustoInstallCopilotChat(id);
 		__kustoSetCopilotChatVisible(id, true);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 };
 
@@ -1212,14 +1186,14 @@ window.__kustoCopilotWriteQuerySend = function __kustoCopilotWriteQuerySend(boxI
 	try {
 		const editor = (_win.queryEditors as any) && (_win.queryEditors as any)[id];
 		currentQuery = editor ? (editor.getValue() || '') : '';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const modelId = ((document.getElementById(id + '_copilot_model') || {}) as any).value || '';
 	try {
 		if (typeof (_win.__kustoSetLastOptimizeModelId as any) === 'function') {
 			(_win.__kustoSetLastOptimizeModelId as any)(modelId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		__kustoAppendChatMessage(id, 'user', prompt);
@@ -1227,7 +1201,7 @@ window.__kustoCopilotWriteQuerySend = function __kustoCopilotWriteQuerySend(boxI
 			inputEl.value = '';
 			inputEl.style.height = '32px';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	__kustoSetCopilotChatRunning(id, true);
 
@@ -1258,10 +1232,10 @@ window.__kustoCopilotWriteQueryCancel = function __kustoCopilotWriteQueryCancel(
 		if (!stateByBox[id] || !stateByBox[id].running) {
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		(_win.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: id });
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// The send-icon button is toggled back to send mode via __kustoSetCopilotChatRunning(false).
 };
 
@@ -1270,25 +1244,25 @@ window.__kustoDisposeCopilotQueryBox = function __kustoDisposeCopilotQueryBox(bo
 	if (!id) return;
 	try {
 		(_win.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: id });
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const kinds = __kustoEnsureQueryBoxKindMap();
 		delete kinds[id];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const stateByBox = __kustoEnsureCopilotChatState();
 		delete stateByBox[id];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const toolState = __kustoEnsureCopilotToolSelectionState();
 		delete toolState[id];
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Called by main.js message handler.
 window.__kustoCopilotApplyWriteQueryOptions = function (boxId: any, models: any, selectedModelId: any, tools: any) {
 	__kustoApplyModelOptions(String(boxId || ''), models, selectedModelId);
-	try { __kustoSetCopilotToolsOptions(String(boxId || ''), tools || []); } catch { /* ignore */ }
+	try { __kustoSetCopilotToolsOptions(String(boxId || ''), tools || []); } catch (e) { console.error('[kusto]', e); }
 };
 
 // Track active panel for click-outside-to-close
@@ -1320,18 +1294,18 @@ window.__kustoCopilotClearConversation = function __kustoCopilotClearConversatio
 			// Reset auto-scroll state so new conversation starts pinned to bottom
 			(messagesHost as any).__kustoAutoScrollPinned = true;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		// Reset tool response sequence counter
 		const state = __kustoEnsureCopilotToolResponseState();
 		if (state[id]) {
 			state[id].seq = 0;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		// Notify extension to reset conversation state (so next message is treated as first)
 		(_win.vscode as any).postMessage({ type: 'clearCopilotConversation', boxId: id });
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Re-run the same initialization logic that runs when the chat first opens
 	__kustoSetCopilotChatRunning(id, false);
@@ -1340,7 +1314,7 @@ window.__kustoCopilotClearConversation = function __kustoCopilotClearConversatio
 	// Re-request model list + default selection (same as initial setup)
 	try {
 		(_win.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: id });
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(boxId: any) {
@@ -1350,7 +1324,7 @@ window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(
 		const panel = document.getElementById(id + '_copilot_tools_panel');
 		const btn = document.getElementById(id + '_copilot_tools_btn');
 		if (!panel) return;
-		try { __kustoRenderCopilotToolsPanel(id); } catch { /* ignore */ }
+		try { __kustoRenderCopilotToolsPanel(id); } catch (e) { console.error('[kusto]', e); }
 		const isHidden = (panel.style.display === 'none');
 		const nextVisible = !!isHidden;
 
@@ -1392,7 +1366,7 @@ window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(
 
 				panel.style.top = top + 'px';
 				panel.style.left = left + 'px';
-			} catch { /* ignore positioning errors; panel will still display */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 
 		try {
@@ -1400,8 +1374,8 @@ window.__kustoCopilotToggleToolsPanel = function __kustoCopilotToggleToolsPanel(
 				btn.classList.toggle('is-active', nextVisible);
 				btn.setAttribute('aria-pressed', nextVisible ? 'true' : 'false');
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Click-outside-to-close handler
@@ -1494,7 +1468,7 @@ window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, res
 		insertIcon.className = 'codicon codicon-insert';
 		insertBtn.appendChild(insertIcon);
 		insertBtn.onclick = (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof window.addQueryBox === 'function') {
 					// Create new box with results visible by default
@@ -1517,7 +1491,7 @@ window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, res
 						}, 100);
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		rightSide.appendChild(insertBtn);
 
@@ -1531,7 +1505,7 @@ window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, res
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -1540,7 +1514,7 @@ window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, res
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -1599,9 +1573,7 @@ window.__kustoCopilotAppendExecutedQuery = function (boxId: any, query: any, res
 
 		host.appendChild(wrapper);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Called by main.js when general-query-rules.md is loaded for the first message.
@@ -1657,7 +1629,7 @@ window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: an
 		previewIcon.className = 'codicon codicon-eye';
 		previewBtn.appendChild(previewIcon);
 		previewBtn.onclick = (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (safeFilePath) {
 					(_win.vscode as any).postMessage({
@@ -1665,7 +1637,7 @@ window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: an
 						filePath: safeFilePath
 					});
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		rightSide.appendChild(previewBtn);
 
@@ -1679,7 +1651,7 @@ window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: an
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -1688,7 +1660,7 @@ window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: an
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -1728,9 +1700,7 @@ window.__kustoCopilotAppendGeneralRulesLink = function (boxId: any, filePath: an
 			// No user message yet, append at end (will be before any assistant response)
 			host.appendChild(wrapper);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Called by main.js when Copilot asks a clarifying question.
@@ -1787,7 +1757,7 @@ window.__kustoCopilotAppendClarifyingQuestion = function (boxId: any, question: 
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -1796,7 +1766,7 @@ window.__kustoCopilotAppendClarifyingQuestion = function (boxId: any, question: 
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -1819,10 +1789,8 @@ window.__kustoCopilotAppendClarifyingQuestion = function (boxId: any, question: 
 			if (input) {
 				input.focus();
 			}
-		} catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // Called by main.js when user sends a message and has a query in the editor.
@@ -1878,7 +1846,7 @@ window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any,
 		viewIcon.className = 'codicon codicon-eye';
 		viewBtn.appendChild(viewIcon);
 		viewBtn.onclick = (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			try {
 				(_win.vscode as any).postMessage({
 					type: 'openToolResultInEditor',
@@ -1887,7 +1855,7 @@ window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any,
 					label: 'Query snapshot',
 					content: safeQuery
 				});
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		rightSide.appendChild(viewBtn);
 
@@ -1901,7 +1869,7 @@ window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any,
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -1910,7 +1878,7 @@ window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any,
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -1945,9 +1913,7 @@ window.__kustoCopilotAppendQuerySnapshot = function (boxId: any, queryText: any,
 
 		host.appendChild(wrapper);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -2004,7 +1970,7 @@ window.__kustoCopilotAppendDevNotesContext = function (boxId: any, preview: any,
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -2013,7 +1979,7 @@ window.__kustoCopilotAppendDevNotesContext = function (boxId: any, preview: any,
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -2044,9 +2010,7 @@ window.__kustoCopilotAppendDevNotesContext = function (boxId: any, preview: any,
 
 		host.appendChild(wrapper);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -2104,7 +2068,7 @@ window.__kustoCopilotAppendDevNoteToolCall = function (boxId: any, action: any, 
 			removeIcon.className = 'codicon codicon-trash';
 			removeBtn.appendChild(removeIcon);
 			removeBtn.onclick = (e: any) => {
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					wrapper.classList.add('is-removed');
 					removeBtn.style.display = 'none';
@@ -2113,7 +2077,7 @@ window.__kustoCopilotAppendDevNoteToolCall = function (boxId: any, action: any, 
 						boxId: id,
 						entryId: safeEntryId
 					});
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			rightSide.appendChild(removeBtn);
 		}
@@ -2141,7 +2105,5 @@ window.__kustoCopilotAppendDevNoteToolCall = function (boxId: any, action: any, 
 
 		host.appendChild(wrapper);
 		__kustoCopilotAutoScrollToBottom(host);
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 };

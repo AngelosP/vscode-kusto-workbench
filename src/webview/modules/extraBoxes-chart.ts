@@ -81,12 +81,12 @@ export function __kustoUpdateLegendPositionButtonUI( boxId: any) {
 		if (!show) return;
 
 		const pos = __kustoNormalizeLegendPosition(st && st.legendPosition);
-		try { st.legendPosition = pos; } catch { /* ignore */ }
+		try { st.legendPosition = pos; } catch (e) { console.error('[kusto]', e); }
 		btn.innerHTML = __kustoLegendPositionIcons[pos] || __kustoLegendPositionIcons.top;
 		const title = 'Legend position: ' + (pos.charAt(0).toUpperCase() + pos.slice(1));
 		btn.title = title;
 		btn.setAttribute('aria-label', title);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartLegendPositionClicked( boxId: any) {
@@ -98,11 +98,11 @@ export function __kustoOnChartLegendPositionClicked( boxId: any) {
 	try {
 		const idx = __kustoLegendPositionCycle.indexOf(current);
 		next = __kustoLegendPositionCycle[(idx + 1) % __kustoLegendPositionCycle.length] || 'top';
-	} catch { /* ignore */ }
-	try { st.legendPosition = next; } catch { /* ignore */ }
-	try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { st.legendPosition = next; } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateLegendPositionButtonUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoFormatNumber( value: any) {
@@ -150,19 +150,19 @@ export function __kustoGetChartState( boxId: any) {
 			if (typeof chartStateByBoxId[id].legendPosition !== 'string' || !chartStateByBoxId[id].legendPosition) {
 				chartStateByBoxId[id].legendPosition = 'top';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Ensure xAxisSettings exists with defaults
 		try {
 			if (!chartStateByBoxId[id].xAxisSettings || typeof chartStateByBoxId[id].xAxisSettings !== 'object') {
 				chartStateByBoxId[id].xAxisSettings = __kustoGetDefaultAxisSettings();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Ensure yAxisSettings exists with defaults
 		try {
 			if (!chartStateByBoxId[id].yAxisSettings || typeof chartStateByBoxId[id].yAxisSettings !== 'object') {
 				chartStateByBoxId[id].yAxisSettings = __kustoGetDefaultYAxisSettings();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return chartStateByBoxId[id];
 	} catch {
 		return { mode: 'edit', expanded: true };
@@ -269,7 +269,7 @@ export function __kustoUpdateSeriesColorsUI( boxId: any, settings: any) {
 		const escHtml = (v: any) => {
 			try {
 				if (typeof _win.escapeHtml === 'function') return _win.escapeHtml(String(v ?? ''));
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return String(v ?? '')
 				.replace(/&/g, '&amp;')
 				.replace(/</g, '&lt;')
@@ -300,7 +300,7 @@ export function __kustoUpdateSeriesColorsUI( boxId: any, settings: any) {
 		}
 		
 		colorsList.innerHTML = html;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -329,15 +329,15 @@ export function __kustoOnSeriesColorChanged( boxId: any, inputEl: any) {
 		}
 		
 		// Re-render chart with new colors
-		try { __kustoRenderChart(id); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		// Update indicator
 		__kustoUpdateAxisLabelIndicator(id, 'y');
 		
 		// Re-sync UI to show/hide reset button
 		__kustoUpdateSeriesColorsUI(id, st.yAxisSettings);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -360,15 +360,15 @@ export function __kustoResetSeriesColor( boxId: any, colName: any, index: any) {
 		}
 		
 		// Re-render chart
-		try { __kustoRenderChart(id); } catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		// Update indicator
 		__kustoUpdateAxisLabelIndicator(id, 'y');
 		
 		// Re-sync UI
 		__kustoUpdateSeriesColorsUI(id, st.yAxisSettings);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -386,7 +386,7 @@ export function __kustoToggleAxisSettingsPopup( boxId: any, axis: any) {
 		const isOpen = popup.classList.contains('is-open');
 		
 		// Close all other popups first
-		try { __kustoCloseAllAxisSettingsPopups(); } catch { /* ignore */ }
+		try { __kustoCloseAllAxisSettingsPopups(); } catch (e) { console.error('[kusto]', e); }
 		
 		if (isOpen) {
 			// Was open, now closed (by closeAll above)
@@ -440,7 +440,7 @@ export function __kustoToggleAxisSettingsPopup( boxId: any, axis: any) {
 						}
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}, 0);
 		
 		// Sync UI with current state
@@ -474,7 +474,7 @@ export function __kustoToggleAxisSettingsPopup( boxId: any, axis: any) {
 					}
 					popup.style.left = (textCenter - arrowTipOffset) + 'px';
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 		window.addEventListener('scroll', repositionOnScroll, true);
 		
@@ -493,11 +493,11 @@ export function __kustoToggleAxisSettingsPopup( boxId: any, axis: any) {
 					popup.classList.remove('is-above');
 					document.removeEventListener('click', closeOnClickOutside);
 					window.removeEventListener('scroll', repositionOnScroll, true);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			document.addEventListener('click', closeOnClickOutside);
 		}, 0);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -514,7 +514,7 @@ export function __kustoCloseAxisSettingsPopup( boxId: any, axis: any) {
 			popup.classList.remove('is-open');
 			popup.classList.remove('is-above');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -527,9 +527,9 @@ export function __kustoCloseAllAxisSettingsPopups() {
 			try {
 				popup.classList.remove('is-open');
 				popup.classList.remove('is-above');
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -546,7 +546,7 @@ export function __kustoToggleLabelSettingsPopup( boxId: any) {
 		const isOpen = popup.classList.contains('is-open');
 		
 		// Close all other popups first
-		try { __kustoCloseAllAxisSettingsPopups(); } catch { /* ignore */ }
+		try { __kustoCloseAllAxisSettingsPopups(); } catch (e) { console.error('[kusto]', e); }
 		
 		if (isOpen) {
 			// Was open, now closed (by closeAll above)
@@ -596,7 +596,7 @@ export function __kustoToggleLabelSettingsPopup( boxId: any) {
 						}
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}, 0);
 		
 		// Add click-outside listener
@@ -614,11 +614,11 @@ export function __kustoToggleLabelSettingsPopup( boxId: any) {
 					popup.classList.remove('is-open');
 					popup.classList.remove('is-above');
 					document.removeEventListener('click', closeOnClickOutside);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			};
 			document.addEventListener('click', closeOnClickOutside);
 		}, 0);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -634,7 +634,7 @@ export function __kustoCloseLabelSettingsPopup( boxId: any) {
 			popup.classList.remove('is-open');
 			popup.classList.remove('is-above');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -653,7 +653,7 @@ export function __kustoSyncLabelSettingsUI( boxId: any) {
 		const modeEl = document.getElementById(id + '_chart_label_mode') as any;
 		if (modeEl) {
 			modeEl.value = mode;
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
 		}
 		
 		// Sync density slider
@@ -674,7 +674,7 @@ export function __kustoSyncLabelSettingsUI( boxId: any) {
 		
 		// Update indicator
 		__kustoUpdateLabelSettingsIndicator(id);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -708,7 +708,7 @@ export function __kustoUpdateLabelSettingsIndicator( boxId: any) {
 		} else {
 			labelText.classList.remove('has-settings');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -730,14 +730,14 @@ export function __kustoSyncAxisSettingsUI( boxId: any, axis: any) {
 			const sortEl = document.getElementById(id + '_chart_' + ax + '_sort') as any;
 			if (sortEl) {
 				sortEl.value = settings.sortDirection || '';
-				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch { /* ignore */ }
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch (e) { console.error('[kusto]', e); }
 			}
 			
 			// X-axis specific: Scale type
 			const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale') as any;
 			if (scaleEl) {
 				scaleEl.value = settings.scaleType || '';
-				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch { /* ignore */ }
+				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch (e) { console.error('[kusto]', e); }
 			}
 			
 			// X-axis specific: Label density slider (100 = All/show all, 1 = minimum density)
@@ -849,7 +849,7 @@ export function __kustoSyncAxisSettingsUI( boxId: any, axis: any) {
 		
 		// Update label indicator
 		__kustoUpdateAxisLabelIndicator(id, ax);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -879,7 +879,7 @@ export function __kustoUpdateAxisLabelIndicator( boxId: any, axis: any) {
 		} else {
 			label.classList.remove('has-settings');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -970,10 +970,10 @@ export function __kustoOnAxisSettingChanged( boxId: any, axis: any, setting: any
 		
 		// Update indicator and re-render chart
 		__kustoUpdateAxisLabelIndicator(id, ax);
-		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 		// Use immediate persist for axis settings to avoid losing changes on quick close
-		try { _win.schedulePersist && _win.schedulePersist('axisSettingChanged', true); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		try { _win.schedulePersist && _win.schedulePersist('axisSettingChanged', true); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -994,10 +994,10 @@ export function __kustoResetAxisSettings( boxId: any, axis: any) {
 		
 		// Sync UI and re-render
 		__kustoSyncAxisSettingsUI(id, ax);
-		try { __kustoRenderChart(id); } catch { /* ignore */ }
+		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 		// Use immediate persist for axis settings to avoid losing changes on quick close
-		try { _win.schedulePersist && _win.schedulePersist('axisSettingReset', true); } catch { /* ignore */ }
-	} catch { /* ignore */ }
+		try { _win.schedulePersist && _win.schedulePersist('axisSettingReset', true); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -1046,14 +1046,15 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	const id = String(boxId || '');
 	if (!id) return;
 
-	// Lit elements: refresh datasets so the dropdown picks up new/removed data sources.
+	// Lit elements: sync global state into reactive properties, then refresh datasets.
 	try {
 		const el = document.getElementById(id) as any;
 		if (el && typeof el.refreshDatasets === 'function') {
+			if (typeof el.syncFromGlobalState === 'function') el.syncFromGlobalState();
 			el.refreshDatasets();
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const st = __kustoGetChartState(id);
 	const datasets = _win.__kustoGetChartDatasetsInDomOrder();
@@ -1082,9 +1083,9 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Sync the unified dropdown button text for Data.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch (e) { console.error('[kusto]', e); }
 
 	// Update chart type picker selection (visual buttons)
 	try {
@@ -1098,7 +1099,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				btn.setAttribute('aria-pressed', btnType === currentType ? 'true' : 'false');
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Update data labels toggle switch
 	try {
@@ -1112,7 +1113,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			labelsTogglePie.classList.toggle('is-active', !!st.showDataLabels);
 			labelsTogglePie.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Update pie/funnel label mode dropdown
 	try {
@@ -1126,15 +1127,15 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				labelModeText.textContent = opt ? opt.text : 'Auto (smart)';
 			}
 			// Also sync dropdown if it exists
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	let ds = null;
 	try {
 		const desired = (typeof st.dataSourceId === 'string') ? st.dataSourceId : '';
 		ds = datasets.find((d: any) => String(d.id) === desired) || null;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const colNames = (() => {
 		try {
@@ -1152,11 +1153,11 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	try {
 		if (mappingLineHost) mappingLineHost.setAttribute('data-chart-type', chartType);
 		if (mappingPieHost) mappingPieHost.setAttribute('data-chart-type', chartType);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (mappingLineHost) mappingLineHost.style.display = (chartType === 'line' || chartType === 'area' || chartType === 'bar' || chartType === 'scatter') ? '' : 'none';
 		if (mappingPieHost) mappingPieHost.style.display = (chartType === 'pie' || chartType === 'funnel') ? '' : 'none';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Legend column selection only applies to line/area/bar.
 	try {
@@ -1164,7 +1165,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		if (legendGroup) {
 			legendGroup.style.display = (chartType === 'line' || chartType === 'area' || chartType === 'bar') ? '' : 'none';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Populate X select with (none) option.
 	let desiredX = '';
@@ -1172,7 +1173,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	const xOptions = ['', ...colNames.filter((c: any) => c)];
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
 	// Sync the unified dropdown button text for X.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch (e) { console.error('[kusto]', e); }
 
 	// Populate Y checkbox dropdown (for line/area/bar).
 	const yMenu = document.getElementById(id + '_chart_y_menu') as any;
@@ -1202,7 +1203,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		const selected = desiredYCols.filter((c: any) => yOptions.includes(c));
 		try {
 			window.__kustoDropdown.updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Populate Tooltip checkbox dropdown (for all chart types).
@@ -1215,7 +1216,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		let desiredTooltipCols = Array.isArray(st.tooltipColumns) ? st.tooltipColumns.filter((c: any) => c) : [];
 		// Filter invalid selections to avoid persisting phantom columns.
 		desiredTooltipCols = desiredTooltipCols.filter((c: any) => tooltipOptions.includes(c));
-		try { st.tooltipColumns = desiredTooltipCols; } catch { /* ignore */ }
+		try { st.tooltipColumns = desiredTooltipCols; } catch (e) { console.error('[kusto]', e); }
 		const items = tooltipOptions.map((c: any) => ({
 			key: c,
 			label: c,
@@ -1231,7 +1232,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		}
 		try {
 			window.__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Legend dropdown: prepend "(none)" option for no legend grouping.
@@ -1241,12 +1242,12 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		const yCount = (Array.isArray(st.yColumns) ? st.yColumns.filter(Boolean).length : 0) || (st.yColumn ? 1 : 0);
 		const disableLegend = yCount > 1;
 		if (disableLegend) {
-			try { st.legendColumn = ''; } catch { /* ignore */ }
+			try { st.legendColumn = ''; } catch (e) { console.error('[kusto]', e); }
 		}
 		_win.__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
-		try { legendSelect.disabled = disableLegend; } catch { /* ignore */ }
+		try { legendSelect.disabled = disableLegend; } catch (e) { console.error('[kusto]', e); }
 		// Sync the unified dropdown button text and disabled state for Legend.
-		try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch { /* ignore */ }
+		try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
 		// Also sync the button's disabled state.
 		try {
 			const legendBtn = document.getElementById(id + '_chart_legend_btn') as any;
@@ -1254,13 +1255,13 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				legendBtn.disabled = disableLegend;
 				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
 	// Sync the unified dropdown button text for Label and Value.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch { /* ignore */ }
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch { /* ignore */ }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch (e) { console.error('[kusto]', e); }
+	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch (e) { console.error('[kusto]', e); }
 
 	// Funnel Sort dropdown: show only for funnel chart type.
 	try {
@@ -1273,11 +1274,11 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			const sortOptions = ['', ...colNames.filter((c: any) => c)];
 			const currentSortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
 			_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch (e) { console.error('[kusto]', e); }
 			// Update the sort UI (direction button visibility).
-			try { __kustoUpdateFunnelSortUI(id); } catch { /* ignore */ }
+			try { __kustoUpdateFunnelSortUI(id); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Best-effort defaults once we have a dataset.
 	// Note: X column is NOT auto-assigned - user must explicitly select it.
@@ -1288,13 +1289,13 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				if (!st.valueColumn) st.valueColumn = _win.__kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Update legend position button visibility based on current state.
-	try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
+	try { __kustoUpdateLegendPositionButtonUI(id); } catch (e) { console.error('[kusto]', e); }
 
 	// Auto-fit if the chart canvas is being clipped after control changes.
-	try { __kustoAutoFitChartIfClipped(id); } catch { /* ignore */ }
+	try { __kustoAutoFitChartIfClipped(id); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoGetChartActiveCanvasElementId( boxId: any) {
@@ -1308,14 +1309,14 @@ export function __kustoGetIsDarkThemeForEcharts() {
 		if (typeof _win.isDarkTheme === 'function') {
 			return !!_win.isDarkTheme();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const cls = document && document.body && document.body.classList;
 		if (cls) {
 			if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) return false;
 			if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) return true;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return true;
 }
 
@@ -1435,7 +1436,7 @@ export function __kustoShouldShowTimeForUtcAxis( timeMsValues: any) {
 				return true;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return false;
 }
 
@@ -1518,17 +1519,17 @@ export function __kustoRefreshChartsForThemeChange() {
 	__kustoLastAppliedEchartsIsDarkTheme = dark;
 	try {
 		for (const id of (chartBoxes || [])) {
-			try { __kustoDisposeChartEcharts(id); } catch { /* ignore */ }
-			try { __kustoRenderChart(id); } catch { /* ignore */ }
-			try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
+			try { __kustoDisposeChartEcharts(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoUpdateLegendPositionButtonUI(id); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoStartEchartsThemeObserver() {
 	if (__kustoEchartsThemeObserverStarted) return;
 	__kustoEchartsThemeObserverStarted = true;
-	try { __kustoRefreshChartsForThemeChange(); } catch { /* ignore */ }
+	try { __kustoRefreshChartsForThemeChange(); } catch (e) { console.error('[kusto]', e); }
 
 	let pending = false;
 	const schedule = () => {
@@ -1536,7 +1537,7 @@ export function __kustoStartEchartsThemeObserver() {
 		pending = true;
 		setTimeout(() => {
 			pending = false;
-			try { __kustoRefreshChartsForThemeChange(); } catch { /* ignore */ }
+			try { __kustoRefreshChartsForThemeChange(); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	};
 
@@ -1548,34 +1549,32 @@ export function __kustoStartEchartsThemeObserver() {
 		if (document && document.documentElement) {
 			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoDisposeChartEcharts( boxId: any) {
 	try {
 		const st = __kustoGetChartState(boxId);
 		if (st && st.__echarts && st.__echarts.instance) {
-			try { st.__echarts.instance.dispose(); } catch { /* ignore */ }
+			try { st.__echarts.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (st) {
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
 					st.__resizeObserver.disconnect();
 				}
-			} catch { /* ignore */ }
-			try { delete st.__lastTimeAxis; } catch { /* ignore */ }
-			try { delete st.__echarts; } catch { /* ignore */ }
-			try { delete st.__resizeObserver; } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__echarts; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRenderChart( boxId: any) {
 	const id = String(boxId || '');
 	if (!id) return;
-	try { __kustoStartEchartsThemeObserver(); } catch { /* ignore */ }
+	try { __kustoStartEchartsThemeObserver(); } catch (e) { console.error('[kusto]', e); }
 	const st = __kustoGetChartState(id);
 	
 	// Track previous rendering state to detect transitions
@@ -1587,21 +1586,21 @@ export function __kustoRenderChart( boxId: any) {
 		if (dsEl && dsEl.value) {
 			st.dataSourceId = String(dsEl.value || '');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	try {
 		const wrapper = document.getElementById(id + '_chart_wrapper') as any;
 		if (wrapper && wrapper.style && String(wrapper.style.display || '').toLowerCase() === 'none') {
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const canvasId = __kustoGetChartActiveCanvasElementId(id);
 	const canvas = document.getElementById(canvasId) as any;
 	if (!canvas) return;
 
 	// If ECharts isn't loaded yet, show a simple placeholder.
 	if (!window.echarts || typeof window.echarts.init !== 'function') {
-		try { canvas.textContent = 'Loading chart…'; } catch { /* ignore */ }
+		try { canvas.textContent = 'Loading chart…'; } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1611,7 +1610,7 @@ export function __kustoRenderChart( boxId: any) {
 		if (typeof _win.__kustoGetResultsState === 'function' && typeof st.dataSourceId === 'string' && st.dataSourceId) {
 			dsState = _win.__kustoGetResultsState(st.dataSourceId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
 	const rawRows = dsState && Array.isArray(dsState.rows) ? dsState.rows : [];
 	const colNames = cols.map(_win.__kustoNormalizeResultsColumnName);
@@ -1647,7 +1646,7 @@ export function __kustoRenderChart( boxId: any) {
 				const cmp = aStr.localeCompare(bStr);
 				return sortDirection === 'asc' ? cmp : -cmp;
 			});
-		} catch { /* ignore sorting errors */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Apply X-axis sorting if configured (and no other sort is active)
@@ -1697,18 +1696,18 @@ export function __kustoRenderChart( boxId: any) {
 				st.__echarts.instance.dispose();
 				delete st.__echarts;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof _win.escapeHtml === 'function') ? _win.escapeHtml(String(msg || '')) : String(msg || '')) + '</div>';
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Reduce canvas min-height when showing placeholder text to avoid overflow.
-		try { canvas.style.minHeight = '60px'; } catch { /* ignore */ }
+		try { canvas.style.minHeight = '60px'; } catch (e) { console.error('[kusto]', e); }
 		// Track that we're now showing a message, not a chart
 		const isNowRendering = false;
 		st.__wasRendering = isNowRendering;
 		// Auto-fit section when transitioning from rendering to not-rendering
 		if (wasRendering !== isNowRendering) {
-			try { __kustoMaximizeChartBox(id); } catch { /* ignore */ }
+			try { __kustoMaximizeChartBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	};
 
@@ -1728,23 +1727,23 @@ export function __kustoRenderChart( boxId: any) {
 
 	// Ensure we have an instance bound to the active element.
 	// Restore canvas min-height for actual chart rendering (may have been reduced for placeholder text).
-	try { canvas.style.minHeight = '140px'; } catch { /* ignore */ }
+	try { canvas.style.minHeight = '140px'; } catch (e) { console.error('[kusto]', e); }
 	try {
 		const isDark = __kustoGetIsDarkThemeForEcharts();
 		const themeName = isDark ? 'dark' : undefined;
 		const prev = st.__echarts && st.__echarts.instance ? st.__echarts : null;
 		if (!prev || prev.canvasId !== canvasId || prev.isDark !== isDark) {
-			try { if (prev && prev.instance) prev.instance.dispose(); } catch { /* ignore */ }
+			try { if (prev && prev.instance) prev.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
 			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark };
 			// Canvas changed (Edit <-> Preview). Rebind resize observer.
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
 					st.__resizeObserver.disconnect();
 				}
-			} catch { /* ignore */ }
-			try { delete st.__resizeObserver; } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const inst = st.__echarts && st.__echarts.instance ? st.__echarts.instance : null;
 	if (!inst) return;
@@ -1753,9 +1752,9 @@ export function __kustoRenderChart( boxId: any) {
 	try {
 		const r = canvas.getBoundingClientRect();
 		canvasWidthPx = r && typeof r.width === 'number' ? r.width : 0;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (!canvasWidthPx) {
-		try { canvasWidthPx = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0; } catch { /* ignore */ }
+		try { canvasWidthPx = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0; } catch (e) { console.error('[kusto]', e); }
 	}
 
 	let option = null;
@@ -1770,7 +1769,7 @@ export function __kustoRenderChart( boxId: any) {
 		const __kustoEscapeHtml = (v: any) => {
 			try {
 				if (typeof _win.escapeHtml === 'function') return _win.escapeHtml(String(v ?? ''));
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				return String(v ?? '')
 					.replace(/&/g, '&amp;')
@@ -1831,7 +1830,7 @@ export function __kustoRenderChart( boxId: any) {
 					if (!s) continue;
 					lines.push(`<span style="opacity:0.85"><strong>${__kustoEscapeHtml(colName)}</strong>: ${__kustoEscapeHtml(s)}</span>`);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const legendPosition = __kustoNormalizeLegendPosition(st && st.legendPosition);
@@ -2286,7 +2285,7 @@ export function __kustoRenderChart( boxId: any) {
 							if (ax === bx) return 0;
 							return ax < bx ? -1 : 1;
 						});
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				const showTime = useTime ? __kustoShouldShowTimeForUtcAxis(points.map((p: any) => {
 					try {
@@ -2393,7 +2392,7 @@ export function __kustoRenderChart( boxId: any) {
 				if (useTime) {
 					st.__lastTimeAxis = { showTime, labelCount: points.length, rotate };
 				} else {
-					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+					try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
 				}
 			}
 		} else {
@@ -2487,7 +2486,7 @@ export function __kustoRenderChart( boxId: any) {
 								// Categorical or Auto: show all individual timestamps
 								timeLabels = timeTooltipLabels;
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				
 				// Build series based on legend grouping or multiple Y columns.
@@ -2731,7 +2730,7 @@ export function __kustoRenderChart( boxId: any) {
 						// Re-order series data to match new label order if needed
 						// This is complex and depends on how series data was built
 						// For now, we'll rebuild series data maps with the new order
-					} catch { /* ignore sorting errors */ }
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				
 				const showTime = treatAsTime ? timeShowTime : false;
@@ -2824,7 +2823,7 @@ export function __kustoRenderChart( boxId: any) {
 											break;
 										}
 									}
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 								__kustoAppendTooltipColumnsHtmlLines(lines, tooltipPayloadOnce, 0);
 
 								for (const p of arr) {
@@ -2874,9 +2873,9 @@ export function __kustoRenderChart( boxId: any) {
 				
 				if (treatAsTime && !useContinuousLabels) {
 						st.__lastTimeAxis = { showTime, labelCount: xLabels.length, rotate };
-						try { delete st.__lastCategoryAxis; } catch { /* ignore */ }
+						try { delete st.__lastCategoryAxis; } catch (e) { console.error('[kusto]', e); }
 				} else {
-					try { delete st.__lastTimeAxis; } catch { /* ignore */ }
+					try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
 					// Store category label stats so the resize observer can recompute rotation.
 					if (__categoryLabelStats) {
 						st.__lastCategoryAxis = {
@@ -2928,25 +2927,25 @@ export function __kustoRenderChart( boxId: any) {
 					
 					// Resize the ECharts instance to fit the new container size
 					requestAnimationFrame(() => {
-						try { inst.resize(); } catch { /* ignore */ }
+						try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
 					});
-					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 		st.__wasRendering = isNowRendering;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		requestAnimationFrame(() => {
-			try { inst.resize(); } catch { /* ignore */ }
+			try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Keep the chart responsive to wrapper/canvas resizes.
 	try {
 		if (!st.__resizeObserver && typeof ResizeObserver !== 'undefined') {
 			st.__resizeObserver = new ResizeObserver(() => {
-				try { inst.resize(); } catch { /* ignore */ }
+				try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					const w = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
 					if (st.__lastTimeAxis) {
@@ -2955,7 +2954,7 @@ export function __kustoRenderChart( boxId: any) {
 							st.__lastTimeAxis.rotate = rotate;
 							try {
 								inst.setOption({ xAxis: { axisLabel: { rotate } } });
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					} else if (st.__lastCategoryAxis) {
 						const ca = st.__lastCategoryAxis;
@@ -2964,18 +2963,18 @@ export function __kustoRenderChart( boxId: any) {
 							ca.rotate = rotate;
 							try {
 								inst.setOption({ xAxis: { axisLabel: { rotate } } });
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			});
-			try { st.__resizeObserver.observe(canvas); } catch { /* ignore */ }
+			try { st.__resizeObserver.observe(canvas); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const wrapper = document.getElementById(id + '_chart_wrapper') as any;
 				if (wrapper) st.__resizeObserver.observe(wrapper);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateChartModeButtons( boxId: any) {
@@ -2997,9 +2996,7 @@ export function __kustoUpdateChartModeButtons( boxId: any) {
 		if (dropdownText) {
 			dropdownText.textContent = mode === 'preview' ? 'Preview' : 'Edit';
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyChartMode( boxId: any) {
@@ -3011,10 +3008,8 @@ export function __kustoApplyChartMode( boxId: any) {
 		if (editHost) editHost.style.display = (mode === 'edit') ? '' : 'none';
 		if (prevHost) prevHost.style.display = (mode === 'preview') ? '' : 'none';
 		__kustoUpdateChartModeButtons(boxId);
-		try { __kustoRenderChart(boxId); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetChartMode( boxId: any, mode: any) {
@@ -3024,8 +3019,8 @@ export function __kustoSetChartMode( boxId: any, mode: any) {
 	if (m !== 'edit' && m !== 'preview') return;
 	const st = __kustoGetChartState(id);
 	st.mode = m;
-	try { __kustoApplyChartMode(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoApplyChartMode(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateChartVisibilityToggleButton( boxId: any) {
@@ -3038,9 +3033,7 @@ export function __kustoUpdateChartVisibilityToggleButton( boxId: any) {
 		btn.setAttribute('aria-selected', expanded ? 'true' : 'false');
 		btn.title = expanded ? 'Hide' : 'Show';
 		btn.setAttribute('aria-label', expanded ? 'Hide' : 'Show');
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoApplyChartBoxVisibility( boxId: any) {
@@ -3066,11 +3059,9 @@ export function __kustoApplyChartBoxVisibility( boxId: any) {
 		if (maxBtn) maxBtn.style.display = expanded ? '' : 'none';
 		__kustoUpdateChartVisibilityToggleButton(boxId);
 		if (expanded) {
-			try { __kustoRenderChart(boxId); } catch { /* ignore */ }
+			try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function toggleChartBoxVisibility( boxId: any) {
@@ -3078,9 +3069,9 @@ export function toggleChartBoxVisibility( boxId: any) {
 	if (!id) return;
 	const st = __kustoGetChartState(id);
 	st.expanded = !st.expanded;
-	try { __kustoApplyChartBoxVisibility(id); } catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoApplyChartBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizeChartBox( boxId: any) {
@@ -3099,7 +3090,7 @@ export function __kustoMaximizeChartBox( boxId: any) {
 		
 		// Apply the calculated height
 		wrapper.style.height = Math.ceil(targetHeight) + 'px';
-		try { delete wrapper.dataset.kustoUserResized; } catch { /* ignore */ }
+		try { delete wrapper.dataset.kustoUserResized; } catch (e) { console.error('[kusto]', e); }
 		
 		// NOTE: Do NOT call __kustoRenderChart here - it would create an infinite loop
 		// because __kustoRenderChart calls __kustoMaximizeChartBox on state transitions.
@@ -3108,14 +3099,12 @@ export function __kustoMaximizeChartBox( boxId: any) {
 		try {
 			if (st && st.__echarts && st.__echarts.instance) {
 				requestAnimationFrame(() => {
-					try { st.__echarts.instance.resize(); } catch { /* ignore */ }
+					try { st.__echarts.instance.resize(); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
-		} catch { /* ignore */ }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-	} catch {
-		// ignore
-	}
+		} catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Check if the chart canvas is partially clipped and auto-fit if needed.
@@ -3144,7 +3133,7 @@ export function __kustoAutoFitChartIfClipped( boxId: any) {
 				const parsed = parseInt(inlineMinHeight, 10);
 				if (parsed > 0) minHeight = parsed;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		
 		// Check if the canvas is being clipped
 		const wrapperRect = wrapper.getBoundingClientRect();
@@ -3156,12 +3145,10 @@ export function __kustoAutoFitChartIfClipped( boxId: any) {
 		if (isClipped) {
 			// Defer to avoid layout thrashing during control updates
 			requestAnimationFrame(() => {
-				try { __kustoMaximizeChartBox(boxId); } catch { /* ignore */ }
+				try { __kustoMaximizeChartBox(boxId); } catch (e) { console.error('[kusto]', e); }
 			});
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function addChartBox( options: any) {
@@ -3263,7 +3250,7 @@ export function addChartBox( options: any) {
 			const detail = e && e.detail ? e.detail : {};
 			const removeId = detail.boxId || id;
 			removeChartBox(removeId);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	});
 
 	container.insertAdjacentElement('beforeend', litEl);
@@ -3272,11 +3259,11 @@ export function addChartBox( options: any) {
 	try {
 		if (chartWrapper && resizerEl) {
 			resizerEl.addEventListener('dblclick', () => {
-				try { __kustoMaximizeChartBox(id); } catch { /* ignore */ }
+				try { __kustoMaximizeChartBox(id); } catch (e) { console.error('[kusto]', e); }
 			});
 			resizerEl.addEventListener('mousedown', (e: any) => {
-				try { e.preventDefault(); e.stopPropagation(); } catch { /* ignore */ }
-				try { chartWrapper.dataset.kustoUserResized = 'true'; } catch { /* ignore */ }
+				try { e.preventDefault(); e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+				try { chartWrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 				resizerEl.classList.add('is-dragging');
 				const prevCursor = document.body.style.cursor;
 				const prevUserSelect = document.body.style.userSelect;
@@ -3284,7 +3271,7 @@ export function addChartBox( options: any) {
 				document.body.style.userSelect = 'none';
 				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 				const startHeight = chartWrapper.getBoundingClientRect().height;
-				try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch { /* ignore */ }
+				try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch (e) { console.error('[kusto]', e); }
 				const minH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
 				const maxH = 900;
 				const onMove = (moveEvent: any) => {
@@ -3292,13 +3279,13 @@ export function addChartBox( options: any) {
 						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
 							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 						}
-					} catch { /* ignore */ }
+					} catch (e) { console.error('[kusto]', e); }
 					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
 					const delta = pageY - startPageY;
 					const currentMinH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
 					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
 					chartWrapper.style.height = nextHeight + 'px';
-					try { __kustoRenderChart(id); } catch { /* ignore */ }
+					try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 				};
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
@@ -3306,22 +3293,22 @@ export function addChartBox( options: any) {
 					resizerEl.classList.remove('is-dragging');
 					document.body.style.cursor = prevCursor;
 					document.body.style.userSelect = prevUserSelect;
-					try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
-					try { __kustoRenderChart(id); } catch { /* ignore */ }
+					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 				};
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
 			});
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
 			controls.scrollIntoView({ block: 'end' });
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return id;
 }
 
@@ -3332,10 +3319,10 @@ export function __kustoOnChartDataSourceChanged( boxId: any) {
 	try {
 		const el = document.getElementById(id + '_chart_ds') as any;
 		st.dataSourceId = el ? String(el.value || '') : '';
-	} catch { /* ignore */ }
-	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartTypeChanged( boxId: any) {
@@ -3345,10 +3332,10 @@ export function __kustoOnChartTypeChanged( boxId: any) {
 	try {
 		const el = document.getElementById(id + '_chart_type') as any;
 		st.chartType = el ? String(el.value || '') : '';
-	} catch { /* ignore */ }
-	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSelectChartType( boxId: any, chartType: any) {
@@ -3357,9 +3344,9 @@ export function __kustoSelectChartType( boxId: any, chartType: any) {
 	if (!id) return;
 	const st = __kustoGetChartState(id);
 	st.chartType = type;
-	try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartLabelsToggled( boxId: any) {
@@ -3380,10 +3367,10 @@ export function __kustoOnChartLabelsToggled( boxId: any) {
 			labelsTogglePie.classList.toggle('is-active', st.showDataLabels);
 			labelsTogglePie.setAttribute('aria-checked', st.showDataLabels ? 'true' : 'false');
 		}
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 /** Handler for when the pie/funnel label mode dropdown changes */
@@ -3402,17 +3389,17 @@ export function __kustoOnChartLabelModeChanged( boxId: any) {
 			const opt = el.options[el.selectedIndex];
 			textEl.textContent = opt ? opt.text : 'Auto (smart)';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Show/hide density slider based on mode
 	try {
 		const densityRow = document.getElementById(id + '_chart_label_density_row') as any;
 		if (densityRow) {
 			densityRow.style.display = (st.labelMode === 'auto') ? '' : 'none';
 		}
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 /** Handler for when the pie/funnel label density slider changes */
@@ -3428,10 +3415,10 @@ export function __kustoOnChartLabelDensityChanged( boxId: any, value: any) {
 		if (valueEl) {
 			valueEl.textContent = densityValue + '%';
 		}
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { __kustoUpdateLabelSettingsIndicator(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartMappingChanged( boxId: any) {
@@ -3439,19 +3426,19 @@ export function __kustoOnChartMappingChanged( boxId: any) {
 	if (!id) return;
 	const st = __kustoGetChartState(id);
 	const oldX = st.xColumn;
-	try { st.xColumn = String(((document.getElementById(id + '_chart_x') as any || {}).value || '')); } catch { /* ignore */ }
+	try { st.xColumn = String(((document.getElementById(id + '_chart_x') as any || {}).value || '')); } catch (e) { console.error('[kusto]', e); }
 	// Y columns are now handled by checkbox dropdown via __kustoOnChartYCheckboxChanged.
-	try { st.legendColumn = String(((document.getElementById(id + '_chart_legend') as any || {}).value || '')); } catch { /* ignore */ }
-	try { st.labelColumn = String(((document.getElementById(id + '_chart_label') as any || {}).value || '')); } catch { /* ignore */ }
-	try { st.valueColumn = String(((document.getElementById(id + '_chart_value') as any || {}).value || '')); } catch { /* ignore */ }
+	try { st.legendColumn = String(((document.getElementById(id + '_chart_legend') as any || {}).value || '')); } catch (e) { console.error('[kusto]', e); }
+	try { st.labelColumn = String(((document.getElementById(id + '_chart_label') as any || {}).value || '')); } catch (e) { console.error('[kusto]', e); }
+	try { st.valueColumn = String(((document.getElementById(id + '_chart_value') as any || {}).value || '')); } catch (e) { console.error('[kusto]', e); }
 	// Update legend position button visibility based on whether a legend column is selected.
-	try { __kustoUpdateLegendPositionButtonUI(id); } catch { /* ignore */ }
+	try { __kustoUpdateLegendPositionButtonUI(id); } catch (e) { console.error('[kusto]', e); }
 	// If X column changed, rebuild Y column options (excluding the new X) to keep UI in sync.
 	if (oldX !== st.xColumn) {
-		try { __kustoUpdateChartBuilderUI(id); } catch { /* ignore */ }
+		try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	}
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for Y column checkbox dropdown changes.
@@ -3485,20 +3472,20 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 				legendBtn.disabled = disableLegend;
 				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
 			}
-			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch { /* ignore */ }
+			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
 			// Update legend position button visibility when legend column is cleared.
-			try { __kustoUpdateLegendPositionButtonUI(boxId); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			try { __kustoUpdateLegendPositionButtonUI(boxId); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 		// Update button text.
 		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	// Update series colors UI in Y-axis settings popup (in case it's open)
 	try {
 		const st2 = __kustoGetChartState(boxId);
 		__kustoUpdateSeriesColorsUI(boxId, st2.yAxisSettings || {});
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for Tooltip column checkbox dropdown changes.
@@ -3518,16 +3505,16 @@ export function __kustoOnChartTooltipCheckboxChanged( dropdownId: any) {
 			menuId = boxId + '_chart_tooltip_menu';
 			textId = boxId + '_chart_tooltip_text';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	if (!boxId) return;
 	const st = __kustoGetChartState(boxId);
 	try {
 		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
 		st.tooltipColumns = selected;
 		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, '(none)');
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(boxId); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for funnel sort column dropdown changes.
@@ -3548,9 +3535,9 @@ export function __kustoOnChartFunnelSortChanged( boxId: any) {
 		}
 		// Update the UI to show/hide direction button and update its state.
 		__kustoUpdateFunnelSortUI(id);
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for funnel sort direction toggle button.
@@ -3564,9 +3551,9 @@ export function __kustoOnChartFunnelSortDirToggle( boxId: any) {
 		// Toggle between 'asc' and 'desc'.
 		st.sortDirection = (st.sortDirection === 'asc') ? 'desc' : 'asc';
 		__kustoUpdateFunnelSortUI(id);
-	} catch { /* ignore */ }
-	try { __kustoRenderChart(id); } catch { /* ignore */ }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Update the funnel sort UI (direction button visibility and icon state).
@@ -3601,15 +3588,15 @@ export function __kustoUpdateFunnelSortUI( boxId: any) {
 }
 
 export function removeChartBox( boxId: any) {
-	try { __kustoDisposeChartEcharts(boxId); } catch { /* ignore */ }
-	try { delete chartStateByBoxId[boxId]; } catch { /* ignore */ }
-	try { _win.__kustoCleanupSectionModeResizeObserver(boxId); } catch { /* ignore */ }
+	try { __kustoDisposeChartEcharts(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { delete chartStateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoCleanupSectionModeResizeObserver(boxId); } catch (e) { console.error('[kusto]', e); }
 	chartBoxes = (chartBoxes || []).filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
 window.__kustoNormalizeLegendPosition = __kustoNormalizeLegendPosition;

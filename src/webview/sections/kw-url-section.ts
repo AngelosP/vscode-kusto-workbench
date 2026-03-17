@@ -295,7 +295,7 @@ export class KwUrlSection extends LitElement {
 				if (!wrapper) return;
 
 				let currentH = 0;
-				try { currentH = wrapper.getBoundingClientRect().height; } catch { /* ignore */ }
+				try { currentH = wrapper.getBoundingClientRect().height; } catch (e) { console.error('[kusto]', e); }
 				const minH = 120;
 				if (currentH && currentH > (minH + 1)) {
 					st.__autoSizeImagePending = false;
@@ -614,7 +614,7 @@ export class KwUrlSection extends LitElement {
 			if (typeof window.__kustoRefreshAllDataSourceDropdowns === 'function') {
 				window.__kustoRefreshAllDataSourceDropdowns();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _onUrlInput(e: Event): void {
@@ -800,7 +800,7 @@ export class KwUrlSection extends LitElement {
 					const h = child.getBoundingClientRect().height || 0;
 					const margin = (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
 					contentH += Math.ceil(h + margin);
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		} else {
 			contentH = contentEl.scrollHeight || 0;
@@ -877,7 +877,7 @@ export class KwUrlSection extends LitElement {
 				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
 					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
 			const nextHeight = Math.max(minH, Math.min(maxH, startHeight + delta));
@@ -903,7 +903,7 @@ export class KwUrlSection extends LitElement {
 		try {
 			const sp = window.schedulePersist;
 			if (typeof sp === 'function') sp();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	/**

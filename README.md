@@ -291,6 +291,9 @@ This extension is built on top of some fantastic open-source projects. Huge than
 | **TOAST UI Editor** | MIT | NHN Cloud FE Development Lab | [github.com/nhn/tui.editor](https://github.com/nhn/tui.editor) |
 | **TOAST UI Editor Color Syntax Plugin** | MIT | NHN Cloud FE Development Lab | [github.com/nhn/tui.editor](https://github.com/nhn/tui.editor) |
 | **Apache ECharts** | Apache 2.0 | Apache Software Foundation | [github.com/apache/echarts](https://github.com/apache/echarts) |
+| **Lit** | BSD-3-Clause | Google | [github.com/lit/lit](https://github.com/lit/lit) |
+| **TanStack Table** | MIT | Tanner Linsley | [github.com/TanStack/table](https://github.com/TanStack/table) |
+| **TanStack Virtual** | MIT | Tanner Linsley | [github.com/TanStack/virtual](https://github.com/TanStack/virtual) |
 | **marked** | MIT | marked contributors | [github.com/markedjs/marked](https://github.com/markedjs/marked) |
 | **DOMPurify** | Apache 2.0 / MPL 2.0 | Cure53 | [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify) |
 | **esbuild** | MIT | Evan Wallace | [github.com/evanw/esbuild](https://github.com/evanw/esbuild) |

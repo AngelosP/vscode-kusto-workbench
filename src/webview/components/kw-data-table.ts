@@ -982,7 +982,7 @@ this.requestUpdate();
 				<span class="sep"></span>
 				<button class="tbtn" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>
 				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._copy()}>${ICON.copy}</button>
-				${this._sorting.length > 0 ? html`<button class="tbtn" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
+				${this._sorting.length > 0 ? html`<button class="tbtn tbtn-text" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
 			</div>` : nothing}
 			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
 		</div>`;
@@ -1166,9 +1166,10 @@ this.requestUpdate();
 	private _renderTh(h: any): TemplateResult {
 		const col = h.column as Column<CellValue[]>, sd = col.getIsSorted(), si = this._sorting.findIndex(s => s.id === col.id), ci = parseInt(col.id);
 		const isFiltered = isColumnFiltered(ci, this._columnFilters);
-		return html`<th @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }} class="${sd ? 'sorted' : ''}">
-			<div class="thc"><span class="thn">${col.columnDef.header}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
-				${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}
+		return html`<th @click=${(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.cm-btn') && !(e.target as HTMLElement).closest('.filtered-link')) col.toggleSorting(undefined, e.shiftKey); }}
+			@contextmenu=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openColumnMenuAt(ci, e.clientX, e.clientY); }}
+			class="${sd ? 'sorted' : ''}">
+			<div class="thc"><span class="thn">${col.columnDef.header}${sd ? html`<span class="si2">${sd === 'asc' ? '↑' : '↓'}${this._sorting.length > 1 ? html`<sup>${si + 1}</sup>` : nothing}</span>` : nothing}${isFiltered ? html`<a href="#" class="filtered-link" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openFilterDialog(ci); }}>(filtered)</a>` : nothing}</span>
 				<button class="cm-btn" @click=${(e: MouseEvent) => { e.stopPropagation(); this._openColumnMenu(ci, e); }}>☰</button>
 			</div>
 		</th>`;
@@ -1178,7 +1179,12 @@ this.requestUpdate();
 		if (this._columnMenuOpen === ci) { this._closeColumnMenu(); return; }
 		const btn = e.currentTarget as HTMLElement;
 		const rect = btn.getBoundingClientRect();
-		this._columnMenuPos = { x: rect.right, y: rect.bottom + 2 };
+		this._openColumnMenuAt(ci, rect.right, rect.bottom + 2);
+	}
+
+	private _openColumnMenuAt(ci: number, x: number, y: number): void {
+		if (this._columnMenuOpen === ci) { this._closeColumnMenu(); return; }
+		this._columnMenuPos = { x, y };
 		this._columnMenuOpen = ci;
 		// Defer so this click doesn't immediately trigger the close handler
 		requestAnimationFrame(() => document.addEventListener('mousedown', this._onDocMouseDown));
@@ -1413,7 +1419,7 @@ this.requestUpdate();
 				navigator.clipboard.writeText(value).catch(() => { /* ignore — document may not be focused */ });
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const ta = document.createElement('textarea');
 			ta.value = value;
@@ -1425,7 +1431,7 @@ this.requestUpdate();
 			ta.select();
 			document.execCommand('copy');
 			document.body.removeChild(ta);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _onDocumentScrollDismiss = (): void => {
@@ -1448,7 +1454,7 @@ this.requestUpdate();
 				e.clipboardData.setData('text/plain', text);
 				return;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		this._writeTextToClipboard(text);
 	};
 
@@ -1467,7 +1473,7 @@ this.requestUpdate();
 		// Fallback: if the component is visible and has an active selection, allow copy.
 		return this.isConnected;
 	}
-	private _copyCol(ci: number): void { if (!this._table) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch {} }
+	private _copyCol(ci: number): void { if (!this._table) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); } }
 	private _save(): void {
 		if (!this._table) return;
 		const rows = this._table.getRowModel().rows;

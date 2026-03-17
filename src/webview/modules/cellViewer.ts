@@ -30,7 +30,7 @@ function __kustoSetCellViewerNavEnabled(enabled: boolean, matchCount: number): v
 			if (prevBtn) prevBtn.disabled = !canNav;
 			if (nextBtn) nextBtn.disabled = !canNav;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoUpdateCellViewerSearchStatus(): void {
@@ -87,15 +87,15 @@ function __kustoApplyCellViewerCurrentMatch(scrollIntoView: boolean): void {
 			content.querySelectorAll('span.cell-viewer-highlight.cell-viewer-highlight-current')
 				.forEach((el) => el.classList.remove('cell-viewer-highlight-current'));
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const el = __kustoGetCellViewerMatchElement(cur);
 	if (el) {
-		try { el.classList.add('cell-viewer-highlight-current'); } catch { /* ignore */ }
+		try { el.classList.add('cell-viewer-highlight-current'); } catch (e) { console.error('[kusto]', e); }
 		if (scrollIntoView) {
 			try {
 				el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	}
 
@@ -136,7 +136,7 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 
 	const modal = document.getElementById('cellViewer');
 	const titleEl = document.getElementById('cellViewerTitle');
-	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
+	try { __kustoEnsureCellViewerSearchControl(); } catch (e) { console.error('[kusto]', e); }
 	const searchInput = document.getElementById('cellViewerSearch') as HTMLInputElement | null;
 	const searchMode = document.getElementById('cellViewerSearchMode') as HTMLElement | null;
 	const content = document.getElementById('cellViewerContent');
@@ -150,7 +150,7 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 			strong.textContent = columnName;
 			titleEl.appendChild(strong);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Store state.
 	_win.__kustoCellViewerState = {
@@ -167,7 +167,7 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 	};
 
 	// Initialize icons if needed.
-	try { __kustoEnsureCellViewerCopyIcon(); } catch { /* ignore */ }
+	try { __kustoEnsureCellViewerCopyIcon(); } catch (e) { console.error('[kusto]', e); }
 
 	// Check if there's an active data search and if this cell is a search match.
 	const dataSearchInput = document.getElementById(boxId + '_data_search') as HTMLInputElement | null;
@@ -188,7 +188,7 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, dataModeVal);
 				st.searchMode = String(dataModeVal);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		st.searchTerm = dataSearchTerm;
 		st.currentMatchIndex = 0;
 		st.searchError = '';
@@ -199,7 +199,7 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 				(searchMode as any).dataset.mode = 'wildcard';
 				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, 'wildcard');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		st.searchTerm = '';
 		st.searchMode = 'wildcard';
 		st.searchError = '';
@@ -208,14 +208,14 @@ function openCellViewer(row: number, col: number, boxId: string): void {
 
 	// Render the content.
 	__kustoRenderCellViewerContent();
-	try { __kustoApplyCellViewerCurrentMatch(true); } catch { /* ignore */ }
+	try { __kustoApplyCellViewerCurrentMatch(true); } catch (e) { console.error('[kusto]', e); }
 
 	// Show the modal.
 	if (modal) modal.classList.add('visible');
 
 	// Focus the search input.
 	setTimeout(() => {
-		try { if (searchInput) searchInput.focus(); } catch { /* ignore */ }
+		try { if (searchInput) searchInput.focus(); } catch (e) { console.error('[kusto]', e); }
 	}, 50);
 }
 
@@ -240,7 +240,7 @@ function __kustoEnsureCellViewerSearchControl(): void {
 				}
 			}
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -269,7 +269,7 @@ function __kustoGetCellViewerColumnName(state: any, colIndex: number): string {
 			if (typeof col.columnName === 'string' && col.columnName) return col.columnName;
 			if (typeof col.displayName === 'string' && col.displayName) return col.displayName;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return 'column ' + (colIndex + 1);
 }
 
@@ -341,7 +341,7 @@ function searchInCellViewer(): void {
 	const state = _win.__kustoCellViewerState as any;
 	if (!state) { return; }
 
-	try { __kustoEnsureCellViewerSearchControl(); } catch { /* ignore */ }
+	try { __kustoEnsureCellViewerSearchControl(); } catch (e) { console.error('[kusto]', e); }
 	let nextTerm = '';
 	let nextMode = 'wildcard';
 	try {
@@ -354,7 +354,7 @@ function searchInCellViewer(): void {
 			nextTerm = searchInput ? String(searchInput.value || '') : '';
 			nextMode = 'wildcard';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const prevTerm = state.searchTerm;
 	const prevMode = state.searchMode;
 	state.searchTerm = nextTerm;
@@ -364,7 +364,7 @@ function searchInCellViewer(): void {
 		state.currentMatchIndex = 0;
 	}
 	__kustoRenderCellViewerContent();
-	try { __kustoApplyCellViewerCurrentMatch(true); } catch { /* ignore */ }
+	try { __kustoApplyCellViewerCurrentMatch(true); } catch (e) { console.error('[kusto]', e); }
 }
 
 function cellViewerNextMatch(): void {
@@ -414,7 +414,7 @@ function copyCellViewerToClipboard(): void {
 		if (hasSelection && inContent) {
 			textToCopy = sel!.toString();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Fall back to the full raw value.
 	if (!textToCopy) {
@@ -457,7 +457,7 @@ function handleCellDoubleClick(event: Event, row: number, col: number, boxId: st
 	try {
 		event.stopPropagation();
 		event.preventDefault();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	openCellViewer(row, col, boxId);
 }
 
@@ -481,7 +481,7 @@ function handleCellViewerKeydown(event: KeyboardEvent): void {
 				cellViewerNextMatch();
 			}
 			event.preventDefault();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (event.key === 'F3') {
@@ -492,7 +492,7 @@ function handleCellViewerKeydown(event: KeyboardEvent): void {
 				cellViewerNextMatch();
 			}
 			event.preventDefault();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 }

@@ -16,14 +16,14 @@ const _win = window;
 function __kustoCloseAllColumnMenus(): void {
 	try {
 		document.querySelectorAll('.column-menu.visible').forEach((m) => {
-			try { m.classList.remove('visible'); } catch { /* ignore */ }
+			try { m.classList.remove('visible'); } catch (e) { console.error('[kusto]', e); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (_win.__kustoActiveColumnMenu) {
 			_win.__kustoActiveColumnMenu = null;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoWireColumnMenuAutoClose(): void {
@@ -32,7 +32,7 @@ function __kustoWireColumnMenuAutoClose(): void {
 			return;
 		}
 		_win.__kustoColumnMenuAutoCloseWired = true;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const shouldIgnoreTarget = (target: EventTarget | null): boolean => {
 		try {
@@ -43,7 +43,7 @@ function __kustoWireColumnMenuAutoClose(): void {
 			}
 			// Also ignore clicks on any column menu button (opening another menu will close the current one anyway).
 			if (target && (target as Element).closest && (target as Element).closest('.column-menu-btn')) return true;
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return false;
 	};
 
@@ -55,7 +55,7 @@ function __kustoWireColumnMenuAutoClose(): void {
 			if (!anyOpen) return;
 			if (shouldIgnoreTarget(target)) return;
 			__kustoCloseAllColumnMenus();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 
 	document.addEventListener('keydown', (ev) => {
@@ -64,9 +64,9 @@ function __kustoWireColumnMenuAutoClose(): void {
 			if (key !== 'Escape') return;
 			const anyOpen = document.querySelector('.column-menu.visible');
 			if (!anyOpen) return;
-			try { ev.preventDefault(); } catch { /* ignore */ }
+			try { ev.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			__kustoCloseAllColumnMenus();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 
 	// Close column menus on scroll/wheel so they don't float detached from their buttons.
@@ -75,7 +75,7 @@ function __kustoWireColumnMenuAutoClose(): void {
 			const anyOpen = document.querySelector('.column-menu.visible');
 			if (!anyOpen) return;
 			__kustoCloseAllColumnMenus();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true); // Use capture to catch scroll events on nested scrollable elements
 
 	document.addEventListener('wheel', () => {
@@ -83,13 +83,13 @@ function __kustoWireColumnMenuAutoClose(): void {
 			const anyOpen = document.querySelector('.column-menu.visible');
 			if (!anyOpen) return;
 			__kustoCloseAllColumnMenus();
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}, { passive: true });
 }
 
 function toggleColumnMenu(colIdx: number, boxId: string): void {
 	// Ensure outside-click/Escape dismiss is wired once.
-	try { __kustoWireColumnMenuAutoClose(); } catch { /* ignore */ }
+	try { __kustoWireColumnMenuAutoClose(); } catch (e) { console.error('[kusto]', e); }
 
 	// Close all other menus
 	const menuId = boxId + '_col_menu_' + colIdx;
@@ -109,7 +109,7 @@ function toggleColumnMenu(colIdx: number, boxId: string): void {
 			if (_win.__kustoActiveColumnMenu && (_win.__kustoActiveColumnMenu as { menu?: Element }).menu === menu) {
 				_win.__kustoActiveColumnMenu = null;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -117,7 +117,7 @@ function toggleColumnMenu(colIdx: number, boxId: string): void {
 	const button = menu.previousElementSibling;
 	if (!button || typeof button.getBoundingClientRect !== 'function') {
 		menu.classList.add('visible');
-		try { _win.__kustoActiveColumnMenu = { menu, button: button || null }; } catch { /* ignore */ }
+		try { _win.__kustoActiveColumnMenu = { menu, button: button || null }; } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -130,7 +130,7 @@ function toggleColumnMenu(colIdx: number, boxId: string): void {
 	menu.style.left = '0px';
 	menu.style.top = '0px';
 	menu.classList.add('visible');
-	try { _win.__kustoActiveColumnMenu = { menu, button }; } catch { /* ignore */ }
+	try { _win.__kustoActiveColumnMenu = { menu, button }; } catch (e) { console.error('[kusto]', e); }
 
 	const menuRect = menu.getBoundingClientRect();
 	const viewportW = Math.max(0, window.innerWidth || 0);
@@ -245,9 +245,7 @@ function showUniqueValues(colIdx: number, boxId: string): void {
 				showExecutionTime: false,
 				resultsDiv: host
 			});
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}, 0);
 
 	// Draw pie chart after DOM is updated
@@ -490,6 +488,7 @@ function closeColumnAnalysis(event: Event | null): void {
 
 // ── Window bridge for inline onclick callers (resultsTable.js HTML strings) ──
 _win.toggleColumnMenu = toggleColumnMenu;
+_win.__kustoCloseAllColumnMenus = __kustoCloseAllColumnMenus;
 _win.showUniqueValues = showUniqueValues;
 _win.showDistinctCountPicker = showDistinctCountPicker;
 _win.calculateDistinctCount = calculateDistinctCount;

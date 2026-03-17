@@ -20,7 +20,7 @@ function __kustoCopyClientActivityId(boxId: any) {
 				}
 			}).catch(function () { /* ignore */ });
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetSearchIconSvg() {
@@ -95,12 +95,10 @@ function __kustoEnsureResultsShownForTool(boxId: any) {
 					if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
 						_win.__kustoApplyResultsVisibility(boxId);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Helper function to focus the table container.
@@ -112,15 +110,15 @@ function __kustoFocusTableContainer(container: any, boxId: any) {
 	try {
 		_win.__kustoLastActiveResultsBoxId = boxId;
 		_win.__kustoLastActiveResultsInteractionAt = Date.now();
-	} catch { /* ignore */ }
-	try { container.focus(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { container.focus(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 	try {
 		if (_win.__kustoResultsCopyKeyHandlerInstalled) return;
 		_win.__kustoResultsCopyKeyHandlerInstalled = true;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	document.addEventListener('keydown', (event) => {
 		try {
@@ -140,7 +138,7 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 						return;
 					}
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			const boxId = (typeof _win.__kustoLastActiveResultsBoxId === 'string') ? _win.__kustoLastActiveResultsBoxId : '';
 			if (!boxId) return;
@@ -157,15 +155,15 @@ function __kustoEnsureResultsCopyKeyHandlerInstalled() {
 			const hasRowSelection = !!(state.selectedRows && state.selectedRows.size > 0);
 			if (!hasCellSelection && !hasRowSelection) return;
 
-			try { event.preventDefault(); } catch { /* ignore */ }
-			try { event.stopPropagation(); } catch { /* ignore */ }
-			try { if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation(); } catch { /* ignore */ }
-			try { _win.copySelectionToClipboard(boxId); } catch { /* ignore */ }
-		} catch { /* ignore */ }
+			try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+			try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
+			try { _win.copySelectionToClipboard(boxId); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 }
 
-try { __kustoEnsureResultsCopyKeyHandlerInstalled(); } catch { /* ignore */ }
+try { __kustoEnsureResultsCopyKeyHandlerInstalled(); } catch (e) { console.error('[kusto]', e); }
 
 function __kustoSetResultsToolsVisible(boxId: any, visible: any) {
 	const searchBtn = document.getElementById(boxId + '_results_search_btn');
@@ -179,11 +177,11 @@ function __kustoSetResultsToolsVisible(boxId: any, visible: any) {
 	const saveSplit = document.getElementById(boxId + '_results_save_split');
 	const sep2 = document.getElementById(boxId + '_results_sep_2');
 	const display = visible ? '' : 'none';
-		try { if (searchBtn) { searchBtn.style.display = display; } } catch { /* ignore */ }
-	try { if (columnBtn) { columnBtn.style.display = display; } } catch { /* ignore */ }
-	try { if (sortBtn) { sortBtn.style.display = display; } } catch { /* ignore */ }
-	try { if (copyBtn) { copyBtn.style.display = display; } } catch { /* ignore */ }
-	try { if (saveBtn) { saveBtn.style.display = display; } } catch { /* ignore */ }
+		try { if (searchBtn) { searchBtn.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (columnBtn) { columnBtn.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (sortBtn) { sortBtn.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (copyBtn) { copyBtn.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (saveBtn) { saveBtn.style.display = display; } } catch (e) { console.error('[kusto]', e); }
 	// Split carets follow filtered state; don't force them visible just because tools are shown.
 	try {
 		if (!visible) {
@@ -191,7 +189,7 @@ function __kustoSetResultsToolsVisible(boxId: any, visible: any) {
 			if (saveMenuBtn) { saveMenuBtn.style.display = 'none'; }
 		} else {
 			const state = _win.__kustoGetResultsState(boxId);
-			const filtered = _win.__kustoIsResultsFiltered(state);
+			const filtered = state ? _win.__kustoIsResultsFiltered(state) : false;
 			if (typeof _win.__kustoSetSplitCaretsVisible === 'function') {
 				_win.__kustoSetSplitCaretsVisible(boxId, filtered);
 			} else {
@@ -201,10 +199,10 @@ function __kustoSetResultsToolsVisible(boxId: any, visible: any) {
 				if (saveMenuBtn) { saveMenuBtn.style.display = caretDisplay; }
 			}
 		}
-	} catch { /* ignore */ }
-	try { if (copySplit) { copySplit.style.display = display; } } catch { /* ignore */ }
-	try { if (saveSplit) { saveSplit.style.display = display; } } catch { /* ignore */ }
-	try { if (sep2) { sep2.style.display = display; } } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { if (copySplit) { copySplit.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (saveSplit) { saveSplit.style.display = display; } } catch (e) { console.error('[kusto]', e); }
+	try { if (sep2) { sep2.style.display = display; } } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoHideResultsTools(boxId: any) {
@@ -213,37 +211,37 @@ function __kustoHideResultsTools(boxId: any) {
 		if (searchContainer) {
 			searchContainer.style.display = 'none';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const columnContainer = document.getElementById(boxId + '_column_search_container');
 		if (columnContainer) {
 			columnContainer.style.display = 'none';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const sortModal = document.getElementById(boxId + '_sort_modal');
 		if (sortModal) {
 			sortModal.classList.remove('visible');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const searchBtn = document.getElementById(boxId + '_results_search_btn');
 		if (searchBtn) {
 			searchBtn.classList.remove('active');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const columnBtn = document.getElementById(boxId + '_results_column_btn');
 		if (columnBtn) {
 			columnBtn.classList.remove('active');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const sortBtn = document.getElementById(boxId + '_results_sort_btn');
 		if (sortBtn) {
 			sortBtn.classList.remove('active');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetSortIconSvg() {
@@ -361,7 +359,7 @@ function __kustoGetCellSortValue(cell: any) {
 			if (ms !== null) {
 				return { kind: 'date', v: ms };
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return { kind: 'string', v: s };
 	} catch {
 		return { kind: 'string', v: String(cell) };
@@ -963,14 +961,14 @@ function __kustoSetRulesCombineEnabled(boxId: any, enabled: any) {
 		el.classList.toggle('on', !!enabled);
 		el.classList.toggle('off', !enabled);
 		el.textContent = enabled ? 'On' : 'Off';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoToggleRulesCombine(boxId: any) {
 	try {
 		const enabled = __kustoGetRulesCombineEnabledFromDom(boxId);
 		__kustoSetRulesCombineEnabled(boxId, !enabled);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetRulesJoinOpFromDom(boxId: any) {
@@ -996,7 +994,7 @@ function __kustoSetRulesJoinOp(boxId: any, joinOp: any) {
 		const orBtn = document.getElementById(boxId + '_filter_rules_join_or');
 		if (andBtn) andBtn.classList.toggle('active', op === 'and');
 		if (orBtn) orBtn.classList.toggle('active', op === 'or');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoApplyFiltersAndRerender(boxId: any) {
@@ -1038,11 +1036,11 @@ function __kustoApplyFiltersAndRerender(boxId: any) {
 			.forEach(cell => {
 				cell.classList.remove('search-match', 'search-match-current');
 			});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	__kustoEnsureDisplayRowIndexMaps(state);
 	_win.__kustoRerenderResultsTable(boxId);
-	try { _win.schedulePersist && _win.schedulePersist('filter'); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist('filter'); } catch (e) { console.error('[kusto]', e); }
 }
 
 function closeColumnFilterPopover() {
@@ -1051,8 +1049,8 @@ function closeColumnFilterPopover() {
 		const { elId } = _win.__kustoActiveFilterPopover;
 		const el = elId ? document.getElementById(elId) : null;
 		if (el) el.remove();
-	} catch { /* ignore */ }
-	try { _win.__kustoActiveFilterPopover = null; } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoActiveFilterPopover = null; } catch (e) { console.error('[kusto]', e); }
 }
 
 function closeColumnFilterDialogOnBackdrop(event: any) {
@@ -1060,7 +1058,7 @@ function closeColumnFilterDialogOnBackdrop(event: any) {
 		if (!event || !_win.__kustoActiveFilterPopover) return;
 		if (event.target !== event.currentTarget) return;
 		closeColumnFilterPopover();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureFilterGlobalCloseHandler() {
@@ -1080,9 +1078,7 @@ function __kustoEnsureFilterGlobalCloseHandler() {
 				return;
 			}
 			closeColumnFilterPopover();
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}, true);
 }
 
@@ -1090,9 +1086,9 @@ function openColumnFilter(event: any, colIndex: any, boxId: any) {
 	try {
 		if (event && typeof event.preventDefault === 'function') event.preventDefault();
 		if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	__kustoEnsureFilterGlobalCloseHandler();
-	try { closeColumnFilterPopover(); } catch { /* ignore */ }
+	try { closeColumnFilterPopover(); } catch (e) { console.error('[kusto]', e); }
 
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) return;
@@ -1120,7 +1116,7 @@ function openColumnFilter(event: any, colIndex: any, boxId: any) {
 	_win.__kustoActiveFilterPopover = { boxId, colIndex: colIdx, mode, dataType: inferredType, elId: modalId, dialogId };
 	dialog.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 	document.body.appendChild(modal);
-	try { __kustoEnsureFilterPopoverSearchControl(boxId, colIdx); } catch { /* ignore */ }
+	try { __kustoEnsureFilterPopoverSearchControl(boxId, colIdx); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureFilterPopoverSearchControl(boxId: any, colIdx: any) {
@@ -1145,7 +1141,7 @@ function __kustoEnsureFilterPopoverSearchControl(boxId: any, colIdx: any) {
 			ariaLabel: 'Search values',
 			onInput: function () { __kustoFilterSearchValues(boxId, colIdx); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRenderFilterPopoverHtml(boxId: any, colIdx: any) {
@@ -1282,7 +1278,7 @@ function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 		const mode = st && st.mode ? st.mode : 'wildcard';
 		const built = _win.__kustoTryBuildSearchRegex(q, mode);
 		const input = document.getElementById(boxId + '_filter_value_search');
-		try { if (input) input.title = built && built.error ? String(built.error) : ''; } catch { /* ignore */ }
+		try { if (input) input.title = built && built.error ? String(built.error) : ''; } catch (e) { console.error('[kusto]', e); }
 		const regex = built && built.regex ? built.regex : null;
 
 		const list = document.getElementById(boxId + '_filter_values_list');
@@ -1293,7 +1289,7 @@ function __kustoFilterSearchValues(boxId: any, colIdx: any) {
 			const hit = (!q || !regex) ? true : !!_win.__kustoRegexTest(regex, t);
 			it.style.display = hit ? '' : 'none';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoFilterSetAllValues(boxId: any, colIdx: any, checked: any) {
@@ -1310,11 +1306,11 @@ function __kustoFilterSetAllValues(boxId: any, colIdx: any, checked: any) {
 				if (inlineDisplay === 'none') continue;
 				try {
 					if (window.getComputedStyle && window.getComputedStyle(row).display === 'none') continue;
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			cb.checked = !!checked;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetValuesAllowedFromSpec(spec: any) {
@@ -1550,8 +1546,8 @@ function __kustoSetRuleJoin(boxId: any, colIdx: any, ruleIdx: any, joinOp: any) 
 			if (_win.__kustoActiveFilterPopover) {
 				_win.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
 			}
-		} catch { /* ignore */ }
-	} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoOnRuleRowOpChanged(boxId: any, colIdx: any, ruleIdx: any) {
@@ -1573,9 +1569,7 @@ function __kustoOnRuleRowOpChanged(boxId: any, colIdx: any, ruleIdx: any) {
 		const listEl = document.getElementById(boxId + '_filter_rules_list');
 		if (!listEl) return;
 		listEl.innerHTML = __kustoRenderRulesListHtml(boxId, colIndex, inferredType, { kind: 'rules', dataType: inferredType, rules: currentRules });
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoDeleteRuleRow(boxId: any, colIdx: any, ruleIdx: any) {
@@ -1599,9 +1593,7 @@ function __kustoDeleteRuleRow(boxId: any, colIdx: any, ruleIdx: any) {
 		const listEl = document.getElementById(boxId + '_filter_rules_list');
 		if (!listEl) return;
 		listEl.innerHTML = __kustoRenderRulesListHtml(boxId, colIndex, inferredType, { kind: 'rules', dataType: inferredType, rules });
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRenderRulesEditorHtml(boxId: any, colIdx: any, dataType: any, existing: any) {
@@ -1732,7 +1724,7 @@ function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
 			_win.__kustoActiveFilterPopover.draftRules = __kustoCaptureRulesFromDom(boxId);
 			_win.__kustoActiveFilterPopover.draftCombine = __kustoGetRulesCombineEnabledFromDom(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	_win.__kustoActiveFilterPopover.mode = (String(mode) === 'rules') ? 'rules' : 'values';
 	const dialogId = _win.__kustoActiveFilterPopover.dialogId || _win.__kustoActiveFilterPopover.elId;
@@ -1745,7 +1737,7 @@ function __kustoSetFilterMode(boxId: any, colIdx: any, mode: any) {
 			const base = __kustoGetRowIndicesExcludingColumnFilter(state, colIdx);
 			_win.__kustoActiveFilterPopover.dataType = __kustoInferColumnType(state, colIdx, base);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	el.innerHTML = __kustoRenderFilterPopoverHtml(boxId, colIdx);
 }
 
@@ -1784,9 +1776,7 @@ function __kustoOnFilterOpChanged(boxId: any, colIdx: any) {
 			if (n) n.style.display = (op === 'top' || op === 'bottom') ? '' : 'none';
 			return;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoFilterToggleAllValues(boxId: any, colIdx: any) {
@@ -1798,7 +1788,7 @@ function __kustoFilterToggleAllValues(boxId: any, colIdx: any) {
 		for (const cb of cbs) {
 			(cb as any).checked = !!(all as any).checked;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function applyColumnFilter(boxId: any, colIdx: any) {
@@ -1905,9 +1895,9 @@ function __kustoSetSortSpecAndRerender(boxId: any, nextSpec: any) {
 			v.lastEnd = -1;
 			v.lastDisplayVersion = -1;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	_win.__kustoRerenderResultsTable(boxId);
-	try { _win.schedulePersist && _win.schedulePersist(); } catch { /* ignore */ }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetSortRuleIndex(state: any, colIndex: any) {
@@ -1919,7 +1909,7 @@ function __kustoGetSortRuleIndex(state: any, colIndex: any) {
 }
 
 function handleHeaderSortClick(event: any, colIndex: any, boxId: any) {
-	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
+	try { __kustoEnsureResultsShownForTool(boxId); } catch (e) { console.error('[kusto]', e); }
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) return;
 	const isMulti = !!(event && (event.shiftKey || event.ctrlKey || event.metaKey));
@@ -1956,18 +1946,18 @@ function sortColumnDescending(colIndex: any, boxId: any) {
 }
 
 function toggleSortDialog(boxId: any) {
-	try { __kustoEnsureResultsShownForTool(boxId); } catch { /* ignore */ }
+	try { __kustoEnsureResultsShownForTool(boxId); } catch (e) { console.error('[kusto]', e); }
 	const modal = document.getElementById(boxId + '_sort_modal');
 	if (!modal) return;
 	const btn = document.getElementById(boxId + '_results_sort_btn');
 	const willOpen = !modal.classList.contains('visible');
 	if (willOpen) {
 		modal.classList.add('visible');
-		try { if (btn) btn.classList.add('active'); } catch { /* ignore */ }
+		try { if (btn) btn.classList.add('active'); } catch (e) { console.error('[kusto]', e); }
 		__kustoRenderSortDialog(boxId);
 	} else {
 		modal.classList.remove('visible');
-		try { if (btn) btn.classList.remove('active'); } catch { /* ignore */ }
+		try { if (btn) btn.classList.remove('active'); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -1978,7 +1968,7 @@ function closeSortDialog(boxId: any) {
 	try {
 		const btn = document.getElementById(boxId + '_results_sort_btn');
 		if (btn) btn.classList.remove('active');
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function closeSortDialogOnBackdrop(event: any, boxId: any) {
@@ -2044,7 +2034,7 @@ function __kustoRenderSortDialog(boxId: any) {
 	);
 
 	listEl.innerHTML = emptyHint + rulesHtml + addRow;
-	try { __kustoWireSortDialogDnD(boxId); } catch { /* ignore */ }
+	try { __kustoWireSortDialogDnD(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoAddSortRuleInline(boxId: any) {
@@ -2087,7 +2077,7 @@ function __kustoWireSortDialogDnD(boxId: any) {
 			const handle = e && e.target && (e.target as HTMLElement).closest ? (e.target as HTMLElement).closest('.kusto-sort-grab') : null;
 			if (!handle) {
 				// Only allow drag when starting from the grab handle.
-				try { e.preventDefault(); } catch { /* ignore */ }
+				try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 			_win.__kustoSortDnD.boxId = boxId;
@@ -2097,7 +2087,7 @@ function __kustoWireSortDialogDnD(boxId: any) {
 				(e as any).dataTransfer.effectAllowed = 'move';
 				// Some browsers require data to be set.
 				(e as any).dataTransfer.setData('text/plain', String(idx));
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 		});
 
 		row.addEventListener('dragend', () => {
@@ -2106,14 +2096,14 @@ function __kustoWireSortDialogDnD(boxId: any) {
 		});
 
 		row.addEventListener('dragover', (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			for (const r of rows) r.classList.remove('kusto-sort-drop');
 			row.classList.add('kusto-sort-drop');
-			try { (e as any).dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+			try { (e as any).dataTransfer.dropEffect = 'move'; } catch (e) { console.error('[kusto]', e); }
 		});
 
 		row.addEventListener('drop', (e: any) => {
-			try { e.preventDefault(); } catch { /* ignore */ }
+			try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 			const fromIdx = _win.__kustoSortDnD ? _win.__kustoSortDnD.fromIdx : -1;
 			const toIdx = parseInt(String(row.getAttribute('data-sort-idx')), 10);
 			if (!isFinite(fromIdx) || !isFinite(toIdx) || fromIdx === toIdx) return;
@@ -2253,19 +2243,19 @@ function __kustoTryGetDomEventFromInlineHandler(explicitEvent: any) {
 		if (explicitEvent && typeof explicitEvent === 'object') {
 			return explicitEvent;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		// In inline handlers, many browsers expose a global `event`.
 		if (typeof window !== 'undefined' && window && window.event) {
 			return window.event;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return null;
 }
 
 function __kustoSetCellSelectionState(boxId: any, state: any, nextRow: any, nextCol: any, options: any) {
 	if (!state) return;
-	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch (e) { console.error('[kusto]', e); }
 
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const cols = Array.isArray(state.columns) ? state.columns : [];
@@ -2295,8 +2285,8 @@ function __kustoSetCellSelectionState(boxId: any, state: any, nextRow: any, next
 	};
 
 	// Clearing row-selection avoids ambiguity about what Ctrl+C will copy.
-	try { if (state.selectedRows && state.selectedRows.size > 0) state.selectedRows.clear(); } catch { /* ignore */ }
-	try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
+	try { if (state.selectedRows && state.selectedRows.size > 0) state.selectedRows.clear(); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
 }
 
 function selectCell(a: any, b: any, c: any, d: any) {
@@ -2316,7 +2306,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 	try {
 		_win.__kustoLastActiveResultsBoxId = boxId;
 		_win.__kustoLastActiveResultsInteractionAt = Date.now();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// NOTE: Native `dblclick` doesn't reliably fire because a single click triggers a full
 	// re-render of the results table, replacing the clicked <td>. Detect a rapid second click
@@ -2334,7 +2324,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 			}
 			state.__kustoLastCellClick = { row, col, t: now };
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// If clicking on an already selected single cell (not extending with shift), deselect it.
 	// Check if the clicked cell is the current focus cell and is the only cell selected.
@@ -2354,7 +2344,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 				if (typeof (_win.openCellViewer) === 'function') {
 					_win.openCellViewer(row, col, boxId);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2362,8 +2352,8 @@ function selectCell(a: any, b: any, c: any, d: any) {
 		state.selectedCell = null;
 		state.cellSelectionAnchor = null;
 		state.cellSelectionRange = null;
-		try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
-		try { _win.__kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+		try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
+		try { _win.__kustoRerenderResultsTable(boxId); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -2371,7 +2361,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 		extend: !!(ev && ev.shiftKey)
 	});
 
-	try { _win.__kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+	try { _win.__kustoRerenderResultsTable(boxId); } catch (e) { console.error('[kusto]', e); }
 
 	// If this was a synthetic double click, open the cell viewer after selection.
 	if (isSyntheticDoubleClick) {
@@ -2379,17 +2369,17 @@ function selectCell(a: any, b: any, c: any, d: any) {
 			if (typeof (_win.openCellViewer) === 'function') {
 				_win.openCellViewer(row, col, boxId);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
 	// Scroll focus cell into view
 	try {
-		const cellEl = document.querySelector('#' + boxId + '_table td[data-row="' + state.selectedCell.row + '"][data-col="' + state.selectedCell.col + '"]') as any;
+		const cellEl = document.querySelector('#' + boxId + '_table td[data-row="' + state.selectedCell?.row + '"][data-col="' + state.selectedCell?.col + '"]') as any;
 		if (cellEl) {
 			cellEl.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Focus the container for keyboard navigation
 	try {
@@ -2397,7 +2387,7 @@ function selectCell(a: any, b: any, c: any, d: any) {
 		if (container) {
 			__kustoFocusTableContainer(container, boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleRowSelection(row: any, boxId: any) {
@@ -2408,13 +2398,13 @@ function toggleRowSelection(row: any, boxId: any) {
 	try {
 		_win.__kustoLastActiveResultsBoxId = boxId;
 		_win.__kustoLastActiveResultsInteractionAt = Date.now();
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Try to get the event for shift-key detection.
 	const ev = __kustoTryGetDomEventFromInlineHandler(null);
 	const isShift = !!(ev && ev.shiftKey);
 
-	try { __kustoEnsureDisplayRowIndexMaps(state); } catch { /* ignore */ }
+	try { __kustoEnsureDisplayRowIndexMaps(state); } catch (e) { console.error('[kusto]', e); }
 
 	// SHIFT+click: select range from last selected row (anchor) to clicked row.
 	if (isShift && state.rowSelectionAnchor !== undefined && state.rowSelectionAnchor !== null) {
@@ -2443,7 +2433,7 @@ function toggleRowSelection(row: any, boxId: any) {
 		state.cellSelectionRange = null;
 		_win.__kustoBumpVisualVersion(state);
 		_win.__kustoRerenderResultsTable(boxId);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Focus the container for keyboard navigation (including Ctrl+C).
 	try {
@@ -2451,7 +2441,7 @@ function toggleRowSelection(row: any, boxId: any) {
 		if (container) {
 			__kustoFocusTableContainer(container, boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // ============================================
@@ -2482,7 +2472,7 @@ function __kustoUpdateResultsToolsDropdownState(boxId: any) {
 		if (columnItem) columnItem.classList.toggle('is-active', !!columnActive);
 		if (sortItem) sortItem.classList.toggle('is-active', !!sortActive);
 		if (visibilityLabel) visibilityLabel.textContent = resultsHidden ? 'Show results' : 'Hide results';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -2537,7 +2527,7 @@ function __kustoToggleResultsToolsDropdown(boxId: any) {
 				if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
 			}
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (isOpen) {
 		// Close the menu
@@ -2558,7 +2548,7 @@ function __kustoToggleResultsToolsDropdown(boxId: any) {
 				const headerWidth = header.getBoundingClientRect().width;
 				menu.classList.toggle('show-visibility-item', headerWidth < 150);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		// Position the menu using fixed positioning
 		try {
@@ -2567,7 +2557,7 @@ function __kustoToggleResultsToolsDropdown(boxId: any) {
 			// Align to the right edge of the button
 			const menuWidth = menu.offsetWidth || 150;
 			menu.style.left = Math.max(0, rect.right - menuWidth) + 'px';
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -2592,7 +2582,7 @@ function __kustoCloseAllResultsToolsDropdowns() {
 		document.querySelectorAll('.results-tools-dropdown-btn[aria-expanded="true"]').forEach(btn => {
 			btn.setAttribute('aria-expanded', 'false');
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Close results tools dropdown when clicking outside
@@ -2601,7 +2591,7 @@ document.addEventListener('click', function (e: any) {
 		if (!(e.target as HTMLElement).closest('.results-tools-dropdown')) {
 			__kustoCloseAllResultsToolsDropdowns();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 });
 
 // ============================================
@@ -2644,7 +2634,7 @@ function toggleColumnTool(boxId: any) {
 		if (body && body.style && body.style.display === 'none') {
 			body.style.display = '';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const container = document.getElementById(boxId + '_column_search_container');
 	const button = window.event && window.event.target && (window.event.target as Element).closest('.tool-toggle-btn');
 
@@ -2692,7 +2682,7 @@ function searchData(boxId: any) {
 			mode = 'wildcard';
 			built = { regex: query ? new RegExp(_win.escapeRegex(String(query).trim()), 'gi') : null, error: null };
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const regex = built && built.regex ? built.regex : null;
 	// Use embedded status and nav elements from search control.
 	const statusEl = document.getElementById(boxId + '_data_search_status');
@@ -2707,7 +2697,7 @@ function searchData(boxId: any) {
 
 	state.searchMatches = [];
 	state.currentSearchIndex = -1;
-	try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
+	try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
 
 	if (!String(query || '').trim()) {
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
@@ -2761,7 +2751,7 @@ function searchData(boxId: any) {
 	if (matchCount > 0) {
 		// Jump to first match
 		state.currentSearchIndex = 0;
-		try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
+		try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
 		if (typeof (_win.__kustoUpdateSearchStatus) === 'function') {
 			_win.__kustoUpdateSearchStatus(statusEl, matchCount, 0, false, '');
 		}
@@ -2787,7 +2777,7 @@ function nextSearchMatch(boxId: any) {
 	if (matches.length === 0) { return; }
 
 	state.currentSearchIndex = (state.currentSearchIndex + 1) % matches.length;
-	try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
+	try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
 	highlightCurrentSearchMatch(boxId);
 }
 
@@ -2799,7 +2789,7 @@ function previousSearchMatch(boxId: any) {
 	if (matches.length === 0) { return; }
 
 	state.currentSearchIndex = (state.currentSearchIndex - 1 + matches.length) % matches.length;
-	try { _win.__kustoBumpVisualVersion(state); } catch { /* ignore */ }
+	try { _win.__kustoBumpVisualVersion(state); } catch (e) { console.error('[kusto]', e); }
 	highlightCurrentSearchMatch(boxId);
 }
 
@@ -2813,7 +2803,7 @@ function highlightCurrentSearchMatch(boxId: any) {
 	if (currentIndex < 0 || currentIndex >= matches.length) { return; }
 
 	// Re-render so virtualization can materialize the current match row/cell.
-	try { _win.__kustoRerenderResultsTable(boxId); } catch { /* ignore */ }
+	try { _win.__kustoRerenderResultsTable(boxId); } catch (e) { console.error('[kusto]', e); }
 
 	const match = matches[currentIndex];
 	const cell = document.querySelector('#' + boxId + '_table td[data-row="' + match.row + '"][data-col="' + match.col + '"]') as any;
@@ -2947,7 +2937,7 @@ function filterColumns(boxId: any) {
 			query = String((input as any).value || '');
 			built = { regex: query ? new RegExp(_win.escapeRegex(String(query).trim()), 'gi') : null, error: null };
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const regex = built && built.regex ? built.regex : null;
 
 	if (!String(query || '').trim()) {
@@ -3033,7 +3023,7 @@ function scrollToColumn(colIndex: any, boxId: any) {
 			(input as any).value = '';
 		}
 		_win.currentAutocompleteIndex = 0;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const state = _win.__kustoGetResultsState(boxId);
 	if (!state) { return; }

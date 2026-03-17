@@ -5,7 +5,7 @@ export {};
 const _win = window;
 
 const connections: any[] = [];
-try { _win.connections = connections; } catch { /* ignore */ }
+try { _win.connections = connections; } catch (e) { console.error('[kusto]', e); }
 const queryBoxes: any[] = [];
 let lastConnectionId: string | null = null;
 let lastDatabase: string | null = null;
@@ -13,11 +13,11 @@ const cachedDatabases: Record<string, any> = {};
 let kustoFavorites: any[] = [];
 let leaveNoTraceClusters: string[] = [];
 const favoritesModeByBoxId: Record<string, any> = {};
-try { _win.favoritesModeByBoxId = favoritesModeByBoxId; } catch { /* ignore */ }
+try { _win.favoritesModeByBoxId = favoritesModeByBoxId; } catch (e) { console.error('[kusto]', e); }
 const pendingFavoriteSelectionByBoxId: Record<string, any> = {};
 const queryEditors: Record<string, any> = {};
 // Expose queryEditors on window so the Lit component (runs in module scope) can access it.
-try { _win.queryEditors = queryEditors; } catch { /* ignore */ }
+try { _win.queryEditors = queryEditors; } catch (e) { console.error('[kusto]', e); }
 const queryEditorResizeObservers: Record<string, any> = {};
 const queryEditorVisibilityObservers: Record<string, any> = {};
 const queryEditorVisibilityMutationObservers: Record<string, any> = {};
@@ -55,7 +55,7 @@ let activeMonacoEditor: any = null;
 
 const queryExecutionTimers: Record<string, any> = {};
 const runModesByBoxId: Record<string, any> = {};
-try { _win.runModesByBoxId = runModesByBoxId; } catch { /* ignore */ }
+try { _win.runModesByBoxId = runModesByBoxId; } catch (e) { console.error('[kusto]', e); }
 
 // Caret docs (custom tooltip) toggle
 let caretDocsEnabled = true;

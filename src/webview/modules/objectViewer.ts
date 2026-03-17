@@ -17,7 +17,7 @@ function openObjectViewer(row: number, col: number, boxId: string): void {
 	const columnName = __kustoGetObjectViewerColumnName(col);
 
 	const modal = document.getElementById('objectViewer');
-	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
+	try { __kustoEnsureObjectViewerSearchControl(); } catch (e) { console.error('[kusto]', e); }
 	const searchInput = document.getElementById('objectViewerSearch') as HTMLInputElement | null;
 	const searchMode = document.getElementById('objectViewerSearchMode') as HTMLElement | null;
 	const titleEl = document.getElementById('objectViewerTitle');
@@ -31,20 +31,18 @@ function openObjectViewer(row: number, col: number, boxId: string): void {
 			strong.textContent = columnName;
 			titleEl.appendChild(strong);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Initialize the raw show/hide button glyph.
-	try { __kustoEnsureObjectViewerRawToggleIcon(); } catch { /* ignore */ }
-	try { __kustoEnsureObjectViewerRawCopyIcon(); } catch { /* ignore */ }
+	try { __kustoEnsureObjectViewerRawToggleIcon(); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoEnsureObjectViewerRawCopyIcon(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		_win.__kustoObjectViewerRawVisible = true;
 		const rawBody = document.getElementById('objectViewerRawBody');
 		if (rawBody) { rawBody.style.display = ''; }
 		const rawToggle = document.getElementById('objectViewerRawToggle');
 		if (rawToggle) { rawToggle.classList.add('is-active'); }
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Initialize navigation state and render.
 	const rootValue = __kustoParseMaybeJson(cellData.full);
@@ -71,7 +69,7 @@ function openObjectViewer(row: number, col: number, boxId: string): void {
 				(searchMode as any).dataset.mode = String(dataModeVal);
 				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, dataModeVal);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		searchInObjectViewer();
 	} else {
 		// Clear search
@@ -81,7 +79,7 @@ function openObjectViewer(row: number, col: number, boxId: string): void {
 				(searchMode as any).dataset.mode = 'wildcard';
 				if (typeof (_win.__kustoUpdateSearchModeToggle) === 'function') (_win.__kustoUpdateSearchModeToggle as any)(searchMode, 'wildcard');
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const resultsSpan = document.getElementById('objectViewerSearchResults');
 		if (resultsSpan) resultsSpan.textContent = '';
 	}
@@ -100,7 +98,7 @@ function __kustoEnsureObjectViewerSearchControl(): void {
 			ariaLabel: 'Search',
 			onInput: function () { searchInObjectViewer(); }
 		});
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function copyObjectViewerRawToClipboard(): void {
@@ -116,7 +114,7 @@ function copyObjectViewerRawToClipboard(): void {
 		if (hasSelection && inRaw) {
 			textToCopy = sel!.toString();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (!textToCopy) {
 		try {
@@ -140,7 +138,7 @@ function closeObjectViewer(event?: Event): void {
 	const modal = document.getElementById('objectViewer');
 	if (modal) modal.classList.remove('visible');
 	_win.currentObjectViewerData = null;
-	try { _win.__kustoObjectViewerState = null; } catch { /* ignore */ }
+	try { _win.__kustoObjectViewerState = null; } catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleObjectViewerRaw(): void {
@@ -149,13 +147,13 @@ function toggleObjectViewerRaw(): void {
 	if (!body || !btn) { return; }
 	const visible = body.style.display !== 'none';
 	const next = !visible;
-	try { body.style.display = next ? '' : 'none'; } catch { /* ignore */ }
-	try { btn.classList.toggle('is-active', next); } catch { /* ignore */ }
+	try { body.style.display = next ? '' : 'none'; } catch (e) { console.error('[kusto]', e); }
+	try { btn.classList.toggle('is-active', next); } catch (e) { console.error('[kusto]', e); }
 	try {
 		btn.title = next ? 'Hide raw value' : 'Show raw value';
 		btn.setAttribute('aria-label', btn.title);
-	} catch { /* ignore */ }
-	try { _win.__kustoObjectViewerRawVisible = next; } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoObjectViewerRawVisible = next; } catch (e) { console.error('[kusto]', e); }
 }
 
 function objectViewerNavigateBack(): void {
@@ -186,9 +184,7 @@ function objectViewerNavigateInto(key: string): void {
 		const nextValue = v[key];
 		st.stack.push({ label: String(key), value: __kustoParseMaybeJson(nextValue) });
 		__kustoRenderObjectViewer();
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoGetObjectViewerColumnName(colIndex: number): string {
@@ -202,9 +198,7 @@ function __kustoGetObjectViewerColumnName(colIndex: number): string {
 			if (typeof col.columnName === 'string' && col.columnName) return col.columnName;
 			if (typeof col.displayName === 'string' && col.displayName) return col.displayName;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	return 'column ' + (colIndex + 1);
 }
 
@@ -278,9 +272,7 @@ function __kustoEnsureObjectViewerRawToggleIcon(): void {
 	} catch {
 		try {
 			btn.innerHTML = fallbackIcon();
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -313,7 +305,7 @@ function __kustoWriteTextToClipboard(text: unknown): void {
 			navigator.clipboard.writeText(value);
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const ta = document.createElement('textarea');
 		ta.value = value;
@@ -325,7 +317,7 @@ function __kustoWriteTextToClipboard(text: unknown): void {
 		ta.select();
 		document.execCommand('copy');
 		document.body.removeChild(ta);
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoRenderObjectViewer(): void {
@@ -343,7 +335,7 @@ function __kustoRenderObjectViewer(): void {
 		if (backBtn) {
 			backBtn.style.display = depth > 1 ? '' : 'none';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (propsTitle) {
 			propsTitle.textContent = '';
@@ -357,7 +349,7 @@ function __kustoRenderObjectViewer(): void {
 				if (!isCurrent) {
 					const capturedI = i;
 					crumb.addEventListener('click', (e: Event) => {
-						try { e.stopPropagation(); } catch { /* ignore */ }
+						try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 						objectViewerNavigateToDepth(capturedI + 1);
 					});
 				}
@@ -370,7 +362,7 @@ function __kustoRenderObjectViewer(): void {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Update Raw value content + search backing data.
 	try {
@@ -388,7 +380,7 @@ function __kustoRenderObjectViewer(): void {
 		if (content) {
 			content.innerHTML = (_win.currentObjectViewerData as any).formatted;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// If user already typed a search term, keep highlighting in sync.
 	try {
@@ -396,11 +388,11 @@ function __kustoRenderObjectViewer(): void {
 		if (input && String(input.value || '').trim()) {
 			searchInObjectViewer();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Render the properties table.
 	if (!table) { return; }
-	try { table.textContent = ''; } catch { /* ignore */ }
+	try { table.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 	const tbody = document.createElement('tbody');
 	const v = frame.value;
 
@@ -423,7 +415,7 @@ function __kustoRenderObjectViewer(): void {
 			try {
 				(tr as any).dataset.kustoKeyText = String(key);
 				(tr as any).dataset.kustoValueText = __kustoStringifyForSearch(parsedNext);
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 
 			// Copy value icon (hover on row). Copies the property's raw value.
 			const copyBtn = document.createElement('button');
@@ -434,7 +426,7 @@ function __kustoRenderObjectViewer(): void {
 			try { copyBtn.innerHTML = __kustoGetCopyIconSvg(14); } catch { copyBtn.textContent = 'Copy'; }
 			const capturedParsedNext = parsedNext;
 			copyBtn.addEventListener('click', (e: Event) => {
-				try { e.stopPropagation(); } catch { /* ignore */ }
+				try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 				__kustoWriteTextToClipboard(__kustoStringifyForSearch(capturedParsedNext));
 			});
 			keyCell.appendChild(copyBtn);
@@ -446,7 +438,7 @@ function __kustoRenderObjectViewer(): void {
 				btn.textContent = 'View';
 				const capturedKey = key;
 				btn.addEventListener('click', (e: Event) => {
-					try { e.stopPropagation(); } catch { /* ignore */ }
+					try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 					objectViewerNavigateInto(capturedKey);
 				});
 				tdVal.appendChild(btn);
@@ -469,8 +461,8 @@ function __kustoRenderObjectViewer(): void {
 		tbody.appendChild(tr);
 	}
 
-	try { table.appendChild(tbody); } catch { /* ignore */ }
-	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+	try { table.appendChild(tbody); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoApplyObjectViewerTableSearchHighlight(): void {
@@ -489,7 +481,7 @@ function __kustoApplyObjectViewerTableSearchHighlight(): void {
 			query = input ? String(input.value || '').trim() : '';
 			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const regex = built && built.regex ? built.regex : null;
 	const rows = table.querySelectorAll('tr');
 	rows.forEach((tr) => {
@@ -500,7 +492,7 @@ function __kustoApplyObjectViewerTableSearchHighlight(): void {
 				? ((_win.__kustoRegexTest as any)(regex, keyText) || (_win.__kustoRegexTest as any)(regex, valueText))
 				: (keyText.toLowerCase().includes(query.toLowerCase()) || valueText.toLowerCase().includes(query.toLowerCase())));
 			tr.classList.toggle('search-match', hit);
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	});
 }
 
@@ -576,7 +568,7 @@ function searchInObjectViewer(): void {
 	const currentData = _win.currentObjectViewerData as any;
 	if (!currentData) { return; }
 
-	try { __kustoEnsureObjectViewerSearchControl(); } catch { /* ignore */ }
+	try { __kustoEnsureObjectViewerSearchControl(); } catch (e) { console.error('[kusto]', e); }
 	const content = document.getElementById('objectViewerContent');
 	const resultsSpan = document.getElementById('objectViewerSearchResults');
 	if (!content || !resultsSpan) return;
@@ -594,19 +586,19 @@ function searchInObjectViewer(): void {
 			query = input ? String(input.value || '').trim() : '';
 			built = { regex: query ? new RegExp(escapeRegex(query), 'gi') : null, error: null };
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	if (!String(query || '').trim()) {
 		content.innerHTML = currentData.formatted;
 		resultsSpan.textContent = '';
-		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
 	if (built && built.error) {
 		content.innerHTML = currentData.formatted;
 		resultsSpan.textContent = String(built.error);
-		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+		try { __kustoApplyObjectViewerTableSearchHighlight(); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -619,10 +611,10 @@ function searchInObjectViewer(): void {
 		if (regex && typeof (_win.__kustoHighlightElementTextNodes) === 'function') {
 			(_win.__kustoHighlightElementTextNodes as any)(content, regex, 'json-highlight');
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	resultsSpan.textContent = matches > 0 ? (matches + ' match' + (matches !== 1 ? 'es' : '')) : 'No matches';
-	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch { /* ignore */ }
+	try { __kustoApplyObjectViewerTableSearchHighlight(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function highlightSearchTerm(html: string, searchTerm: string): string {

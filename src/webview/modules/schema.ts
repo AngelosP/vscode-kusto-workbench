@@ -45,7 +45,7 @@ function setSchemaLoading(boxId: string, loading: boolean): void {
 				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
 				btn.setAttribute('aria-busy', 'true');
 				btn.title = 'Loading schema…';
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			(btn as any).disabled = true;
 		}
 		return;
@@ -63,11 +63,11 @@ function setSchemaLoading(boxId: string, loading: boolean): void {
 				if (typeof prevTitle === 'string') {
 					btn.title = prevTitle;
 				}
-			} catch { /* ignore */ }
-			try { delete dataset.kustoPrevHtml; } catch { /* ignore */ }
-			try { delete dataset.kustoPrevTitle; } catch { /* ignore */ }
-			try { delete dataset.kustoRefreshSchemaInFlight; } catch { /* ignore */ }
-			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoPrevTitle; } catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoRefreshSchemaInFlight; } catch (e) { console.error('[kusto]', e); }
+			try { btn.removeAttribute('aria-busy'); } catch (e) { console.error('[kusto]', e); }
 			(btn as any).disabled = false;
 			return;
 		}
@@ -81,16 +81,14 @@ function setSchemaLoading(boxId: string, loading: boolean): void {
 				if (typeof prevTitle === 'string') {
 					btn.title = prevTitle;
 				}
-			} catch { /* ignore */ }
-			try { delete dataset.kustoAutoPrevHtml; } catch { /* ignore */ }
-			try { delete dataset.kustoAutoPrevTitle; } catch { /* ignore */ }
-			try { delete dataset.kustoSchemaAutoInFlight; } catch { /* ignore */ }
-			try { btn.removeAttribute('aria-busy'); } catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoAutoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoAutoPrevTitle; } catch (e) { console.error('[kusto]', e); }
+			try { delete dataset.kustoSchemaAutoInFlight; } catch (e) { console.error('[kusto]', e); }
+			try { btn.removeAttribute('aria-busy'); } catch (e) { console.error('[kusto]', e); }
 			(btn as any).disabled = false;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function setSchemaLoadedSummary(boxId: string, text: string, title: string, isError: boolean, meta?: any): void {
@@ -145,9 +143,7 @@ function setSchemaLoadedSummary(boxId: string, text: string, title: string, isEr
 		while (el.firstChild) {
 			el.removeChild(el.firstChild);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	const hasText = !!text;
 	if (hasText && meta && meta.fromCache) {
@@ -168,10 +164,10 @@ function setSchemaLoadedSummary(boxId: string, text: string, title: string, isEr
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					(_win.vscode as any).postMessage({ type: 'seeCachedValues' });
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			});
 			el.appendChild(link);
 		} catch {
@@ -209,7 +205,7 @@ function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void {
 		if (typeof (_win.__kustoGetSelectionOwnerBoxId) === 'function') {
 			ownerId = (_win.__kustoGetSelectionOwnerBoxId as any)(boxId) || boxId;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const connectionId = typeof (_win.__kustoGetConnectionId) === 'function' ? (_win.__kustoGetConnectionId as any)(ownerId) : '';
 	const database = typeof (_win.__kustoGetDatabase) === 'function' ? (_win.__kustoGetDatabase as any)(ownerId) : '';
 	if (!connectionId || !database) {
@@ -224,7 +220,7 @@ function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void {
 		}
 		requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		(_win.__kustoSchemaRequestTokenByBoxId as any)[boxId] = requestToken;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	(_win.vscode as any).postMessage({
 		type: 'prefetchSchema',
 		connectionId,
@@ -257,7 +253,7 @@ _win.__kustoRequestDatabases = async function (connectionId: string, forceRefres
 					clusterKey = String(clusterUrl || '').trim().toLowerCase();
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const cachedDatabases = _win.cachedDatabases as any;
 		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
@@ -270,9 +266,7 @@ _win.__kustoRequestDatabases = async function (connectionId: string, forceRefres
 		if (!forceRefresh && Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) {
 			return cachedByConnectionId;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 
 	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 	return await new Promise((resolve, reject) => {
@@ -295,7 +289,7 @@ _win.__kustoRequestDatabases = async function (connectionId: string, forceRefres
 				boxId: requestId
 			});
 		} catch (e) {
-			try { delete (_win.databasesRequestResolversByBoxId as any)[requestId]; } catch { /* ignore */ }
+			try { delete (_win.databasesRequestResolversByBoxId as any)[requestId]; } catch (e) { console.error('[kusto]', e); }
 			reject(e);
 		}
 	});
@@ -315,7 +309,7 @@ function onDatabaseChanged(boxId: string): void {
 		if (_win.__kustoSchemaRequestTokenByBoxId) {
 			delete (_win.__kustoSchemaRequestTokenByBoxId as any)[boxId];
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	setSchemaLoadedSummary(boxId, '', '', false);
 	// Persist selection immediately so VS Code Problems can reflect current schema context.
 	try {
@@ -328,27 +322,27 @@ function onDatabaseChanged(boxId: string): void {
 				database: String(database || '')
 			});
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	ensureSchemaForBox(boxId, false);
 	// Update monaco-kusto schema if we have a cached schema for the new database
 	try {
 		if (typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
 			(_win.__kustoUpdateSchemaForFocusedBox as any)(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof (_win.__kustoUpdateFavoritesUiForBox) === 'function') {
 			(_win.__kustoUpdateFavoritesUiForBox as any)(boxId);
 		} else if (typeof (_win.__kustoUpdateFavoritesUiForAllBoxes) === 'function') {
 			(_win.__kustoUpdateFavoritesUiForAllBoxes as any)();
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof (_win.__kustoUpdateRunEnabledForBox) === 'function') {
 			(_win.__kustoUpdateRunEnabledForBox as any)(boxId);
 		}
-	} catch { /* ignore */ }
-	try { if (typeof (_win.schedulePersist) === 'function') (_win.schedulePersist as any)(); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { if (typeof (_win.schedulePersist) === 'function') (_win.schedulePersist as any)(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function refreshSchema(boxId: string): void {
@@ -363,7 +357,7 @@ function refreshSchema(boxId: string): void {
 		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 			kwEl.setSchemaInfo({ status: 'loading', statusText: 'Refreshing…' });
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Legacy: Update old schema refresh button if present
 	try {
@@ -381,20 +375,16 @@ function refreshSchema(boxId: string): void {
 				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
 				btn.setAttribute('aria-busy', 'true');
 				btn.title = 'Refreshing schema…';
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			btn.disabled = true;
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const el = document.getElementById(boxId + '_schema_status');
 		if (el) {
 			el.style.display = 'none';
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
 	ensureSchemaForBox(boxId, true);
 }
@@ -413,7 +403,7 @@ async function __kustoRequestSchema(connectionId: string, database: string, forc
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) {
 				return schemaByConnDb[key];
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 
 		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		const p = new Promise((resolve, reject) => {
@@ -432,7 +422,7 @@ async function __kustoRequestSchema(connectionId: string, database: string, forc
 				forceRefresh: !!forceRefresh
 			});
 		} catch (e) {
-			try { delete (_win.schemaRequestResolversByBoxId as any)[reqBoxId]; } catch { /* ignore */ }
+			try { delete (_win.schemaRequestResolversByBoxId as any)[reqBoxId]; } catch (e) { console.error('[kusto]', e); }
 			throw e;
 		}
 		return await p;

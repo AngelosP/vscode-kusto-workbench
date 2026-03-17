@@ -19,7 +19,7 @@ function __kustoGetScrollY(): number {
 		if (typeof window.scrollY === 'number') {
 			return window.scrollY;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		return (document && document.documentElement && typeof document.documentElement.scrollTop === 'number')
 			? document.documentElement.scrollTop
@@ -58,7 +58,7 @@ function __kustoMaybeAutoScrollWhileDragging(clientY: number, options?: { thresh
 		}
 
 		if (scrollDeltaY) {
-			try { window.scrollBy(0, scrollDeltaY); } catch { /* ignore */ }
+			try { window.scrollBy(0, scrollDeltaY); } catch (e) { console.error('[kusto]', e); }
 		}
 		return scrollDeltaY;
 	} catch {

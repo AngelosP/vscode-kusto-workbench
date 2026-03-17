@@ -11,7 +11,7 @@ function __kustoRerenderResultsTable(boxId: any) {
 	const table = document.getElementById(boxId + '_table');
 	if (!table) return;
 
-	try { __kustoRerenderResultsTableBody(boxId, undefined); } catch { /* ignore */ }
+	try { __kustoRerenderResultsTableBody(boxId, undefined); } catch (e) { console.error('[kusto]', e); }
 	return;
 }
 
@@ -44,7 +44,7 @@ function __kustoResolveVirtualScrollElement(containerEl: any) {
 		const sh = Math.max(0, containerEl.scrollHeight || 0);
 		const ch = Math.max(0, containerEl.clientHeight || 0);
 		if (sh > (ch + 1)) return containerEl;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Otherwise, find the nearest scrollable ancestor.
 	let el = null;
@@ -60,7 +60,7 @@ function __kustoResolveVirtualScrollElement(containerEl: any) {
 					return el;
 				}
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try { el = el.parentElement; } catch { el = null; }
 	}
 
@@ -72,7 +72,7 @@ function __kustoResolveVirtualScrollElement(containerEl: any) {
 			const ch = Math.max(0, se.clientHeight || 0);
 			if (sh > (ch + 1)) return se;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	return containerEl;
 }
@@ -105,11 +105,11 @@ function __kustoResolveScrollSourceForEvent(ev: any, containerEl: any) {
 							return el;
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try { el = el.parentElement; } catch { el = null; }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return __kustoResolveVirtualScrollElement(containerEl);
 }
 
@@ -130,13 +130,13 @@ function __kustoGetVirtualScrollMetrics(scrollEl: any, containerEl: any) {
 				clientH = Math.max(0, Math.floor(visBottom - visTop));
 			}
 			if (!clientH) {
-				try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch { /* ignore */ }
+				try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch (e) { console.error('[kusto]', e); }
 			}
 		} else if (containerEl) {
-			try { scrollTop = Math.max(0, Math.floor(containerEl.scrollTop || 0)); } catch { /* ignore */ }
-			try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch { /* ignore */ }
+			try { scrollTop = Math.max(0, Math.floor(containerEl.scrollTop || 0)); } catch (e) { console.error('[kusto]', e); }
+			try { clientH = Math.max(0, Math.floor(containerEl.clientHeight || 0)); } catch (e) { console.error('[kusto]', e); }
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return { scrollTop, clientH };
 }
 
@@ -147,7 +147,7 @@ function __kustoBumpVisualVersion(state: any) {
 			? state.__kustoVisualVersion
 			: 0;
 		state.__kustoVisualVersion = cur + 1;
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoComputeVirtualRange(state: any, containerEl: any, displayRowIndices: any, options: any) {
@@ -171,14 +171,14 @@ function __kustoComputeVirtualRange(state: any, containerEl: any, displayRowIndi
 			if (sh > (ch + 1)) {
 				effectiveScrollEl = containerEl;
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		if (!effectiveScrollEl) {
 			effectiveScrollEl = (options && options.scrollEl) ? options.scrollEl : __kustoResolveVirtualScrollElement(containerEl);
 		}
 		const m = __kustoGetVirtualScrollMetrics(effectiveScrollEl, containerEl);
 		scrollTop = Math.max(0, Math.floor(m.scrollTop || 0));
 		clientH = Math.max(0, Math.floor(m.clientH || 0));
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Subtract the thead height so scrollTop maps to the data row area, not the header.
 	const theadH = Math.max(0, Math.floor(v.theadHeight || 0));
@@ -279,7 +279,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 			const ord = spec.length > 1 ? ('<span class="kusto-sort-priority">' + String(ruleIdx + 1) + '</span>') : '';
 			indicator.innerHTML = arrow + ord;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Update filtered column links.
 	try {
@@ -292,7 +292,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 				? ('<a href="#" class="kusto-filtered-link" onclick="openColumnFilter(event, ' + String(i) + ', ' + boxIdArg + '); return false;">(filtered)</a>')
 				: '';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Build fast lookup for search matches.
 	let matchSet = null;
@@ -308,7 +308,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 			const cur = (state.currentSearchIndex >= 0 && state.currentSearchIndex < matches.length) ? matches[state.currentSearchIndex] : null;
 			if (cur) currentKey = String(cur.row) + ',' + String(cur.col);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const rows = Array.isArray(state.rows) ? state.rows : [];
 	const cols = Array.isArray(state.columns) ? state.columns : [];
@@ -338,12 +338,12 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 			}
 			countEl.textContent = countText;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Enable virtualization only for larger results.
 	const v = __kustoGetVirtualizationState(state);
 	const virtualThreshold = 500;
-	try { if (v) v.enabled = (displayRowIndices.length > virtualThreshold); } catch { /* ignore */ }
+	try { if (v) v.enabled = (displayRowIndices.length > virtualThreshold); } catch (e) { console.error('[kusto]', e); }
 
 	// Determine which display row should be forced into view (selected cell or current search match).
 	// IMPORTANT: Only apply forceDisplayRow for programmatic navigation (initial render, search,
@@ -364,7 +364,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const visibleRange = (v && v.enabled)
 		? __kustoComputeVirtualRange(state, container, displayRowIndices, { forceDisplayRow, scrollEl: (v && v.scrollSourceEl) ? v.scrollSourceEl : null })
@@ -414,14 +414,14 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 				let savedScrollTop = -1;
 				try {
 					if (container) savedScrollTop = container.scrollTop;
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				tbody.innerHTML = tbodyHtml;
 				// Restore scrollTop immediately after DOM update.
 				try {
 					if (container && savedScrollTop > 0 && Math.abs(container.scrollTop - savedScrollTop) > 1) {
 						container.scrollTop = savedScrollTop;
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				if (v && v.enabled) {
 					v.lastStart = visibleRange.start;
 					v.lastEnd = visibleRange.end;
@@ -430,7 +430,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 				}
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Measure row height and thead height once (after first render) to make virtualization accurate.
 	try {
@@ -469,11 +469,11 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 				v.lastEnd = -1;
 				// Re-render immediately with corrected measurements so spacer heights are
 				// accurate from the start, preventing scroll jumps and empty regions.
-				try { __kustoRerenderResultsTableBody(boxId, { reason: 'measurement' }); } catch { /* ignore */ }
+				try { __kustoRerenderResultsTableBody(boxId, { reason: 'measurement' }); } catch (e) { console.error('[kusto]', e); }
 				return; // the recursive call already handled the rest
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	// Attach scroll/resize handlers for virtualization.
 	// IMPORTANT: the actual scroller can differ by host (query results vs URL/CSV embeds).
@@ -502,7 +502,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 										}
 									}
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 
 							// Record the actual scroll source so range calculation matches the host's scroll behavior.
 							// IMPORTANT: only update scrollSourceEl when the source is directly related
@@ -525,11 +525,11 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 										vv.scrollSourceEl = src;
 									}
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 
 							const st2 = __kustoGetResultsState(boxId);
 							const vv2 = __kustoGetVirtualizationState(st2);
-							if (!vv2) {
+							if (!st2 || !vv2) {
 								return;
 							}
 							// The enabled flag may be stale if the state object was replaced
@@ -555,27 +555,27 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 							// on the next event-loop turn regardless of rendering state.
 							setTimeout(() => {
 								vv2.rafPending = false;
-								try { __kustoRerenderResultsTableBody(boxId, { reason: 'scroll' }); } catch { /* ignore */ }
+								try { __kustoRerenderResultsTableBody(boxId, { reason: 'scroll' }); } catch (e) { console.error('[kusto]', e); }
 							}, 0);
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 					};
 				}
 				// Always listen on the table container (ideal scroller in most hosts).
-				try { container.addEventListener('scroll', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
-				try { container.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
+				try { container.addEventListener('scroll', vv.scrollHandler, { passive: true }); } catch (e) { console.error('[kusto]', e); }
+				try { container.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch (e) { console.error('[kusto]', e); }
 
 				try {
 					if (vv.scrollEl && vv.scrollEl !== scrollEl && vv.scrollHandler) {
 						vv.scrollEl.removeEventListener('scroll', vv.scrollHandler);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 				try {
 					if (scrollEl !== container) {
 						scrollEl.addEventListener('scroll', vv.scrollHandler, { passive: true });
-						try { scrollEl.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch { /* ignore */ }
+						try { scrollEl.addEventListener('wheel', vv.scrollHandler, { passive: true }); } catch (e) { console.error('[kusto]', e); }
 					}
 					vv.scrollEl = scrollEl;
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				// Fallback: capture scroll/wheel at the document level.
 				// Scroll events do not bubble, and in some hosts the scroller can be an ancestor or the
@@ -586,7 +586,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 						document.addEventListener('scroll', vv.scrollHandler, { passive: true, capture: true });
 						document.addEventListener('wheel', vv.scrollHandler, { passive: true, capture: true });
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				try {
 					if (typeof ResizeObserver !== 'undefined') {
@@ -600,7 +600,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 										vv3.lastEnd = -1;
 									}
 									__kustoRerenderResultsTableBody(boxId, { reason: 'resize' });
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							});
 						}
 						if (vv.resizeObserver && Array.isArray(vv.observedEls)) {
@@ -614,7 +614,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 							}
 						}
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 
 				// IntersectionObserver fallback: when a virtual spacer row becomes visible, it
 				// means the user has scrolled to the edge of the rendered window. Trigger a
@@ -636,13 +636,13 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 									vv._spacerRenderPending = true;
 									setTimeout(() => {
 										vv._spacerRenderPending = false;
-										try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible' }); } catch { /* ignore */ }
+										try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible' }); } catch (e) { console.error('[kusto]', e); }
 									}, 50);
-								} catch { /* ignore */ }
+								} catch (e) { console.error('[kusto]', e); }
 							}, { root: container, threshold: 0 });
 						}
 						// Disconnect old observations and observe the current spacer rows.
-						try { vv.spacerObserver.disconnect(); } catch { /* ignore */ }
+						try { vv.spacerObserver.disconnect(); } catch (e) { console.error('[kusto]', e); }
 						// Suppress callbacks briefly so that observing freshly-rendered spacers doesn't
 						// immediately trigger a re-render loop.
 						vv._suppressSpacerCallback = true;
@@ -651,7 +651,7 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 							for (const sp of spacers) {
 								vv.spacerObserver.observe(sp);
 							}
-						} catch { /* ignore */ }
+						} catch (e) { console.error('[kusto]', e); }
 						setTimeout(() => {
 							vv._suppressSpacerCallback = false;
 							// After suppression ends, manually check if any observed spacer is
@@ -671,20 +671,20 @@ function __kustoRerenderResultsTableBody(boxId: any, options: any) {
 										vv._spacerRenderPending = true;
 										setTimeout(() => {
 											vv._spacerRenderPending = false;
-											try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible-deferred' }); } catch { /* ignore */ }
+											try { __kustoRerenderResultsTableBody(boxId, { reason: 'spacer-visible-deferred' }); } catch (e) { console.error('[kusto]', e); }
 										}, 50);
 									}
 								}
-							} catch { /* ignore */ }
+							} catch (e) { console.error('[kusto]', e); }
 						}, 100);
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
-	try { _win.__kustoEnsureDragSelectionHandlers(boxId); } catch { /* ignore */ }
-	try { _win.__kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
+	try { _win.__kustoEnsureDragSelectionHandlers(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoUpdateSplitButtonState(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
 function displayResult(result: any) {
@@ -701,8 +701,8 @@ function displayResult(result: any) {
 
 // Ensure these entrypoints are always accessible globally (some hosts/tooling can
 // make bare function declarations non-global).
-try { window.displayResult = displayResult; } catch { /* ignore */ }
-try { window.displayResultForBox = displayResultForBox; } catch { /* ignore */ }
+try { window.displayResult = displayResult; } catch (e) { console.error('[kusto]', e); }
+try { window.displayResultForBox = displayResultForBox; } catch (e) { console.error('[kusto]', e); }
 
 function __kustoEnsureResultsStateMap() {
 	if (!_win.__kustoResultsByBoxId || typeof _win.__kustoResultsByBoxId !== 'object') {
@@ -726,13 +726,13 @@ function __kustoSetResultsState(boxId: any, state: any) {
 	const map = __kustoEnsureResultsStateMap();
 	map[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
-	try { _win.currentResult = state; } catch { /* ignore */ }
+	try { _win.currentResult = state; } catch (e) { console.error('[kusto]', e); }
 	// Notify any dependent sections (charts/transformations) that this data source changed.
 	try {
 		if (typeof _win.__kustoNotifyResultsUpdated === 'function') {
 			_win.__kustoNotifyResultsUpdated(boxId);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function displayResultForBox(result: any, boxId: any, options: any) {
@@ -755,16 +755,19 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				});
-				try { _win.__kustoEnsureDisplayRowIndexMaps(__kustoGetResultsState(boxId)); } catch { /* ignore */ }
-				try { _win.__kustoTryStoreQueryResult(boxId, result); } catch { /* ignore */ }
-				try { _win.__kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
+				try { _win.__kustoEnsureDisplayRowIndexMaps(__kustoGetResultsState(boxId)!); } catch (e) { console.error('[kusto]', e); }
+				try { _win.__kustoTryStoreQueryResult(boxId, result); } catch (e) { console.error('[kusto]', e); }
+				try { _win.__kustoUpdateSplitButtonState(boxId); } catch (e) { console.error('[kusto]', e); }
 				return;
 			}
-		} catch { /* ignore — fall through to legacy rendering */ }
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	const resultsDiv = (options && options.resultsDiv) ? options.resultsDiv : document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
+
+	// Remove stale overlay — fresh results are arriving.
+	try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
 
 	const columns = Array.isArray(result && result.columns) ? result.columns : [];
 	const rows = Array.isArray(result && result.rows) ? result.rows : [];
@@ -791,7 +794,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 		if (st) {
 			_win.__kustoEnsureDisplayRowIndexMaps(st);
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 
 	const label = (options && typeof options.label === 'string' && options.label) ? options.label : 'Results';
 	const showExecutionTime = !(options && options.showExecutionTime === false);
@@ -1017,7 +1020,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 		'</div>';
 
 	resultsDiv.innerHTML = html;
-	try { __kustoEnsureResultsSearchControls(boxId); } catch { /* ignore */ }
+	try { __kustoEnsureResultsSearchControls(boxId); } catch (e) { console.error('[kusto]', e); }
 	// Ensure the results UI establishes a consistent scroll surface everywhere it is embedded.
 	// Some hosts (e.g. URL/CSV) don't have the same wrapper DOM as query results, so we
 	// apply minimal inline flex/overflow styles to make virtualization + selection reliable.
@@ -1028,7 +1031,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 		resultsDiv.style.minHeight = '0';
 		resultsDiv.style.minWidth = '0';
 		resultsDiv.style.overflow = 'hidden';
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const body = document.getElementById(boxId + '_results_body');
 		if (body && body.style) {
@@ -1038,7 +1041,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 			body.style.minHeight = '0';
 			body.style.overflow = 'hidden';
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const container = document.getElementById(boxId + '_table_container');
 		if (container && container.style) {
@@ -1050,8 +1053,8 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 			container.style.overflowX = 'auto';
 			container.style.overflowY = 'auto';
 		}
-	} catch { /* ignore */ }
-	try { __kustoRerenderResultsTableBody(boxId, { reason: 'initial' }); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoRerenderResultsTableBody(boxId, { reason: 'initial' }); } catch (e) { console.error('[kusto]', e); }
 	// Some hosts (notably URL/CSV previews) can inject the table before the container has a
 	// real height, so virtualization may bind scroll handlers to the wrong element until a
 	// later rerender (e.g. on click). Do a one-time post-layout rerender to rebind.
@@ -1065,26 +1068,22 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 			st.__kustoPostLayoutRerenderScheduled = true;
 			setTimeout(() => {
 				setTimeout(() => {
-					try { __kustoRerenderResultsTableBody(boxId, { reason: 'post-layout' }); } catch { /* ignore */ }
+					try { __kustoRerenderResultsTableBody(boxId, { reason: 'post-layout' }); } catch (e) { console.error('[kusto]', e); }
 				}, 0);
 			}, 0);
 		}
-	} catch { /* ignore */ }
-	try { _win.__kustoUpdateSplitButtonState(boxId); } catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
+	try { _win.__kustoUpdateSplitButtonState(boxId); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof _win.__kustoApplyResultsVisibility === 'function') {
 			_win.__kustoApplyResultsVisibility(boxId);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof _win.__kustoUpdateQueryResultsToggleButton === 'function') {
 			_win.__kustoUpdateQueryResultsToggleButton(boxId);
 		}
-	} catch {
-		// ignore
-	}
+	} catch (e) { console.error('[kusto]', e); }
 	resultsDiv.classList.add('visible');
 }
 
@@ -1115,7 +1114,7 @@ function __kustoEnsureResultsSearchControls(boxId: any) {
 				onKeyDown: function (e: any) { _win.handleColumnSearchKeydown(e, boxId); }
 			});
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoTryExtractJsonFromErrorText(raw: any) {
@@ -1142,9 +1141,7 @@ function __kustoTryExtractJsonFromErrorText(raw: any) {
 		try {
 			const trimmed = candidate.trim();
 			return JSON.parse(trimmed);
-		} catch {
-			// ignore
-		}
+		} catch (e) { console.error('[kusto]', e); }
 		return null;
 	}
 }
@@ -1195,7 +1192,7 @@ function __kustoTryExtractAutoFindTermFromMessage(message: any) {
 			if ((looksLikeSem0219 || looksLikeArity1) && mentionsNotEmpty) {
 				return 'notempty';
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Specific common cases (more precise patterns first).
 		let m = msg.match(/\bSEM0139\b\s*:\s*Failed\s+to\s+resolve\s+expression\s*(['"])(.*?)\1/i);
 		if (!m) {
@@ -1216,7 +1213,7 @@ function __kustoTryExtractAutoFindTermFromMessage(message: any) {
 				return t;
 			}
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	return null;
 }
 
@@ -1244,7 +1241,7 @@ function __kustoBuildErrorUxModel(rawError: any) {
 					if (isFinite(line) && isFinite(col) && line > 0 && col > 0) {
 						loc = { line, col, token: `[line:position=${line}:${col}]` };
 					}
-				} catch { /* ignore */ }
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			const autoFindTerm = __kustoTryExtractAutoFindTermFromMessage(String(normalized || candidateMsg || ''));
 			return { kind: 'badrequest', message: normalized || raw, location: loc || null, autoFindTerm };
@@ -1252,9 +1249,7 @@ function __kustoBuildErrorUxModel(rawError: any) {
 
 		try {
 			return { kind: 'json', pretty: JSON.stringify(json, null, 2) };
-		} catch {
-			// fall through
-		}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// Not JSON (or unparseable): display as wrapped text.
@@ -1386,7 +1381,7 @@ try {
 	window.__kustoRenderErrorUx = function (boxId: any, error: any, clientActivityId: any) {
 		const bid = String(boxId || '').trim();
 		if (!bid) return;
-		try { _win.__kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
+		try { _win.__kustoEnsureResultsShownForTool(bid); } catch (e) { console.error('[kusto]', e); }
 		const resultsDiv = document.getElementById(bid + '_results');
 		if (!resultsDiv) return;
 		const model = __kustoBuildErrorUxModel(error);
@@ -1394,24 +1389,24 @@ try {
 			if (model && model.location) {
 				model.location = __kustoMaybeAdjustLocationForCacheLine(bid, model.location);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (model && model.kind === 'badrequest' && model.location && model.message) {
 				model.message = __kustoStripLinePositionTokens(model.message);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		if (!model || model.kind === 'none') {
 			resultsDiv.innerHTML = '';
 			try {
 				if (resultsDiv.classList) {
 					resultsDiv.classList.remove('visible');
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof _win.__kustoApplyResultsVisibility === 'function') {
 					_win.__kustoApplyResultsVisibility(bid);
 				}
-			} catch { /* ignore */ }
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		const html = __kustoRenderErrorUxHtml(bid, model, clientActivityId);
@@ -1421,24 +1416,22 @@ try {
 			if (typeof _win.__kustoApplyResultsVisibility === 'function') {
 				_win.__kustoApplyResultsVisibility(bid);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoClampResultsWrapperHeight === 'function') {
 				_win.__kustoClampResultsWrapperHeight(bid);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		// Special UX: on SEM0139, auto-find the unresolved expression in the query editor.
 		try {
 			if (model && model.autoFindTerm && typeof _win.__kustoAutoFindInQueryEditor === 'function') {
 				setTimeout(() => {
-					try { _win.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch { /* ignore */ }
+					try { _win.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch (e) { console.error('[kusto]', e); }
 				}, 0);
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 // Navigate to a line/column in the query editor and scroll it into view.
 try {
@@ -1450,7 +1443,7 @@ try {
 			if (event && typeof event.stopPropagation === 'function') {
 				event.stopPropagation();
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		const bid = String(boxId || '').trim();
 		const ln = parseInt(String(line), 10);
 		const cn = parseInt(String(col), 10);
@@ -1462,26 +1455,22 @@ try {
 			if (boxEl && typeof boxEl.scrollIntoView === 'function') {
 				boxEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
 			}
-		} catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const editor = _win.queryEditors ? _win.queryEditors[bid] : null;
 			if (!editor) return;
 			const pos = { lineNumber: ln, column: cn };
-			try { editor.focus(); } catch { /* ignore */ }
-			try { if (typeof editor.setPosition === 'function') editor.setPosition(pos); } catch { /* ignore */ }
-			try { if (typeof editor.revealPositionInCenter === 'function') editor.revealPositionInCenter(pos); } catch { /* ignore */ }
+			try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof editor.setPosition === 'function') editor.setPosition(pos); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof editor.revealPositionInCenter === 'function') editor.revealPositionInCenter(pos); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (typeof editor.setSelection === 'function') {
 					editor.setSelection({ startLineNumber: ln, startColumn: cn, endLineNumber: ln, endColumn: cn });
 				}
-			} catch { /* ignore */ }
-		} catch {
-			// ignore
-		}
+			} catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 // Delegated click handler for clickable error locations.
 try {
@@ -1507,14 +1496,10 @@ try {
 					_win.__kustoNavigateToQueryLocation(event, boxId, line, col);
 					return;
 				}
-			} catch {
-				// ignore
-			}
+			} catch (e) { console.error('[kusto]', e); }
 		}, true);
 	}
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 function displayError(error: any) {
 	const boxId = _win.lastExecutedBox;
@@ -1527,7 +1512,7 @@ function displayError(error: any) {
 			_win.__kustoRenderErrorUx(boxId, error);
 			return;
 		}
-	} catch { /* ignore */ }
+	} catch (e) { console.error('[kusto]', e); }
 	const resultsDiv = document.getElementById(boxId + '_results');
 	if (!resultsDiv) { return; }
 	const raw = (error === null || error === undefined) ? '' : String(error);
@@ -1547,8 +1532,8 @@ try {
 				_win.__kustoRenderErrorUx(bid, error);
 				return;
 			}
-		} catch { /* ignore */ }
-		try { _win.__kustoEnsureResultsShownForTool(bid); } catch { /* ignore */ }
+		} catch (e) { console.error('[kusto]', e); }
+		try { _win.__kustoEnsureResultsShownForTool(bid); } catch (e) { console.error('[kusto]', e); }
 		const resultsDiv = document.getElementById(bid + '_results');
 		if (!resultsDiv) return;
 		const raw = (error === null || error === undefined) ? '' : String(error);
@@ -1556,9 +1541,7 @@ try {
 		resultsDiv.innerHTML = '<div class="results-header" style="color: var(--vscode-errorForeground);">' + esc + '</div>';
 		resultsDiv.classList.add('visible');
 	};
-} catch {
-	// ignore
-}
+} catch (e) { console.error('[kusto]', e); }
 
 function displayCancelled() {
 	const boxId = _win.lastExecutedBox;
