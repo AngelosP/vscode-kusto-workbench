@@ -10,83 +10,20 @@ export const styles = css`
 		:host(.is-collapsed) .connection-row {
 			display: none;
 		}
-		:host(.is-collapsed) .header-max-btn,
 		:host(.is-collapsed) .header-share-btn {
 			display: none;
 		}
 		*, *::before, *::after { box-sizing: border-box; }
 
-		/* ── Header group (name row + connection row) ──────────────── */
+		/* ── Header group (shell + connection row) ──────────────── */
 		.header-group {
 			display: flex;
 			flex-direction: column;
-			gap: 8px;
+			gap: 0;
 			margin-bottom: 8px;
 		}
 
-		/* ── Header row (name + action buttons) ────────────────────── */
-		.header-row {
-			display: flex;
-			gap: 8px;
-			align-items: center;
-			flex-wrap: nowrap;
-		}
-		.query-name-group {
-			display: flex;
-			gap: 0;
-			align-items: center;
-			flex: 1 1 150px;
-			min-width: 0;
-		}
-		.section-drag-handle {
-			opacity: 1;
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-descriptionForeground);
-			border-radius: 4px;
-			margin: 0;
-			width: 12px;
-			height: 24px;
-			padding: 0;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			cursor: grab;
-			flex: 0 0 auto;
-		}
-		.section-drag-handle:hover {
-			background: var(--vscode-list-hoverBackground);
-			border-color: var(--vscode-input-border);
-			color: var(--vscode-foreground);
-		}
-		.section-drag-handle:active { cursor: grabbing; }
-		.section-drag-handle-glyph {
-			font-size: 14px;
-			line-height: 1;
-			letter-spacing: -1px;
-		}
-		.query-name {
-			background: transparent;
-			border: 1px solid transparent;
-			color: var(--vscode-foreground);
-			padding: 4px 8px;
-			font-size: 12px;
-			flex: 1 1 150px;
-			min-width: 0;
-			font-family: inherit;
-		}
-		.query-name:hover { border-color: var(--vscode-input-border); }
-		.query-name:focus { outline: none; border-color: var(--vscode-focusBorder); }
-		.section-actions {
-			display: inline-flex;
-			gap: 8px;
-			align-items: center;
-		}
-		.header-tabs {
-			display: inline-flex;
-			gap: 2px;
-			align-items: center;
-		}
+		/* ── Share button (slotted into shell header-buttons) ───── */
 		.header-tab {
 			background: transparent;
 			border: 1px solid transparent;
@@ -103,29 +40,7 @@ export const styles = css`
 		}
 		.header-tab svg { display: block; }
 		.header-tab:hover { background: var(--vscode-list-hoverBackground); }
-		.header-tab.is-active {
-			background: var(--vscode-toolbar-activeBackground, rgba(128, 128, 128, 0.25));
-			color: var(--vscode-foreground);
-		}
 		.header-share-btn { margin-right: 6px; }
-		.header-max-btn { margin-right: 6px; }
-		.close-btn {
-			background: transparent;
-			border: none;
-			color: var(--vscode-foreground);
-			cursor: pointer;
-			padding: 0;
-			border-radius: 4px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			line-height: 0;
-			min-width: 28px;
-			width: 28px;
-			height: 28px;
-		}
-		.close-btn:hover { background: var(--vscode-list-hoverBackground); }
-		.close-btn svg { display: block; }
 
 		/* ── Connection row ─────────────────────────────────────────── */
 		.connection-row {

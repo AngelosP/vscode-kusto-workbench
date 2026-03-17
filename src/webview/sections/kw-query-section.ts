@@ -5,6 +5,7 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import '../components/kw-dropdown.js';
+import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,11 +77,8 @@ const clusterPickerIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16
 
 const shareIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 3zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M4 6a2 2 0 1 1-.001 4.001A2 2 0 0 1 4 6zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M12 9a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 9zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M5.5 7.5l5-2.5M5.5 8.5l5 2.5" stroke="currentColor" stroke-width="1" fill="none"/></svg>`;
 
-const maximizeIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6V3h3" /><path d="M13 10v3h-3" /><path d="M3 3l4 4" /><path d="M13 13l-4-4" /></svg>`;
 
-const previewIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z" /><circle cx="8" cy="8" r="2.1" /></svg>`;
 
-const closeIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -205,47 +203,24 @@ export class KwQuerySection extends LitElement {
 	override render(): TemplateResult {
 		return html`
 			<div class="header-group" @dropdown-opened=${this._onDropdownOpened}>
-				${this._renderHeaderRow()}
-				${this._renderConnectionRow()}
+				<kw-section-shell
+					.name=${this._name}
+					.expanded=${this._expanded}
+					box-id=${this.boxId}
+					name-placeholder="Query Name (optional)"
+					@name-change=${this._onShellNameChange}
+					@toggle-visibility=${this._onToggleClick}
+					@fit-to-contents=${this._onMaximizeClick}
+					@section-remove=${this._onShellRemove}>
+					<button slot="header-buttons" class="header-tab header-share-btn" type="button"
+						title="Share" aria-label="Share"
+						@click=${this._onShareClick}>${shareIconSvg}</button>
+					<div slot="header-extra">
+						${this._renderConnectionRow()}
+					</div>
+				</kw-section-shell>
 			</div>
 			<slot></slot>
-		`;
-	}
-
-	// ── Header row sub-template ───────────────────────────────────────────────
-
-	private _renderHeaderRow(): TemplateResult {
-		return html`
-			<div class="header-row">
-				<div class="query-name-group">
-					<button type="button" class="section-drag-handle" draggable="true"
-						title="Drag to reorder" aria-label="Reorder section"
-						@dragstart=${this._onDragStart}>
-						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
-					</button>
-					<input type="text" class="query-name" placeholder="Query Name (optional)"
-						.value=${this._name}
-						@input=${this._onNameInput} />
-				</div>
-				<div class="section-actions">
-					<div class="header-tabs" role="tablist" aria-label="Query visibility">
-						<button class="header-tab header-share-btn" type="button"
-							title="Share" aria-label="Share"
-							@click=${this._onShareClick}>${shareIconSvg}</button>
-						<button class="header-tab header-max-btn" type="button"
-							title="Fit to contents" aria-label="Fit to contents"
-							@click=${this._onMaximizeClick}>${maximizeIconSvg}</button>
-						<button class="header-tab ${this._expanded ? 'is-active' : ''}" type="button"
-							role="tab" aria-selected="${this._expanded ? 'true' : 'false'}"
-							title="${this._expanded ? 'Hide' : 'Show'}"
-							aria-label="${this._expanded ? 'Hide' : 'Show'}"
-							@click=${this._onToggleClick}>${previewIconSvg}</button>
-					</div>
-					<button class="close-btn" type="button"
-						title="Remove query box" aria-label="Remove query box"
-						@click=${this._onCloseClick}>${closeIconSvg}</button>
-				</div>
-			</div>
 		`;
 	}
 
@@ -493,9 +468,8 @@ export class KwQuerySection extends LitElement {
 
 	// ── Header row events ─────────────────────────────────────────────────────
 
-	private _onNameInput(e: Event): void {
-		const input = e.target as HTMLInputElement;
-		this._name = input.value;
+	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
+		this._name = e.detail.name;
 		try { window.schedulePersist?.(); } catch { /* ignore */ }
 		try { window.__kustoRefreshAllDataSourceDropdowns?.(); } catch { /* ignore */ }
 	}
@@ -512,19 +486,14 @@ export class KwQuerySection extends LitElement {
 		try { window.toggleQueryBoxVisibility?.(this.boxId); } catch { /* ignore */ }
 	}
 
-	private _onCloseClick(): void {
+	private _onShellRemove(e: Event): void {
+		// Stop propagation so the composed event doesn't bubble further —
+		// query sections use a legacy window function for removal.
+		e.stopPropagation();
 		try { window.removeQueryBox?.(this.boxId); } catch { /* ignore */ }
 	}
 
-	private _onDragStart(e: DragEvent): void {
-		// Let the event bubble to the container's dragstart handler in main.js.
-		// Mark the event with a flag so main.js can identify it came from a drag handle.
-		try {
-			if (e.dataTransfer) {
-				e.dataTransfer.setData('application/x-kusto-section-drag-handle', 'true');
-			}
-		} catch { /* ignore */ }
-	}
+
 
 	// ── Dropdown events ───────────────────────────────────────────────────────
 
