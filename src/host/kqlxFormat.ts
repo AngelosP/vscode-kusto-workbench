@@ -258,17 +258,18 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 
 	const sectionsRaw = (state as any).sections;
 	const sections = Array.isArray(sectionsRaw) ? (sectionsRaw as KqlxSectionV1[]) : [];
-	const caretDocsEnabled =	(typeof (state as any).caretDocsEnabled === 'boolean') ? (state as any).caretDocsEnabled : undefined;
+
+	const parsedState: KqlxStateV1 = { sections };
+	if (typeof (state as any).caretDocsEnabled === 'boolean') {
+		parsedState.caretDocsEnabled = (state as any).caretDocsEnabled;
+	}
 
 	return {
 		ok: true,
 		file: {
 			kind: kind as KqlxFileKind,
 			version: 1,
-			state: {
-				caretDocsEnabled,
-				sections
-			}
+			state: parsedState
 		}
 	};
 }

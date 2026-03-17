@@ -3,6 +3,8 @@ import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import '../components/kw-section-shell.js';
+import '../components/kw-popover.js';
+import type { PopoverAnchorRect } from '../components/kw-popover.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -117,7 +119,6 @@ const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 
 const LEGEND_CYCLE: LegendPosition[] = ['top', 'right', 'bottom', 'left'];
 
-const SVG_CLOSE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>';
 const SVG_CARET = '<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -183,16 +184,14 @@ export class KwChartSection extends LitElement {
 	@state() private _modeDropdownOpen = false;
 	@state() private _openDropdownId = '';
 	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' = '';
-	@state() private _axisPopupPos = { top: 0, left: 0 };
+	@state() private _popoverAnchorRect: PopoverAnchorRect | null = null;
 
 	private _userResized = false;
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
-	private _closeAxisPopupBound = this._closeAxisPopupOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
 	private _scrollAtPopupOpen = 0;
 
 	// Stable dismiss callbacks for dismiss stack
-	private _dismissAxisPopup = (): void => { this._closeAxisPopup(); };
 	private _dismissDropdown = (): void => { this._openDropdownId = ''; document.removeEventListener('mousedown', this._closeDropdownBound); };
 	private _dismissModeDropdown = (): void => { this._modeDropdownOpen = false; };
 	private _themeObserver: MutationObserver | null = null;
@@ -224,9 +223,7 @@ export class KwChartSection extends LitElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		document.removeEventListener('mousedown', this._closeDropdownBound);
-		document.removeEventListener('mousedown', this._closeAxisPopupBound);
 		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
-		removeDismissable(this._dismissAxisPopup);
 		removeDismissable(this._dismissDropdown);
 		removeDismissable(this._dismissModeDropdown);
 		this._themeObserver?.disconnect();
@@ -260,11 +257,7 @@ export class KwChartSection extends LitElement {
 			this._updateHostClasses();
 		}
 
-		// Manage dismiss stack for popups/dropdowns
-		if (changed.has('_openAxisPopup')) {
-			if (this._openAxisPopup) pushDismissable(this._dismissAxisPopup);
-			else removeDismissable(this._dismissAxisPopup);
-		}
+		// Manage dismiss stack for dropdowns
 		if (changed.has('_openDropdownId')) {
 			if (this._openDropdownId) pushDismissable(this._dismissDropdown);
 			else removeDismissable(this._dismissDropdown);
@@ -482,8 +475,8 @@ export class KwChartSection extends LitElement {
 				</div>
 			</div>
 
-			${this._openAxisPopup === 'x' ? this._renderXAxisPopup() : nothing}
-			${this._openAxisPopup === 'y' ? this._renderYAxisPopup() : nothing}
+			${this._renderXAxisPopup()}
+			${this._renderYAxisPopup()}
 		`;
 	}
 
@@ -547,7 +540,7 @@ export class KwChartSection extends LitElement {
 				</div>
 			</div>
 
-			${this._openAxisPopup === 'labels' ? this._renderLabelSettingsPopup() : nothing}
+			${this._renderLabelSettingsPopup()}
 		`;
 	}
 
@@ -557,15 +550,13 @@ export class KwChartSection extends LitElement {
 		const s = this._xAxisSettings;
 		const densityLabel = s.labelDensity >= 100 ? 'All' : s.labelDensity + '%';
 		return html`
-			<div class="axis-popup" style="top:${this._axisPopupPos.top}px; left:${this._axisPopupPos.left}px;"
-				@click=${(e: Event) => e.stopPropagation()} @mousedown=${(e: Event) => e.stopPropagation()}>
-				<div class="axis-popup-header">
-					<span>X-Axis Settings</span>
-					<button class="axis-popup-close" @click=${() => this._closeAxisPopup()}
-						title="Close"><span .innerHTML=${SVG_CLOSE}></span></button>
-				</div>
-				<div class="axis-popup-content">
-					<div class="axis-popup-checkbox">
+			<kw-popover
+				.open=${this._openAxisPopup === 'x'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'X-Axis Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-checkbox">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('x', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
 						<label>Show axis title</label>
@@ -601,12 +592,11 @@ export class KwChartSection extends LitElement {
 						<div class="axis-popup-slider-header"><label>Label Density</label><span>${densityLabel}</span></div>
 						<input type="range" class="axis-popup-slider" min="1" max="100" .value=${String(Math.max(1, s.labelDensity))}
 							@input=${(e: Event) => this._onAxisSetting('x', 'labelDensity', parseInt((e.target as HTMLInputElement).value, 10))}>
-					</div>
 				</div>
-				<div class="axis-popup-footer">
+				<div slot="footer">
 					<button class="axis-popup-reset" @click=${() => this._resetAxisSettings('x')}>Reset to defaults</button>
 				</div>
-			</div>
+			</kw-popover>
 		`;
 	}
 
@@ -614,15 +604,13 @@ export class KwChartSection extends LitElement {
 		const s = this._yAxisSettings;
 		const defColors = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b8d0'];
 		return html`
-			<div class="axis-popup" style="top:${this._axisPopupPos.top}px; left:${this._axisPopupPos.left}px;"
-				@click=${(e: Event) => e.stopPropagation()} @mousedown=${(e: Event) => e.stopPropagation()}>
-				<div class="axis-popup-header">
-					<span>Y-Axis Settings</span>
-					<button class="axis-popup-close" @click=${() => this._closeAxisPopup()}
-						title="Close"><span .innerHTML=${SVG_CLOSE}></span></button>
-				</div>
-				<div class="axis-popup-content">
-					<div class="axis-popup-checkbox">
+			<kw-popover
+				.open=${this._openAxisPopup === 'y'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Y-Axis Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-checkbox">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('y', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
 						<label>Show axis title</label>
@@ -666,25 +654,22 @@ export class KwChartSection extends LitElement {
 							})}
 						</div>
 					` : nothing}
-				</div>
-				<div class="axis-popup-footer">
+				<div slot="footer">
 					<button class="axis-popup-reset" @click=${() => this._resetAxisSettings('y')}>Reset to defaults</button>
 				</div>
-			</div>
+			</kw-popover>
 		`;
 	}
 
 	private _renderLabelSettingsPopup(): TemplateResult {
 		return html`
-			<div class="axis-popup" style="top:${this._axisPopupPos.top}px; left:${this._axisPopupPos.left}px;"
-				@click=${(e: Event) => e.stopPropagation()} @mousedown=${(e: Event) => e.stopPropagation()}>
-				<div class="axis-popup-header">
-					<span>Label Settings</span>
-					<button class="axis-popup-close" @click=${() => this._closeAxisPopup()}
-						title="Close"><span .innerHTML=${SVG_CLOSE}></span></button>
-				</div>
-				<div class="axis-popup-content">
-					<div class="axis-popup-row">
+			<kw-popover
+				.open=${this._openAxisPopup === 'labels'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Label Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-row">
 						<label>Display Mode</label>
 						<select @change=${(e: Event) => { this._labelMode = (e.target as HTMLSelectElement).value as LabelMode; this._schedulePersist(); }}>
 							<option value="auto" ?selected=${this._labelMode === 'auto'}>Auto (smart)</option>
@@ -701,8 +686,7 @@ export class KwChartSection extends LitElement {
 								@input=${(e: Event) => { this._labelDensity = parseInt((e.target as HTMLInputElement).value, 10); this._schedulePersist(); }}>
 						</div>
 					` : nothing}
-				</div>
-			</div>
+			</kw-popover>
 		`;
 	}
 
@@ -746,17 +730,14 @@ export class KwChartSection extends LitElement {
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 	}
 
-	/** Close all fixed-position dropdowns and axis popups when scroll exceeds threshold. */
+	/** Close all fixed-position dropdowns when scroll exceeds threshold. */
 	private _closeAllPopupsOnScroll(): void {
-		if (!this._openDropdownId && !this._openAxisPopup && !this._modeDropdownOpen) return;
+		if (!this._openDropdownId && !this._modeDropdownOpen) return;
 		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
 		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		if (this._openDropdownId) {
 			this._openDropdownId = '';
 			document.removeEventListener('mousedown', this._closeDropdownBound);
-		}
-		if (this._openAxisPopup) {
-			this._closeAxisPopup();
 		}
 		if (this._modeDropdownOpen) {
 			this._modeDropdownOpen = false;
@@ -930,9 +911,6 @@ export class KwChartSection extends LitElement {
 	// ── Axis settings handlers ────────────────────────────────────────────────
 
 	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels', e: Event): void {
-		// Always clean up the previous listener first
-		document.removeEventListener('mousedown', this._closeAxisPopupBound);
-
 		if (this._openAxisPopup === axis) {
 			this._openAxisPopup = '';
 			return;
@@ -952,28 +930,20 @@ export class KwChartSection extends LitElement {
 			textWidth = ctx.measureText(labelText).width;
 		}
 
-		// Position: arrow tip at center of text, popup left offset so arrow (at CSS left:12px + 5px) points there
-		const arrowTipOffset = 17; // 12px CSS left + 5px for arrow center
 		const textCenter = rect.left + (textWidth / 2);
-		this._axisPopupPos = { top: rect.bottom + 8, left: textCenter - arrowTipOffset };
+		this._popoverAnchorRect = {
+			top: rect.top,
+			left: rect.left,
+			bottom: rect.bottom,
+			width: rect.width,
+			textCenter,
+		};
 		this._openAxisPopup = axis;
-		this._captureScrollPosition();
-
-		// Defer so the current click doesn't immediately close it
-		setTimeout(() => document.addEventListener('mousedown', this._closeAxisPopupBound), 0);
 	}
 
-	/** Stable bound handler for closing axis popups on outside click. */
-	private _closeAxisPopupOnClickOutside(ev: Event): void {
-		const popup = this.shadowRoot?.querySelector('.axis-popup');
-		if (popup?.contains(ev.target as Node)) return;
-		this._closeAxisPopup();
-	}
-
-	/** Close the axis popup and clean up the document listener. */
+	/** Close the axis popup. */
 	private _closeAxisPopup(): void {
 		this._openAxisPopup = '';
-		document.removeEventListener('mousedown', this._closeAxisPopupBound);
 	}
 
 	private _onAxisSetting(axis: 'x' | 'y', key: string, value: unknown): void {

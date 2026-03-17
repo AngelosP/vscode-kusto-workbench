@@ -28,6 +28,7 @@ import './components/kw-sort-dialog.js';
 import './components/kw-dropdown.js';
 import './components/kw-data-table.js';
 import './components/kw-section-shell.js';
+import './components/kw-popover.js';
 import './components/kw-section-reorder-popup.js';
 import './viewers/cached-values/kw-cached-values.js';
 import './viewers/connection-manager/kw-connection-manager.js';
