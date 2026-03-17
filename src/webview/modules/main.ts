@@ -1820,6 +1820,10 @@ window.addEventListener('message', async (event: any) => {
 					if (sourceBox && comparisonBox && sourceBox.parentNode && comparisonBox.parentNode) {
 						sourceBox.parentNode.insertBefore(comparisonBox, sourceBox.nextSibling);
 					}
+					// Scroll the new comparison box into view.
+					if (comparisonBox && typeof comparisonBox.scrollIntoView === 'function') {
+						comparisonBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+					}
 				} catch (e) { console.error('[kusto]', e); }
 				
 				// Set connection and database to match source

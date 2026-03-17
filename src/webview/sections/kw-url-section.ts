@@ -760,8 +760,29 @@ export class KwUrlSection extends LitElement {
 
 	// ── Fit to contents ───────────────────────────────────────────────────────
 
+	/**
+	 * Compute the height needed to show all CSV content without a scrollbar.
+	 * Used as the max-drag limit so users can manually expand to see every row.
+	 */
+	private _computeFullCsvHeight(): number {
+		const RESIZER_HEIGHT = 12;
+		if (!this._csvActive || this._csvRows.length === 0) return 0;
+		const tableEl = this.shadowRoot?.querySelector('kw-data-table') as { getVisibleRowCount?: () => number } | null;
+		const visibleRows = (tableEl && typeof tableEl.getVisibleRowCount === 'function')
+			? Math.max(0, tableEl.getVisibleRowCount())
+			: this._csvRows.length;
+		const tableShadow = (tableEl as unknown as { shadowRoot?: ShadowRoot | null })?.shadowRoot ?? null;
+		const hbarH = (tableShadow?.querySelector('.hbar') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+		const headH = (tableShadow?.querySelector('.dtable-head-wrap') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+		const rowSample = (tableShadow?.querySelector('#dt-body tbody tr td') as HTMLElement | null)?.getBoundingClientRect().height ?? 0;
+		const rowH = rowSample > 0 ? rowSample : 24;
+		const EXTRA_PAD = 16;
+		const contentH = hbarH + headH + (visibleRows * rowH) + RESIZER_HEIGHT;
+		return Math.max(120, Math.ceil(contentH + EXTRA_PAD));
+	}
+
 	/** Compute the ideal wrapper height to show all content.
-	 *  For CSV: cap at 750px. For images/text/html: use natural height (cap at 3000px).
+	 *  For CSV: auto-fit caps at ~10 visible rows. For images/text/html: natural height (cap at 3000px).
 	 */
 	private _computeFitToContentsHeight(): number {
 		const RESIZER_HEIGHT = 12;
@@ -860,7 +881,12 @@ export class KwUrlSection extends LitElement {
 		wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
 
 		const minH = 120;
-		let maxH = this._computeFitToContentsHeight() || 20000;
+		// For CSV tables, allow expanding to show all rows.
+		// For images in Mode B, cap to natural image height (no blank space).
+		// For everything else, use fit-to-contents as the max.
+		let maxH = (this._csvActive && this._csvRows.length > 0)
+			? (this._computeFullCsvHeight() || 20000)
+			: (this._computeFitToContentsHeight() || 20000);
 
 		// In Mode B (Fill section) for images, cap max height to image natural height
 		// so there's no blank space below the image.

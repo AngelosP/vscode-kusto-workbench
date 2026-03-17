@@ -6,7 +6,6 @@ import './modules/controlCommands.generated.js';
 import './modules/functions.generated.js';
 import './modules/utils.js';
 import './modules/dropdown.js';
-import './modules/columnAnalysis.js';
 import './modules/searchControl.js';
 import './viewers/kw-diff-view.js';
 import './modules/objectViewer.js';
@@ -14,7 +13,8 @@ import './modules/cellViewer.js';
 import './modules/schema.js';
 import './modules/persistence.js';
 import './modules/copilotQueryBoxes.js';
-import './modules/resultsTable.js';
+import './modules/resultsState.js';
+import './modules/errorUtils.js';
 import './modules/queryBoxes.js';
 import './modules/extraBoxes.js';
 import './modules/monaco-diagnostics.js'; // Before monaco — sets utility window bridges

@@ -783,12 +783,16 @@ function addQueryBox( options: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-	try {
-		const controls = document.querySelector('.add-controls');
-		if (controls && typeof controls.scrollIntoView === 'function') {
-			controls.scrollIntoView({ block: 'end' });
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	// Scroll to the bottom only for user-initiated "Add Section".
+	// Comparison boxes will be repositioned next to the source and scrolled there instead.
+	if (!isComparison) {
+		try {
+			const controls = document.querySelector('.add-controls');
+			if (controls && typeof controls.scrollIntoView === 'function') {
+				controls.scrollIntoView({ block: 'end' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
 	return id;
 }
 

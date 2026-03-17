@@ -1080,6 +1080,149 @@ export class KwQuerySection extends LitElement {
 		});
 	}
 
+	// ── Error display ─────────────────────────────────────────────────────────
+
+	/**
+	 * Display an error in the results area.
+	 * Called from `__kustoRenderErrorUx()` in errorUtils.ts when the section
+	 * element has this method, or directly from main.ts message handlers.
+	 *
+	 * @param errorOrModel - Either a pre-built ErrorUxModel (from __kustoBuildErrorUxModel)
+	 *   or a raw error string/object that will be displayed as-is.
+	 * @param clientActivityId - Optional Kusto client activity ID.
+	 */
+	public displayError(
+		errorOrModel: unknown,
+		clientActivityId?: string
+	): void {
+		const resultsDiv = document.getElementById(this.boxId + '_results');
+		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
+		const resizer = document.getElementById(this.boxId + '_results_resizer');
+		if (!resultsDiv) return;
+
+		// Remove stale overlay.
+		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
+		resultsDiv.innerHTML = '';
+
+		// Determine if we received a pre-built model or a raw error.
+		const model = (errorOrModel && typeof errorOrModel === 'object' && 'kind' in (errorOrModel as any))
+			? errorOrModel as { kind: string; message?: string; pretty?: string; text?: string; location?: { line: number; col: number } | null; autoFindTerm?: string | null }
+			: null;
+
+		const container = document.createElement('div');
+		container.className = 'results-header kusto-error-ux';
+		container.style.color = 'var(--vscode-errorForeground)';
+
+		if (model) {
+			if (model.kind === 'none') {
+				resultsDiv.classList.remove('visible');
+				return;
+			}
+			if (model.kind === 'badrequest') {
+				const msgEl = document.createElement('div');
+				const strong = document.createElement('strong');
+				strong.textContent = model.message || '';
+				msgEl.appendChild(strong);
+				if (model.location && model.location.line && model.location.col) {
+					const link = document.createElement('a');
+					link.href = '#';
+					link.className = 'kusto-error-location';
+					link.dataset.boxid = this.boxId;
+					link.dataset.line = String(model.location.line);
+					link.dataset.col = String(model.location.col);
+					link.title = `Go to line ${model.location.line}, column ${model.location.col}`;
+					link.textContent = ` Line ${model.location.line}, Col ${model.location.col}`;
+					msgEl.appendChild(document.createTextNode(' '));
+					msgEl.appendChild(link);
+				}
+				container.appendChild(msgEl);
+			} else if (model.kind === 'json') {
+				const pre = document.createElement('pre');
+				pre.style.cssText = 'margin:0; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family);';
+				pre.textContent = model.pretty || '';
+				container.appendChild(pre);
+			} else {
+				// text
+				const lines = String(model.text || '').split(/\r?\n/);
+				lines.forEach((line, i) => {
+					if (i > 0) container.appendChild(document.createElement('br'));
+					container.appendChild(document.createTextNode(line));
+				});
+			}
+		} else {
+			// Raw error string — display as-is.
+			const raw = (errorOrModel === null || errorOrModel === undefined) ? '' : String(errorOrModel);
+			const lines = raw.split(/\r?\n/);
+			const strong = document.createElement('strong');
+			lines.forEach((line, i) => {
+				if (i > 0) strong.appendChild(document.createElement('br'));
+				strong.appendChild(document.createTextNode(line));
+			});
+			container.appendChild(strong);
+		}
+
+		// Append client activity ID if present.
+		if (clientActivityId && typeof clientActivityId === 'string') {
+			const actDiv = document.createElement('div');
+			actDiv.className = 'kusto-error-activity-id';
+			const label = document.createElement('span');
+			label.className = 'kusto-error-activity-id-label';
+			label.textContent = 'Client Activity ID:';
+			actDiv.appendChild(label);
+			actDiv.appendChild(document.createTextNode(' '));
+			const value = document.createElement('span');
+			value.className = 'kusto-error-activity-id-value';
+			value.textContent = clientActivityId;
+			actDiv.appendChild(value);
+			const copyBtn = document.createElement('button');
+			copyBtn.className = 'results-label-tooltip-copy';
+			copyBtn.type = 'button';
+			copyBtn.title = 'Copy to clipboard';
+			copyBtn.setAttribute('aria-label', 'Copy Client Activity ID');
+			copyBtn.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="2" ry="2"/><path d="M3 11V4a2 2 0 0 1 2-2h7"/></svg>';
+			copyBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				try {
+					navigator.clipboard.writeText(clientActivityId).then(() => {
+						copyBtn.classList.add('results-footer-copy-done');
+						setTimeout(() => copyBtn.classList.remove('results-footer-copy-done'), 1200);
+					}).catch(() => { /* ignore */ });
+				} catch (e) { console.error('[kusto]', e); }
+			});
+			actDiv.appendChild(copyBtn);
+			container.appendChild(actDiv);
+		}
+
+		resultsDiv.appendChild(container);
+		resultsDiv.classList.add('visible');
+		if (resultsWrapper) {
+			resultsWrapper.style.display = 'block';
+			// Auto-fit: error/cancellation messages are short — clear any
+			// previous data-table height so the wrapper shrinks to content.
+			resultsWrapper.style.height = '';
+			resultsWrapper.style.overflow = '';
+			delete resultsWrapper.dataset.kustoUserResized;
+			delete resultsWrapper.dataset.kustoPreviousHeight;
+		}
+		// No data table to resize — hide the grip.
+		if (resizer) resizer.style.display = 'none';
+
+		// Auto-find term in query editor for SEM0139 errors.
+		const autoFind = model?.autoFindTerm;
+		if (autoFind && typeof window.__kustoAutoFindInQueryEditor === 'function') {
+			setTimeout(() => {
+				try { window.__kustoAutoFindInQueryEditor(this.boxId, String(autoFind)); } catch (e) { console.error('[kusto]', e); }
+			}, 0);
+		}
+	}
+
+	/**
+	 * Display a cancellation message in the results area.
+	 */
+	public displayCancelled(): void {
+		this.displayError('Cancelled.');
+	}
+
 	// ── Persistence ───────────────────────────────────────────────────────────
 
 	/**
