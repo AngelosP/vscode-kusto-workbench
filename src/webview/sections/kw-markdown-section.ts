@@ -345,6 +345,7 @@ export class KwMarkdownSection extends LitElement {
 				previewStyle: 'vertical',
 				hideModeSwitch: true,
 				usageStatistics: false,
+				frontMatter: true,
 				initialValue,
 				toolbarItems: toolbarItemsConfig,
 				plugins: getToastUiPlugins(ToastEditor),
@@ -527,6 +528,7 @@ export class KwMarkdownSection extends LitElement {
 				el: viewerContainer,
 				viewer: true,
 				usageStatistics: false,
+				frontMatter: true,
 				initialValue: String(initialValue || ''),
 				plugins: getToastUiPlugins(ToastEditor),
 				events: {
@@ -769,6 +771,28 @@ export class KwMarkdownSection extends LitElement {
 			try { toastEditor.changeMode(this._mode, true); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
+
+		// After a mode switch (especially from preview → editor where the container
+		// transitions from display:none to visible), the TOASTUI toolbar may
+		// recalculate its item layout before the DOM has finalized dimensions,
+		// causing toolbar items to be pushed into the overflow dropdown and the
+		// toolbar border to render incorrectly.  Force a second layout pass after
+		// the browser has completed the layout cycle.
+		requestAnimationFrame(() => {
+			try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
+			// Nudge the toolbar element to trigger its ResizeObserver, which
+			// re-runs classifyToolbarItems() with the correct clientWidth.
+			try {
+				const toolbarEl = editorContainer.querySelector('.toastui-editor-defaultUI-toolbar');
+				if (toolbarEl instanceof HTMLElement) {
+					// A minimal style toggle forces the ResizeObserver callback.
+					toolbarEl.style.minWidth = '0';
+					requestAnimationFrame(() => {
+						toolbarEl.style.minWidth = '';
+					});
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		});
 	}
 
 	// ── Visibility (expand/collapse) ──────────────────────────────────────────

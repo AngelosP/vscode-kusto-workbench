@@ -1,6 +1,34 @@
 // Monaco theme detection & sync — extracted from monaco.ts (Phase 6 decomposition).
 // Handles dark/light theme detection, custom KQL token themes, and MutationObserver-based auto-switch.
 
+export function parseCssColorToRgb(value: any) {
+	const v = String(value || '').trim();
+	if (!v) {
+		return null;
+	}
+	// rgb()/rgba()
+	let m = v.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+)\s*)?\)/i);
+	if (m) {
+		return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10) };
+	}
+	// #RGB, #RRGGBB, #RRGGBBAA
+	m = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+	if (m) {
+		const hex = m[1];
+		if (hex.length === 3) {
+			const r = parseInt(hex[0] + hex[0], 16);
+			const g = parseInt(hex[1] + hex[1], 16);
+			const b = parseInt(hex[2] + hex[2], 16);
+			return { r, g, b };
+		}
+		const r = parseInt(hex.slice(0, 2), 16);
+		const g = parseInt(hex.slice(2, 4), 16);
+		const b = parseInt(hex.slice(4, 6), 16);
+		return { r, g, b };
+	}
+	return null;
+}
+
 export function isDarkTheme() {
 	// VS Code webviews typically toggle these classes on theme changes.
 	try {
@@ -14,34 +42,6 @@ export function isDarkTheme() {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-
-	const parseCssColorToRgb = (value: any) => {
-		const v = String(value || '').trim();
-		if (!v) {
-			return null;
-		}
-		// rgb()/rgba()
-		let m = v.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+)\s*)?\)/i);
-		if (m) {
-			return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10) };
-		}
-		// #RGB, #RRGGBB, #RRGGBBAA
-		m = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
-		if (m) {
-			const hex = m[1];
-			if (hex.length === 3) {
-				const r = parseInt(hex[0] + hex[0], 16);
-				const g = parseInt(hex[1] + hex[1], 16);
-				const b = parseInt(hex[2] + hex[2], 16);
-				return { r, g, b };
-			}
-			const r = parseInt(hex.slice(0, 2), 16);
-			const g = parseInt(hex.slice(2, 4), 16);
-			const b = parseInt(hex.slice(4, 6), 16);
-			return { r, g, b };
-		}
-		return null;
-	};
 
 	let bg = '';
 	try {

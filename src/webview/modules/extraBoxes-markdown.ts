@@ -1139,6 +1139,31 @@ export function __kustoApplyMarkdownEditorMode( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
+	// After a mode switch (especially from preview → editor where the container
+	// transitions from display:none to visible), the TOASTUI toolbar may
+	// recalculate its item layout before the DOM has finalized dimensions,
+	// causing toolbar items to be pushed into the overflow dropdown and the
+	// toolbar border to render incorrectly.  Force a second layout pass after
+	// the browser has completed the layout cycle.
+	try {
+		requestAnimationFrame(() => {
+			try {
+				if (markdownEditors[boxId] && typeof markdownEditors[boxId].layout === 'function') {
+					markdownEditors[boxId].layout();
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			try {
+				const toolbarEl = editorHost?.querySelector('.toastui-editor-defaultUI-toolbar');
+				if (toolbarEl) {
+					toolbarEl.style.minWidth = '0';
+					requestAnimationFrame(() => {
+						toolbarEl.style.minWidth = '';
+					});
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		});
+	} catch (e) { console.error('[kusto]', e); }
+
 	// In .md files, the body shouldn't scroll but Toast UI's changeMode may trigger
 	// scrollIntoView internally. Reset scroll position to prevent layout shift.
 	try {
@@ -1554,6 +1579,7 @@ export function initMarkdownViewer( boxId: any, initialValue: any) {
 	try {
 		const opts: any = {
 			usageStatistics: false,
+			frontMatter: true,
 			initialValue: typeof initialValue === 'string' ? initialValue : '',
 			plugins: getToastUiPlugins(ToastEditor),
 			events: {
@@ -1777,6 +1803,7 @@ export function initMarkdownEditor( boxId: any) {
 			previewStyle: 'vertical',
 			hideModeSwitch: true,
 			usageStatistics: false,
+			frontMatter: true,
 			initialValue,
 			toolbarItems: toolbarItemsConfig,
 			plugins: getToastUiPlugins(ToastEditor),

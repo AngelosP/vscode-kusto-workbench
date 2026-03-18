@@ -2,7 +2,6 @@
 // KQL diagnostics engine (DISABLED - monaco-kusto handles validation).
 // Also contains text-processing utility functions used by completions and other modules.
 // Window bridge exports at bottom for remaining callers.
-export {};
 
 const _win = window;
 
@@ -19,7 +18,7 @@ let __kustoProvideCompletionItemsForDiagnostics: any;
 // --- Live diagnostics (markers) + quick fixes ---
 const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';
 
-const __kustoMaskCommentsPreserveLayout = (text: any) => {
+export const __kustoMaskCommentsPreserveLayout = (text: any) => {
 	try {
 		const s = String(text || '');
 		if (!s) return s;
@@ -172,9 +171,9 @@ const __kustoFilterMarkersByAutocomplete = async (model: any, markers: any) => {
 	}
 };
 
-const __kustoClamp = (n: any, min: any, max: any) => Math.max(min, Math.min(max, n));
+export const __kustoClamp = (n: any, min: any, max: any) => Math.max(min, Math.min(max, n));
 
-const __kustoSplitTopLevelStatements = (text: any) => {
+export const __kustoSplitTopLevelStatements = (text: any) => {
 	// Split on ';' and blank lines when not inside strings/comments/brackets.
 	const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	const out = [];
@@ -310,7 +309,7 @@ const __kustoSplitTopLevelStatements = (text: any) => {
 	return out.filter(s => String(s.text || '').trim().length > 0);
 };
 
-const __kustoSplitPipelineStagesDeep = (text: any) => {
+export const __kustoSplitPipelineStagesDeep = (text: any) => {
 	// Split at the *shallowest* pipeline depth (not inside strings or comments).
 	// This allows pipes inside `let ... { ... }` bodies (depth 1) to behave like top-level pipelines.
 	const s = String(text || '');
@@ -382,7 +381,7 @@ const __kustoSplitPipelineStagesDeep = (text: any) => {
 	return parts;
 };
 
-const __kustoFindLastTopLevelPipeBeforeOffset = (text: any, offset: any) => {
+export const __kustoFindLastTopLevelPipeBeforeOffset = (text: any, offset: any) => {
 	// Returns the offset of the last top-level '|' before `offset` (exclusive), or -1.
 	try {
 		const s = String(text || '');
@@ -420,7 +419,7 @@ const __kustoFindLastTopLevelPipeBeforeOffset = (text: any, offset: any) => {
 	}
 };
 
-const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText: any, offsetInStmt: any) => {
+export const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText: any, offsetInStmt: any) => {
 	try {
 		const s = String(stmtText || '');
 		const pipeIdx = __kustoFindLastTopLevelPipeBeforeOffset(s, offsetInStmt);
@@ -452,7 +451,7 @@ const __kustoGetActivePipeStageInfoBeforeOffset = (stmtText: any, offsetInStmt: 
 	}
 };
 
-const __kustoParsePipeHeaderFromLine = (trimmedPipeLine: any) => {
+export const __kustoParsePipeHeaderFromLine = (trimmedPipeLine: any) => {
 	try {
 		const t = String(trimmedPipeLine || '').trim();
 		if (!t.startsWith('|')) return null;
@@ -477,7 +476,7 @@ const __kustoParsePipeHeaderFromLine = (trimmedPipeLine: any) => {
 	}
 };
 
-const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader: any) => {
+export const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader: any) => {
 	try {
 		if (!pipeHeader || !pipeHeader.key) return false;
 		const key = String(pipeHeader.key).toLowerCase();
@@ -511,7 +510,7 @@ const __kustoPipeHeaderAllowsIndentedContinuation = (pipeHeader: any) => {
 	}
 };
 
-const __kustoGetStatementStartAtOffset = (text: any, offset: any) => {
+export const __kustoGetStatementStartAtOffset = (text: any, offset: any) => {
 	const raw = String(text || '');
 	const end = Math.max(0, Math.min(raw.length, Number(offset) || 0));
 	let last = -1;
@@ -574,7 +573,7 @@ const __kustoGetStatementStartAtOffset = (text: any, offset: any) => {
 	return last + 1;
 };
 
-const __kustoBuildLineStarts = (text: any) => {
+export const __kustoBuildLineStarts = (text: any) => {
 	const starts = [0];
 	for (let i = 0; i < text.length; i++) {
 		const ch = text.charCodeAt(i);
@@ -585,7 +584,7 @@ const __kustoBuildLineStarts = (text: any) => {
 	return starts;
 };
 
-const __kustoOffsetToPosition = (lineStarts: any, offset: any) => {
+export const __kustoOffsetToPosition = (lineStarts: any, offset: any) => {
 	const off = __kustoClamp(offset, 0, Number.MAX_SAFE_INTEGER);
 	let lo = 0;
 	let hi = lineStarts.length - 1;
@@ -607,14 +606,14 @@ const __kustoOffsetToPosition = (lineStarts: any, offset: any) => {
 	return { lineNumber: lastLine, column: (off - start) + 1 };
 };
 
-const __kustoIsIdentStart = (ch: any) => {
+export const __kustoIsIdentStart = (ch: any) => {
 	return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95; // A-Z a-z _
 };
-const __kustoIsIdentPart = (ch: any) => {
+export const __kustoIsIdentPart = (ch: any) => {
 	return __kustoIsIdentStart(ch) || (ch >= 48 && ch <= 57) || ch === 45; // 0-9 -
 };
 
-const __kustoScanIdentifiers = (text: any) => {
+export const __kustoScanIdentifiers = (text: any) => {
 	// Lightweight lexer that returns identifier tokens with offsets.
 	const tokens = [];
 	let i = 0;
@@ -701,7 +700,7 @@ const __kustoScanIdentifiers = (text: any) => {
 	return tokens;
 };
 
-const __kustoLevenshtein = (a: any, b: any) => {
+export const __kustoLevenshtein = (a: any, b: any) => {
 	const s = String(a || '');
 	const t = String(b || '');
 	if (s === t) return 0;
@@ -724,7 +723,7 @@ const __kustoLevenshtein = (a: any, b: any) => {
 	return prev[m];
 };
 
-const __kustoBestMatches = (needle: any, candidates: any, maxCount: any) => {
+export const __kustoBestMatches = (needle: any, candidates: any, maxCount: any) => {
 	const n = String(needle || '');
 	const nl = n.toLowerCase();
 	const out = [];

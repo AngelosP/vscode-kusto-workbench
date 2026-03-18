@@ -1,7 +1,6 @@
 // Monaco module — converted from legacy/monaco.js
 // Monaco Editor configuration, completions, column inference, caret docs overlay.
 // Window bridge exports at bottom for remaining legacy callers.
-export {};
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -47,7 +46,7 @@ declare const require: any;
 // Derive `columnsByTable` from `columnTypesByTable` to avoid storing duplicate column lists.
 // Falls back to legacy `columnsByTable` if present (older cached schema entries).
 const __kustoColumnsByTableCache = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
-function __kustoGetColumnsByTable(schema: any) {
+export function __kustoGetColumnsByTable(schema: any) {
 	try {
 		if (!schema || typeof schema !== 'object') return null;
 		if (schema.columnsByTable && typeof schema.columnsByTable === 'object') return schema.columnsByTable;

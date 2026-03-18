@@ -348,3 +348,81 @@ describe('__kustoPrettifyKustoTextWithSemicolonStatements', () => {
 		expect(semicolons).toBe(2);
 	});
 });
+
+// ── Edge cases: nested queries, multiline strings, comments in summarize ──
+
+describe('__kustoPrettifyKusto — edge cases', () => {
+	it('handles nested subquery in join', () => {
+		const input = 'T | join (T2 | where y > 3 | project y) on x';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| join');
+		expect(result).toContain('T2');
+	});
+
+	it('handles comment inside summarize block', () => {
+		const input = 'T | summarize count(), // count items\navg(x) by category';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| summarize');
+		expect(result).toContain('count()');
+		expect(result).toContain('avg(x)');
+		expect(result).toContain('by');
+	});
+
+	it('handles block comment between pipe stages', () => {
+		const input = 'T\n| where x > 5\n/* filter by category */\n| project a, b';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| where');
+		expect(result).toContain('| project');
+	});
+
+	it('handles multiline where with nested function calls', () => {
+		const input = 'T | where strlen(name) > 5 and toupper(category) == "TEST"';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| where');
+		expect(result).toContain('strlen(name)');
+	});
+
+	it('handles summarize with multiple by columns', () => {
+		const input = 'T | summarize count(), sum(val), avg(x) by bin(timestamp, 1h), category, region';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| summarize');
+		expect(result).toContain('count()');
+		expect(result).toContain('sum(val)');
+		expect(result).toContain('by');
+		expect(result).toContain('category');
+		expect(result).toContain('region');
+	});
+
+	it('handles query with union', () => {
+		const input = 'T1 | union T2 | where x > 5';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| union');
+	});
+
+	it('preserves multiline string literals', () => {
+		const input = "T | where msg contains 'line1\\nline2'";
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain("'line1\\nline2'");
+	});
+
+	it('handles empty where clause', () => {
+		const input = 'T | where';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| where');
+	});
+
+	it('handles long project-away list', () => {
+		const input = 'T | project-away col1, col2, col3, col4, col5';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| project');
+		expect(result).toContain('col1');
+		expect(result).toContain('col5');
+	});
+
+	it('handles where with or and parenthesized groups', () => {
+		const input = 'T | where (a > 5 and b < 10) or (c == 1 and d == 2)';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('| where');
+		expect(result).toContain('or');
+	});
+});
