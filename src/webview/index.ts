@@ -7,7 +7,7 @@ import './modules/functions.generated.js';
 import './modules/utils.js';
 import './modules/dropdown.js';
 import './modules/searchControl.js';
-import './viewers/kw-diff-view.js';
+import './viewers/diff-view/kw-diff-view.js';
 import './modules/objectViewer.js';
 import './modules/cellViewer.js';
 import './modules/schema.js';
