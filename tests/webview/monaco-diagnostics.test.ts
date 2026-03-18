@@ -16,6 +16,11 @@ import {
 	__kustoParsePipeHeaderFromLine,
 	__kustoPipeHeaderAllowsIndentedContinuation,
 	__kustoGetActivePipeStageInfoBeforeOffset,
+	__kustoParseFullyQualifiedTableExpr,
+	__kustoExtractSourceLower,
+	__kustoSplitTopLevelCommaList,
+	__kustoGetDotChainRoot,
+	__kustoExtractJoinTable,
 } from '../../src/webview/modules/monaco-diagnostics.js';
 
 // ── __kustoMaskCommentsPreserveLayout ─────────────────────────────────────────
@@ -699,5 +704,657 @@ describe('__kustoGetActivePipeStageInfoBeforeOffset', () => {
 		const result = __kustoGetActivePipeStageInfoBeforeOffset(text, text.length);
 		expect(result.key).toBe('order by');
 		expect(result.headerHasArgs).toBe(true);
+	});
+});
+
+// ── __kustoParseFullyQualifiedTableExpr ───────────────────────────────────────
+
+describe('__kustoParseFullyQualifiedTableExpr', () => {
+	it('parses cluster.database.table', () => {
+		const result = __kustoParseFullyQualifiedTableExpr("cluster('mycluster.kusto.windows.net').database('MyDb').MyTable");
+		expect(result).toEqual({
+			cluster: 'mycluster.kusto.windows.net',
+			database: 'MyDb',
+			table: 'MyTable',
+		});
+	});
+
+	it('ignores whitespace variations', () => {
+		const result = __kustoParseFullyQualifiedTableExpr("cluster( 'a.com' ) . database( 'db1' ) . T1");
+		expect(result).toEqual({ cluster: 'a.com', database: 'db1', table: 'T1' });
+	});
+
+	it('returns null for plain table name', () => {
+		expect(__kustoParseFullyQualifiedTableExpr('MyTable')).toBeNull();
+	});
+
+	it('returns null for database-only qualifier', () => {
+		expect(__kustoParseFullyQualifiedTableExpr("database('db').Table")).toBeNull();
+	});
+
+	it('returns null for empty input', () => {
+		expect(__kustoParseFullyQualifiedTableExpr('')).toBeNull();
+		expect(__kustoParseFullyQualifiedTableExpr(null)).toBeNull();
+	});
+
+	it('handles table name with hyphens and underscores', () => {
+		const result = __kustoParseFullyQualifiedTableExpr("cluster('c').database('d').my_table-1");
+		expect(result).toEqual({ cluster: 'c', database: 'd', table: 'my_table-1' });
+	});
+
+	it('case-insensitive keywords', () => {
+		const result = __kustoParseFullyQualifiedTableExpr("CLUSTER('c').DATABASE('d').T");
+		expect(result).toEqual({ cluster: 'c', database: 'd', table: 'T' });
+	});
+});
+
+// ── __kustoExtractSourceLower ─────────────────────────────────────────────────
+
+describe('__kustoExtractSourceLower', () => {
+	it('extracts plain table name', () => {
+		expect(__kustoExtractSourceLower('MyTable')).toBe('mytable');
+	});
+
+	it('extracts from cluster().database().table', () => {
+		expect(__kustoExtractSourceLower("cluster('c').database('d').Table1")).toBe('table1');
+	});
+
+	it('extracts from database().table', () => {
+		expect(__kustoExtractSourceLower("database('d').Table2")).toBe('table2');
+	});
+
+	it('strips leading parentheses', () => {
+		expect(__kustoExtractSourceLower('(  MyTable | where x > 1)')).toBe('mytable');
+	});
+
+	it('returns null for empty input', () => {
+		expect(__kustoExtractSourceLower('')).toBeNull();
+		expect(__kustoExtractSourceLower(null)).toBeNull();
+	});
+
+	it('returns null for only whitespace', () => {
+		expect(__kustoExtractSourceLower('   ')).toBeNull();
+	});
+
+	it('returns first identifier even with trailing operators', () => {
+		expect(__kustoExtractSourceLower('SomeTable | where x > 1')).toBe('sometable');
+	});
+});
+
+// ── __kustoSplitTopLevelCommaList ─────────────────────────────────────────────
+
+describe('__kustoSplitTopLevelCommaList', () => {
+	it('splits simple comma-separated values', () => {
+		expect(__kustoSplitTopLevelCommaList('a, b, c')).toEqual(['a', 'b', 'c']);
+	});
+
+	it('does not split inside parentheses', () => {
+		expect(__kustoSplitTopLevelCommaList('f(a, b), c')).toEqual(['f(a, b)', 'c']);
+	});
+
+	it('does not split inside brackets', () => {
+		expect(__kustoSplitTopLevelCommaList('[a, b], c')).toEqual(['[a, b]', 'c']);
+	});
+
+	it('does not split inside braces', () => {
+		expect(__kustoSplitTopLevelCommaList('{a, b}, c')).toEqual(['{a, b}', 'c']);
+	});
+
+	it('does not split inside double quotes', () => {
+		expect(__kustoSplitTopLevelCommaList('"a, b", c')).toEqual(['"a, b"', 'c']);
+	});
+
+	it('does not split inside single quotes', () => {
+		expect(__kustoSplitTopLevelCommaList("'a, b', c")).toEqual(["'a, b'", 'c']);
+	});
+
+	it('handles empty input', () => {
+		expect(__kustoSplitTopLevelCommaList('')).toEqual([]);
+		expect(__kustoSplitTopLevelCommaList(null)).toEqual([]);
+	});
+
+	it('handles single item (no commas)', () => {
+		expect(__kustoSplitTopLevelCommaList('only_one')).toEqual(['only_one']);
+	});
+
+	it('handles nested parens and commas', () => {
+		expect(__kustoSplitTopLevelCommaList('f(g(1, 2), 3), x')).toEqual(['f(g(1, 2), 3)', 'x']);
+	});
+
+	it('handles escaped quotes', () => {
+		expect(__kustoSplitTopLevelCommaList('"a\\"b, c", d')).toEqual(['"a\\"b, c"', 'd']);
+	});
+});
+
+// ── __kustoGetDotChainRoot ────────────────────────────────────────────────────
+
+describe('__kustoGetDotChainRoot', () => {
+	it('returns root for simple dot chain', () => {
+		const s = 'col.sub';
+		// identStart points to 'sub' at index 4
+		expect(__kustoGetDotChainRoot(s, 4)).toBe('col');
+	});
+
+	it('returns deepest root for multi-level chain', () => {
+		const s = 'root.mid.leaf';
+		// identStart points to 'leaf' at index 9
+		expect(__kustoGetDotChainRoot(s, 9)).toBe('root');
+	});
+
+	it('returns null when no preceding dot', () => {
+		expect(__kustoGetDotChainRoot('hello', 0)).toBeNull();
+		expect(__kustoGetDotChainRoot('hello world', 6)).toBeNull();
+	});
+
+	it('handles whitespace before dot', () => {
+		const s = 'col .sub';
+		// identStart points to 'sub' at index 5
+		expect(__kustoGetDotChainRoot(s, 5)).toBe('col');
+	});
+
+	it('returns null for dot at start of string', () => {
+		const s = '.sub';
+		expect(__kustoGetDotChainRoot(s, 1)).toBeNull();
+	});
+
+	it('handles identifiers with hyphens', () => {
+		const s = 'my-col.sub';
+		expect(__kustoGetDotChainRoot(s, 7)).toBe('my-col');
+	});
+});
+
+// ── __kustoExtractJoinTable ───────────────────────────────────────────────────
+
+describe('__kustoExtractJoinTable', () => {
+	it('extracts table from join(Table)', () => {
+		expect(__kustoExtractJoinTable('join(MyTable)')).toBe('MyTable');
+	});
+
+	it('extracts from join kind=inner (Table)', () => {
+		expect(__kustoExtractJoinTable('join kind=inner (OtherTable)')).toBe('OtherTable');
+	});
+
+	it('extracts from join with hint', () => {
+		expect(__kustoExtractJoinTable('join hint.remote=auto (T2)')).toBe('T2');
+	});
+
+	it('extracts from lookup(Table)', () => {
+		expect(__kustoExtractJoinTable('lookup(RefTable)')).toBe('RefTable');
+	});
+
+	it('extracts from join kind=leftouter hint.strategy=broadcast (T3)', () => {
+		expect(__kustoExtractJoinTable('join kind=leftouter hint.strategy=broadcast (T3)')).toBe('T3');
+	});
+
+	it('returns null for empty input', () => {
+		expect(__kustoExtractJoinTable('')).toBeNull();
+		expect(__kustoExtractJoinTable(null)).toBeNull();
+	});
+
+	it('handles withsource option', () => {
+		expect(__kustoExtractJoinTable('join withsource=Source (T4)')).toBe('T4');
+	});
+
+	it('handles table with hyphens/underscores', () => {
+		expect(__kustoExtractJoinTable('join(my_table-1)')).toBe('my_table-1');
+	});
+});
+
+// ── Additional edge cases for existing functions ──────────────────────────────
+
+describe('__kustoSplitTopLevelStatements — additional edge cases', () => {
+	it('handles double-quoted strings with escaped quotes', () => {
+		const result = __kustoSplitTopLevelStatements('print "a\\"b"; T');
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles single-quoted strings with escaped quotes (Kusto \'\')', () => {
+		const result = __kustoSplitTopLevelStatements("print 'it''s'; T");
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles CRLF line endings', () => {
+		const result = __kustoSplitTopLevelStatements('T1\r\n\r\nT2');
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles mixed bracket types without splitting', () => {
+		const result = __kustoSplitTopLevelStatements('T | where f({a; b}; [c; d])');
+		expect(result).toHaveLength(1);
+	});
+});
+
+describe('__kustoSplitPipelineStagesDeep — additional edge cases', () => {
+	it('handles double-quoted strings with escape', () => {
+		const result = __kustoSplitPipelineStagesDeep('T | where x == "a|b"');
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles block comments with pipes', () => {
+		const result = __kustoSplitPipelineStagesDeep('T /* | fake */ | where x > 5');
+		expect(result).toHaveLength(2);
+	});
+
+	it('multiple pipes at different depths — splits at shallowest', () => {
+		// 2 top-level pipes, plus nested pipes inside parens
+		const result = __kustoSplitPipelineStagesDeep('T | where (a | b) | project x');
+		expect(result).toHaveLength(3);
+	});
+});
+
+describe('__kustoScanIdentifiers — additional edge cases', () => {
+	it('handles multiple bracket types for depth tracking', () => {
+		const tokens = __kustoScanIdentifiers('f(a, [b], {c})');
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		expect(idents.find((t: any) => t.value === 'a')?.depth).toBe(1);
+		expect(idents.find((t: any) => t.value === 'b')?.depth).toBe(2);
+		expect(idents.find((t: any) => t.value === 'c')?.depth).toBe(2);
+	});
+
+	it('handles escaped double quotes in strings', () => {
+		const tokens = __kustoScanIdentifiers('T | where x == "say \\"hi\\""');
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		expect(idents.map((t: any) => t.value)).not.toContain('say');
+		expect(idents.map((t: any) => t.value)).not.toContain('hi');
+	});
+
+	it('returns empty for whitespace only input', () => {
+		expect(__kustoScanIdentifiers('   \n\t  ')).toEqual([]);
+	});
+
+	it('handles consecutive pipes', () => {
+		const tokens = __kustoScanIdentifiers('||');
+		const pipes = tokens.filter((t: any) => t.type === 'pipe');
+		expect(pipes).toHaveLength(2);
+	});
+});
+
+describe('__kustoLevenshtein — additional edge cases', () => {
+	it('handles single-character strings', () => {
+		expect(__kustoLevenshtein('a', 'b')).toBe(1);
+		expect(__kustoLevenshtein('a', 'a')).toBe(0);
+	});
+
+	it('completely different strings', () => {
+		expect(__kustoLevenshtein('abc', 'xyz')).toBe(3);
+	});
+});
+
+describe('__kustoBestMatches — additional edge cases', () => {
+	it('returns empty array when needle is empty and no candidates', () => {
+		expect(__kustoBestMatches('', [], 5)).toEqual([]);
+	});
+
+	it('sorts by edit distance with prefix boost', () => {
+		const result = __kustoBestMatches('coun', ['counter', 'count', 'county'], 3);
+		// 'count' should be first (prefix match with short length)
+		expect(result[0]).toBe('count');
+	});
+
+	it('uses default maxCount when not given', () => {
+		const candidates = Array.from({ length: 20 }, (_, i) => 'item' + i);
+		const result = __kustoBestMatches('item', candidates, undefined);
+		expect(result.length).toBeLessThanOrEqual(5);
+	});
+});
+
+describe('__kustoParsePipeHeaderFromLine — additional edge cases', () => {
+	it('handles null input', () => {
+		expect(__kustoParsePipeHeaderFromLine(null)).toBeNull();
+	});
+
+	it('parses distinct operator', () => {
+		const result = __kustoParsePipeHeaderFromLine('| distinct col1, col2');
+		expect(result?.key).toBe('distinct');
+	});
+
+	it('parses extend operator', () => {
+		const result = __kustoParsePipeHeaderFromLine('| extend x = 1');
+		expect(result?.key).toBe('extend');
+	});
+
+	it('parses project-away', () => {
+		const result = __kustoParsePipeHeaderFromLine('| project-away col1');
+		expect(result?.key).toBe('project-away');
+	});
+});
+
+describe('__kustoPipeHeaderAllowsIndentedContinuation — additional edge cases', () => {
+	it('allows lookup', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'lookup', rest: '' })).toBe(true);
+	});
+
+	it('allows distinct with empty rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'distinct', rest: '' })).toBe(true);
+	});
+
+	it('does not allow distinct with rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'distinct', rest: 'col1' })).toBe(false);
+	});
+
+	it('allows project-away/project-keep/project-rename with empty rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-away', rest: '' })).toBe(true);
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-keep', rest: '' })).toBe(true);
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-rename', rest: '' })).toBe(true);
+	});
+
+	it('does not allow project-away with rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-away', rest: 'col1' })).toBe(false);
+	});
+
+	it('allows sort by with empty rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'sort by', rest: '' })).toBe(true);
+	});
+
+	it('allows project-reorder and project-smart with empty rest', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-reorder', rest: '' })).toBe(true);
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: 'project-smart', rest: '' })).toBe(true);
+	});
+
+	it('returns false for empty/missing key', () => {
+		expect(__kustoPipeHeaderAllowsIndentedContinuation({ key: '', rest: '' })).toBe(false);
+	});
+});
+
+describe('__kustoGetActivePipeStageInfoBeforeOffset — additional edge cases', () => {
+	it('handles sort by', () => {
+		const text = 'T | sort by col desc';
+		const result = __kustoGetActivePipeStageInfoBeforeOffset(text, text.length);
+		expect(result?.key).toBe('sort by');
+	});
+
+	it('maps parse-where to parse', () => {
+		const text = 'T | parse-where msg with "prefix" val';
+		const result = __kustoGetActivePipeStageInfoBeforeOffset(text, text.length);
+		expect(result?.key).toBe('parse');
+	});
+
+	it('returns null for empty pipe', () => {
+		const text = 'T |';
+		const result = __kustoGetActivePipeStageInfoBeforeOffset(text, text.length);
+		expect(result).toBeNull();
+	});
+
+	it('returns pipeIdx in the result', () => {
+		const text = 'T | where x > 5';
+		const result = __kustoGetActivePipeStageInfoBeforeOffset(text, text.length);
+		expect(result?.pipeIdx).toBe(2);
+	});
+});
+
+describe('__kustoMaskCommentsPreserveLayout — additional edge cases', () => {
+	it('handles adjacent comments', () => {
+		const input = '// line1\n// line2\n';
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toHaveLength(input.length);
+		expect(result.split('\n')).toHaveLength(3);
+	});
+
+	it('handles block comment immediately followed by content', () => {
+		const input = '/*c*/T';
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toContain('T');
+		expect(result).toHaveLength(input.length);
+	});
+
+	it('handles nested-looking block comment (not truly nested)', () => {
+		const input = '/* a /* b */ c';
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		// Block comment ends at first */, so ' c' is outside
+		expect(result.endsWith(' c')).toBe(true);
+	});
+});
+
+describe('__kustoOffsetToPosition — additional edge cases', () => {
+	it('handles offset beyond end of text', () => {
+		const starts = __kustoBuildLineStarts('abc');
+		const result = __kustoOffsetToPosition(starts, 100);
+		expect(result.lineNumber).toBe(1);
+		expect(result.column).toBeGreaterThan(1);
+	});
+
+	it('handles single empty line', () => {
+		const starts = __kustoBuildLineStarts('');
+		const result = __kustoOffsetToPosition(starts, 0);
+		expect(result).toEqual({ lineNumber: 1, column: 1 });
+	});
+
+	it('handles multi-line boundary positions', () => {
+		const starts = __kustoBuildLineStarts('ab\ncd\nef');
+		// Offset pointing to 'c' on line 2
+		expect(__kustoOffsetToPosition(starts, 3)).toEqual({ lineNumber: 2, column: 1 });
+		// Offset pointing to 'e' on line 3
+		expect(__kustoOffsetToPosition(starts, 6)).toEqual({ lineNumber: 3, column: 1 });
+	});
+});
+
+describe('__kustoGetStatementStartAtOffset — additional edge cases', () => {
+	it('handles multiple semicolons', () => {
+		const text = 'A; B; C';
+		const result = __kustoGetStatementStartAtOffset(text, text.length);
+		// Should point after the last semicolon
+		expect(result).toBe(5);
+	});
+
+	it('handles blank lines with tabs and spaces', () => {
+		const text = 'Statement1\n \t \nStatement2';
+		const result = __kustoGetStatementStartAtOffset(text, text.length);
+		expect(result).toBeGreaterThan(0);
+	});
+
+	it('does not split on semicolons inside block comments', () => {
+		const text = 'T /* a; b */ | where x > 5';
+		expect(__kustoGetStatementStartAtOffset(text, text.length)).toBe(0);
+	});
+
+	it('does not split on semicolons inside double-quoted strings', () => {
+		const text = 'print "a;b" | where x > 5';
+		expect(__kustoGetStatementStartAtOffset(text, text.length)).toBe(0);
+	});
+
+	it('handles brackets correctly (does not split inside)', () => {
+		const text = 'T | where f(a; b)';
+		expect(__kustoGetStatementStartAtOffset(text, text.length)).toBe(0);
+	});
+});
+
+// ── More deep path edge cases for coverage ────────────────────────────────────
+
+describe('__kustoSplitTopLevelStatements — deep edge cases', () => {
+	it('handles carriage return only', () => {
+		const result = __kustoSplitTopLevelStatements('T1\r\rT2');
+		expect(result).toHaveLength(2);
+	});
+
+	it('does not split on single newline', () => {
+		const result = __kustoSplitTopLevelStatements('T | where x > 5\n| project a');
+		expect(result).toHaveLength(1);
+	});
+
+	it('handles line comments across blank line separator', () => {
+		const result = __kustoSplitTopLevelStatements('T1 // comment\n| project a\n\nT2');
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles closing brackets decreasing depth', () => {
+		const result = __kustoSplitTopLevelStatements('f(a); g(b)');
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles triple backtick strings spanning semicolons', () => {
+		const result = __kustoSplitTopLevelStatements('print ```hello;world```');
+		expect(result).toHaveLength(1);
+	});
+
+	it('handles multiple blank lines between statements', () => {
+		const result = __kustoSplitTopLevelStatements('T1\n\n\n\n\nT2');
+		expect(result).toHaveLength(2);
+		expect(result[0].text).toContain('T1');
+		expect(result[1].text).toContain('T2');
+	});
+});
+
+describe('__kustoSplitPipelineStagesDeep — deep edge cases', () => {
+	it('handles nested brackets at multiple depths', () => {
+		const result = __kustoSplitPipelineStagesDeep('T | where f(g(a | b)) | project x');
+		expect(result).toHaveLength(3);
+	});
+
+	it('handles single-quoted string with pipe inside', () => {
+		const result = __kustoSplitPipelineStagesDeep("T | where x == 'a|b'");
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles text without any pipes', () => {
+		const result = __kustoSplitPipelineStagesDeep('Table');
+		expect(result).toHaveLength(1);
+		expect(result[0]).toBe('Table');
+	});
+
+	it('handles line comments with pipes', () => {
+		const result = __kustoSplitPipelineStagesDeep('T // | fake\n| where x > 5');
+		expect(result).toHaveLength(2);
+	});
+});
+
+describe('__kustoScanIdentifiers — deep edge cases', () => {
+	it('handles block comment with no closing', () => {
+		// Unclosed block comment — should still parse without error
+		const tokens = __kustoScanIdentifiers('T /* unclosed');
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		expect(idents.map((t: any) => t.value)).toContain('T');
+		// Content inside unclosed comment should be skipped
+		expect(idents.map((t: any) => t.value)).not.toContain('unclosed');
+	});
+
+	it('handles multiple pipes and identifiers in complex query', () => {
+		const tokens = __kustoScanIdentifiers('T | where x > 5 | summarize count() by col | project col, count_');
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		const pipes = tokens.filter((t: any) => t.type === 'pipe');
+		expect(pipes).toHaveLength(3);
+		expect(idents.map((t: any) => t.value)).toContain('T');
+		expect(idents.map((t: any) => t.value)).toContain('where');
+		expect(idents.map((t: any) => t.value)).toContain('summarize');
+		expect(idents.map((t: any) => t.value)).toContain('count');
+		expect(idents.map((t: any) => t.value)).toContain('project');
+	});
+
+	it('handles unclosed single-quoted string', () => {
+		const tokens = __kustoScanIdentifiers("T | where x == 'unclosed");
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		expect(idents.map((t: any) => t.value)).toContain('T');
+	});
+
+	it('handles unclosed double-quoted string', () => {
+		const tokens = __kustoScanIdentifiers('T | where x == "unclosed');
+		const idents = tokens.filter((t: any) => t.type === 'ident');
+		expect(idents.map((t: any) => t.value)).toContain('T');
+	});
+});
+
+describe('__kustoMaskCommentsPreserveLayout — deep edge cases', () => {
+	it('handles unclosed block comment', () => {
+		const input = 'Table /* unclosed block';
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toHaveLength(input.length);
+		expect(result).toContain('Table');
+	});
+
+	it('handles unclosed single-quoted string', () => {
+		const input = "Table 'unclosed string";
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toHaveLength(input.length);
+	});
+
+	it('handles unclosed double-quoted string', () => {
+		const input = 'Table "unclosed string';
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toHaveLength(input.length);
+	});
+
+	it('handles alternating string types', () => {
+		const input = "T | where a == 'x' and b == \"y\"";
+		const result = __kustoMaskCommentsPreserveLayout(input);
+		expect(result).toContain('T');
+		expect(result).toContain("'x'");
+		expect(result).toContain('"y"');
+	});
+});
+
+describe('__kustoBestMatches — more edge cases', () => {
+	it('handles maxCount of 1', () => {
+		const result = __kustoBestMatches('x', ['xa', 'xb', 'xc'], 1);
+		expect(result).toHaveLength(1);
+	});
+
+	it('produces stable order for equal distances', () => {
+		const result = __kustoBestMatches('x', ['b', 'a', 'c'], 3);
+		// Equal distance — sorted alphabetically
+		expect(result).toEqual(['a', 'b', 'c']);
+	});
+});
+
+describe('__kustoParseFullyQualifiedTableExpr — more edge cases', () => {
+	it('handles whitespace in quotes', () => {
+		const result = __kustoParseFullyQualifiedTableExpr("cluster('my cluster').database('my db').T");
+		expect(result).toEqual({ cluster: 'my cluster', database: 'my db', table: 'T' });
+	});
+
+	it('does not match partial patterns', () => {
+		expect(__kustoParseFullyQualifiedTableExpr("cluster('c').T")).toBeNull();
+		expect(__kustoParseFullyQualifiedTableExpr("database('d').T")).toBeNull();
+	});
+});
+
+describe('__kustoExtractSourceLower — more edge cases', () => {
+	it('handles function call RHS (returns the function name)', () => {
+		expect(__kustoExtractSourceLower('range(1, 10, 1)')).toBe('range');
+	});
+
+	it('handles parenthesized expression', () => {
+		expect(__kustoExtractSourceLower('( T | where x > 5 )')).toBe('t');
+	});
+});
+
+describe('__kustoSplitTopLevelCommaList — more edge cases', () => {
+	it('handles whitespace-only items', () => {
+		const result = __kustoSplitTopLevelCommaList('a,   , b');
+		expect(result).toEqual(['a', 'b']);
+	});
+
+	it('handles complex nested structures', () => {
+		const result = __kustoSplitTopLevelCommaList('f(a, b), g({c: [1, 2]})');
+		expect(result).toEqual(['f(a, b)', 'g({c: [1, 2]})']);
+	});
+});
+
+describe('__kustoExtractJoinTable — more edge cases', () => {
+	it('handles join without parens (extracts from stripped text)', () => {
+		// Without parens, the function strips join/lookup and options, then matches first identifier
+		const result = __kustoExtractJoinTable('join TableName');
+		expect(result).toBe('TableName');
+	});
+
+	it('handles join with whitespace in parens', () => {
+		expect(__kustoExtractJoinTable('join (  MyTable  )')).toBe('MyTable');
+	});
+
+	it('handles join with complex options', () => {
+		expect(__kustoExtractJoinTable('join kind=inner hint.remote=auto hint.strategy=broadcast (BigTable)')).toBe('BigTable');
+	});
+});
+
+describe('__kustoFindLastTopLevelPipeBeforeOffset — more edge cases', () => {
+	it('handles multiple pipes and returns last before offset', () => {
+		const text = 'T | a | b | c';
+		const result = __kustoFindLastTopLevelPipeBeforeOffset(text, 9);
+		// Before '| c', should be at the '| b' position
+		expect(result).toBe(6);
+	});
+
+	it('handles pipes inside block comments', () => {
+		const text = 'T /* | */ | where x > 5';
+		const result = __kustoFindLastTopLevelPipeBeforeOffset(text, text.length);
+		expect(result).toBeGreaterThan(5);
 	});
 });

@@ -919,8 +919,11 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				// Copilot chat always starts closed — visibility is not restored from persisted state.
 				try {
-					if (typeof (_win.__kustoSetCopilotChatWidthPx) === 'function' && typeof section.copilotChatWidthPx === 'number') {
-						(_win.__kustoSetCopilotChatWidthPx as any)(boxId, section.copilotChatWidthPx);
+					if (typeof section.copilotChatWidthPx === 'number') {
+						const kwEl = (_win.__kustoGetQuerySectionElement as any) ? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+						if (kwEl && typeof kwEl.setCopilotChatWidthPx === 'function') {
+							kwEl.setCopilotChatWidthPx(section.copilotChatWidthPx);
+						}
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				// Monaco editor may initialize after restore; remember desired wrapper height for initQueryEditor.

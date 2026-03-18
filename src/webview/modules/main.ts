@@ -671,8 +671,9 @@ document.addEventListener('keydown', (event: any) => {
 			event.stopImmediatePropagation();
 		}
 		try {
-			if (typeof _win.__kustoCopilotWriteQuerySend === 'function') {
-				_win.__kustoCopilotWriteQuerySend(_win.activeQueryEditorBoxId);
+			const kwEl = _win.activeQueryEditorBoxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(_win.activeQueryEditorBoxId) : null;
+			if (kwEl && typeof kwEl.copilotWriteQuerySend === 'function') {
+				kwEl.copilotWriteQuerySend();
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		return;
@@ -1593,8 +1594,9 @@ window.addEventListener('message', async (event: any) => {
 				if (action === 'proceed') {
 					// User chose to use the embedded copilot chat; toggle it open.
 					const ftBoxId = String(message.boxId || '').trim();
-					if (ftBoxId && typeof window.__kustoSetCopilotChatVisible === 'function') {
-						window.__kustoSetCopilotChatVisible(ftBoxId, true);
+					const kwEl = ftBoxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(ftBoxId) : null;
+					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
+						kwEl.setCopilotChatVisible(true);
 					}
 				}
 				// 'openedAgent' and 'dismissed': do nothing in webview (agent was opened or dialog dismissed).
@@ -1901,9 +1903,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryOptions':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotApplyWriteQueryOptions === 'function') {
-					window.__kustoCopilotApplyWriteQueryOptions(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotApplyWriteQueryOptions === 'function') {
+					kwEl.copilotApplyWriteQueryOptions(
 						message.models || [],
 						message.selectedModelId || '',
 						message.tools || []
@@ -1914,16 +1916,18 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryStatus':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotWriteQueryStatus === 'function') {
-					window.__kustoCopilotWriteQueryStatus(boxId, message.status || '', message.detail || '', message.role || '');
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotWriteQueryStatus === 'function') {
+					kwEl.copilotWriteQueryStatus(message.status || '', message.detail || '', message.role || '');
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotWriteQuerySetQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotWriteQuerySetQuery === 'function') {
-					window.__kustoCopilotWriteQuerySetQuery(boxId, message.query || '');
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
+					kwEl.copilotWriteQuerySetQuery(message.query || '');
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1939,9 +1943,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryToolResult':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotWriteQueryToolResult === 'function') {
-					window.__kustoCopilotWriteQueryToolResult(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotWriteQueryToolResult === 'function') {
+					kwEl.copilotWriteQueryToolResult(
 						message.tool || '',
 						message.label || '',
 						message.json || '',
@@ -1953,14 +1957,14 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotExecutedQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendExecutedQuery === 'function') {
-					window.__kustoCopilotAppendExecutedQuery(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendExecutedQuery === 'function') {
+					kwEl.copilotAppendExecutedQuery(
 						message.query || '',
 						message.resultSummary || '',
 						message.errorMessage || '',
 						message.entryId || '',
-						message.result || null // Pass result for insert-with-results
+						message.result || null
 					);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1968,9 +1972,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotGeneralQueryRulesLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendGeneralRulesLink === 'function') {
-					window.__kustoCopilotAppendGeneralRulesLink(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendGeneralRulesLink === 'function') {
+					kwEl.copilotAppendGeneralRulesLink(
 						message.filePath || '',
 						message.preview || '',
 						message.entryId || ''
@@ -1981,9 +1985,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotUserQuerySnapshot':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendQuerySnapshot === 'function') {
-					window.__kustoCopilotAppendQuerySnapshot(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendQuerySnapshot === 'function') {
+					kwEl.copilotAppendQuerySnapshot(
 						message.queryText || '',
 						message.entryId || ''
 					);
@@ -1993,9 +1997,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNotesContextLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendDevNotesContext === 'function') {
-					window.__kustoCopilotAppendDevNotesContext(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendDevNotesContext === 'function') {
+					kwEl.copilotAppendDevNotesContext(
 						message.preview || '',
 						message.entryId || ''
 					);
@@ -2005,12 +2009,12 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNoteToolCall':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendDevNoteToolCall === 'function') {
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendDevNoteToolCall === 'function') {
 					const detail = message.action === 'save'
 						? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
 						: ('Removed note: ' + (message.noteId || '') + (message.reason ? ' — ' + message.reason : ''));
-					window.__kustoCopilotAppendDevNoteToolCall(
-						boxId,
+					kwEl.copilotAppendDevNoteToolCall(
 						message.action || 'save',
 						detail,
 						message.result || '',
@@ -2022,9 +2026,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotClarifyingQuestion':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotAppendClarifyingQuestion === 'function') {
-					window.__kustoCopilotAppendClarifyingQuestion(
-						boxId,
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotAppendClarifyingQuestion === 'function') {
+					kwEl.copilotAppendClarifyingQuestion(
 						message.question || '',
 						message.entryId || ''
 					);
@@ -2034,8 +2038,9 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryDone':
 			try {
 				const boxId = String(message.boxId || '');
-				if (boxId && typeof window.__kustoCopilotWriteQueryDone === 'function') {
-					window.__kustoCopilotWriteQueryDone(boxId, !!message.ok, message.message || '');
+				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
+					kwEl.copilotWriteQueryDone(!!message.ok, message.message || '');
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -2702,15 +2707,10 @@ window.addEventListener('message', async (event: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
-				if (typeof window.__kustoSetCopilotChatVisible === 'function') {
-					window.__kustoSetCopilotChatVisible(sectionId, true);
-				} else if (typeof window.__kustoToggleCopilotChatForBox === 'function') {
-					// Check if already visible, if not toggle
-					const isVisible = typeof window.__kustoGetCopilotChatVisible === 'function' 
-						? window.__kustoGetCopilotChatVisible(sectionId) 
-						: false;
-					if (!isVisible) {
-						window.__kustoToggleCopilotChatForBox(sectionId);
+				{
+					const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
+						kwEl.setCopilotChatVisible(true);
 					}
 				}
 				
@@ -2877,8 +2877,9 @@ window.addEventListener('message', async (event: any) => {
 						// Clear the Copilot chat "thinking..." state on timeout
 						// (unlike cancel/error, no regular handler will clear this)
 						try {
-							if (typeof window.__kustoCopilotWriteQueryDone === 'function') {
-								window.__kustoCopilotWriteQueryDone(sectionId, false, 'Request timed out');
+							const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+							if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
+								kwEl.copilotWriteQueryDone(false, 'Request timed out');
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						
@@ -2899,14 +2900,17 @@ window.addEventListener('message', async (event: any) => {
 				const sendButton = document.getElementById(sectionId + '_copilot_send') as any;
 				if (sendButton && !sendButton.disabled) {
 					sendButton.click();
-				} else if (typeof window.__kustoCopilotWriteQuerySend === 'function') {
-					// Fallback: call the send function directly
-					window.__kustoCopilotWriteQuerySend(sectionId);
 				} else {
-					// Clean up and report error
-					clearTimeout(timeoutId);
-					window.removeEventListener('message', resultHandler);
-					(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+					// Fallback: call the send function via kw-query-section
+					const kwEl2 = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+					if (kwEl2 && typeof kwEl2.copilotWriteQuerySend === 'function') {
+						kwEl2.copilotWriteQuerySend();
+					} else {
+						// Clean up and report error
+						clearTimeout(timeoutId);
+						window.removeEventListener('message', resultHandler);
+						(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+					}
 				}
 				
 				} catch (err: any) {

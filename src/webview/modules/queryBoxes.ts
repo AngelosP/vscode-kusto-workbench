@@ -111,7 +111,7 @@ function __kustoGetQuerySectionElement( boxId: any) {
 	return null;
 }
 
-// Expose globally for other modules (main.js, monaco.js, schema.js, copilotQueryBoxes.js).
+// Expose globally for other modules (main.js, monaco.js, schema.js).
 try {
 	window.__kustoGetConnectionId = __kustoGetConnectionId;
 	window.__kustoGetDatabase = __kustoGetDatabase;
@@ -1561,8 +1561,9 @@ function qualifyTablesInText( text: any, tables: any, clusterUrl: any, database:
 function removeQueryBox( boxId: any) {
 	// Dispose Copilot chat state for this query box (if present).
 	try {
-		if (typeof window.__kustoDisposeCopilotQueryBox === 'function') {
-			window.__kustoDisposeCopilotQueryBox(boxId);
+		const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+		if (kwEl && typeof kwEl.disposeCopilotChat === 'function') {
+			kwEl.disposeCopilotChat();
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -1755,3 +1756,29 @@ window.removeQueryBox = removeQueryBox;
 window.toggleCachePill = toggleCachePill;
 window.toggleCachePopup = toggleCachePopup;
 window.toggleCacheControls = toggleCacheControls;
+
+// ── Copilot chat thin window bridges ──────────────────────────────────────────
+// These remain as window globals because they are called from inline onclick
+// attributes in HTML strings (queryBoxes.ts toolbar, queryBoxes-toolbar.ts
+// overflow menu). The actual logic lives in kw-query-section.
+
+window.__kustoToggleCopilotChatForBox = function (boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(id) : null;
+	if (kwEl && typeof kwEl.toggleCopilotChat === 'function') {
+		kwEl.toggleCopilotChat();
+	}
+};
+
+window.addCopilotQueryBox = function (options: any) {
+	const id = (window.addQueryBox as any)(options || {});
+	try {
+		const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(id) : null;
+		if (kwEl && typeof kwEl.installCopilotChat === 'function') {
+			kwEl.installCopilotChat();
+			kwEl.setCopilotChatVisible(true);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return id;
+};

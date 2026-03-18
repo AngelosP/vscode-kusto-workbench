@@ -116,9 +116,36 @@ export function __kustoExplodePipesToLines(input: any) {
 		let out = '';
 		let inSingle = false;
 		let inDouble = false;
+		let inLineComment = false;
+		let inBlockComment = false;
 		let depth = 0;
 		for (let i = 0; i < text.length; i++) {
 			const ch = text[i];
+			const next = i + 1 < text.length ? text[i + 1] : '';
+			if (inLineComment) {
+				if (ch === '\n') inLineComment = false;
+				out += ch;
+				continue;
+			}
+			if (inBlockComment) {
+				out += ch;
+				if (ch === '*' && next === '/') {
+					out += '/';
+					inBlockComment = false;
+					i++;
+				}
+				continue;
+			}
+			if (!inSingle && !inDouble && ch === '/' && next === '/') {
+				inLineComment = true;
+				out += ch;
+				continue;
+			}
+			if (!inSingle && !inDouble && ch === '/' && next === '*') {
+				inBlockComment = true;
+				out += ch;
+				continue;
+			}
 			if (!inDouble && ch === "'") {
 				const prev = i > 0 ? text[i - 1] : '';
 				if (prev !== '\\') inSingle = !inSingle;
@@ -157,9 +184,51 @@ export function __kustoSplitTopLevel(text: any, delimiterChar: any) {
 	let depth = 0;
 	let inSingle = false;
 	let inDouble = false;
+	let inLineComment = false;
+	let inBlockComment = false;
+	let inTripleBacktick = false;
 	for (let i = 0; i < text.length; i++) {
 		const ch = text[i];
 		const next = i + 1 < text.length ? text[i + 1] : '';
+		if (inLineComment) {
+			if (ch === '\n') inLineComment = false;
+			buf += ch;
+			continue;
+		}
+		if (inBlockComment) {
+			buf += ch;
+			if (ch === '*' && next === '/') {
+				buf += '/';
+				inBlockComment = false;
+				i++;
+			}
+			continue;
+		}
+		if (inTripleBacktick) {
+			buf += ch;
+			if (ch === '`' && next === '`' && i + 2 < text.length && text[i + 2] === '`') {
+				buf += '``';
+				inTripleBacktick = false;
+				i += 2;
+			}
+			continue;
+		}
+		if (!inSingle && !inDouble && ch === '`' && next === '`' && i + 2 < text.length && text[i + 2] === '`') {
+			inTripleBacktick = true;
+			buf += '```';
+			i += 2;
+			continue;
+		}
+		if (!inSingle && !inDouble && ch === '/' && next === '/') {
+			inLineComment = true;
+			buf += ch;
+			continue;
+		}
+		if (!inSingle && !inDouble && ch === '/' && next === '*') {
+			inBlockComment = true;
+			buf += ch;
+			continue;
+		}
 		if (!inDouble && ch === "'") {
 			const prev = i > 0 ? text[i - 1] : '';
 			if (prev !== '\\') inSingle = !inSingle;
@@ -194,8 +263,29 @@ export function __kustoFindTopLevelKeyword(text: any, keywordLower: any) {
 		let depth = 0;
 		let inSingle = false;
 		let inDouble = false;
+		let inLineComment = false;
+		let inBlockComment = false;
 		for (let i = 0; i < text.length; i++) {
 			const ch = text[i];
+			const next = i + 1 < text.length ? text[i + 1] : '';
+			if (inLineComment) {
+				if (ch === '\n') inLineComment = false;
+				continue;
+			}
+			if (inBlockComment) {
+				if (ch === '*' && next === '/') { inBlockComment = false; i++; }
+				continue;
+			}
+			if (!inSingle && !inDouble && ch === '/' && next === '/') {
+				inLineComment = true;
+				i++;
+				continue;
+			}
+			if (!inSingle && !inDouble && ch === '/' && next === '*') {
+				inBlockComment = true;
+				i++;
+				continue;
+			}
 			if (!inDouble && ch === "'") {
 				const prev = i > 0 ? text[i - 1] : '';
 				if (prev !== '\\') inSingle = !inSingle;
@@ -435,7 +525,7 @@ export function __kustoPrettifyKusto(input: any) {
 		}
 
 		{
-			const m = trimmed.match(/^\|\s*(extend|project|project-away|project-keep|project-rename|project-reorder|project-smart|distinct)\b/i);
+			const m = trimmed.match(/^\|\s*(extend|project-away|project-keep|project-rename|project-reorder|project-smart|project|distinct)\b/i);
 			if (m) {
 				const clause = String(m[1] || '').toLowerCase();
 				const block = [];

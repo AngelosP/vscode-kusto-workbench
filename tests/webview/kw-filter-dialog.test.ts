@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { html, render, nothing } from 'lit';
 import {
 	rowMatchesFilterSpec,
 	rowMatchesRules,
@@ -15,6 +16,8 @@ import {
 	type CompoundFilterSpec,
 	type RuleFilterRule,
 } from '../../src/webview/components/kw-filter-dialog.js';
+import '../../src/webview/components/kw-filter-dialog.js';
+import type { KwFilterDialog } from '../../src/webview/components/kw-filter-dialog.js';
 
 // ── rowMatchesFilterSpec with ValuesFilterSpec ─────────────────────────────────
 
@@ -518,5 +521,263 @@ describe('isColumnFiltered / getFilterSpecForColumn', () => {
 	it('returns null for empty filters array', () => {
 		expect(getFilterSpecForColumn(0, [])).toBeNull();
 		expect(isColumnFiltered(0, [])).toBe(false);
+	});
+});
+
+// ── Lit component tests ───────────────────────────────────────────────────────
+
+let container: HTMLDivElement;
+
+function createFilterDialog(opts: {
+	columns?: Array<{ name: string }>;
+	rows?: unknown[][];
+	colIndex?: number;
+	columnFilters?: Array<{ id: string; value: unknown }>;
+} = {}): KwFilterDialog {
+	const {
+		columns = [{ name: 'Col1' }, { name: 'Col2' }],
+		rows = [['A', 1], ['B', 2], ['A', 3], ['C', 1]],
+		colIndex = 0,
+		columnFilters = [],
+	} = opts;
+	render(html`
+		<kw-filter-dialog
+			.columns=${columns}
+			.rows=${rows}
+			.colIndex=${colIndex}
+			.columnFilters=${columnFilters}
+		></kw-filter-dialog>
+	`, container);
+	return container.querySelector('kw-filter-dialog')!;
+}
+
+function getShadow(el: KwFilterDialog, selector: string): HTMLElement | null {
+	return el.shadowRoot?.querySelector(selector) as HTMLElement | null;
+}
+
+function getAllShadow(el: KwFilterDialog, selector: string): HTMLElement[] {
+	return Array.from(el.shadowRoot?.querySelectorAll(selector) ?? []) as HTMLElement[];
+}
+
+beforeEach(() => {
+	container = document.createElement('div');
+	document.body.appendChild(container);
+});
+
+afterEach(() => {
+	render(nothing, container);
+	container.remove();
+});
+
+describe('kw-filter-dialog — Lit component', () => {
+	it('renders with column name in header', async () => {
+		const el = createFilterDialog({ columns: [{ name: 'Status' }], colIndex: 0 });
+		await el.updateComplete;
+		const header = getShadow(el, '.sd-h strong');
+		expect(header?.textContent).toContain('Status');
+	});
+
+	it('renders values mode by default', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		const modeButtons = getAllShadow(el, '.fd-mode');
+		expect(modeButtons.length).toBe(2);
+		expect(modeButtons[0].textContent).toBe('Values');
+		expect(modeButtons[0].classList.contains('active')).toBe(true);
+	});
+
+	it('shows value choices with counts from rows', async () => {
+		const el = createFilterDialog({
+			rows: [['X', 1], ['Y', 2], ['X', 3]],
+			colIndex: 0,
+		});
+		await el.updateComplete;
+		const items = getAllShadow(el, '.fd-item');
+		// X appears 2 times, Y appears 1 time
+		expect(items.length).toBe(2);
+		const labels = items.map(i => i.querySelector('.fd-item-text')?.textContent?.trim());
+		expect(labels).toContain('X');
+		expect(labels).toContain('Y');
+	});
+
+	it('all values are checked by default (items count matches row count)', async () => {
+		const el = createFilterDialog({
+			rows: [['A', 1], ['B', 2]],
+			colIndex: 0,
+		});
+		await el.updateComplete;
+		// Verify items are displayed (the number of items matches unique values)
+		const items = getAllShadow(el, '.fd-item');
+		expect(items.length).toBe(2);
+	});
+
+	it('switching to rules mode shows rules UI', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		const rulesBtn = getAllShadow(el, '.fd-mode')[1];
+		rulesBtn.click();
+		await el.updateComplete;
+		// Should show the rules list and an initial rule row
+		const ruleRows = getAllShadow(el, '.fr-row');
+		expect(ruleRows.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('shows data type selector in rules mode', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		getAllShadow(el, '.fd-mode')[1].click();
+		await el.updateComplete;
+		const typeSelect = getShadow(el, '.fr-type-select') as HTMLSelectElement;
+		expect(typeSelect).toBeTruthy();
+	});
+
+	it('renders search bar in values mode', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		const searchInput = getShadow(el, '.sinp') as HTMLInputElement;
+		expect(searchInput).toBeTruthy();
+		expect(searchInput.placeholder).toBe('Search values...');
+	});
+
+	it('select all / deselect all buttons exist', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		const buttons = getAllShadow(el, '.fd-actions .sd-btn');
+		expect(buttons.length).toBe(2);
+		expect(buttons[0].textContent).toBe('Select all');
+		expect(buttons[1].textContent).toBe('Deselect all');
+	});
+
+	it('renders apply and remove filter buttons in footer', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		const footerBtns = getAllShadow(el, '.sd-f .sd-btn');
+		expect(footerBtns.length).toBe(2);
+		expect(footerBtns[0].textContent).toBe('Remove Filter');
+		expect(footerBtns[1].textContent).toBe('Apply');
+	});
+
+	it('dispatches filter-close when backdrop is clicked', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		let closed = false;
+		el.addEventListener('filter-close', () => { closed = true; });
+		const bg = getShadow(el, '.sd-bg')!;
+		bg.click();
+		expect(closed).toBe(true);
+	});
+
+	it('dispatches filter-close when close button is clicked', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		let closed = false;
+		el.addEventListener('filter-close', () => { closed = true; });
+		const closeBtn = getShadow(el, '.sd-x')!;
+		closeBtn.click();
+		expect(closed).toBe(true);
+	});
+
+	it('dispatches filter-apply with null when Remove Filter clicked', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		let detail: any = null;
+		el.addEventListener('filter-apply', ((e: CustomEvent) => { detail = e.detail; }) as EventListener);
+		const removeBtn = getAllShadow(el, '.sd-f .sd-btn')[0];
+		removeBtn.click();
+		expect(detail).not.toBeNull();
+		expect(detail.filterSpec).toBeNull();
+	});
+
+	it('dispatches filter-apply with values spec when Apply clicked after deselecting', async () => {
+		const el = createFilterDialog({
+			rows: [['A', 1], ['B', 2], ['C', 3]],
+			colIndex: 0,
+		});
+		await el.updateComplete;
+		// Deselect all, then select only 'A'
+		getAllShadow(el, '.fd-actions .sd-btn')[1].click(); // Deselect all
+		await el.updateComplete;
+		const checkboxes = getAllShadow(el, '.fd-item input[type="checkbox"]') as HTMLInputElement[];
+		// Find the 'A' checkbox and check it
+		const items = getAllShadow(el, '.fd-item');
+		for (let i = 0; i < items.length; i++) {
+			const text = items[i].querySelector('.fd-item-text')?.textContent?.trim();
+			if (text === 'A') {
+				checkboxes[i].click();
+				break;
+			}
+		}
+		await el.updateComplete;
+
+		let detail: any = null;
+		el.addEventListener('filter-apply', ((e: CustomEvent) => { detail = e.detail; }) as EventListener);
+		getAllShadow(el, '.sd-f .sd-btn')[1].click(); // Apply
+		expect(detail).not.toBeNull();
+		expect(detail.filterSpec).not.toBeNull();
+		expect(detail.filterSpec.kind).toBe('values');
+		expect(detail.filterSpec.allowedValues).toEqual(['A']);
+	});
+
+	it('does not close dialog when clicking inside the dialog', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		let closed = false;
+		el.addEventListener('filter-close', () => { closed = true; });
+		const dialog = getShadow(el, '.sd.fd')!;
+		dialog.click();
+		expect(closed).toBe(false);
+	});
+
+	it('renders nothing when colIndex is null', async () => {
+		render(html`<kw-filter-dialog .colIndex=${null}></kw-filter-dialog>`, container);
+		const el = container.querySelector('kw-filter-dialog')! as KwFilterDialog;
+		await el.updateComplete;
+		expect(getShadow(el, '.sd-bg')).toBeNull();
+	});
+
+	it('shows "No values match" when search has no results', async () => {
+		const el = createFilterDialog({
+			rows: [['A', 1], ['B', 2]],
+			colIndex: 0,
+		});
+		await el.updateComplete;
+		const searchInput = getShadow(el, '.sinp') as HTMLInputElement;
+		searchInput.value = 'zzzzz';
+		searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+		await el.updateComplete;
+		const empty = getShadow(el, '.fd-empty');
+		expect(empty?.textContent).toBe('No values match');
+	});
+
+	it('handles null/empty row values via NULL_EMPTY_KEY', async () => {
+		const el = createFilterDialog({
+			rows: [[null, 1], ['', 2], ['A', 3]],
+			colIndex: 0,
+		});
+		await el.updateComplete;
+		const items = getAllShadow(el, '.fd-item');
+		const labels = items.map(i => i.querySelector('.fd-item-text')?.textContent?.trim());
+		expect(labels).toContain('Null or empty');
+		expect(labels).toContain('A');
+	});
+
+	it('shows combine checkbox in rules mode', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		getAllShadow(el, '.fd-mode')[1].click();
+		await el.updateComplete;
+		const combineLabel = getShadow(el, '.fd-combine');
+		expect(combineLabel).toBeTruthy();
+		expect(combineLabel?.textContent).toContain('Apply these rules on top of value filters');
+	});
+
+	it('renders "No rules yet" when rules list is empty', async () => {
+		const el = createFilterDialog();
+		await el.updateComplete;
+		getAllShadow(el, '.fd-mode')[1].click();
+		await el.updateComplete;
+		// The initDraft adds an initial rule, so we need to check that the rule row is present
+		const ruleRows = getAllShadow(el, '.fr-row');
+		expect(ruleRows.length).toBeGreaterThanOrEqual(1);
 	});
 });

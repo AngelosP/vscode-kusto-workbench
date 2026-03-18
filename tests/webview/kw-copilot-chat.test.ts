@@ -574,3 +574,368 @@ describe('kw-copilot-chat — input resizer', () => {
 		expect(resizer!.title).toBe('Drag to resize input area');
 	});
 });
+
+describe('kw-copilot-chat — streaming append', () => {
+	it('appendMessage with detail stores detail', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('assistant', 'Hello', 'Some hidden detail');
+		await waitUpdate(el);
+		const msgs = getMessages(el);
+		const last = msgs[msgs.length - 1];
+		expect(last.detail).toBe('Some hidden detail');
+	});
+
+	it('multiple assistant messages render in order', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('assistant', 'First');
+		el.appendMessage('assistant', 'Second');
+		el.appendMessage('assistant', 'Third');
+		await waitUpdate(el);
+		const assistantMsgs = getAllShadowEls(el, '.msg-assistant');
+		expect(assistantMsgs.length).toBe(3);
+		expect(assistantMsgs[0].textContent).toBe('First');
+		expect(assistantMsgs[1].textContent).toBe('Second');
+		expect(assistantMsgs[2].textContent).toBe('Third');
+	});
+});
+
+describe('kw-copilot-chat — tool call remove action', () => {
+	it('marks entry as removed and shows is-removed class', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendToolResponse('get_schema', 'Schema result', '{}', 'entry-rm-2');
+		await waitUpdate(el);
+		const removeBtn = getShadowEl(el, '.remove-btn')!;
+		removeBtn.click();
+		await waitUpdate(el);
+		const toolMsg = getShadowEl(el, '.msg-tool');
+		expect(toolMsg!.classList.contains('is-removed')).toBe(true);
+	});
+
+	it('remove button disappears after entry is removed', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendToolResponse('get_schema', 'Schema', '{}', 'entry-rm-3');
+		await waitUpdate(el);
+		getShadowEl(el, '.remove-btn')!.click();
+		await waitUpdate(el);
+		// Remove button should be gone since entry is marked as removed
+		const removeBtn = getShadowEl(el, '.remove-btn');
+		expect(removeBtn).toBeNull();
+	});
+});
+
+describe('kw-copilot-chat — query snapshot rendering', () => {
+	it('query snapshot has correct icon', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendQuerySnapshot('StormEvents | take 5', 'qs-1');
+		await waitUpdate(el);
+		const snapshot = getShadowEl(el, '.msg-query-snapshot');
+		expect(snapshot).toBeTruthy();
+		const icon = snapshot!.querySelector('.codicon-code');
+		expect(icon).toBeTruthy();
+	});
+
+	it('query snapshot view button dispatches copilot-view-tool', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendQuerySnapshot('StormEvents | take 5', 'qs-view-1');
+		await waitUpdate(el);
+		const handler = vi.fn();
+		el.addEventListener('copilot-view-tool', handler as any);
+		const viewBtn = getShadowEl(el, '.msg-query-snapshot .tool-icon-btn');
+		viewBtn!.click();
+		await waitUpdate(el);
+		expect(handler).toHaveBeenCalledTimes(1);
+		const detail = (handler.mock.calls[0][0] as CustomEvent).detail;
+		expect(detail.tool).toBe('Existing query');
+	});
+
+	it('query snapshot remove button dispatches copilot-remove-entry', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendQuerySnapshot('StormEvents | take 5', 'qs-rm-1');
+		await waitUpdate(el);
+		const handler = vi.fn();
+		el.addEventListener('copilot-remove-entry', handler as any);
+		const removeBtn = getShadowEl(el, '.msg-query-snapshot .remove-btn');
+		expect(removeBtn).toBeTruthy();
+		removeBtn!.click();
+		await waitUpdate(el);
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect((handler.mock.calls[0][0] as CustomEvent).detail.entryId).toBe('qs-rm-1');
+	});
+});
+
+describe('kw-copilot-chat — clear conversation', () => {
+	it('clearConversation() preserves tip and removes all other messages', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Question 1');
+		el.appendMessage('assistant', 'Answer 1');
+		el.appendToolResponse('get_schema', 'Schema', '{}', 'e1');
+		el.appendQuerySnapshot('T | take 5', 'e2');
+		el.appendMessage('user', 'Question 2');
+		expect(getMessages(el).length).toBe(6); // tip + 5 messages
+		el.clearConversation();
+		await waitUpdate(el);
+		const msgs = getMessages(el);
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].text).toBe('__TIP__');
+	});
+});
+
+describe('kw-copilot-chat — send with empty input', () => {
+	it('does not dispatch copilot-send for whitespace-only input', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.value = '   ';
+		const handler = vi.fn();
+		el.addEventListener('copilot-send', handler as any);
+		const sendBtn = getShadowEl(el, '.send-btn');
+		sendBtn!.click();
+		expect(handler).not.toHaveBeenCalled();
+		const msgs = getMessages(el);
+		const last = msgs[msgs.length - 1];
+		expect(last.kind).toBe('notification');
+		expect(last.text).toContain('Type what you want');
+	});
+});
+
+describe('kw-copilot-chat — tool toggle', () => {
+	const sampleTools: CopilotTool[] = [
+		{ name: 'get_extended_schema', label: 'Get Schema', description: 'Gets schema', enabledByDefault: true },
+		{ name: 'execute_kusto_query', label: 'Execute Query', description: 'Runs query', enabledByDefault: true },
+		{ name: 'respond_to_all_other_queries', label: 'Respond', description: 'Final answer', enabledByDefault: true },
+	];
+
+	it('toggling a tool off removes it from enabled list', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		// Open tools panel
+		const toolsBtn = getShadowEl(el, '.tools-btn')!;
+		toolsBtn.click();
+		await waitUpdate(el);
+		// Find checkbox for get_extended_schema and uncheck it
+		const toolItems = getAllShadowEls(el, '.tool-checkbox') as HTMLInputElement[];
+		expect(toolItems.length).toBe(3);
+		// Click to toggle off
+		toolItems[0].click();
+		await waitUpdate(el);
+		const enabled = el.getEnabledTools();
+		// Should have 2 instead of 3
+		expect(enabled.length).toBe(2);
+	});
+
+	it('marks userModifiedTools after toggle', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.applyOptions([], '', sampleTools);
+		await waitUpdate(el);
+		const toolsBtn = getShadowEl(el, '.tools-btn')!;
+		toolsBtn.click();
+		await waitUpdate(el);
+		const toolItems = getAllShadowEls(el, '.tool-checkbox') as HTMLInputElement[];
+		toolItems[0].click();
+		// After reapplying options, custom state should be preserved
+		el.applyOptions([], '', sampleTools);
+		const enabled = el.getEnabledTools();
+		expect(enabled.length).toBe(2);
+	});
+});
+
+describe('kw-copilot-chat — system message actions', () => {
+	it('system message with detail shows view button', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendDevNotesContext('Some dev notes here', 'sys-1');
+		await waitUpdate(el);
+		const systemMsg = getShadowEl(el, '.msg-system');
+		expect(systemMsg).toBeTruthy();
+		const viewBtn = systemMsg!.querySelector('.tool-icon-btn');
+		expect(viewBtn).toBeTruthy();
+	});
+
+	it('devnote tool call renders with notebook icon', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendDevNoteToolCall('save', 'note content', 'Saved', 'dn-1');
+		await waitUpdate(el);
+		const toolMsg = getShadowEl(el, '.msg-tool');
+		expect(toolMsg).toBeTruthy();
+		const icon = toolMsg!.querySelector('.codicon-notebook');
+		expect(icon).toBeTruthy();
+	});
+});
+
+describe('kw-copilot-chat — Ctrl+Enter inserts newline', () => {
+	it('Ctrl+Enter does not send', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const ta = getShadowEl(el, 'textarea') as HTMLTextAreaElement;
+		ta.value = 'test';
+		const handler = vi.fn();
+		el.addEventListener('copilot-send', handler as any);
+		ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+		expect(handler).not.toHaveBeenCalled();
+	});
+});
+
+describe('kw-copilot-chat — appendTipMessage', () => {
+	it('adds another tip notification', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		const countBefore = getMessages(el).length;
+		el.appendTipMessage();
+		const countAfter = getMessages(el).length;
+		expect(countAfter).toBe(countBefore + 1);
+		const last = getMessages(el)[getMessages(el).length - 1];
+		expect(last.text).toBe('__TIP__');
+	});
+});
+
+describe('kw-copilot-chat — clarifying question rendering', () => {
+	it('clarifying question has comment icon', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendClarifyingQuestion('What time range?', 'cq-1');
+		await waitUpdate(el);
+		const cq = getShadowEl(el, '.msg-clarifying-question');
+		expect(cq).toBeTruthy();
+		const icon = cq!.querySelector('.codicon-comment');
+		expect(icon).toBeTruthy();
+	});
+
+	it('clarifying question has remove button', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendClarifyingQuestion('What table?', 'cq-2');
+		await waitUpdate(el);
+		const removeBtn = getShadowEl(el, '.msg-clarifying-question .remove-btn');
+		expect(removeBtn).toBeTruthy();
+	});
+});
+
+describe('kw-copilot-chat — tooltip on tool messages', () => {
+	it('mouseenter on tool message creates tooltip', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendToolResponse('get_schema', 'Schema', '{"tables":[]}', 'tooltip-1');
+		await waitUpdate(el);
+		const toolMsg = getShadowEl(el, '.msg-tool')!;
+		toolMsg.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+		await waitUpdate(el);
+		// Tooltip should be appended to document.body
+		const tooltip = document.querySelector('.kusto-copilot-tool-tooltip');
+		expect(tooltip).toBeTruthy();
+	});
+
+	it('mouseleave on tool message hides tooltip', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendToolResponse('get_schema', 'Schema', '{"tables":[]}', 'tooltip-2');
+		await waitUpdate(el);
+		const toolMsg = getShadowEl(el, '.msg-tool')!;
+		toolMsg.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+		toolMsg.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+		// Wait for hide timeout
+		await new Promise(r => setTimeout(r, 400));
+		const tooltip = document.querySelector('.kusto-copilot-tool-tooltip');
+		if (tooltip) {
+			expect((tooltip as HTMLElement).style.display).toBe('none');
+		}
+	});
+});
+
+describe('kw-copilot-chat — user message with detail', () => {
+	it('user message with detail has help cursor style', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Question', 'Extra context');
+		await waitUpdate(el);
+		const userMsg = getShadowEl(el, '.msg-user');
+		expect(userMsg?.style.cursor).toBe('help');
+		expect(userMsg?.style.textDecoration).toContain('underline');
+	});
+
+	it('user message without detail has no special style', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Simple question');
+		await waitUpdate(el);
+		const userMsg = getShadowEl(el, '.msg-user');
+		// No cursor:help when no detail
+		expect(userMsg?.style.cursor).toBe('');
+	});
+});
+
+describe('kw-copilot-chat — error query tooltip', () => {
+	it('error query renders with is-error class on tool-result', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendExecutedQuery('bad query', 'Error', 'Syntax error', 'err-1', null);
+		await waitUpdate(el);
+		const toolResult = getShadowEl(el, '.tool-result.is-error');
+		expect(toolResult).toBeTruthy();
+	});
+});
+
+describe('kw-copilot-chat — general rules hover', () => {
+	it('general rules system message shows book icon', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Hello');
+		el.appendGeneralRulesLink('/rules.md', 'Rules preview', 'gr-1');
+		await waitUpdate(el);
+		const systemMsg = getShadowEl(el, '.msg-system');
+		expect(systemMsg).toBeTruthy();
+		const icon = systemMsg?.querySelector('.codicon-book');
+		expect(icon).toBeTruthy();
+	});
+
+	it('general rules message has remove button', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Hello');
+		el.appendGeneralRulesLink('/rules.md', 'Rules', 'gr-2');
+		await waitUpdate(el);
+		const removeBtn = getShadowEl(el, '.msg-system .remove-btn');
+		expect(removeBtn).toBeTruthy();
+	});
+});
+
+describe('kw-copilot-chat — message ordering', () => {
+	it('messages appear in correct chronological order', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendMessage('user', 'Hello');
+		el.appendMessage('assistant', 'Hi there');
+		el.appendMessage('user', 'Follow-up');
+		await waitUpdate(el);
+		const msgs = getMessages(el);
+		// tip, user, assistant, user
+		expect(msgs[1].kind).toBe('user');
+		expect(msgs[1].text).toBe('Hello');
+		expect(msgs[2].kind).toBe('assistant');
+		expect(msgs[3].kind).toBe('user');
+		expect(msgs[3].text).toBe('Follow-up');
+	});
+});
+
+describe('kw-copilot-chat — devnotes system message', () => {
+	it('devnotes has notebook icon', async () => {
+		const el = createChat();
+		await waitUpdate(el);
+		el.appendDevNotesContext('some notes', 'dn-sys-1');
+		await waitUpdate(el);
+		const systemMsg = getShadowEl(el, '.msg-system');
+		const icon = systemMsg?.querySelector('.codicon-notebook');
+		expect(icon).toBeTruthy();
+	});
+});

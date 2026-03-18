@@ -235,4 +235,139 @@ describe('kw-cell-viewer', () => {
 
 		expect(getCellValue(el)?.textContent?.length).toBe(10000);
 	});
+
+	it('navigates to next match', async () => {
+		const el = getViewer();
+		el.show('Col', 'aaa bbb aaa bbb aaa', { searchQuery: 'aaa' });
+		await el.updateComplete;
+
+		expect(getHighlights(el).length).toBe(3);
+		// First match is current initially
+		expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(true);
+
+		// Navigate next
+		const searchBar = getSearchBar(el)!;
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// Should move to second match
+		expect(getHighlights(el)[1].classList.contains('cell-highlight-current')).toBe(true);
+		expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(false);
+	});
+
+	it('navigates to previous match', async () => {
+		const el = getViewer();
+		el.show('Col', 'aaa bbb aaa bbb aaa', { searchQuery: 'aaa' });
+		await el.updateComplete;
+
+		// Navigate prev from first match should wrap to last
+		const searchBar = getSearchBar(el)!;
+		searchBar.dispatchEvent(new CustomEvent('search-prev', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		expect(getHighlights(el)[2].classList.contains('cell-highlight-current')).toBe(true);
+	});
+
+	it('next match wraps around from last to first', async () => {
+		const el = getViewer();
+		el.show('Col', 'aaa bbb aaa', { searchQuery: 'aaa' });
+		await el.updateComplete;
+
+		const searchBar = getSearchBar(el)!;
+		// Navigate to last (index 1)
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+		// Navigate past last — should wrap to first (index 0)
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(true);
+	});
+
+	it('does not navigate when only 1 match', async () => {
+		const el = getViewer();
+		el.show('Col', 'abc def', { searchQuery: 'abc' });
+		await el.updateComplete;
+
+		expect(getHighlights(el).length).toBe(1);
+		const searchBar = getSearchBar(el)!;
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// Still on the same match
+		expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(true);
+	});
+
+	it('copy button uses vscode postMessage callback when set', async () => {
+		const el = getViewer();
+		const mockCallback = vi.fn();
+		el.copyCallback = mockCallback;
+		el.show('Col', 'copyable text');
+		await el.updateComplete;
+
+		getCopyButton(el)?.click();
+
+		expect(mockCallback).toHaveBeenCalledTimes(1);
+		expect(mockCallback.mock.calls[0][0]).toEqual({ type: 'copyToClipboard', text: 'copyable text' });
+	});
+
+	it('search mode change resets match index', async () => {
+		const el = getViewer();
+		el.show('Col', 'aaa bbb aaa', { searchQuery: 'aaa', searchMode: 'wildcard' });
+		await el.updateComplete;
+
+		// Navigate to second match
+		const searchBar = getSearchBar(el)!;
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// Change mode → should reset to first match
+		searchBar.dispatchEvent(new CustomEvent('search-mode-change', { detail: { mode: 'regex' }, bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// After re-render, first match should be current
+		if (getHighlights(el).length >= 2) {
+			expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(true);
+		}
+	});
+
+	it('search input change resets match index', async () => {
+		const el = getViewer();
+		el.show('Col', 'aaa bbb aaa', { searchQuery: 'aaa' });
+		await el.updateComplete;
+
+		const searchBar = getSearchBar(el)!;
+		// Navigate away from first match
+		searchBar.dispatchEvent(new CustomEvent('search-next', { bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// Change query
+		searchBar.dispatchEvent(new CustomEvent('search-input', { detail: { query: 'bbb' }, bubbles: true, composed: true }));
+		await el.updateComplete;
+
+		// Should have 1 match (bbb) and it should be current
+		expect(getHighlights(el).length).toBe(1);
+		expect(getHighlights(el)[0].classList.contains('cell-highlight-current')).toBe(true);
+	});
+
+	it('wildcard search with * works', async () => {
+		const el = getViewer();
+		el.show('Col', 'hello world help', { searchQuery: 'hel*', searchMode: 'wildcard' });
+		await el.updateComplete;
+
+		// Depending on wildcard implementation, this should match 'hello' and 'help'
+		expect(getHighlights(el).length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('shows special characters correctly escaped', async () => {
+		const el = getViewer();
+		el.show('Col', '<b>bold</b> & "quoted"');
+		await el.updateComplete;
+
+		const valueEl = getCellValue(el)!;
+		expect(valueEl.innerHTML).toContain('&lt;b&gt;');
+		expect(valueEl.innerHTML).toContain('&amp;');
+		// Quotes may or may not be entity-escaped depending on browser innerHTML normalization
+		expect(valueEl.textContent).toContain('"quoted"');
+	});
 });

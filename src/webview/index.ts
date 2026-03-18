@@ -12,7 +12,6 @@ import './modules/objectViewer.js';
 import './modules/cellViewer.js';
 import './modules/schema.js';
 import './modules/persistence.js';
-import './modules/copilotQueryBoxes.js';
 import './modules/resultsState.js';
 import './modules/errorUtils.js';
 import './modules/queryBoxes.js';

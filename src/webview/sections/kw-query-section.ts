@@ -4,6 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
+import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
 
@@ -179,6 +180,12 @@ export class KwQuerySection extends LitElement {
 	private _dismissSchemaPopover = (): void => { this._schemaPopoverOpen = false; };
 	// Bound handler for close-on-scroll (schema popover)
 	private _closeSchemaPopoverOnScrollBound = this._closeSchemaPopoverOnScroll.bind(this);
+
+	// ── Copilot chat state ────────────────────────────────────────────────────
+
+	private _copilotChatVisible = false;
+	private _copilotChatWidthPx: number | undefined;
+	private _copilotSplitObserver: ResizeObserver | null = null;
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
@@ -1270,7 +1277,7 @@ export class KwQuerySection extends LitElement {
 		const cacheUnit = cacheUnitEl?.value || 'days';
 
 		let copilotChatWidthPx: number | undefined;
-		try { const fn = window.__kustoGetCopilotChatWidthPx; if (typeof fn === 'function') { const w = fn(b); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } } catch (e) { console.error('[kusto]', e); }
+		try { const w = this.getCopilotChatWidthPx(); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } catch (e) { console.error('[kusto]', e); }
 
 		const shouldPersist = !!(resultJson && !this._isLeaveNoTrace(clusterUrl));
 		const editorHeightPx = this._getEditorHeightPx();
@@ -1286,6 +1293,475 @@ export class KwQuerySection extends LitElement {
 			...(resultsHeightPx !== undefined ? { resultsHeightPx } : {}),
 			...(typeof copilotChatWidthPx === 'number' ? { copilotChatWidthPx } : {}),
 		};
+	}
+
+	// ── Copilot Chat Management ───────────────────────────────────────────────
+
+	private static readonly _DEFAULT_CHAT_WIDTH_PX = 720;
+	private static readonly _MIN_CHAT_WIDTH_PX = 160;
+	private static readonly _MIN_EDITOR_WIDTH_PX = 240;
+	private static readonly _COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';
+
+	/** Find the <kw-copilot-chat> Lit element for this section. */
+	public getCopilotChatEl(): KwCopilotChat | null {
+		const pane = document.getElementById(this.boxId + '_copilot_chat_pane');
+		return (pane?.querySelector('kw-copilot-chat') as KwCopilotChat | null) ?? null;
+	}
+
+	public getCopilotChatVisible(): boolean {
+		return this._copilotChatVisible;
+	}
+
+	public getCopilotChatWidthPx(): number | undefined {
+		if (typeof this._copilotChatWidthPx === 'number' && Number.isFinite(this._copilotChatWidthPx)) {
+			return this._copilotChatWidthPx;
+		}
+		try {
+			const pane = document.getElementById(this.boxId + '_copilot_chat_pane');
+			if (!pane) return undefined;
+			const w = Math.round(pane.getBoundingClientRect().width || 0);
+			return w > 0 ? w : undefined;
+		} catch { return undefined; }
+	}
+
+	public setCopilotChatWidthPx(widthPx: number): void {
+		const id = this.boxId;
+		if (!id) return;
+		let max: number | undefined;
+		try {
+			const split = document.getElementById(id + '_copilot_split');
+			if (split) {
+				const total = Math.round(split.getBoundingClientRect().width || 0);
+				if (total > 0) max = Math.max(KwQuerySection._MIN_CHAT_WIDTH_PX, total - KwQuerySection._MIN_EDITOR_WIDTH_PX);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		const next = KwQuerySection._clampNumber(widthPx, KwQuerySection._MIN_CHAT_WIDTH_PX, max);
+		try {
+			const pane = document.getElementById(id + '_copilot_chat_pane');
+			if (pane?.style) pane.style.flex = '0 1 ' + next + 'px';
+		} catch (e) { console.error('[kusto]', e); }
+		this._copilotChatWidthPx = next;
+		try { const ed = (window.queryEditors as any)?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	public setCopilotChatVisible(visible: boolean): void {
+		const id = this.boxId;
+		if (!id) return;
+		const next = !!visible;
+		this._copilotChatVisible = next;
+		if (next) { try { this.installCopilotChat(); } catch (e) { console.error('[kusto]', e); } }
+		try {
+			const split = document.getElementById(id + '_copilot_split');
+			if (split?.classList) split.classList.toggle(KwQuerySection._COPILOT_VISIBILITY_CLASS_HIDDEN, !next);
+		} catch (e) { console.error('[kusto]', e); }
+		if (next) {
+			try {
+				const wrapper = document.getElementById(id + '_query_editor');
+				const editorWrapper = wrapper?.closest?.('.query-editor-wrapper') as HTMLElement | null;
+				if (editorWrapper) {
+					const currentHeight = editorWrapper.getBoundingClientRect().height;
+					if (currentHeight < 180) {
+						editorWrapper.style.height = '180px';
+						try {
+							if (!window.__kustoManualQueryEditorHeightPxByBoxId || typeof window.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
+								(window as any).__kustoManualQueryEditorHeightPxByBoxId = {};
+							}
+							window.__kustoManualQueryEditorHeightPxByBoxId[id] = 180;
+						} catch (e) { console.error('[kusto]', e); }
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		this._setCopilotToggleButtonState(next);
+		try { const ed = (window.queryEditors as any)?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		try { window.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	public toggleCopilotChat(): void {
+		const id = this.boxId;
+		if (!id) return;
+		if (!window.__kustoCopilotChatFirstTimeDismissed) {
+			try { (window.vscode as any).postMessage({ type: 'copilotChatFirstTimeCheck', boxId: id }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+		this.setCopilotChatVisible(!this._copilotChatVisible);
+	}
+
+	public disposeCopilotChat(): void {
+		const id = this.boxId;
+		if (!id) return;
+		try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: id }); } catch (e) { console.error('[kusto]', e); }
+		if (this._copilotSplitObserver) {
+			this._copilotSplitObserver.disconnect();
+			this._copilotSplitObserver = null;
+		}
+	}
+
+	public installCopilotChat(): void {
+		const boxId = this.boxId;
+		try {
+			const wrapper = document.getElementById(boxId + '_query_editor');
+			if (!wrapper) return;
+			const editorWrapper = wrapper.closest?.('.query-editor-wrapper') as HTMLElement | null;
+			if (!editorWrapper) return;
+			if (document.getElementById(boxId + '_copilot_chat_pane')) return;
+
+			const existingChildren = Array.from(editorWrapper.childNodes || []);
+			const split = document.createElement('div');
+			split.className = 'kusto-copilot-split';
+			split.id = boxId + '_copilot_split';
+			split.style.flex = '1 1 auto';
+			split.style.minHeight = '0';
+
+			const splitter = document.createElement('div');
+			splitter.className = 'query-editor-resizer kusto-copilot-splitter';
+			splitter.id = boxId + '_copilot_splitter';
+			splitter.title = 'Drag to resize Copilot chat';
+			splitter.setAttribute('aria-label', 'Resize Copilot chat');
+			splitter.setAttribute('data-kusto-no-editor-focus', 'true');
+
+			const editorPane = document.createElement('div');
+			editorPane.className = 'kusto-copilot-editor-pane';
+			for (const n of existingChildren) { try { editorPane.appendChild(n); } catch (e) { console.error('[kusto]', e); } }
+
+			try { editorWrapper.innerHTML = ''; } catch (e) { console.error('[kusto]', e); }
+			split.appendChild(editorPane);
+			split.appendChild(splitter);
+
+			const chatPane = document.createElement('div');
+			chatPane.className = 'kusto-copilot-chat-pane';
+			chatPane.id = boxId + '_copilot_chat_pane';
+			chatPane.style.flex = '0 1 ' + KwQuerySection._DEFAULT_CHAT_WIDTH_PX + 'px';
+
+			const chatEl = document.createElement('kw-copilot-chat') as KwCopilotChat;
+			chatEl.setAttribute('box-id', boxId);
+
+			// Create model dropdown slot.
+			const modelSlot = document.createElement('div');
+			modelSlot.setAttribute('slot', 'model-dropdown');
+			modelSlot.innerHTML = KwQuerySection._modelDropdownHtml(boxId);
+			chatEl.appendChild(modelSlot);
+
+			chatPane.appendChild(chatEl);
+			split.appendChild(chatPane);
+			editorWrapper.appendChild(split);
+
+			// Hoist vertical query resizer to wrapper level.
+			try { const qr = document.getElementById(boxId + '_query_resizer'); if (qr) editorWrapper.appendChild(qr); } catch (e) { console.error('[kusto]', e); }
+
+			// Restore persisted width.
+			try {
+				const persisted = this._copilotChatWidthPx;
+				if (typeof persisted === 'number' && Number.isFinite(persisted)) this.setCopilotChatWidthPx(persisted);
+			} catch (e) { console.error('[kusto]', e); }
+
+			// ── Wire <kw-copilot-chat> events to vscode.postMessage ───────
+			this._wireCopilotChatEvents(chatEl, boxId, chatPane, split, splitter);
+
+			// Ask extension for model list + default selection.
+			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+
+			// ResizeObserver: re-layout Monaco when split crosses auto-hide threshold.
+			try {
+				const AUTO_HIDE_THRESHOLD = KwQuerySection._MIN_EDITOR_WIDTH_PX + KwQuerySection._MIN_CHAT_WIDTH_PX;
+				let wasBelowThreshold = false;
+				const splitObserver = new ResizeObserver((entries: any) => {
+					try {
+						const w = entries[0]?.contentRect?.width;
+						const isBelowNow = w > 0 && w <= AUTO_HIDE_THRESHOLD;
+						if (isBelowNow !== wasBelowThreshold) {
+							wasBelowThreshold = isBelowNow;
+							const ed = (window.queryEditors as any)?.[boxId];
+							if (ed?.layout) ed.layout();
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				});
+				splitObserver.observe(split);
+				this._copilotSplitObserver = splitObserver;
+			} catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _wireCopilotChatEvents(chatEl: KwCopilotChat, boxId: string, chatPane: HTMLElement, split: HTMLElement, splitter: HTMLElement): void {
+		chatEl.addEventListener('copilot-send', ((e: CustomEvent) => {
+			const { text, enabledTools } = e.detail;
+			const connectionId = this.getConnectionId();
+			const database = this.getDatabase();
+			if (!connectionId) { chatEl.appendMessage('notification', 'Select a cluster connection first.'); return; }
+			if (!database) { chatEl.appendMessage('notification', 'Select a database first.'); return; }
+			let currentQuery = '';
+			try { const ed = (window.queryEditors as any)?.[boxId]; currentQuery = ed ? (ed.getValue() || '') : ''; } catch (e) { console.error('[kusto]', e); }
+			const modelId = ((document.getElementById(boxId + '_copilot_model') || {}) as any).value || '';
+			try { if (typeof window.__kustoSetLastOptimizeModelId === 'function') window.__kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
+			chatEl.setRunning(true);
+			try {
+				(window.vscode as any).postMessage({
+					type: 'startCopilotWriteQuery', boxId: String(boxId),
+					connectionId: String(connectionId || ''), database: String(database || ''),
+					currentQuery: String(currentQuery || ''), request: String(text || ''),
+					modelId: String(modelId || ''), enabledTools,
+					queryMode: typeof window.getRunMode === 'function' ? window.getRunMode(boxId) : 'take100'
+				});
+			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
+		}) as EventListener);
+
+		chatEl.addEventListener('copilot-cancel', () => {
+			try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId }); } catch (e) { console.error('[kusto]', e); }
+		});
+
+		chatEl.addEventListener('copilot-clear', () => {
+			chatEl.clearConversation();
+			try { (window.vscode as any).postMessage({ type: 'clearCopilotConversation', boxId }); } catch (e) { console.error('[kusto]', e); }
+			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+		});
+
+		chatEl.addEventListener('copilot-close', () => { this.setCopilotChatVisible(false); });
+
+		chatEl.addEventListener('copilot-view-tool', ((e: CustomEvent) => {
+			try { (window.vscode as any).postMessage({ type: 'openToolResultInEditor', boxId, tool: e.detail.tool, label: e.detail.label, content: e.detail.content }); } catch (e) { console.error('[kusto]', e); }
+		}) as EventListener);
+
+		chatEl.addEventListener('copilot-remove-entry', ((e: CustomEvent) => {
+			try { (window.vscode as any).postMessage({ type: 'removeFromCopilotHistory', boxId, entryId: e.detail.entryId }); } catch (e) { console.error('[kusto]', e); }
+		}) as EventListener);
+
+		chatEl.addEventListener('copilot-open-preview', ((e: CustomEvent) => {
+			try { (window.vscode as any).postMessage({ type: 'openMarkdownPreview', filePath: e.detail.filePath }); } catch (e) { console.error('[kusto]', e); }
+		}) as EventListener);
+
+		chatEl.addEventListener('copilot-insert-query', ((e: CustomEvent) => {
+			try {
+				if (typeof window.addQueryBox === 'function') {
+					const sourceClusterUrl = this.getClusterUrl();
+					const sourceDatabase = this.getDatabase();
+
+					const scrollContainer = document.documentElement;
+					const savedScroll = scrollContainer.scrollTop;
+					const newBoxId = window.addQueryBox({
+						initialQuery: e.detail.query,
+						defaultResultsVisible: true,
+						afterBoxId: boxId,
+						clusterUrl: sourceClusterUrl || undefined,
+						database: sourceDatabase || undefined,
+					});
+					scrollContainer.scrollTop = savedScroll;
+					if (newBoxId) {
+						if (typeof window.__kustoSetSectionName === 'function') {
+							window.__kustoSetSectionName(newBoxId, 'Copilot query');
+						}
+						setTimeout(() => {
+							KwQuerySection._setQueryText(newBoxId, e.detail.query);
+							if (e.detail.result && typeof window.displayResultForBox === 'function') {
+								(window.displayResultForBox as any)(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
+							}
+							const newBox = document.getElementById(newBoxId);
+							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+						}, 100);
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}) as EventListener);
+
+		chatEl.addEventListener('copilot-open-agent', () => {
+			try { (window.vscode as any).postMessage({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
+		});
+
+		// ── Splitter drag ─────────────────────────────────────────────────
+
+		splitter.addEventListener('mousedown', (e: any) => {
+			try { e.preventDefault(); e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+			splitter.classList.add('is-dragging');
+			const previousCursor = document.body.style.cursor;
+			const previousUserSelect = document.body.style.userSelect;
+			document.body.style.cursor = 'ew-resize';
+			document.body.style.userSelect = 'none';
+			const startX = e.clientX;
+			let startW = KwQuerySection._DEFAULT_CHAT_WIDTH_PX;
+			try { startW = Math.round(chatPane.getBoundingClientRect().width || KwQuerySection._DEFAULT_CHAT_WIDTH_PX); } catch (e) { console.error('[kusto]', e); }
+			const onMove = (moveEvent: any) => {
+				const delta = (moveEvent.clientX - startX);
+				let max: number | undefined;
+				try { const total = Math.round(split.getBoundingClientRect().width || 0); if (total > 0) max = Math.max(KwQuerySection._MIN_CHAT_WIDTH_PX, total - KwQuerySection._MIN_EDITOR_WIDTH_PX); } catch (e) { console.error('[kusto]', e); }
+				const next = KwQuerySection._clampNumber(startW - delta, KwQuerySection._MIN_CHAT_WIDTH_PX, max);
+				try { chatPane.style.flex = '0 1 ' + next + 'px'; } catch (e) { console.error('[kusto]', e); }
+				this._copilotChatWidthPx = next;
+				try { const ed = (window.queryEditors as any)?.[boxId]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+			};
+			const onUp = () => {
+				document.removeEventListener('mousemove', onMove, true);
+				document.removeEventListener('mouseup', onUp, true);
+				splitter.classList.remove('is-dragging');
+				document.body.style.cursor = previousCursor;
+				document.body.style.userSelect = previousUserSelect;
+				try { window.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
+			};
+			document.addEventListener('mousemove', onMove, true);
+			document.addEventListener('mouseup', onUp, true);
+		});
+	}
+
+	private _setCopilotToggleButtonState(visible: boolean): void {
+		try {
+			const btn = document.getElementById(this.boxId + '_copilot_chat_toggle');
+			if (!btn) return;
+			btn.classList.toggle('is-active', !!visible);
+			btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private static _clampNumber(value: any, min: any, max: any): number {
+		const n = typeof value === 'number' ? value : parseInt(String(value || ''), 10);
+		if (!Number.isFinite(n)) return min;
+		if (typeof max === 'number' && Number.isFinite(max)) {
+			return Math.max(min, Math.min(max, n));
+		}
+		return Math.max(min, n);
+	}
+
+	private static _setQueryText(boxId: string, queryText: string): void {
+		try {
+			const editor = (window.queryEditors as any)?.[boxId];
+			if (!editor) return;
+			const model = editor.getModel?.();
+			if (!model) return;
+			let next = String(queryText || '');
+			try { if (typeof window.__kustoPrettifyKustoText === 'function') next = window.__kustoPrettifyKustoText(next); } catch (e) { console.error('[kusto]', e); }
+			editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: next }]);
+			editor.focus();
+			try { window.schedulePersist?.('copilotWriteQuery'); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private static _applyModelOptions(boxId: string, models: any, selectedModelId: any): void {
+		try {
+			const sel = document.getElementById(boxId + '_copilot_model') as HTMLSelectElement | null;
+			if (!sel) return;
+			sel.innerHTML = '';
+			const ph = document.createElement('option');
+			ph.value = ''; ph.textContent = 'Select model...'; ph.disabled = true; ph.selected = true;
+			sel.appendChild(ph);
+			for (const m of (Array.isArray(models) ? models : []) as any[]) {
+				if (!m?.id) continue;
+				const opt = document.createElement('option');
+				opt.value = String(m.id);
+				const label = String(m.label || m.id);
+				const id = String(m.id);
+				opt.textContent = (label && label !== id) ? label + ' (' + id + ')' : id;
+				opt.setAttribute('data-short-label', label);
+				sel.appendChild(opt);
+			}
+			let preferred = '';
+			try { if (typeof window.__kustoGetLastOptimizeModelId === 'function') preferred = String(window.__kustoGetLastOptimizeModelId() || ''); } catch (e) { console.error('[kusto]', e); }
+			const hasPreferred = preferred && Array.from(sel.options).some((o: any) => o.value === preferred);
+			if (hasPreferred) sel.value = preferred;
+			else if (selectedModelId) sel.value = String(selectedModelId);
+			if (!sel.value && sel.options.length > 0) sel.selectedIndex = 0;
+			sel.onchange = () => {
+				try { if (typeof window.__kustoSetLastOptimizeModelId === 'function') window.__kustoSetLastOptimizeModelId(sel.value); } catch (e) { console.error('[kusto]', e); }
+				try { (window as any).__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
+			};
+			try { (window as any).__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private static _modelDropdownHtml(boxId: string): string {
+		try {
+			if ((window as any).__kustoDropdown?.renderMenuDropdownHtml) {
+				const modelIconSvg = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3.18 8l1.83-.55L5.56 5.6a.3.3 0 0 1 .57 0l.55 1.85L8.5 8a.3.3 0 0 1 0 .57l-1.83.55-.55 1.84a.3.3 0 0 1-.57 0l-.55-1.84L3.18 8.57a.3.3 0 0 1 0-.57ZM9.14 3l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17L12.53 3a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17L9.14 3.36a.19.19 0 0 1 0-.36ZM9.14 11l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17 1.16.35a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17-1.16-.35a.19.19 0 0 1 0-.36Z"/></svg>';
+				return (window as any).__kustoDropdown.renderMenuDropdownHtml({
+					wrapperClass: 'kusto-copilot-chat-model-dropdown kusto-dropdown-tooltip-label',
+					title: '', iconSvg: modelIconSvg, includeHiddenSelect: true,
+					selectId: boxId + '_copilot_model',
+					onChange: "try{if(typeof __kustoSetLastOptimizeModelId==='function'){__kustoSetLastOptimizeModelId(this.value)}}catch{}",
+					buttonId: boxId + '_copilot_model_btn', buttonTextId: boxId + '_copilot_model_btn_text',
+					menuId: boxId + '_copilot_model_menu', placeholder: 'Select model...',
+					onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + boxId + "_copilot_model')}catch{}"
+				});
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return '<div class="select-wrapper"><select id="' + boxId + '_copilot_model" aria-label="Copilot model"></select></div>';
+	}
+
+	// ── Copilot message delegators ────────────────────────────────────────────
+	// Called from main.ts message handlers — find the <kw-copilot-chat> element
+	// and delegate to its public API.
+
+	public copilotApplyWriteQueryOptions(models: any, selectedModelId: string, tools: any): void {
+		// Populate the model <select> element (slotted into kw-copilot-chat).
+		KwQuerySection._applyModelOptions(this.boxId, models, selectedModelId);
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.applyOptions(models, selectedModelId, tools || []);
+	}
+
+	public copilotWriteQueryStatus(text: string, detail: string, role: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendMessage((role === 'assistant' ? 'assistant' : 'notification') as 'assistant' | 'notification', text, detail);
+	}
+
+	public copilotWriteQuerySetQuery(queryText: string): void {
+		KwQuerySection._setQueryText(this.boxId, queryText);
+	}
+
+	public copilotWriteQueryDone(ok: boolean, message: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.setRunning(false, message);
+	}
+
+	public copilotWriteQueryToolResult(toolName: string, label: string, jsonText: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendToolResponse(toolName, label, jsonText, entryId);
+	}
+
+	public copilotAppendExecutedQuery(query: string, resultSummary: string, errorMessage: string, entryId: string, result: unknown): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendExecutedQuery(query, resultSummary, errorMessage, entryId, result);
+	}
+
+	public copilotAppendGeneralRulesLink(filePath: string, preview: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendGeneralRulesLink(filePath, preview, entryId);
+	}
+
+	public copilotAppendClarifyingQuestion(question: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendClarifyingQuestion(question, entryId);
+	}
+
+	public copilotAppendQuerySnapshot(queryText: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendQuerySnapshot(queryText, entryId);
+	}
+
+	public copilotAppendDevNotesContext(preview: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendDevNotesContext(preview, entryId);
+	}
+
+	public copilotAppendDevNoteToolCall(action: string, detail: string, result: string, entryId: string): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) chatEl.appendDevNoteToolCall(action, detail, result, entryId);
+	}
+
+	public copilotClearConversation(): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl) {
+			chatEl.clearConversation();
+			try { (window.vscode as any).postMessage({ type: 'clearCopilotConversation', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(this.boxId || '') }); } catch (e) { console.error('[kusto]', e); }
+		}
+	}
+
+	public copilotWriteQuerySend(): void {
+		const chatEl = this.getCopilotChatEl();
+		if (!chatEl) return;
+		const sendBtn = chatEl.shadowRoot?.querySelector('.send-btn') as HTMLElement | null;
+		if (sendBtn) sendBtn.click();
+	}
+
+	public copilotWriteQueryCancel(): void {
+		const chatEl = this.getCopilotChatEl();
+		if (chatEl && !chatEl.isRunning()) return;
+		try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────

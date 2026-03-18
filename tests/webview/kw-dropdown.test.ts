@@ -416,4 +416,265 @@ describe('kw-dropdown', () => {
 		expect(items[0].getAttribute('aria-selected')).toBe('true');
 		expect(items[1].getAttribute('aria-selected')).toBe('false');
 	});
+
+	it('ArrowDown key navigates to next item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		// Dispatch ArrowDown on the menu
+		const menu = getMenu(el)!;
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+
+		// Second item should be focused
+		const items = getItems(el);
+		expect(items[1].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('ArrowUp key navigates to previous item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		// Start at first, go up → wraps to last
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+		await el.updateComplete;
+
+		const items = getItems(el);
+		expect(items[items.length - 1].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('ArrowDown wraps from last to first', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		// Navigate to end
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+		await el.updateComplete;
+		// Then ArrowDown should wrap
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+
+		const items = getItems(el);
+		expect(items[0].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('Home key moves focus to first item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		// Navigate away from first
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+		// Now press Home
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+		await el.updateComplete;
+
+		const items = getItems(el);
+		expect(items[0].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('End key moves focus to last item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+		await el.updateComplete;
+
+		const items = getItems(el);
+		expect(items[items.length - 1].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('Enter key selects focused item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		let receivedDetail: any = null;
+		el.addEventListener('dropdown-select', ((e: CustomEvent) => {
+			receivedDetail = e.detail;
+		}) as EventListener);
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		// First is focused by default; Move to Beta
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+		// Press Enter
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await el.updateComplete;
+
+		expect(receivedDetail).not.toBeNull();
+		expect(receivedDetail.id).toBe('b');
+	});
+
+	it('Space key selects focused item', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		let receivedDetail: any = null;
+		el.addEventListener('dropdown-select', ((e: CustomEvent) => {
+			receivedDetail = e.detail;
+		}) as EventListener);
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+		await el.updateComplete;
+
+		expect(receivedDetail).not.toBeNull();
+		expect(receivedDetail.id).toBe('a'); // First item focused by default
+	});
+
+	it('selecting via Enter closes the menu', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+		expect(getMenu(el)).not.toBeNull();
+
+		const menu = getMenu(el)!;
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await el.updateComplete;
+
+		expect(getMenu(el)).toBeNull();
+	});
+
+	it('Enter key on focused action fires dropdown-action', async () => {
+		const el = createDropdown({
+			items: [],
+			actions: [{ id: 'new', label: 'Add new' }],
+		});
+		await el.updateComplete;
+
+		let actionDetail: any = null;
+		el.addEventListener('dropdown-action', ((e: CustomEvent) => {
+			actionDetail = e.detail;
+		}) as EventListener);
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const menu = getMenu(el)!;
+		// First and only entry is the action
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await el.updateComplete;
+
+		expect(actionDetail).not.toBeNull();
+		expect(actionDetail.id).toBe('new');
+	});
+
+	it('ArrowDown on button opens menu', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		const btn = getButton(el);
+		expect(getMenu(el)).toBeNull();
+
+		btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+
+		expect(getMenu(el)).not.toBeNull();
+	});
+
+	it('ArrowUp on button opens menu', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		const btn = getButton(el);
+		btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+		await el.updateComplete;
+
+		expect(getMenu(el)).not.toBeNull();
+	});
+
+	it('keyboard navigation skips disabled items', async () => {
+		const disabledItems: DropdownItem[] = [
+			{ id: 'a', label: 'Alpha', disabled: true },
+			{ id: 'b', label: 'Beta' },
+			{ id: 'c', label: 'Charlie' },
+		];
+		const el = createDropdown({ items: disabledItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		// Only non-disabled items are in the entries list
+		// So first focusable is Beta (b), second is Charlie (c)
+		const menu = getMenu(el)!;
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+		await el.updateComplete;
+
+		let receivedDetail: any = null;
+		el.addEventListener('dropdown-select', ((e: CustomEvent) => {
+			receivedDetail = e.detail;
+		}) as EventListener);
+		menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await el.updateComplete;
+
+		// The second non-disabled item should be selected
+		expect(receivedDetail.id).toBe('c');
+	});
+
+	it('mouseenter on item sets focus', async () => {
+		const el = createDropdown({ items: sampleItems });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const items = getItems(el);
+		items[2].dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+		await el.updateComplete;
+
+		expect(items[2].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('initially focuses selected item when menu opens', async () => {
+		const el = createDropdown({ items: sampleItems, selectedId: 'c' });
+		await el.updateComplete;
+
+		getButton(el).click();
+		await el.updateComplete;
+
+		const items = getItems(el);
+		expect(items[2].classList.contains('is-focused')).toBe(true);
+	});
+
+	it('renders icon in button when buttonIcon is set', async () => {
+		render(html`
+			<kw-dropdown
+				.items=${sampleItems}
+				.buttonIcon=${'<svg></svg>'}
+			></kw-dropdown>
+		`, container);
+		const el = container.querySelector('kw-dropdown')! as KwDropdown;
+		await el.updateComplete;
+
+		expect(el.hasAttribute('has-icon')).toBe(true);
+	});
 });

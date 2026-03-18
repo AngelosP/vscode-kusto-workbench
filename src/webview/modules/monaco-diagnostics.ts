@@ -700,6 +700,113 @@ export const __kustoScanIdentifiers = (text: any) => {
 	return tokens;
 };
 
+/** Parse a fully-qualified table expression like `cluster('url').database('db').TableName`. */
+export const __kustoParseFullyQualifiedTableExpr = (text: any) => {
+	try {
+		const s = String(text || '');
+		const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+		if (m && m[1] && m[2] && m[3]) {
+			return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
+		}
+		return null;
+	} catch {
+		return null;
+	}
+};
+
+/** Extract the source table name (lowercased) from a let RHS expression. */
+export const __kustoExtractSourceLower = (rhsText: any) => {
+	const rhs = String(rhsText || '').trim();
+	if (!rhs) return null;
+	try {
+		const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+		if (m && m[1]) return String(m[1]).toLowerCase();
+	} catch { /* ignore */ }
+	try {
+		const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+		if (m && m[1]) return String(m[1]).toLowerCase();
+	} catch { /* ignore */ }
+	try {
+		const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
+		return (m && m[1]) ? String(m[1]).toLowerCase() : null;
+	} catch { return null; }
+};
+
+/** Split text by commas at top level (respecting parens, brackets, braces, quotes). */
+export const __kustoSplitTopLevelCommaList = (s: any) => {
+	try {
+		const text = String(s || '');
+		const parts: string[] = [];
+		let start = 0;
+		let paren = 0, bracket = 0, brace = 0;
+		let quote: string | null = null;
+		for (let i = 0; i < text.length; i++) {
+			const ch = text[i];
+			if (quote) {
+				if (ch === '\\') { i++; continue; }
+				if (ch === quote) quote = null;
+				continue;
+			}
+			if (ch === '"' || ch === "'") { quote = ch; continue; }
+			if (ch === '(') paren++;
+			else if (ch === ')' && paren > 0) paren--;
+			else if (ch === '[') bracket++;
+			else if (ch === ']' && bracket > 0) bracket--;
+			else if (ch === '{') brace++;
+			else if (ch === '}' && brace > 0) brace--;
+			else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
+				parts.push(text.slice(start, i).trim());
+				start = i + 1;
+			}
+		}
+		parts.push(text.slice(start).trim());
+		return parts.filter(Boolean);
+	} catch { return []; }
+};
+
+/** Walk backwards from an identifier through dot-chains to find the root column. */
+export const __kustoGetDotChainRoot = (s: any, identStart: any) => {
+	let currentIdentStart = identStart;
+	if (currentIdentStart <= 0 || s[currentIdentStart - 1] !== '.') return null;
+	let root: string | null = null;
+	while (currentIdentStart > 0 && s[currentIdentStart - 1] === '.') {
+		let p = currentIdentStart - 2;
+		while (p >= 0 && /\s/.test(s[p])) p--;
+		const end = p + 1;
+		while (p >= 0 && /[\w-]/.test(s[p])) p--;
+		const start = p + 1;
+		const seg = s.slice(start, end);
+		if (!seg || !/^[A-Za-z_]/.test(seg)) break;
+		root = seg;
+		currentIdentStart = start;
+	}
+	return root;
+};
+
+/** Extract the right-side table name from a join, lookup, or from clause. */
+export const __kustoExtractJoinTable = (seg: any) => {
+	try {
+		const clause = String(seg || '');
+		const paren = clause.match(/\(([^)]*)\)/);
+		if (paren && paren[1]) {
+			const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
+			if (mName && mName[1]) return mName[1];
+		}
+		const openParen = clause.match(/\(\s*([A-Za-z_][\w-]*)\b/);
+		if (openParen && openParen[1]) return openParen[1];
+		const afterOp = clause.replace(/^(join|lookup)\b/i, '').trim();
+		const withoutOpts = afterOp
+			.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+			.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
+			.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
+			.trim();
+		const mName = withoutOpts.match(/^([A-Za-z_][\w-]*)\b/);
+		return mName && mName[1] ? mName[1] : null;
+	} catch {
+		return null;
+	}
+};
+
 export const __kustoLevenshtein = (a: any, b: any) => {
 	const s = String(a || '');
 	const t = String(b || '');
@@ -897,22 +1004,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		const letSources: any = {};
-		const extractSourceLower = (rhsText: any) => {
-			const rhs = String(rhsText || '').trim();
-			if (!rhs) return null;
-			try {
-				const m = rhs.match(/\bcluster\s*\([^)]*\)\s*\.\s*database\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
-				if (m && m[1]) return String(m[1]).toLowerCase();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				const m = rhs.match(/\bdatabase\s*\([^)]*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
-				if (m && m[1]) return String(m[1]).toLowerCase();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				const m = rhs.replace(/^\(\s*/g, '').trim().match(/^([A-Za-z_][\w-]*)\b/);
-				return (m && m[1]) ? String(m[1]).toLowerCase() : null;
-			} catch { return null; }
-		};
+		const extractSourceLower = __kustoExtractSourceLower;
 		try {
 			const lines = raw.split('\n');
 			for (let i = 0; i < lines.length; i++) {
@@ -942,19 +1034,6 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			return null;
 		};
 	})();
-
-							const __kustoParseFullyQualifiedTableExpr = (text: any) => {
-								try {
-									const s = String(text || '');
-									const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
-									if (m && m[1] && m[2] && m[3]) {
-										return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
-									}
-									return null;
-								} catch {
-									return null;
-								}
-							};
 
 							// Unknown table checks: (1) statement-first identifier; (2) join/from identifier.
 	const reportUnknownName = (code: any, name: any, startOffset: any, endOffset: any, candidates: any, what: any) => {
@@ -1236,28 +1315,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 		} catch (e) { console.error('[kusto]', e); }
 
 		try {
-			const extractJoinOrLookupRightTable = (seg: any) => {
-				try {
-					const clause = String(seg || '');
-					const paren = clause.match(/\(([^)]*)\)/);
-					if (paren && paren[1]) {
-						const mName = String(paren[1]).trim().match(/^([A-Za-z_][\w-]*)\b/);
-						if (mName && mName[1]) return mName[1];
-					}
-					const openParen = clause.match(/\(\s*([A-Za-z_][\w-]*)\b/);
-					if (openParen && openParen[1]) return openParen[1];
-					const afterOp = clause.replace(/^(join|lookup)\b/i, '').trim();
-					const withoutOpts = afterOp
-						.replace(/\bkind\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
-						.replace(/\bhint\.[A-Za-z_][\w-]*\s*=\s*[^ \t\r\n)]+/ig, ' ')
-						.replace(/\bwithsource\s*=\s*[A-Za-z_][\w-]*\b/ig, ' ')
-						.trim();
-					const mName = withoutOpts.match(/^([A-Za-z_][\w-]*)\b/);
-					return mName && mName[1] ? mName[1] : null;
-				} catch {
-					return null;
-				}
-			};
+			const extractJoinOrLookupRightTable = __kustoExtractJoinTable;
 
 			for (const m of stmtText.matchAll(/\b(join|lookup|from)\b/gi)) {
 				const kw = String(m[1] || '').toLowerCase();
@@ -1314,23 +1372,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 			}
 			return set;
 		};
-		const getDotChainRoot = (s: any, identStart: any) => {
-			let currentIdentStart = identStart;
-			if (currentIdentStart <= 0 || s[currentIdentStart - 1] !== '.') return null;
-			let root = null;
-			while (currentIdentStart > 0 && s[currentIdentStart - 1] === '.') {
-				let p = currentIdentStart - 2;
-				while (p >= 0 && /\s/.test(s[p])) p--;
-				const end = p + 1;
-				while (p >= 0 && /[\w-]/.test(s[p])) p--;
-				const start = p + 1;
-				const seg = s.slice(start, end);
-				if (!seg || !/^[A-Za-z_]/.test(seg)) break;
-				root = seg;
-				currentIdentStart = start;
-			}
-			return root;
-		};
+		const getDotChainRoot = __kustoGetDotChainRoot;
 		const letNames = new Set();
 		try {
 			for (const m of raw.matchAll(/(^|\n)\s*let\s+([A-Za-z_][\w-]*)\s*=/gi)) {
@@ -1537,37 +1579,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					if (byTok) {
 						const byText = stmtRaw.slice(byTok.endOffset, clauseEnd);
 							// Only include group-by output columns (aliases and bare keys).
-							const splitTopLevelCommaList = (s: any) => {
-								try {
-									const text = String(s || '');
-									const parts = [];
-									let start = 0;
-									let paren = 0, bracket = 0, brace = 0;
-									let quote = null;
-									for (let i = 0; i < text.length; i++) {
-										const ch = text[i];
-										if (quote) {
-											if (ch === '\\') { i++; continue; }
-											if (ch === quote) quote = null;
-											continue;
-										}
-										if (ch === '"' || ch === "'") { quote = ch; continue; }
-										if (ch === '(') paren++;
-										else if (ch === ')' && paren > 0) paren--;
-										else if (ch === '[') bracket++;
-										else if (ch === ']' && bracket > 0) bracket--;
-										else if (ch === '{') brace++;
-										else if (ch === '}' && brace > 0) brace--;
-										else if (ch === ',' && paren === 0 && bracket === 0 && brace === 0) {
-											parts.push(text.slice(start, i).trim());
-											start = i + 1;
-										}
-									}
-									parts.push(text.slice(start).trim());
-									return parts.filter(Boolean);
-								} catch { return []; }
-							};
-							for (const item of splitTopLevelCommaList(byText)) {
+							for (const item of __kustoSplitTopLevelCommaList(byText)) {
 								const mAssign = String(item || '').match(/^([A-Za-z_][\w-]*)\s*=/);
 								if (mAssign && mAssign[1]) { next.add(String(mAssign[1])); continue; }
 								const mBare = String(item || '').match(/^([A-Za-z_][\w-]*)\s*$/);

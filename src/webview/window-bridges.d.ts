@@ -805,35 +805,11 @@ declare global {
 		__kustoRequestKqlTableReferences?: (args: any) => Promise<any>;
 
 		// =====================================================================
-		// copilotQueryBoxes.ts
+		// Copilot chat — thin bridges (logic in kw-query-section.ts)
 		// =====================================================================
-		__kustoQueryBoxKindByBoxId: Record<string, string>;
-		__kustoCopilotChatWidthPxByBoxId: Record<string, number>;
-		__kustoCopilotChatVisibleByBoxId: Record<string, boolean>;
 		__kustoCopilotChatFirstTimeDismissed: boolean;
-		__kustoGetCopilotChatWidthPx: (boxId: string) => number;
-		__kustoSetCopilotChatWidthPx: (boxId: string, widthPx: number) => void;
-		__kustoGetCopilotChatVisible: (boxId: string) => boolean;
-		__kustoSetCopilotChatVisible: (boxId: string, visible: boolean) => void;
-		__kustoGetCopilotChatEl: (boxId: string) => any;
 		__kustoToggleCopilotChatForBox: (boxId: string) => void;
 		addCopilotQueryBox: (options?: any) => string;
-		__kustoCopilotWriteQuerySend: (boxId: string) => void;
-		__kustoCopilotWriteQueryCancel: (boxId: string) => void;
-		__kustoDisposeCopilotQueryBox: (boxId: string) => void;
-		__kustoCopilotApplyWriteQueryOptions: (boxId: string, models: any, selectedModelId: string, tools: any) => void;
-		__kustoCopilotClearConversation: (boxId: string) => void;
-		__kustoCopilotToggleToolsPanel: (boxId: string) => void;
-		__kustoCopilotWriteQueryStatus: (boxId: string, text: string, detail: string, role: string) => void;
-		__kustoCopilotWriteQuerySetQuery: (boxId: string, queryText: string) => void;
-		__kustoCopilotWriteQueryDone: (boxId: string, ok: boolean, message: string) => void;
-		__kustoCopilotWriteQueryToolResult: (boxId: string, toolName: string, label: string, jsonText: string, entryId: string) => void;
-		__kustoCopilotAppendExecutedQuery: (boxId: string, query: string, resultSummary: string, errorMessage: string, entryId: string, result: any) => void;
-		__kustoCopilotAppendGeneralRulesLink: (boxId: string, filePath: string, preview: string, entryId: string) => void;
-		__kustoCopilotAppendClarifyingQuestion: (boxId: string, question: string, entryId: string) => void;
-		__kustoCopilotAppendQuerySnapshot: (boxId: string, queryText: string, entryId: string) => void;
-		__kustoCopilotAppendDevNotesContext: (boxId: string, preview: string, entryId: string) => void;
-		__kustoCopilotAppendDevNoteToolCall: (boxId: string, action: string, detail: string, result: string, entryId: string) => void;
 
 		// =====================================================================
 		// extraBoxes.ts
