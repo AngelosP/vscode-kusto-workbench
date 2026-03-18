@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { styles } from './kw-copilot-chat.styles.js';
 import { codiconSheet } from '../shared/codicon-styles.js';
 
@@ -44,14 +45,25 @@ export interface ChatMessageEntry {
 
 const AUTOSCROLL_THRESHOLD_PX = 40;
 
+/** Render markdown text to sanitized HTML. Falls back to plain text if marked/DOMPurify unavailable. */
+function renderMarkdown(text: string): string {
+	const w = globalThis as Record<string, unknown>;
+	const marked = w['marked'] as { parse?: (src: string) => string } | undefined;
+	const DOMPurify = w['DOMPurify'] as { sanitize?: (html: string) => string } | undefined;
+	if (!marked?.parse || !DOMPurify?.sanitize) return '';
+	try {
+		return DOMPurify.sanitize(marked.parse(text));
+	} catch {
+		return '';
+	}
+}
+
 const FINAL_TOOL_NAMES = new Set([
 	'respond_to_query_performance_optimization_request',
 	'respond_to_all_other_queries',
 	'ask_user_clarifying_question',
 ]);
 
-const SVG_SEND = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 1.5a.5.5 0 0 1 .5.5v10.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 1 1 .708-.708L7.5 12.793V2a.5.5 0 0 1 .5-.5z" transform="rotate(180 8 8)"/></svg>';
-const SVG_STOP = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>';
 const SVG_TOOLS = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" xmlns="http://www.w3.org/2000/svg"><line x1="2" y1="5.5" x2="14" y2="5.5"/><circle cx="10" cy="5.5" r="2" fill="var(--vscode-editor-background, #1e1e1e)" stroke="currentColor"/><line x1="2" y1="10.5" x2="14" y2="10.5"/><circle cx="6" cy="10.5" r="2" fill="var(--vscode-editor-background, #1e1e1e)" stroke="currentColor"/></svg>';
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -109,8 +121,6 @@ export class KwCopilotChat extends LitElement {
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
 	@query('textarea') private _textarea!: HTMLTextAreaElement;
-
-	static override styles = styles;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -198,7 +208,7 @@ export class KwCopilotChat extends LitElement {
 			id: this._nextId(),
 			kind: 'system',
 			text: 'Loaded query writing guidelines',
-			toolName: 'general-query-rules.md',
+			toolName: 'General query rules',
 			detail: preview || 'Query writing guidelines for the LLM',
 			tooltipLabel: 'Preview:',
 			filePath: filePath || undefined,
@@ -253,7 +263,7 @@ export class KwCopilotChat extends LitElement {
 			id: this._nextId(),
 			kind: 'system',
 			text: 'Loaded file development notes for context',
-			toolName: 'Development Notes',
+			toolName: 'Development notes',
 			detail: preview || '(no notes)',
 			tooltipLabel: 'Notes:',
 			entryId: entryId || undefined,
@@ -383,8 +393,8 @@ export class KwCopilotChat extends LitElement {
 						class="send-btn ${this._running ? 'is-running' : ''}"
 						title=${this._running ? 'Stop (Esc)' : 'Send (Enter)'}
 						@click=${this._onSendOrCancel}>
-						<span class="icon-send" .innerHTML=${SVG_SEND}></span>
-						<span class="icon-stop" .innerHTML=${SVG_STOP}></span>
+						<span class="icon-send codicon codicon-arrow-up"></span>
+						<span class="icon-stop codicon codicon-debug-stop"></span>
 					</button>
 				</div>
 			</div>
@@ -414,10 +424,11 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	private _renderAssistantMessage(msg: ChatMessageEntry) {
+		const mdHtml = renderMarkdown(msg.text);
 		return html`<div class="msg msg-assistant"
 			title=${msg.detail || ''}
 			style=${msg.detail ? 'cursor:help;text-decoration:underline dotted' : ''}
-		>${msg.text}</div>`;
+		>${mdHtml ? unsafeHTML(mdHtml) : msg.text}</div>`;
 	}
 
 	private _renderNotificationMessage(msg: ChatMessageEntry) {
@@ -430,7 +441,6 @@ export class KwCopilotChat extends LitElement {
 	private _renderToolMessage(msg: ChatMessageEntry) {
 		const isExecuteQuery = msg.toolName === 'execute_kusto_query';
 		const isDevNote = msg.toolName?.startsWith('update_development_note');
-		const iconClass = isDevNote ? 'codicon-notebook' : 'codicon-tools';
 		return html`
 			<div class="msg msg-tool ${msg.isError ? 'is-error' : ''} ${msg.removed ? 'is-removed' : ''}"
 				data-entry-id=${msg.entryId || ''}
@@ -439,7 +449,9 @@ export class KwCopilotChat extends LitElement {
 				@mouseleave=${() => this._hideTooltip()}>
 				<div class="tool-header">
 					<div class="tool-header-left">
-						<span class="tool-icon codicon ${iconClass}" aria-hidden="true"></span>
+						${isDevNote
+							? html`<span class="tool-icon codicon codicon-notebook" aria-hidden="true"></span>`
+							: html`<span class="tool-icon" aria-hidden="true" .innerHTML=${SVG_TOOLS}></span>`}
 						<strong>${msg.toolName || 'tool'}</strong>
 					</div>
 					<div class="tool-header-right">
@@ -451,10 +463,10 @@ export class KwCopilotChat extends LitElement {
 							</button>
 						` : nothing}
 						${!isExecuteQuery && !isDevNote && msg.detail ? html`
-							<button type="button" class="tool-icon-btn"
-								title="View what the tool returned"
-								@click=${(e: Event) => { e.preventDefault(); this._onViewTool(msg); }}>
-								<span class="codicon codicon-eye"></span>
+						<button type="button" class="tool-icon-btn"
+							title="View what the tool returned"
+							@click=${(e: Event) => { e.preventDefault(); this._onViewTool(msg); }}>
+							<span class="codicon codicon-link-external"></span>
 							</button>
 						` : nothing}
 						${msg.entryId && !msg.removed ? html`
@@ -472,7 +484,7 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	private _renderSystemMessage(msg: ChatMessageEntry) {
-		const isDevNotes = msg.toolName === 'Development Notes';
+		const isDevNotes = msg.toolName === 'Development notes';
 		const iconClass = isDevNotes ? 'codicon-notebook' : 'codicon-book';
 		return html`
 			<div class="msg msg-system ${msg.removed ? 'is-removed' : ''}"
@@ -488,9 +500,16 @@ export class KwCopilotChat extends LitElement {
 					<div class="tool-header-right">
 						${msg.filePath ? html`
 							<button type="button" class="tool-icon-btn"
-								title="View what the guidelines are"
+								title="View in new tab"
 								@click=${(e: Event) => { e.preventDefault(); this._onOpenPreview(msg); }}>
-								<span class="codicon codicon-eye"></span>
+								<span class="codicon codicon-link-external"></span>
+							</button>
+						` : nothing}
+						${!msg.filePath && msg.detail ? html`
+							<button type="button" class="tool-icon-btn"
+								title="View content"
+								@click=${(e: Event) => { e.preventDefault(); this._onViewTool(msg); }}>
+								<span class="codicon codicon-link-external"></span>
 							</button>
 						` : nothing}
 						${msg.entryId && !msg.removed ? html`
@@ -517,13 +536,13 @@ export class KwCopilotChat extends LitElement {
 				<div class="tool-header">
 					<div class="tool-header-left">
 						<span class="tool-icon codicon codicon-code" aria-hidden="true"></span>
-						<strong>Query context</strong>
+						<strong>Existing query</strong>
 					</div>
 					<div class="tool-header-right">
 						<button type="button" class="tool-icon-btn"
 							title=${msg.detail || ''}
-							@click=${(e: Event) => { e.preventDefault(); this._onViewTool({ ...msg, toolName: 'Query context', toolLabel: 'Query snapshot' }); }}>
-							<span class="codicon codicon-eye"></span>
+							@click=${(e: Event) => { e.preventDefault(); this._onViewTool({ ...msg, toolName: 'Existing query', toolLabel: 'Query snapshot' }); }}>
+						<span class="codicon codicon-link-external"></span>
 						</button>
 						${msg.entryId && !msg.removed ? html`
 							<button type="button" class="tool-icon-btn remove-btn"
@@ -558,7 +577,7 @@ export class KwCopilotChat extends LitElement {
 						` : nothing}
 					</div>
 				</div>
-				<div class="clarifying-question-text">${msg.text}</div>
+				<div class="clarifying-question-text">${(() => { const h = renderMarkdown(msg.text); return h ? unsafeHTML(h) : msg.text; })()}</div>
 			</div>
 		`;
 	}

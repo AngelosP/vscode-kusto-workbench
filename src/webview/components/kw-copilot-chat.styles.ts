@@ -131,7 +131,44 @@ export const styles = css`
 		background: var(--vscode-editorWidget-background);
 		color: var(--vscode-foreground);
 		border: none;
+		white-space: normal;
 	}
+
+	/* Markdown content inside assistant messages */
+	.msg-assistant p { margin: 0 0 6px; }
+	.msg-assistant p:last-child { margin-bottom: 0; }
+	.msg-assistant code {
+		font-family: var(--vscode-editor-font-family, monospace);
+		font-size: 11px;
+		background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+		padding: 1px 4px;
+		border-radius: 3px;
+	}
+	.msg-assistant pre {
+		margin: 4px 0;
+		padding: 6px 8px;
+		background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+		border-radius: 3px;
+		overflow-x: auto;
+		font-size: 11px;
+		line-height: 1.4;
+	}
+	.msg-assistant pre code {
+		background: none;
+		padding: 0;
+		border-radius: 0;
+	}
+	.msg-assistant ul, .msg-assistant ol {
+		margin: 4px 0;
+		padding-left: 20px;
+	}
+	.msg-assistant li { margin: 1px 0; }
+	.msg-assistant strong { font-weight: 600; }
+	.msg-assistant a {
+		color: var(--vscode-textLink-foreground, #3794ff);
+		text-decoration: none;
+	}
+	.msg-assistant a:hover { text-decoration: underline; }
 
 	.msg-assistant + .msg-assistant {
 		margin-top: -6px;
@@ -160,6 +197,10 @@ export const styles = css`
 	.msg-tool {
 		background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
 		border-left: 3px solid var(--vscode-charts-green, #89d185);
+		max-width: 350px;
+		margin-right: 25px;
+		padding: 6px 8px;
+		white-space: normal;
 	}
 	.msg-tool.is-error {
 		border-left-color: var(--vscode-inputValidation-errorBorder, #f48771);
@@ -169,22 +210,34 @@ export const styles = css`
 	.msg-system {
 		background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
 		border-left: 3px solid var(--vscode-textLink-foreground);
+		max-width: 350px;
+		margin-right: 25px;
+		padding: 6px 8px;
+		white-space: normal;
 	}
 
 	/* Query snapshot messages */
 	.msg-query-snapshot {
 		background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
 		border-left: 3px solid var(--vscode-charts-blue, #4fc1ff);
+		max-width: 350px;
+		margin-right: 25px;
+		padding: 6px 8px;
+		white-space: normal;
 	}
 
 	/* Clarifying question messages */
 	.msg-clarifying-question {
 		background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1));
 		border-left: 3px solid var(--vscode-charts-purple, #b180d7);
+		max-width: 350px;
+		margin-right: 25px;
+		padding: 6px 8px;
+		white-space: normal;
 	}
 
 	.clarifying-question-text {
-		padding: 4px 0 0 0;
+		padding: 4px 0 2px 0;
 		color: var(--vscode-foreground);
 		font-size: 12px;
 		line-height: 1.4;
@@ -211,12 +264,16 @@ export const styles = css`
 	.tool-header-left {
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: 6px;
 	}
 	.tool-icon {
 		display: inline-flex;
 		align-items: center;
 		flex: 0 0 auto;
+	}
+	.tool-icon svg {
+		width: 14px;
+		height: 14px;
 	}
 	.tool-icon.codicon {
 		font-size: 14px;
@@ -227,7 +284,8 @@ export const styles = css`
 		gap: 4px;
 	}
 	.tool-result {
-		margin-top: 4px;
+		margin-top: 2px;
+		margin-bottom: 2px;
 		font-size: 12px;
 		color: var(--vscode-descriptionForeground);
 		padding-left: 20px;
@@ -241,8 +299,8 @@ export const styles = css`
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 22px;
-		height: 22px;
+		width: 18px;
+		height: 18px;
 		padding: 0;
 		border: none;
 		border-radius: 4px;
@@ -255,7 +313,7 @@ export const styles = css`
 		background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31));
 		opacity: 1;
 	}
-	.tool-icon-btn .codicon { font-size: 14px; }
+	.tool-icon-btn .codicon { font-size: 13px; }
 	.remove-btn:hover {
 		color: var(--vscode-inputValidation-errorBorder, #f48771);
 	}
@@ -380,6 +438,8 @@ export const styles = css`
 		align-items: center;
 		gap: 0;
 		min-width: 0;
+		overflow: hidden;
+		flex: 1 1 auto;
 	}
 
 	/* ── Tools button ───────────────────────────────────────────── */
@@ -496,8 +556,8 @@ export const styles = css`
 		opacity: 0.35;
 		cursor: default;
 	}
-	.send-btn .icon-send { display: block; }
-	.send-btn .icon-stop { display: none; }
+	.send-btn .icon-send { display: block; font-size: 14px; }
+	.send-btn .icon-stop { display: none; font-size: 14px; }
 	.send-btn.is-running .icon-send { display: none; }
 	.send-btn.is-running .icon-stop { display: block; }
 	.send-btn.is-running {
@@ -508,9 +568,10 @@ export const styles = css`
 	/* ── Model dropdown slot ────────────────────────────────────── */
 
 	::slotted(.kusto-copilot-chat-model-dropdown) {
-		max-width: 160px;
+		max-width: 200px;
 		min-width: 0;
-		flex: 0 1 auto;
+		flex: 1 1 auto;
 		overflow: hidden;
+		margin-left: 10px;
 	}
 `;
