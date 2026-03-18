@@ -2419,20 +2419,8 @@ export function __kustoRenderTransformation( boxId: any) {
 				}
 			}
 
-			// If nothing is valid yet, still show the base dataset.
+			// If nothing is valid yet, skip rendering (Lit element handles its own display).
 			if (!parsed.length) {
-				const outRowsBase = [];
-				for (const r of rows) {
-					const row = Array.isArray(r) ? r : [];
-					outRowsBase.push(row.map(__kustoGetRawCellValueForTransform));
-				}
-				_win.displayResultForBox({ columns: colNames.slice(), rows: outRowsBase, metadata: { transformationType: 'derive' } }, id, { label: 'Transformations', showExecutionTime: false });
-				try {
-					const wrapper = document.getElementById(id + '_results_wrapper') as any;
-					if (wrapper) wrapper.style.display = '';
-				} catch (e) { console.error('[kusto]', e); }
-				try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
-				try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 				return;
 			}
 
@@ -2469,13 +2457,6 @@ export function __kustoRenderTransformation( boxId: any) {
 				outRows.push(baseRawRow.concat(derivedValues));
 			}
 
-			_win.displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'derive' } }, id, { label: 'Transformations', showExecutionTime: false });
-			try {
-				const wrapper = document.getElementById(id + '_results_wrapper') as any;
-				if (wrapper) wrapper.style.display = '';
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2560,13 +2541,6 @@ export function __kustoRenderTransformation( boxId: any) {
 				}
 				outRows.push(rowOut);
 			}
-			_win.displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'summarize' } }, id, { label: 'Transformations', showExecutionTime: false });
-			try {
-				const wrapper = document.getElementById(id + '_results_wrapper') as any;
-				if (wrapper) wrapper.style.display = '';
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2648,13 +2622,6 @@ export function __kustoRenderTransformation( boxId: any) {
 				}
 				outRows.push(out);
 			}
-			_win.displayResultForBox({ columns: outCols, rows: outRows, metadata: { transformationType: 'pivot' } }, id, { label: 'Transformations', showExecutionTime: false });
-			try {
-				const wrapper = document.getElementById(id + '_results_wrapper') as any;
-				if (wrapper) wrapper.style.display = '';
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -2691,13 +2658,6 @@ export function __kustoRenderTransformation( boxId: any) {
 				seen.add(key);
 				outRows.push([raw]);
 			}
-			_win.displayResultForBox({ columns: [col], rows: outRows, metadata: { transformationType: 'distinct' } }, id, { label: 'Transformations', showExecutionTime: false });
-			try {
-				const wrapper = document.getElementById(id + '_results_wrapper') as any;
-				if (wrapper) wrapper.style.display = '';
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoEnsureTransformationAutoExpandWhenResultsAppear(id); } catch (e) { console.error('[kusto]', e); }
-			try { setTimeout(() => { try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); } }, 0); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 

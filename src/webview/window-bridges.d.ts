@@ -156,8 +156,7 @@ declare global {
 		// =====================================================================
 		__kustoActiveColumnMenu: { menu: HTMLElement | null; button: Element | null } | null;
 		__kustoColumnMenuAutoCloseWired: boolean;
-		toggleColumnMenu: (colIdx: number, boxId: string) => void;
-		showUniqueValues: (colIdx: number, boxId: string) => void;
+
 		showDistinctCountPicker: (colIdx: number, boxId: string) => void;
 		calculateDistinctCount: (groupByColIdx: number, boxId: string) => void;
 		closeColumnAnalysis: (event: Event | null) => void;
@@ -465,10 +464,7 @@ declare global {
 		// resultsTable.ts
 		// =====================================================================
 		__kustoGetResultsState: (boxId: string) => KustoResultsState | null;
-		__kustoIsResultsFiltered: (state: KustoResultsState) => boolean;
-		__kustoGetVirtualizationState: (state: KustoResultsState) => any;
-		__kustoBumpVisualVersion: (state: KustoResultsState) => void;
-		__kustoRerenderResultsTable: (boxId: string) => void;
+
 		__kustoGetRawCellValue: (cell: any) => any;
 		__kustoGetRawCellValueForChart: (cell: any) => any;
 		__kustoNormalizeResultsColumnName: (col: KustoResultsColumn) => string;
@@ -508,16 +504,7 @@ declare global {
 		__kustoEnsureDragSelectionHandlers: (boxId: string) => void;
 		__kustoFocusTableContainer: (container: HTMLElement | null, boxId: string) => void;
 		__kustoUpdateSplitButtonState: (boxId: string) => void;
-		__kustoOnCopyPrimary: (boxId: string) => void;
-		__kustoOnSavePrimary: (boxId: string, label?: string) => void;
-		copySelectionToClipboard: (boxId: string) => void;
-		selectCell: (a: any, b: any, c: any, d?: any) => void;
-		searchData: (boxId: string) => void;
-		nextSearchMatch: (boxId: string) => void;
-		previousSearchMatch: (boxId: string) => void;
-		filterColumns: (boxId: string) => void;
-		handleDataSearchKeydown: (event: KeyboardEvent, boxId: string) => void;
-		handleColumnSearchKeydown: (event: KeyboardEvent, boxId: string) => void;
+
 		__kustoCopyClientActivityId: (boxId: string) => void;
 		__kustoEnsureResultsCopyKeyHandlerInstalled: () => void;
 		__kustoGetSelectAllIconSvg: (size?: number) => string;
@@ -547,7 +534,7 @@ declare global {
 		__kustoEnsureFilterGlobalCloseHandler: () => void;
 		openColumnFilter: (event: Event, colIndex: number, boxId: string) => void;
 		__kustoEnsureFilterPopoverSearchControl: (boxId: string, colIdx: number) => void;
-		__kustoRenderFilterPopoverHtml: (boxId: string, colIdx: number) => string;
+
 		__kustoFilterSearchValues: (boxId: string, colIdx: number) => void;
 		__kustoFilterSetAllValues: (boxId: string, colIdx: number, checked: boolean) => void;
 		__kustoGetValuesAllowedFromSpec: (spec: any) => any[] | null;
@@ -574,7 +561,7 @@ declare global {
 		sortColumnDescending: (colIndex: number, boxId: string) => void;
 		toggleSortDialog: (boxId: string) => void;
 		closeSortDialogOnBackdrop: (event: Event, boxId: string) => void;
-		__kustoRenderSortDialog: (boxId: string) => void;
+
 		__kustoAddSortRuleInline: (boxId: string) => void;
 		__kustoWireSortDialogDnD: (boxId: string) => void;
 		__kustoMoveSortRule: (boxId: string, fromIdx: number, toIdx: number) => void;
@@ -592,7 +579,7 @@ declare global {
 		__kustoToggleResultsToolsDropdown: (boxId: string) => void;
 		__kustoCloseResultsToolsDropdown: (boxId: string) => void;
 		__kustoCloseAllResultsToolsDropdowns: () => void;
-		toggleSearchTool: (boxId: string) => void;
+
 		toggleColumnTool: (boxId: string) => void;
 		highlightCurrentSearchMatch: (boxId: string) => void;
 		handleTableKeydown: (event: KeyboardEvent, boxId: string) => void;
@@ -605,9 +592,7 @@ declare global {
 		__kustoResolveVirtualScrollElement: (containerEl: any) => any;
 		__kustoResolveScrollSourceForEvent: (ev: any, containerEl: any) => any;
 		__kustoGetVirtualScrollMetrics: (scrollEl: HTMLElement, containerEl: HTMLElement) => { scrollTop: number; clientH: number };
-		__kustoComputeVirtualRange: (state: KustoResultsState, containerEl: HTMLElement, displayRowIndices: number[] | null, options: any) => { start: number; end: number };
-		__kustoBuildResultsTableRowHtml: (rowIdx: number, displayIdx: number, state: KustoResultsState, boxId: string, matchSet: any, currentKey: string) => string;
-		__kustoRerenderResultsTableBody: (boxId: string, options: any) => void;
+
 		__kustoEnsureResultsStateMap: () => Record<string, KustoResultsState>;
 		__kustoEnsureResultsSearchControls: (boxId: string) => void;
 		__kustoTryExtractJsonFromErrorText: (raw: any) => any;
@@ -632,11 +617,11 @@ declare global {
 		__kustoSplitMenuEl: HTMLElement | null;
 		__kustoContextMenuEl: HTMLElement | null;
 		__kustoOpenShareModal: (boxId: string) => void;
-		__kustoGetVisibleResultsAsCsv: (boxId: string) => string;
+
 		__kustoGetAllResultsAsCsv: (boxId: string) => string;
 		__kustoGetResultsAsCsv: (boxId: string, mode: string) => string;
 		__kustoMakeSafeCsvFileNameFromLabel: (label: string) => string;
-		__kustoSaveResultsToCsvFile: (boxId: string, sectionLabel: string, mode: string) => void;
+
 		saveVisibleResultsToCsvFile: (boxId: string, sectionLabel: string) => void;
 		__kustoOnSaveSecondary: (boxId: string, sectionLabel: string) => void;
 		__kustoHideSplitMenu: () => void;
