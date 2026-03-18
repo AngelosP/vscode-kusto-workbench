@@ -28,6 +28,7 @@ import './components/kw-filter-dialog.js';
 import './components/kw-sort-dialog.js';
 import './components/kw-dropdown.js';
 import './components/kw-data-table.js';
+import './components/kw-copilot-chat.js';
 import './components/kw-section-shell.js';
 import './components/kw-popover.js';
 import './components/kw-section-reorder-popup.js';

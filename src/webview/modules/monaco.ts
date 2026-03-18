@@ -4954,7 +4954,7 @@ function initQueryEditor(boxId: any) {
 				try {
 					if (e && e.target && (e.target as HTMLElement).closest) {
 						// Allow embedded UI (e.g. Copilot Chat) to receive focus.
-						if ((e.target as HTMLElement).closest('.kusto-copilot-chat') || (e.target as HTMLElement).closest('[data-kusto-no-editor-focus="true"]')) {
+						if ((e.target as HTMLElement).closest('.kusto-copilot-chat') || (e.target as HTMLElement).closest('kw-copilot-chat') || (e.target as HTMLElement).closest('[data-kusto-no-editor-focus="true"]')) {
 							return;
 						}
 						if ((e.target as HTMLElement).closest('.query-editor-toolbar')) {

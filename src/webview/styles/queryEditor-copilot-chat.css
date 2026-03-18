@@ -35,6 +35,8 @@
 			align-items: stretch;
 			padding: 0;
 			margin: 0;
+			container-type: inline-size;
+			container-name: copilot-chat-pane;
 		}
 
 		.kusto-copilot-editor-pane {
@@ -328,7 +330,7 @@
 		}
 
 		/* When the input bar is narrow, collapse the model dropdown to icon-only */
-		@container copilot-input-bar (max-width: 220px) {
+		@container copilot-input-bar (max-width: 150px) {
 			.kusto-copilot-chat-model-dropdown {
 				max-width: 30px;
 				width: 30px;
@@ -342,17 +344,48 @@
 				display: none;
 			}
 			.kusto-copilot-chat-model-dropdown .kusto-dropdown-btn {
-				padding: 2px 2px;
+				padding: 2px 2px 2px 8px;
 				width: 30px;
 				min-width: 0;
 				justify-content: center;
 			}
 			.kusto-copilot-chat-model-dropdown.has-icon .select-icon {
+				display: block !important;
 				position: static;
 				transform: none;
 			}
 			.kusto-copilot-chat-model-dropdown.has-icon .kusto-dropdown-btn {
-				padding-left: 2px;
+				padding-left: 8px;
+			}
+		}
+
+		/* Same rule for the Lit <kw-copilot-chat> — the chat pane is the container */
+		@container copilot-chat-pane (max-width: 150px) {
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown {
+				max-width: 30px;
+				width: 30px;
+				min-width: 30px;
+				flex: 0 0 30px;
+			}
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn-text {
+				display: none;
+			}
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn-caret {
+				display: none;
+			}
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn {
+				padding: 2px 2px 2px 8px;
+				width: 30px;
+				min-width: 0;
+				justify-content: center;
+			}
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown.has-icon .select-icon {
+				display: block !important;
+				position: static;
+				transform: none;
+			}
+			kw-copilot-chat .kusto-copilot-chat-model-dropdown.has-icon .kusto-dropdown-btn {
+				padding-left: 8px;
 			}
 		}
 
@@ -364,34 +397,50 @@
 		}
 
 		/* Model dropdown in input bar: borderless, smaller font */
-		.kusto-copilot-chat-input-bar .kusto-dropdown-btn {
+		.kusto-copilot-chat-input-bar .kusto-dropdown-btn,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn {
 			border: none;
 			background: transparent;
-			padding: 2px 21px 2px 2px;
+			padding: 2px 14px 2px 8px;
 			min-height: 22px;
 			font-size: 11px;
 		}
-		.kusto-copilot-chat-input-bar .has-icon .kusto-dropdown-btn {
-			padding-left: 18px;
+		.kusto-copilot-chat-input-bar .has-icon .kusto-dropdown-btn,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown.has-icon .kusto-dropdown-btn {
+			padding-left: 8px;
 		}
-		.kusto-copilot-chat-input-bar .has-icon .select-icon {
-			left: 2px;
-			width: 14px;
-			height: 14px;
+		/* Reduce the caret size for the model dropdown */
+		.kusto-copilot-chat-input-bar .kusto-dropdown-btn-caret,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn-caret {
+			width: 12px;
+			height: 12px;
+			right: 2px;
 		}
-		.kusto-copilot-chat-input-bar .kusto-dropdown-btn:hover {
+		.kusto-copilot-chat-input-bar .kusto-dropdown-btn-caret svg,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn-caret svg {
+			width: 11px;
+			height: 11px;
+		}
+		/* Hide icon when text is visible (non-icon-only mode) */
+		.kusto-copilot-chat-input-bar .has-icon .select-icon,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown.has-icon .select-icon {
+			display: none;
+		}
+		.kusto-copilot-chat-input-bar .kusto-dropdown-btn:hover,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn:hover {
 			background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 			border: none;
 		}
-		.kusto-copilot-chat-input-bar .kusto-dropdown-btn:focus {
+		.kusto-copilot-chat-input-bar .kusto-dropdown-btn:focus,
+		kw-copilot-chat .kusto-copilot-chat-model-dropdown .kusto-dropdown-btn:focus {
 			border: none;
 			outline: 1px solid var(--vscode-focusBorder);
 		}
 
 		.kusto-copilot-chat-input-bar .kusto-copilot-chat-model-dropdown {
-			max-width: 160px;
+			max-width: 200px;
 			min-width: 0;
-			flex: 0 1 auto;
+			flex: 1 1 auto;
 			overflow: hidden;
 		}
 

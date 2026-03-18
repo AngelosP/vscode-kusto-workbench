@@ -808,9 +808,6 @@ declare global {
 		// copilotQueryBoxes.ts
 		// =====================================================================
 		__kustoQueryBoxKindByBoxId: Record<string, string>;
-		__kustoCopilotChatStateByBoxId: Record<string, any>;
-		__kustoCopilotToolResponsesByBoxId: Record<string, any>;
-		__kustoCopilotToolSelectionByBoxId: Record<string, any>;
 		__kustoCopilotChatWidthPxByBoxId: Record<string, number>;
 		__kustoCopilotChatVisibleByBoxId: Record<string, boolean>;
 		__kustoCopilotChatFirstTimeDismissed: boolean;
@@ -818,6 +815,7 @@ declare global {
 		__kustoSetCopilotChatWidthPx: (boxId: string, widthPx: number) => void;
 		__kustoGetCopilotChatVisible: (boxId: string) => boolean;
 		__kustoSetCopilotChatVisible: (boxId: string, visible: boolean) => void;
+		__kustoGetCopilotChatEl: (boxId: string) => any;
 		__kustoToggleCopilotChatForBox: (boxId: string) => void;
 		addCopilotQueryBox: (options?: any) => string;
 		__kustoCopilotWriteQuerySend: (boxId: string) => void;

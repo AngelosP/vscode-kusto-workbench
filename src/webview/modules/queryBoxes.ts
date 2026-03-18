@@ -163,7 +163,19 @@ function addQueryBox( options: any) {
 	const defaultResultsVisible = (options && typeof options.defaultResultsVisible === 'boolean') ? !!options.defaultResultsVisible : true;
 	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
 	const defaultExpanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
-	_win.queryBoxes.push(id);
+	const afterBoxId = (options && options.afterBoxId) ? String(options.afterBoxId) : '';
+
+	// Insert into queryBoxes array at the right position.
+	if (afterBoxId) {
+		const afterIdx = _win.queryBoxes.indexOf(afterBoxId);
+		if (afterIdx >= 0) {
+			_win.queryBoxes.splice(afterIdx + 1, 0, id);
+		} else {
+			_win.queryBoxes.push(id);
+		}
+	} else {
+		_win.queryBoxes.push(id);
+	}
 
 	const container = document.getElementById('queries-container') as any;
 
@@ -388,7 +400,13 @@ function addQueryBox( options: any) {
 		'</div>' +
 		'</kw-query-section>';
 
-	container.insertAdjacentHTML('beforeend', boxHtml);
+	// Insert into the DOM — after a specific section or at the end.
+	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+	if (afterEl) {
+		afterEl.insertAdjacentHTML('afterend', boxHtml);
+	} else {
+		container.insertAdjacentHTML('beforeend', boxHtml);
+	}
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
 	try { _win.updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 	_win.setRunMode(id, 'take100');
