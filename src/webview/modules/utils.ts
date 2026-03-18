@@ -1,16 +1,15 @@
 // Utils module — converted from legacy/utils.js
 // Window bridge exports at bottom for remaining legacy callers.
-export {};
 
 const _win = window;
 
-function escapeHtml(str: string): string {
+export function escapeHtml(str: string): string {
 	const div = document.createElement('div');
 	div.textContent = str;
 	return div.innerHTML;
 }
 
-function escapeRegex(str: string): string {
+export function escapeRegex(str: string): string {
 	return str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 

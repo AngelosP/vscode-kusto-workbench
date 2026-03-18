@@ -23,6 +23,7 @@ import './modules/monaco.js';
 import './modules/main.js'; // Must be last — message dispatcher
 import './components/kw-search-bar.js';
 import './components/kw-object-viewer.js';
+import './components/kw-cell-viewer.js';
 import './components/kw-filter-dialog.js';
 import './components/kw-sort-dialog.js';
 import './components/kw-dropdown.js';

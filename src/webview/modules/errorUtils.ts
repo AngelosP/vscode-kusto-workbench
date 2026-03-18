@@ -1,6 +1,5 @@
 // Error parsing utilities and navigation helpers for query error UX.
 // Extracted from resultsTable-render.ts during legacy results table removal.
-export {};
 
 const _win = window;
 
@@ -23,7 +22,7 @@ export interface ErrorUxModel {
 
 // ── Error parsing helpers ────────────────────────────────────────────────────
 
-function __kustoTryExtractJsonFromErrorText(raw: any) {
+export function __kustoTryExtractJsonFromErrorText(raw: any) {
 	const text = String(raw || '');
 	const firstObj = text.indexOf('{');
 	const firstArr = text.indexOf('[');
@@ -51,7 +50,7 @@ function __kustoTryExtractJsonFromErrorText(raw: any) {
 	}
 }
 
-function __kustoExtractLinePosition(text: any) {
+export function __kustoExtractLinePosition(text: any) {
 	const s = String(text || '');
 	const m = s.match(/\[line:position\s*=\s*(\d+)\s*:\s*(\d+)\s*\]/i);
 	if (!m) {
@@ -65,21 +64,21 @@ function __kustoExtractLinePosition(text: any) {
 	return { line, col, token: `[line:position=${line}:${col}]` };
 }
 
-function __kustoNormalizeBadRequestInnerMessage(msg: any) {
+export function __kustoNormalizeBadRequestInnerMessage(msg: any) {
 	let s = String(msg || '').trim();
 	s = s.replace(/^Request is invalid[^:]*:\s*/i, '');
 	s = s.replace(/^(Semantic error:|Syntax error:)\s*/i, '');
 	return s.trim();
 }
 
-function __kustoStripLinePositionTokens(text: any) {
+export function __kustoStripLinePositionTokens(text: any) {
 	let s = String(text || '');
 	s = s.replace(/\s*\[line:position\s*=\s*\d+\s*:\s*\d+\s*\]\s*/gi, ' ');
 	s = s.replace(/\s{2,}/g, ' ').trim();
 	return s;
 }
 
-function __kustoTryExtractAutoFindTermFromMessage(message: any) {
+export function __kustoTryExtractAutoFindTermFromMessage(message: any) {
 	try {
 		const msg = String(message || '');
 		if (!msg.trim()) return null;
@@ -115,7 +114,7 @@ function __kustoTryExtractAutoFindTermFromMessage(message: any) {
 
 // ── Error model builder ──────────────────────────────────────────────────────
 
-function __kustoBuildErrorUxModel(rawError: any): ErrorUxModel {
+export function __kustoBuildErrorUxModel(rawError: any): ErrorUxModel {
 	const raw = (rawError === null || rawError === undefined) ? '' : String(rawError);
 	if (!raw.trim()) {
 		return { kind: 'none' };

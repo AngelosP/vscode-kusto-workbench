@@ -6,6 +6,12 @@ export default defineConfig({
 		environment: 'happy-dom',
 		include: ['tests/webview/**/*.test.ts'],
 		globals: true,
+		coverage: {
+			provider: 'v8',
+			reporter: ['text', 'text-summary'],
+			include: ['src/webview/**/*.ts'],
+			exclude: ['src/webview/vendor/**', 'src/webview/**/*.d.ts'],
+		},
 	},
 	plugins: [
 		{

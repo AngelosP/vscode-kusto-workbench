@@ -1,6 +1,5 @@
 // Object Viewer module — converted from legacy/objectViewer.js
 // Window bridge exports at bottom for remaining inline onclick callers.
-export {};
 
 declare const escapeHtml: (s: string) => string;
 declare const escapeRegex: (s: string) => string;
@@ -202,7 +201,7 @@ function __kustoGetObjectViewerColumnName(colIndex: number): string {
 	return 'column ' + (colIndex + 1);
 }
 
-function __kustoParseMaybeJson(value: unknown): unknown {
+export function __kustoParseMaybeJson(value: unknown): unknown {
 	if (typeof value !== 'string') {
 		return value;
 	}
@@ -221,7 +220,7 @@ function __kustoParseMaybeJson(value: unknown): unknown {
 	}
 }
 
-function __kustoStringifyForSearch(value: unknown): string {
+export function __kustoStringifyForSearch(value: unknown): string {
 	try {
 		if (value === null || value === undefined) return '';
 		if (typeof value === 'string') return value;
@@ -231,7 +230,7 @@ function __kustoStringifyForSearch(value: unknown): string {
 	}
 }
 
-function __kustoFormatScalarForTable(value: unknown): string {
+export function __kustoFormatScalarForTable(value: unknown): string {
 	if (value === null) return 'null';
 	if (value === undefined) return 'undefined';
 	if (typeof value === 'string') return value;
@@ -243,7 +242,7 @@ function __kustoFormatScalarForTable(value: unknown): string {
 	}
 }
 
-function __kustoIsComplexValue(value: unknown): boolean {
+export function __kustoIsComplexValue(value: unknown): boolean {
 	if (value === null || value === undefined) return false;
 	if (typeof value === 'string') {
 		const s = (value as string).trim();
@@ -496,7 +495,7 @@ function __kustoApplyObjectViewerTableSearchHighlight(): void {
 	});
 }
 
-function formatJson(jsonString: unknown): string {
+export function formatJson(jsonString: unknown): string {
 	try {
 		const obj = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;
 		return syntaxHighlightJson(obj);
@@ -505,7 +504,7 @@ function formatJson(jsonString: unknown): string {
 	}
 }
 
-function syntaxHighlightJson(obj: unknown, indent = 0): string {
+export function syntaxHighlightJson(obj: unknown, indent = 0): string {
 	const indentStr = '  '.repeat(indent);
 	const nextIndent = '  '.repeat(indent + 1);
 

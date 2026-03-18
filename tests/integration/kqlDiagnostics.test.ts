@@ -345,3 +345,182 @@ suite('KQL diagnostics', () => {
 		);
 	});
 });
+
+suite('_splitTopLevelStatements edge cases', () => {
+	test('empty string returns no statements', () => {
+		const stmts = _splitTopLevelStatements('');
+		assert.strictEqual(stmts.length, 0, 'empty input should produce no statements');
+	});
+
+	test('whitespace-only string returns no statements', () => {
+		const stmts = _splitTopLevelStatements('   \t\n  \n  ');
+		assert.strictEqual(stmts.length, 0, 'whitespace-only input should produce no statements');
+	});
+
+	test('single line comment returns one statement', () => {
+		const stmts = _splitTopLevelStatements('// this is a comment');
+		assert.strictEqual(stmts.length, 1, 'comment-only input should produce one statement');
+		assert.ok(stmts[0].text.includes('// this is a comment'));
+	});
+
+	test('block comment returns one statement', () => {
+		const stmts = _splitTopLevelStatements('/* multi\nline\ncomment */');
+		assert.strictEqual(stmts.length, 1);
+	});
+
+	test('semicolons inside single-quoted strings do not split', () => {
+		const text = "print 'hello;world'";
+		const stmts = _splitTopLevelStatements(text);
+		assert.strictEqual(stmts.length, 1,
+			`semicolon inside string should not split, got ${stmts.length} statements`);
+	});
+
+	test('semicolons inside double-quoted strings do not split', () => {
+		const text = 'print "hello;world"';
+		const stmts = _splitTopLevelStatements(text);
+		assert.strictEqual(stmts.length, 1,
+			`semicolon inside double-quoted string should not split, got ${stmts.length} statements`);
+	});
+
+	test('multiple statements separated by semicolons', () => {
+		const text = 'let x = 1;\nT | take x';
+		const stmts = _splitTopLevelStatements(text);
+		assert.ok(stmts.length >= 2,
+			`expected at least 2 statements, got ${stmts.length}`);
+	});
+
+	test('statements separated by blank lines', () => {
+		const text = 'T | take 10\n\nU | take 5';
+		const stmts = _splitTopLevelStatements(text);
+		assert.ok(stmts.length >= 2,
+			`expected at least 2 statements from blank-line separation, got ${stmts.length}`);
+	});
+});
+
+suite('KQL diagnostics – additional coverage', () => {
+	test('dot commands do not produce KW_EXPECTED_PIPE', () => {
+		const text = '.show tables';
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE for dot command, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('project-away does not produce KW_EXPECTED_PIPE', () => {
+		const text = [
+			'SampleEvents',
+			'| project-away Metrics',
+			'| take 10',
+			''
+		].join('\n');
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE for project-away, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('project-rename does not produce KW_EXPECTED_PIPE', () => {
+		const text = [
+			'SampleEvents',
+			'| project-rename NewName = OldName',
+			'| take 10',
+			''
+		].join('\n');
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE for project-rename, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('invoke operator does not produce KW_EXPECTED_PIPE', () => {
+		const text = [
+			'SampleEvents',
+			'| invoke MyFunc()',
+			'| take 10',
+			''
+		].join('\n');
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE for invoke, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('multiple let statements with semicolons produce no KW_EXPECTED_PIPE', () => {
+		const text = [
+			'let a = SampleEvents | take 1;',
+			'let b = SampleEvents | take 2;',
+			'a | union b',
+			''
+		].join('\n');
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, null);
+		const expectedPipe = diags.filter((d) => d.code === 'KW_EXPECTED_PIPE');
+		assert.strictEqual(
+			expectedPipe.length,
+			0,
+			`Expected no KW_EXPECTED_PIPE for multiple let statements, got: ${JSON.stringify(expectedPipe, null, 2)}`
+		);
+	});
+
+	test('known column is not flagged as KW_UNKNOWN_COLUMN', () => {
+		const text = 'SampleEvents | where EventTime > ago(1h)';
+		const schema: any = {
+			tables: ['SampleEvents'],
+			columnTypesByTable: {
+				SampleEvents: { EventTime: 'datetime' }
+			}
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('EventTime')),
+			`EventTime should not be flagged as unknown`
+		);
+	});
+
+	test('column created by extend is valid in subsequent operators', () => {
+		const text = [
+			'SampleEvents',
+			'| extend DayOfWeek = dayofweek(EventTime)',
+			'| where DayOfWeek > 1d',
+			''
+		].join('\n');
+
+		const schema: any = {
+			tables: ['SampleEvents'],
+			columnTypesByTable: {
+				SampleEvents: { EventTime: 'datetime' }
+			}
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownCols = diags.filter((d) => d.code === 'KW_UNKNOWN_COLUMN');
+		assert.ok(
+			!unknownCols.some((d) => String(d.message || '').includes('DayOfWeek')),
+			`DayOfWeek created by extend should be valid, got: ${JSON.stringify(unknownCols, null, 2)}`
+		);
+	});
+});

@@ -1,6 +1,5 @@
 // Cell Viewer module — converted from legacy/cellViewer.js
 // Window bridge exports at bottom for remaining inline onclick callers.
-export {};
 
 import { buildSearchRegex, type SearchMode } from '../components/search-utils.js';
 
@@ -259,7 +258,7 @@ function closeCellViewer(event?: Event): void {
 /**
  * Get the column name for the cell viewer title.
  */
-function __kustoGetCellViewerColumnName(state: any, colIndex: number): string {
+export function __kustoGetCellViewerColumnName(state: any, colIndex: number): string {
 	try {
 		const cols = (state && Array.isArray(state.columns)) ? state.columns : [];
 		const col = cols[colIndex];

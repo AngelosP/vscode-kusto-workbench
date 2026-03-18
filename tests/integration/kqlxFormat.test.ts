@@ -186,3 +186,125 @@ suite('stringifyKqlxFile', () => {
 		}
 	});
 });
+
+suite('parseKqlxText edge cases', () => {
+	test('whitespace-only text (spaces, tabs, newlines) → empty file with defaults', () => {
+		const result = parseKqlxText('   \t\n  ');
+		assert.strictEqual(result.ok, true);
+		if (result.ok) {
+			assert.strictEqual(result.file.kind, 'kqlx');
+			assert.deepStrictEqual(result.file.state.sections, []);
+		}
+	});
+
+	test('section-level extra fields are preserved through roundtrip', () => {
+		const sections = [
+			{ type: 'query', name: 'Q1', query: 'T | take 1', customField: 'preserved', metadata: { x: 42 } }
+		];
+		const file: KqlxFileV1 = {
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: sections as any }
+		};
+		const text = stringifyKqlxFile(file);
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			const s = parsed.file.state.sections[0] as any;
+			assert.strictEqual(s.customField, 'preserved', 'extra section fields should survive roundtrip');
+			assert.deepStrictEqual(s.metadata, { x: 42 }, 'nested extra fields should survive roundtrip');
+		}
+	});
+
+	test('root-level extra fields are NOT preserved (by design)', () => {
+		const text = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: [] },
+			extraProp: 'should be dropped'
+		});
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			assert.strictEqual((parsed.file as any).extraProp, undefined, 'root extra fields should be dropped');
+		}
+	});
+
+	test('state-level extra fields beyond caretDocsEnabled are NOT preserved', () => {
+		const text = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: [], customState: true }
+		});
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			assert.strictEqual((parsed.file.state as any).customState, undefined,
+				'state extra fields should be dropped');
+		}
+	});
+
+	test('caretDocsEnabled is preserved when true', () => {
+		const text = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: [], caretDocsEnabled: true }
+		});
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			assert.strictEqual(parsed.file.state.caretDocsEnabled, true);
+		}
+	});
+
+	test('caretDocsEnabled is omitted when not a boolean', () => {
+		const text = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: [], caretDocsEnabled: 'yes' }
+		});
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			assert.strictEqual(parsed.file.state.caretDocsEnabled, undefined,
+				'non-boolean caretDocsEnabled should be omitted');
+		}
+	});
+
+	test('unicode characters in query text survive roundtrip', () => {
+		const file: KqlxFileV1 = {
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				sections: [
+					{ type: 'query', name: '\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8', query: 'T | where Name == "\u00fc\u00e4\u00f6\u00df\u20ac"' },
+					{ type: 'markdown', title: '\u2603 \ud83d\ude80 Emoji', text: 'Hello \u4e16\u754c' }
+				]
+			}
+		};
+		const text = stringifyKqlxFile(file);
+		const parsed = parseKqlxText(text);
+		assert.strictEqual(parsed.ok, true);
+		if (parsed.ok) {
+			assert.deepStrictEqual(parsed.file, file, 'unicode should be preserved through roundtrip');
+		}
+	});
+
+	test('stringifyKqlxFile output is valid JSON that can be parsed back', () => {
+		const file: KqlxFileV1 = {
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				sections: [
+					{ type: 'query', name: 'Q', query: 'T | take 1', resultJson: '{"rows":[]}' }
+				]
+			}
+		};
+		const text = stringifyKqlxFile(file);
+		// Should not throw
+		const reparsed = JSON.parse(text);
+		assert.strictEqual(reparsed.kind, 'kqlx');
+		assert.strictEqual(reparsed.version, 1);
+		assert.strictEqual(reparsed.state.sections.length, 1);
+	});
+});

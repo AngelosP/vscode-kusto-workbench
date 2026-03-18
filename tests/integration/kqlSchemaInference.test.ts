@@ -35,6 +35,81 @@ TableA
 		};
 		assert.ok(scoreSchemaMatch(tokens, s1) > scoreSchemaMatch(tokens, s2));
 	});
+
+	test('empty query returns empty token sets', () => {
+		const t = extractKqlSchemaMatchTokens('');
+		assert.strictEqual(t.tableNamesLower.size, 0);
+		assert.strictEqual(t.functionNamesLower.size, 0);
+		assert.strictEqual(t.allNamesLower.size, 0);
+	});
+
+	test('whitespace-only query returns empty token sets', () => {
+		const t = extractKqlSchemaMatchTokens('   \t\n  ');
+		assert.strictEqual(t.tableNamesLower.size, 0);
+		assert.strictEqual(t.functionNamesLower.size, 0);
+	});
+
+	test('query with only comments returns empty token sets', () => {
+		const t = extractKqlSchemaMatchTokens('// TableA\n/* TableB */\n');
+		assert.strictEqual(t.tableNamesLower.size, 0, 'comments should be stripped — no tables');
+		assert.strictEqual(t.functionNamesLower.size, 0, 'comments should be stripped — no functions');
+	});
+
+	test('function names inside string literals are not extracted', () => {
+		const t = extractKqlSchemaMatchTokens('TableA | where col == "MyFunc()"');
+		assert.ok(!t.functionNamesLower.has('myfunc'), 'function name inside double-quoted string should be masked');
+		assert.ok(t.tableNamesLower.has('tablea'), 'table reference should still be found');
+	});
+
+	test('function names inside single-quoted strings are not extracted', () => {
+		const t = extractKqlSchemaMatchTokens("TableA | where col == 'SomeFunc()'");
+		assert.ok(!t.functionNamesLower.has('somefunc'), 'function name inside single-quoted string should be masked');
+	});
+
+	test('built-in operator names are excluded from function extraction (stoplist)', () => {
+		// Use () after each operator to ensure the regex actually matches them,
+		// so the stoplist (not regex non-matching) is what excludes them.
+		const q = 'TableA | where(x > 1) | summarize count() | extend y = iif(x,1,0) | join(TableB) on id';
+		const t = extractKqlSchemaMatchTokens(q);
+		assert.ok(!t.functionNamesLower.has('count'), 'count should be in stoplist');
+		assert.ok(!t.functionNamesLower.has('iif'), 'iif should be in stoplist');
+		assert.ok(!t.functionNamesLower.has('where'), 'where should be in stoplist');
+		assert.ok(!t.functionNamesLower.has('summarize'), 'summarize should be in stoplist');
+		assert.ok(!t.functionNamesLower.has('join'), 'join should be in stoplist');
+	});
+
+	test('scoreSchemaMatch returns 0 for null/undefined inputs', () => {
+		const tokens = extractKqlSchemaMatchTokens('TableA');
+		assert.strictEqual(scoreSchemaMatch(tokens, null), 0, 'null schema → 0');
+		assert.strictEqual(scoreSchemaMatch(tokens, undefined), 0, 'undefined schema → 0');
+		assert.strictEqual(scoreSchemaMatch(null as any, { tables: ['TableA'], columnTypesByTable: {} }), 0, 'null tokens → 0');
+	});
+
+	test('scoreSchemaMatch scores function matches at weight 1', () => {
+		const tokens = extractKqlSchemaMatchTokens('invoke MyFunc()');
+		const schema: DatabaseSchemaIndex = {
+			tables: [],
+			columnTypesByTable: {},
+			functions: [{ name: 'MyFunc' }]
+		};
+		assert.strictEqual(scoreSchemaMatch(tokens, schema), 1, 'one function match = 1');
+	});
+
+	test('scoreSchemaMatch weights table matches higher than function matches', () => {
+		const tokens = extractKqlSchemaMatchTokens('TableA | invoke MyFunc()');
+		const tableOnly: DatabaseSchemaIndex = {
+			tables: ['TableA'],
+			columnTypesByTable: { TableA: { c: 's' } }
+		};
+		const funcOnly: DatabaseSchemaIndex = {
+			tables: [],
+			columnTypesByTable: {},
+			functions: [{ name: 'MyFunc' }]
+		};
+		// Table match = 3 points, function match = 1 point
+		assert.ok(scoreSchemaMatch(tokens, tableOnly) > scoreSchemaMatch(tokens, funcOnly),
+			'table match should score higher than function match');
+	});
 });
 
 suite('formatSchemaAsCompactText', () => {

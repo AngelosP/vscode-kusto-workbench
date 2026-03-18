@@ -1145,6 +1145,7 @@
     "lint": "eslint src/host src/webview",
     "test": "vscode-test",
     "test:webview": "vitest run",
+    "test:webview:coverage": "vitest run --coverage",
     "test:webview:watch": "vitest"
   },
   "devDependencies": {
@@ -1152,6 +1153,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/vscode": "^1.107.0",
+    "@vitest/coverage-v8": "^4.1.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "chai": "^4.5.0",

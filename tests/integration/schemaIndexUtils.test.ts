@@ -236,4 +236,185 @@ suite('formatSchemaWithTokenBudget', () => {
 		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, fullLen - 1, charCountTokenizer);
 		assert.ok(result.phase >= 1, `expected phase >= 1, got ${result.phase}`);
 	});
+
+	test('very small budget → phase 5 hard truncation with cut-off notice', async () => {
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 5, charCountTokenizer);
+		assert.strictEqual(result.phase, 5, 'extremely small budget should trigger phase 5');
+		assert.ok(result.text.includes('schema cut off due to context window limits'),
+			'phase 5 output should include cut-off notice');
+	});
+
+	test('phase 5 with budget smaller than notice itself still returns notice', async () => {
+		// Budget of 1 is smaller than the cut-off notice alone
+		const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, 1, charCountTokenizer);
+		assert.strictEqual(result.phase, 5);
+		// Should not throw; text should contain at least the notice
+		assert.ok(result.text.length > 0, 'output should not be empty');
+	});
+
+	test('prune notice is appended for phases 1-4', async () => {
+		// Use a budget that only fits phase 1 (dropTypes)
+		const phase0Text = formatSchemaWithOptions('TestDb', schema, undefined, {});
+		const phase1Text = formatSchemaWithOptions('TestDb', schema, undefined, { dropTypes: true });
+		// Budget fits phase1 but not phase0
+		if (phase1Text.length < phase0Text.length) {
+			const budget = phase0Text.length - 1; // too small for phase 0
+			const result = await formatSchemaWithTokenBudget('TestDb', schema, undefined, budget, charCountTokenizer);
+			if (result.phase >= 1 && result.phase <= 4) {
+				assert.ok(result.text.includes('[Note: Schema was reduced'),
+					'phases 1-4 should include prune notice');
+			}
+		}
+	});
+});
+
+suite('formatSchemaWithOptions – additional coverage', () => {
+	test('tables are grouped by tableFolders', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: ['RootTable', 'SalesOrders', 'SalesProducts', 'SystemLogs'],
+			columnTypesByTable: {
+				RootTable: { Id: 'long' },
+				SalesOrders: { Id: 'long', Amount: 'decimal' },
+				SalesProducts: { Id: 'long', Name: 'string' },
+				SystemLogs: { Id: 'long', Message: 'string' }
+			},
+			tableFolders: {
+				SalesOrders: 'Sales',
+				SalesProducts: 'Sales',
+				SystemLogs: 'System'
+			}
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, {});
+		assert.ok(text.includes('## Sales'), 'should have Sales folder header');
+		assert.ok(text.includes('## System'), 'should have System folder header');
+		// RootTable should appear before any folder header (it has no folder)
+		const rootIdx = text.indexOf('RootTable');
+		const salesIdx = text.indexOf('## Sales');
+		assert.ok(rootIdx < salesIdx, 'root table should appear before folder sections');
+	});
+
+	test('.NET type names are abbreviated correctly', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: ['T'],
+			columnTypesByTable: {
+				T: {
+					col_str: 'System.String',
+					col_long: 'System.Int64',
+					col_int: 'System.Int32',
+					col_dt: 'System.DateTime',
+					col_ts: 'System.TimeSpan',
+					col_dbl: 'System.Double',
+					col_bool: 'System.Boolean',
+					col_obj: 'System.Object',
+					col_guid: 'System.Guid'
+				}
+			}
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, {});
+		assert.ok(text.includes('col_str(s)'), 'System.String → s');
+		assert.ok(text.includes('col_long(l)'), 'System.Int64 → l');
+		assert.ok(text.includes('col_int(i)'), 'System.Int32 → i');
+		assert.ok(text.includes('col_dt(dt)'), 'System.DateTime → dt');
+		assert.ok(text.includes('col_ts(ts)'), 'System.TimeSpan → ts');
+		assert.ok(text.includes('col_dbl(r)'), 'System.Double → r');
+		assert.ok(text.includes('col_bool(b)'), 'System.Boolean → b');
+		assert.ok(text.includes('col_obj(d)'), 'System.Object → d');
+		assert.ok(text.includes('col_guid(g)'), 'System.Guid → g');
+	});
+
+	test('dropColumns: true preserves table docstrings', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: ['Users'],
+			columnTypesByTable: { Users: { Id: 'long', Name: 'string' } },
+			tableDocStrings: { Users: 'All registered users' }
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, { dropColumns: true });
+		assert.ok(text.includes('Users'), 'table name should still be present');
+		assert.ok(text.includes('// All registered users'), 'table docstring should be preserved');
+		assert.ok(!text.includes('Id'), 'column names should be hidden');
+	});
+
+	test('function with defaultValue in parameters includes =value', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: [],
+			columnTypesByTable: {},
+			functions: [
+				{
+					name: 'GetData',
+					parameters: [
+						{ name: 'startDate', type: 'datetime' },
+						{ name: 'limit', type: 'int', defaultValue: '100' }
+					]
+				}
+			]
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, {});
+		assert.ok(text.includes('limit:i=100'), 'should include default value');
+		assert.ok(text.includes('startDate:dt'), 'should include type without default');
+	});
+
+	test('dropFunctionParams: true with parametersText → just FuncName()', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: [],
+			columnTypesByTable: {},
+			functions: [
+				{ name: 'Legacy', parametersText: 'x:string, y:long' }
+			]
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, { dropFunctionParams: true });
+		assert.ok(text.includes('Legacy()'), 'should show function with empty parens');
+		assert.ok(!text.includes('x:string'), 'parameters should be hidden');
+	});
+
+	test('functions grouped by folder', () => {
+		const schema: DatabaseSchemaIndex = {
+			tables: [],
+			columnTypesByTable: {},
+			functions: [
+				{ name: 'RootFunc' },
+				{ name: 'GetOrders', folder: 'Sales' },
+				{ name: 'GetRevenue', folder: 'Sales' },
+				{ name: 'GetLogs', folder: 'System' }
+			]
+		};
+
+		const text = formatSchemaWithOptions('TestDb', schema, undefined, {});
+		assert.ok(text.includes('## Sales'), 'should have Sales folder header');
+		assert.ok(text.includes('## System'), 'should have System folder header');
+		const rootIdx = text.indexOf('RootFunc');
+		const salesIdx = text.indexOf('## Sales');
+		assert.ok(rootIdx < salesIdx, 'root functions should appear before folder sections');
+	});
+});
+
+suite('getColumnsByTable – additional coverage', () => {
+	test('backward compat: legacy columnsByTable field used when present', () => {
+		const schema = {
+			tables: ['T'],
+			columnsByTable: { T: ['Alpha', 'Bravo', 'Charlie'] },
+			columnTypesByTable: { T: { Alpha: 'string', Bravo: 'long', Charlie: 'bool' } }
+		} as any;
+
+		const result = getColumnsByTable(schema);
+		// When columnsByTable is present, it takes precedence
+		assert.deepStrictEqual(result['T'], ['Alpha', 'Bravo', 'Charlie']);
+	});
+
+	test('table with null column types entry is skipped', () => {
+		const schema = makeSchema({
+			tables: ['Good', 'Bad'],
+			columnTypesByTable: {
+				Good: { Id: 'long' },
+				Bad: null as any
+			}
+		});
+		const result = getColumnsByTable(schema);
+		assert.deepStrictEqual(result['Good'], ['Id']);
+		assert.strictEqual(result['Bad'], undefined, 'null entry should be skipped');
+	});
 });

@@ -96,6 +96,10 @@ export function sanitizeConversationHistory(
 				// The entry is too far down — relocate it.
 				const [removed] = history.splice(i, 1);
 				history.splice(insertAt, 0, removed);
+				// The splice shifted items between insertAt..i up by one,
+				// so the element that was at i-1 is now at i. Re-examine
+				// the current index on the next iteration.
+				i++;
 			}
 		}
 	}
