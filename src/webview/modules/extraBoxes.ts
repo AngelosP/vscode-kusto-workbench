@@ -10,6 +10,16 @@ import './extraBoxes-chart';
 import './extraBoxes-transformation';
 import './extraBoxes-markdown';
 
+import {
+	getRawCellValue as _getRawCellValue,
+	cellToChartString as _cellToChartString,
+	cellToChartNumber as _cellToChartNumber,
+	cellToChartTimeMs as _cellToChartTimeMs,
+	inferTimeXAxisFromRows as _inferTimeXAxisFromRows,
+	normalizeResultsColumnName as _normalizeResultsColumnName,
+	pickFirstNonEmpty as _pickFirstNonEmpty,
+} from '../shared/data-utils.js';
+
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
@@ -434,13 +444,7 @@ function __kustoGetRawCellValueForChart( cell: any) {
 			return _win.__kustoGetRawCellValue(cell);
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try {
-		if (cell && typeof cell === 'object') {
-			if ('full' in cell && cell.full !== undefined && cell.full !== null) return cell.full;
-			if ('display' in cell && cell.display !== undefined && cell.display !== null) return cell.display;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return cell;
+	return _getRawCellValue(cell);
 }
 
 function __kustoCellToChartString( cell: any) {
@@ -486,37 +490,11 @@ function __kustoCellToChartTimeMs( cell: any) {
 }
 
 function __kustoInferTimeXAxisFromRows( rows: any, xIndex: any) {
-	try {
-		const r = Array.isArray(rows) ? rows : [];
-		let seen = 0;
-		let dateCount = 0;
-		for (let i = 0; i < r.length && seen < 50; i++) {
-			const row = r[i];
-			if (!row) continue;
-			const raw = __kustoGetRawCellValueForChart(row[xIndex]);
-			if (raw === null || raw === undefined) continue;
-			const s = String(raw).trim();
-			if (!s) continue;
-			seen++;
-			const t = __kustoCellToChartTimeMs(raw);
-			if (typeof t === 'number' && Number.isFinite(t)) dateCount++;
-		}
-		if (seen === 0) return false;
-		return (dateCount / seen) >= 0.8;
-	} catch {
-		return false;
-	}
+	return _inferTimeXAxisFromRows(rows, xIndex);
 }
 
 function __kustoNormalizeResultsColumnName( c: any) {
-	try {
-		if (typeof c === 'string') return c;
-		if (c && typeof c === 'object') {
-			if (typeof c.name === 'string') return c.name;
-			if (typeof c.columnName === 'string') return c.columnName;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
+	return _normalizeResultsColumnName(c);
 }
 
 function __kustoSetSelectOptions( selectEl: any, values: any, selectedValue: any, labelMap?: any) {
@@ -543,13 +521,7 @@ function __kustoSetSelectOptions( selectEl: any, values: any, selectedValue: any
 }
 
 function __kustoPickFirstNonEmpty( arr: any) {
-	try {
-		for (const v of (arr || [])) {
-			const s = String(v || '');
-			if (s) return s;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
+	return _pickFirstNonEmpty(arr);
 }
 
 // Pending reveal requests from the extension host (e.g., Search result click).

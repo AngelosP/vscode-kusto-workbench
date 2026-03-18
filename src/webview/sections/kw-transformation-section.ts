@@ -2,6 +2,14 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-transformation-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import {
+	tokenizeExpr,
+	parseExprToRpn,
+	evalRpn,
+	getRawCellValue,
+	type ExprToken,
+} from '../shared/transform-expr.js';
+import { normalizeResultsColumnName } from '../shared/data-utils.js';
 import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1235,12 +1243,8 @@ export class KwTransformationSection extends LitElement {
 	private _getColumnNames(): string[] {
 		const ds = this._datasets.find(d => d.id === this._dataSourceId);
 		if (!ds) return [];
-		const norm = window.__kustoNormalizeResultsColumnName;
 		const cols = Array.isArray(ds.columns) ? ds.columns : [];
-		if (typeof norm === 'function') {
-			return cols.map((c: string) => norm(c)).filter((c: string) => c);
-		}
-		return cols.filter((c: string) => c);
+		return cols.map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c);
 	}
 
 	// ── Rendering delegation ──────────────────────────────────────────────────
@@ -1290,28 +1294,15 @@ export class KwTransformationSection extends LitElement {
 			return;
 		}
 
-		const w = window;
-		const norm = typeof w.__kustoNormalizeResultsColumnName === 'function'
-			? w.__kustoNormalizeResultsColumnName : (c: string) => c;
-		const colNames = (ds.columns || []).map((c: string) => norm(c)).filter((c: string) => c);
+		const colNames = (ds.columns || []).map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c);
 		const colIndex: Record<string, number> = {};
 		for (let i = 0; i < colNames.length; i++) {
 			colIndex[colNames[i]] = i;
 			colIndex[String(colNames[i]).toLowerCase()] = i;
 		}
 		const rows = Array.isArray(ds.rows) ? ds.rows : [];
-		const getRaw = typeof w.__kustoGetRawCellValueForTransform === 'function'
-			? w.__kustoGetRawCellValueForTransform
-			: (cell: unknown) => {
-				if (cell && typeof cell === 'object') {
-					if ('full' in (cell as any)) return (cell as any).full;
-					if ('display' in (cell as any)) return (cell as any).display;
-				}
-				return cell;
-			};
-		const tryParseNum = typeof w.__kustoTryParseFiniteNumber === 'function'
-			? w.__kustoTryParseFiniteNumber
-			: (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+		const getRaw = (cell: unknown) => getRawCellValue(cell);
+		const tryParseNum = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
 		try {
 			const type = this._transformationType;
@@ -1343,25 +1334,12 @@ export class KwTransformationSection extends LitElement {
 	}
 
 	private _computeDerive(colNames: string[], _colIndex: Record<string, number>, rows: unknown[][], getRaw: (v: unknown) => unknown): void {
-		const w = window;
 		let deriveColumns = this._deriveColumns;
 		if (!deriveColumns.length) {
 			deriveColumns = [{ name: '', expression: '' }];
 		}
 
-		const tokenize = w.__kustoTokenizeExpr;
-		const parseRpn = w.__kustoParseExprToRpn;
-		const evalRpn = w.__kustoEvalRpn;
-		if (typeof tokenize !== 'function' || typeof parseRpn !== 'function' || typeof evalRpn !== 'function') {
-			// Fallback: show base dataset without derived columns
-			const outRows = rows.map(r => (Array.isArray(r) ? r : []).map(getRaw));
-			this._resultColumns = colNames.map(c => ({ name: c }));
-			this._resultRows = outRows;
-			this._resultError = '';
-			return;
-		}
-
-		const parsed: { name: string; rpn: unknown[] }[] = [];
+		const parsed: { name: string; rpn: ExprToken[] }[] = [];
 		for (const d of deriveColumns) {
 			const n = String(d.name || '').trim();
 			const e = String(d.expression || '').trim();
@@ -1369,7 +1347,7 @@ export class KwTransformationSection extends LitElement {
 			if (!e) continue;
 			const name = n || 'derived';
 			try {
-				const rpn = parseRpn(tokenize(e));
+				const rpn = parseExprToRpn(tokenizeExpr(e));
 				parsed.push({ name, rpn });
 			} catch { continue; }
 		}

@@ -2,6 +2,17 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
+import {
+	getDefaultXAxisSettings,
+	getDefaultYAxisSettings,
+	hasCustomXAxisSettings,
+	hasCustomYAxisSettings,
+	hasCustomLabelSettings,
+	normalizeLegendPosition,
+	type XAxisSettings,
+	type YAxisSettings,
+	type LegendPosition,
+} from '../shared/chart-utils.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
 import type { PopoverAnchorRect } from '../components/kw-popover.js';
@@ -10,28 +21,10 @@ import type { PopoverAnchorRect } from '../components/kw-popover.js';
 
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | '';
 export type ChartMode = 'edit' | 'preview';
-export type LegendPosition = 'top' | 'right' | 'bottom' | 'left';
+export type { LegendPosition, XAxisSettings, YAxisSettings };
 export type SortDirection = 'asc' | 'desc' | '';
 export type ScaleType = 'category' | 'continuous' | '';
 export type LabelMode = 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
-
-export interface XAxisSettings {
-	sortDirection: SortDirection;
-	scaleType: ScaleType;
-	labelDensity: number;
-	showAxisLabel: boolean;
-	customLabel: string;
-	titleGap: number;
-}
-
-export interface YAxisSettings {
-	showAxisLabel: boolean;
-	customLabel: string;
-	min: string;
-	max: string;
-	seriesColors: Record<string, string>;
-	titleGap: number;
-}
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 chart variant. */
 export interface ChartSectionData {
@@ -69,29 +62,10 @@ interface DatasetEntry {
 	rows: unknown[][];
 }
 
-// ─── Default axis settings ────────────────────────────────────────────────────
+// ─── Default axis settings (re-exported from shared) ─────────────────────────
 
-function defaultXAxisSettings(): XAxisSettings {
-	return {
-		sortDirection: '',
-		scaleType: '',
-		labelDensity: 100,
-		showAxisLabel: true,
-		customLabel: '',
-		titleGap: 30,
-	};
-}
-
-function defaultYAxisSettings(): YAxisSettings {
-	return {
-		showAxisLabel: true,
-		customLabel: '',
-		min: '',
-		max: '',
-		seriesColors: {},
-		titleGap: 45,
-	};
-}
+const defaultXAxisSettings = getDefaultXAxisSettings;
+const defaultYAxisSettings = getDefaultYAxisSettings;
 
 // ─── SVG icon constants ───────────────────────────────────────────────────────
 
@@ -117,7 +91,7 @@ const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 	right: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="8" height="10" rx="1"/><path d="M13 3v10"/></svg>',
 };
 
-const LEGEND_CYCLE: LegendPosition[] = ['top', 'right', 'bottom', 'left'];
+const LEGEND_CYCLE = ['top', 'right', 'bottom', 'left'] as const;
 
 const SVG_CARET = '<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
@@ -130,11 +104,6 @@ function esc(s: unknown): string {
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;')
 		.replace(/'/g, '&#39;');
-}
-
-function normalizeLegendPosition(pos: unknown): LegendPosition {
-	const p = String(pos || '').toLowerCase();
-	return (p === 'top' || p === 'right' || p === 'bottom' || p === 'left') ? p : 'top';
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -976,22 +945,15 @@ export class KwChartSection extends LitElement {
 	}
 
 	private _hasCustomXSettings(): boolean {
-		const s = this._xAxisSettings;
-		const d = defaultXAxisSettings();
-		return !!(s.sortDirection !== d.sortDirection || s.scaleType !== d.scaleType ||
-			s.labelDensity !== d.labelDensity || s.showAxisLabel === false ||
-			s.customLabel || s.titleGap !== d.titleGap);
+		return hasCustomXAxisSettings(this._xAxisSettings);
 	}
 
 	private _hasCustomYSettings(): boolean {
-		const s = this._yAxisSettings;
-		const d = defaultYAxisSettings();
-		return !!(s.showAxisLabel === false || s.customLabel || s.min || s.max ||
-			s.titleGap !== d.titleGap || (s.seriesColors && Object.keys(s.seriesColors).length > 0));
+		return hasCustomYAxisSettings(this._yAxisSettings);
 	}
 
 	private _hasCustomLabelSettings(): boolean {
-		return this._labelMode !== 'auto' || this._labelDensity !== 50;
+		return hasCustomLabelSettings({ labelMode: this._labelMode, labelDensity: this._labelDensity });
 	}
 
 	// ── Theme observer ────────────────────────────────────────────────────────

@@ -2,6 +2,8 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
+import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
+
 const _win = window;
 // Persistence + .kqlx document round-tripping.
 //
@@ -22,36 +24,19 @@ if ((_win.__kustoIsSessionFile as any) === undefined) _win.__kustoIsSessionFile 
 // Set by the extension host; true for .kql/.csl files.
 if ((_win.__kustoCompatibilityMode as any) === undefined) _win.__kustoCompatibilityMode = false;
 
-/**
- * Helper to normalize a cluster URL for consistent comparison.
- */
+// Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
-	try {
-		let u = String(clusterUrl || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) {
-			u = 'https://' + u;
-		}
-		return u.replace(/\/+$/g, '').toLowerCase();
-	} catch {
-		return '';
-	}
+	return normalizeClusterUrl(clusterUrl);
 }
 
 /**
  * Check if a cluster URL is marked as "Leave no trace".
- * When true, tabular results from this cluster should not be persisted.
+ * Delegates to the pure shared function, providing the window global.
  */
 function __kustoIsLeaveNoTraceCluster(clusterUrl: any) {
 	try {
-		if (!clusterUrl) return false;
-		// (_win.leaveNoTraceClusters as any) is defined in state.js and populated from connectionsData
-		if (typeof (_win.leaveNoTraceClusters as any) === 'undefined' || !Array.isArray((_win.leaveNoTraceClusters as any))) return false;
-		const normalized = __kustoNormalizeClusterUrl(clusterUrl);
-		if (!normalized) return false;
-		return (_win.leaveNoTraceClusters as any).some(function(lntUrl: any) {
-			return __kustoNormalizeClusterUrl(lntUrl) === normalized;
-		});
+		const list = (_win.leaveNoTraceClusters as any);
+		return isLeaveNoTraceCluster(clusterUrl, Array.isArray(list) ? list : []);
 	} catch {
 		return false;
 	}
@@ -221,89 +206,17 @@ _win.__kustoQueryResultJsonByBoxId = (_win.__kustoQueryResultJsonByBoxId as any)
 const __kustoMaxPersistedResultBytes = 5 * 1024 * 1024;
 const __kustoMaxPersistedResultRowsHardCap = 5000;
 
-function __kustoByteLengthUtf8(text: any) {
-	try {
-		if (typeof TextEncoder !== 'undefined') {
-			return new TextEncoder().encode(String(text)).length;
-		}
-		// Fallback: approximate (UTF-16 code units). Safe enough for a cap.
-		return String(text).length * 2;
-	} catch {
-		return Number.MAX_SAFE_INTEGER;
-	}
-}
+// byteLengthUtf8 is now imported from shared/persistence-utils.ts
 
 function __kustoTryStoreQueryResult(boxId: any, result: any) {
 	try {
 		if (!boxId) return;
-		let json = '';
-		try {
-			json = JSON.stringify(result ?? null);
-		} catch {
-			// If result isn't serializable, don't persist it.
-			delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
-			return;
-		}
-		let bytes = __kustoByteLengthUtf8(json);
-		if (bytes <= __kustoMaxPersistedResultBytes) {
+		const { json } = trySerializeQueryResult(result, __kustoMaxPersistedResultBytes, __kustoMaxPersistedResultRowsHardCap);
+		if (json) {
 			(_win.__kustoQueryResultJsonByBoxId as any)[boxId] = json;
-			return;
+		} else {
+			delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
 		}
-
-		// Too large: attempt to persist a truncated version (keep columns + metadata + top N rows).
-		try {
-			const cols = Array.isArray(result && result.columns) ? result.columns : [];
-			const rows = Array.isArray(result && result.rows) ? result.rows : [];
-			const meta = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
-
-			// If there are no rows to trim, give up.
-			if (!rows || !Array.isArray(rows) || rows.length === 0) {
-				delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
-				return;
-			}
-
-			const totalRows = rows.length;
-			let hi = Math.min(totalRows, __kustoMaxPersistedResultRowsHardCap);
-			let lo = 0;
-			let bestJson = '';
-			let bestCount = 0;
-
-			// Binary search the largest row count that fits.
-			while (lo <= hi) {
-				const mid = Math.floor((lo + hi) / 2);
-				const candidate = {
-					columns: cols,
-					rows: rows.slice(0, mid),
-					metadata: Object.assign({}, meta, {
-						persistedTruncated: true,
-						persistedTotalRows: totalRows,
-						persistedRows: mid
-					})
-				};
-				let candidateJson = '';
-				try {
-					candidateJson = JSON.stringify(candidate);
-				} catch {
-					candidateJson = '';
-				}
-				const candidateBytes = candidateJson ? __kustoByteLengthUtf8(candidateJson) : Number.MAX_SAFE_INTEGER;
-				if (candidateJson && candidateBytes <= __kustoMaxPersistedResultBytes) {
-					bestJson = candidateJson;
-					bestCount = mid;
-					lo = mid + 1;
-				} else {
-					hi = mid - 1;
-				}
-			}
-
-			if (bestJson && bestCount > 0) {
-				(_win.__kustoQueryResultJsonByBoxId as any)[boxId] = bestJson;
-				return;
-			}
-		} catch (e) { console.error('[kusto]', e); }
-
-		// Still too large; do not persist.
-		delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -558,167 +471,20 @@ function getKqlxState() {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	const sections = [];
+	const sections: any[] = [];
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
+	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_'];
 	for (const child of children) {
 		const id = child && child.id ? String(child.id) : '';
 		if (!id) continue;
 
-		if (id.startsWith('query_')) {
-			// Lit component: delegate to its serialize() method if available.
+		// All section types are Lit components that implement serialize().
+		const isSection = sectionPrefixes.some(prefix => id.startsWith(prefix));
+		if (isSection) {
 			const el = document.getElementById(id);
 			if (el && typeof (el as any).serialize === 'function') {
 				try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
-				continue;
-			}
-			// Legacy fallback.
-			const querySectionType = 'query';
-			const name = (_win.__kustoGetSectionName as any) ? (_win.__kustoGetSectionName as any)(id) : '';
-			const connectionId = (_win.__kustoGetConnectionId as any) ? (_win.__kustoGetConnectionId as any)(id) : '';
-			let favoritesMode;
-			try {
-				if (typeof (_win.favoritesModeByBoxId as any) === 'object' && (_win.favoritesModeByBoxId as any) && Object.prototype.hasOwnProperty.call((_win.favoritesModeByBoxId as any), id)) {
-					favoritesMode = !!(_win.favoritesModeByBoxId as any)[id];
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			let expanded = true;
-			try {
-				expanded = !((_win.__kustoQueryExpandedByBoxId as any) && (_win.__kustoQueryExpandedByBoxId as any)[id] === false);
-			} catch (e) { console.error('[kusto]', e); }
-			let resultsVisible = true;
-			try {
-				resultsVisible = !((_win.__kustoResultsVisibleByBoxId as any) && (_win.__kustoResultsVisibleByBoxId as any)[id] === false);
-			} catch (e) { console.error('[kusto]', e); }
-			let clusterUrl = '';
-			try {
-				if (connectionId && Array.isArray((_win.connections as any))) {
-					const conn = ((_win.connections as any) || []).find((c: any) => c && String(c.id || '') === String(connectionId));
-					clusterUrl = conn ? String(conn.clusterUrl || '') : '';
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			const database = (_win.__kustoGetDatabase as any) ? (_win.__kustoGetDatabase as any)(id) : '';
-			let query = (_win.queryEditors as any) && (_win.queryEditors as any)[id] ? ((_win.queryEditors as any)[id].getValue() || '') : '';
-			// If the editor hasn't initialized yet (e.g. Monaco still loading on a slow machine),
-			// don't lose content: use the pending restore buffer.
-			if (!query) {
-				try {
-					const pending = (_win.__kustoPendingQueryTextByBoxId as any) && (_win.__kustoPendingQueryTextByBoxId as any)[id];
-					if (typeof pending === 'string' && pending) {
-						query = pending;
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			const resultJson = ((_win.__kustoQueryResultJsonByBoxId as any) && (_win.__kustoQueryResultJsonByBoxId as any)[id])
-				? String((_win.__kustoQueryResultJsonByBoxId as any)[id])
-				: '';
-			const runMode = ((_win.runModesByBoxId as any) && (_win.runModesByBoxId as any)[id]) ? String((_win.runModesByBoxId as any)[id]) : 'take100';
-			const cacheEnabled = !!((document.getElementById(id + '_cache_enabled') || {}) as any).checked;
-			const cacheValue = parseInt(((document.getElementById(id + '_cache_value') || {}) as any).value || '1', 10) || 1;
-			const cacheUnit = ((document.getElementById(id + '_cache_unit') || {}) as any).value || 'days';
-			let copilotChatWidthPx;
-			try {
-				if (typeof (_win.__kustoGetCopilotChatWidthPx) === 'function') {
-					const w = (_win.__kustoGetCopilotChatWidthPx as any)(id);
-					if (typeof w === 'number' && Number.isFinite(w)) {
-						copilotChatWidthPx = w;
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			// Leave no trace: don't persist results from sensitive clusters
-			const shouldPersistResult = resultJson && !__kustoIsLeaveNoTraceCluster(clusterUrl);
-			sections.push({
-				id,
-				type: querySectionType,
-				name,
-				...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {}),
-				clusterUrl,
-				database,
-				query,
-				expanded,
-				resultsVisible,
-				...(shouldPersistResult ? { resultJson } : {}),
-				runMode,
-				cacheEnabled,
-				cacheValue,
-				cacheUnit,
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_query_editor'),
-				resultsHeightPx: __kustoGetQueryResultsOutputHeightPx(id),
-				...(typeof copilotChatWidthPx === 'number' ? { copilotChatWidthPx } : {})
-			});
-			continue;
-		}
-
-		if (id.startsWith('chart_')) {
-			// Lit component: delegate to its serialize() method.
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try {
-					sections.push((el as any).serialize());
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			continue;
-		}
-
-		if (id.startsWith('transformation_')) {
-			// Lit component: delegate to its serialize() method.
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try {
-					sections.push((el as any).serialize());
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			continue;
-		}
-
-		if (id.startsWith('markdown_')) {
-			// Lit component: delegate to its serialize() method.
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try {
-					sections.push((el as any).serialize());
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			continue;
-		}
-
-		if (id.startsWith('python_')) {
-			// Lit component: delegate to its serialize() method.
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try {
-					sections.push((el as any).serialize());
-					continue;
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			// Legacy fallback (for old-style boxes still in DOM during transition).
-			let code = (_win.__kustoPythonEditors as any) && (_win.__kustoPythonEditors as any)[id] ? ((_win.__kustoPythonEditors as any)[id].getValue() || '') : '';
-			if (!code) {
-				try {
-					const pending = (_win.__kustoPendingPythonCodeByBoxId as any) && (_win.__kustoPendingPythonCodeByBoxId as any)[id];
-					if (typeof pending === 'string' && pending) {
-						code = pending;
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			}
-			const output = (document.getElementById(id + '_py_output') || {}).textContent || '';
-			sections.push({
-				id,
-				type: 'python',
-				code,
-				output,
-				editorHeightPx: __kustoGetWrapperHeightPx(id, '_py_editor')
-			});
-			continue;
-		}
-
-		if (id.startsWith('url_')) {
-			// Lit component: delegate to its serialize() method.
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try {
-					sections.push((el as any).serialize());
-				} catch (e) { console.error('[kusto]', e); }
 			}
 			continue;
 		}

@@ -2,6 +2,27 @@
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 
+import {
+	formatNumber as _formatNumber,
+	computeAxisFontSize as _computeAxisFontSize,
+	normalizeLegendPosition as _normalizeLegendPosition,
+	getDefaultXAxisSettings,
+	hasCustomXAxisSettings,
+	getDefaultYAxisSettings,
+	hasCustomYAxisSettings,
+	hasCustomLabelSettings as _hasCustomLabelSettings,
+	formatUtcDateTime as _formatUtcDateTime,
+	computeTimePeriodGranularity as _computeTimePeriodGranularity,
+	formatTimePeriodLabel as _formatTimePeriodLabel,
+	generateContinuousTimeLabels as _generateContinuousTimeLabels,
+	shouldShowTimeForUtcAxis as _shouldShowTimeForUtcAxis,
+	computeTimeAxisLabelRotation as _computeTimeAxisLabelRotation,
+	computeCategoryLabelRotation as _computeCategoryLabelRotation,
+	measureLabelChars as _measureLabelChars,
+	DEFAULT_SERIES_COLORS,
+	LEGEND_POSITION_CYCLE,
+} from '../shared/chart-utils.js';
+
 const _win = window;
 
 // Access shared chart/transformation state from window (set by extraBoxes.ts).
@@ -54,8 +75,7 @@ export const __kustoLegendPositionIcons = {
 };
 
 export function __kustoNormalizeLegendPosition( pos: any) {
-	const p = String(pos || '').toLowerCase();
-	return (p === 'top' || p === 'right' || p === 'bottom' || p === 'left') ? p : 'top';
+	return _normalizeLegendPosition(pos);
 }
 
 export function __kustoUpdateLegendPositionButtonUI( boxId: any) {
@@ -106,33 +126,11 @@ export function __kustoOnChartLegendPositionClicked( boxId: any) {
 }
 
 export function __kustoFormatNumber( value: any) {
-	try {
-		if (value === null || value === undefined) return '';
-		const n = typeof value === 'number' ? value : Number(value);
-		if (!Number.isFinite(n)) return String(value);
-		// Use locale formatting for nice thousands separators
-		return n.toLocaleString('en-US', { maximumFractionDigits: 6 });
-	} catch {
-		return String(value);
-	}
+	try { return _formatNumber(value); } catch { return String(value); }
 }
 
 export function __kustoComputeAxisFontSize( labelCount: any, axisPixelWidth: any, isYAxis: any) {
-	try {
-		const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
-		const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
-		if (!w || !n) return 12; // default
-		// For Y-axis, always use reasonable size
-		if (isYAxis) return 11;
-		// For X-axis, adjust based on density
-		const pixelsPerLabel = w / n;
-		if (pixelsPerLabel < 30) return 9;
-		if (pixelsPerLabel < 50) return 10;
-		if (pixelsPerLabel < 80) return 11;
-		return 12;
-	} catch {
-		return 12;
-	}
+	try { return _computeAxisFontSize(labelCount, axisPixelWidth, isYAxis); } catch { return 12; }
 }
 
 export function __kustoGetChartState( boxId: any) {
@@ -173,70 +171,34 @@ export function __kustoGetChartState( boxId: any) {
  * Returns default axis settings.
  */
 export function __kustoGetDefaultAxisSettings() {
-	return {
-		sortDirection: '',      // '' = auto, 'asc', 'desc'
-		scaleType: '',          // '' = auto, 'category', 'continuous'
-		labelDensity: 100,      // 100 = show all, 0 = hide all (slider value)
-		showAxisLabel: true,    // Show the axis title
-		customLabel: '',        // Custom axis title (empty = use column name)
-		titleGap: 30            // Gap between axis title and axis (default 30 for X)
-	};
+	return getDefaultXAxisSettings();
 }
 
 /**
  * Check if axis settings differ from defaults.
  */
 export function __kustoHasCustomAxisSettings( settings: any) {
-	if (!settings || typeof settings !== 'object') return false;
-	const defaults = __kustoGetDefaultAxisSettings();
-	return (
-		(settings.sortDirection && settings.sortDirection !== defaults.sortDirection) ||
-		(settings.scaleType && settings.scaleType !== defaults.scaleType) ||
-		(typeof settings.labelDensity === 'number' && settings.labelDensity !== 100) ||
-		(settings.showAxisLabel === false) ||
-		(settings.customLabel && settings.customLabel !== defaults.customLabel) ||
-		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap)
-	);
+	return hasCustomXAxisSettings(settings);
 }
 
 /**
  * Returns default Y-axis settings.
  */
 export function __kustoGetDefaultYAxisSettings() {
-	return {
-		showAxisLabel: true,    // Show the axis title
-		customLabel: '',        // Custom axis title (empty = use column name)
-		min: '',                // Min value (empty = auto)
-		max: '',                // Max value (empty = auto)
-		seriesColors: {},       // Custom colors by column name, e.g. { 'Revenue': '#ff0000' }
-		titleGap: 45            // Gap between axis title and axis (default 45 for Y)
-	};
+	return getDefaultYAxisSettings();
 }
 
 /**
  * Check if Y-axis settings differ from defaults.
  */
 export function __kustoHasCustomYAxisSettings( settings: any) {
-	if (!settings || typeof settings !== 'object') return false;
-	const defaults = __kustoGetDefaultYAxisSettings();
-	const hasCustomColors = settings.seriesColors && typeof settings.seriesColors === 'object' && Object.keys(settings.seriesColors).length > 0;
-	return (
-		(settings.showAxisLabel === false) ||
-		(settings.customLabel && settings.customLabel !== '') ||
-		(settings.min !== '' && settings.min !== undefined && settings.min !== null) ||
-		(settings.max !== '' && settings.max !== undefined && settings.max !== null) ||
-		hasCustomColors ||
-		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap)
-	);
+	return hasCustomYAxisSettings(settings);
 }
 
 /**
  * Default color palette for chart series (ECharts default-ish colors).
  */
-export const __kustoDefaultSeriesColors = [
-	'#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
-	'#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#48b8d0'
-];
+export const __kustoDefaultSeriesColors = DEFAULT_SERIES_COLORS;
 
 /**
  * Update the series colors UI in the Y-axis settings popup.
@@ -681,11 +643,7 @@ export function __kustoSyncLabelSettingsUI( boxId: any) {
  * Check if label settings have been customized from defaults.
  */
 export function __kustoHasCustomLabelSettings( st: any) {
-	if (!st) return false;
-	const mode = st.labelMode || 'auto';
-	const density = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
-	// Has custom if mode is not 'auto' OR if density differs from default (50)
-	return mode !== 'auto' || density !== 50;
+	return _hasCustomLabelSettings(st);
 }
 
 /**
@@ -1321,19 +1279,7 @@ export function __kustoGetIsDarkThemeForEcharts() {
 }
 
 export function __kustoFormatUtcDateTime( ms: any, showTime: any) {
-	const v = (typeof ms === 'number') ? ms : Number(ms);
-	if (!Number.isFinite(v)) return '';
-	const d = new Date(v);
-	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-	const dd = String(d.getUTCDate()).padStart(2, '0');
-	const mon = months[d.getUTCMonth()] || 'Jan';
-	const yyyy = String(d.getUTCFullYear());
-	const date = `${dd}-${mon}-${yyyy}`;
-	if (!showTime) return date;
-	const hh = String(d.getUTCHours()).padStart(2, '0');
-	const mm = String(d.getUTCMinutes()).padStart(2, '0');
-	const ss = String(d.getUTCSeconds()).padStart(2, '0');
-	return (ss === '00') ? `${date} ${hh}:${mm}` : `${date} ${hh}:${mm}:${ss}`;
+	return _formatUtcDateTime(ms, showTime);
 }
 
 /**
@@ -1341,61 +1287,14 @@ export function __kustoFormatUtcDateTime( ms: any, showTime: any) {
  * Returns: 'day', 'week', 'month', 'quarter', or 'year'
  */
 export function __kustoComputeTimePeriodGranularity( timeMsValues: any) {
-	try {
-		const times = (timeMsValues || []).filter((t: any) => typeof t === 'number' && Number.isFinite(t));
-		if (times.length < 2) return 'day';
-		
-		const minT = Math.min(...times);
-		const maxT = Math.max(...times);
-		const rangeDays = (maxT - minT) / (1000 * 60 * 60 * 24);
-		
-		// Choose granularity based on date range
-		if (rangeDays > 365 * 2) return 'year';      // > 2 years: show years
-		if (rangeDays > 365) return 'quarter';       // > 1 year: show quarters
-		if (rangeDays > 90) return 'month';          // > 3 months: show months
-		if (rangeDays > 14) return 'week';           // > 2 weeks: show weeks
-		return 'day';                                 // Otherwise: show days
-	} catch {
-		return 'day';
-	}
+	try { return _computeTimePeriodGranularity(timeMsValues); } catch { return 'day'; }
 }
 
 /**
  * Formats a timestamp to a period boundary label based on granularity.
  */
 export function __kustoFormatTimePeriodLabel( ms: any, granularity: any) {
-	const v = (typeof ms === 'number') ? ms : Number(ms);
-	if (!Number.isFinite(v)) return '';
-	const d = new Date(v);
-	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-	const yyyy = String(d.getUTCFullYear());
-	const mon = months[d.getUTCMonth()] || 'Jan';
-	
-	switch (granularity) {
-		case 'year':
-			return yyyy;
-		case 'quarter': {
-			const q = Math.floor(d.getUTCMonth() / 3) + 1;
-			return `Q${q} ${yyyy}`;
-		}
-		case 'month':
-			return `${mon} ${yyyy}`;
-		case 'week': {
-			// Show the week start date (Monday)
-			const dayOfWeek = d.getUTCDay();
-			const diff = d.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-			const weekStart = new Date(d);
-			weekStart.setUTCDate(diff);
-			const dd = String(weekStart.getUTCDate()).padStart(2, '0');
-			const mm = months[weekStart.getUTCMonth()] || 'Jan';
-			return `${dd}-${mm}`;
-		}
-		default: {
-			// day granularity
-			const dd = String(d.getUTCDate()).padStart(2, '0');
-			return `${dd}-${mon}`;
-		}
-	}
+	return _formatTimePeriodLabel(ms, granularity);
 }
 
 /**
@@ -1403,95 +1302,22 @@ export function __kustoFormatTimePeriodLabel( ms: any, granularity: any) {
  * Returns an array of labels with the same length as timeKeys, with empty strings for non-boundary points.
  */
 export function __kustoGenerateContinuousTimeLabels( timeKeys: any, granularity: any) {
-	try {
-		if (!timeKeys || !timeKeys.length) return [];
-		
-		const labels = [];
-		let lastPeriodLabel = null;
-		
-		for (const t of timeKeys) {
-			const periodLabel = __kustoFormatTimePeriodLabel(t, granularity);
-			// Only show label if it's different from the previous period
-			if (periodLabel !== lastPeriodLabel) {
-				labels.push(periodLabel);
-				lastPeriodLabel = periodLabel;
-			} else {
-				labels.push(''); // Empty label for points within the same period
-			}
-		}
-		
-		return labels;
-	} catch {
-		return timeKeys.map(() => '');
-	}
+	try { return _generateContinuousTimeLabels(timeKeys, granularity); } catch { return (timeKeys || []).map(() => ''); }
 }
 
 export function __kustoShouldShowTimeForUtcAxis( timeMsValues: any) {
-	try {
-		for (const t of (timeMsValues || [])) {
-			const v = (typeof t === 'number') ? t : Number(t);
-			if (!Number.isFinite(v)) continue;
-			const d = new Date(v);
-			if (d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0 || d.getUTCSeconds() !== 0 || d.getUTCMilliseconds() !== 0) {
-				return true;
-			}
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return false;
+	try { return _shouldShowTimeForUtcAxis(timeMsValues); } catch { return false; }
 }
 
 export function __kustoComputeTimeAxisLabelRotation( axisPixelWidth: any, labelCount: any, showTime: any) {
-	const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
-	const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
-	if (!w || !n) return 0;
-
-	// Our UTC format is either:
-	// - DD-MMM-YYYY (11 chars)
-	// - DD-MMM-YYYY HH:MM (17 chars)
-	const approxChars = showTime ? 17 : 11;
-	const approxCharPx = 7; // heuristic in typical VS Code fonts
-	const approxLabelPx = approxChars * approxCharPx + 10; // add a bit of padding
-	const maxNoRotate = Math.max(1, Math.floor(w / Math.max(1, approxLabelPx)));
-
-	// If we have many labels relative to available width, rotate.
-	// Note: bar/line/area charts use category axes where all labels are rendered,
-	// so we must use the actual count — no artificial cap.
-	if (n > maxNoRotate * 2) return 60;
-	if (n > maxNoRotate * 1.3) return 45;
-	return 0;
+	return _computeTimeAxisLabelRotation(axisPixelWidth, labelCount, showTime);
 }
 
 /**
  * Compute the optimal X-axis label rotation for category (non-time) labels.
- * Uses the actual label string lengths to estimate whether labels will overlap,
- * and returns an appropriate tilt angle.
- *
- * @param {number} axisPixelWidth - Available pixel width for the X axis.
- * @param {number} labelCount     - Number of labels.
- * @param {number} avgLabelChars  - Average character count across labels.
- * @param {number} maxLabelChars  - Max character count among labels.
- * @returns {number} Rotation angle in degrees (0, 30, 45, 60, or 75).
  */
 export function __kustoComputeCategoryLabelRotation( axisPixelWidth: any, labelCount: any, avgLabelChars: any, maxLabelChars: any) {
-	const w = (typeof axisPixelWidth === 'number' && Number.isFinite(axisPixelWidth)) ? axisPixelWidth : 0;
-	const n = (typeof labelCount === 'number' && Number.isFinite(labelCount)) ? Math.max(0, Math.floor(labelCount)) : 0;
-	if (!w || !n) return 0;
-
-	const avg = (typeof avgLabelChars === 'number' && Number.isFinite(avgLabelChars)) ? avgLabelChars : 6;
-	const mx  = (typeof maxLabelChars === 'number' && Number.isFinite(maxLabelChars)) ? maxLabelChars : avg;
-
-	const approxCharPx = 7; // heuristic for monospace font in VS Code webviews
-	// Blend average and max so one abnormally long label doesn't dominate,
-	// but we still account for it.
-	const effectiveLabelChars = Math.ceil(avg * 0.6 + mx * 0.4);
-	const approxLabelPx = effectiveLabelChars * approxCharPx + 12; // with padding
-	const maxNoRotate = Math.max(1, Math.floor(w / Math.max(1, approxLabelPx)));
-
-	if (n > maxNoRotate * 3) return 75;
-	if (n > maxNoRotate * 2) return 60;
-	if (n > maxNoRotate * 1.3) return 45;
-	if (n > maxNoRotate) return 30;
-	return 0;
+	return _computeCategoryLabelRotation(axisPixelWidth, labelCount, avgLabelChars, maxLabelChars);
 }
 
 /**
@@ -1499,14 +1325,7 @@ export function __kustoComputeCategoryLabelRotation( axisPixelWidth: any, labelC
  * Returns { avgLabelChars, maxLabelChars }.
  */
 export function __kustoMeasureLabelChars( labels: any) {
-	let total = 0, mx = 0;
-	const len = labels ? labels.length : 0;
-	for (let i = 0; i < len; i++) {
-		const c = String(labels[i] || '').length;
-		total += c;
-		if (c > mx) mx = c;
-	}
-	return { avgLabelChars: len ? total / len : 6, maxLabelChars: mx || 6 };
+	return _measureLabelChars(labels);
 }
 
 let __kustoEchartsThemeObserverStarted = false;
