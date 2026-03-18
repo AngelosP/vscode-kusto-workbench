@@ -1461,8 +1461,10 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			if (typeof _win.setSchemaLoadedSummary === 'function') {
-				_win.setSchemaLoadedSummary(id, '', '', false);
+			const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+				? (_win.__kustoGetQuerySectionElement as any)(id) : null;
+			if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+				kwEl.setSchemaInfo({ status: 'not-loaded', statusText: 'Not loaded', cached: false, tables: undefined, cols: undefined, funcs: undefined, errorMessage: undefined });
 			}
 		} catch (e) { console.error('[kusto]', e); }
 	}

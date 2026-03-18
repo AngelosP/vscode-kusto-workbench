@@ -1,6 +1,7 @@
 // Main module — converted from legacy/main.js
 // Message dispatcher, keyboard shortcuts, drag-and-drop.
 // Window bridge exports at bottom for remaining legacy callers.
+import { buildSchemaInfo } from '../shared/schema-utils';
 export {};
 
 const _win = window;
@@ -131,16 +132,12 @@ document.addEventListener('keydown', (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 		}
 
-		// Object Viewer
+		// Object Viewer (legacy global modal)
 		try {
 			const modal = document.getElementById('objectViewer') as any;
 			if (modal && modal.classList && modal.classList.contains('visible')) {
 				handled = true;
-				if (typeof window.closeObjectViewer === 'function') {
-					window.closeObjectViewer();
-				} else {
-					modal.classList.remove('visible');
-				}
+				modal.classList.remove('visible');
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -1366,7 +1363,7 @@ window.addEventListener('message', async (event: any) => {
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
 			_win.schemaByBoxId[message.boxId] = message.schema;
-			_win.setSchemaLoading(message.boxId, false);
+			(_win.schemaFetchInFlightByBoxId as any)[message.boxId] = false;
 			
 			// Update monaco-kusto with the raw schema JSON if available
 			// With aggregate schema approach, we always push schemas to monaco-kusto
@@ -1479,13 +1476,14 @@ window.addEventListener('message', async (event: any) => {
 					}
 				}
 				
-				_win.setSchemaLoadedSummary(
-					message.boxId,
-					displayText,
-					tooltipText,
-					isError,
-					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson, isFailoverToCache }
-				);
+				try {
+					const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+						kwEl.setSchemaInfo(buildSchemaInfo(displayText, isError,
+							{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson, isFailoverToCache }));
+					}
+				} catch (e) { console.error('[kusto]', e); }
 			}
 			break;
 		case 'schemaError':
@@ -1509,15 +1507,23 @@ window.addEventListener('message', async (event: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
-			_win.setSchemaLoading(message.boxId, false);
+			(_win.schemaFetchInFlightByBoxId as any)[message.boxId] = false;
 			try {
 				const hasSchema = !!(_win.schemaByBoxId && _win.schemaByBoxId[message.boxId]);
 				if (!hasSchema) {
-					_win.setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+					const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+						kwEl.setSchemaInfo(buildSchemaInfo('Schema failed', true));
+					}
 				}
 			} catch {
 				try {
-					_win.setSchemaLoadedSummary(message.boxId, 'Schema failed', message.error || 'Schema fetch failed', true);
+					const kwEl2 = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					if (kwEl2 && typeof kwEl2.setSchemaInfo === 'function') {
+						kwEl2.setSchemaInfo(buildSchemaInfo('Schema failed', true));
+					}
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			try {

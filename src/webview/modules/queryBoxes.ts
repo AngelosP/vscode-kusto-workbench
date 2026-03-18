@@ -2,8 +2,22 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import './queryBoxes-toolbar';
 import './queryBoxes-execution';
-import './queryBoxes-connection';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
+import { buildSchemaInfo } from '../shared/schema-utils';
+import {
+	formatClusterDisplayName,
+	normalizeClusterUrlKey,
+	formatClusterShortName,
+	clusterShortNameKey,
+	extractClusterUrlsFromQueryText,
+	extractClusterDatabaseHintsFromQueryText,
+	computeMissingClusterUrls as _computeMissing,
+	favoriteKey as __kustoFavoriteKey,
+	findFavorite as __kustoFindFavorite_pure,
+	getFavoritesSorted as __kustoGetFavoritesSorted_pure,
+	parseKustoConnectionString,
+	findConnectionIdForClusterUrl as _findConnIdPure,
+} from '../shared/clusterUtils';
 export {};
 
 const _win = window;
@@ -111,7 +125,7 @@ function __kustoGetQuerySectionElement( boxId: any) {
 	return null;
 }
 
-// Expose globally for other modules (main.js, monaco.js, schema.js).
+// Expose globally for other modules (main.js, monaco.js).
 try {
 	window.__kustoGetConnectionId = __kustoGetConnectionId;
 	window.__kustoGetDatabase = __kustoGetDatabase;
@@ -406,7 +420,6 @@ function addQueryBox( options: any) {
 			try { if (_win.schemaFetchInFlightByBoxId) _win.schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 			try { if (_win.lastSchemaRequestAtByBoxId) _win.lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { if (window.__kustoSchemaRequestTokenByBoxId) delete window.__kustoSchemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			try { if (typeof _win.setSchemaLoading === 'function') _win.setSchemaLoading(boxId, false); } catch (e) { console.error('[kusto]', e); }
 			// Persist selection.
 			try {
 				if (!_win.__kustoRestoreInProgress) {
@@ -448,7 +461,7 @@ function addQueryBox( options: any) {
 		kwEl.addEventListener('database-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.onDatabaseChanged(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { onDatabaseChanged(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('refresh-databases', (e: any) => {
@@ -486,7 +499,7 @@ function addQueryBox( options: any) {
 		kwEl.addEventListener('schema-refresh', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			try { _win.refreshSchema(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { refreshSchema(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
 	}
 
@@ -1030,7 +1043,7 @@ async function fullyQualifyTablesInEditor( boxId: any) {
 	const currentTables = currentSchema && Array.isArray(currentSchema.tables) ? currentSchema.tables : null;
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
-		try { _win.ensureSchemaForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { ensureSchemaForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
@@ -1734,12 +1747,1000 @@ function toggleCacheControls( boxId: any) {
 }
 
 
-// Connection/database picker, cluster URL helpers, favorites, missing clusters,
-// and XML import are in queryBoxes-connection.ts.
+// ── Connection/database picker, cluster URL helpers, favorites, missing clusters,
+// XML import — absorbed from queryBoxes-connection.ts ──
+
+function computeMissingClusterUrls(detectedClusterUrls: any) {
+	return _computeMissing(detectedClusterUrls, _win.connections || []);
+}
+
+function renderMissingClustersBanner( boxId: any, missingClusterUrls: any) {
+	const banner = document.getElementById(boxId + '_missing_clusters') as any;
+	const textEl = document.getElementById(boxId + '_missing_clusters_text') as any;
+	if (!banner || !textEl) {
+		return;
+	}
+	const missing = Array.isArray(missingClusterUrls) ? missingClusterUrls : [];
+	if (!missing.length) {
+		banner.style.display = 'none';
+		textEl.innerHTML = '';
+		return;
+	}
+	const shortNames = missing
+		.map((u: any) => formatClusterShortName(u))
+		.filter(Boolean);
+	const label = shortNames.length
+		? ('Detected clusters not in your connections: <strong>' + _win.escapeHtml(shortNames.join(', ')) + '</strong>.')
+		: 'Detected clusters not in your connections.';
+	textEl.innerHTML = label + ' Add them with one click.';
+	banner.style.display = 'flex';
+}
+
+function updateMissingClustersForBox( boxId: any, queryText: any) {
+	try {
+		_win.lastQueryTextByBoxId[boxId] = String(queryText || '');
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		_win.suggestedDatabaseByClusterKeyByBoxId[boxId] = extractClusterDatabaseHintsFromQueryText(queryText);
+	} catch (e) { console.error('[kusto]', e); }
+	const detected = extractClusterUrlsFromQueryText(queryText);
+	const missing = computeMissingClusterUrls(detected);
+	try { _win.missingClusterUrlsByBoxId[boxId] = missing; } catch (e) { console.error('[kusto]', e); }
+	renderMissingClustersBanner(boxId, missing);
+}
+
+// Called by Monaco on content changes.
+window.__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
+	const id = String(boxId || '').trim();
+	if (!id) {
+		return;
+	}
+	try { _win.lastQueryTextByBoxId[id] = String(queryText || ''); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (_win.missingClusterDetectTimersByBoxId[id]) {
+			clearTimeout(_win.missingClusterDetectTimersByBoxId[id]);
+		}
+		_win.missingClusterDetectTimersByBoxId[id] = setTimeout(() => {
+			try { updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || ''); } catch (e) { console.error('[kusto]', e); }
+		}, 260);
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+// Called by main.ts when the connections list changes.
+window.__kustoOnConnectionsUpdated = function () {
+	try {
+		for (const id of (_win.queryBoxes || [])) {
+			updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || '');
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		for (const id of (_win.queryBoxes || [])) {
+			try {
+				if (_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]) {
+					__kustoTryApplyPendingFavoriteSelectionForBox(id);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
+			window.__kustoUpdateFavoritesUiForAllBoxes();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
+	return _findConnIdPure(clusterUrl, _win.connections || []);
+}
+
+function __kustoGetCurrentClusterUrlForBox( boxId: any) {
+	return _win.__kustoGetClusterUrl(boxId);
+}
+
+function __kustoGetCurrentDatabaseForBox( boxId: any) {
+	return _win.__kustoGetDatabase(boxId);
+}
+
+function __kustoFindFavorite( clusterUrl: any, database: any) {
+	return __kustoFindFavorite_pure(clusterUrl, database, Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
+}
+
+function __kustoGetFavoritesSorted() {
+	return __kustoGetFavoritesSorted_pure(Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
+}
+
+let __kustoAutoEnterFavoritesByBoxId = Object.create(null);
+let __kustoAutoEnterFavoritesForNewBoxByBoxId = Object.create(null);
+
+function __kustoMarkNewBoxForFavoritesAutoEnter( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		if (typeof _win.__kustoRestoreInProgress === 'boolean' && _win.__kustoRestoreInProgress) {
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		__kustoAutoEnterFavoritesForNewBoxByBoxId = __kustoAutoEnterFavoritesForNewBoxByBoxId || Object.create(null);
+		__kustoAutoEnterFavoritesForNewBoxByBoxId[id] = true;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoTryAutoEnterFavoritesModeForNewBox( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	let pending = false;
+	try {
+		pending = !!(__kustoAutoEnterFavoritesForNewBoxByBoxId && __kustoAutoEnterFavoritesForNewBoxByBoxId[id]);
+	} catch { pending = false; }
+	if (!pending) return;
+	try {
+		if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
+			try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
+	if (!hasAny) return;
+	const clusterUrl = __kustoGetCurrentClusterUrlForBox(id);
+	const db = __kustoGetCurrentDatabaseForBox(id);
+	if (!clusterUrl || !db) return;
+	const fav = __kustoFindFavorite(clusterUrl, db);
+	try {
+		if (fav) {
+			__kustoApplyFavoritesMode(id, true);
+			__kustoUpdateFavoritesUiForBox(id);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { delete __kustoAutoEnterFavoritesForNewBoxByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+}
+
+window.__kustoSetAutoEnterFavoritesForBox = function (boxId: any, clusterUrl: any, database: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const c = String(clusterUrl || '').trim();
+	const d = String(database || '').trim();
+	if (!c || !d) return;
+	try {
+		__kustoAutoEnterFavoritesByBoxId = __kustoAutoEnterFavoritesByBoxId || Object.create(null);
+		__kustoAutoEnterFavoritesByBoxId[id] = { clusterUrl: c, database: d };
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	let desired = null;
+	try {
+		desired = __kustoAutoEnterFavoritesByBoxId && __kustoAutoEnterFavoritesByBoxId[id]
+			? __kustoAutoEnterFavoritesByBoxId[id]
+			: null;
+	} catch { desired = null; }
+	if (!desired) return;
+	const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
+	if (!hasAny) return;
+	const fav = __kustoFindFavorite(desired.clusterUrl, desired.database);
+	if (!fav) {
+		try {
+			const isInFavMode = !!(_win.favoritesModeByBoxId && _win.favoritesModeByBoxId[id]);
+			if (isInFavMode) {
+				__kustoApplyFavoritesMode(id, false);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	try { __kustoApplyFavoritesMode(id, true); } catch (e) { console.error('[kusto]', e); }
+	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+}
+
+window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
+	try {
+		for (const id of (_win.queryBoxes || [])) {
+			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+let __kustoDidDefaultFirstBoxToFavorites = false;
+
+window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
+	try {
+		if (__kustoDidDefaultFirstBoxToFavorites) return;
+		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
+		if (!hasAny) return;
+		if (!Array.isArray(_win.queryBoxes) || _win.queryBoxes.length !== 1) return;
+		const id = String(_win.queryBoxes[0] || '').trim();
+		if (!id) return;
+		try {
+			if (_win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, id)) {
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			let desiredCluster = '';
+			let desiredDb = '';
+			const pending = __kustoAutoEnterFavoritesByBoxId && __kustoAutoEnterFavoritesByBoxId[id];
+			if (pending) {
+				desiredCluster = pending.clusterUrl || '';
+				desiredDb = pending.database || '';
+			}
+			if (!desiredCluster) {
+				const kwEl = _win.__kustoGetQuerySectionElement(id);
+				desiredCluster = kwEl ? _win.__kustoGetClusterUrl(id) : '';
+			}
+			if (!desiredDb) {
+				desiredDb = _win.__kustoGetDatabase(id);
+			}
+			if (desiredCluster && desiredDb) {
+				const fav = __kustoFindFavorite(desiredCluster, desiredDb);
+				if (!fav) {
+					__kustoDidDefaultFirstBoxToFavorites = true;
+					return;
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		__kustoApplyFavoritesMode(id, true);
+		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
+		__kustoDidDefaultFirstBoxToFavorites = true;
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+let __kustoConfirmRemoveFavoriteCallbacksById = Object.create(null);
+
+window.__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
+	try {
+		const m = (message && typeof message === 'object') ? message : {};
+		const requestId = String(m.requestId || '');
+		const ok = !!m.ok;
+		if (!requestId) return;
+		const cb = __kustoConfirmRemoveFavoriteCallbacksById && __kustoConfirmRemoveFavoriteCallbacksById[requestId];
+		try { delete __kustoConfirmRemoveFavoriteCallbacksById[requestId]; } catch (e) { console.error('[kusto]', e); }
+		if (typeof cb === 'function') {
+			try { cb(ok); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+window.__kustoGetSelectionOwnerBoxId = function (boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return '';
+	try {
+		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
+			const meta = _win.optimizationMetadataByBoxId[id];
+			if (meta && meta.isComparison && meta.sourceBoxId) {
+				return String(meta.sourceBoxId || '').trim() || id;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return id;
+};
+
+function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return false;
+	let pending = null;
+	try {
+		pending = _win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]
+			? _win.pendingFavoriteSelectionByBoxId[id]
+			: null;
+	} catch (e) { console.error('[kusto]', e); }
+	if (!pending) return false;
+	const clusterUrl = String(pending.clusterUrl || '').trim();
+	const database = String(pending.database || '').trim();
+	if (!clusterUrl || !database) {
+		try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+		return false;
+	}
+	const connectionId = __kustoFindConnectionIdForClusterUrl(clusterUrl);
+	if (!connectionId) {
+		return false;
+	}
+	let ownerId = id;
+	try {
+		ownerId = (typeof window.__kustoGetSelectionOwnerBoxId === 'function')
+			? (window.__kustoGetSelectionOwnerBoxId(id) || id)
+			: id;
+	} catch { ownerId = id; }
+	const applyToBox = (targetBoxId: any) => {
+		const tid = String(targetBoxId || '').trim();
+		if (!tid) return;
+		const kwEl = _win.__kustoGetQuerySectionElement(tid);
+		if (!kwEl) return;
+		try {
+			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(clusterUrl);
+			if (typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(database);
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			if (connectionId && typeof kwEl.setConnectionId === 'function') {
+				kwEl.setConnectionId(connectionId);
+			}
+			kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+				detail: { boxId: tid, connectionId: connectionId, clusterUrl: clusterUrl },
+				bubbles: true, composed: true,
+			}));
+		} catch (e) { console.error('[kusto]', e); }
+	};
+	applyToBox(ownerId);
+	if (ownerId !== id) {
+		applyToBox(id);
+	}
+	try { delete _win.pendingFavoriteSelectionByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+	return true;
+}
+
+function __kustoSetElementDisplay( el: any, display: any) {
+	try {
+		if (!el) return;
+		el.style.display = display;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoUpdateFavoritesUiForBox( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const kwEl = _win.__kustoGetQuerySectionElement(id);
+	if (kwEl && typeof kwEl.setFavorites === 'function') {
+		kwEl.setFavorites(Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
+	}
+}
+
+window.__kustoUpdateFavoritesUiForAllBoxes = function () {
+	try {
+		_win.queryBoxes.forEach((id: any) =>  {
+			try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
+		});
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+function toggleFavoriteForBox( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const clusterUrl = _win.__kustoGetClusterUrl(id);
+	const database = _win.__kustoGetDatabase(id);
+	if (!clusterUrl || !database) return;
+	const existing = __kustoFindFavorite(clusterUrl, database);
+	if (existing) {
+		(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+	} else {
+		(_win.vscode as any).postMessage({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+	}
+}
+
+function removeFavorite( clusterUrl: any, database: any) {
+	const c = String(clusterUrl || '').trim();
+	const d = String(database || '').trim();
+	if (!c || !d) return;
+	(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: c, database: d });
+}
+
+function closeAllFavoritesDropdowns() {
+	// no-op — Lit component handles its own dropdown lifecycle.
+}
+
+function __kustoApplyFavoritesMode( boxId: any, enabled: any) {
+	_win.favoritesModeByBoxId = _win.favoritesModeByBoxId || {};
+	_win.favoritesModeByBoxId[boxId] = !!enabled;
+	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
+	if (kwEl && typeof kwEl.setFavoritesMode === 'function') {
+		kwEl.setFavoritesMode(!!enabled);
+	}
+}
+
+window.__kustoEnterFavoritesModeForBox = function (boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	try {
+		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
+		if (!hasAny) return;
+		__kustoApplyFavoritesMode(id, true);
+		__kustoUpdateFavoritesUiForBox(id);
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+function __kustoGetTrashIconSvg() {
+	return (
+		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+		'<path d="M6 2.5h4" />' +
+		'<path d="M3.5 4.5h9" />' +
+		'<path d="M5 4.5l.7 9h4.6l.7-9" />' +
+		'<path d="M6.6 7v4.8" />' +
+		'<path d="M9.4 7v4.8" />' +
+		'</svg>'
+	);
+}
+
+function addMissingClusterConnections( boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) {
+		return;
+	}
+	const missing = _win.missingClusterUrlsByBoxId[id];
+	const clusters = Array.isArray(missing) ? missing.slice() : [];
+	if (!clusters.length) {
+		return;
+	}
+	try {
+		const hasSelection = !!_win.__kustoGetConnectionId(id);
+		const kwEl = _win.__kustoGetQuerySectionElement(id);
+		if (kwEl && !hasSelection) {
+			const hints = _win.suggestedDatabaseByClusterKeyByBoxId && _win.suggestedDatabaseByClusterKeyByBoxId[id]
+				? _win.suggestedDatabaseByClusterKeyByBoxId[id]
+				: {};
+			let chosenClusterUrl = '';
+			let chosenDb = '';
+			for (const u of clusters) {
+				const key = clusterShortNameKey(u);
+				const db = key && hints ? String(hints[key] || '') : '';
+				if (db) {
+					chosenClusterUrl = String(u || '').trim();
+					chosenDb = db;
+					break;
+				}
+			}
+			if (!chosenClusterUrl) {
+				chosenClusterUrl = String(clusters[0] || '').trim();
+				const key0 = clusterShortNameKey(chosenClusterUrl);
+				chosenDb = key0 && hints ? String(hints[key0] || '') : '';
+			}
+			if (typeof kwEl.setDesiredClusterUrl === 'function') kwEl.setDesiredClusterUrl(chosenClusterUrl);
+			if (chosenDb && typeof kwEl.setDesiredDatabase === 'function') kwEl.setDesiredDatabase(chosenDb);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		(_win.vscode as any).postMessage({
+			type: 'addConnectionsForClusters',
+			boxId: id,
+			clusterUrls: clusters
+		});
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function updateConnectionSelects() {
+	_win.queryBoxes.forEach((id: any) =>  {
+		const el = _win.__kustoGetQuerySectionElement(id);
+		if (el && typeof el.setConnections === 'function') {
+			el.setConnections(_win.connections || [], { lastConnectionId: _win.lastConnectionId || '' });
+		}
+		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
+	});
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForAllBoxes === 'function') {
+			window.__kustoUpdateRunEnabledForAllBoxes();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function updateDatabaseField( boxId: any) {
+	try {
+		if (typeof __kustoClearDatabaseLoadError === 'function') {
+			__kustoClearDatabaseLoadError(boxId);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const connectionId = _win.__kustoGetConnectionId(boxId);
+	if (!connectionId) return;
+	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
+	if (kwEl) {
+		kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+			detail: { boxId: boxId, connectionId: connectionId, clusterUrl: _win.__kustoGetClusterUrl(boxId) },
+			bubbles: true, composed: true,
+		}));
+	}
+}
+
+function __kustoClearDatabaseLoadError( boxId: any) {
+	const bid = String(boxId || '').trim();
+	if (!bid) return;
+	const resultsDiv = document.getElementById(bid + '_results') as any;
+	if (!resultsDiv || !resultsDiv.dataset) return;
+	try {
+		if (resultsDiv.dataset.kustoDbLoadErrorActive !== '1') {
+			return;
+		}
+		const prevHtml = resultsDiv.dataset.kustoDbLoadErrorPrevHtml;
+		const prevVisible = resultsDiv.dataset.kustoDbLoadErrorPrevVisible;
+		if (typeof prevHtml === 'string') {
+			resultsDiv.innerHTML = prevHtml;
+		}
+		try {
+			if (typeof prevVisible === 'string' && prevVisible.length) {
+				const desiredVisible = (prevVisible === '1');
+				if (typeof _win.__kustoSetResultsVisible === 'function') {
+					_win.__kustoSetResultsVisible(bid, desiredVisible);
+				} else {
+					try {
+						if (window.__kustoResultsVisibleByBoxId) {
+							window.__kustoResultsVisibleByBoxId[bid] = desiredVisible;
+						}
+						if (typeof _win.__kustoApplyResultsVisibility === 'function') {
+							_win.__kustoApplyResultsVisibility(bid);
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	} finally {
+		try {
+			delete resultsDiv.dataset.kustoDbLoadErrorActive;
+			delete resultsDiv.dataset.kustoDbLoadErrorPrevHtml;
+			delete resultsDiv.dataset.kustoDbLoadErrorPrevVisible;
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+function promptAddConnectionFromDropdown( boxId: any) {
+	try {
+		(_win.vscode as any).postMessage({ type: 'promptAddConnection', boxId: boxId });
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function importConnectionsFromXmlFile( boxId: any) {
+	try {
+		(_win.vscode as any).postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
+	} catch (e: any) {
+		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+function parseKustoExplorerConnectionsXml( xmlText: any) {
+	const text = String(xmlText || '');
+	if (!text.trim()) {
+		return [];
+	}
+	let doc;
+	try {
+		doc = new DOMParser().parseFromString(text, 'application/xml');
+	} catch {
+		return [];
+	}
+	try {
+		const err = doc.getElementsByTagName('parsererror');
+		if (err && err.length) {
+			return [];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const nodes = Array.from(doc.getElementsByTagName('ServerDescriptionBase'));
+	const results = [];
+	for (const node of nodes) {
+		const name = getChildText(node, 'Name');
+		const details = getChildText(node, 'Details');
+		const connectionString = getChildText(node, 'ConnectionString');
+		const parsed = parseKustoConnectionString(connectionString);
+		let clusterUrl = (parsed.dataSource || details || '').trim();
+		if (!clusterUrl) {
+			continue;
+		}
+		if (!/^https?:\/\//i.test(clusterUrl)) {
+			clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
+		}
+		results.push({
+			name: (name || '').trim() || clusterUrl,
+			clusterUrl: clusterUrl.trim(),
+			database: (parsed.initialCatalog || '').trim() || undefined
+		});
+	}
+	const seen = new Set();
+	const deduped = [];
+	for (const r of results) {
+		let key = '';
+		try {
+			key = (typeof normalizeClusterUrlKey === 'function')
+				? normalizeClusterUrlKey(r.clusterUrl || '')
+				: String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
+		} catch {
+			key = String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
+		}
+		if (!key || seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		deduped.push(r);
+	}
+	return deduped;
+}
+
+function getChildText( node: any, localName: any) {
+	if (!node || !node.childNodes) {
+		return '';
+	}
+	for (const child of Array.from(node.childNodes) as any[]) {
+		if (!child || child.nodeType !== 1) {
+			continue;
+		}
+		const ln = child.localName || child.nodeName;
+		if (String(ln).toLowerCase() === String(localName).toLowerCase()) {
+			return String(child.textContent || '');
+		}
+	}
+	return '';
+}
+
+function refreshDatabases( boxId: any) {
+	const connectionId = _win.__kustoGetConnectionId(boxId);
+	if (!connectionId) return;
+	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
+	if (kwEl && typeof kwEl.setRefreshLoading === 'function') {
+		kwEl.setRefreshLoading(true);
+		kwEl.setDatabasesLoading(true);
+	}
+	(_win.vscode as any).postMessage({
+		type: 'refreshDatabases',
+		connectionId: connectionId,
+		boxId: boxId
+	});
+}
+
+function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
+	const errText = String(error || '');
+	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
+	if (responseConnectionId) {
+		const currentConnectionId = _win.__kustoGetConnectionId(boxId);
+		const responseConnId = String(responseConnectionId || '').trim();
+		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+			const refreshBtn = document.getElementById(boxId + '_refresh') as any;
+			if (refreshBtn) {
+				try {
+					if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
+						const prev = refreshBtn.dataset.kustoPrevHtml;
+						if (typeof prev === 'string' && prev) {
+							refreshBtn.innerHTML = prev;
+						}
+						try { delete refreshBtn.dataset.kustoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+						try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch (e) { console.error('[kusto]', e); }
+						try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch (e) { console.error('[kusto]', e); }
+					}
+					refreshBtn.removeAttribute('aria-busy');
+					refreshBtn.disabled = false;
+				} catch (e) { console.error('[kusto]', e); }
+			}
+			return;
+		}
+	}
+	try {
+		const databaseSelect = document.getElementById(boxId + '_database') as any;
+		const refreshBtn = document.getElementById(boxId + '_refresh') as any;
+		if (databaseSelect) {
+			const hadPreviousContent = databaseSelect.dataset &&
+				databaseSelect.dataset.kustoRefreshInFlight === 'true' &&
+				typeof databaseSelect.dataset.kustoPrevHtml === 'string' &&
+				databaseSelect.dataset.kustoPrevHtml;
+			if (isEnotfound) {
+				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
+				try { databaseSelect.value = ''; } catch (e) { console.error('[kusto]', e); }
+			} else if (hadPreviousContent) {
+				try {
+					const prevHtml = databaseSelect.dataset.kustoPrevHtml;
+					const prevValue = databaseSelect.dataset.kustoPrevValue;
+					if (typeof prevHtml === 'string' && prevHtml) {
+						databaseSelect.innerHTML = prevHtml;
+					}
+					if (typeof prevValue === 'string') {
+						databaseSelect.value = prevValue;
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			} else {
+				databaseSelect.innerHTML = '<option value="" disabled selected>Failed to load database list.</option>';
+				try { databaseSelect.value = ''; } catch (e) { console.error('[kusto]', e); }
+			}
+			databaseSelect.disabled = false;
+			try { window.__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_database'); } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (databaseSelect.dataset) {
+					delete databaseSelect.dataset.kustoRefreshInFlight;
+					delete databaseSelect.dataset.kustoPrevHtml;
+					delete databaseSelect.dataset.kustoPrevValue;
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		if (refreshBtn) {
+			try {
+				if (refreshBtn.dataset && (refreshBtn.dataset.kustoRefreshDbInFlight === '1' || refreshBtn.dataset.kustoAutoDbInFlight === '1')) {
+					const prev = refreshBtn.dataset.kustoPrevHtml;
+					if (typeof prev === 'string' && prev) {
+						refreshBtn.innerHTML = prev;
+					}
+					try { delete refreshBtn.dataset.kustoPrevHtml; } catch (e) { console.error('[kusto]', e); }
+					try { delete refreshBtn.dataset.kustoRefreshDbInFlight; } catch (e) { console.error('[kusto]', e); }
+					try { delete refreshBtn.dataset.kustoAutoDbInFlight; } catch (e) { console.error('[kusto]', e); }
+				}
+				refreshBtn.removeAttribute('aria-busy');
+			} catch (e) { console.error('[kusto]', e); }
+			refreshBtn.disabled = false;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId: any) {
+	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
+	if (responseConnectionId) {
+		const currentConnectionId = _win.__kustoGetConnectionId(boxId);
+		const responseConnId = String(responseConnectionId || '').trim();
+		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+			if (kwEl && typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(false);
+			return;
+		}
+	}
+	const list = (Array.isArray(databases) ? databases : [])
+		.map((d: any) => String(d || '').trim())
+		.filter(Boolean)
+		.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
+	const connectionId = _win.__kustoGetConnectionId(boxId);
+	if (connectionId) {
+		let clusterKey = '';
+		try {
+			const cid = String(connectionId || '').trim();
+			const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+			if (clusterUrl) {
+				let u = clusterUrl;
+				if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+				try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		_win.cachedDatabases[String(clusterKey || '').trim()] = list;
+	}
+	if (kwEl && typeof kwEl.setDatabases === 'function') {
+		kwEl.setDatabases(list, _win.lastDatabase || '');
+		kwEl.setRefreshLoading(false);
+	}
+	try { __kustoTryAutoEnterFavoritesModeForNewBox(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
+			window.__kustoUpdateRunEnabledForBox(boxId);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+// ── Schema functions (relocated from schema.ts) ──
+
+function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void {
+	if (!boxId) {
+		return;
+	}
+	if (!forceRefresh && (_win.schemaByBoxId as any)[boxId]) {
+		return;
+	}
+	if ((_win.schemaFetchInFlightByBoxId as any)[boxId]) {
+		return;
+	}
+	const now = Date.now();
+	const last = (_win.lastSchemaRequestAtByBoxId as any)[boxId] || 0;
+	// Avoid spamming schema fetch requests if autocomplete is invoked repeatedly.
+	if (!forceRefresh && now - last < 1500) {
+		return;
+	}
+	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = now;
+
+	let ownerId = boxId;
+	try {
+		if (typeof (_win.__kustoGetSelectionOwnerBoxId) === 'function') {
+			ownerId = (_win.__kustoGetSelectionOwnerBoxId as any)(boxId) || boxId;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const connectionId = typeof (_win.__kustoGetConnectionId) === 'function' ? (_win.__kustoGetConnectionId as any)(ownerId) : '';
+	const database = typeof (_win.__kustoGetDatabase) === 'function' ? (_win.__kustoGetDatabase as any)(ownerId) : '';
+	if (!connectionId || !database) {
+		return;
+	}
+
+	// Set loading state.
+	(_win.schemaFetchInFlightByBoxId as any)[boxId] = true;
+	try {
+		const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+			? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+			kwEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	let requestToken = '';
+	try {
+		if (!_win.__kustoSchemaRequestTokenByBoxId || typeof _win.__kustoSchemaRequestTokenByBoxId !== 'object') {
+			_win.__kustoSchemaRequestTokenByBoxId = {};
+		}
+		requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		(_win.__kustoSchemaRequestTokenByBoxId as any)[boxId] = requestToken;
+	} catch (e) { console.error('[kusto]', e); }
+	(_win.vscode as any).postMessage({
+		type: 'prefetchSchema',
+		connectionId,
+		database,
+		boxId,
+		forceRefresh: !!forceRefresh,
+		requestToken
+	});
+}
+
+function onDatabaseChanged(boxId: string): void {
+	// Clear any prior schema so it matches the newly selected DB.
+	delete (_win.schemaByBoxId as any)[boxId];
+	// Clear request throttling/in-flight so we can fetch immediately for the new DB.
+	try {
+		if (_win.schemaFetchInFlightByBoxId) {
+			(_win.schemaFetchInFlightByBoxId as any)[boxId] = false;
+		}
+		if (_win.lastSchemaRequestAtByBoxId) {
+			(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
+		}
+		if (_win.__kustoSchemaRequestTokenByBoxId) {
+			delete (_win.__kustoSchemaRequestTokenByBoxId as any)[boxId];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	// Reset schema UI.
+	try {
+		const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+			? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+			kwEl.setSchemaInfo(buildSchemaInfo('', false));
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	// Persist selection immediately so VS Code Problems can reflect current schema context.
+	try {
+		if (!_win.__kustoRestoreInProgress) {
+			const connectionId = typeof (_win.__kustoGetConnectionId) === 'function' ? (_win.__kustoGetConnectionId as any)(boxId) : '';
+			const database = typeof (_win.__kustoGetDatabase) === 'function' ? (_win.__kustoGetDatabase as any)(boxId) : '';
+			(_win.vscode as any).postMessage({
+				type: 'saveLastSelection',
+				connectionId: String(connectionId || ''),
+				database: String(database || '')
+			});
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	ensureSchemaForBox(boxId, false);
+	// Update monaco-kusto schema if we have a cached schema for the new database
+	try {
+		if (typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
+			(_win.__kustoUpdateSchemaForFocusedBox as any)(boxId);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		if (typeof (_win.__kustoUpdateFavoritesUiForBox) === 'function') {
+			(_win.__kustoUpdateFavoritesUiForBox as any)(boxId);
+		} else if (typeof (_win.__kustoUpdateFavoritesUiForAllBoxes) === 'function') {
+			(_win.__kustoUpdateFavoritesUiForAllBoxes as any)();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		if (typeof (_win.__kustoUpdateRunEnabledForBox) === 'function') {
+			(_win.__kustoUpdateRunEnabledForBox as any)(boxId);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { if (typeof (_win.schedulePersist) === 'function') (_win.schedulePersist as any)(); } catch (e) { console.error('[kusto]', e); }
+}
+
+function refreshSchema(boxId: string): void {
+	if (!boxId) {
+		return;
+	}
+
+	// Update schema info UI via Lit element.
+	try {
+		const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
+			? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
+			kwEl.setSchemaInfo({ status: 'loading', statusText: 'Refreshing\u2026' });
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
+	ensureSchemaForBox(boxId, true);
+}
+
+// Request schema for an arbitrary (connectionId, database) pair.
+async function __kustoRequestSchema(connectionId: string, database: string, forceRefresh?: boolean): Promise<any> {
+	try {
+		const cid = String(connectionId || '').trim();
+		const db = String(database || '').trim();
+		if (!cid || !db) {
+			return null;
+		}
+		const key = cid + '|' + db;
+		try {
+			const schemaByConnDb = _win.schemaByConnDb as any;
+			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) {
+				return schemaByConnDb[key];
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		const p = new Promise((resolve, reject) => {
+			try {
+				(_win.schemaRequestResolversByBoxId as any)[reqBoxId] = { resolve, reject, key };
+			} catch (e) {
+				reject(e);
+			}
+		});
+		try {
+			(_win.vscode as any).postMessage({
+				type: 'prefetchSchema',
+				connectionId: cid,
+				database: db,
+				boxId: reqBoxId,
+				forceRefresh: !!forceRefresh
+			});
+		} catch (e) {
+			try { delete (_win.schemaRequestResolversByBoxId as any)[reqBoxId]; } catch (e) { console.error('[kusto]', e); }
+			throw e;
+		}
+		return await p;
+	} catch {
+		return null;
+	}
+}
+
+// Request database list for an arbitrary connectionId.
+_win.__kustoRequestDatabases = async function (connectionId: string, forceRefresh?: boolean): Promise<any[]> {
+	const cid = String(connectionId || '').trim();
+	if (!cid) {
+		return [];
+	}
+	try {
+		let clusterKey = '';
+		try {
+			const conn = Array.isArray(_win.connections) ? (_win.connections as any[]).find((c: any) => c && String(c.id || '').trim() === cid) : null;
+			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+			if (clusterUrl) {
+				let u = clusterUrl;
+				if (!/^https?:\/\//i.test(u)) {
+					u = 'https://' + u;
+				}
+				try {
+					clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
+				} catch {
+					clusterKey = String(clusterUrl || '').trim().toLowerCase();
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		const cachedDatabases = _win.cachedDatabases as any;
+		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
+		if (!forceRefresh && Array.isArray(cachedByCluster) && cachedByCluster.length) {
+			return cachedByCluster;
+		}
+
+		// Legacy fallback (pre per-cluster cache): allow reading by connectionId.
+		const cachedByConnectionId = cachedDatabases && cachedDatabases[cid];
+		if (!forceRefresh && Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) {
+			return cachedByConnectionId;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
+	return await new Promise((resolve, reject) => {
+		try {
+			let resolvers = _win.databasesRequestResolversByBoxId as any;
+			if (!resolvers || typeof resolvers !== 'object') {
+				resolvers = {};
+				_win.databasesRequestResolversByBoxId = resolvers;
+			}
+			resolvers[requestId] = { resolve, reject };
+		} catch {
+			resolve([]);
+			return;
+		}
+
+		try {
+			(_win.vscode as any).postMessage({
+				type: forceRefresh ? 'refreshDatabases' : 'getDatabases',
+				connectionId: cid,
+				boxId: requestId
+			});
+		} catch (e) {
+			try { delete (_win.databasesRequestResolversByBoxId as any)[requestId]; } catch (e) { console.error('[kusto]', e); }
+			reject(e);
+		}
+	});
+};
 
 // ── Window bridges for remaining legacy callers ──
 // Execution, comparison, and optimization bridges are in queryBoxes-execution.ts.
-// Connection, favorites, cluster helpers, and database bridges are in queryBoxes-connection.ts.
 window.fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
 window.qualifyTablesInTextPriority = qualifyTablesInTextPriority;
 window.__kustoIndexToAlphaName = __kustoIndexToAlphaName;
@@ -1756,6 +2757,50 @@ window.removeQueryBox = removeQueryBox;
 window.toggleCachePill = toggleCachePill;
 window.toggleCachePopup = toggleCachePopup;
 window.toggleCacheControls = toggleCacheControls;
+// Schema functions (relocated from schema.ts) — bridges for monaco module callers.
+window.ensureSchemaForBox = ensureSchemaForBox;
+window.onDatabaseChanged = onDatabaseChanged;
+window.refreshSchema = refreshSchema;
+window.__kustoRequestSchema = __kustoRequestSchema;
+// Connection/database/favorites bridges (absorbed from queryBoxes-connection.ts).
+window.formatClusterDisplayName = formatClusterDisplayName;
+window.normalizeClusterUrlKey = normalizeClusterUrlKey;
+window.formatClusterShortName = formatClusterShortName;
+window.clusterShortNameKey = clusterShortNameKey;
+window.extractClusterUrlsFromQueryText = extractClusterUrlsFromQueryText;
+window.extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFromQueryText;
+window.computeMissingClusterUrls = computeMissingClusterUrls;
+window.renderMissingClustersBanner = renderMissingClustersBanner;
+window.updateMissingClustersForBox = updateMissingClustersForBox;
+window.__kustoFavoriteKey = __kustoFavoriteKey;
+window.__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
+window.__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
+window.__kustoFindFavorite = __kustoFindFavorite;
+window.__kustoGetFavoritesSorted = __kustoGetFavoritesSorted;
+window.__kustoMarkNewBoxForFavoritesAutoEnter = __kustoMarkNewBoxForFavoritesAutoEnter;
+window.__kustoTryAutoEnterFavoritesModeForNewBox = __kustoTryAutoEnterFavoritesModeForNewBox;
+window.__kustoTryAutoEnterFavoritesModeForBox = __kustoTryAutoEnterFavoritesModeForBox;
+window.__kustoFindConnectionIdForClusterUrl = __kustoFindConnectionIdForClusterUrl;
+window.__kustoTryApplyPendingFavoriteSelectionForBox = __kustoTryApplyPendingFavoriteSelectionForBox;
+window.__kustoSetElementDisplay = __kustoSetElementDisplay;
+window.__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
+window.toggleFavoriteForBox = toggleFavoriteForBox;
+window.removeFavorite = removeFavorite;
+window.closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
+window.__kustoApplyFavoritesMode = __kustoApplyFavoritesMode;
+window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
+window.addMissingClusterConnections = addMissingClusterConnections;
+window.updateConnectionSelects = updateConnectionSelects;
+window.updateDatabaseField = updateDatabaseField;
+window.__kustoClearDatabaseLoadError = __kustoClearDatabaseLoadError;
+window.promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
+window.importConnectionsFromXmlFile = importConnectionsFromXmlFile;
+window.parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;
+window.getChildText = getChildText;
+window.parseKustoConnectionString = parseKustoConnectionString;
+window.refreshDatabases = refreshDatabases;
+window.onDatabasesError = onDatabasesError;
+window.updateDatabaseSelect = updateDatabaseSelect;
 
 // ── Copilot chat thin window bridges ──────────────────────────────────────────
 // These remain as window globals because they are called from inline onclick

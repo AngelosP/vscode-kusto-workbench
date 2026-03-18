@@ -138,20 +138,6 @@ declare global {
 		__kustoMaybeAutoScrollWhileDragging: (clientY: number, options?: any) => number;
 
 		// =====================================================================
-		// cellViewer.ts
-		// =====================================================================
-		__kustoCellViewerState: any;
-		openCellViewer: (row: number, col: number, boxId: string) => void;
-		closeCellViewer: () => void;
-		handleCellDoubleClick: (event: Event, row: number, col: number, boxId: string) => void;
-		copyCellViewerToClipboard: () => void;
-		searchInCellViewer: (query: string) => void;
-		cellViewerNavigateMatch: (delta: number) => void;
-		cellViewerNextMatch: () => void;
-		cellViewerPreviousMatch: () => void;
-		handleCellViewerKeydown: (e: KeyboardEvent) => void;
-
-		// =====================================================================
 		// columnAnalysis.ts
 		// =====================================================================
 		__kustoActiveColumnMenu: { menu: HTMLElement | null; button: Element | null } | null;
@@ -160,42 +146,6 @@ declare global {
 		showDistinctCountPicker: (colIdx: number, boxId: string) => void;
 		calculateDistinctCount: (groupByColIdx: number, boxId: string) => void;
 		closeColumnAnalysis: (event: Event | null) => void;
-
-		// =====================================================================
-		// objectViewer.ts
-		// =====================================================================
-		__kustoObjectViewerState: any;
-		__kustoObjectViewerRawVisible: boolean;
-		currentObjectViewerData: any;
-		openObjectViewer: (row: number, col: number, boxId: string) => void;
-		closeObjectViewer: () => void;
-		copyObjectViewerRawToClipboard: () => void;
-		toggleObjectViewerRaw: () => void;
-		objectViewerNavigateBack: () => void;
-		objectViewerNavigateToDepth: (depth: number) => void;
-		objectViewerNavigateInto: (prop: string) => void;
-		searchInObjectViewer: (query: string) => void;
-		formatJson: (text: string) => string;
-		syntaxHighlightJson: (json: string) => string;
-		highlightSearchTerm: (html: string, term: string) => string;
-		__kustoGetCopyIconSvg: (size?: number) => string;
-		__kustoWriteTextToClipboard: (text: string) => void;
-		__kustoParseMaybeJson: (text: string) => any;
-
-		// =====================================================================
-		// searchControl.ts
-		// =====================================================================
-		__kustoGetSearchIconSvg: () => string;
-		__kustoCreateSearchControl: (hostEl: HTMLElement | null, options?: any) => void;
-		__kustoGetSearchControlState: (inputId: string, modeId: string) => { query: string; mode: string };
-		__kustoTryBuildSearchRegex: (query: string, mode: string) => { regex: RegExp | null; error: string | null; mode: string };
-		__kustoRegexTest: (regex: RegExp | null, text: string) => boolean;
-		__kustoCountRegexMatches: (regex: RegExp | null, text: string, maxMatches?: number) => number;
-		__kustoHighlightPlainTextToHtml: (text: string, regex: RegExp | null, options?: any) => { html: string; count: number };
-		__kustoHighlightElementTextNodes: (rootEl: HTMLElement | null, regex: RegExp | null, highlightClass?: string) => number;
-		__kustoUpdateSearchModeToggle: (btn: HTMLElement | null, mode: string) => void;
-		__kustoUpdateSearchStatus: (statusEl: HTMLElement | null, matchCount: number, currentMatchIndex: number, hasError: boolean, errorMsg?: string) => void;
-		__kustoSetSearchNavEnabled: (prevBtn: HTMLButtonElement | null, nextBtn: HTMLButtonElement | null, enabled: boolean, matchCount: number) => void;
 
 		// =====================================================================
 		// dropdown.ts
@@ -231,10 +181,8 @@ declare global {
 		closeDiffView: () => void;
 
 		// =====================================================================
-		// schema.ts
+		// schema functions (relocated to queryBoxes.ts)
 		// =====================================================================
-		setSchemaLoading: (boxId: string, loading: boolean) => void;
-		setSchemaLoadedSummary: (boxId: string, text: string, title: string, isError: boolean, meta?: any) => void;
 		ensureSchemaForBox: (boxId: string, forceRefresh?: boolean) => void;
 		onDatabaseChanged: (boxId: string) => void;
 		refreshSchema: (boxId: string) => void;
@@ -301,7 +249,7 @@ declare global {
 		__kustoComparisonSummaryVisibleByBoxId?: Record<string, boolean>;
 
 		// =====================================================================
-		// queryBoxes-connection.ts
+		// queryBoxes.ts (connection/favorites — absorbed from queryBoxes-connection.ts)
 		// =====================================================================
 		formatClusterDisplayName: (connection: KustoConnectionInfo) => string;
 		formatClusterShortName: (clusterUrl: string) => string;

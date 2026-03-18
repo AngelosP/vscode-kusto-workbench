@@ -1,19 +1,18 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { escapeHtml } from '../../src/webview/modules/utils.js';
 
-// objectViewer.ts uses a global `escapeHtml` via `declare const`. Set it before import.
-beforeAll(() => {
-	(window as any).escapeHtml = escapeHtml;
-});
-
 import {
-	__kustoParseMaybeJson,
-	__kustoStringifyForSearch,
-	__kustoFormatScalarForTable,
-	__kustoIsComplexValue,
-	syntaxHighlightJson,
-	formatJson,
-} from '../../src/webview/modules/objectViewer.js';
+	parseMaybeJson as __kustoParseMaybeJson,
+	stringifyForSearch as __kustoStringifyForSearch,
+	formatScalarForTable as __kustoFormatScalarForTable,
+	isComplexValue as __kustoIsComplexValue,
+	syntaxHighlightJson as _syntaxHighlightJsonRaw,
+	formatJson as _formatJsonRaw,
+} from '../../src/webview/shared/viewer-utils.js';
+
+// Bind escapeHtml for the functions that need it.
+const syntaxHighlightJson = (obj: unknown, indent = 0) => _syntaxHighlightJsonRaw(obj, indent, escapeHtml);
+const formatJson = (json: unknown) => _formatJsonRaw(json, escapeHtml);
 
 // ── __kustoParseMaybeJson ─────────────────────────────────────────────────────
 

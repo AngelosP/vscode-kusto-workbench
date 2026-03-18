@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { __kustoGetCellViewerColumnName } from '../../src/webview/modules/cellViewer.js';
+import { getColumnName as __kustoGetCellViewerColumnName } from '../../src/webview/shared/viewer-utils.js';
 
 // ── __kustoGetCellViewerColumnName ────────────────────────────────────────────
 
