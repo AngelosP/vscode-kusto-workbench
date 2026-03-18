@@ -1,6 +1,7 @@
 // Toolbar rendering, action buttons, run modes, share modal, overflow menu.
 // Extracted from queryBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
+import { getRunModeLabelText } from '../shared/comparisonUtils';
 
 const _win = window;
 
@@ -1355,17 +1356,7 @@ function getRunMode( boxId: any) {
 	return _win.runModesByBoxId[boxId] || 'take100';
 }
 
-function getRunModeLabelText( mode: any) {
-	switch ((mode || '').toLowerCase()) {
-		case 'plain':
-			return 'Run Query';
-		case 'sample100':
-			return 'Run Query (sample 100)';
-		case 'take100':
-		default:
-			return 'Run Query (take 100)';
-	}
-}
+// getRunModeLabelText imported from ../shared/comparisonUtils.ts
 
 function setRunMode( boxId: any, mode: any) {
 	_win.runModesByBoxId[boxId] = (mode || 'take100');

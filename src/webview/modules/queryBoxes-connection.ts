@@ -1,146 +1,26 @@
 // Connection/database picker wiring, cluster URL helpers, favorites, missing clusters,
 // XML import — extracted from queryBoxes.ts
 // Window bridge exports at bottom for remaining legacy callers.
+import {
+	formatClusterDisplayName,
+	normalizeClusterUrlKey,
+	formatClusterShortName,
+	clusterShortNameKey,
+	extractClusterUrlsFromQueryText,
+	extractClusterDatabaseHintsFromQueryText,
+	computeMissingClusterUrls as _computeMissing,
+	favoriteKey as __kustoFavoriteKey,
+	findFavorite as __kustoFindFavorite_pure,
+	getFavoritesSorted as __kustoGetFavoritesSorted_pure,
+	parseKustoConnectionString,
+	findConnectionIdForClusterUrl as _findConnIdPure,
+} from '../shared/clusterUtils';
 export {};
 
 const _win = window;
 
-function formatClusterDisplayName( connection: any) {
-	if (!connection) {
-		return '';
-	}
-	const url = String(connection.clusterUrl || '').trim();
-	if (url) {
-		try {
-			const u = new URL(url);
-			const hostname = String(u.hostname || '').trim();
-			const lower = hostname.toLowerCase();
-			if (lower.endsWith('.kusto.windows.net')) {
-				return hostname.slice(0, hostname.length - '.kusto.windows.net'.length);
-			}
-			return hostname || url;
-		} catch (e) { console.error('[kusto]', e); }
-	}
-	return String(connection.name || connection.clusterUrl || '').trim();
-}
-
-function normalizeClusterUrlKey( url: any) {
-	try {
-		const raw = String(url || '').trim();
-		if (!raw) return '';
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
-		const u = new URL(withScheme);
-		return (u.origin + u.pathname).replace(/\/+$/, '').toLowerCase();
-	} catch {
-		return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
-	}
-}
-
-function formatClusterShortName( clusterUrl: any) {
-	const raw = String(clusterUrl || '').trim();
-	if (!raw) {
-		return '';
-	}
-	try {
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
-		const u = new URL(withScheme);
-		const host = String(u.hostname || '').trim();
-		if (!host) {
-			return raw;
-		}
-		const first = host.split('.')[0];
-		return first || host;
-	} catch {
-		// Fall back to a best-effort host extraction
-		const m = raw.match(/([a-z0-9-]+)(?:\.[a-z0-9.-]+)+/i);
-		if (m && m[1]) {
-			return m[1];
-		}
-		return raw;
-	}
-}
-
-function clusterShortNameKey( clusterUrl: any) {
-	try {
-		return String(formatClusterShortName(clusterUrl) || '').trim().toLowerCase();
-	} catch {
-		return String(clusterUrl || '').trim().toLowerCase();
-	}
-}
-
-function extractClusterUrlsFromQueryText( queryText: any) {
-	const text = String(queryText || '');
-	if (!text) {
-		return [];
-	}
-	// Primary pattern: cluster('https://...') or cluster("...")
-	const urls = [];
-	try {
-		const re = /\bcluster\s*\(\s*(['"])([^'"\r\n]+?)\1\s*\)/ig;
-		let m;
-		while ((m = re.exec(text)) !== null) {
-			const u = String(m[2] || '').trim();
-			if (u) urls.push(u);
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	// Unique by cluster short-name key (case-insensitive)
-	const seen = new Set();
-	const out = [];
-	for (const u of urls) {
-		const key = clusterShortNameKey(u);
-		if (!key || seen.has(key)) continue;
-		seen.add(key);
-		out.push(u);
-	}
-	return out;
-}
-
-function extractClusterDatabaseHintsFromQueryText( queryText: any) {
-	const text = String(queryText || '');
-	const map: any = {};
-	if (!text) {
-		return map;
-	}
-	// Pattern: cluster('...').database('...') (case-insensitive, with whitespace)
-	try {
-		const re = /\bcluster\s*\(\s*(['"])([^'"\r\n]+?)\1\s*\)\s*\.\s*database\s*\(\s*(['"])([^'"\r\n]+?)\3\s*\)/ig;
-		let m;
-		while ((m = re.exec(text)) !== null) {
-			const clusterUrl = String(m[2] || '').trim();
-			const database = String(m[4] || '').trim();
-			if (!clusterUrl || !database) continue;
-			const key = clusterShortNameKey(clusterUrl);
-			if (!key) continue;
-			if (!map[key]) {
-				map[key] = database;
-			}
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return map;
-}
-
-function computeMissingClusterUrls( detectedClusterUrls: any) {
-	const detected = Array.isArray(detectedClusterUrls) ? detectedClusterUrls : [];
-	if (!detected.length) {
-		return [];
-	}
-	const existingKeys = new Set();
-	try {
-		for (const c of (_win.connections || [])) {
-			if (!c) continue;
-			const key = clusterShortNameKey(c.clusterUrl || '');
-			if (key) existingKeys.add(key);
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	const missing = [];
-	for (const u of detected) {
-		const key = clusterShortNameKey(u);
-		if (!key) continue;
-		if (!existingKeys.has(key)) {
-			missing.push(u);
-		}
-	}
-	return missing;
+function computeMissingClusterUrls(detectedClusterUrls: any) {
+	return _computeMissing(detectedClusterUrls, _win.connections || []);
 }
 
 function renderMissingClustersBanner( boxId: any, missingClusterUrls: any) {
@@ -234,24 +114,11 @@ function __kustoGetCurrentDatabaseForBox( boxId: any) {
 }
 
 function __kustoFindFavorite( clusterUrl: any, database: any) {
-	const key = __kustoFavoriteKey(clusterUrl, database);
-	const list = Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : [];
-	for (const f of list) {
-		if (!f) continue;
-		const fk = __kustoFavoriteKey(f.clusterUrl, f.database);
-		if (fk === key) return f;
-	}
-	return null;
+	return __kustoFindFavorite_pure(clusterUrl, database, Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
 }
 
 function __kustoGetFavoritesSorted() {
-	const list = (Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []).slice();
-	list.sort((a: any, b: any) => {
-		const an = String((a && a.name) || '').toLowerCase();
-		const bn = String((b && b.name) || '').toLowerCase();
-		return an.localeCompare(bn);
-	});
-	return list;
+	return __kustoGetFavoritesSorted_pure(Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites : []);
 }
 
 // Auto-enter Favorites mode when restoring a .kqlx selection that matches an existing favorite.
@@ -439,17 +306,7 @@ window.__kustoOnConfirmRemoveFavoriteResult = function (message: any) {
 };
 
 function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
-	try {
-		const key = normalizeClusterUrlKey(String(clusterUrl || '').trim());
-		if (!key) return '';
-		for (const c of (_win.connections || [])) {
-			if (!c) continue;
-			if (normalizeClusterUrlKey(c.clusterUrl || '') === key) {
-				return String(c.id || '').trim();
-			}
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
+	return _findConnIdPure(clusterUrl, _win.connections || []);
 }
 
 // For optimized/comparison boxes, execution inherits cluster/db from the source box.
@@ -847,25 +704,6 @@ function getChildText( node: any, localName: any) {
 		}
 	}
 	return '';
-}
-
-function parseKustoConnectionString( cs: any) {
-	const raw = String(cs || '');
-	const parts = raw.split(';').map((p: any) => p.trim()).filter(Boolean);
-	const map: any = {};
-	for (const part of parts) {
-		const idx = part.indexOf('=');
-		if (idx <= 0) {
-			continue;
-		}
-		const key = part.slice(0, idx).trim().toLowerCase();
-		const val = part.slice(idx + 1).trim();
-		map[key] = val;
-	}
-	return {
-		dataSource: map['data source'] || map['datasource'] || map['server'] || map['address'] || '',
-		initialCatalog: map['initial catalog'] || map['database'] || ''
-	};
 }
 
 function refreshDatabases( boxId: any) {

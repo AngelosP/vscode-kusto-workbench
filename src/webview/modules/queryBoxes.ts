@@ -3,6 +3,7 @@
 import './queryBoxes-toolbar';
 import './queryBoxes-execution';
 import './queryBoxes-connection';
+import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 export {};
 
 const _win = window;
@@ -10,23 +11,6 @@ const _win = window;
 // Diagnostics logging — no-op (was removed from original source, callers remain).
 function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }
 window.__kustoLog = __kustoLog;
-
-function __kustoIndexToAlphaName( index: any) {
-	// Excel-like column naming: 0->A, 25->Z, 26->AA, ...
-	try {
-		let n = Math.max(0, Math.floor(Number(index) || 0));
-		let out = '';
-		while (true) {
-			const r = n % 26;
-			out = String.fromCharCode(65 + r) + out;
-			n = Math.floor(n / 26) - 1;
-			if (n < 0) break;
-		}
-		return out || 'A';
-	} catch {
-		return 'A';
-	}
-}
 
 function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
 	const used = new Set();

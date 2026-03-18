@@ -1,5 +1,24 @@
 // Query execution, result handling, comparison, optimization — extracted from queryBoxes.ts
 // Window bridge exports at bottom for remaining legacy callers.
+import {
+	normalizeCellForComparison as __kustoNormalizeCellForComparison,
+	rowKeyForComparison as __kustoRowKeyForComparison,
+	normalizeColumnNameForComparison as __kustoNormalizeColumnNameForComparison,
+	getNormalizedColumnNameList as __kustoGetNormalizedColumnNameList,
+	doColumnHeaderNamesMatch as __kustoDoColumnHeaderNamesMatch,
+	getColumnDifferences as __kustoGetColumnDifferences,
+	doColumnOrderMatch as __kustoDoColumnOrderMatch,
+	doRowOrderMatch as __kustoDoRowOrderMatch,
+	buildColumnIndexMapForNames as __kustoBuildColumnIndexMapForNames,
+	buildNameBasedColumnMapping as __kustoBuildNameBasedColumnMapping,
+	rowKeyForComparisonWithColumnMapping as __kustoRowKeyForComparisonWithColumnMapping,
+	rowKeyForComparisonIgnoringColumnOrder as __kustoRowKeyForComparisonIgnoringColumnOrder,
+	areResultsEquivalentWithDetails as __kustoAreResultsEquivalentWithDetails,
+	areResultsEquivalent as __kustoAreResultsEquivalent,
+	doResultHeadersMatch as __kustoDoResultHeadersMatch,
+	formatElapsed,
+	isValidConnectionIdForRun as __kustoIsValidConnectionIdForRun_pure,
+} from '../shared/comparisonUtils';
 export {};
 
 const _win = window;
@@ -45,434 +64,8 @@ function __kustoLockCacheForBenchmark( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoNormalizeCellForComparison( cell: any) {
-	const stripNumericGrouping = (s: any) => {
-		try {
-			return String(s).trim().replace(/[, _]/g, '');
-		} catch {
-			return '';
-		}
-	};
-	const isNumericString = (s: any) => {
-		try {
-			const t = stripNumericGrouping(s);
-			if (!t) return false;
-			return /^[+-]?(?:\d+\.?\d*|\d*\.?\d+)(?:[eE][+-]?\d+)?$/.test(t);
-		} catch {
-			return false;
-		}
-	};
-	const tryParseDateMs = (v: any) => {
-		try {
-			if (v instanceof Date) {
-				const t = v.getTime();
-				return isFinite(t) ? t : null;
-			}
-			const s = String(v).trim();
-			if (!s) return null;
-			// Don't treat pure numbers as dates.
-			if (isNumericString(s)) return null;
-			// First attempt: native parse
-			let t = Date.parse(s);
-			if (isFinite(t)) return t;
-			// Kusto-ish: "YYYY-MM-DD HH:mm:ss(.fffffff)?(Z)?" -> convert to ISO-ish
-			let iso = s;
-			if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(iso)) {
-				iso = iso.replace(' ', 'T');
-			}
-			// Trim fractional seconds beyond milliseconds for JS Date.parse
-			iso = iso.replace(/\.(\d{3})\d+/, '.$1');
-			// If it looks like a timestamp but lacks timezone, treat as UTC to stabilize comparisons.
-			if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(iso)) {
-				iso = iso + 'Z';
-			}
-			t = Date.parse(iso);
-			return isFinite(t) ? t : null;
-		} catch {
-			return null;
-		}
-	};
-	const stableStringify = (obj: any) => {
-		const seen = new Set();
-		const walk = (v: any): any => {
-			if (v === null || v === undefined) return v;
-			const t = typeof v;
-			if (t === 'string' || t === 'number' || t === 'boolean') return v;
-			if (v instanceof Date) {
-				const ms = v.getTime();
-				return isFinite(ms) ? { $date: ms } : { $date: String(v) };
-			}
-			if (t !== 'object') return String(v);
-			if (seen.has(v)) return '[circular]';
-			seen.add(v);
-			if (Array.isArray(v)) {
-				return v.map(walk);
-			}
-			const out: any = {};
-			for (const k of Object.keys(v).sort()) {
-				try {
-					out[k] = walk(v[k]);
-				} catch {
-					out[k] = '[unreadable]';
-				}
-			}
-			seen.delete(v);
-			return out;
-		};
-		try {
-			return JSON.stringify(walk(obj));
-		} catch {
-			try { return String(obj); } catch { return '[unstringifiable]'; }
-		}
-	};
-	const normalize = (v: any) => {
-		try {
-			if (v === null || v === undefined) return ['n', null];
-			const t = typeof v;
-			if (t === 'number') {
-				return ['num', isFinite(v) ? v : String(v)];
-			}
-			if (t === 'boolean') return ['bool', v ? 1 : 0];
-			if (t === 'string') {
-				const s = String(v);
-				if (isNumericString(s)) {
-					const num = parseFloat(stripNumericGrouping(s));
-					if (isFinite(num)) return ['num', num];
-				}
-				const ms = tryParseDateMs(s);
-				if (ms !== null) return ['date', ms];
-				return ['str', s];
-			}
-			if (v instanceof Date) {
-				const ms = v.getTime();
-				return ['date', isFinite(ms) ? ms : String(v)];
-			}
-			if (t !== 'object') return ['p', t, String(v)];
-			// Common table-cell wrapper used by this webview.
-			if (v && typeof v === 'object' && 'full' in v && v.full !== undefined && v.full !== null) {
-				return normalize(v.full);
-			}
-			if (v && typeof v === 'object' && 'display' in v && v.display !== undefined && v.display !== null) {
-				return normalize(v.display);
-			}
-			return ['obj', stableStringify(v)];
-		} catch {
-			try { return ['obj', String(v)]; } catch { return ['obj', '[uncomparable]']; }
-		}
-	};
-
-	try {
-		return normalize(cell);
-	} catch {
-		try { return ['obj', String(cell)]; } catch { return ['obj', '[uncomparable]']; }
-	}
-}
-
-function __kustoRowKeyForComparison( row: any) {
-	try {
-		const r = Array.isArray(row) ? row : [];
-		const norm = r.map(__kustoNormalizeCellForComparison);
-		return JSON.stringify(norm);
-	} catch {
-		try { return String(row); } catch { return '[uncomparable-row]'; }
-	}
-}
-
-function __kustoNormalizeColumnNameForComparison( name: any) {
-	try {
-		// Columns can be plain strings or {name, type} objects (Kusto column metadata).
-		if (name && typeof name === 'object' && 'name' in name) {
-			// eslint-disable-next-line eqeqeq
-			return String(name.name == null ? '' : name.name).trim().toLowerCase();
-		}
-		// eslint-disable-next-line eqeqeq
-		return String(name == null ? '' : name).trim().toLowerCase();
-	} catch {
-		return '';
-	}
-}
-
-function __kustoGetNormalizedColumnNameList( state: any) {
-	try {
-		const cols = Array.isArray(state && state.columns) ? state.columns : [];
-		return cols.map(__kustoNormalizeColumnNameForComparison);
-	} catch {
-		return [];
-	}
-}
-
-function __kustoDoColumnHeaderNamesMatch( sourceState: any, comparisonState: any) {
-	try {
-		const a = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
-		const b = __kustoGetNormalizedColumnNameList(comparisonState).slice().sort();
-		if (a.length !== b.length) return false;
-		for (let i = 0; i < a.length; i++) {
-			if (a[i] !== b[i]) return false;
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function __kustoGetColumnDifferences( sourceState: any, comparisonState: any) {
-	// Returns { onlyInA: string[], onlyInB: string[] } with original (non-normalized) column names.
-	try {
-		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
-		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
-		const aNorm = aCols.map(__kustoNormalizeColumnNameForComparison);
-		const bNorm = bCols.map(__kustoNormalizeColumnNameForComparison);
-		const aSet = new Set(aNorm);
-		const bSet = new Set(bNorm);
-		const onlyInA = [];
-		const onlyInB = [];
-		for (let i = 0; i < aCols.length; i++) {
-			if (!bSet.has(aNorm[i])) {
-				onlyInA.push(String(aCols[i]));
-			}
-		}
-		for (let i = 0; i < bCols.length; i++) {
-			if (!aSet.has(bNorm[i])) {
-				onlyInB.push(String(bCols[i]));
-			}
-		}
-		return { onlyInA, onlyInB };
-	} catch {
-		return { onlyInA: [], onlyInB: [] };
-	}
-}
-
-function __kustoDoColumnOrderMatch( sourceState: any, comparisonState: any) {
-	try {
-		const a = __kustoGetNormalizedColumnNameList(sourceState);
-		const b = __kustoGetNormalizedColumnNameList(comparisonState);
-		if (a.length !== b.length) return false;
-		for (let i = 0; i < a.length; i++) {
-			if (a[i] !== b[i]) return false;
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function __kustoDoRowOrderMatch( sourceState: any, comparisonState: any) {
-	try {
-		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
-		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
-		if (aRows.length !== bRows.length) return false;
-		// Build column mapping by name for consistent comparison.
-		const columnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState);
-		if (!columnHeaderNamesMatch) return false;
-		const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
-		const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
-		const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
-		const rowKeyForA = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
-		const rowKeyForB = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
-		for (let i = 0; i < aRows.length; i++) {
-			if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
-				return false;
-			}
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function __kustoBuildColumnIndexMapForNames( state: any) {
-	const cols = Array.isArray(state && state.columns) ? state.columns : [];
-	const map = new Map();
-	for (let i = 0; i < cols.length; i++) {
-		const n = __kustoNormalizeColumnNameForComparison(cols[i]);
-		if (!map.has(n)) {
-			map.set(n, []);
-		}
-		map.get(n).push(i);
-	}
-	return map;
-}
-
-function __kustoBuildNameBasedColumnMapping( state: any, canonicalNames: any) {
-	try {
-		const map = __kustoBuildColumnIndexMapForNames(state);
-		const mapping = [];
-		for (const name of canonicalNames) {
-			const list = map.get(name) || [];
-			mapping.push(list.length ? list.shift() : -1);
-			map.set(name, list);
-		}
-		return mapping;
-	} catch {
-		return [];
-	}
-}
-
-function __kustoRowKeyForComparisonWithColumnMapping( row: any, mapping: any) {
-	try {
-		const r = Array.isArray(row) ? row : [];
-		const norm = (mapping || []).map((idx: any) => __kustoNormalizeCellForComparison(idx >= 0 ? r[idx] : undefined));
-		return JSON.stringify(norm);
-	} catch {
-		try { return String(row); } catch { return '[uncomparable-row]'; }
-	}
-}
-
-function __kustoRowKeyForComparisonIgnoringColumnOrder( row: any) {
-	try {
-		const r = Array.isArray(row) ? row : [];
-		const parts = r.map(__kustoNormalizeCellForComparison).map((c: any) => {
-			try { return JSON.stringify(c); } catch { return String(c); }
-		});
-		parts.sort();
-		return JSON.stringify(parts);
-	} catch {
-		try { return String(row); } catch { return '[uncomparable-row]'; }
-	}
-}
-
-function __kustoAreResultsEquivalentWithDetails( sourceState: any, comparisonState: any) {
-	try {
-		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
-		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
-		if (aCols.length !== bCols.length) {
-			return {
-				dataMatches: false,
-				rowOrderMatches: false,
-				columnOrderMatches: false,
-				columnHeaderNamesMatch: false,
-				reason: 'columnCountMismatch',
-				columnCountA: aCols.length,
-				columnCountB: bCols.length
-			};
-		}
-
-		const aRows = Array.isArray(sourceState && sourceState.rows) ? sourceState.rows : [];
-		const bRows = Array.isArray(comparisonState && comparisonState.rows) ? comparisonState.rows : [];
-		if (aRows.length !== bRows.length) {
-			return {
-				dataMatches: false,
-				rowOrderMatches: false,
-				columnOrderMatches: false,
-				columnHeaderNamesMatch: __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState),
-				reason: 'rowCountMismatch',
-				rowCountA: aRows.length,
-				rowCountB: bRows.length
-			};
-		}
-
-		const columnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch(sourceState, comparisonState);
-		const columnOrderMatches = __kustoDoColumnOrderMatch(sourceState, comparisonState);
-
-		// Data equivalence prioritizes values:
-		// - ignore row order always
-		// - ignore column order always
-		// - ignore column header names when needed
-		let rowKeyForA = null;
-		let rowKeyForB = null;
-		let rowOrderMatches = false;
-
-		if (columnHeaderNamesMatch) {
-			// Align columns by header name (case-insensitive) using a canonical sorted name list.
-			const canonicalNames = __kustoGetNormalizedColumnNameList(sourceState).slice().sort();
-			const aMap = __kustoBuildNameBasedColumnMapping(sourceState, canonicalNames);
-			const bMap = __kustoBuildNameBasedColumnMapping(comparisonState, canonicalNames);
-			rowKeyForA = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, aMap);
-			rowKeyForB = (row: any) => __kustoRowKeyForComparisonWithColumnMapping(row, bMap);
-			// Row order matches means: after aligning columns by name, each row matches in sequence.
-			rowOrderMatches = true;
-			for (let i = 0; i < aRows.length; i++) {
-				if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
-					rowOrderMatches = false;
-					break;
-				}
-			}
-		} else {
-			// No reliable column-name alignment; compare each row as an unordered multiset of cell values.
-			rowKeyForA = __kustoRowKeyForComparisonIgnoringColumnOrder;
-			rowKeyForB = __kustoRowKeyForComparisonIgnoringColumnOrder;
-			rowOrderMatches = true;
-			for (let i = 0; i < aRows.length; i++) {
-				if (rowKeyForA(aRows[i]) !== rowKeyForB(bRows[i])) {
-					rowOrderMatches = false;
-					break;
-				}
-			}
-		}
-
-		const counts = new Map();
-		for (const row of aRows) {
-			const key = rowKeyForA(row);
-			counts.set(key, (counts.get(key) || 0) + 1);
-		}
-		for (const row of bRows) {
-			const key = rowKeyForB(row);
-			const prev = counts.get(key) || 0;
-			if (prev <= 0) {
-				return {
-					dataMatches: false,
-					rowOrderMatches,
-					columnOrderMatches,
-					columnHeaderNamesMatch,
-					reason: 'extraOrMismatchedRow',
-					firstMismatchedRowKey: key
-				};
-			}
-			if (prev === 1) {
-				counts.delete(key);
-			} else {
-				counts.set(key, prev - 1);
-			}
-		}
-		const dataMatches = counts.size === 0;
-		if (!dataMatches) {
-			let firstMissingKey = '';
-			try {
-				for (const k of counts.keys()) { firstMissingKey = k; break; }
-			} catch (e) { console.error('[kusto]', e); }
-			return {
-				dataMatches,
-				rowOrderMatches,
-				columnOrderMatches,
-				columnHeaderNamesMatch,
-				reason: 'missingRow',
-				firstMismatchedRowKey: firstMissingKey
-			};
-		}
-		return { dataMatches, rowOrderMatches, columnOrderMatches, columnHeaderNamesMatch };
-	} catch {
-		return {
-			dataMatches: false,
-			rowOrderMatches: false,
-			columnOrderMatches: false,
-			columnHeaderNamesMatch: false,
-			reason: 'exception'
-		};
-	}
-}
-
-function __kustoAreResultsEquivalent( sourceState: any, comparisonState: any) {
-	try {
-		return !!__kustoAreResultsEquivalentWithDetails(sourceState, comparisonState).dataMatches;
-	} catch {
-		return false;
-	}
-}
-
-function __kustoDoResultHeadersMatch( sourceState: any, comparisonState: any) {
-	try {
-		// Historical name: keep behavior for any callers that expect strict header equality.
-		const aCols = Array.isArray(sourceState && sourceState.columns) ? sourceState.columns : [];
-		const bCols = Array.isArray(comparisonState && comparisonState.columns) ? comparisonState.columns : [];
-		if (aCols.length !== bCols.length) return false;
-		for (let i = 0; i < aCols.length; i++) {
-			if (String(aCols[i]) !== String(bCols[i])) return false;
-		}
-		return true;
-	} catch {
-		return false;
-	}
-}
+// Pure comparison functions moved to ../shared/comparisonUtils.ts
+// They are imported at the top of this file and re-exported via window bridges at the bottom.
 
 function __kustoUpdateAcceptOptimizationsButton( comparisonBoxId: any, enabled: any, tooltip: any) {
 	const btn = document.getElementById(comparisonBoxId + '_accept_btn') as any;
@@ -1775,12 +1368,7 @@ async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: an
 
 // ── Run readiness, execution core ──
 
-function __kustoIsValidConnectionIdForRun( connectionId: any) {
-	const cid = String(connectionId || '').trim();
-	if (!cid) return false;
-	if (cid === '__enter_new__' || cid === '__import_xml__') return false;
-	return true;
-}
+const __kustoIsValidConnectionIdForRun = __kustoIsValidConnectionIdForRun_pure;
 
 function __kustoGetEffectiveSelectionOwnerIdForRun( boxId: any) {
 	const id = String(boxId || '').trim();
@@ -1922,12 +1510,7 @@ window.__kustoUpdateRunEnabledForAllBoxes = function () {
 	} catch (e) { console.error('[kusto]', e); }
 };
 
-function formatElapsed( ms: any) {
-	const totalSeconds = Math.floor(ms / 1000);
-	const minutes = Math.floor(totalSeconds / 60);
-	const seconds = totalSeconds % 60;
-	return minutes + ':' + seconds.toString().padStart(2, '0');
-}
+// formatElapsed imported from ../shared/comparisonUtils.ts
 
 function setQueryExecuting( boxId: any, executing: any) {
 	const runBtn = document.getElementById(boxId + '_run_btn') as any;
