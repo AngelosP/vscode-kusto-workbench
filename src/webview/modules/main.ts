@@ -5,6 +5,11 @@ import { buildSchemaInfo } from '../shared/schema-utils';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled, ensureResultsShownForTool } from './resultsState';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
+import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName } from './queryBoxes';
+import { addMarkdownBox } from './extraBoxes-markdown';
+import { addChartBox } from './extraBoxes-chart';
+import { addTransformationBox } from './extraBoxes-transformation';
+import { addPythonBox, addUrlBox } from './extraBoxes';
 export {};
 
 const _win = window;
@@ -671,7 +676,7 @@ document.addEventListener('keydown', (event: any) => {
 			event.stopImmediatePropagation();
 		}
 		try {
-			const kwEl = _win.activeQueryEditorBoxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(_win.activeQueryEditorBoxId) : null;
+			const kwEl = _win.activeQueryEditorBoxId ? __kustoGetQuerySectionElement(_win.activeQueryEditorBoxId) : null;
 			if (kwEl && typeof kwEl.copilotWriteQuerySend === 'function') {
 				kwEl.copilotWriteQuerySend();
 			}
@@ -1473,8 +1478,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				try {
-					const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
-						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					const kwEl = __kustoGetQuerySectionElement(message.boxId);
 					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 						kwEl.setSchemaInfo(buildSchemaInfo(displayText, isError,
 							{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson, isFailoverToCache }));
@@ -1507,16 +1511,14 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const hasSchema = !!(_win.schemaByBoxId && _win.schemaByBoxId[message.boxId]);
 				if (!hasSchema) {
-					const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
-						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					const kwEl = __kustoGetQuerySectionElement(message.boxId);
 					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 						kwEl.setSchemaInfo(buildSchemaInfo('Schema failed', true));
 					}
 				}
 			} catch {
 				try {
-					const kwEl2 = typeof (_win.__kustoGetQuerySectionElement) === 'function'
-						? (_win.__kustoGetQuerySectionElement as any)(message.boxId) : null;
+					const kwEl2 = __kustoGetQuerySectionElement(message.boxId);
 					if (kwEl2 && typeof kwEl2.setSchemaInfo === 'function') {
 						kwEl2.setSchemaInfo(buildSchemaInfo('Schema failed', true));
 					}
@@ -1575,7 +1577,7 @@ window.addEventListener('message', async (event: any) => {
 				try {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {
-						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+						const kwEl = __kustoGetQuerySectionElement(boxId);
 						if (kwEl && typeof kwEl.setConnectionId === 'function') {
 							kwEl.setConnectionId(message.connectionId);
 							kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -1594,7 +1596,7 @@ window.addEventListener('message', async (event: any) => {
 				if (action === 'proceed') {
 					// User chose to use the embedded copilot chat; toggle it open.
 					const ftBoxId = String(message.boxId || '').trim();
-					const kwEl = ftBoxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(ftBoxId) : null;
+					const kwEl = ftBoxId ? __kustoGetQuerySectionElement(ftBoxId) : null;
 					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
 						kwEl.setCopilotChatVisible(true);
 					}
@@ -1786,7 +1788,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				// Create a new query box below the source box for comparison
-				const comparisonBoxId = _win.addQueryBox({ 
+				const comparisonBoxId = addQueryBox({ 
 					id: 'query_opt_' + Date.now(), 
 					initialQuery: prettifiedOptimizedQuery,
 					isComparison: true,
@@ -1829,7 +1831,7 @@ window.addEventListener('message', async (event: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 				
 				// Set connection and database to match source
-				const compKwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(comparisonBoxId) : null;
+				const compKwEl = __kustoGetQuerySectionElement(comparisonBoxId);
 				if (compKwEl) {
 					if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
 					if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
@@ -1844,7 +1846,7 @@ window.addEventListener('message', async (event: any) => {
 				
 				// Set the query name
 				if (desiredOptimizedName) {
-					_win.setSectionName(comparisonBoxId, desiredOptimizedName);
+					__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
 				}
 				
 				// Execute both queries for comparison
@@ -1903,7 +1905,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryOptions':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotApplyWriteQueryOptions === 'function') {
 					kwEl.copilotApplyWriteQueryOptions(
 						message.models || [],
@@ -1916,7 +1918,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryStatus':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryStatus === 'function') {
 					kwEl.copilotWriteQueryStatus(message.status || '', message.detail || '', message.role || '');
 				}
@@ -1925,7 +1927,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQuerySetQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
 				}
@@ -1943,7 +1945,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryToolResult':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryToolResult === 'function') {
 					kwEl.copilotWriteQueryToolResult(
 						message.tool || '',
@@ -1957,7 +1959,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotExecutedQuery':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendExecutedQuery === 'function') {
 					kwEl.copilotAppendExecutedQuery(
 						message.query || '',
@@ -1972,7 +1974,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotGeneralQueryRulesLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendGeneralRulesLink === 'function') {
 					kwEl.copilotAppendGeneralRulesLink(
 						message.filePath || '',
@@ -1985,7 +1987,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotUserQuerySnapshot':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendQuerySnapshot === 'function') {
 					kwEl.copilotAppendQuerySnapshot(
 						message.queryText || '',
@@ -1997,7 +1999,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNotesContextLoaded':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendDevNotesContext === 'function') {
 					kwEl.copilotAppendDevNotesContext(
 						message.preview || '',
@@ -2009,7 +2011,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotDevNoteToolCall':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendDevNoteToolCall === 'function') {
 					const detail = message.action === 'save'
 						? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
@@ -2026,7 +2028,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotClarifyingQuestion':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendClarifyingQuestion === 'function') {
 					kwEl.copilotAppendClarifyingQuestion(
 						message.question || '',
@@ -2038,7 +2040,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQueryDone':
 			try {
 				const boxId = String(message.boxId || '');
-				const kwEl = boxId && window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(boxId) : null;
+				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
 					kwEl.copilotWriteQueryDone(!!message.ok, message.message || '');
 				}
@@ -2092,110 +2094,80 @@ window.addEventListener('message', async (event: any) => {
 				let sectionId = '';
 				let success = false;
 				
-				// Helper to set section name
-				const setSectionName = (id: any, name: any) => {
-					if (id && name) {
-						// Lit sections expose setName() for shadow DOM.
-						const el = document.getElementById(id) as any;
-						if (el && typeof el.setName === 'function') {
-							el.setName(String(name));
-							return;
-						}
-						// Legacy sections use light DOM inputs.
-						const nameInput = document.getElementById(id + '_name') as any;
-						if (nameInput) {
-							nameInput.value = String(name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
-						}
-					}
-				};
-				
 				try {
 					if (sectionType === 'query') {
-						if (typeof _win.addQueryBox === 'function') {
-							const queryOpts: any = {};
-							if (input.query) {
-								queryOpts.initialQuery = String(input.query);
-							}
-							sectionId = _win.addQueryBox(queryOpts);
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
-							}
-							if (sectionId && input.clusterUrl) {
-								// Find connection by cluster URL
-								const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
-								if (conn) {
-									const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
-									if (kwEl && typeof kwEl.setConnectionId === 'function') {
-										kwEl.setConnectionId(conn.id);
-										kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-											detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
-											bubbles: true, composed: true,
-										}));
-									}
-								}
-							}
-							if (sectionId && input.database) {
-								const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
-								if (kwEl && typeof kwEl.setDatabase === 'function') {
-									kwEl.setDatabase(input.database);
-									kwEl.dispatchEvent(new CustomEvent('database-changed', {
-										detail: { boxId: sectionId, database: input.database },
+						const queryOpts: any = {};
+						if (input.query) {
+							queryOpts.initialQuery = String(input.query);
+						}
+						sectionId = addQueryBox(queryOpts);
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
+						}
+						if (sectionId && input.clusterUrl) {
+							// Find connection by cluster URL
+							const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+							if (conn) {
+								const kwEl = __kustoGetQuerySectionElement(sectionId);
+								if (kwEl && typeof kwEl.setConnectionId === 'function') {
+									kwEl.setConnectionId(conn.id);
+									kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+										detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
 										bubbles: true, composed: true,
 									}));
 								}
 							}
 						}
-					} else if (sectionType === 'markdown') {
-						if (typeof _win.addMarkdownBox === 'function') {
-							// Pass text as option so it's available when the editor initializes
-							// Accept both 'text' and 'content' - LLMs may use either property name
-							const textValue = input.text ?? input.content;
-							const markdownOptions = (textValue !== undefined) ? { text: String(textValue) } : undefined;
-							sectionId = _win.addMarkdownBox(markdownOptions);
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
+						if (sectionId && input.database) {
+							const kwEl = __kustoGetQuerySectionElement(sectionId);
+							if (kwEl && typeof kwEl.setDatabase === 'function') {
+								kwEl.setDatabase(input.database);
+								kwEl.dispatchEvent(new CustomEvent('database-changed', {
+									detail: { boxId: sectionId, database: input.database },
+									bubbles: true, composed: true,
+								}));
 							}
+						}
+					} else if (sectionType === 'markdown') {
+						// Pass text as option so it's available when the editor initializes
+						// Accept both 'text' and 'content' - LLMs may use either property name
+						const textValue = input.text ?? input.content;
+						const markdownOptions = (textValue !== undefined) ? { text: String(textValue) } : undefined;
+						sectionId = addMarkdownBox(markdownOptions);
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
 						}
 					} else if (sectionType === 'chart') {
-						if (typeof _win.addChartBox === 'function') {
-							sectionId = _win.addChartBox();
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
-							}
+						sectionId = addChartBox();
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
 						}
 					} else if (sectionType === 'transformation') {
-						if (typeof _win.addTransformationBox === 'function') {
-							sectionId = _win.addTransformationBox();
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
-							}
+						sectionId = addTransformationBox();
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
 						}
 					} else if (sectionType === 'url') {
-						if (typeof _win.addUrlBox === 'function') {
-							sectionId = _win.addUrlBox();
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
-							}
+						sectionId = addUrlBox();
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
 						}
 					} else if (sectionType === 'python') {
-						if (typeof _win.addPythonBox === 'function') {
-							sectionId = _win.addPythonBox();
-							success = !!sectionId;
-							// Set section name if provided
-							if (sectionId && input.name) {
-								_win.setSectionName(sectionId, input.name);
-							}
+						sectionId = addPythonBox();
+						success = !!sectionId;
+						// Set section name if provided
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
 						}
 					}
 				} catch (err: any) {
@@ -2352,7 +2324,7 @@ window.addEventListener('message', async (event: any) => {
 					if (input.clusterUrl) {
 						const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 						if (conn) {
-							const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+							const kwEl = __kustoGetQuerySectionElement(sectionId);
 							if (kwEl && typeof kwEl.setConnectionId === 'function') {
 								kwEl.setConnectionId(conn.id);
 								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -2383,7 +2355,7 @@ window.addEventListener('message', async (event: any) => {
 						if (input.clusterUrl) {
 							await new Promise((r: any) => setTimeout(r, 500));
 						}
-						const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+						const kwEl = __kustoGetQuerySectionElement(sectionId);
 						if (kwEl && typeof kwEl.setDatabase === 'function') {
 							kwEl.setDatabase(input.database);
 							kwEl.dispatchEvent(new CustomEvent('database-changed', {
@@ -2646,8 +2618,8 @@ window.addEventListener('message', async (event: any) => {
 						const sections = document.querySelectorAll('[data-section-type="query"]');
 						if (sections.length > 0) {
 							sectionId = sections[0].id;
-						} else if (typeof _win.addQueryBox === 'function') {
-							sectionId = _win.addQueryBox();
+						} else {
+							sectionId = addQueryBox();
 						}
 					}
 					
@@ -2708,7 +2680,7 @@ window.addEventListener('message', async (event: any) => {
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
 				{
-					const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+					const kwEl = __kustoGetQuerySectionElement(sectionId);
 					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
 						kwEl.setCopilotChatVisible(true);
 					}
@@ -2877,7 +2849,7 @@ window.addEventListener('message', async (event: any) => {
 						// Clear the Copilot chat "thinking..." state on timeout
 						// (unlike cancel/error, no regular handler will clear this)
 						try {
-							const kwEl = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+							const kwEl = __kustoGetQuerySectionElement(sectionId);
 							if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
 								kwEl.copilotWriteQueryDone(false, 'Request timed out');
 							}
@@ -2902,7 +2874,7 @@ window.addEventListener('message', async (event: any) => {
 					sendButton.click();
 				} else {
 					// Fallback: call the send function via kw-query-section
-					const kwEl2 = window.__kustoGetQuerySectionElement ? window.__kustoGetQuerySectionElement(sectionId) : null;
+					const kwEl2 = __kustoGetQuerySectionElement(sectionId);
 					if (kwEl2 && typeof kwEl2.copilotWriteQuerySend === 'function') {
 						kwEl2.copilotWriteQuerySend();
 					} else {

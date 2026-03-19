@@ -1,7 +1,7 @@
 // Query boxes module — converted from legacy/queryBoxes.js
 // Window bridge exports at bottom for remaining legacy callers.
 import './queryBoxes-toolbar';
-import './queryBoxes-execution';
+import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility } from './queryBoxes-execution';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
@@ -119,7 +119,7 @@ function __kustoGetClusterUrl( boxId: any) {
 	return '';
 }
 
-function __kustoGetQuerySectionElement( boxId: any) {
+export function __kustoGetQuerySectionElement( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el;
@@ -143,7 +143,7 @@ function __kustoGetSectionName( boxId: any) {
 	return '';
 }
 
-function __kustoSetSectionName( boxId: any, name: any) {
+export function __kustoSetSectionName( boxId: any, name: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.setName === 'function') { el.setName(String(name || '')); return; }
@@ -155,7 +155,7 @@ try {
 	window.__kustoSetSectionName = __kustoSetSectionName;
 } catch (e) { console.error('[kusto]', e); }
 
-function addQueryBox( options: any) {
+export function addQueryBox( options: any) {
 	const isFirstBox = !(Array.isArray(_win.queryBoxes) && _win.queryBoxes.length > 0);
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
@@ -456,7 +456,7 @@ function addQueryBox( options: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			}
-			try { _win.__kustoUpdateFavoritesUiForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoUpdateFavoritesUiForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { if (typeof window.__kustoUpdateRunEnabledForBox === 'function') window.__kustoUpdateRunEnabledForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
@@ -562,8 +562,8 @@ function addQueryBox( options: any) {
 	// automatically switch to Favorites mode.
 	try {
 		if (!isComparison) {
-			_win.__kustoMarkNewBoxForFavoritesAutoEnter(id);
-			_win.__kustoTryAutoEnterFavoritesModeForNewBox(id);
+			__kustoMarkNewBoxForFavoritesAutoEnter(id);
+			__kustoTryAutoEnterFavoritesModeForNewBox(id);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// If this is the first section and the user has favorites, default to Favorites mode.
@@ -597,10 +597,10 @@ function addQueryBox( options: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateQueryVisibilityToggleButton(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoApplyQueryBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.__kustoUpdateQueryResultsToggleButton(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.__kustoUpdateComparisonSummaryToggleButton(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.__kustoApplyResultsVisibility(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.__kustoApplyComparisonSummaryVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateQueryResultsToggleButton(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoUpdateComparisonSummaryToggleButton(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyResultsVisibility(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoApplyComparisonSummaryVisibility(id); } catch (e) { console.error('[kusto]', e); }
 
 	// Drag handle resize for results output.
 	try {

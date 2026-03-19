@@ -106,7 +106,7 @@ function acceptOptimizations( comparisonBoxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoUpdateQueryResultsToggleButton( boxId: any) {
+export function __kustoUpdateQueryResultsToggleButton( boxId: any) {
 	const btn = document.getElementById(boxId + '_results_toggle') as any;
 	if (!btn) {
 		return;
@@ -121,7 +121,7 @@ function __kustoUpdateQueryResultsToggleButton( boxId: any) {
 	btn.setAttribute('aria-label', visible ? 'Hide results' : 'Show results');
 }
 
-function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
+export function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
 	const btn = document.getElementById(boxId + '_summary_toggle') as any;
 	if (!btn) {
 		return;
@@ -136,7 +136,7 @@ function __kustoUpdateComparisonSummaryToggleButton( boxId: any) {
 	btn.setAttribute('aria-label', visible ? 'Hide comparison summary' : 'Show comparison summary');
 }
 
-function __kustoApplyResultsVisibility( boxId: any) {
+export function __kustoApplyResultsVisibility( boxId: any) {
 	const wrapper = document.getElementById(boxId + '_results_wrapper') as any;
 	if (!wrapper) {
 		// Support non-query-box results (e.g. URL CSV preview) that render a results block
@@ -281,7 +281,7 @@ function __kustoApplyResultsVisibility( boxId: any) {
 	}
 }
 
-function __kustoApplyComparisonSummaryVisibility( boxId: any) {
+export function __kustoApplyComparisonSummaryVisibility( boxId: any) {
 	const box = document.getElementById(boxId) as any;
 	if (!box) {
 		return;

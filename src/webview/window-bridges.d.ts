@@ -284,7 +284,6 @@ declare global {
 		setRefreshLoading: (boxId: string, loading: boolean) => void;
 		setFavorites: (boxId: string, favorites: KustoFavoriteInfo[]) => void;
 		setFavoritesMode: (boxId: string, enabled: boolean) => void;
-		setSectionName: (boxId: string, name: string) => void;
 		normalizeClusterUrlKey: (url: string) => string;
 		clusterShortNameKey: (clusterUrl: string) => string;
 		extractClusterUrlsFromQueryText: (queryText: string) => string[];

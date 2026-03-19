@@ -620,7 +620,7 @@ try {
 	});
 } catch (e) { console.error('[kusto]', e); }
 
-function addPythonBox( options: any) {
+export function addPythonBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
 	pythonBoxes.push(id);
 
@@ -988,7 +988,7 @@ function onPythonError( message: any) {
 	setPythonOutput(boxId, String(message.error || 'Python execution failed.'));
 }
 
-function addUrlBox( options: any) {
+export function addUrlBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
 
