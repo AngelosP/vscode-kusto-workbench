@@ -2,6 +2,8 @@ import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
+import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,11 +82,17 @@ export class KwMarkdownSection extends LitElement {
 	/** Height stored before entering Preview mode (so we can restore it). */
 	private _prevHeightPx: string | null = null;
 
+	// ── Theme observer singleton ─────────────────────────────────────────────
+
+	private static _themeObserverStarted = false;
+	private static _lastAppliedToastUiIsDark: boolean | null = null;
+
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		document.addEventListener('click', this._onDocumentClick);
+		KwMarkdownSection._startThemeObserver();
 	}
 
 	override disconnectedCallback(): void {
@@ -136,7 +144,7 @@ export class KwMarkdownSection extends LitElement {
 					name-placeholder="Markdown Name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}
-					@fit-to-contents=${this._fitToContents}>
+					@fit-to-contents=${this.fitToContents}>
 					${this._renderModeButtons('header-buttons')}
 					<div class="editor-wrapper" id="editor-wrapper">
 						<slot name="editor"></slot>
@@ -144,7 +152,7 @@ export class KwMarkdownSection extends LitElement {
 						<div class="resizer"
 							title="Drag to resize\nDouble-click to fit to contents"
 							@mousedown=${this._onResizerMouseDown}
-							@dblclick=${this._fitToContents}></div>
+							@dblclick=${this.fitToContents}></div>
 					</div>
 				</kw-section-shell>
 			</div>
@@ -304,9 +312,7 @@ export class KwMarkdownSection extends LitElement {
 		// Clean mount point.
 		editorContainer.textContent = '';
 
-		const isLikelyDark = typeof window.isLikelyDarkTheme === 'function'
-			? window.isLikelyDarkTheme()
-			: false;
+		const isLikelyDark = KwMarkdownSection._isDarkTheme();
 
 		// Build undo/redo buttons.
 		let toastEditorRef: any = null;
@@ -316,10 +322,6 @@ export class KwMarkdownSection extends LitElement {
 		const redoButton = this._createToolbarButton('Redo', 'Redo (Ctrl+Y)',
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>',
 			() => { try { toastEditorRef?.getCurrentModeEditor?.()?.commands?.redo?.(); } catch (e) { console.error('[kusto]', e); } });
-
-		const getToastUiPlugins = typeof window.getToastUiPlugins === 'function'
-			? window.getToastUiPlugins
-			: () => [];
 
 		const toolbarItemsConfig: any[] = [];
 		if (undoButton && redoButton) {
@@ -348,18 +350,14 @@ export class KwMarkdownSection extends LitElement {
 				frontMatter: true,
 				initialValue,
 				toolbarItems: toolbarItemsConfig,
-				plugins: getToastUiPlugins(ToastEditor),
+				plugins: KwMarkdownSection._getToastUiPlugins(ToastEditor),
 				events: {
 					change: () => {
 						this._schedulePersist();
 						this._scheduleMdAutoExpand();
 					},
 					afterPreviewRender: () => {
-						try {
-							if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
-								window.__kustoRewriteToastUiImagesInContainer(editorContainer);
-							}
-						} catch (e) { console.error('[kusto]', e); }
+						try { KwMarkdownSection._rewriteToastUiImages(editorContainer); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			};
@@ -377,11 +375,7 @@ export class KwMarkdownSection extends LitElement {
 		this._installKeyboardShortcuts(editorContainer, toastEditor);
 
 		// Initial image rewrite pass.
-		try {
-			if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
-				window.__kustoRewriteToastUiImagesInContainer(editorContainer);
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		try { KwMarkdownSection._rewriteToastUiImages(editorContainer); } catch (e) { console.error('[kusto]', e); }
 
 		// Build and store API.
 		const api: ToastEditorApi = {
@@ -432,11 +426,7 @@ export class KwMarkdownSection extends LitElement {
 		this._applyEditorMode();
 
 		// Apply pending reveal.
-		try {
-			if (typeof window.__kustoTryApplyPendingMarkdownReveal === 'function') {
-				window.__kustoTryApplyPendingMarkdownReveal(this.boxId);
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		try { this._tryApplyPendingReveal(); } catch (e) { console.error('[kusto]', e); }
 
 		// Fix border issues.
 		try {
@@ -462,15 +452,8 @@ export class KwMarkdownSection extends LitElement {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
-		// Theme observer.
-		try {
-			if (typeof window.__kustoStartToastUiThemeObserver === 'function') {
-				window.__kustoStartToastUiThemeObserver();
-			}
-			if (typeof window.__kustoApplyToastUiThemeAll === 'function') {
-				window.__kustoApplyToastUiThemeAll();
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		// Apply theme to this instance.
+		try { KwMarkdownSection._applyThemeToHost(editorContainer, KwMarkdownSection._isDarkTheme()); } catch (e) { console.error('[kusto]', e); }
 
 		// Initial sizing.
 		try { api.layout(); } catch (e) { console.error('[kusto]', e); }
@@ -514,13 +497,7 @@ export class KwMarkdownSection extends LitElement {
 
 		viewerContainer.textContent = '';
 
-		const isLikelyDark = typeof window.isLikelyDarkTheme === 'function'
-			? window.isLikelyDarkTheme()
-			: false;
-
-		const getToastUiPlugins = typeof window.getToastUiPlugins === 'function'
-			? window.getToastUiPlugins
-			: () => [];
+		const isLikelyDark = KwMarkdownSection._isDarkTheme();
 
 		let instance: any = null;
 		try {
@@ -530,14 +507,10 @@ export class KwMarkdownSection extends LitElement {
 				usageStatistics: false,
 				frontMatter: true,
 				initialValue: String(initialValue || ''),
-				plugins: getToastUiPlugins(ToastEditor),
+				plugins: KwMarkdownSection._getToastUiPlugins(ToastEditor),
 				events: {
 					afterPreviewRender: () => {
-						try {
-							if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
-								window.__kustoRewriteToastUiImagesInContainer(viewerContainer);
-							}
-						} catch (e) { console.error('[kusto]', e); }
+						try { KwMarkdownSection._rewriteToastUiImages(viewerContainer); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			};
@@ -553,9 +526,7 @@ export class KwMarkdownSection extends LitElement {
 		}
 
 		try {
-			if (typeof window.__kustoRewriteToastUiImagesInContainer === 'function') {
-				window.__kustoRewriteToastUiImagesInContainer(viewerContainer);
-			}
+			KwMarkdownSection._rewriteToastUiImages(viewerContainer);
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Strip TOAST UI viewer chrome (border, padding) for cleaner preview rendering.
@@ -593,15 +564,8 @@ export class KwMarkdownSection extends LitElement {
 			}
 		};
 
-		// Theme observer.
-		try {
-			if (typeof window.__kustoStartToastUiThemeObserver === 'function') {
-				window.__kustoStartToastUiThemeObserver();
-			}
-			if (typeof window.__kustoApplyToastUiThemeAll === 'function') {
-				window.__kustoApplyToastUiThemeAll();
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		// Apply theme to this viewer instance.
+		try { KwMarkdownSection._applyThemeToHost(viewerContainer, KwMarkdownSection._isDarkTheme()); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _viewerInitRetryCount = 0;
@@ -762,6 +726,16 @@ export class KwMarkdownSection extends LitElement {
 			viewerContainer.style.setProperty('border', 'none', 'important');
 			const md = this._editorApi?.getValue() ?? '';
 			this._initViewer(md);
+
+			// Auto-fit on entering Preview mode so user sees full rendered content.
+			const fit = () => { try { this.fitToContents(); } catch (e) { console.error('[kusto]', e); } };
+			fit();
+			setTimeout(fit, 50);
+			setTimeout(fit, 150);
+			setTimeout(fit, 350);
+
+			// In .md files, reset scroll to prevent layout shift.
+			this._resetMdScroll();
 			return;
 		}
 
@@ -793,6 +767,19 @@ export class KwMarkdownSection extends LitElement {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		});
+
+		// In .md files, reset scroll to prevent layout shift.
+		this._resetMdScroll();
+	}
+
+	/** Reset scroll position for .md files after mode switch. */
+	private _resetMdScroll(): void {
+		try {
+			if (String(window.__kustoDocumentKind || '') === 'md') {
+				document.body.scrollTop = 0;
+				document.documentElement.scrollTop = 0;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Visibility (expand/collapse) ──────────────────────────────────────────
@@ -819,7 +806,7 @@ export class KwMarkdownSection extends LitElement {
 	private _toggleDropdown(e: Event): void {
 		e.stopPropagation();
 		// Close any global dropdowns first.
-		try { window.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
+		try { _closeAllDropdownMenus(); } catch (e) { console.error('[kusto]', e); }
 		this._dropdownOpen = !this._dropdownOpen;
 	}
 
@@ -838,7 +825,7 @@ export class KwMarkdownSection extends LitElement {
 
 	// ── Fit to contents ───────────────────────────────────────────────────────
 
-	private _fitToContents(): void {
+	public fitToContents(): void {
 		const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
 		if (!wrapper) return;
 
@@ -1021,18 +1008,12 @@ export class KwMarkdownSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof window.__kustoGetScrollY === 'function'
-			? window.__kustoGetScrollY as () => number
-			: () => 0;
-
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = wrapper.getBoundingClientRect().height;
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
-					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-				}
+				maybeAutoScrollWhileDragging(moveEvent.clientY);
 			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
@@ -1219,6 +1200,291 @@ export class KwMarkdownSection extends LitElement {
 	/** Get section name. */
 	public getName(): string {
 		return this._title;
+	}
+
+	/** Re-apply editor mode externally (e.g., after text update from tool). */
+	public applyEditorMode(): void {
+		this._applyEditorMode();
+	}
+
+	// ── Internalized utilities (formerly in extraBoxes-markdown.ts) ────────────
+
+	/** Detect if VS Code is using a dark theme. */
+	private static _isDarkTheme(): boolean {
+		// Prefer the body classes VS Code toggles on theme change.
+		try {
+			const cls = document?.body?.classList;
+			if (cls) {
+				if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) return false;
+				if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) return true;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		// Fall back to luminance of the editor background.
+		let bg = '';
+		try {
+			bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim();
+			if (!bg) bg = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-background').trim();
+		} catch { bg = ''; }
+		const rgb = KwMarkdownSection._parseCssColorToRgb(bg);
+		if (!rgb) return false;
+		const luminance = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+		return luminance < 0.5;
+	}
+
+	private static _parseCssColorToRgb(value: string): { r: number; g: number; b: number } | null {
+		const v = String(value || '').trim();
+		if (!v) return null;
+		let m = v.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+		if (m) return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10) };
+		m = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+		if (m) {
+			const hex = m[1];
+			if (hex.length === 3) return { r: parseInt(hex[0] + hex[0], 16), g: parseInt(hex[1] + hex[1], 16), b: parseInt(hex[2] + hex[2], 16) };
+			return { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) };
+		}
+		return null;
+	}
+
+	/** Get Toast UI plugins for the editor. */
+	private static _getToastUiPlugins(ToastEditor: any): any[] {
+		try {
+			const colorSyntax = ToastEditor?.plugin?.colorSyntax;
+			if (typeof colorSyntax === 'function') return [[colorSyntax, {}]];
+		} catch (e) { console.error('[kusto]', e); }
+		return [];
+	}
+
+	/** Apply dark/light theme class to a TOAST UI host container. */
+	private static _applyThemeToHost(hostEl: HTMLElement | null, isDark: boolean): void {
+		if (!hostEl) return;
+		try {
+			const roots = hostEl.querySelectorAll('.toastui-editor-defaultUI');
+			if (roots.length > 0) {
+				for (const el of roots) {
+					try { el.classList.toggle('toastui-editor-dark', isDark); } catch (e) { console.error('[kusto]', e); }
+				}
+			} else {
+				// TOAST UI viewer (Preview mode) doesn't use .toastui-editor-defaultUI.
+				// Toggle the class on the host element itself so the descendant CSS
+				// selectors (.toastui-editor-dark .toastui-editor-contents p) still match.
+				hostEl.classList.toggle('toastui-editor-dark', isDark);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	/** Apply theme to all markdown instances. Called by the singleton observer. */
+	static applyThemeAll(): void {
+		let isDark = true;
+		try { isDark = KwMarkdownSection._isDarkTheme(); } catch { isDark = true; }
+		if (KwMarkdownSection._lastAppliedToastUiIsDark === isDark) return;
+		KwMarkdownSection._lastAppliedToastUiIsDark = isDark;
+
+		try {
+			const boxes: string[] = window.__kustoMarkdownBoxes || [];
+			for (const boxId of boxes) {
+				const editorHost = document.getElementById(String(boxId) + '_md_editor');
+				const viewerHost = document.getElementById(String(boxId) + '_md_viewer');
+				KwMarkdownSection._applyThemeToHost(editorHost, isDark);
+				KwMarkdownSection._applyThemeToHost(viewerHost, isDark);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	/** Start the singleton MutationObserver for theme changes. */
+	private static _startThemeObserver(): void {
+		if (KwMarkdownSection._themeObserverStarted) return;
+		KwMarkdownSection._themeObserverStarted = true;
+
+		// Apply once now.
+		try { KwMarkdownSection.applyThemeAll(); } catch (e) { console.error('[kusto]', e); }
+
+		let pending = false;
+		const schedule = () => {
+			if (pending) return;
+			pending = true;
+			setTimeout(() => {
+				pending = false;
+				try { KwMarkdownSection.applyThemeAll(); } catch (e) { console.error('[kusto]', e); }
+			}, 0);
+		};
+
+		try {
+			const observer = new MutationObserver(() => schedule());
+			if (document?.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+			if (document?.documentElement) observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	/** Rewrite relative image src URLs to webview-compatible URIs. */
+	private static _rewriteToastUiImages(rootEl: HTMLElement): void {
+		try {
+			if (!rootEl?.querySelectorAll) return;
+			const baseUri = typeof window.__kustoDocumentUri === 'string' ? String(window.__kustoDocumentUri) : '';
+			if (!baseUri) return;
+
+			window.__kustoResolvedImageSrcCache = window.__kustoResolvedImageSrcCache || {};
+			const cache = window.__kustoResolvedImageSrcCache;
+
+			const imgs = rootEl.querySelectorAll('img');
+			for (const img of imgs) {
+				try {
+					const src = String(img.getAttribute('src') || '').trim();
+					if (!src) continue;
+					const lower = src.toLowerCase();
+					if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('blob:') ||
+						lower.startsWith('vscode-webview://') || lower.startsWith('vscode-resource:')) continue;
+					try { if (img.dataset?.kustoResolvedSrc === src) continue; } catch (e) { console.error('[kusto]', e); }
+
+					const key = baseUri + '::' + src;
+					if (cache && typeof cache[key] === 'string' && cache[key]) {
+						img.setAttribute('src', cache[key]);
+						try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch (e) { console.error('[kusto]', e); }
+						continue;
+					}
+
+					const resolver = window.__kustoResolveResourceUri;
+					if (typeof resolver !== 'function') continue;
+
+					resolver({ path: src, baseUri }).then((resolved: any) => {
+						try {
+							if (!resolved || typeof resolved !== 'string') return;
+							cache[key] = resolved;
+							img.setAttribute('src', resolved);
+							try { if (img.dataset) img.dataset.kustoResolvedSrc = src; } catch (e) { console.error('[kusto]', e); }
+						} catch (e) { console.error('[kusto]', e); }
+					});
+				} catch (e) { console.error('[kusto]', e); }
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	/** Apply any pending markdown reveal that was queued before the editor initialized. */
+	private _tryApplyPendingReveal(): void {
+		try {
+			const map = window.__kustoPendingMarkdownRevealByBoxId;
+			const pending = map?.[this.boxId];
+			if (!pending) return;
+			try { if (map) delete map[this.boxId]; } catch (e) { console.error('[kusto]', e); }
+			this.revealRange(pending);
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	/** Reveal a text range in the markdown editor (for search/find integration). */
+	public revealRange(payload: any): void {
+		if (!payload) return;
+		const toast = this._editorApi?._toastui;
+		if (!toast || typeof toast.setSelection !== 'function') {
+			// Queue for later if editor not ready.
+			window.__kustoPendingMarkdownRevealByBoxId = window.__kustoPendingMarkdownRevealByBoxId || {};
+			window.__kustoPendingMarkdownRevealByBoxId[this.boxId] = payload;
+			return;
+		}
+
+		const sl = typeof payload.startLine === 'number' ? payload.startLine : 0;
+		const sc = typeof payload.startChar === 'number' ? payload.startChar : 0;
+		const el = typeof payload.endLine === 'number' ? payload.endLine : sl;
+		const ec = typeof payload.endChar === 'number' ? payload.endChar : sc;
+		const matchText = typeof payload.matchText === 'string' ? String(payload.matchText) : '';
+		const startOffset = typeof payload.startOffset === 'number' ? payload.startOffset : undefined;
+
+		try { this.scrollIntoView({ block: 'center' }); } catch (e) { console.error('[kusto]', e); }
+
+		// Get the editor's markdown text for offset-based search.
+		const mdText = (() => {
+			try { return typeof toast.getMarkdown === 'function' ? String(toast.getMarkdown() || '') : String(this._editorApi?.getValue() || ''); }
+			catch { return ''; }
+		})();
+
+		const computeLineChar1Based = (text: string, offset0: number): [number, number] => {
+			const t = String(text || '');
+			const off = Math.max(0, Math.min(t.length, Math.floor(offset0)));
+			const before = t.slice(0, off);
+			const line = before.split('\n').length;
+			const lastNl = before.lastIndexOf('\n');
+			const ch = off - (lastNl >= 0 ? (lastNl + 1) : 0) + 1;
+			return [Math.max(1, line), Math.max(1, ch)];
+		};
+
+		let foundStart = 0;
+		let foundEnd = 0;
+		if (matchText) {
+			const preferred = (typeof startOffset === 'number' && Number.isFinite(startOffset)) ? Math.max(0, Math.floor(startOffset)) : undefined;
+			let idx = -1;
+			try {
+				if (typeof preferred === 'number' && mdText.startsWith(matchText, preferred)) {
+					idx = preferred;
+				} else if (typeof preferred === 'number') {
+					const forward = mdText.indexOf(matchText, preferred);
+					const back = mdText.lastIndexOf(matchText, preferred);
+					if (forward < 0) idx = back;
+					else if (back < 0) idx = forward;
+					else idx = (Math.abs(forward - preferred) <= Math.abs(preferred - back)) ? forward : back;
+				} else {
+					idx = mdText.indexOf(matchText);
+				}
+			} catch { idx = -1; }
+			if (idx >= 0) {
+				foundStart = idx;
+				foundEnd = idx + matchText.length;
+			}
+		}
+
+		const mdStart: [number, number] = (matchText && foundEnd > foundStart)
+			? computeLineChar1Based(mdText, foundStart)
+			: [Math.max(1, sl + 1), Math.max(1, sc + 1)];
+		const mdEnd: [number, number] = (matchText && foundEnd > foundStart)
+			? computeLineChar1Based(mdText, foundEnd)
+			: [Math.max(1, el + 1), Math.max(1, ec + 1)];
+
+		const applySelection = () => {
+			try {
+				if (this._mode === 'preview') {
+					// In preview mode, try to select in the rendered DOM.
+					const viewerContainer = this._getViewerContainer();
+					if (viewerContainer && matchText) {
+						const walker = document.createTreeWalker(viewerContainer, NodeFilter.SHOW_TEXT);
+						while (walker.nextNode()) {
+							const n = walker.currentNode;
+							const text = typeof n.nodeValue === 'string' ? n.nodeValue : '';
+							const at = text.indexOf(matchText);
+							if (at >= 0) {
+								const range = document.createRange();
+								range.setStart(n, at);
+								range.setEnd(n, at + matchText.length);
+								try {
+									const sel = window.getSelection?.();
+									if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+								} catch (e) { console.error('[kusto]', e); }
+								try { (range.startContainer.parentElement as HTMLElement)?.scrollIntoView({ block: 'center' }); } catch (e) { console.error('[kusto]', e); }
+								return;
+							}
+						}
+					}
+					return;
+				}
+
+				if (this._mode === 'wysiwyg') {
+					let from = 0, to = 0;
+					try {
+						if (typeof toast.convertPosToMatchEditorMode === 'function') {
+							const converted = toast.convertPosToMatchEditorMode(mdStart, mdEnd, 'wysiwyg');
+							if (converted && typeof converted[0] === 'number' && typeof converted[1] === 'number') {
+								from = converted[0]; to = converted[1];
+							}
+						}
+					} catch (e) { console.error('[kusto]', e); }
+					try { toast.setSelection(from, to); } catch (e) { console.error('[kusto]', e); }
+				} else {
+					try { toast.setSelection(mdStart, mdEnd); } catch (e) { console.error('[kusto]', e); }
+				}
+				try { if (typeof toast.focus === 'function') toast.focus(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
+		};
+
+		applySelection();
+		setTimeout(applySelection, 50);
+		setTimeout(applySelection, 150);
 	}
 }
 

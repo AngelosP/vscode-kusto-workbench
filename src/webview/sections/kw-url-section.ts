@@ -3,6 +3,7 @@ import { styles } from './kw-url-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-section-shell.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -872,10 +873,6 @@ export class KwUrlSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof window.__kustoGetScrollY === 'function'
-			? window.__kustoGetScrollY as () => number
-			: () => 0;
-
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = wrapper.getBoundingClientRect().height;
 		wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
@@ -900,9 +897,7 @@ export class KwUrlSection extends LitElement {
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
-					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-				}
+				maybeAutoScrollWhileDragging(moveEvent.clientY);
 			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;

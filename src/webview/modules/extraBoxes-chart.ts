@@ -2,6 +2,15 @@
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 
+import { isDarkTheme } from './monaco-theme';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { getResultsState } from './resultsState';
+import {
+	syncSelectBackedDropdown,
+	renderCheckboxItemsHtml,
+	updateCheckboxButtonText,
+	getCheckboxSelections,
+} from './dropdown';
 import {
 	formatNumber as _formatNumber,
 	computeAxisFontSize as _computeAxisFontSize,
@@ -230,7 +239,7 @@ export function __kustoUpdateSeriesColorsUI( boxId: any, settings: any) {
 		// Use global escapeHtml function (defined in utils.js) since __kustoEscapeHtml is only defined inside __kustoRenderChart
 		const escHtml = (v: any) => {
 			try {
-				if (typeof _win.escapeHtml === 'function') return _win.escapeHtml(String(v ?? ''));
+				return escapeHtml(String(v ?? ''));
 			} catch (e) { console.error('[kusto]', e); }
 			return String(v ?? '')
 				.replace(/&/g, '&amp;')
@@ -615,7 +624,7 @@ export function __kustoSyncLabelSettingsUI( boxId: any) {
 		const modeEl = document.getElementById(id + '_chart_label_mode') as any;
 		if (modeEl) {
 			modeEl.value = mode;
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
 		}
 		
 		// Sync density slider
@@ -688,14 +697,14 @@ export function __kustoSyncAxisSettingsUI( boxId: any, axis: any) {
 			const sortEl = document.getElementById(id + '_chart_' + ax + '_sort') as any;
 			if (sortEl) {
 				sortEl.value = settings.sortDirection || '';
-				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch (e) { console.error('[kusto]', e); }
+				try { syncSelectBackedDropdown(id + '_chart_' + ax + '_sort'); } catch (e) { console.error('[kusto]', e); }
 			}
 			
 			// X-axis specific: Scale type
 			const scaleEl = document.getElementById(id + '_chart_' + ax + '_scale') as any;
 			if (scaleEl) {
 				scaleEl.value = settings.scaleType || '';
-				try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch (e) { console.error('[kusto]', e); }
+				try { syncSelectBackedDropdown(id + '_chart_' + ax + '_scale'); } catch (e) { console.error('[kusto]', e); }
 			}
 			
 			// X-axis specific: Label density slider (100 = All/show all, 1 = minimum density)
@@ -1023,8 +1032,8 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			for (const ds of datasets) {
 				const value = String(ds.id || '');
 				const label = String(ds.label || value);
-				const escValue = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(value) : value;
-				const escLabel = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(label) : label;
+				const escValue = escapeHtml(value);
+				const escLabel = escapeHtml(label);
 				html += '<option value="' + escValue + '">' + escLabel + '</option>';
 			}
 			dsSelect.innerHTML = html;
@@ -1043,7 +1052,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Sync the unified dropdown button text for Data.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_ds'); } catch (e) { console.error('[kusto]', e); }
+	try { syncSelectBackedDropdown(id + '_chart_ds'); } catch (e) { console.error('[kusto]', e); }
 
 	// Update chart type picker selection (visual buttons)
 	try {
@@ -1085,7 +1094,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 				labelModeText.textContent = opt ? opt.text : 'Auto (smart)';
 			}
 			// Also sync dropdown if it exists
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(id + '_chart_label_mode'); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -1131,7 +1140,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	const xOptions = ['', ...colNames.filter((c: any) => c)];
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
 	// Sync the unified dropdown button text for X.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_x'); } catch (e) { console.error('[kusto]', e); }
+	try { syncSelectBackedDropdown(id + '_chart_x'); } catch (e) { console.error('[kusto]', e); }
 
 	// Populate Y checkbox dropdown (for line/area/bar).
 	const yMenu = document.getElementById(id + '_chart_y_menu') as any;
@@ -1150,7 +1159,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			checked: desiredYCols.includes(c)
 		}));
 		try {
-			yMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
+			yMenu.innerHTML = renderCheckboxItemsHtml(items, {
 				dropdownId: id + '_chart_y',
 				onChangeJs: '__kustoOnChartYCheckboxChanged'
 			});
@@ -1160,7 +1169,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		// Update button text.
 		const selected = desiredYCols.filter((c: any) => yOptions.includes(c));
 		try {
-			window.__kustoDropdown.updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
+			updateCheckboxButtonText(id + '_chart_y_text', selected, 'Select...');
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1181,7 +1190,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			checked: desiredTooltipCols.includes(c)
 		}));
 		try {
-			tooltipMenu.innerHTML = window.__kustoDropdown.renderCheckboxItemsHtml(items, {
+			tooltipMenu.innerHTML = renderCheckboxItemsHtml(items, {
 				dropdownId: isPieOrFunnel ? (id + '_chart_tooltip_pie') : (id + '_chart_tooltip'),
 				onChangeJs: '__kustoOnChartTooltipCheckboxChanged'
 			});
@@ -1189,7 +1198,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			tooltipMenu.innerHTML = '<div class="kusto-dropdown-empty">No columns available.</div>';
 		}
 		try {
-			window.__kustoDropdown.updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
+			updateCheckboxButtonText(tooltipTextId, desiredTooltipCols, '(none)');
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1205,7 +1214,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		_win.__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
 		try { legendSelect.disabled = disableLegend; } catch (e) { console.error('[kusto]', e); }
 		// Sync the unified dropdown button text and disabled state for Legend.
-		try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
+		try { syncSelectBackedDropdown(id + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
 		// Also sync the button's disabled state.
 		try {
 			const legendBtn = document.getElementById(id + '_chart_legend_btn') as any;
@@ -1218,8 +1227,8 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
 	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
 	// Sync the unified dropdown button text for Label and Value.
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_label'); } catch (e) { console.error('[kusto]', e); }
-	try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_value'); } catch (e) { console.error('[kusto]', e); }
+	try { syncSelectBackedDropdown(id + '_chart_label'); } catch (e) { console.error('[kusto]', e); }
+	try { syncSelectBackedDropdown(id + '_chart_value'); } catch (e) { console.error('[kusto]', e); }
 
 	// Funnel Sort dropdown: show only for funnel chart type.
 	try {
@@ -1232,7 +1241,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			const sortOptions = ['', ...colNames.filter((c: any) => c)];
 			const currentSortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
 			_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
-			try { window.__kustoDropdown.syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch (e) { console.error('[kusto]', e); }
 			// Update the sort UI (direction button visibility).
 			try { __kustoUpdateFunnelSortUI(id); } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1264,16 +1273,7 @@ export function __kustoGetChartActiveCanvasElementId( boxId: any) {
 
 export function __kustoGetIsDarkThemeForEcharts() {
 	try {
-		if (typeof _win.isDarkTheme === 'function') {
-			return !!_win.isDarkTheme();
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	try {
-		const cls = document && document.body && document.body.classList;
-		if (cls) {
-			if (cls.contains('vscode-light') || cls.contains('vscode-high-contrast-light')) return false;
-			if (cls.contains('vscode-dark') || cls.contains('vscode-high-contrast')) return true;
-		}
+		return isDarkTheme();
 	} catch (e) { console.error('[kusto]', e); }
 	return true;
 }
@@ -1426,8 +1426,8 @@ export function __kustoRenderChart( boxId: any) {
 	// Find dataset.
 	let dsState = null;
 	try {
-		if (typeof _win.__kustoGetResultsState === 'function' && typeof st.dataSourceId === 'string' && st.dataSourceId) {
-			dsState = _win.__kustoGetResultsState(st.dataSourceId);
+		if (typeof st.dataSourceId === 'string' && st.dataSourceId) {
+			dsState = getResultsState(st.dataSourceId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
@@ -1517,7 +1517,7 @@ export function __kustoRenderChart( boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof _win.escapeHtml === 'function') ? _win.escapeHtml(String(msg || '')) : String(msg || '')) + '</div>';
+			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + escapeHtml(String(msg || '')) + '</div>';
 		} catch (e) { console.error('[kusto]', e); }
 		// Reduce canvas min-height when showing placeholder text to avoid overflow.
 		try { canvas.style.minHeight = '60px'; } catch (e) { console.error('[kusto]', e); }
@@ -1587,7 +1587,7 @@ export function __kustoRenderChart( boxId: any) {
 
 		const __kustoEscapeHtml = (v: any) => {
 			try {
-				if (typeof _win.escapeHtml === 'function') return _win.escapeHtml(String(v ?? ''));
+				return escapeHtml(String(v ?? ''));
 			} catch (e) { console.error('[kusto]', e); }
 			try {
 				return String(v ?? '')
@@ -3088,18 +3088,16 @@ export function addChartBox( options: any) {
 				const prevUserSelect = document.body.style.userSelect;
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
-				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+				const startPageY = e.clientY + getScrollY();
 				const startHeight = chartWrapper.getBoundingClientRect().height;
 				try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch (e) { console.error('[kusto]', e); }
 				const minH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
 				const maxH = 900;
 				const onMove = (moveEvent: any) => {
 					try {
-						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
-							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-						}
+						maybeAutoScrollWhileDragging(moveEvent.clientY);
 					} catch (e) { console.error('[kusto]', e); }
-					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+					const pageY = moveEvent.clientY + getScrollY();
 					const delta = pageY - startPageY;
 					const currentMinH = typeof __kustoGetChartMinResizeHeight === 'function' ? __kustoGetChartMinResizeHeight(id) : 80;
 					const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
@@ -3269,7 +3267,7 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 	const st = __kustoGetChartState(boxId);
 	const menuId = boxId + '_chart_y_menu';
 	try {
-		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
+		const selected = getCheckboxSelections(menuId);
 		st.yColumns = selected;
 		st.yColumn = selected.length ? selected[0] : '';
 		// If multiple Y columns are selected, Legend grouping is not supported.
@@ -3291,12 +3289,12 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 				legendBtn.disabled = disableLegend;
 				legendBtn.setAttribute('aria-disabled', disableLegend ? 'true' : 'false');
 			}
-			try { window.__kustoDropdown.syncSelectBackedDropdown(boxId + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(boxId + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
 			// Update legend position button visibility when legend column is cleared.
 			try { __kustoUpdateLegendPositionButtonUI(boxId); } catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
 		// Update button text.
-		window.__kustoDropdown.updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
+		updateCheckboxButtonText(boxId + '_chart_y_text', selected, 'Select...');
 	} catch (e) { console.error('[kusto]', e); }
 	// Update series colors UI in Y-axis settings popup (in case it's open)
 	try {
@@ -3328,9 +3326,9 @@ export function __kustoOnChartTooltipCheckboxChanged( dropdownId: any) {
 	if (!boxId) return;
 	const st = __kustoGetChartState(boxId);
 	try {
-		const selected = window.__kustoDropdown.getCheckboxSelections(menuId);
+		const selected = getCheckboxSelections(menuId);
 		st.tooltipColumns = selected;
-		window.__kustoDropdown.updateCheckboxButtonText(textId, selected, '(none)');
+		updateCheckboxButtonText(textId, selected, '(none)');
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
@@ -3418,69 +3416,31 @@ export function removeChartBox( boxId: any) {
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoNormalizeLegendPosition = __kustoNormalizeLegendPosition;
-window.__kustoUpdateLegendPositionButtonUI = __kustoUpdateLegendPositionButtonUI;
-window.__kustoOnChartLegendPositionClicked = __kustoOnChartLegendPositionClicked;
-window.__kustoFormatNumber = __kustoFormatNumber;
-window.__kustoComputeAxisFontSize = __kustoComputeAxisFontSize;
 window.__kustoGetChartState = __kustoGetChartState;
-window.__kustoGetDefaultAxisSettings = __kustoGetDefaultAxisSettings;
-window.__kustoHasCustomAxisSettings = __kustoHasCustomAxisSettings;
-window.__kustoGetDefaultYAxisSettings = __kustoGetDefaultYAxisSettings;
-window.__kustoHasCustomYAxisSettings = __kustoHasCustomYAxisSettings;
+window.__kustoGetChartMinResizeHeight = __kustoGetChartMinResizeHeight;
+window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
+window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
+window.__kustoRenderChart = __kustoRenderChart;
+window.__kustoMaximizeChartBox = __kustoMaximizeChartBox;
+window.addChartBox = addChartBox;
+window.removeChartBox = removeChartBox;
+// DOM onclick bridges — referenced from innerHTML-generated chart builder HTML.
+window.__kustoOnChartLegendPositionClicked = __kustoOnChartLegendPositionClicked;
 window.__kustoUpdateSeriesColorsUI = __kustoUpdateSeriesColorsUI;
 window.__kustoOnSeriesColorChanged = __kustoOnSeriesColorChanged;
 window.__kustoResetSeriesColor = __kustoResetSeriesColor;
-window.__kustoToggleAxisSettingsPopup = __kustoToggleAxisSettingsPopup;
-window.__kustoCloseAxisSettingsPopup = __kustoCloseAxisSettingsPopup;
-window.__kustoCloseAllAxisSettingsPopups = __kustoCloseAllAxisSettingsPopups;
-window.__kustoToggleLabelSettingsPopup = __kustoToggleLabelSettingsPopup;
-window.__kustoCloseLabelSettingsPopup = __kustoCloseLabelSettingsPopup;
-window.__kustoSyncLabelSettingsUI = __kustoSyncLabelSettingsUI;
-window.__kustoHasCustomLabelSettings = __kustoHasCustomLabelSettings;
-window.__kustoUpdateLabelSettingsIndicator = __kustoUpdateLabelSettingsIndicator;
-window.__kustoSyncAxisSettingsUI = __kustoSyncAxisSettingsUI;
-window.__kustoUpdateAxisLabelIndicator = __kustoUpdateAxisLabelIndicator;
 window.__kustoOnAxisSettingChanged = __kustoOnAxisSettingChanged;
 window.__kustoResetAxisSettings = __kustoResetAxisSettings;
-window.__kustoGetChartMinResizeHeight = __kustoGetChartMinResizeHeight;
-window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
-window.__kustoGetChartActiveCanvasElementId = __kustoGetChartActiveCanvasElementId;
-window.__kustoGetIsDarkThemeForEcharts = __kustoGetIsDarkThemeForEcharts;
-window.__kustoFormatUtcDateTime = __kustoFormatUtcDateTime;
-window.__kustoComputeTimePeriodGranularity = __kustoComputeTimePeriodGranularity;
-window.__kustoFormatTimePeriodLabel = __kustoFormatTimePeriodLabel;
-window.__kustoGenerateContinuousTimeLabels = __kustoGenerateContinuousTimeLabels;
-window.__kustoShouldShowTimeForUtcAxis = __kustoShouldShowTimeForUtcAxis;
-window.__kustoComputeTimeAxisLabelRotation = __kustoComputeTimeAxisLabelRotation;
-window.__kustoComputeCategoryLabelRotation = __kustoComputeCategoryLabelRotation;
-window.__kustoMeasureLabelChars = __kustoMeasureLabelChars;
-window.__kustoRefreshChartsForThemeChange = __kustoRefreshChartsForThemeChange;
-window.__kustoStartEchartsThemeObserver = __kustoStartEchartsThemeObserver;
-window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
-window.__kustoRenderChart = __kustoRenderChart;
-window.__kustoUpdateChartModeButtons = __kustoUpdateChartModeButtons;
-window.__kustoApplyChartMode = __kustoApplyChartMode;
-window.__kustoSetChartMode = __kustoSetChartMode;
-window.__kustoUpdateChartVisibilityToggleButton = __kustoUpdateChartVisibilityToggleButton;
-window.__kustoApplyChartBoxVisibility = __kustoApplyChartBoxVisibility;
-window.toggleChartBoxVisibility = toggleChartBoxVisibility;
-window.__kustoMaximizeChartBox = __kustoMaximizeChartBox;
-window.__kustoAutoFitChartIfClipped = __kustoAutoFitChartIfClipped;
-window.addChartBox = addChartBox;
 window.__kustoOnChartDataSourceChanged = __kustoOnChartDataSourceChanged;
 window.__kustoOnChartTypeChanged = __kustoOnChartTypeChanged;
-window.__kustoSelectChartType = __kustoSelectChartType;
-window.__kustoOnChartLabelsToggled = __kustoOnChartLabelsToggled;
-window.__kustoOnChartLabelModeChanged = __kustoOnChartLabelModeChanged;
-window.__kustoOnChartLabelDensityChanged = __kustoOnChartLabelDensityChanged;
 window.__kustoOnChartMappingChanged = __kustoOnChartMappingChanged;
 window.__kustoOnChartYCheckboxChanged = __kustoOnChartYCheckboxChanged;
 window.__kustoOnChartTooltipCheckboxChanged = __kustoOnChartTooltipCheckboxChanged;
+window.__kustoOnChartLabelsToggled = __kustoOnChartLabelsToggled;
+window.__kustoOnChartLabelModeChanged = __kustoOnChartLabelModeChanged;
+window.__kustoOnChartLabelDensityChanged = __kustoOnChartLabelDensityChanged;
 window.__kustoOnChartFunnelSortChanged = __kustoOnChartFunnelSortChanged;
 window.__kustoOnChartFunnelSortDirToggle = __kustoOnChartFunnelSortDirToggle;
-window.__kustoUpdateFunnelSortUI = __kustoUpdateFunnelSortUI;
-window.removeChartBox = removeChartBox;
 
 
 

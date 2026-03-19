@@ -2,6 +2,8 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-transformation-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
+import { setResultsState } from '../modules/resultsState.js';
 import {
 	tokenizeExpr,
 	parseExprToRpn,
@@ -712,10 +714,6 @@ export class KwTransformationSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof window.__kustoGetScrollY === 'function'
-			? window.__kustoGetScrollY as () => number
-			: () => 0;
-
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = this._wrapperHeight;
 
@@ -724,9 +722,7 @@ export class KwTransformationSection extends LitElement {
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
-					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-				}
+				maybeAutoScrollWhileDragging(moveEvent.clientY);
 			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
@@ -1266,8 +1262,7 @@ export class KwTransformationSection extends LitElement {
 			const rows = this._resultRows;
 			// Register results directly in the global state map so other sections
 			// (charts, other transformations) can use this transformation as a data source.
-			if (typeof w.__kustoSetResultsState === 'function') {
-				w.__kustoSetResultsState(this.boxId, {
+			setResultsState(this.boxId, {
 					boxId: this.boxId,
 					columns: cols,
 					rows: rows,
@@ -1277,7 +1272,6 @@ export class KwTransformationSection extends LitElement {
 					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				});
-			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
 

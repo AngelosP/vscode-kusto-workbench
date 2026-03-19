@@ -4,6 +4,8 @@ import './queryBoxes-toolbar';
 import './queryBoxes-execution';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { syncSelectBackedDropdown } from './dropdown';
 import {
 	formatClusterDisplayName,
 	normalizeClusterUrlKey,
@@ -679,16 +681,14 @@ function addQueryBox( options: any) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+				const startPageY = e.clientY + getScrollY();
 				const startHeight = wrapper.getBoundingClientRect().height;
 
 				const onMove = (moveEvent: any) => {
 					try {
-						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
-							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-						}
+						maybeAutoScrollWhileDragging(moveEvent.clientY);
 					} catch (e) { console.error('[kusto]', e); }
-					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+					const pageY = moveEvent.clientY + getScrollY();
 					const delta = pageY - startPageY;
 					const bounds = computeResizeBounds();
 					const minHeight = (bounds && typeof bounds.minHeight === 'number') ? bounds.minHeight : 24;
@@ -1770,7 +1770,7 @@ function renderMissingClustersBanner( boxId: any, missingClusterUrls: any) {
 		.map((u: any) => formatClusterShortName(u))
 		.filter(Boolean);
 	const label = shortNames.length
-		? ('Detected clusters not in your connections: <strong>' + _win.escapeHtml(shortNames.join(', ')) + '</strong>.')
+		? ('Detected clusters not in your connections: <strong>' + escapeHtml(shortNames.join(', ')) + '</strong>.')
 		: 'Detected clusters not in your connections.';
 	textEl.innerHTML = label + ' Add them with one click.';
 	banner.style.display = 'flex';
@@ -2374,10 +2374,13 @@ function refreshDatabases( boxId: any) {
 function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 	const errText = String(error || '');
 	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
+	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
 	if (responseConnectionId) {
 		const currentConnectionId = _win.__kustoGetConnectionId(boxId);
 		const responseConnId = String(responseConnectionId || '').trim();
 		if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+			if (kwEl && typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(false);
+			if (kwEl && typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(false);
 			const refreshBtn = document.getElementById(boxId + '_refresh') as any;
 			if (refreshBtn) {
 				try {
@@ -2424,7 +2427,7 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 				try { databaseSelect.value = ''; } catch (e) { console.error('[kusto]', e); }
 			}
 			databaseSelect.disabled = false;
-			try { window.__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_database'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(boxId + '_database'); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (databaseSelect.dataset) {
 					delete databaseSelect.dataset.kustoRefreshInFlight;
@@ -2448,6 +2451,11 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 			} catch (e) { console.error('[kusto]', e); }
 			refreshBtn.disabled = false;
 		}
+	} catch (e) { console.error('[kusto]', e); }
+	// Reset Lit component loading states so spinners don't get stuck on error.
+	try {
+		if (kwEl && typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(false);
+		if (kwEl && typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(false);
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.__kustoUpdateRunEnabledForBox === 'function') {
@@ -2743,14 +2751,9 @@ _win.__kustoRequestDatabases = async function (connectionId: string, forceRefres
 // Execution, comparison, and optimization bridges are in queryBoxes-execution.ts.
 window.fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
 window.qualifyTablesInTextPriority = qualifyTablesInTextPriority;
-window.__kustoIndexToAlphaName = __kustoIndexToAlphaName;
-window.__kustoGetUsedSectionNamesUpper = __kustoGetUsedSectionNamesUpper;
 window.addQueryBox = addQueryBox;
 window.__kustoAutoSizeEditor = __kustoAutoSizeEditor;
-window.__kustoAutoSizeResults = __kustoAutoSizeResults;
 window.__kustoMaximizeQueryBox = __kustoMaximizeQueryBox;
-window.__kustoUpdateQueryVisibilityToggleButton = __kustoUpdateQueryVisibilityToggleButton;
-window.__kustoApplyQueryBoxVisibility = __kustoApplyQueryBoxVisibility;
 window.toggleQueryBoxVisibility = toggleQueryBoxVisibility;
 window.qualifyTablesInText = qualifyTablesInText;
 window.removeQueryBox = removeQueryBox;
@@ -2772,27 +2775,16 @@ window.extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFro
 window.computeMissingClusterUrls = computeMissingClusterUrls;
 window.renderMissingClustersBanner = renderMissingClustersBanner;
 window.updateMissingClustersForBox = updateMissingClustersForBox;
-window.__kustoFavoriteKey = __kustoFavoriteKey;
 window.__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
 window.__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
 window.__kustoFindFavorite = __kustoFindFavorite;
-window.__kustoGetFavoritesSorted = __kustoGetFavoritesSorted;
-window.__kustoMarkNewBoxForFavoritesAutoEnter = __kustoMarkNewBoxForFavoritesAutoEnter;
-window.__kustoTryAutoEnterFavoritesModeForNewBox = __kustoTryAutoEnterFavoritesModeForNewBox;
-window.__kustoTryAutoEnterFavoritesModeForBox = __kustoTryAutoEnterFavoritesModeForBox;
-window.__kustoFindConnectionIdForClusterUrl = __kustoFindConnectionIdForClusterUrl;
-window.__kustoTryApplyPendingFavoriteSelectionForBox = __kustoTryApplyPendingFavoriteSelectionForBox;
-window.__kustoSetElementDisplay = __kustoSetElementDisplay;
-window.__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
 window.toggleFavoriteForBox = toggleFavoriteForBox;
 window.removeFavorite = removeFavorite;
 window.closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
-window.__kustoApplyFavoritesMode = __kustoApplyFavoritesMode;
 window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
 window.addMissingClusterConnections = addMissingClusterConnections;
 window.updateConnectionSelects = updateConnectionSelects;
 window.updateDatabaseField = updateDatabaseField;
-window.__kustoClearDatabaseLoadError = __kustoClearDatabaseLoadError;
 window.promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
 window.importConnectionsFromXmlFile = importConnectionsFromXmlFile;
 window.parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;

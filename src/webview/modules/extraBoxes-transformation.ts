@@ -10,6 +10,7 @@ import {
 	parseExprToRpn as _parseExprToRpn,
 	evalRpn as _evalRpn,
 } from '../shared/transform-expr.js';
+import { escapeHtml } from './utils';
 
 const _win = window;
 
@@ -928,7 +929,7 @@ export function __kustoBuildCheckboxMenuHtml( boxId: any, options: any, selected
 		const v = String(opt || '');
 		if (!v) continue;
 		const checked = selectedSet && selectedSet.has(v);
-		const esc = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(v) : v;
+		const esc = escapeHtml(v);
 		const js = String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 		html +=
 			'<div class="kusto-checkbox-item" role="option" aria-selected="' + (checked ? 'true' : 'false') + '" onclick="try{__kustoToggleGroupByColumn(\'' + String(boxId).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\',\'' + js + '\')}catch{}">' +
@@ -1035,8 +1036,8 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 				const row = st.deriveColumns[i] || {};
 				const name = String(row.name || '');
 				const expr = String(row.expression || '');
-				const escName = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(name) : name;
-				const escExpr = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(expr) : expr;
+				const escName = escapeHtml(name);
+				const escExpr = escapeHtml(expr);
 				const nameInputId = id + '_tf_derive_name_' + i;
 				const exprInputId = id + '_tf_derive_expr_' + i;
 				html +=
@@ -1072,7 +1073,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 						'<select id="' + selectId + '" class="kusto-transform-select kusto-transform-groupby-select" onchange="try{__kustoOnGroupByColumnChanged(\'' + id + '\',' + i + ', this.value)}catch{}">' +
 							'<option value=""' + (col ? '' : ' selected') + '>(select column)</option>';
 				for (const c of colNames) {
-					const esc = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(c) : c;
+					const esc = escapeHtml(c);
 					html += '<option value="' + esc + '"' + (c === col ? ' selected' : '') + '>' + esc + '</option>';
 				}
 				html +=
@@ -1102,7 +1103,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 				const nm = String(a.name || '');
 				const fn = String(a.function || 'count');
 				const col = String(a.column || '');
-				const escName = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(nm) : nm;
+				const escName = escapeHtml(nm);
 				const fnSelectId = id + '_tf_agg_fn_' + i;
 				const colSelectId = id + '_tf_agg_col_' + i;
 				const nameInputId = id + '_tf_agg_name_' + i;
@@ -1121,7 +1122,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 					'<select id="' + colSelectId + '" class="kusto-transform-select" onchange="try{__kustoOnTransformationAggChanged(\'' + id + '\',' + i + ', null, this.value, null)}catch{}" ' + (fn === 'count' ? 'disabled' : '') + '>';
 				html += '<option value=""' + (col ? '' : ' selected') + '>(select)</option>';
 				for (const c of colNames) {
-					const esc = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(c) : c;
+					const esc = escapeHtml(c);
 					html += '<option value="' + esc + '"' + (c === col ? ' selected' : '') + '>' + esc + '</option>';
 				}
 				html +=
@@ -1911,7 +1912,7 @@ export function __kustoRenderTransformationError( boxId: any, message: any) {
 		const wrapper = document.getElementById(boxId + '_results_wrapper') as any;
 		if (wrapper) wrapper.style.display = '';
 		if (resultsDiv) {
-			resultsDiv.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + ((typeof _win.escapeHtml === 'function') ? _win.escapeHtml(String(message || '')) : String(message || '')) + '</div>';
+			resultsDiv.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + escapeHtml(String(message || '')) + '</div>';
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -2343,20 +2344,10 @@ export function addTransformationBox( options: any) {
 // ── Window bridges ──────────────────────────────────────────────────────────
 window.__kustoGetTransformationState = __kustoGetTransformationState;
 window.__kustoGetTransformationMinResizeHeight = __kustoGetTransformationMinResizeHeight;
-window.__kustoUpdateTransformationModeButtons = __kustoUpdateTransformationModeButtons;
-window.__kustoApplyTransformationMode = __kustoApplyTransformationMode;
-window.__kustoSetTransformationMode = __kustoSetTransformationMode;
-window.__kustoUpdateTransformationVisibilityToggleButton = __kustoUpdateTransformationVisibilityToggleButton;
-window.__kustoApplyTransformationBoxVisibility = __kustoApplyTransformationBoxVisibility;
-window.toggleTransformationBoxVisibility = toggleTransformationBoxVisibility;
 window.__kustoMaximizeTransformationBox = __kustoMaximizeTransformationBox;
-window.__kustoComputeTransformationFitHeightPx = __kustoComputeTransformationFitHeightPx;
-window.__kustoMaybeAutoFitTransformationBox = __kustoMaybeAutoFitTransformationBox;
 window.removeTransformationBox = removeTransformationBox;
 window.__kustoSetTransformationType = __kustoSetTransformationType;
 window.__kustoOnTransformationDataSourceChanged = __kustoOnTransformationDataSourceChanged;
-window.__kustoSetCheckboxDropdownText = __kustoSetCheckboxDropdownText;
-window.__kustoBuildCheckboxMenuHtml = __kustoBuildCheckboxMenuHtml;
 window.__kustoToggleGroupByColumn = __kustoToggleGroupByColumn;
 window.__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
 window.__kustoOnTransformationDistinctChanged = __kustoOnTransformationDistinctChanged;
@@ -2385,16 +2376,7 @@ window.__kustoOnDeriveDragOver = __kustoOnDeriveDragOver;
 window.__kustoOnDeriveDrop = __kustoOnDeriveDrop;
 window.__kustoOnDeriveDragEnd = __kustoOnDeriveDragEnd;
 window.__kustoOnTransformationPivotChanged = __kustoOnTransformationPivotChanged;
-window.__kustoTryParseFiniteNumber = __kustoTryParseFiniteNumber;
-window.__kustoTryParseDate = __kustoTryParseDate;
-window.__kustoFormatDate = __kustoFormatDate;
-window.__kustoGetRawCellValueForTransform = __kustoGetRawCellValueForTransform;
-window.__kustoTokenizeExpr = __kustoTokenizeExpr;
-window.__kustoParseExprToRpn = __kustoParseExprToRpn;
-window.__kustoEvalRpn = __kustoEvalRpn;
-window.__kustoRenderTransformationError = __kustoRenderTransformationError;
 window.__kustoRenderTransformation = __kustoRenderTransformation;
-window.__kustoEnsureTransformationAutoExpandWhenResultsAppear = __kustoEnsureTransformationAutoExpandWhenResultsAppear;
 window.addTransformationBox = addTransformationBox;
 window.__kustoConfigureTransformationFromTool = __kustoConfigureTransformationFromTool;
 window.__kustoShowExpressionHelpTooltip = __kustoShowExpressionHelpTooltip;

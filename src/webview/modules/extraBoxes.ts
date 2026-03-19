@@ -19,6 +19,9 @@ import {
 	normalizeResultsColumnName as _normalizeResultsColumnName,
 	pickFirstNonEmpty as _pickFirstNonEmpty,
 } from '../shared/data-utils.js';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { getResultsState, getRawCellValue as _getRawCellValueFromState } from './resultsState';
+import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
@@ -169,8 +172,7 @@ function __kustoGetChartDatasetsInDomOrder() {
 				}
 				// Only include sections that can be data sources
 				if (!(id.startsWith('query_') || id.startsWith('url_') || id.startsWith('transformation_'))) continue;
-				if (typeof _win.__kustoGetResultsState !== 'function') continue;
-				const st = _win.__kustoGetResultsState(id);
+				const st = getResultsState(id);
 				const cols = st && Array.isArray(st.columns) ? st.columns : [];
 				const rows = st && Array.isArray(st.rows) ? st.rows : [];
 				if (!cols.length) continue;
@@ -337,24 +339,22 @@ function __kustoGetChartValidationStatus( boxId: any) {
 		let availableColumns: any[] = [];
 		if (dataSourceId) {
 			try {
-				if (typeof _win.__kustoGetResultsState === 'function') {
-					const dsState = _win.__kustoGetResultsState(dataSourceId);
-					if (dsState) {
-						dataSourceExists = true;
-						const cols = Array.isArray(dsState.columns) ? dsState.columns : [];
-						const rows = Array.isArray(dsState.rows) ? dsState.rows : [];
-						availableColumns = cols.map((c: any) => String(c || ''));
-						dataSourceHasData = cols.length > 0 && rows.length > 0;
-						if (!dataSourceHasData) {
-							if (cols.length === 0) {
-								issues.push(`Data source "${dataSourceId}" has no columns. Execute the query first to get results.`);
-							} else if (rows.length === 0) {
-								issues.push(`Data source "${dataSourceId}" has columns but no data rows. Execute the query first.`);
-							}
+				const dsState = getResultsState(dataSourceId);
+				if (dsState) {
+					dataSourceExists = true;
+					const cols = Array.isArray(dsState.columns) ? dsState.columns : [];
+					const rows = Array.isArray(dsState.rows) ? dsState.rows : [];
+					availableColumns = cols.map((c: any) => String(c || ''));
+					dataSourceHasData = cols.length > 0 && rows.length > 0;
+					if (!dataSourceHasData) {
+						if (cols.length === 0) {
+							issues.push(`Data source "${dataSourceId}" has no columns. Execute the query first to get results.`);
+						} else if (rows.length === 0) {
+							issues.push(`Data source "${dataSourceId}" has columns but no data rows. Execute the query first.`);
 						}
-					} else {
-						issues.push(`Data source "${dataSourceId}" not found or has no results. Make sure the query has been executed.`);
 					}
+				} else {
+					issues.push(`Data source "${dataSourceId}" not found or has no results. Make sure the query has been executed.`);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -440,9 +440,7 @@ try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; 
 
 function __kustoGetRawCellValueForChart( cell: any) {
 	try {
-		if (typeof _win.__kustoGetRawCellValue === 'function') {
-			return _win.__kustoGetRawCellValue(cell);
-		}
+		return _getRawCellValueFromState(cell);
 	} catch (e) { console.error('[kusto]', e); }
 	return _getRawCellValue(cell);
 }
@@ -508,8 +506,8 @@ function __kustoSetSelectOptions( selectEl: any, values: any, selectedValue: any
 			const s = String(v ?? '');
 			const labelText = (s in labels) ? labels[s] : s;
 			if (!labelText) continue;
-			const escVal = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(s) : s;
-			const escLabel = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(labelText) : labelText;
+			const escVal = escapeHtml(s);
+			const escLabel = escapeHtml(labelText);
 			html += '<option value="' + escVal + '">' + escLabel + '</option>';
 		}
 		if (!html) {
@@ -536,7 +534,7 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
-		try { window.__kustoDropdown && window.__kustoDropdown.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
+		try { _closeAllDropdownMenus(); } catch (e) { console.error('[kusto]', e); }
 		if (isOpen) {
 			menu.style.display = 'none';
 			btn.setAttribute('aria-expanded', 'false');
@@ -678,6 +676,52 @@ function removePythonBox( boxId: any) {
 	}
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
+
+function __kustoMaximizePythonBox(boxId: any) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const editorEl = document.getElementById(id + '_py_editor') as any;
+	const wrapper = editorEl?.closest?.('.query-editor-wrapper');
+	if (!wrapper) return;
+	const applyFitToContent = () => {
+		try {
+			const ed = pythonEditors?.[id];
+			if (!ed) return;
+			let contentHeight = 0;
+			try {
+				const ch = typeof ed.getContentHeight === 'function' ? ed.getContentHeight() : 0;
+				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
+			} catch (e) { console.error('[kusto]', e); }
+			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
+
+			let chrome = 0;
+			try {
+				for (const child of Array.from(wrapper.children || []) as any[]) {
+					if (!child || child === editorEl) continue;
+					try { if (getComputedStyle(child).display === 'none') continue; } catch (e) { console.error('[kusto]', e); }
+					chrome += child.getBoundingClientRect?.().height || 0;
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			try {
+				const csw = getComputedStyle(wrapper);
+				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
+				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+			} catch (e) { console.error('[kusto]', e); }
+
+			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + contentHeight)));
+			wrapper.style.height = desired + 'px';
+			wrapper.style.minHeight = '0';
+			try { if (wrapper.dataset) wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	};
+
+	applyFitToContent();
+	setTimeout(applyFitToContent, 50);
+	setTimeout(applyFitToContent, 150);
+	try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
+}
+_win.__kustoMaximizePythonBox = __kustoMaximizePythonBox;
 
 function initPythonEditor( boxId: any) {
 	return _win.ensureMonaco().then((monaco: any) => {
@@ -822,16 +866,14 @@ function initPythonEditor( boxId: any) {
 					document.body.style.cursor = 'ns-resize';
 					document.body.style.userSelect = 'none';
 
-						const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+						const startPageY = e.clientY + getScrollY();
 					const startHeight = wrapper.getBoundingClientRect().height;
 
 					const onMove = (moveEvent: any) => {
 							try {
-								if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
-									_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-								}
+								maybeAutoScrollWhileDragging(moveEvent.clientY);
 							} catch (e) { console.error('[kusto]', e); }
-							const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+							const pageY = moveEvent.clientY + getScrollY();
 							const delta = pageY - startPageY;
 						const nextHeight = Math.max(120, Math.min(900, startHeight + delta));
 						wrapper.style.height = nextHeight + 'px';
@@ -1006,7 +1048,6 @@ function removeUrlBox( boxId: any) {
 
 // ── Window bridges for remaining legacy callers ──
 window.__kustoGetChartDatasetsInDomOrder = __kustoGetChartDatasetsInDomOrder;
-window.__kustoConfigureChartFromTool = __kustoConfigureChartFromTool;
 window.__kustoGetRawCellValueForChart = __kustoGetRawCellValueForChart;
 window.__kustoCellToChartString = __kustoCellToChartString;
 window.__kustoCellToChartNumber = __kustoCellToChartNumber;
@@ -1015,9 +1056,6 @@ window.__kustoInferTimeXAxisFromRows = __kustoInferTimeXAxisFromRows;
 window.__kustoNormalizeResultsColumnName = __kustoNormalizeResultsColumnName;
 window.__kustoSetSelectOptions = __kustoSetSelectOptions;
 window.__kustoPickFirstNonEmpty = __kustoPickFirstNonEmpty;
-window.__kustoToggleSectionModeDropdown = __kustoToggleSectionModeDropdown;
-window.__kustoCloseSectionModeDropdown = __kustoCloseSectionModeDropdown;
-window.__kustoUpdateSectionModeResponsive = __kustoUpdateSectionModeResponsive;
 window.__kustoSetupSectionModeResizeObserver = __kustoSetupSectionModeResizeObserver;
 window.__kustoCleanupSectionModeResizeObserver = __kustoCleanupSectionModeResizeObserver;
 window.addPythonBox = addPythonBox;

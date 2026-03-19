@@ -1,6 +1,7 @@
-// Dropdown module — converted from legacy/dropdown.js
-// Window bridge exports at bottom for remaining legacy callers.
-export {};
+// Dropdown module — legacy HTML dropdown rendering and menu management.
+// ES module exports at bottom for TypeScript callers.
+// window.__kustoDropdown bridge retained for inline HTML onclick handlers.
+import { escapeHtml as _escHtml } from './utils';
 
 const _win = window;
 
@@ -18,10 +19,7 @@ const _win = window;
 
 	const escAttr = (value: unknown): string => {
 		try {
-			// Prefer the existing helper if available.
-			if (typeof (_win.escapeHtml) === 'function') {
-				return (_win.escapeHtml as any)(String(value ?? ''));
-			}
+			return _escHtml(String(value ?? ''));
 		} catch (e) { console.error('[kusto]', e); }
 		return String(value ?? '')
 			.replace(/&/g, '&amp;')
@@ -833,3 +831,27 @@ const _win = window;
 		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 	};
 })();
+
+// ======================================================================
+// ES module exports — TypeScript callers import these directly.
+// The window.__kustoDropdown bridge is retained for inline HTML handlers.
+// ======================================================================
+const _dd = _win.__kustoDropdown as Record<string, any>;
+
+export function closeAllMenus(): void { _dd.closeAllMenus(); }
+export function closeMenuDropdown(buttonId: string, menuId: string): void { _dd.closeMenuDropdown(buttonId, menuId); }
+export function toggleMenuDropdown(opts: any): void { _dd.toggleMenuDropdown(opts); }
+export function wireCloseOnFocusOut(buttonEl: HTMLElement, menuEl: HTMLElement): void { _dd.wireCloseOnFocusOut(buttonEl, menuEl); }
+export function wireMenuInteractions(menuEl: HTMLElement): void { _dd.wireMenuInteractions(menuEl); }
+export function syncSelectBackedDropdown(selectId: string): void { _dd.syncSelectBackedDropdown(selectId); }
+export function selectFromMenu(selectId: string, keyEnc: string): void { _dd.selectFromMenu(selectId, keyEnc); }
+export function toggleSelectMenu(selectId: string): void { _dd.toggleSelectMenu(selectId); }
+export function renderSelectHtml(opts: any): string { return _dd.renderSelectHtml(opts); }
+export function renderMenuDropdownHtml(opts: any): string { return _dd.renderMenuDropdownHtml(opts); }
+export function renderMenuItemsHtml(items: any[], opts: any): string { return _dd.renderMenuItemsHtml(items, opts); }
+export function renderCheckboxDropdownHtml(opts: any): string { return _dd.renderCheckboxDropdownHtml(opts); }
+export function renderCheckboxItemsHtml(items: any[], opts: any): string { return _dd.renderCheckboxItemsHtml(items, opts); }
+export function getCheckboxSelections(menuId: string): string[] { return _dd.getCheckboxSelections(menuId); }
+export function updateCheckboxButtonText(buttonTextId: string, selectedValues: string[], placeholder: string): void { _dd.updateCheckboxButtonText(buttonTextId, selectedValues, placeholder); }
+export function toggleCheckboxMenu(buttonId: string, menuId: string): void { _dd.toggleCheckboxMenu(buttonId, menuId); }
+export function getChevronDownSvg(): string { return _dd.getChevronDownSvg(); }

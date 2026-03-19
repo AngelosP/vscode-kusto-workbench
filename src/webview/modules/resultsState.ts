@@ -1,31 +1,30 @@
 // Cross-section results state map and simplified Lit-only result routing.
 // Extracted from resultsTable-render.ts during legacy results table removal.
-export {};
 
 const _win = window;
 
 // ── Results state map ────────────────────────────────────────────────────────
 
-function __kustoEnsureResultsStateMap() {
+export function ensureResultsStateMap() {
 	if (!_win.__kustoResultsByBoxId || typeof _win.__kustoResultsByBoxId !== 'object') {
 		_win.__kustoResultsByBoxId = {};
 	}
 	return _win.__kustoResultsByBoxId;
 }
 
-function __kustoGetResultsState(boxId: any) {
+export function getResultsState(boxId: any) {
 	if (!boxId) {
 		return null;
 	}
-	const map = __kustoEnsureResultsStateMap();
+	const map = ensureResultsStateMap();
 	return map[boxId] || null;
 }
 
-function __kustoSetResultsState(boxId: any, state: any) {
+export function setResultsState(boxId: any, state: any) {
 	if (!boxId) {
 		return;
 	}
-	const map = __kustoEnsureResultsStateMap();
+	const map = ensureResultsStateMap();
 	map[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
 	try { _win.currentResult = state; } catch (e) { console.error('[kusto]', e); }
@@ -40,15 +39,15 @@ function __kustoSetResultsState(boxId: any, state: any) {
 // ── Raw cell value extraction ────────────────────────────────────────────────
 // Used by charts, transformations, and other cross-section consumers.
 
-function __kustoGetRawCellValue(cell: any) {
+export function getRawCellValue(cell: any) {
 	try {
 		if (cell === null || cell === undefined) return null;
 		if (typeof cell === 'object') {
 			if (cell && typeof cell === 'object' && 'full' in cell && cell.full !== undefined && cell.full !== null) {
-				return __kustoGetRawCellValue(cell.full);
+				return getRawCellValue(cell.full);
 			}
 			if (cell && typeof cell === 'object' && 'display' in cell && cell.display !== undefined && cell.display !== null) {
-				return __kustoGetRawCellValue(cell.display);
+				return getRawCellValue(cell.display);
 			}
 			return cell;
 		}
@@ -60,7 +59,7 @@ function __kustoGetRawCellValue(cell: any) {
 
 // ── Ensure results shown for tool ────────────────────────────────────────────
 
-function __kustoEnsureResultsShownForTool(boxId: any) {
+export function ensureResultsShownForTool(boxId: any) {
 	try {
 		if (_win.__kustoResultsVisibleByBoxId && _win.__kustoResultsVisibleByBoxId[boxId] === false) {
 			if (typeof (_win.__kustoSetResultsVisible) === 'function') {
@@ -79,7 +78,7 @@ function __kustoEnsureResultsShownForTool(boxId: any) {
 
 // ── Lit-only display routing ─────────────────────────────────────────────────
 
-function displayResultForBox(result: any, boxId: any, options: any) {
+export function displayResultForBox(result: any, boxId: any, options: any) {
 	if (!boxId) { return; }
 
 	// Resolve the section element and delegate to its displayResult() method.
@@ -100,7 +99,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
 		rowIndexToDisplayIndex.push(i);
 	}
 
-	__kustoSetResultsState(boxId, {
+	setResultsState(boxId, {
 		boxId, columns: cols, rows: rws, metadata: meta,
 		selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
 		selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
@@ -114,7 +113,7 @@ function displayResultForBox(result: any, boxId: any, options: any) {
  * Wrapper that routes to displayResultForBox using lastExecutedBox.
  * Called by persistence.ts when restoring saved results from .kqlx files.
  */
-function displayResult(result: any) {
+export function displayResult(result: any) {
 	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
@@ -126,7 +125,7 @@ function displayResult(result: any) {
 	});
 }
 
-function displayCancelled() {
+export function displayCancelled() {
 	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
@@ -150,11 +149,12 @@ function displayCancelled() {
 }
 
 // ── Window bridge exports ────────────────────────────────────────────────────
-window.__kustoEnsureResultsStateMap = __kustoEnsureResultsStateMap;
-window.__kustoGetResultsState = __kustoGetResultsState;
-window.__kustoSetResultsState = __kustoSetResultsState;
-window.__kustoGetRawCellValue = __kustoGetRawCellValue;
-window.__kustoEnsureResultsShownForTool = __kustoEnsureResultsShownForTool;
+// Dead bridges removed: __kustoEnsureResultsStateMap (self-only),
+// __kustoGetRawCellValue (1 consumer updated to import).
+// Remaining bridges kept for callers not yet migrated to imports.
+window.__kustoGetResultsState = getResultsState;
+window.__kustoSetResultsState = setResultsState;
+window.__kustoEnsureResultsShownForTool = ensureResultsShownForTool;
 window.displayResultForBox = displayResultForBox;
 window.displayResult = displayResult;
 window.displayCancelled = displayCancelled;

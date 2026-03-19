@@ -3,6 +3,7 @@ import { styles } from './kw-diff-view.styles.js';
 import { customElement, state } from 'lit/decorators.js';
 import type { DataTableColumn, CellValue } from '../../components/kw-data-table.js';
 import '../../components/kw-data-table.js';
+import { getResultsState } from '../../modules/resultsState.js';
 
 // ── Pure diff-model helpers (ported from legacy diffView.ts) ──
 
@@ -304,10 +305,8 @@ export class KwDiffView extends LitElement {
 
 		let aState: any = null, bState: any = null;
 		try {
-			if (typeof (_win.__kustoGetResultsState) === 'function') {
-				aState = _win.__kustoGetResultsState!(aBoxId);
-				bState = _win.__kustoGetResultsState!(bBoxId);
-			}
+			aState = getResultsState(aBoxId);
+			bState = getResultsState(bBoxId);
 		} catch (e) { console.error('[kusto]', e); }
 
 		if (!aState || !bState) {

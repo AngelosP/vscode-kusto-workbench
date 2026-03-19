@@ -7,6 +7,8 @@ import { pushDismissable, removeDismissable } from '../components/dismiss-stack.
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
+import { displayResultForBox } from '../modules/resultsState.js';
+import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../modules/dropdown.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1551,8 +1553,8 @@ export class KwQuerySection extends LitElement {
 						}
 						setTimeout(() => {
 							KwQuerySection._setQueryText(newBoxId, e.detail.query);
-							if (e.detail.result && typeof window.displayResultForBox === 'function') {
-								(window.displayResultForBox as any)(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
+							if (e.detail.result) {
+								displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
 							}
 							const newBox = document.getElementById(newBoxId);
 							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1658,17 +1660,16 @@ export class KwQuerySection extends LitElement {
 			if (!sel.value && sel.options.length > 0) sel.selectedIndex = 0;
 			sel.onchange = () => {
 				try { if (typeof window.__kustoSetLastOptimizeModelId === 'function') window.__kustoSetLastOptimizeModelId(sel.value); } catch (e) { console.error('[kusto]', e); }
-				try { (window as any).__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
+				try { syncSelectBackedDropdown(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
 			};
-			try { (window as any).__kustoDropdown?.syncSelectBackedDropdown?.(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
+			try { syncSelectBackedDropdown(boxId + '_copilot_model'); } catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	private static _modelDropdownHtml(boxId: string): string {
 		try {
-			if ((window as any).__kustoDropdown?.renderMenuDropdownHtml) {
-				const modelIconSvg = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3.18 8l1.83-.55L5.56 5.6a.3.3 0 0 1 .57 0l.55 1.85L8.5 8a.3.3 0 0 1 0 .57l-1.83.55-.55 1.84a.3.3 0 0 1-.57 0l-.55-1.84L3.18 8.57a.3.3 0 0 1 0-.57ZM9.14 3l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17L12.53 3a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17L9.14 3.36a.19.19 0 0 1 0-.36ZM9.14 11l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17 1.16.35a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17-1.16-.35a.19.19 0 0 1 0-.36Z"/></svg>';
-				return (window as any).__kustoDropdown.renderMenuDropdownHtml({
+			const modelIconSvg = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3.18 8l1.83-.55L5.56 5.6a.3.3 0 0 1 .57 0l.55 1.85L8.5 8a.3.3 0 0 1 0 .57l-1.83.55-.55 1.84a.3.3 0 0 1-.57 0l-.55-1.84L3.18 8.57a.3.3 0 0 1 0-.57ZM9.14 3l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17L12.53 3a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17L9.14 3.36a.19.19 0 0 1 0-.36ZM9.14 11l1.16-.35.35-1.17a.19.19 0 0 1 .37 0l.35 1.17 1.16.35a.19.19 0 0 1 0 .36l-1.16.35-.35 1.17a.19.19 0 0 1-.37 0l-.35-1.17-1.16-.35a.19.19 0 0 1 0-.36Z"/></svg>';
+			return renderMenuDropdownHtml({
 					wrapperClass: 'kusto-copilot-chat-model-dropdown kusto-dropdown-tooltip-label',
 					title: '', iconSvg: modelIconSvg, includeHiddenSelect: true,
 					selectId: boxId + '_copilot_model',
@@ -1676,8 +1677,7 @@ export class KwQuerySection extends LitElement {
 					buttonId: boxId + '_copilot_model_btn', buttonTextId: boxId + '_copilot_model_btn_text',
 					menuId: boxId + '_copilot_model_menu', placeholder: 'Select model...',
 					onToggle: "try{window.__kustoDropdown&&window.__kustoDropdown.toggleSelectMenu&&window.__kustoDropdown.toggleSelectMenu('" + boxId + "_copilot_model')}catch{}"
-				});
-			}
+			});
 		} catch (e) { console.error('[kusto]', e); }
 		return '<div class="select-wrapper"><select id="' + boxId + '_copilot_model" aria-label="Copilot model"></select></div>';
 	}

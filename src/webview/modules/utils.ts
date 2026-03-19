@@ -1,7 +1,4 @@
-// Utils module — converted from legacy/utils.js
-// Window bridge exports at bottom for remaining legacy callers.
-
-const _win = window;
+// Utils module — pure utility functions for DOM escaping and scroll helpers.
 
 export function escapeHtml(str: string): string {
 	const div = document.createElement('div');
@@ -13,7 +10,7 @@ export function escapeRegex(str: string): string {
 	return str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
-function __kustoGetScrollY(): number {
+export function getScrollY(): number {
 	try {
 		if (typeof window.scrollY === 'number') {
 			return window.scrollY;
@@ -28,7 +25,7 @@ function __kustoGetScrollY(): number {
 	}
 }
 
-function __kustoMaybeAutoScrollWhileDragging(clientY: number, options?: { thresholdPx?: number; maxStepPx?: number }): number {
+export function maybeAutoScrollWhileDragging(clientY: number, options?: { thresholdPx?: number; maxStepPx?: number }): number {
 	// When dragging a resize handle near the viewport edge, scroll the page a bit so
 	// the user can keep resizing even when the cursor hits the bottom/top of the screen.
 	//
@@ -64,11 +61,3 @@ function __kustoMaybeAutoScrollWhileDragging(clientY: number, options?: { thresh
 		return 0;
 	}
 }
-
-// ======================================================================
-// Window bridge: expose globals for remaining legacy callers
-// ======================================================================
-_win.escapeHtml = escapeHtml;
-_win.escapeRegex = escapeRegex;
-_win.__kustoGetScrollY = __kustoGetScrollY;
-_win.__kustoMaybeAutoScrollWhileDragging = __kustoMaybeAutoScrollWhileDragging;

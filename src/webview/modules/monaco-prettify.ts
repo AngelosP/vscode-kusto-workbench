@@ -1,6 +1,5 @@
 // KQL Prettification — pure functions extracted from monaco.ts (Phase 6 decomposition).
-// No state dependencies, no DOM access. All functions are exported and assigned to window
-// so that existing callers (both module imports and window.funcName calls) keep working.
+// No state dependencies, no DOM access. Consumed via ES import by monaco.ts.
 
 export function __kustoToSingleLineKusto(input: any) {
 	try {
@@ -832,12 +831,3 @@ export function __kustoPrettifyKustoTextWithSemicolonStatements(text: any) {
 	return outLines.join('\n');
 }
 
-// ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoToSingleLineKusto = __kustoToSingleLineKusto;
-window.__kustoExplodePipesToLines = __kustoExplodePipesToLines;
-window.__kustoSplitTopLevel = __kustoSplitTopLevel;
-window.__kustoFindTopLevelKeyword = __kustoFindTopLevelKeyword;
-window.__kustoPrettifyWhereClause = __kustoPrettifyWhereClause;
-window.__kustoPrettifyKusto = __kustoPrettifyKusto;
-window.__kustoSplitKustoStatementsBySemicolon = __kustoSplitKustoStatementsBySemicolon;
-window.__kustoPrettifyKustoTextWithSemicolonStatements = __kustoPrettifyKustoTextWithSemicolonStatements;

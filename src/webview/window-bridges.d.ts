@@ -130,14 +130,6 @@ declare global {
 		MonacoEnvironment?: Record<string, any>;
 
 		// =====================================================================
-		// utils.ts
-		// =====================================================================
-		escapeHtml: (str: string) => string;
-		escapeRegex: (str: string) => string;
-		__kustoGetScrollY: () => number;
-		__kustoMaybeAutoScrollWhileDragging: (clientY: number, options?: any) => number;
-
-		// =====================================================================
 		// columnAnalysis.ts
 		// =====================================================================
 		__kustoActiveColumnMenu: { menu: HTMLElement | null; button: Element | null } | null;
@@ -413,7 +405,6 @@ declare global {
 		// =====================================================================
 		__kustoGetResultsState: (boxId: string) => KustoResultsState | null;
 
-		__kustoGetRawCellValue: (cell: any) => any;
 		__kustoGetRawCellValueForChart: (cell: any) => any;
 		__kustoNormalizeResultsColumnName: (col: KustoResultsColumn) => string;
 		__kustoNormalizeColumnNameForComparison: (name: string) => string;
@@ -429,7 +420,6 @@ declare global {
 		__kustoUpdateQueryResultsToggleButton: (boxId: string) => void;
 		__kustoNotifyResultsUpdated: (boxId: string) => void;
 		__kustoClampResultsWrapperHeight: (boxId: string) => void;
-		__kustoNavigateToQueryLocation: (event: Event, boxId: string, lineNumber: number, column: number) => void;
 		__kustoRenderErrorUx: (boxId: string, error: any, clientActivityId?: string) => void;
 		__kustoActiveFilterPopover: any;
 		__kustoFilterGlobalCloseHandlerInstalled: boolean;
@@ -541,15 +531,7 @@ declare global {
 		__kustoResolveScrollSourceForEvent: (ev: any, containerEl: any) => any;
 		__kustoGetVirtualScrollMetrics: (scrollEl: HTMLElement, containerEl: HTMLElement) => { scrollTop: number; clientH: number };
 
-		__kustoEnsureResultsStateMap: () => Record<string, KustoResultsState>;
 		__kustoEnsureResultsSearchControls: (boxId: string) => void;
-		__kustoTryExtractJsonFromErrorText: (raw: any) => any;
-		__kustoExtractLinePosition: (text: string) => { line: number; col: number; token: string } | null;
-		__kustoNormalizeBadRequestInnerMessage: (msg: string) => string;
-		__kustoStripLinePositionTokens: (text: string) => string;
-		__kustoTryExtractAutoFindTermFromMessage: (message: string) => string | null;
-		__kustoBuildErrorUxModel: (rawError: any) => any;
-		__kustoMaybeAdjustLocationForCacheLine: (boxId: string, location: any) => any;
 		__kustoRenderActivityIdInlineHtml: (boxId: string, clientActivityId: string) => string;
 		__kustoRenderErrorUxHtml: (boxId: string, model: any, clientActivityId: string) => string;
 
@@ -691,26 +673,7 @@ declare global {
 		// =====================================================================
 		__kustoAttachAutoResizeToContent: (editor: any, containerEl?: any) => void;
 
-		// =====================================================================
-		// monaco-prettify.ts
-		// =====================================================================
-		__kustoToSingleLineKusto: (text: string) => string;
-		__kustoExplodePipesToLines: (text: string) => string;
-		__kustoSplitTopLevel: (text: string) => string[];
-		__kustoFindTopLevelKeyword: (text: string) => string | null;
-		__kustoPrettifyWhereClause: (text: string) => string;
-		__kustoPrettifyKusto: (text: string) => string;
-		__kustoSplitKustoStatementsBySemicolon: (text: string) => string[];
-		__kustoPrettifyKustoTextWithSemicolonStatements: (text: string) => string;
 
-		// =====================================================================
-		// monaco-theme.ts
-		// =====================================================================
-		isDarkTheme: () => boolean;
-		getVSCodeEditorBackground: () => string;
-		defineCustomThemes: (monaco: any) => void;
-		applyMonacoTheme: (monaco: any) => void;
-		startMonacoThemeObserver: (monaco: any) => void;
 
 		// =====================================================================
 		// main.ts
@@ -727,7 +690,6 @@ declare global {
 		parseKustoExplorerConnectionsXml: (xmlText: string) => any[];
 		onPythonResult: (message: any) => void;
 		onPythonError: (message: any) => void;
-		__kustoMaximizeMarkdownBox: (boxId: string) => void;
 		__kustoMaximizePythonBox: (boxId: string) => void;
 		__kustoGetFocusedMonacoEditor: () => any | null;
 		__kustoGetSelectionOrCurrentLineRange: (editor: any) => any;
@@ -861,38 +823,18 @@ declare global {
 		__kustoStartEchartsThemeObserver: () => void;
 
 		// =====================================================================
-		// extraBoxes-markdown.ts
+		// extraBoxes-markdown.ts (thin bridge module)
 		// =====================================================================
 		__kustoMarkdownBoxes: any[];
 		removeMarkdownBox: (boxId: string) => void;
-		initMarkdownViewer: (boxId: string) => void;
-		initMarkdownEditor: (boxId: string) => void;
-		toggleMarkdownBoxVisibility: (boxId: string) => void;
 		isLikelyDarkTheme: () => boolean;
-		getToastUiPlugins: () => any[];
-		ensureMarkedGlobal: () => any;
-		__kustoTryApplyPendingMarkdownReveal: (boxId: string) => void;
-		__kustoIsDarkTheme: () => boolean;
-		__kustoApplyToastUiThemeToHost: (host: HTMLElement) => void;
+		getToastUiPlugins: (ToastEditor: any) => any[];
 		__kustoApplyToastUiThemeAll: () => void;
-		__kustoStartToastUiThemeObserver: () => void;
-		__kustoAutoExpandMarkdownBoxToContent: (boxId: string) => void;
-		__kustoScheduleMdAutoExpand: (boxId: string) => void;
-		__kustoEnsureMarkdownModeMap: () => void;
 		__kustoGetMarkdownMode: (boxId: string) => string;
 		__kustoSetMarkdownMode: (boxId: string, mode: string) => void;
-		__kustoUpdateMarkdownModeButtons: (boxId: string) => void;
-		__kustoToggleMdModeDropdown: (boxId: string) => void;
-		__kustoCloseMdModeDropdown: (boxId: string) => void;
-		__kustoUpdateMdModeResponsive: (boxId: string) => void;
-		__kustoSetupMdModeResizeObserver: (boxId: string) => void;
-		__kustoCleanupMdModeResizeObserver: (boxId: string) => void;
-		__kustoUpdateMarkdownPreviewSizing: (boxId: string) => void;
 		__kustoApplyMarkdownEditorMode: (boxId: string) => void;
-		__kustoAutoFitMarkdownBoxHeight: (boxId: string) => void;
-		__kustoUpdateMarkdownVisibilityToggleButton: (boxId: string) => void;
-		__kustoApplyMarkdownBoxVisibility: (boxId: string) => void;
-		__kustoRewriteToastUiImagesInContainer: (container: HTMLElement) => void;
+		__kustoMaximizeMarkdownBox: (boxId: string) => void;
+		__kustoRevealTextRangeFromHost?: (message: any) => void;
 
 
 		// =====================================================================
@@ -963,12 +905,8 @@ declare global {
 		// =====================================================================
 		__kustoMarkdownModeByBoxId?: Record<string, string>;
 		__kustoMarkdownExpandedByBoxId?: Record<string, boolean>;
-		__kustoMdAutoExpandTimersByBoxId?: Record<string, any>;
-		__kustoToastUiViewerInitRetryCountByBoxId?: Record<string, number>;
-		__kustoToastUiInitRetryCountByBoxId?: Record<string, number>;
 		__kustoResolvedImageSrcCache?: Record<string, string>;
-		__kustoRevealMarkdownRangeInBox?: (boxId: string, payload: any) => void;
-		__kustoRevealTextRangeFromHost?: (message: any) => void;
+		__kustoPendingMarkdownRevealByBoxId?: Record<string, any>;
 
 		// =====================================================================
 		// persistence.ts (additional state)

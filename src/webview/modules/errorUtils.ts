@@ -1,5 +1,7 @@
 // Error parsing utilities and navigation helpers for query error UX.
 // Extracted from resultsTable-render.ts during legacy results table removal.
+import { escapeHtml } from './utils';
+import { ensureResultsShownForTool } from './resultsState';
 
 const _win = window;
 
@@ -255,10 +257,10 @@ try {
 // Centralized error UX renderer — delegates to section's displayError() method
 // when available, falls back to raw HTML injection for non-Lit sections.
 
-function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string) {
+export function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string) {
 	const bid = String(boxId || '').trim();
 	if (!bid) return;
-	try { _win.__kustoEnsureResultsShownForTool(bid); } catch (e) { console.error('[kusto]', e); }
+	try { ensureResultsShownForTool(bid); } catch (e) { console.error('[kusto]', e); }
 
 	const model = __kustoBuildErrorUxModel(error);
 	try {
@@ -286,7 +288,6 @@ function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string)
 	// Fallback: render into the results div directly.
 	const resultsDiv = document.getElementById(bid + '_results');
 	if (!resultsDiv) return;
-	const escapeHtml = (s: string) => (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(s) : s;
 	let html = '';
 	if (model.kind === 'badrequest') {
 		const msgEsc = escapeHtml(model.message || '');
@@ -339,20 +340,17 @@ function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string)
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoDisplayBoxError(boxId: any, error: any) {
+export function __kustoDisplayBoxError(boxId: any, error: any) {
 	const bid = String(boxId || '').trim();
 	if (!bid) return;
 	__kustoRenderErrorUx(bid, error);
 }
 
 // ── Window bridge exports ────────────────────────────────────────────────────
-window.__kustoTryExtractJsonFromErrorText = __kustoTryExtractJsonFromErrorText;
-window.__kustoExtractLinePosition = __kustoExtractLinePosition;
-window.__kustoNormalizeBadRequestInnerMessage = __kustoNormalizeBadRequestInnerMessage;
-window.__kustoStripLinePositionTokens = __kustoStripLinePositionTokens;
-window.__kustoTryExtractAutoFindTermFromMessage = __kustoTryExtractAutoFindTermFromMessage;
-window.__kustoBuildErrorUxModel = __kustoBuildErrorUxModel;
-window.__kustoMaybeAdjustLocationForCacheLine = __kustoMaybeAdjustLocationForCacheLine;
-window.__kustoNavigateToQueryLocation = __kustoNavigateToQueryLocation;
+// Dead bridges removed: __kustoTryExtractJsonFromErrorText, __kustoExtractLinePosition,
+// __kustoNormalizeBadRequestInnerMessage, __kustoStripLinePositionTokens,
+// __kustoTryExtractAutoFindTermFromMessage, __kustoBuildErrorUxModel,
+// __kustoMaybeAdjustLocationForCacheLine, __kustoNavigateToQueryLocation
+// (all self-only consumption — callers use direct function calls)
 window.__kustoRenderErrorUx = __kustoRenderErrorUx;
 window.__kustoDisplayBoxError = __kustoDisplayBoxError;

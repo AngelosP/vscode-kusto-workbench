@@ -35,6 +35,7 @@ import {
 	__kustoInstallSmartSuggestWidgetSizing,
 } from './monaco-suggest';
 import { __kustoAttachAutoResizeToContent } from './monaco-resize';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 
 const _win = window;
 
@@ -3021,7 +3022,7 @@ function initQueryEditor(boxId: any) {
 
 			const formatDiagMessageHtml = (msg: any) => {
 				const raw = String(msg || '').trim();
-				const esc = (typeof _win.escapeHtml === 'function') ? _win.escapeHtml(raw) : raw;
+				const esc = escapeHtml(raw);
 				// Minimal markdown-ish formatting: `code` + newlines.
 				const withCode = String(esc)
 					.replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -4392,7 +4393,7 @@ function initQueryEditor(boxId: any) {
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			const escaped = typeof _win.escapeHtml === 'function' ? _win.escapeHtml(raw) : raw;
+			const escaped = escapeHtml(raw);
 			const html = escaped
 				.replace(/\r\n/g, '\n')
 				.replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -5140,16 +5141,14 @@ function initQueryEditor(boxId: any) {
 				document.body.style.cursor = 'ns-resize';
 				document.body.style.userSelect = 'none';
 
-				const startPageY = e.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+				const startPageY = e.clientY + getScrollY();
 				const startHeight = w.getBoundingClientRect().height;
 
 				const onMove = (moveEvent: any) => {
 					try {
-						if (typeof _win.__kustoMaybeAutoScrollWhileDragging === 'function') {
-							_win.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-						}
+						maybeAutoScrollWhileDragging(moveEvent.clientY);
 					} catch (e) { console.error('[kusto]', e); }
-					const pageY = moveEvent.clientY + (typeof _win.__kustoGetScrollY === 'function' ? _win.__kustoGetScrollY() : 0);
+					const pageY = moveEvent.clientY + getScrollY();
 					const delta = pageY - startPageY;
 					// Use a larger min-height when the Copilot chat is visible.
 					let minHeightPx = 120;

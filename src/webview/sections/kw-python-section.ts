@@ -2,6 +2,7 @@ import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -484,18 +485,12 @@ export class KwPythonSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
-		const getScrollY = typeof window.__kustoGetScrollY === 'function'
-			? window.__kustoGetScrollY as () => number
-			: () => 0;
-
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = wrapper.getBoundingClientRect().height;
 
 		const onMove = (moveEvent: MouseEvent) => {
 			try {
-				if (typeof window.__kustoMaybeAutoScrollWhileDragging === 'function') {
-					window.__kustoMaybeAutoScrollWhileDragging(moveEvent.clientY);
-				}
+				maybeAutoScrollWhileDragging(moveEvent.clientY);
 			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;

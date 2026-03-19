@@ -2,6 +2,8 @@
 // Extracted from queryBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 import { getRunModeLabelText } from '../shared/comparisonUtils';
+import { getResultsState } from './resultsState';
+import { closeMenuDropdown, toggleMenuDropdown, wireMenuInteractions, renderMenuItemsHtml } from './dropdown';
 
 const _win = window;
 
@@ -409,7 +411,7 @@ function __kustoOpenShareModal( boxId: any) {
 	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
 
 	// Determine whether results are available.
-	const state = (typeof _win.__kustoGetResultsState === 'function') ? _win.__kustoGetResultsState(boxId) : null;
+	const state = getResultsState(boxId);
 	const hasResults = !!(state && Array.isArray(state.columns) && state.columns.length > 0 && Array.isArray(state.rows) && state.rows.length > 0);
 	const totalRows = hasResults ? state.rows.length : 0;
 	const resultsCheck = document.getElementById('shareModal_chk_results') as any;
@@ -548,7 +550,7 @@ function __kustoShareCopyToClipboard() {
 	let totalRows = 0;
 	if (includeResults) {
 		try {
-			const state = (typeof _win.__kustoGetResultsState === 'function') ? _win.__kustoGetResultsState(boxId) : null;
+			const state = getResultsState(boxId);
 			if (state && Array.isArray(state.columns) && Array.isArray(state.rows)) {
 				// columns are plain strings in state.columns.
 				columns = state.columns.map((c: any) => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
@@ -670,10 +672,8 @@ function closeToolsDropdown( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.closeMenuDropdown === 'function') {
-			window.__kustoDropdown.closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
-			return;
-		}
+		closeMenuDropdown(id + '_tools_btn', id + '_tools_menu');
+		return;
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		const menu = document.getElementById(id + '_tools_menu') as any;
@@ -890,7 +890,7 @@ function toggleToolbarOverflow( boxId: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Wire keyboard nav if available
-		try { window.__kustoDropdown?.wireMenuInteractions?.(menu); } catch (e) { console.error('[kusto]', e); }
+		try { wireMenuInteractions(menu); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -1092,19 +1092,17 @@ function toggleToolsDropdown( boxId: any) {
 	if (!menu || !btn) return;
 
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.toggleMenuDropdown === 'function') {
-			window.__kustoDropdown.toggleMenuDropdown({
-				buttonId: id + '_tools_btn',
-				menuId: id + '_tools_menu',
-				beforeOpen: () => {
-					try { renderToolsMenuForBox(id); } catch (e) { console.error('[kusto]', e); }
-				},
-				afterOpen: () => {
-					// Shared dropdown helper wires keyboard navigation.
-				}
-			});
-			return;
-		}
+		toggleMenuDropdown({
+			buttonId: id + '_tools_btn',
+			menuId: id + '_tools_menu',
+			beforeOpen: () => {
+				try { renderToolsMenuForBox(id); } catch (e) { console.error('[kusto]', e); }
+			},
+			afterOpen: () => {
+				// Shared dropdown helper wires keyboard navigation.
+			}
+		});
+		return;
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback (legacy behavior)
@@ -1124,7 +1122,7 @@ function toggleToolsDropdown( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	if (next === 'block') {
-		try { window.__kustoDropdown?.wireMenuInteractions?.(menu); } catch (e) { console.error('[kusto]', e); }
+		try { wireMenuInteractions(menu); } catch (e) { console.error('[kusto]', e); }
 		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 	}
 }
@@ -1175,18 +1173,16 @@ function renderToolsMenuForBox( boxId: any) {
 	];
 
 	try {
-		if (window.__kustoDropdown && typeof window.__kustoDropdown.renderMenuItemsHtml === 'function') {
-			menu.innerHTML = window.__kustoDropdown.renderMenuItemsHtml(items, {
-				dropdownId: id + '_tools',
-				onSelectJs: (keyEnc: any) => {
-					return (
-						"onQueryEditorToolbarAction('" + id + "', '" + keyEnc + "');" +
-						" try{window.__kustoDropdown&&window.__kustoDropdown.closeMenuDropdown&&window.__kustoDropdown.closeMenuDropdown('" + id + "_tools_btn','" + id + "_tools_menu')}catch{}"
-					);
-				}
-			});
-			return;
-		}
+		menu.innerHTML = renderMenuItemsHtml(items, {
+			dropdownId: id + '_tools',
+			onSelectJs: (keyEnc: any) => {
+				return (
+					"onQueryEditorToolbarAction('" + id + "', '" + keyEnc + "');" +
+					" try{window.__kustoDropdown&&window.__kustoDropdown.closeMenuDropdown&&window.__kustoDropdown.closeMenuDropdown('" + id + "_tools_btn','" + id + "_tools_menu')}catch{}"
+				);
+			}
+		});
+		return;
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Minimal fallback markup (should rarely be used)

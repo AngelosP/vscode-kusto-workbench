@@ -3,6 +3,7 @@
 export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
+import { displayResult } from './resultsState';
 
 const _win = window;
 // Persistence + .kqlx document round-tripping.
@@ -888,9 +889,7 @@ function applyKqlxState(state: any) {
 									p.metadata.executionTime = '';
 								}
 								_win.lastExecutedBox = boxId;
-								if (typeof (_win.displayResult) === 'function') {
-									(_win.displayResult as any)(p);
-								}
+								displayResult(p);
 							}
 						} catch {
 							// If stored JSON is invalid, drop it.

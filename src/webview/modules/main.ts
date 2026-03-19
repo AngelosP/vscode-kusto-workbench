@@ -2,6 +2,9 @@
 // Message dispatcher, keyboard shortcuts, drag-and-drop.
 // Window bridge exports at bottom for remaining legacy callers.
 import { buildSchemaInfo } from '../shared/schema-utils';
+import { getResultsState, displayResultForBox, displayResult, displayCancelled, ensureResultsShownForTool } from './resultsState';
+import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
+import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 export {};
 
 const _win = window;
@@ -1175,9 +1178,9 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				if (typeof _win.onDatabasesError === 'function') {
 					_win.onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
-				} else if (typeof window.__kustoDisplayBoxError === 'function') {
-					window.__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
-				}
+				} else {
+				__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
+			}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'importConnectionsXmlText':
@@ -1207,23 +1210,15 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				// Always target the concrete boxId when available (prevents races when
 				// multiple queries are running and keeps comparison summaries in sync).
-				if (message.boxId && (typeof _win.displayResultForBox === 'function' || typeof window.displayResultForBox === 'function')) {
+				if (message.boxId) {
 					try {
 						if (typeof _win.setQueryExecuting === 'function') {
 							_win.setQueryExecuting(message.boxId, false);
 						}
 					} catch (e) { console.error('[kusto]', e); }
-					if (typeof _win.displayResultForBox === 'function') {
-						_win.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
-					} else {
-						window.displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
-					}
-				} else if (typeof _win.displayResult === 'function') {
-					_win.displayResult(message.result);
-				} else if (typeof window.displayResult === 'function') {
-					window.displayResult(message.result);
+					displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 				} else {
-					console.error('Query result received, but no results renderer is available (displayResult/displayResultForBox).');
+					displayResult(message.result);
 				}
 			} catch (e: any) {
 				console.error('Failed to render query results:', e);
@@ -1239,8 +1234,8 @@ window.addEventListener('message', async (event: any) => {
 					const metadata = _win.optimizationMetadataByBoxId[message.boxId];
 					if (metadata.isComparison && metadata.sourceBoxId) {
 						// Check if source box has results too
-						const sourceState = _win.__kustoGetResultsState(metadata.sourceBoxId);
-						const comparisonState = _win.__kustoGetResultsState(message.boxId);
+						const sourceState = getResultsState(metadata.sourceBoxId);
+						const comparisonState = getResultsState(message.boxId);
 						if (sourceState && comparisonState) {
 							_win.displayComparisonSummary(metadata.sourceBoxId, message.boxId);
 						}
@@ -1253,8 +1248,8 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				if (message.boxId && _win.optimizationMetadataByBoxId[message.boxId] && _win.optimizationMetadataByBoxId[message.boxId].comparisonBoxId) {
 					const comparisonBoxId = _win.optimizationMetadataByBoxId[message.boxId].comparisonBoxId;
-					const sourceState = _win.__kustoGetResultsState(message.boxId);
-					const comparisonState = _win.__kustoGetResultsState(comparisonBoxId);
+					const sourceState = getResultsState(message.boxId);
+					const comparisonState = getResultsState(comparisonBoxId);
 					if (sourceState && comparisonState) {
 						_win.displayComparisonSummary(message.boxId, comparisonBoxId);
 					}
@@ -1275,9 +1270,9 @@ window.addEventListener('message', async (event: any) => {
 						_win.setQueryExecuting(boxId, false);
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				if (boxId && typeof window.__kustoRenderErrorUx === 'function') {
+				if (boxId) {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
-					window.__kustoRenderErrorUx(boxId, err, clientActivityId);
+					__kustoRenderErrorUx(boxId, err, clientActivityId);
 				} else if (typeof _win.displayError === 'function') {
 					_win.displayError(err);
 				} else {
@@ -1299,11 +1294,7 @@ window.addEventListener('message', async (event: any) => {
 					_win.setQueryExecuting(cancelledBoxId, false);
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			if (typeof _win.displayCancelled === 'function') {
-				_win.displayCancelled();
-			} else {
-				_win.displayError('Cancelled');
-			}
+			displayCancelled();
 			break;
 		case 'ensureResultsVisible':
 			try {
@@ -1312,8 +1303,8 @@ window.addEventListener('message', async (event: any) => {
 					// Prefer the canonical setter so the toggle button and wrapper stay in sync.
 					if (typeof _win.__kustoSetResultsVisible === 'function') {
 						_win.__kustoSetResultsVisible(boxId, true);
-					} else if (typeof _win.__kustoEnsureResultsShownForTool === 'function') {
-						_win.__kustoEnsureResultsShownForTool(boxId);
+					} else {
+						ensureResultsShownForTool(boxId);
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1403,11 +1394,16 @@ window.addEventListener('message', async (event: any) => {
 								return false;
 							}
 
-							// Set as context if this is the active box
-							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, isActiveBox, modelUri, isForceRefresh);
+							// Set as context if this is the active box, OR if this is a force-refresh.
+							// When the user clicks "Refresh schema" (forceRefresh), the editor may have lost
+							// focus (activeQueryEditorBoxId cleared to null by onDidBlurEditorWidget).
+							// Without setAsContext=true, addDatabaseToSchema updates the aggregate schema
+							// but the stale in-context database persists, causing completions to stay stale.
+							const shouldSetAsContext = isActiveBox || isForceRefresh;
+							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, shouldSetAsContext, modelUri, isForceRefresh);
 							
-							// If this is the active box, trigger revalidation to reflect the new schema
-							if (isActiveBox && typeof window.__kustoTriggerRevalidation === 'function') {
+							// Trigger revalidation to reflect the new schema
+							if (shouldSetAsContext && typeof window.__kustoTriggerRevalidation === 'function') {
 								window.__kustoTriggerRevalidation(message.boxId);
 							}
 							return true;
@@ -1527,9 +1523,7 @@ window.addEventListener('message', async (event: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			try {
-				if (typeof window.__kustoDisplayBoxError === 'function') {
-					window.__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
-				}
+				__kustoDisplayBoxError(message.boxId, message.error || 'Schema fetch failed');
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'crossClusterSchemaData':
@@ -3398,9 +3392,7 @@ function __kustoToggleAddSectionDropdown( event: any) {
 
 		// Close all other dropdowns first.
 		try {
-			if (window.__kustoDropdown && typeof window.__kustoDropdown.closeAllMenus === 'function') {
-				window.__kustoDropdown.closeAllMenus();
-			}
+			_closeAllDropdownMenus();
 		} catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) {

@@ -98,6 +98,8 @@ export interface ConnectionServiceHost {
 export class ConnectionService {
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
+	/** Tracks when we last showed a DB-load error notification per cluster (to avoid spamming). */
+	private lastDbErrorNotificationByCluster = new Map<string, number>();
 
 	constructor(private readonly host: ConnectionServiceHost) {
 		this.loadLastSelection();
@@ -420,17 +422,22 @@ export class ConnectionService {
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
 			if (isAuthErr && !forceRefresh && cachedBefore.length > 0) {
 				this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
-				void vscode.window.showWarningMessage(
-					`Couldn't refresh the database list due to an authentication error. Using cached list.`,
-					'More Info'
-				).then(selection => {
-					if (selection === 'More Info') {
-						void vscode.window.showInformationMessage(
-							`Use the refresh button and sign in with the correct account for this cluster.`,
-							{ modal: true }
-						);
-					}
-				});
+				const now = Date.now();
+				const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
+				if ((now - lastShown) > 5000) {
+					this.lastDbErrorNotificationByCluster.set(clusterKey, now);
+					void vscode.window.showWarningMessage(
+						`Couldn't refresh the database list due to an authentication error. Using cached list.`,
+						'More Info'
+					).then(selection => {
+						if (selection === 'More Info') {
+							void vscode.window.showInformationMessage(
+								`Use the refresh button and sign in with the correct account for this cluster.`,
+								{ modal: true }
+							);
+						}
+					});
+				}
 				return;
 			}
 
@@ -472,24 +479,37 @@ export class ConnectionService {
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection);
 			const action = forceRefresh ? 'refresh' : 'load';
 
+			// Throttle error notifications: suppress if we showed one for this cluster within the last 5 seconds.
+			// This prevents spamming when multiple query sections all fail for the same cluster (e.g. VPN disconnect).
+			const now = Date.now();
+			const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
+			const shouldShowNotification = (now - lastShown) > 5000;
+			if (shouldShowNotification) {
+				this.lastDbErrorNotificationByCluster.set(clusterKey, now);
+			}
+
 			if (cachedBefore.length > 0) {
 				this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
-				void vscode.window.showWarningMessage(
-					`Failed to ${action} database list. Using cached list.`,
-					'More Info'
-				).then(selection => {
+				if (shouldShowNotification) {
+					void vscode.window.showWarningMessage(
+						`Failed to ${action} database list. Using cached list.`,
+						'More Info'
+					).then(selection => {
+						if (selection === 'More Info') {
+							void vscode.window.showInformationMessage(userMessage, { modal: true });
+						}
+					});
+				}
+				return;
+			}
+
+			if (shouldShowNotification) {
+				void vscode.window.showErrorMessage(`Failed to ${action} database list.`, 'More Info').then(selection => {
 					if (selection === 'More Info') {
 						void vscode.window.showInformationMessage(userMessage, { modal: true });
 					}
 				});
-				return;
 			}
-
-			void vscode.window.showErrorMessage(`Failed to ${action} database list.`, 'More Info').then(selection => {
-				if (selection === 'More Info') {
-					void vscode.window.showInformationMessage(userMessage, { modal: true });
-				}
-			});
 			this.host.postMessage({
 				type: 'databasesError',
 				boxId,

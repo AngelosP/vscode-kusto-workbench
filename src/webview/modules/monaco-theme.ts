@@ -226,9 +226,3 @@ export function startMonacoThemeObserver(monaco: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-// ── Window bridges ──────────────────────────────────────────────────────────
-window.isDarkTheme = isDarkTheme;
-window.getVSCodeEditorBackground = getVSCodeEditorBackground;
-window.defineCustomThemes = defineCustomThemes;
-window.applyMonacoTheme = applyMonacoTheme;
-window.startMonacoThemeObserver = startMonacoThemeObserver;

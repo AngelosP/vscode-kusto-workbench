@@ -19,6 +19,8 @@ import {
 	formatElapsed,
 	isValidConnectionIdForRun as __kustoIsValidConnectionIdForRun_pure,
 } from '../shared/comparisonUtils';
+import { escapeHtml } from './utils';
+import { getResultsState } from './resultsState';
 export {};
 
 const _win = window;
@@ -469,21 +471,13 @@ function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: an
 // run modes, and global dropdown dismiss handlers are in queryBoxes-toolbar.ts.
 
 function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
-	const sourceState = _win.__kustoGetResultsState(sourceBoxId);
-	const comparisonState = _win.__kustoGetResultsState(comparisonBoxId);
+	const sourceState = getResultsState(sourceBoxId);
+	const comparisonState = getResultsState(comparisonBoxId);
 	
 	if (!sourceState || !comparisonState) {
 		return;
 	}
 
-	const escapeHtml = (s: any) => {
-		return String(s ?? '')
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#39;');
-	};
 	const getBoxLabel = (boxId: any) => {
 		try {
 			const name = _win.__kustoGetSectionName(boxId);
@@ -651,9 +645,9 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 				' (' +
 				String(commonCount) + ' matching ' + pluralRows(commonCount) +
 				', ' +
-				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + _win.escapeHtml(sourceLabel) +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
 				', ' +
-				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + _win.escapeHtml(comparisonLabel) +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
 				')';
 			rowsMatch = (onlyACount === 0 && onlyBCount === 0);
 		}
@@ -692,10 +686,10 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 			// Only column differences
 			const parts = [];
 			if (columnDiff.onlyInA.length > 0) {
-				parts.push(String(columnDiff.onlyInA.length) + ' missing ' + (columnDiff.onlyInA.length === 1 ? 'column' : 'columns') + ' in ' + _win.escapeHtml(comparisonLabel));
+				parts.push(String(columnDiff.onlyInA.length) + ' missing ' + (columnDiff.onlyInA.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
 			}
 			if (columnDiff.onlyInB.length > 0) {
-				parts.push(String(columnDiff.onlyInB.length) + ' extra ' + (columnDiff.onlyInB.length === 1 ? 'column' : 'columns') + ' in ' + _win.escapeHtml(comparisonLabel));
+				parts.push(String(columnDiff.onlyInB.length) + ' extra ' + (columnDiff.onlyInB.length === 1 ? 'column' : 'columns') + ' in ' + escapeHtml(comparisonLabel));
 			}
 			diffLabel = ' (' + parts.join(', ') + ')';
 			const titleParts = ['View diff'];
@@ -711,9 +705,9 @@ function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 			diffLabel = ' (' +
 				String(commonCount) + ' matching ' + pluralRows(commonCount) +
 				', ' +
-				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + _win.escapeHtml(sourceLabel) +
+				String(onlyACount) + ' unmatched ' + pluralRows(onlyACount) + ' in ' + escapeHtml(sourceLabel) +
 				', ' +
-				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + _win.escapeHtml(comparisonLabel) +
+				String(onlyBCount) + ' unmatched ' + pluralRows(onlyBCount) + ' in ' + escapeHtml(comparisonLabel) +
 				')';
 			diffTitle = 'View diff\nUnmatched rows: ' + String(onlyACount) + ' in ' + sourceLabel + ', ' + String(onlyBCount) + ' in ' + comparisonLabel;
 		} else if (hasColumnDiff && hasRowDiff) {
@@ -1867,54 +1861,13 @@ function executeQuery( boxId: any, mode?: any) {
 
 // ── Window bridges for remaining legacy callers ──
 window.__kustoSetResultsVisible = __kustoSetResultsVisible;
-window.__kustoLockCacheForBenchmark = __kustoLockCacheForBenchmark;
-window.__kustoNormalizeCellForComparison = __kustoNormalizeCellForComparison;
-window.__kustoRowKeyForComparison = __kustoRowKeyForComparison;
-window.__kustoNormalizeColumnNameForComparison = __kustoNormalizeColumnNameForComparison;
-window.__kustoGetNormalizedColumnNameList = __kustoGetNormalizedColumnNameList;
-window.__kustoDoColumnHeaderNamesMatch = __kustoDoColumnHeaderNamesMatch;
-window.__kustoGetColumnDifferences = __kustoGetColumnDifferences;
-window.__kustoDoColumnOrderMatch = __kustoDoColumnOrderMatch;
-window.__kustoDoRowOrderMatch = __kustoDoRowOrderMatch;
-window.__kustoBuildColumnIndexMapForNames = __kustoBuildColumnIndexMapForNames;
-window.__kustoBuildNameBasedColumnMapping = __kustoBuildNameBasedColumnMapping;
-window.__kustoRowKeyForComparisonWithColumnMapping = __kustoRowKeyForComparisonWithColumnMapping;
-window.__kustoRowKeyForComparisonIgnoringColumnOrder = __kustoRowKeyForComparisonIgnoringColumnOrder;
-window.__kustoAreResultsEquivalentWithDetails = __kustoAreResultsEquivalentWithDetails;
-window.__kustoAreResultsEquivalent = __kustoAreResultsEquivalent;
-window.__kustoDoResultHeadersMatch = __kustoDoResultHeadersMatch;
-window.__kustoUpdateAcceptOptimizationsButton = __kustoUpdateAcceptOptimizationsButton;
 window.acceptOptimizations = acceptOptimizations;
-window.__kustoUpdateQueryResultsToggleButton = __kustoUpdateQueryResultsToggleButton;
-window.__kustoUpdateComparisonSummaryToggleButton = __kustoUpdateComparisonSummaryToggleButton;
-window.__kustoApplyResultsVisibility = __kustoApplyResultsVisibility;
-window.__kustoApplyComparisonSummaryVisibility = __kustoApplyComparisonSummaryVisibility;
 window.toggleQueryResultsVisibility = toggleQueryResultsVisibility;
 window.toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;
-window.__kustoEnsureCacheBackupMap = __kustoEnsureCacheBackupMap;
-window.__kustoBackupCacheSettings = __kustoBackupCacheSettings;
-window.__kustoRestoreCacheSettings = __kustoRestoreCacheSettings;
-window.__kustoEnsureRunModeBackupMap = __kustoEnsureRunModeBackupMap;
-window.__kustoBackupRunMode = __kustoBackupRunMode;
-window.__kustoRestoreRunMode = __kustoRestoreRunMode;
-window.__kustoSetLinkedOptimizationMode = __kustoSetLinkedOptimizationMode;
 window.displayComparisonSummary = displayComparisonSummary;
-window.__kustoEnsureOptimizePrepByBoxId = __kustoEnsureOptimizePrepByBoxId;
-window.__kustoHideOptimizePromptForBox = __kustoHideOptimizePromptForBox;
-window.__kustoSetOptimizeInProgress = __kustoSetOptimizeInProgress;
-window.__kustoUpdateOptimizeStatus = __kustoUpdateOptimizeStatus;
-window.__kustoCancelOptimizeQuery = __kustoCancelOptimizeQuery;
-window.__kustoShowOptimizePromptLoading = __kustoShowOptimizePromptLoading;
 window.__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
 window.__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
-window.__kustoApplyOptimizeQueryOptions = __kustoApplyOptimizeQueryOptions;
-window.__kustoRunOptimizeQueryWithOverrides = __kustoRunOptimizeQueryWithOverrides;
 window.optimizeQueryWithCopilot = optimizeQueryWithCopilot;
-window.__kustoIsValidConnectionIdForRun = __kustoIsValidConnectionIdForRun;
-window.__kustoGetEffectiveSelectionOwnerIdForRun = __kustoGetEffectiveSelectionOwnerIdForRun;
-window.__kustoIsRunSelectionReady = __kustoIsRunSelectionReady;
-window.__kustoHasValidFavoriteSelection = __kustoHasValidFavoriteSelection;
-window.__kustoClearSchemaSummaryIfNoSelection = __kustoClearSchemaSummaryIfNoSelection;
 window.formatElapsed = formatElapsed;
 window.setQueryExecuting = setQueryExecuting;
 window.cancelQuery = cancelQuery;
