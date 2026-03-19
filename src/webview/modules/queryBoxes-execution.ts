@@ -20,6 +20,15 @@ import {
 	isValidConnectionIdForRun as __kustoIsValidConnectionIdForRun_pure,
 } from '../shared/comparisonUtils';
 import { escapeHtml } from './utils';
+import {
+__kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
+__kustoSetSectionName, __kustoGetSectionName, __kustoPickNextAvailableSectionLetterName,
+addQueryBox, toggleCacheControls, removeQueryBox,
+__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
+__kustoLog
+} from './queryBoxes';
+import { getRunModeLabelText } from '../shared/comparisonUtils';
+import { getRunMode, setRunMode, closeRunMenu } from './queryBoxes-toolbar';
 import { getResultsState } from './resultsState';
 export {};
 
@@ -61,7 +70,7 @@ function __kustoLockCacheForBenchmark( boxId: any) {
 			unitSelect.disabled = true;
 			unitSelect.title = msg;
 		}
-		try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
 		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -93,7 +102,7 @@ function acceptOptimizations( comparisonBoxId: any) {
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
 		// Remove comparison box and clear metadata links.
-		try { _win.removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+		try { removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
 				delete _win.optimizationMetadataByBoxId[comparisonBoxId];
@@ -382,7 +391,7 @@ function __kustoRestoreCacheSettings( boxId: any) {
 			if (enabledEl) { enabledEl.disabled = false; enabledEl.title = ''; }
 			if (valueEl) { valueEl.disabled = false; valueEl.title = ''; }
 			if (unitEl) { unitEl.disabled = false; unitEl.title = ''; }
-			try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
@@ -409,7 +418,7 @@ function __kustoRestoreCacheSettings( boxId: any) {
 			unitEl.disabled = false;
 			unitEl.title = '';
 		}
-		try { _win.toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
@@ -430,7 +439,7 @@ function __kustoBackupRunMode( boxId: any) {
 		return;
 	}
 	try {
-		map[boxId] = { mode: String(_win.getRunMode(boxId) || 'take100') };
+		map[boxId] = { mode: String(getRunMode(boxId) || 'take100') };
 	} catch {
 		map[boxId] = { mode: 'take100' };
 	}
@@ -444,7 +453,7 @@ function __kustoRestoreRunMode( boxId: any) {
 		return;
 	}
 	try {
-		_win.setRunMode(boxId, String(backup.mode || 'take100'));
+		setRunMode(boxId, String(backup.mode || 'take100'));
 	} catch (e) { console.error('[kusto]', e); }
 	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
 }
@@ -457,7 +466,7 @@ export function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBo
 		if (active) {
 			try { __kustoBackupCacheSettings(id); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoBackupRunMode(id); } catch (e) { console.error('[kusto]', e); }
-			try { _win.setRunMode(id, 'plain'); } catch (e) { console.error('[kusto]', e); }
+			try { setRunMode(id, 'plain'); } catch (e) { console.error('[kusto]', e); }
 			el.classList.add('has-linked-optimization');
 		} else {
 			el.classList.remove('has-linked-optimization');
@@ -480,7 +489,7 @@ export function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any
 
 	const getBoxLabel = (boxId: any) => {
 		try {
-			const name = _win.__kustoGetSectionName(boxId);
+			const name = __kustoGetSectionName(boxId);
 			return name || String(boxId || '').trim() || 'Dataset';
 		} catch {
 			return String(boxId || '').trim() || 'Dataset';
@@ -1036,10 +1045,10 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	// - If the source section has no name, assign the next available letter (A, B, C, ...)
 	// - The optimized section will then use "<source name> (optimized)"
 	try {
-		let sourceName = _win.__kustoGetSectionName(boxId);
+		let sourceName = __kustoGetSectionName(boxId);
 		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
-			_win.__kustoSetSectionName(boxId, sourceName);
+			__kustoSetSectionName(boxId, sourceName);
 			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (sourceName) {
@@ -1150,10 +1159,10 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 	if (isOptimizeScenario) {
 		try {
 			const nameInput = null;
-			sourceNameForOptimize = _win.__kustoGetSectionName(boxId);
+			sourceNameForOptimize = __kustoGetSectionName(boxId);
 			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
-				_win.__kustoSetSectionName(boxId, sourceNameForOptimize);
+				__kustoSetSectionName(boxId, sourceNameForOptimize);
 				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			}
 			if (sourceNameForOptimize) {
@@ -1162,8 +1171,8 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	
-	const connectionId = _win.__kustoGetConnectionId(boxId);
-	const database = _win.__kustoGetDatabase(boxId);
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
 		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
@@ -1208,10 +1217,10 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 				// Set the comparison box name.
 				try {
 					if (desiredOptimizedName) {
-						_win.__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
+						__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
 						try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					} else {
-						const currentName = _win.__kustoGetSectionName(existingComparisonBoxId);
+						const currentName = __kustoGetSectionName(existingComparisonBoxId);
 						let shouldReplace = !currentName;
 						if (!shouldReplace) {
 							const upper = currentName.toUpperCase();
@@ -1220,7 +1229,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 							}
 						}
 						if (shouldReplace) {
-							_win.__kustoSetSectionName(existingComparisonBoxId, _win.__kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
+							__kustoSetSectionName(existingComparisonBoxId, __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
 							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
@@ -1253,7 +1262,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	// Do not auto-name the source section for plain comparisons.
 	// For optimization scenarios, we already ensured a name above.
-	let queryName = sourceNameForOptimize || _win.__kustoGetSectionName(boxId);
+	let queryName = sourceNameForOptimize || __kustoGetSectionName(boxId);
 	if (!desiredOptimizedName && isOptimizeScenario && queryName) {
 		desiredOptimizedName = queryName + ' (optimized)';
 	}
@@ -1269,7 +1278,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	let comparisonBoxId = '';
 	try {
-		comparisonBoxId = _win.addQueryBox({
+		comparisonBoxId = addQueryBox({
 			id: 'query_cmp_' + Date.now(),
 			initialQuery: comparisonQuery,
 			isComparison: true,
@@ -1319,7 +1328,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	// Set connection and database to match source.
 	try {
-		const compKwEl = _win.__kustoGetQuerySectionElement(comparisonBoxId);
+		const compKwEl = __kustoGetQuerySectionElement(comparisonBoxId);
 		if (compKwEl) {
 			if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
 			if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
@@ -1338,11 +1347,11 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 	// Set the query name.
 	try {
 		if (desiredOptimizedName) {
-			_win.__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
+			__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
 		} else {
-			const existing = _win.__kustoGetSectionName(comparisonBoxId);
+			const existing = __kustoGetSectionName(comparisonBoxId);
 			if (!existing) {
-				_win.__kustoSetSectionName(comparisonBoxId, _win.__kustoPickNextAvailableSectionLetterName(comparisonBoxId));
+				__kustoSetSectionName(comparisonBoxId, __kustoPickNextAvailableSectionLetterName(comparisonBoxId));
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1375,7 +1384,7 @@ function __kustoGetEffectiveSelectionOwnerIdForRun( boxId: any) {
 	return id;
 }
 
-function __kustoIsRunSelectionReady( boxId: any) {
+export function __kustoIsRunSelectionReady( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return false;
 
@@ -1390,8 +1399,8 @@ function __kustoIsRunSelectionReady( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	const connectionId = _win.__kustoGetConnectionId(ownerId);
-	const database = _win.__kustoGetDatabase(ownerId);
+	const connectionId = __kustoGetConnectionId(ownerId);
+	const database = __kustoGetDatabase(ownerId);
 
 	if (!__kustoIsValidConnectionIdForRun(connectionId)) return false;
 	if (!database) return false;
@@ -1414,14 +1423,10 @@ function __kustoHasValidFavoriteSelection( ownerBoxId: any) {
 		const id = String(ownerBoxId || '').trim();
 		if (!id) return false;
 		// Treat "favorite selected" as: the current (clusterUrl, db) matches a known favorite.
-		const clusterUrl = (typeof _win.__kustoGetCurrentClusterUrlForBox === 'function')
-			? String(_win.__kustoGetCurrentClusterUrlForBox(id) || '').trim()
-			: '';
-		const db = (typeof _win.__kustoGetCurrentDatabaseForBox === 'function')
-			? String(_win.__kustoGetCurrentDatabaseForBox(id) || '').trim()
-			: '';
+		const clusterUrl = String(__kustoGetCurrentClusterUrlForBox(id) || '').trim();
+		const db = String(__kustoGetCurrentDatabaseForBox(id) || '').trim();
 		if (!clusterUrl || !db) return false;
-		return typeof _win.__kustoFindFavorite === 'function' ? !!_win.__kustoFindFavorite(clusterUrl, db) : false;
+		return !!__kustoFindFavorite(clusterUrl, db);
 	} catch {
 		return false;
 	}
@@ -1431,8 +1436,8 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const ownerId = __kustoGetEffectiveSelectionOwnerIdForRun(id);
-	let connectionId = _win.__kustoGetConnectionId(ownerId);
-	let database = _win.__kustoGetDatabase(ownerId);
+	let connectionId = __kustoGetConnectionId(ownerId);
+	let database = __kustoGetDatabase(ownerId);
 
 	// If neither a database nor a favorite is selected, blank the schema summary to avoid stale counts.
 	const hasValidCluster = typeof __kustoIsValidConnectionIdForRun === 'function'
@@ -1455,8 +1460,7 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			const kwEl = typeof (_win.__kustoGetQuerySectionElement) === 'function'
-				? (_win.__kustoGetQuerySectionElement as any)(id) : null;
+			const kwEl = __kustoGetQuerySectionElement(id);
 			if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
 				kwEl.setSchemaInfo({ status: 'not-loaded', statusText: 'Not loaded', cached: false, tables: undefined, cols: undefined, funcs: undefined, errorMessage: undefined });
 			}
@@ -1488,7 +1492,7 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 		runBtn.disabled = !enabled;
 		try {
 			// When disabled, provide a helpful tooltip instead of looking "broken".
-			const modeLabel = _win.getRunModeLabelText(_win.getRunMode(id));
+			const modeLabel = getRunModeLabelText(getRunMode(id));
 			runBtn.title = enabled ? modeLabel : (modeLabel + '\n' + disabledTooltip);
 			// Also keep ARIA label helpful when disabled.
 			runBtn.setAttribute('aria-label', enabled ? modeLabel : disabledTooltip);
@@ -1531,7 +1535,7 @@ export function setQueryExecuting( boxId: any, executing: any) {
 			cancelBtn.disabled = false;
 			cancelBtn.style.display = 'flex';
 		}
-		_win.closeRunMenu(boxId);
+		closeRunMenu(boxId);
 		if (status) {
 			status.style.display = 'inline-flex';
 		}
@@ -1606,7 +1610,7 @@ function cancelQuery( boxId: any) {
 }
 
 export function executeQuery( boxId: any, mode?: any) {
-	const effectiveMode = mode || _win.getRunMode(boxId);
+	const effectiveMode = mode || getRunMode(boxId);
 	try {
 		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {
 			window.__kustoClearAutoFindInQueryEditor(boxId);
@@ -1705,13 +1709,31 @@ export function executeQuery( boxId: any, mode?: any) {
 
 	const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
+	// If the user has text selected in the editor, run only the selected text.
+	let usedSelection = false;
+	try {
+		if (editor && typeof editor.getSelection === 'function' && typeof editor.getModel === 'function') {
+			const sel = editor.getSelection();
+			if (sel && !sel.isEmpty()) {
+				const model = editor.getModel();
+				if (model && typeof model.getValueInRange === 'function') {
+					const selectedText = model.getValueInRange(sel);
+					if (selectedText && selectedText.trim()) {
+						query = selectedText;
+						usedSelection = true;
+					}
+				}
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
 	// If the editor has multiple statements (blank-line separated), run only the statement at cursor.
+	// Skip if the user explicitly selected text — their selection takes priority.
 	// IMPORTANT: Do NOT add checks for hasTextFocus or activeQueryEditorBoxId here!
 	// When clicking the Run button, the editor loses focus before this code executes, which would
 	// cause the full editor content to be sent instead of just the active statement. This was a
 	// regression bug - always check for multiple statements and extract at cursor unconditionally.
 	try {
-		if (editor) {
+		if (editor && !usedSelection) {
 			const model = editor.getModel && editor.getModel();
 			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
 				? window.__kustoGetStatementBlocksFromModel(model)
@@ -1734,8 +1756,8 @@ export function executeQuery( boxId: any, mode?: any) {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	let connectionId = _win.__kustoGetConnectionId(boxId);
-	let database = _win.__kustoGetDatabase(boxId);
+	let connectionId = __kustoGetConnectionId(boxId);
+	let database = __kustoGetDatabase(boxId);
 	let cacheEnabled = (document.getElementById(boxId + '_cache_enabled') as any).checked;
 	const cacheValue = parseInt((document.getElementById(boxId + '_cache_value') as any).value) || 1;
 	const cacheUnit = (document.getElementById(boxId + '_cache_unit') as any).value;
@@ -1751,8 +1773,8 @@ export function executeQuery( boxId: any, mode?: any) {
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
 				sourceBoxIdForComparison = String(sourceBoxId || '');
-				const srcConnId = _win.__kustoGetConnectionId(sourceBoxId);
-				const srcDb = _win.__kustoGetDatabase(sourceBoxId);
+				const srcConnId = __kustoGetConnectionId(sourceBoxId);
+				const srcDb = __kustoGetDatabase(sourceBoxId);
 				if (srcConnId) {
 					connectionId = srcConnId;
 				}
@@ -1785,7 +1807,7 @@ export function executeQuery( boxId: any, mode?: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					_win.__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
+					__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
 						sourceBoxId: sourceBoxIdForComparison
 					});
 				} catch (e) { console.error('[kusto]', e); }
@@ -1804,7 +1826,7 @@ export function executeQuery( boxId: any, mode?: any) {
 		const desiredPending = !!(dbEl && dbEl.dataset && dbEl.dataset.desired);
 		const dbDisabled = !!(dbEl && dbEl.disabled);
 		if (pending || desiredPending || dbDisabled) {
-			_win.__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', {
+			__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', {
 				pending,
 				desiredPending,
 				dbDisabled,
@@ -1828,10 +1850,10 @@ export function executeQuery( boxId: any, mode?: any) {
 		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
-	_win.__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
+	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
 
 	setQueryExecuting(boxId, true);
-	_win.closeRunMenu(boxId);
+	closeRunMenu(boxId);
 
 	// Track the effective cacheEnabled value for this run.
 	// When caching is enabled, the extension injects an extra (hidden) first line,
@@ -1860,14 +1882,8 @@ export function executeQuery( boxId: any, mode?: any) {
 }
 
 // ── Window bridges for remaining legacy callers ──
-window.__kustoSetResultsVisible = __kustoSetResultsVisible;
-window.acceptOptimizations = acceptOptimizations;
-window.toggleQueryResultsVisibility = toggleQueryResultsVisibility;
-window.displayComparisonSummary = displayComparisonSummary;
+// __kustoSetResultsVisible bridge removed (D8) — exported, all consumers use ES imports.
 window.__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
 window.__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
-window.optimizeQueryWithCopilot = optimizeQueryWithCopilot;
-window.formatElapsed = formatElapsed;
-window.setQueryExecuting = setQueryExecuting;
 window.cancelQuery = cancelQuery;
 window.executeQuery = executeQuery;

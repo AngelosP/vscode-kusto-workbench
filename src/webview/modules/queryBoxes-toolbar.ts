@@ -3,6 +3,12 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import { getRunModeLabelText } from '../shared/comparisonUtils';
 import { getResultsState } from './resultsState';
+import {
+	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetSectionName,
+	closeAllFavoritesDropdowns,
+	fullyQualifyTablesInEditor
+} from './queryBoxes';
+import { executeQuery, __kustoIsRunSelectionReady } from './queryBoxes-execution';
 import { closeMenuDropdown, toggleMenuDropdown, wireMenuInteractions, renderMenuItemsHtml } from './dropdown';
 
 const _win = window;
@@ -219,7 +225,7 @@ function onQueryEditorToolbarAction( boxId: any, action: any) {
 		try { setToolbarActionBusy(boxId, 'qualifyTables', true); } catch (e) { console.error('[kusto]', e); }
 		(async () => {
 			try {
-				await _win.fullyQualifyTablesInEditor(boxId);
+				await fullyQualifyTablesInEditor(boxId);
 			} finally {
 				try { _win.qualifyTablesInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 				try { setToolbarActionBusy(boxId, 'qualifyTables', false); } catch (e) { console.error('[kusto]', e); }
@@ -350,8 +356,8 @@ function copyQueryAsAdeLink( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	let connectionId = _win.__kustoGetConnectionId(boxId);
-	let database = _win.__kustoGetDatabase(boxId);
+	let connectionId = __kustoGetConnectionId(boxId);
+	let database = __kustoGetDatabase(boxId);
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
@@ -359,8 +365,8 @@ function copyQueryAsAdeLink( boxId: any) {
 			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = String(meta.sourceBoxId || '');
-				const srcConnId = _win.__kustoGetConnectionId(sourceBoxId);
-				const srcDb = _win.__kustoGetDatabase(sourceBoxId);
+				const srcConnId = __kustoGetConnectionId(sourceBoxId);
+				const srcDb = __kustoGetDatabase(sourceBoxId);
 				if (srcConnId) connectionId = srcConnId;
 				if (srcDb) database = srcDb;
 			}
@@ -406,7 +412,7 @@ function __kustoOpenShareModal( boxId: any) {
 
 	// Pre-populate the section name.
 	const nameInput = null;
-	const sectionName = _win.__kustoGetSectionName(boxId);
+	const sectionName = __kustoGetSectionName(boxId);
 	const titleEl = document.getElementById('shareModal_title') as any;
 	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
 
@@ -448,8 +454,8 @@ function __kustoOpenShareModal( boxId: any) {
 	let connectionId = '';
 	let database = '';
 	try {
-		connectionId = _win.__kustoGetConnectionId(boxId);
-		database = _win.__kustoGetDatabase(boxId);
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Inherit from source box if this is a comparison section.
@@ -458,8 +464,8 @@ function __kustoOpenShareModal( boxId: any) {
 			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
-				const srcConnId = _win.__kustoGetConnectionId(src);
-				const srcDb = _win.__kustoGetDatabase(src);
+				const srcConnId = __kustoGetConnectionId(src);
+				const srcDb = __kustoGetDatabase(src);
 				if (srcConnId) connectionId = srcConnId;
 				if (srcDb) database = srcDb;
 			}
@@ -528,16 +534,16 @@ function __kustoShareCopyToClipboard() {
 	let connectionId = '';
 	let database = '';
 	try {
-		connectionId = _win.__kustoGetConnectionId(boxId);
-		database = _win.__kustoGetDatabase(boxId);
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
 			const meta = _win.optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
-				const srcConnId = _win.__kustoGetConnectionId(src);
-				const srcDb = _win.__kustoGetDatabase(src);
+				const srcConnId = __kustoGetConnectionId(src);
+				const srcDb = __kustoGetDatabase(src);
 				if (srcConnId) connectionId = srcConnId;
 				if (srcDb) database = srcDb;
 			}
@@ -589,7 +595,7 @@ function __kustoShareCopyToClipboard() {
 	// Get section name.
 	let sectionName = '';
 	try {
-		sectionName = _win.__kustoGetSectionName(boxId);
+		sectionName = __kustoGetSectionName(boxId);
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Send to extension to build ADE link and copy to clipboard.
@@ -698,7 +704,7 @@ const __kustoRunBtnResizeObservers: any = {};
  * Initialize toolbar overflow detection for a query box.
  * Uses ResizeObserver to detect when buttons overflow and shows a "..." menu.
  */
-function initToolbarOverflow( boxId: any) {
+export function initToolbarOverflow( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const toolbar = document.getElementById(id + '_toolbar') as any;
@@ -854,7 +860,7 @@ function toggleToolbarOverflow( boxId: any) {
 
 	// Close all other menus first
 	try { closeAllRunMenus(); } catch (e) { console.error('[kusto]', e); }
-	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 	try { closeToolsDropdown(id); } catch (e) { console.error('[kusto]', e); }
 
 	if (isOpen) {
@@ -1108,7 +1114,7 @@ function toggleToolsDropdown( boxId: any) {
 	// Fallback (legacy behavior)
 	const next = menu.style.display === 'block' ? 'none' : 'block';
 	try { closeAllRunMenus(); } catch (e) { console.error('[kusto]', e); }
-	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 	if (next === 'block') {
 		try { renderToolsMenuForBox(id); } catch (e) { console.error('[kusto]', e); }
 	}
@@ -1268,8 +1274,8 @@ async function exportQueryToPowerBI( boxId: any) {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	const connectionId = _win.__kustoGetConnectionId(boxId);
-	const database = _win.__kustoGetDatabase(boxId);
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
 		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
@@ -1341,14 +1347,14 @@ function __kustoApplyRunModeFromMenu( boxId: any, mode: any) {
 	setRunMode(id, mode);
 	// Only execute if selection is valid; otherwise we just changed the default run mode.
 	try {
-		if (_win.__kustoIsRunSelectionReady(id)) {
-			_win.executeQuery(id, mode);
+		if (__kustoIsRunSelectionReady(id)) {
+			executeQuery(id, mode);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try { closeRunMenu(id); } catch (e) { console.error('[kusto]', e); }
 }
 
-function getRunMode( boxId: any) {
+export function getRunMode( boxId: any) {
 	return _win.runModesByBoxId[boxId] || 'take100';
 }
 
@@ -1370,7 +1376,7 @@ export function setRunMode( boxId: any, mode: any) {
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
-function closeRunMenu( boxId: any) {
+export function closeRunMenu( boxId: any) {
 	const menu = document.getElementById(boxId + '_run_menu') as any;
 	if (menu) {
 		menu.style.display = 'none';
@@ -1417,7 +1423,7 @@ document.addEventListener('click', (ev: any) => {
 	// Clicking inside a dropdown should not dismiss it.
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
-	try { _win.closeAllFavoritesDropdowns && _win.closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 	try { window.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
 });
 
@@ -1456,7 +1462,6 @@ document.addEventListener('wheel', (ev: any) => {
 window.updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
 window.updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;
 window.toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabled;
-window.updateCopilotInlineCompletionsToggleButtons = updateCopilotInlineCompletionsToggleButtons;
 window.toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
 window.toggleCaretDocsEnabled = toggleCaretDocsEnabled;
 window.onQueryEditorToolbarAction = onQueryEditorToolbarAction;
@@ -1471,8 +1476,6 @@ window.closeToolbarOverflow = closeToolbarOverflow;
 window.toggleToolsDropdown = toggleToolsDropdown;
 window.__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
 window.getRunMode = getRunMode;
-window.getRunModeLabelText = getRunModeLabelText;
 window.setRunMode = setRunMode;
-window.closeRunMenu = closeRunMenu;
 window.closeAllRunMenus = closeAllRunMenus;
 window.toggleRunMenu = toggleRunMenu;

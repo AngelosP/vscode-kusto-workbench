@@ -24,10 +24,12 @@ let __kustoGetStatementStartAtOffset: any;
 let __kustoScanIdentifiers: any;
 let __kustoSplitTopLevelStatements: any;
 let __kustoSplitPipelineStagesDeep: any;
-// From monaco.ts module scope (window bridge set at import time):
+// From monaco.ts module scope:
 let __kustoGetColumnsByTable: any;
+// From queryBoxes.ts (schema logic):
+let ensureSchemaForBox: any;
 
-_win.__kustoInitCompletionDeps = function (deps: any) {
+export function __kustoInitCompletionDeps(deps: any) {
 	KUSTO_FUNCTION_DOCS = deps.KUSTO_FUNCTION_DOCS;
 	KUSTO_KEYWORD_DOCS = deps.KUSTO_KEYWORD_DOCS;
 	KUSTO_CONTROL_COMMAND_DOCS_BASE_URL = deps.KUSTO_CONTROL_COMMAND_DOCS_BASE_URL;
@@ -40,7 +42,8 @@ _win.__kustoInitCompletionDeps = function (deps: any) {
 	__kustoSplitTopLevelStatements = deps.__kustoSplitTopLevelStatements;
 	__kustoSplitPipelineStagesDeep = deps.__kustoSplitPipelineStagesDeep;
 	__kustoGetColumnsByTable = deps.__kustoGetColumnsByTable;
-};
+	ensureSchemaForBox = deps.ensureSchemaForBox;
+}
 
 // -- Pipe operator suggestions --
 const KUSTO_PIPE_OPERATOR_SUGGESTIONS = [
@@ -302,7 +305,9 @@ const __kustoCompletionProvider = {
 		const schema = boxId ? _win.schemaByBoxId[boxId] : null;
 		if (!schema || !schema.tables) {
 			// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
-			_win.ensureSchemaForBox(boxId);
+			if (typeof ensureSchemaForBox === 'function') {
+				ensureSchemaForBox(boxId);
+			}
 
 			// Even without schema, we can still suggest earlier `let` variables (multi-statement scripts).
 			try {
@@ -1559,5 +1564,5 @@ __kustoProvideCompletionItemsForDiagnostics = __kustoCompletionProvider.provideC
 // DISABLED: Custom completion provider - monaco-kusto now handles completions
 // monaco.languages.registerCompletionItemProvider('kusto', __kustoCompletionProvider);
 
-// -- Window bridge exports --
-_win.__kustoProvideCompletionItemsForDiagnostics = __kustoProvideCompletionItemsForDiagnostics;
+// Window bridge removed (D8) — __kustoProvideCompletionItemsForDiagnostics is dead
+// (diagnostics module has uninitialized local let that shadows it).

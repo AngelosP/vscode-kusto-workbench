@@ -1,6 +1,8 @@
 // Cross-section results state map and simplified Lit-only result routing.
 // Extracted from resultsTable-render.ts during legacy results table removal.
 
+import { __kustoSetResultsVisible, setQueryExecuting } from './queryBoxes-execution';
+import { __kustoNotifyResultsUpdated } from './extraBoxes';
 const _win = window;
 
 // ── Results state map ────────────────────────────────────────────────────────
@@ -31,7 +33,7 @@ export function setResultsState(boxId: any, state: any) {
 	// Notify any dependent sections (charts/transformations) that this data source changed.
 	try {
 		if (typeof _win.__kustoNotifyResultsUpdated === 'function') {
-			_win.__kustoNotifyResultsUpdated(boxId);
+			__kustoNotifyResultsUpdated(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -62,16 +64,7 @@ export function getRawCellValue(cell: any) {
 export function ensureResultsShownForTool(boxId: any) {
 	try {
 		if (_win.__kustoResultsVisibleByBoxId && _win.__kustoResultsVisibleByBoxId[boxId] === false) {
-			if (typeof (_win.__kustoSetResultsVisible) === 'function') {
-				_win.__kustoSetResultsVisible(boxId, true);
-			} else {
-				_win.__kustoResultsVisibleByBoxId[boxId] = true;
-				try {
-					if (typeof (_win.__kustoApplyResultsVisibility) === 'function') {
-						_win.__kustoApplyResultsVisibility(boxId);
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			}
+			__kustoSetResultsVisible(boxId, true);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -117,7 +110,7 @@ export function displayResult(result: any) {
 	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
-	try { _win.setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }
+	try { setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }
 
 	displayResultForBox(result, boxId, {
 		label: 'Results',
@@ -129,7 +122,7 @@ export function displayCancelled() {
 	const boxId = _win.lastExecutedBox;
 	if (!boxId) { return; }
 
-	try { _win.setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }
+	try { setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }
 
 	// Delegate to the Lit section element if available.
 	const sectionEl = document.getElementById(boxId);
@@ -148,11 +141,4 @@ export function displayCancelled() {
 	resultsDiv.classList.add('visible');
 }
 
-// ── Window bridge exports ────────────────────────────────────────────────────
-// Dead bridges removed: __kustoEnsureResultsStateMap (self-only),
-// __kustoGetRawCellValue (1 consumer updated to import).
-// Remaining bridges kept for callers not yet migrated to imports.
-window.__kustoGetResultsState = getResultsState;
-window.displayResultForBox = displayResultForBox;
-window.displayResult = displayResult;
-window.displayCancelled = displayCancelled;
+// Window bridges removed (D8) — getResultsState exported, all consumers use ES imports.

@@ -4,6 +4,7 @@ export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
 import { displayResult } from './resultsState';
+import { addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls } from './queryBoxes';
 
 const _win = window;
 // Persistence + .kqlx document round-tripping.
@@ -172,7 +173,7 @@ export function __kustoRequestAddSection(kind: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Normal .kqlx flow.
-	if (k === 'query') return (_win.addQueryBox as any)();
+	if (k === 'query') return addQueryBox();
 	if (k === 'chart') return (_win.addChartBox as any)();
 	if (k === 'transformation') return (_win.addTransformationBox as any)();
 	if (k === 'markdown') return (_win.addMarkdownBox as any)();
@@ -602,7 +603,7 @@ try {
 function __kustoClearAllSections() {
 	try {
 		for (const id of ((_win.queryBoxes as any) || []).slice()) {
-			try { (_win.removeQueryBox as any)(id); } catch (e) { console.error('[kusto]', e); }
+			try { removeQueryBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
@@ -699,7 +700,7 @@ function applyKqlxState(state: any) {
 				(_win.addMarkdownBox as any)({ text: singleText, mdAutoExpand: isPlainMd });
 				return;
 			}
-			const boxId = (_win.addQueryBox as any)();
+			const boxId = addQueryBox();
 			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
 			try {
 				const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
@@ -720,7 +721,7 @@ function applyKqlxState(state: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				// Ensure dropdowns see the desired selection once (_win.connections as any)/favorites are available.
-				try { (_win.updateConnectionSelects as any)(); } catch (e) { console.error('[kusto]', e); }
+				try { updateConnectionSelects(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof (_win.__kustoTryAutoEnterFavoritesModeForAllBoxes) === 'function') {
 						(_win.__kustoTryAutoEnterFavoritesModeForAllBoxes as any)();
@@ -801,7 +802,7 @@ function applyKqlxState(state: any) {
 			}
 			if (t === 'query' || t === 'copilotQuery') {
 				const isLegacyCopilotQuerySection = t === 'copilotQuery';
-				const boxId = (_win.addQueryBox as any)({
+				const boxId = addQueryBox({
 					id: (section.id ? String(section.id) : undefined),
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					clusterUrl: String(section.clusterUrl || ''),
@@ -839,7 +840,7 @@ function applyKqlxState(state: any) {
 							} catch (e) { console.error('[kusto]', e); }
 						} else {
 							// Try again after (_win.connections as any) are populated.
-							try { (_win.updateConnectionSelects as any)(); } catch (e) { console.error('[kusto]', e); }
+							try { updateConnectionSelects(); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
 					try {
@@ -907,7 +908,7 @@ function applyKqlxState(state: any) {
 					if (ce) (ce as any).checked = (section.cacheEnabled !== false);
 					if (cv) (cv as any).value = String(section.cacheValue || 1);
 					if (cu) (cu as any).value = String(section.cacheUnit || 'days');
-					try { (_win.toggleCacheControls as any)(boxId); } catch (e) { console.error('[kusto]', e); }
+					try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
 				} catch (e) { console.error('[kusto]', e); }
 				// Apply results visibility UI (toggle button + legacy results wrapper).
 				try {
@@ -1143,7 +1144,7 @@ function __kustoApplyPendingAdds() {
 		? (_win.__kustoAllowedSectionKinds as any).map((v: any) => String(v))
 		: ['query', 'markdown', 'python', 'url'];
 	if (allowed.includes('query')) {
-		for (let i = 0; i < (pendingAdds.query || 0); i++) (_win.addQueryBox as any)();
+		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
 	}
 	if (allowed.includes('markdown')) {
 		for (let i = 0; i < (pendingAdds.markdown || 0); i++) (_win.addMarkdownBox as any)();
@@ -1249,7 +1250,7 @@ export function handleDocumentDataMessage(message: any) {
 				if (k === 'markdown') {
 					(_win.addMarkdownBox as any)();
 				} else {
-					(_win.addQueryBox as any)();
+					addQueryBox();
 				}
 			}
 		}
@@ -1287,11 +1288,6 @@ export function handleDocumentDataMessage(message: any) {
 // ======================================================================
 _win.schedulePersist = schedulePersist;
 _win.getKqlxState = getKqlxState;
-_win.handleDocumentDataMessage = handleDocumentDataMessage;
-_win.__kustoOnQueryResult = __kustoOnQueryResult;
 _win.__kustoTryStoreQueryResult = __kustoTryStoreQueryResult;
 _win.__kustoRequestAddSection = __kustoRequestAddSection;
-_win.__kustoSetCompatibilityMode = __kustoSetCompatibilityMode;
-_win.__kustoApplyDocumentCapabilities = __kustoApplyDocumentCapabilities;
-_win.__kustoGetWrapperHeightPx = __kustoGetWrapperHeightPx;
 

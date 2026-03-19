@@ -12,6 +12,11 @@ import {
 } from '../shared/transform-expr.js';
 import { escapeHtml } from './utils';
 
+import {
+	__kustoGetChartDatasetsInDomOrder, __kustoSetSelectOptions,
+	__kustoCleanupSectionModeResizeObserver, __kustoGetRawCellValueForChart,
+	__kustoNormalizeResultsColumnName
+} from './extraBoxes';
 const _win = window;
 
 // Access shared transformation state from window (set by extraBoxes.ts).
@@ -804,7 +809,7 @@ export function __kustoMaybeAutoFitTransformationBox( boxId: any) {
 export function removeTransformationBox( boxId: any) {
 	const id = String(boxId || '');
 	if (!id) return;
-	try { _win.__kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const el = document.getElementById(id) as any;
 		if (el && el.parentElement) {
@@ -984,7 +989,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Data source dropdown
-	const datasets = _win.__kustoGetChartDatasetsInDomOrder();
+	const datasets = __kustoGetChartDatasetsInDomOrder();
 	const dsSelect = document.getElementById(id + '_tf_ds') as any;
 	try {
 		if (dsSelect) {
@@ -996,7 +1001,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 					labelMap[d.id] = d.label;
 					return d.id;
 				});
-			_win.__kustoSetSelectOptions(dsSelect, values, String(st.dataSourceId || ''), labelMap);
+			__kustoSetSelectOptions(dsSelect, values, String(st.dataSourceId || ''), labelMap);
 			try {
 				const txt = document.getElementById(id + '_tf_ds_text') as any;
 				if (txt) {
@@ -1021,7 +1026,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 
 	// Column-dependent controls
 	const ds = datasets.find((d: any) => String(d.id) === String(st.dataSourceId || ''));
-	const colNames = ds ? (ds.columns || []).map(_win.__kustoNormalizeResultsColumnName).filter((c: any) => c) : [];
+	const colNames = ds ? (ds.columns || []).map(__kustoNormalizeResultsColumnName).filter((c: any) => c) : [];
 
 	// Derive
 	try {
@@ -1143,9 +1148,9 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 		const rowSel = document.getElementById(id + '_tf_pivot_row') as any;
 		const colSel = document.getElementById(id + '_tf_pivot_col') as any;
 		const valSel = document.getElementById(id + '_tf_pivot_val') as any;
-		if (rowSel) _win.__kustoSetSelectOptions(rowSel, colNames, String(st.pivotRowKeyColumn || ''), null);
-		if (colSel) _win.__kustoSetSelectOptions(colSel, colNames, String(st.pivotColumnKeyColumn || ''), null);
-		if (valSel) _win.__kustoSetSelectOptions(valSel, colNames, String(st.pivotValueColumn || ''), null);
+		if (rowSel) __kustoSetSelectOptions(rowSel, colNames, String(st.pivotRowKeyColumn || ''), null);
+		if (colSel) __kustoSetSelectOptions(colSel, colNames, String(st.pivotColumnKeyColumn || ''), null);
+		if (valSel) __kustoSetSelectOptions(valSel, colNames, String(st.pivotValueColumn || ''), null);
 		const aggSel = document.getElementById(id + '_tf_pivot_agg') as any;
 		if (aggSel && typeof st.pivotAggregation === 'string') aggSel.value = st.pivotAggregation;
 		// Sync dropdown button text for custom dropdowns
@@ -1165,7 +1170,7 @@ export function __kustoUpdateTransformationBuilderUI( boxId: any) {
 	try {
 		const sel = document.getElementById(id + '_tf_distinct_col') as any;
 		if (sel) {
-			_win.__kustoSetSelectOptions(sel, colNames, String(st.distinctColumn || ''), null);
+			__kustoSetSelectOptions(sel, colNames, String(st.distinctColumn || ''), null);
 			try {
 				const txt = document.getElementById(id + '_tf_distinct_col_text') as any;
 				if (txt) {
@@ -1888,7 +1893,7 @@ export function __kustoFormatDate( d: any, fmt: any) {
 }
 
 export function __kustoGetRawCellValueForTransform( cell: any) {
-	try { return _win.__kustoGetRawCellValueForChart(cell); } catch (e) { console.error('[kusto]', e); }
+	try { return __kustoGetRawCellValueForChart(cell); } catch (e) { console.error('[kusto]', e); }
 	return getRawCellValue(cell);
 }
 
@@ -1933,7 +1938,7 @@ export function __kustoRenderTransformation( boxId: any) {
 	const st = __kustoGetTransformationState(id);
 	if (st && st.expanded === false) return;
 
-	const datasets = _win.__kustoGetChartDatasetsInDomOrder();
+	const datasets = __kustoGetChartDatasetsInDomOrder();
 	const ds = datasets.find((d: any) => String(d.id) === String(st.dataSourceId || ''));
 	if (!ds) {
 		__kustoRenderTransformationError(id, 'Select a data source (a query, CSV URL, or transformation section with results).');
@@ -1941,7 +1946,7 @@ export function __kustoRenderTransformation( boxId: any) {
 	}
 
 	const cols = Array.isArray(ds.columns) ? ds.columns : [];
-	const colNames = cols.map(_win.__kustoNormalizeResultsColumnName).filter((c: any) => c);
+	const colNames = cols.map(__kustoNormalizeResultsColumnName).filter((c: any) => c);
 	const colIndex: any = {};
 	for (let i = 0; i < colNames.length; i++) {
 		colIndex[String(colNames[i]).toLowerCase()] = i;

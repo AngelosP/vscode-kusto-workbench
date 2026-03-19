@@ -2635,13 +2635,11 @@ window.addEventListener('message', async (event: any) => {
 					
 					// Try to get from the result state (most reliable after display)
 					try {
-						if (typeof _win.__kustoGetResultsState === 'function') {
-							const resultState = getResultsState(sectionId);
-							if (resultState) {
-								columns = Array.isArray(resultState.columns) ? resultState.columns : [];
-								rows = Array.isArray(resultState.rows) ? resultState.rows : [];
-								rowCount = rows.length;
-							}
+						const resultState = getResultsState(sectionId);
+						if (resultState) {
+							columns = Array.isArray(resultState.columns) ? resultState.columns : [];
+							rows = Array.isArray(resultState.rows) ? resultState.rows : [];
+							rowCount = rows.length;
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					

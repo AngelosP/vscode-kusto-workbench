@@ -1656,14 +1656,9 @@ return markers;
 				// DISABLED: Custom diagnostics - monaco-kusto now handles validation via its language service
 
 // The function stub is kept for backwards compatibility with existing callers.
-_win.__kustoScheduleKustoDiagnostics = function (boxId: any, delayMs: any) {
+export function __kustoScheduleKustoDiagnostics(boxId: any, delayMs: any) {
 	// Monaco-kusto provides its own diagnostics/validation, so this is now a no-op.
 	return;
-};
+}
 
-// -- Window bridge exports --
-// Utility functions used by completions and other modules.
-_win.__kustoGetStatementStartAtOffset = __kustoGetStatementStartAtOffset;
-_win.__kustoScanIdentifiers = __kustoScanIdentifiers;
-_win.__kustoSplitTopLevelStatements = __kustoSplitTopLevelStatements;
-_win.__kustoSplitPipelineStagesDeep = __kustoSplitPipelineStagesDeep;
+// Window bridges removed (D8) — all utility functions exported at top, consumed via ES imports.

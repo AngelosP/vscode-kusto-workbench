@@ -32,6 +32,12 @@ import {
 	LEGEND_POSITION_CYCLE,
 } from '../shared/chart-utils.js';
 
+import {
+	__kustoGetChartDatasetsInDomOrder, __kustoSetSelectOptions, __kustoPickFirstNonEmpty,
+	__kustoGetRawCellValueForChart, __kustoCellToChartTimeMs, __kustoCellToChartString,
+	__kustoCellToChartNumber, __kustoInferTimeXAxisFromRows, __kustoNormalizeResultsColumnName,
+	__kustoCleanupSectionModeResizeObserver
+} from './extraBoxes';
 const _win = window;
 
 // Access shared chart/transformation state from window (set by extraBoxes.ts).
@@ -1024,7 +1030,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	const st = __kustoGetChartState(id);
-	const datasets = _win.__kustoGetChartDatasetsInDomOrder();
+	const datasets = __kustoGetChartDatasetsInDomOrder();
 	const dsSelect = document.getElementById(id + '_chart_ds') as any;
 	try {
 		if (dsSelect) {
@@ -1107,7 +1113,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	const colNames = (() => {
 		try {
 			const cols = ds && Array.isArray(ds.columns) ? ds.columns : [];
-			return cols.map(_win.__kustoNormalizeResultsColumnName).filter(Boolean);
+			return cols.map(__kustoNormalizeResultsColumnName).filter(Boolean);
 		} catch {
 			return [];
 		}
@@ -1138,7 +1144,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 	let desiredX = '';
 	try { desiredX = String(((document.getElementById(id + '_chart_x') as any || {}).value || st.xColumn || '')).trim(); } catch { desiredX = String(st.xColumn || ''); }
 	const xOptions = ['', ...colNames.filter((c: any) => c)];
-	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_x'), xOptions, desiredX, { '': '(none)' });
 	// Sync the unified dropdown button text for X.
 	try { syncSelectBackedDropdown(id + '_chart_x'); } catch (e) { console.error('[kusto]', e); }
 
@@ -1211,7 +1217,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		if (disableLegend) {
 			try { st.legendColumn = ''; } catch (e) { console.error('[kusto]', e); }
 		}
-		_win.__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
+		__kustoSetSelectOptions(legendSelect, legendOptions, disableLegend ? '' : ((typeof st.legendColumn === 'string') ? st.legendColumn : ''), { '': '(none)' });
 		try { legendSelect.disabled = disableLegend; } catch (e) { console.error('[kusto]', e); }
 		// Sync the unified dropdown button text and disabled state for Legend.
 		try { syncSelectBackedDropdown(id + '_chart_legend'); } catch (e) { console.error('[kusto]', e); }
@@ -1224,8 +1230,8 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
-	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
-	_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_label'), colNames, (typeof st.labelColumn === 'string') ? st.labelColumn : '');
+	__kustoSetSelectOptions(document.getElementById(id + '_chart_value'), colNames, (typeof st.valueColumn === 'string') ? st.valueColumn : '');
 	// Sync the unified dropdown button text for Label and Value.
 	try { syncSelectBackedDropdown(id + '_chart_label'); } catch (e) { console.error('[kusto]', e); }
 	try { syncSelectBackedDropdown(id + '_chart_value'); } catch (e) { console.error('[kusto]', e); }
@@ -1240,7 +1246,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 			// Populate sort dropdown with (none) option plus all columns.
 			const sortOptions = ['', ...colNames.filter((c: any) => c)];
 			const currentSortCol = (typeof st.sortColumn === 'string') ? st.sortColumn : '';
-			_win.__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
+			__kustoSetSelectOptions(document.getElementById(id + '_chart_funnel_sort'), sortOptions, currentSortCol, { '': '(none)' });
 			try { syncSelectBackedDropdown(id + '_chart_funnel_sort'); } catch (e) { console.error('[kusto]', e); }
 			// Update the sort UI (direction button visibility).
 			try { __kustoUpdateFunnelSortUI(id); } catch (e) { console.error('[kusto]', e); }
@@ -1253,7 +1259,7 @@ export function __kustoUpdateChartBuilderUI( boxId: any) {
 		if (colNames.length) {
 			if (chartType === 'pie' || chartType === 'funnel') {
 				if (!st.labelColumn) st.labelColumn = colNames[0] || '';
-				if (!st.valueColumn) st.valueColumn = _win.__kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
+				if (!st.valueColumn) st.valueColumn = __kustoPickFirstNonEmpty(colNames.slice(1)) || colNames[0] || '';
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1432,7 +1438,7 @@ export function __kustoRenderChart( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
 	const rawRows = dsState && Array.isArray(dsState.rows) ? dsState.rows : [];
-	const colNames = cols.map(_win.__kustoNormalizeResultsColumnName);
+	const colNames = cols.map(__kustoNormalizeResultsColumnName);
 	const indexOf = (name: any) => {
 		const n = String(name || '');
 		if (!n) return -1;
@@ -1447,8 +1453,8 @@ export function __kustoRenderChart( boxId: any) {
 	if (sortColIndex >= 0 && (sortDirection === 'asc' || sortDirection === 'desc')) {
 		try {
 			rows = [...rawRows].sort((a: any, b: any) => {
-				const aVal = (a && a.length > sortColIndex) ? _win.__kustoGetRawCellValueForChart(a[sortColIndex]) : null;
-				const bVal = (b && b.length > sortColIndex) ? _win.__kustoGetRawCellValueForChart(b[sortColIndex]) : null;
+				const aVal = (a && a.length > sortColIndex) ? __kustoGetRawCellValueForChart(a[sortColIndex]) : null;
+				const bVal = (b && b.length > sortColIndex) ? __kustoGetRawCellValueForChart(b[sortColIndex]) : null;
 				// Handle nulls: sort nulls to the end
 				if (aVal === null && bVal === null) return 0;
 				if (aVal === null) return 1;
@@ -1478,15 +1484,15 @@ export function __kustoRenderChart( boxId: any) {
 		if (colIndex < 0 || !direction) return rowsToSort;
 		try {
 			return [...rowsToSort].sort((a: any, b: any) => {
-				const aVal = (a && a.length > colIndex) ? _win.__kustoGetRawCellValueForChart(a[colIndex]) : null;
-				const bVal = (b && b.length > colIndex) ? _win.__kustoGetRawCellValueForChart(b[colIndex]) : null;
+				const aVal = (a && a.length > colIndex) ? __kustoGetRawCellValueForChart(a[colIndex]) : null;
+				const bVal = (b && b.length > colIndex) ? __kustoGetRawCellValueForChart(b[colIndex]) : null;
 				// Handle nulls: sort nulls to the end
 				if (aVal === null && bVal === null) return 0;
 				if (aVal === null) return 1;
 				if (bVal === null) return -1;
 				// Try date/time comparison first
-				const aTime = _win.__kustoCellToChartTimeMs(aVal);
-				const bTime = _win.__kustoCellToChartTimeMs(bVal);
+				const aTime = __kustoCellToChartTimeMs(aVal);
+				const bTime = __kustoCellToChartTimeMs(bVal);
 				if (typeof aTime === 'number' && typeof bTime === 'number' && Number.isFinite(aTime) && Number.isFinite(bTime)) {
 					return direction === 'asc' ? (aTime - bTime) : (bTime - aTime);
 				}
@@ -1621,7 +1627,7 @@ export function __kustoRenderChart( boxId: any) {
 					const ci = indexOf(colName);
 					if (ci < 0) continue;
 					const cell = (row && row.length > ci) ? row[ci] : null;
-					const raw = _win.__kustoGetRawCellValueForChart(cell);
+					const raw = __kustoGetRawCellValueForChart(cell);
 					if (raw === null || raw === undefined) {
 						out[colName] = '';
 						continue;
@@ -1630,7 +1636,7 @@ export function __kustoRenderChart( boxId: any) {
 						out[colName] = __kustoFormatNumber(raw);
 						continue;
 					}
-					out[colName] = _win.__kustoCellToChartString(cell);
+					out[colName] = __kustoCellToChartString(cell);
 				}
 				return out;
 			} catch {
@@ -1670,8 +1676,8 @@ export function __kustoRenderChart( boxId: any) {
 				return;
 			} else {
 				const data = (rows || []).map((r: any) => {
-					const label = (r && r.length > li) ? _win.__kustoCellToChartString(r[li]) : '';
-					const value = (r && r.length > vi) ? _win.__kustoCellToChartNumber(r[vi]) : null;
+					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
+					const value = (r && r.length > vi) ? __kustoCellToChartNumber(r[vi]) : null;
 					const tooltipPayload = __kustoGetTooltipPayloadForRow(r);
 					return { name: label, value: (typeof value === 'number' && Number.isFinite(value)) ? value : 0, __kustoTooltip: tooltipPayload };
 				});
@@ -1940,8 +1946,8 @@ export function __kustoRenderChart( boxId: any) {
 				const si = sortCol ? indexOf(sortCol) : -1;
 				
 				let data = (rows || []).map((r: any, originalIndex: any) => {
-					const label = (r && r.length > li) ? _win.__kustoCellToChartString(r[li]) : '';
-					const value = (r && r.length > vi) ? _win.__kustoCellToChartNumber(r[vi]) : null;
+					const label = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '';
+					const value = (r && r.length > vi) ? __kustoCellToChartNumber(r[vi]) : null;
 					const tooltipPayload = __kustoGetTooltipPayloadForRow(r);
 					// Store the sort value for sorting later.
 					let sortValue = null;
@@ -2080,13 +2086,13 @@ export function __kustoRenderChart( boxId: any) {
 				showErrorAndReturn('Select columns.');
 				return;
 			} else {
-				const useTime = _win.__kustoInferTimeXAxisFromRows(rows, xi);
+				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
 				const points = [];
 				for (const r of (rows || [])) {
 					const x = useTime
-						? ((r && r.length > xi) ? _win.__kustoCellToChartTimeMs(r[xi]) : null)
-						: ((r && r.length > xi) ? _win.__kustoCellToChartNumber(r[xi]) : null);
-					const y = (r && r.length > yi) ? _win.__kustoCellToChartNumber(r[yi]) : null;
+						? ((r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null)
+						: ((r && r.length > xi) ? __kustoCellToChartNumber(r[xi]) : null);
+					const y = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
 					if (typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y)) {
 						points.push({ value: [x, y], __kustoTooltip: __kustoGetTooltipPayloadForRow(r) });
 					}
@@ -2232,7 +2238,7 @@ export function __kustoRenderChart( boxId: any) {
 				return;
 			} else {
 				const isArea = chartType === 'area';
-				const useTime = _win.__kustoInferTimeXAxisFromRows(rows, xi);
+				const useTime = __kustoInferTimeXAxisFromRows(rows, xi);
 				
 				// X-axis settings for sort, scale, label density, etc.
 				const xAxisSortDirection = xAxisSettings.sortDirection || '';
@@ -2272,7 +2278,7 @@ export function __kustoRenderChart( boxId: any) {
 						try {
 							const all = [];
 							for (const r of (rows || [])) {
-								const t = (r && r.length > xi) ? _win.__kustoCellToChartTimeMs(r[xi]) : null;
+								const t = (r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null;
 								if (typeof t === 'number' && Number.isFinite(t)) all.push(t);
 							}
 							// Sort based on X-axis sort direction setting
@@ -2324,11 +2330,11 @@ export function __kustoRenderChart( boxId: any) {
 					const yColName = yCols[0] || 'Y';
 					const groups: any = {};
 					for (const r of (rows || [])) {
-						const legendValue = (r && r.length > li) ? _win.__kustoCellToChartString(r[li]) : '(empty)';
+						const legendValue = (r && r.length > li) ? __kustoCellToChartString(r[li]) : '(empty)';
 						const xVal = treatAsTime
-							? ((r && r.length > xi) ? _win.__kustoCellToChartTimeMs(r[xi]) : null)
-							: ((r && r.length > xi) ? _win.__kustoCellToChartString(r[xi]) : '');
-						const yVal = (r && r.length > yi) ? _win.__kustoCellToChartNumber(r[yi]) : null;
+							? ((r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null)
+							: ((r && r.length > xi) ? __kustoCellToChartString(r[xi]) : '');
+						const yVal = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
 						const tt = __kustoGetTooltipPayloadForRow(r);
 						if (!groups[legendValue]) groups[legendValue] = [];
 						groups[legendValue].push({ x: xVal, y: yVal, tt });
@@ -2441,8 +2447,8 @@ export function __kustoRenderChart( boxId: any) {
 								const map: any = {};
 								const tmap: any = {};
 								for (const r of (rows || [])) {
-									const x = (r && r.length > xi) ? _win.__kustoCellToChartTimeMs(r[xi]) : null;
-									const y = (r && r.length > yi) ? _win.__kustoCellToChartNumber(r[yi]) : null;
+									const x = (r && r.length > xi) ? __kustoCellToChartTimeMs(r[xi]) : null;
+									const y = (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null;
 									if (typeof x === 'number' && Number.isFinite(x)) {
 										const key = String(x);
 										map[key] = y;
@@ -2483,11 +2489,11 @@ export function __kustoRenderChart( boxId: any) {
 							});
 						} else {
 							for (const r of (rows || [])) {
-								const xVal = (r && r.length > xi) ? _win.__kustoCellToChartString(r[xi]) : '';
+								const xVal = (r && r.length > xi) ? __kustoCellToChartString(r[xi]) : '';
 								xLabelsSet.add(xVal);
 							}
 							const xLabels = Array.from(xLabelsSet);
-							const yData = (rows || []).map((r: any) => (r && r.length > yi) ? _win.__kustoCellToChartNumber(r[yi]) : null);
+							const yData = (rows || []).map((r: any) => (r && r.length > yi) ? __kustoCellToChartNumber(r[yi]) : null);
 							const ttData = (rows || []).map((r: any) => __kustoGetTooltipPayloadForRow(r));
 							seriesData.push({
 								name: yCol,
@@ -3407,7 +3413,7 @@ export function __kustoUpdateFunnelSortUI( boxId: any) {
 export function removeChartBox( boxId: any) {
 	try { __kustoDisposeChartEcharts(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { delete chartStateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { _win.__kustoCleanupSectionModeResizeObserver(boxId); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoCleanupSectionModeResizeObserver(boxId); } catch (e) { console.error('[kusto]', e); }
 	chartBoxes = (chartBoxes || []).filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {
@@ -3416,8 +3422,6 @@ export function removeChartBox( boxId: any) {
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoGetChartState = __kustoGetChartState;
-window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
 window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
 window.__kustoRenderChart = __kustoRenderChart;
 window.__kustoMaximizeChartBox = __kustoMaximizeChartBox;

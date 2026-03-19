@@ -34,10 +34,41 @@ import {
 	__kustoRegisterGlobalSuggestMutationHandler,
 	__kustoInstallSmartSuggestWidgetSizing,
 } from './monaco-suggest';
+import {
+	__kustoGetStatementStartAtOffset,
+	__kustoScanIdentifiers,
+	__kustoSplitTopLevelStatements,
+	__kustoSplitPipelineStagesDeep,
+	__kustoScheduleKustoDiagnostics,
+} from './monaco-diagnostics';
+import { __kustoInitCompletionDeps } from './monaco-completions';
 import { __kustoAttachAutoResizeToContent } from './monaco-resize';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { __kustoAutoSizeEditor, ensureSchemaForBox } from './queryBoxes';
+import { executeQuery } from './queryBoxes-execution';
 
 const _win = window;
+
+// Module-level variables for functions that span closure scopes (Scope A: require callback, Scope B: initQueryEditor callback).
+// These replace _win.xxx bridge assignments for self-consumed functions.
+let __kustoEnableMarkersForModel: ((modelUri: any) => void) | null = null;
+let __kustoDisableMarkersForModel: ((modelUri: any) => void) | null = null;
+let __kustoGetHoverInfoAt: ((model: any, position: any) => any) | null = null;
+let __kustoSchemaOperationQueue: Promise<any> = Promise.resolve();
+let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
+let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null = null;
+let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
+let __kustoEnableMarkersForBox: ((boxId: any) => void) | null = null;
+let __kustoTriggerRevalidation: ((boxId: any) => void) | null = null;
+let __kustoExtractCrossClusterRefs: ((queryText: any) => any[]) | null = null;
+let __kustoRequestCrossClusterSchema: ((clusterName: any, database: any, boxId: any) => void) | null = null;
+let __kustoApplyCrossClusterSchemaInternal: ((...args: any[]) => Promise<void>) | null = null;
+let __kustoCheckCrossClusterRefs: ((queryText: any, boxId: any) => void) | null = null;
+let __kustoFocusInProgress: string | null = null;
+let __kustoStatementSeparatorMinBlankLines = 1;
+let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
+let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
+let __kustoExtractStatementTextAtCursor: ((editor: any) => string | null) | null = null;
 
 // AMD globals loaded by require() — not available at module scope
 // but referenced inside the require() callback and other functions.
@@ -250,7 +281,7 @@ function ensureMonaco() {
 								};
 								
 								// Function to enable markers for a specific model (called on focus AFTER schema context is set)
-								_win.__kustoEnableMarkersForModel = function(modelUri: any) {
+__kustoEnableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
 									if (!_win.__kustoMarkersEnabledModels.has(uri)) {
@@ -260,7 +291,7 @@ function ensureMonaco() {
 								
 								// Function to disable markers for a specific model (called on blur)
 								// This removes the model from the enabled set and clears existing markers
-								_win.__kustoDisableMarkersForModel = function(modelUri: any) {
+__kustoDisableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
 									_win.__kustoMarkersEnabledModels.delete(uri);
@@ -1035,7 +1066,7 @@ function ensureMonaco() {
 							const full = model.getValue();
 							if (!full) return null;
 							const offset = model.getOffsetAt(position);
-							const statementStart = _win.__kustoGetStatementStartAtOffset(full, offset);
+							const statementStart = __kustoGetStatementStartAtOffset(full, offset);
 							const stmtPrefix = String(full.slice(statementStart, Math.min(full.length, statementStart + 400)));
 							const trimmed = stmtPrefix.replace(/^\s+/g, '');
 							if (!trimmed.startsWith('.')) return null;
@@ -1550,22 +1581,21 @@ function ensureMonaco() {
 					// using the exact same suggestion logic ("if it's in autocomplete, it must not squiggle").
 					// Completion provider and diagnostics extracted to monaco-completions.ts / monaco-diagnostics.ts.
 					// Inject dependencies from this AMD callback scope into the completion provider module.
-					if (typeof _win.__kustoInitCompletionDeps === 'function') {
-						_win.__kustoInitCompletionDeps({
-							KUSTO_FUNCTION_DOCS,
-							KUSTO_KEYWORD_DOCS,
-							KUSTO_CONTROL_COMMAND_DOCS_BASE_URL,
-							KUSTO_CONTROL_COMMAND_DOCS_VIEW,
-							__kustoControlCommands,
-							findEnclosingFunctionCall,
-							getTokenAtPosition,
-							__kustoGetStatementStartAtOffset: _win.__kustoGetStatementStartAtOffset,
-							__kustoScanIdentifiers: _win.__kustoScanIdentifiers,
-							__kustoSplitTopLevelStatements: _win.__kustoSplitTopLevelStatements,
-							__kustoSplitPipelineStagesDeep: _win.__kustoSplitPipelineStagesDeep,
-							__kustoGetColumnsByTable: _win.__kustoGetColumnsByTable,
-						});
-					}
+					__kustoInitCompletionDeps({
+						KUSTO_FUNCTION_DOCS,
+						KUSTO_KEYWORD_DOCS,
+						KUSTO_CONTROL_COMMAND_DOCS_BASE_URL,
+						KUSTO_CONTROL_COMMAND_DOCS_VIEW,
+						__kustoControlCommands,
+						findEnclosingFunctionCall,
+						getTokenAtPosition,
+						__kustoGetStatementStartAtOffset,
+						__kustoScanIdentifiers,
+						__kustoSplitTopLevelStatements,
+						__kustoSplitPipelineStagesDeep,
+						__kustoGetColumnsByTable,
+						ensureSchemaForBox,
+					});
 
 
 					// Hover provider for diagnostics (shown on red underline hover).
@@ -1612,7 +1642,7 @@ function ensureMonaco() {
 					});
 
 					// Expose a helper so the editor instance can decide whether to auto-show hover.
-					_win.__kustoGetHoverInfoAt = getHoverInfoAt;
+					__kustoGetHoverInfoAt = getHoverInfoAt;
 
 					// --- monaco-kusto integration ---
 					// Track which schemas have been loaded into the monaco-kusto worker
@@ -1633,24 +1663,24 @@ function ensureMonaco() {
 					_win.__kustoSchemaCache = {};
 					
 					// Mutex to serialize schema operations - prevents race conditions during parallel loads
-					_win.__kustoSchemaOperationQueue = Promise.resolve();
+					__kustoSchemaOperationQueue = Promise.resolve();
 					
 					// Function to set/add schema in monaco-kusto worker for full IntelliSense support
 					// Uses aggregate approach: first schema uses setSchemaFromShowSchema, 
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
 					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Serialize schema operations to prevent race conditions
-						const operationPromise = _win.__kustoSchemaOperationQueue.then(async () => {
-							return await _win.__kustoSetMonacoKustoSchemaInternal(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
+						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
+							return await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
 						}).catch((e: any) => {
 							console.error('[monaco-kusto] Queued operation failed:', e);
 						});
-						_win.__kustoSchemaOperationQueue = operationPromise;
+						__kustoSchemaOperationQueue = operationPromise;
 						return operationPromise;
 					};
 					
 					// Internal implementation - called through the queue
-					_win.__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
+__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Resolve which Monaco model this operation applies to
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						if (!models || models.length === 0) {
@@ -1729,7 +1759,7 @@ function ensureMonaco() {
 									return;
 								} else {
 									// Same cluster, different database - try to switch context
-									const switched = await _win.__kustoSetDatabaseInContext(clusterUrl, database, modelKey);
+									const switched = await __kustoSetDatabaseInContext!(clusterUrl, database, modelKey);
 									if (switched) {
 										return;
 									}
@@ -1932,7 +1962,7 @@ function ensureMonaco() {
 												perModelLoadedSchemas[schemaKey] = true;
 												_win.__kustoSchemaCache[schemaKey] = _win.__kustoSchemaCache[schemaKey] || { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 												if (setAsContext) {
-													await _win.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
+													await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
 												}
 											} else if (typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
 												try {
@@ -1994,7 +2024,7 @@ function ensureMonaco() {
 																				contextSet = false;
 																		}
 																		if (!contextSet) {
-																			await _win.__kustoSetDatabaseInContext(clusterUrl, databaseInContext, modelKey);
+																			await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
 																		}
 																	}
 													} else {
@@ -2032,7 +2062,7 @@ function ensureMonaco() {
 					// Function to switch the "database in context" without reloading schemas
 					// This allows unqualified table names to resolve to the correct database
 					// Returns true if context switch succeeded, false otherwise
-					_win.__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null) {
+__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null) {
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url: any) => {
 							if (!url) return '';
@@ -2115,21 +2145,21 @@ function ensureMonaco() {
 					// so unqualified table names resolve correctly for the focused query box
 					// enableMarkers: if true (default), enables red squiggles for this box; set to false
 					//                when just making a section visible without giving it focus
-					_win.__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true) {
+__kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true) {
 						try {
 							if (!boxId) return;
 							
 							// Debounce: track the most recent focus request
 							// If another focus came in for the same box, skip duplicate processing
 							_win.__kustoLastFocusedBoxId = _win.__kustoLastFocusedBoxId || null;
-							_win.__kustoFocusInProgress = _win.__kustoFocusInProgress || null;
+							__kustoFocusInProgress = __kustoFocusInProgress || null;
 							
 							// If we're already processing this exact box, skip
-							if (_win.__kustoFocusInProgress === boxId) {
+							if (__kustoFocusInProgress === boxId) {
 								return;
 							}
 							
-							_win.__kustoFocusInProgress = boxId;
+							__kustoFocusInProgress = boxId;
 							
 							// Mark worker as initialized once a query box gets focus
 							_win.__kustoWorkerInitialized = true;
@@ -2163,7 +2193,7 @@ function ensureMonaco() {
 							// This allows red squiggles to show after focus, but only when we have schema context
 							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
 							if (enableMarkers) {
-								_win.__kustoEnableMarkersForBox(boxId);
+								__kustoEnableMarkersForBox!(boxId);
 							}
 							
 							// Get the cluster URL for this connection
@@ -2233,13 +2263,13 @@ function ensureMonaco() {
 								} else {
 									// Same cluster, try to switch context
 									let contextSwitched = false;
-									if (typeof _win.__kustoSetDatabaseInContext === 'function') {
-										contextSwitched = await _win.__kustoSetDatabaseInContext(clusterUrl, database, focusedModelUri);
+									if (__kustoSetDatabaseInContext != null) {
+										contextSwitched = await __kustoSetDatabaseInContext!(clusterUrl, database, focusedModelUri);
 									}
 									
 									if (contextSwitched) {
 										// Context switch succeeded, trigger re-validation
-										_win.__kustoTriggerRevalidation(boxId);
+										__kustoTriggerRevalidation!(boxId);
 										return;
 									} else {
 										// Context switch failed (database not found in current schema)
@@ -2295,39 +2325,39 @@ function ensureMonaco() {
 									}
 								} catch (e) {
 									// Fallback: try the queued path
-									if (typeof _win.__kustoSetMonacoKustoSchema === 'function') {
-										await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+									if (__kustoSetMonacoKustoSchema != null) {
+										await __kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 									}
 								}
 								
 								// Trigger re-validation with the newly loaded schema
-								_win.__kustoTriggerRevalidation(boxId);
+								__kustoTriggerRevalidation!(boxId);
 							} else {
 								// Request a fresh schema fetch which will include rawSchemaJson
 								// Markers will be enabled when schema loads
-								if (typeof _win.ensureSchemaForBox === 'function') {
-									_win.ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
+								if (typeof ensureSchemaForBox === 'function') {
+									ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
 								}
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Error updating schema for focused box:', e);
 						} finally {
 							// Clear the in-progress flag
-							if (_win.__kustoFocusInProgress === boxId) {
-								_win.__kustoFocusInProgress = null;
+							if (__kustoFocusInProgress === boxId) {
+								__kustoFocusInProgress = null;
 							}
 						}
 					};
 					
 					// Helper to enable markers for a specific box's editor
-					_win.__kustoEnableMarkersForBox = function(boxId: any) {
+__kustoEnableMarkersForBox = function(boxId: any) {
 						try {
 							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model && model.uri) {
-									if (typeof _win.__kustoEnableMarkersForModel === 'function') {
-										_win.__kustoEnableMarkersForModel(model.uri);
+									if (__kustoEnableMarkersForModel != null) {
+										__kustoEnableMarkersForModel!(model.uri);
 									}
 								}
 							}
@@ -2336,7 +2366,7 @@ function ensureMonaco() {
 					
 					// Helper to trigger re-validation for a specific box's editor
 					// This is needed after context switch since monaco-kusto doesn't auto-revalidate
-					_win.__kustoTriggerRevalidation = function(boxId: any) {
+__kustoTriggerRevalidation = function(boxId: any) {
 						try {
 							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
@@ -2357,7 +2387,7 @@ function ensureMonaco() {
 
 					// Parse query text to extract cluster() and database() references
 					// Returns array of { clusterName, database } objects
-					_win.__kustoExtractCrossClusterRefs = function (queryText: any) {
+__kustoExtractCrossClusterRefs = function (queryText: any) {
 						const refs: any[] = [];
 						if (!queryText || typeof queryText !== 'string') {
 							return refs;
@@ -2408,7 +2438,7 @@ function ensureMonaco() {
 					};
 
 					// Request schema for a cross-cluster reference
-					_win.__kustoRequestCrossClusterSchema = function (clusterName: any, database: any, boxId: any) {
+__kustoRequestCrossClusterSchema = function (clusterName: any, database: any, boxId: any) {
 						// If clusterName is null, resolve it from current context
 						let resolvedClusterName = clusterName;
 						if (clusterName === null) {
@@ -2449,17 +2479,17 @@ function ensureMonaco() {
 					// This is serialized through the same queue as __kustoSetMonacoKustoSchema to prevent races
 					_win.__kustoApplyCrossClusterSchema = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
 						// Serialize through the same queue as primary schema operations
-						const operationPromise = _win.__kustoSchemaOperationQueue.then(async () => {
-							return await _win.__kustoApplyCrossClusterSchemaInternal(clusterName, clusterUrl, database, rawSchemaJson);
+						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
+							return await __kustoApplyCrossClusterSchemaInternal!(clusterName, clusterUrl, database, rawSchemaJson);
 						}).catch((e: any) => {
 							console.error('[monaco-kusto] Cross-cluster schema operation failed:', e);
 						});
-						_win.__kustoSchemaOperationQueue = operationPromise;
+						__kustoSchemaOperationQueue = operationPromise;
 						return operationPromise;
 					};
 					
 					// Internal implementation - called through the queue
-					_win.__kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
+__kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
 						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						try {
@@ -2578,10 +2608,10 @@ function ensureMonaco() {
 					};
 
 					// Check for cross-cluster references in a query and request schemas
-					_win.__kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
-						const refs = _win.__kustoExtractCrossClusterRefs(queryText);
+__kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
+						const refs = __kustoExtractCrossClusterRefs!(queryText);
 						for (const ref of refs) {
-							_win.__kustoRequestCrossClusterSchema(ref.clusterName, ref.database, boxId);
+							__kustoRequestCrossClusterSchema!(ref.clusterName, ref.database, boxId);
 						}
 					};
 
@@ -3318,16 +3348,16 @@ function initQueryEditor(boxId: any) {
 			// - Statements are separated by one-or-more blank lines (the existing behavior).
 			// This must match Run Query behavior and the gutter indicator.
 			try {
-				if (typeof _win.__kustoStatementSeparatorMinBlankLines !== 'number') {
-					_win.__kustoStatementSeparatorMinBlankLines = 1;
+				if (typeof __kustoStatementSeparatorMinBlankLines !== 'number') {
+					__kustoStatementSeparatorMinBlankLines = 1;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.__kustoGetStatementBlocksFromModel !== 'function') {
-					_win.__kustoGetStatementBlocksFromModel = function (model: any) {
+				if (typeof __kustoGetStatementBlocksFromModel !== 'function') {
+					__kustoGetStatementBlocksFromModel = function (model: any) {
 						try {
 							if (!model || typeof model.getLineCount !== 'function' || typeof model.getLineContent !== 'function') return [];
-							const minBlankLines = Math.max(1, Number(_win.__kustoStatementSeparatorMinBlankLines) || 1);
+							const minBlankLines = Math.max(1, Number(__kustoStatementSeparatorMinBlankLines) || 1);
 							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
 							if (!lineCount) return [];
 							const blocks = [];
@@ -3394,14 +3424,14 @@ function initQueryEditor(boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.__kustoIsSeparatorBlankLine !== 'function') {
-					_win.__kustoIsSeparatorBlankLine = function (model: any, lineNumber: any) {
+				if (typeof __kustoIsSeparatorBlankLine !== 'function') {
+					__kustoIsSeparatorBlankLine = function (model: any, lineNumber: any) {
 						try {
 							if (!model || typeof model.getLineContent !== 'function' || typeof model.getLineCount !== 'function') return false;
 							const lineCount = Math.max(0, Number(model.getLineCount()) || 0);
 							const ln = Number(lineNumber) || 0;
 							if (!ln || ln < 1 || ln > lineCount) return false;
-							const minBlankLines = Math.max(1, Number(_win.__kustoStatementSeparatorMinBlankLines) || 1);
+							const minBlankLines = Math.max(1, Number(__kustoStatementSeparatorMinBlankLines) || 1);
 							const isBlank = /^\s*$/.test(String(model.getLineContent(ln) || ''));
 							if (!isBlank) return false;
 							let start = ln;
@@ -3425,8 +3455,8 @@ function initQueryEditor(boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.__kustoExtractStatementTextAtCursor !== 'function') {
-					_win.__kustoExtractStatementTextAtCursor = function (editor: any) {
+				if (typeof __kustoExtractStatementTextAtCursor !== 'function') {
+					__kustoExtractStatementTextAtCursor = function (editor: any) {
 						try {
 							if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') return null;
 							const model = editor.getModel();
@@ -3436,12 +3466,12 @@ function initQueryEditor(boxId: any) {
 							if (!cursorLine || cursorLine < 1) return null;
 							// If the cursor is on a separator (2+ blank lines), treat as "no statement".
 							try {
-								if (_win.__kustoIsSeparatorBlankLine && _win.__kustoIsSeparatorBlankLine(model, cursorLine)) {
+								if (__kustoIsSeparatorBlankLine && __kustoIsSeparatorBlankLine(model, cursorLine)) {
 									return null;
 								}
 							} catch (e) { console.error('[kusto]', e); }
-							const blocks = (_win.__kustoGetStatementBlocksFromModel && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
-								? _win.__kustoGetStatementBlocksFromModel(model)
+							const blocks = (__kustoGetStatementBlocksFromModel && typeof __kustoGetStatementBlocksFromModel === 'function')
+								? __kustoGetStatementBlocksFromModel(model)
 								: [];
 							if (!blocks || !blocks.length) return null;
 							let block = null;
@@ -3475,8 +3505,8 @@ function initQueryEditor(boxId: any) {
 
 			const computeStatementBlocks = (model: any) => {
 				try {
-					if (_win.__kustoGetStatementBlocksFromModel && typeof _win.__kustoGetStatementBlocksFromModel === 'function') {
-						return _win.__kustoGetStatementBlocksFromModel(model);
+					if (__kustoGetStatementBlocksFromModel && typeof __kustoGetStatementBlocksFromModel === 'function') {
+						return __kustoGetStatementBlocksFromModel(model);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				return [];
@@ -3514,7 +3544,7 @@ function initQueryEditor(boxId: any) {
 					}
 					// If cursor is on a separator blank-line run (2+ blank lines), don't show an active statement.
 					try {
-						if (_win.__kustoIsSeparatorBlankLine && _win.__kustoIsSeparatorBlankLine(model, pos.lineNumber)) {
+						if (__kustoIsSeparatorBlankLine && __kustoIsSeparatorBlankLine(model, pos.lineNumber)) {
 							activeStmtDecorationIds = editor.deltaDecorations(activeStmtDecorationIds, []);
 							return;
 						}
@@ -4291,12 +4321,12 @@ function initQueryEditor(boxId: any) {
 						// When the editor has multiple statements, operate on the statement under the cursor.
 						try {
 							const model = ed.getModel && ed.getModel();
-							const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
-								? _win.__kustoGetStatementBlocksFromModel(model)
+							const blocks = (model && typeof __kustoGetStatementBlocksFromModel === 'function')
+								? __kustoGetStatementBlocksFromModel(model)
 								: [];
 							const hasMultipleStatements = blocks && blocks.length > 1;
-							if (hasMultipleStatements && typeof _win.__kustoExtractStatementTextAtCursor === 'function') {
-								const stmt = _win.__kustoExtractStatementTextAtCursor(ed);
+							if (hasMultipleStatements && typeof __kustoExtractStatementTextAtCursor === 'function') {
+								const stmt = __kustoExtractStatementTextAtCursor(ed);
 								if (stmt) {
 									v = stmt;
 								} else {
@@ -4360,7 +4390,7 @@ function initQueryEditor(boxId: any) {
 		try {
 			const __kustoRunThisQueryBox = () => {
 				try {
-					_win.executeQuery(boxId);
+					executeQuery(boxId);
 				} catch (e) { console.error('[kusto]', e); }
 			};
 			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, __kustoRunThisQueryBox);
@@ -4648,7 +4678,7 @@ function initQueryEditor(boxId: any) {
 								return;
 							}
 
-					const getter = _win.__kustoGetHoverInfoAt;
+					const getter = __kustoGetHoverInfoAt;
 					if (typeof getter !== 'function') {
 						showWatermark();
 						return;
@@ -4830,21 +4860,19 @@ function initQueryEditor(boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.__kustoScheduleKustoDiagnostics === 'function') {
-					_win.__kustoScheduleKustoDiagnostics(boxId, 250);
-				}
+				__kustoScheduleKustoDiagnostics(boxId, 250);
 			} catch (e) { console.error('[kusto]', e); }
 			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			// Check for cross-cluster references and request their schemas
 			try {
-				if (typeof _win.__kustoCheckCrossClusterRefs === 'function') {
+				if (__kustoCheckCrossClusterRefs != null) {
 					// Debounce the check to avoid excessive requests while typing
 					if (!_win.__kustoCrossClusterCheckTimeout) {
 						_win.__kustoCrossClusterCheckTimeout = {};
 					}
 					clearTimeout(_win.__kustoCrossClusterCheckTimeout[boxId]);
 					_win.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
-						_win.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
 					}, 500);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -4858,25 +4886,23 @@ function initQueryEditor(boxId: any) {
 			try { _win.__kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			syncPlaceholder();
-			_win.ensureSchemaForBox(boxId);
+			ensureSchemaForBox(boxId);
 			scheduleDocUpdate();
 			// Update monaco-kusto schema if switching to a different cluster/database
 			try {
-				if (typeof _win.__kustoUpdateSchemaForFocusedBox === 'function') {
-					_win.__kustoUpdateSchemaForFocusedBox(boxId);
+				if (__kustoUpdateSchemaForFocusedBox != null) {
+					__kustoUpdateSchemaForFocusedBox!(boxId);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.__kustoScheduleKustoDiagnostics === 'function') {
-					_win.__kustoScheduleKustoDiagnostics(boxId, 0);
-				}
+				__kustoScheduleKustoDiagnostics(boxId, 0);
 			} catch (e) { console.error('[kusto]', e); }
 			// Check for cross-cluster references on focus (in addition to content change)
 			try {
-				if (typeof _win.__kustoCheckCrossClusterRefs === 'function') {
+				if (__kustoCheckCrossClusterRefs != null) {
 					// Small delay to let the schema load first
 					setTimeout(() => {
-						_win.__kustoCheckCrossClusterRefs(editor.getValue(), boxId);
+						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
 					}, 100);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -4917,8 +4943,8 @@ function initQueryEditor(boxId: any) {
 							// Disable markers (red squiggles) for this editor now that it's unfocused
 							try {
 								const model = editor.getModel();
-								if (model && model.uri && typeof _win.__kustoDisableMarkersForModel === 'function') {
-									_win.__kustoDisableMarkersForModel(model.uri);
+								if (model && model.uri && __kustoDisableMarkersForModel != null) {
+									__kustoDisableMarkersForModel!(model.uri);
 								}
 							} catch (e) { console.error('[kusto]', e); }
 						}
@@ -5187,9 +5213,7 @@ function initQueryEditor(boxId: any) {
 				try {
 					e.preventDefault();
 					e.stopPropagation();
-					if (typeof _win.__kustoAutoSizeEditor === 'function') {
-						_win.__kustoAutoSizeEditor(boxId);
-					}
+					__kustoAutoSizeEditor(boxId);
 				} catch (e) { console.error('[kusto]', e); }
 			});
 		}
@@ -5388,3 +5412,12 @@ function __kustoShowEditorContextMenu(editor: any, event: MouseEvent) {
 window.__kustoGetColumnsByTable = __kustoGetColumnsByTable;
 window.ensureMonaco = ensureMonaco;
 window.initQueryEditor = initQueryEditor;
+
+// ── Deferred window bridges ──────────────────────────────────────────────────
+// These module-level lets are populated inside the ensureMonaco().then() callback.
+// External modules access them via window.__kustoXxx; the bridge is set via
+// Object.defineProperty so it always reads the current value of the module-level let.
+Object.defineProperty(window, '__kustoUpdateSchemaForFocusedBox', { get: () => __kustoUpdateSchemaForFocusedBox, configurable: true });
+Object.defineProperty(window, '__kustoTriggerRevalidation', { get: () => __kustoTriggerRevalidation, configurable: true });
+Object.defineProperty(window, '__kustoGetStatementBlocksFromModel', { get: () => __kustoGetStatementBlocksFromModel, configurable: true });
+Object.defineProperty(window, '__kustoExtractStatementTextAtCursor', { get: () => __kustoExtractStatementTextAtCursor, configurable: true });

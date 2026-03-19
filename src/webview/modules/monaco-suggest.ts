@@ -1101,9 +1101,4 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 }
 
 
-// ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoIsElementVisibleForSuggest = __kustoIsElementVisibleForSuggest;
-window.__kustoGetWordNearCursor = __kustoGetWordNearCursor;
-window.__kustoFindSuggestWidgetForEditor = __kustoFindSuggestWidgetForEditor;
-window.__kustoRegisterGlobalSuggestMutationHandler = __kustoRegisterGlobalSuggestMutationHandler;
-window.__kustoInstallSmartSuggestWidgetSizing = __kustoInstallSmartSuggestWidgetSizing;
+// Window bridges removed (D8) — all 5 functions exported at top, consumed via ES imports by monaco.ts.

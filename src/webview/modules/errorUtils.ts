@@ -346,11 +346,4 @@ export function __kustoDisplayBoxError(boxId: any, error: any) {
 	__kustoRenderErrorUx(bid, error);
 }
 
-// ── Window bridge exports ────────────────────────────────────────────────────
-// Dead bridges removed: __kustoTryExtractJsonFromErrorText, __kustoExtractLinePosition,
-// __kustoNormalizeBadRequestInnerMessage, __kustoStripLinePositionTokens,
-// __kustoTryExtractAutoFindTermFromMessage, __kustoBuildErrorUxModel,
-// __kustoMaybeAdjustLocationForCacheLine, __kustoNavigateToQueryLocation
-// (all self-only consumption — callers use direct function calls)
-window.__kustoRenderErrorUx = __kustoRenderErrorUx;
-window.__kustoDisplayBoxError = __kustoDisplayBoxError;
+// Window bridges removed (D8) — both functions exported, all consumers use ES imports.

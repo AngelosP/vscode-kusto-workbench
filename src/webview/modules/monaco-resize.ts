@@ -1,6 +1,7 @@
 // Monaco auto-resize — extracted from monaco.ts (Phase 6 decomposition).
 // Resizes Monaco editor wrappers so full content is visible (no inner scrollbars).
 
+import { __kustoGetQuerySectionElement } from './queryBoxes';
 const _win = window;
 // Auto-resize Monaco editor wrappers so the full content is visible (no inner scrollbars).
 // This only applies while the wrapper has NOT been manually resized by the user.
@@ -57,7 +58,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					const box = wrapper.closest ? wrapper.closest('.query-box') : null;
 					if (box && box.id) {
 						const boxId = box.id.replace(/_box$/, '');
-						const kwEl = _win.__kustoGetQuerySectionElement ? _win.__kustoGetQuerySectionElement(boxId) : null;
+						const kwEl = _win.__kustoGetQuerySectionElement ? __kustoGetQuerySectionElement(boxId) : null;
 						if (kwEl && typeof kwEl.getCopilotChatVisible === 'function' && kwEl.getCopilotChatVisible()) {
 							return;
 						}
