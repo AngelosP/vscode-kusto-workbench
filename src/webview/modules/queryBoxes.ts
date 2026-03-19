@@ -88,7 +88,6 @@ function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 // Expose for persistence + extra box types.
 try {
 	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
-	window.__kustoEnsureSectionHasDefaultNameIfMissing = __kustoEnsureSectionHasDefaultNameIfMissing;
 } catch (e) { console.error('[kusto]', e); }
 
 // ── Global accessor helpers for query section connection/database ──────────
@@ -2752,7 +2751,6 @@ _win.__kustoRequestDatabases = async function (connectionId: string, forceRefres
 // ── Window bridges for remaining legacy callers ──
 // Execution, comparison, and optimization bridges are in queryBoxes-execution.ts.
 window.fullyQualifyTablesInEditor = fullyQualifyTablesInEditor;
-window.qualifyTablesInTextPriority = qualifyTablesInTextPriority;
 window.addQueryBox = addQueryBox;
 window.__kustoAutoSizeEditor = __kustoAutoSizeEditor;
 window.__kustoMaximizeQueryBox = __kustoMaximizeQueryBox;
@@ -2764,8 +2762,6 @@ window.toggleCachePopup = toggleCachePopup;
 window.toggleCacheControls = toggleCacheControls;
 // Schema functions (relocated from schema.ts) — bridges for monaco module callers.
 window.ensureSchemaForBox = ensureSchemaForBox;
-window.onDatabaseChanged = onDatabaseChanged;
-window.refreshSchema = refreshSchema;
 window.__kustoRequestSchema = __kustoRequestSchema;
 // Connection/database/favorites bridges (absorbed from queryBoxes-connection.ts).
 window.formatClusterDisplayName = formatClusterDisplayName;
@@ -2775,8 +2771,6 @@ window.clusterShortNameKey = clusterShortNameKey;
 window.extractClusterUrlsFromQueryText = extractClusterUrlsFromQueryText;
 window.extractClusterDatabaseHintsFromQueryText = extractClusterDatabaseHintsFromQueryText;
 window.computeMissingClusterUrls = computeMissingClusterUrls;
-window.renderMissingClustersBanner = renderMissingClustersBanner;
-window.updateMissingClustersForBox = updateMissingClustersForBox;
 window.__kustoGetCurrentClusterUrlForBox = __kustoGetCurrentClusterUrlForBox;
 window.__kustoGetCurrentDatabaseForBox = __kustoGetCurrentDatabaseForBox;
 window.__kustoFindFavorite = __kustoFindFavorite;
@@ -2786,11 +2780,9 @@ window.closeAllFavoritesDropdowns = closeAllFavoritesDropdowns;
 window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
 window.addMissingClusterConnections = addMissingClusterConnections;
 window.updateConnectionSelects = updateConnectionSelects;
-window.updateDatabaseField = updateDatabaseField;
 window.promptAddConnectionFromDropdown = promptAddConnectionFromDropdown;
 window.importConnectionsFromXmlFile = importConnectionsFromXmlFile;
 window.parseKustoExplorerConnectionsXml = parseKustoExplorerConnectionsXml;
-window.getChildText = getChildText;
 window.parseKustoConnectionString = parseKustoConnectionString;
 window.refreshDatabases = refreshDatabases;
 window.onDatabasesError = onDatabasesError;

@@ -2342,15 +2342,8 @@ export function addTransformationBox( options: any) {
 	return id;
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoGetTransformationState = __kustoGetTransformationState;
-window.__kustoGetTransformationMinResizeHeight = __kustoGetTransformationMinResizeHeight;
-window.__kustoMaximizeTransformationBox = __kustoMaximizeTransformationBox;
-window.removeTransformationBox = removeTransformationBox;
-window.__kustoSetTransformationType = __kustoSetTransformationType;
-window.__kustoOnTransformationDataSourceChanged = __kustoOnTransformationDataSourceChanged;
 window.__kustoToggleGroupByColumn = __kustoToggleGroupByColumn;
 window.__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
-window.__kustoOnTransformationDistinctChanged = __kustoOnTransformationDistinctChanged;
 window.__kustoOnTransformationAggChanged = __kustoOnTransformationAggChanged;
 window.__kustoAddTransformationAgg = __kustoAddTransformationAgg;
 window.__kustoRemoveTransformationAgg = __kustoRemoveTransformationAgg;
@@ -2375,10 +2368,8 @@ window.__kustoClearDeriveDropIndicators = __kustoClearDeriveDropIndicators;
 window.__kustoOnDeriveDragOver = __kustoOnDeriveDragOver;
 window.__kustoOnDeriveDrop = __kustoOnDeriveDrop;
 window.__kustoOnDeriveDragEnd = __kustoOnDeriveDragEnd;
-window.__kustoOnTransformationPivotChanged = __kustoOnTransformationPivotChanged;
 window.__kustoRenderTransformation = __kustoRenderTransformation;
 window.addTransformationBox = addTransformationBox;
-window.__kustoConfigureTransformationFromTool = __kustoConfigureTransformationFromTool;
 window.__kustoShowExpressionHelpTooltip = __kustoShowExpressionHelpTooltip;
 window.__kustoHideExpressionHelpTooltip = __kustoHideExpressionHelpTooltip;
 window.__kustoHideExpressionHelpTooltipImmediate = __kustoHideExpressionHelpTooltipImmediate;

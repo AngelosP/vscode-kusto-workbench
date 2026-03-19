@@ -1293,10 +1293,5 @@ _win.__kustoTryStoreQueryResult = __kustoTryStoreQueryResult;
 _win.__kustoRequestAddSection = __kustoRequestAddSection;
 _win.__kustoSetCompatibilityMode = __kustoSetCompatibilityMode;
 _win.__kustoApplyDocumentCapabilities = __kustoApplyDocumentCapabilities;
-_win.__kustoNormalizeClusterUrl = __kustoNormalizeClusterUrl;
-_win.__kustoIsLeaveNoTraceCluster = __kustoIsLeaveNoTraceCluster;
-_win.__kustoSetWrapperHeightPx = __kustoSetWrapperHeightPx;
 _win.__kustoGetWrapperHeightPx = __kustoGetWrapperHeightPx;
-_win.__kustoGetQueryResultsOutputHeightPx = __kustoGetQueryResultsOutputHeightPx;
-_win.__kustoSetQueryResultsOutputHeightPx = __kustoSetQueryResultsOutputHeightPx;
 

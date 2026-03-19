@@ -153,8 +153,6 @@ export function displayCancelled() {
 // __kustoGetRawCellValue (1 consumer updated to import).
 // Remaining bridges kept for callers not yet migrated to imports.
 window.__kustoGetResultsState = getResultsState;
-window.__kustoSetResultsState = setResultsState;
-window.__kustoEnsureResultsShownForTool = ensureResultsShownForTool;
 window.displayResultForBox = displayResultForBox;
 window.displayResult = displayResult;
 window.displayCancelled = displayCancelled;

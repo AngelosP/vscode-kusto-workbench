@@ -3417,7 +3417,6 @@ export function removeChartBox( boxId: any) {
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
 window.__kustoGetChartState = __kustoGetChartState;
-window.__kustoGetChartMinResizeHeight = __kustoGetChartMinResizeHeight;
 window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
 window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
 window.__kustoRenderChart = __kustoRenderChart;
@@ -3426,21 +3425,10 @@ window.addChartBox = addChartBox;
 window.removeChartBox = removeChartBox;
 // DOM onclick bridges — referenced from innerHTML-generated chart builder HTML.
 window.__kustoOnChartLegendPositionClicked = __kustoOnChartLegendPositionClicked;
-window.__kustoUpdateSeriesColorsUI = __kustoUpdateSeriesColorsUI;
 window.__kustoOnSeriesColorChanged = __kustoOnSeriesColorChanged;
 window.__kustoResetSeriesColor = __kustoResetSeriesColor;
-window.__kustoOnAxisSettingChanged = __kustoOnAxisSettingChanged;
-window.__kustoResetAxisSettings = __kustoResetAxisSettings;
-window.__kustoOnChartDataSourceChanged = __kustoOnChartDataSourceChanged;
-window.__kustoOnChartTypeChanged = __kustoOnChartTypeChanged;
-window.__kustoOnChartMappingChanged = __kustoOnChartMappingChanged;
 window.__kustoOnChartYCheckboxChanged = __kustoOnChartYCheckboxChanged;
 window.__kustoOnChartTooltipCheckboxChanged = __kustoOnChartTooltipCheckboxChanged;
-window.__kustoOnChartLabelsToggled = __kustoOnChartLabelsToggled;
-window.__kustoOnChartLabelModeChanged = __kustoOnChartLabelModeChanged;
-window.__kustoOnChartLabelDensityChanged = __kustoOnChartLabelDensityChanged;
-window.__kustoOnChartFunnelSortChanged = __kustoOnChartFunnelSortChanged;
-window.__kustoOnChartFunnelSortDirToggle = __kustoOnChartFunnelSortDirToggle;
 
 
 

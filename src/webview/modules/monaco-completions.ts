@@ -1561,4 +1561,3 @@ __kustoProvideCompletionItemsForDiagnostics = __kustoCompletionProvider.provideC
 
 // -- Window bridge exports --
 _win.__kustoProvideCompletionItemsForDiagnostics = __kustoProvideCompletionItemsForDiagnostics;
-_win.__kustoTryGetDotCommandCompletionContext = __kustoTryGetDotCommandCompletionContext;

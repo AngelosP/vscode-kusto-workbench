@@ -86,7 +86,6 @@ declare global {
 		queryEditorVisibilityObservers: Record<string, any>;
 		queryEditorVisibilityMutationObservers: Record<string, any>;
 		queryEditorBoxByModelUri: Record<string, string>;
-		suggestDebounceTimers: Record<string, any>;
 		activeQueryEditorBoxId: string | null;
 		schemaByBoxId: Record<string, KustoSchemaInfo>;
 		schemaFetchInFlightByBoxId: Record<string, boolean>;
@@ -109,7 +108,6 @@ declare global {
 		autoTriggerAutocompleteEnabled: boolean;
 		copilotInlineCompletionsEnabled: boolean;
 		copilotInlineCompletionRequests: Record<string, any>;
-		currentMonacoKustoSchemaKey: string | null;
 
 		// =====================================================================
 		// vscodeApi.js — VS Code API
@@ -176,8 +174,6 @@ declare global {
 		// schema functions (relocated to queryBoxes.ts)
 		// =====================================================================
 		ensureSchemaForBox: (boxId: string, forceRefresh?: boolean) => void;
-		onDatabaseChanged: (boxId: string) => void;
-		refreshSchema: (boxId: string) => void;
 		__kustoRequestSchema: (connectionId: string, database: string, forceRefresh?: boolean) => Promise<KustoSchemaInfo>;
 		__kustoRequestDatabases: (connectionId: string, forceRefresh?: boolean) => Promise<string[]>;
 		__kustoSchemaRequestTokenByBoxId: Record<string, any>;
@@ -193,12 +189,7 @@ declare global {
 		__kustoRequestAddSection: (kind: string) => void;
 		__kustoSetCompatibilityMode: (enabled: boolean) => void;
 		__kustoApplyDocumentCapabilities: () => void;
-		__kustoNormalizeClusterUrl: (url: string) => string;
-		__kustoIsLeaveNoTraceCluster: (clusterUrl: string) => boolean;
-		__kustoSetWrapperHeightPx: (boxId: string, suffix: string, heightPx: number) => void;
 		__kustoGetWrapperHeightPx: (boxId: string, suffix: string) => number | undefined;
-		__kustoGetQueryResultsOutputHeightPx: (boxId: string) => number | undefined;
-		__kustoSetQueryResultsOutputHeightPx: (boxId: string, heightPx: number) => void;
 		__kustoCompatibilityMode: boolean;
 		__kustoCompatibilitySingleKind: string | null;
 		__kustoCompatibilityTooltip: string | null;
@@ -229,7 +220,6 @@ declare global {
 		__kustoLog: (_boxId?: string, _event?: string, _message?: string, _data?: any, _level?: string) => void;
 		fullyQualifyTablesInEditor: (boxId: string) => Promise<void>;
 		toggleCacheControls: (boxId: string) => void;
-		qualifyTablesInTextPriority: (text: string, boxId: string) => string;
 		qualifyTablesInText: (text: string, boxId: string) => string;
 		__kustoIndexToAlphaName: (index: number) => string;
 		__kustoGetUsedSectionNamesUpper: () => Set<string>;
@@ -256,7 +246,6 @@ declare global {
 		__kustoGetSectionName: (boxId: string) => string;
 		__kustoSetSectionName: (boxId: string, name: string) => void;
 		__kustoPickNextAvailableSectionLetterName: (excludeBoxId?: string) => string;
-		__kustoEnsureSectionHasDefaultNameIfMissing: (boxId: string) => string;
 		__kustoUpdateRunEnabledForBox: (boxId: string) => void;
 		__kustoSetAutoEnterFavoritesForBox: (boxId: string, clusterUrl: string, database: string) => void;
 		__kustoSetFavoritesModeForBox: (boxId: string, enabled: boolean) => void;
@@ -289,11 +278,7 @@ declare global {
 		extractClusterUrlsFromQueryText: (queryText: string) => string[];
 		extractClusterDatabaseHintsFromQueryText: (queryText: string) => Record<string, string>;
 		computeMissingClusterUrls: (detectedClusterUrls: string[]) => string[];
-		renderMissingClustersBanner: (boxId: string, missingClusterUrls: string[]) => void;
-		updateMissingClustersForBox: (boxId: string, queryText: string) => void;
-		updateDatabaseField: (boxId: string) => void;
 		addMissingClusterConnections: (boxId: string) => void;
-		getChildText: (node: Element, localName: string) => string;
 		parseKustoConnectionString: (cs: string) => { dataSource: string; initialCatalog: string };
 		__kustoFavoriteKey: (clusterUrl: string, database: string) => string;
 		__kustoGetFavoritesSorted: () => KustoFavoriteInfo[];
@@ -325,23 +310,12 @@ declare global {
 		toggleCopilotInlineCompletionsEnabled: () => void;
 		toggleCaretDocsEnabled: () => void;
 		onQueryEditorToolbarAction: (boxId: string, action: string) => void;
-		copyQueryAsAdeLink: (boxId: string) => void;
 		__kustoShareCopyToClipboard: () => void;
-		setToolbarActionBusy: (boxId: string, action: string, busy: boolean) => void;
 		closeToolsDropdown: (boxId: string) => void;
-		initRunButtonResponsive: (boxId: string) => void;
-		updateRunButtonResponsive: (boxId: string) => void;
-		updateToolbarOverflow: (boxId: string) => void;
 		toggleToolbarOverflow: (boxId: string) => void;
 		toggleOverflowSubmenu: (element: HTMLElement, event: Event) => void;
 		closeToolbarOverflow: (boxId: string) => void;
-		closeAllToolbarOverflowMenus: () => void;
-		renderToolbarOverflowMenu: (boxId: string) => void;
 		toggleToolsDropdown: (boxId: string) => void;
-		renderToolsMenuForBox: (boxId: string) => void;
-		runMonacoAction: (boxId: string, actionId: string) => void;
-		replaceAllInEditor: (boxId: string, from: string, to: string) => void;
-		exportQueryToPowerBI: (boxId: string) => Promise<void>;
 		__kustoApplyRunModeFromMenu: (boxId: string, mode: string) => void;
 		getRunModeLabelText: (mode: string) => string;
 		closeRunMenu: (boxId: string) => void;
@@ -364,7 +338,6 @@ declare global {
 		__kustoUpdateComparisonSummaryToggleButton: (boxId: string) => void;
 		displayComparisonSummary: (sourceBoxId: string, comparisonBoxId: string) => void;
 		toggleQueryResultsVisibility: (boxId: string) => void;
-		toggleComparisonSummaryVisibility: (boxId: string) => void;
 		cancelQuery: (boxId: string) => void;
 		formatElapsed: (ms: number) => string;
 		acceptOptimizations: (comparisonBoxId: string) => void;
@@ -412,7 +385,6 @@ declare global {
 		__kustoTryParseDateMs: (v: any) => number | null;
 		__kustoSetResultsVisible: (boxId: string, visible: boolean) => void;
 		__kustoApplyResultsVisibility: (boxId: string) => void;
-		__kustoEnsureResultsShownForTool: (boxId: string) => void;
 		__kustoEnsureDisplayRowIndexMaps: (state: KustoResultsState) => void;
 		__kustoSetSplitCaretsVisible: (boxId: string, filtered: boolean) => void;
 		__kustoFormatCellDisplayValueForTable: (cell: any) => string;
@@ -710,7 +682,6 @@ declare global {
 		__kustoPendingTransformationConfig?: Record<string, any>;
 		__kustoSetSectionExpanded?: (boxId: string, expanded: boolean) => void;
 		__kustoDevNotesEnabled?: boolean;
-		__kustoRequestKqlDiagnostics?: (args: any) => Promise<any>;
 		__kustoRequestKqlTableReferences?: (args: any) => Promise<any>;
 
 		// =====================================================================
@@ -745,12 +716,8 @@ declare global {
 		__kustoToggleSectionModeDropdown: (boxId: string) => void;
 		__kustoCloseSectionModeDropdown: (boxId: string) => void;
 		__kustoUpdateSectionModeResponsive: (boxId: string) => void;
-		__kustoSetupSectionModeResizeObserver: (boxId: string) => void;
 		__kustoCleanupSectionModeResizeObserver: (boxId: string) => void;
 		removePythonBox: (boxId: string) => void;
-		initPythonEditor: (boxId: string) => void;
-		setPythonOutput: (boxId: string, output: string) => void;
-		runPythonBox: (boxId: string) => void;
 		removeUrlBox: (boxId: string) => void;
 		__kustoRefreshDependentExtraBoxes?: (boxId: string) => void;
 
@@ -769,21 +736,12 @@ declare global {
 		__kustoSetChartMode: (boxId: string, mode: string) => void;
 		__kustoUpdateChartModeButtons: (boxId: string) => void;
 		__kustoUpdateChartVisibilityToggleButton: (boxId: string) => void;
-		__kustoGetChartMinResizeHeight: (boxId: string) => number;
 		__kustoUpdateChartBuilderUI: (boxId: string) => void;
 		__kustoGetChartActiveCanvasElementId: (boxId: string) => string | null;
 		__kustoGetIsDarkThemeForEcharts: () => boolean;
-		__kustoOnChartDataSourceChanged: (boxId: string) => void;
-		__kustoOnChartTypeChanged: (boxId: string) => void;
 		__kustoSelectChartType: (boxId: string, chartType: string) => void;
-		__kustoOnChartLabelsToggled: (boxId: string) => void;
-		__kustoOnChartLabelModeChanged: (boxId: string) => void;
-		__kustoOnChartLabelDensityChanged: (boxId: string) => void;
-		__kustoOnChartMappingChanged: (boxId: string) => void;
-		__kustoOnChartYCheckboxChanged: (boxId: string) => void;
-		__kustoOnChartTooltipCheckboxChanged: (boxId: string) => void;
-		__kustoOnChartFunnelSortChanged: (boxId: string) => void;
-		__kustoOnChartFunnelSortDirToggle: (boxId: string) => void;
+		__kustoOnChartYCheckboxChanged: (dropdownId: string) => void;
+		__kustoOnChartTooltipCheckboxChanged: (dropdownId: string) => void;
 		__kustoUpdateFunnelSortUI: (boxId: string) => void;
 		__kustoNormalizeLegendPosition: (pos: string) => string;
 		__kustoUpdateLegendPositionButtonUI: (boxId: string) => void;
@@ -795,9 +753,8 @@ declare global {
 		__kustoHasCustomAxisSettings: (settings: any) => boolean;
 		__kustoGetDefaultYAxisSettings: () => any;
 		__kustoHasCustomYAxisSettings: (settings: any) => boolean;
-		__kustoUpdateSeriesColorsUI: (boxId: string) => void;
-		__kustoOnSeriesColorChanged: (boxId: string, seriesName: string, color: string) => void;
-		__kustoResetSeriesColor: (boxId: string, seriesName: string) => void;
+		__kustoOnSeriesColorChanged: (boxId: string, inputEl: any) => void;
+		__kustoResetSeriesColor: (boxId: string, colName: string, index: number) => void;
 		__kustoToggleAxisSettingsPopup: (boxId: string, axis: string) => void;
 		__kustoCloseAxisSettingsPopup: (boxId: string) => void;
 		__kustoCloseAllAxisSettingsPopups: () => void;
@@ -808,8 +765,6 @@ declare global {
 		__kustoUpdateLabelSettingsIndicator: (boxId: string) => void;
 		__kustoSyncAxisSettingsUI: (boxId: string) => void;
 		__kustoUpdateAxisLabelIndicator: (boxId: string) => void;
-		__kustoOnAxisSettingChanged: (boxId: string, setting: string, value: any) => void;
-		__kustoResetAxisSettings: (boxId: string) => void;
 		__kustoFormatUtcDateTime: (dateMs: number) => string;
 		__kustoComputeTimePeriodGranularity: (minMs: number, maxMs: number) => string;
 		__kustoFormatTimePeriodLabel: (dateMs: number, granularity: string) => string;
@@ -826,10 +781,7 @@ declare global {
 		// =====================================================================
 		__kustoMarkdownBoxes: any[];
 		removeMarkdownBox: (boxId: string) => void;
-		isLikelyDarkTheme: () => boolean;
 		getToastUiPlugins: (ToastEditor: any) => any[];
-		__kustoApplyToastUiThemeAll: () => void;
-		__kustoGetMarkdownMode: (boxId: string) => string;
 		__kustoSetMarkdownMode: (boxId: string, mode: string) => void;
 		__kustoApplyMarkdownEditorMode: (boxId: string) => void;
 		__kustoMaximizeMarkdownBox: (boxId: string) => void;
@@ -842,25 +794,17 @@ declare global {
 		__kustoTransformationBoxes: any[];
 		__kustoConfigureTransformation: (boxId: string, config: any) => any;
 		__kustoRenderTransformation: (boxId: string) => void;
-		removeTransformationBox: (boxId: string) => void;
 		toggleTransformationBoxVisibility: (boxId: string) => void;
-		__kustoGetTransformationState: (boxId: string) => any;
-		__kustoGetTransformationMinResizeHeight: (boxId: string) => number;
 		__kustoUpdateTransformationModeButtons: (boxId: string) => void;
 		__kustoApplyTransformationMode: (boxId: string) => void;
 		__kustoSetTransformationMode: (boxId: string, mode: string) => void;
 		__kustoUpdateTransformationVisibilityToggleButton: (boxId: string) => void;
-		__kustoApplyTransformationBoxVisibility: (boxId: string) => void;
-		__kustoMaximizeTransformationBox: (boxId: string) => void;
 		__kustoComputeTransformationFitHeightPx: (boxId: string) => number;
 		__kustoMaybeAutoFitTransformationBox: (boxId: string) => void;
-		__kustoSetTransformationType: (boxId: string, type: string) => void;
-		__kustoOnTransformationDataSourceChanged: (boxId: string) => void;
 		__kustoSetCheckboxDropdownText: (buttonTextId: string, selectedValues: string[], placeholder: string) => void;
 		__kustoBuildCheckboxMenuHtml: (items: any[], opts: any) => string;
 		__kustoToggleGroupByColumn: (boxId: string, column: string) => void;
 		__kustoUpdateTransformationBuilderUI: (boxId: string) => void;
-		__kustoOnTransformationDistinctChanged: (boxId: string) => void;
 		__kustoOnTransformationAggChanged: (boxId: string) => void;
 		__kustoAddTransformationAgg: (boxId: string) => void;
 		__kustoRemoveTransformationAgg: (boxId: string, index: number) => void;
@@ -885,12 +829,10 @@ declare global {
 		__kustoOnDeriveDragOver?: (boxId: string, event: any) => void;
 		__kustoOnDeriveDrop?: (boxId: string) => void;
 		__kustoOnDeriveDragEnd?: (boxId: string) => void;
-		__kustoOnTransformationPivotChanged?: (boxId: string) => void;
 		__kustoGroupByDragState?: any;
 		__kustoAggDragState?: any;
 		__kustoDeriveDragState?: any;
 		__kustoOnResultsVisibilityToggled?: ((boxId?: string) => void) | null;
-		__kustoConfigureTransformationFromTool?: (boxId: string, config: any) => any;
 		__kustoRenderTransformationError?: (boxId: string, error: any) => void;
 		__kustoEnsureTransformationAutoExpandWhenResultsAppear?: (boxId: string) => void;
 		__kustoShowExpressionHelpTooltip?: (boxId: string, event: any) => void;
@@ -920,7 +862,6 @@ declare global {
 		// =====================================================================
 		// resultsTable.ts (additional)
 		// =====================================================================
-		__kustoSetResultsState?: (boxId: string, state: KustoResultsState) => void;
 		__kustoGetRawCellValueForTransform?: (cell: any) => any;
 		__kustoTryParseFiniteNumber?: (v: any) => number | null;
 

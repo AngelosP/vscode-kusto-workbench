@@ -1863,7 +1863,6 @@ export function executeQuery( boxId: any, mode?: any) {
 window.__kustoSetResultsVisible = __kustoSetResultsVisible;
 window.acceptOptimizations = acceptOptimizations;
 window.toggleQueryResultsVisibility = toggleQueryResultsVisibility;
-window.toggleComparisonSummaryVisibility = toggleComparisonSummaryVisibility;
 window.displayComparisonSummary = displayComparisonSummary;
 window.__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
 window.__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;

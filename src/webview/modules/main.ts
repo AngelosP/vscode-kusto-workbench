@@ -321,48 +321,6 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 try {
-	window.__kustoRequestKqlDiagnostics = async function (args: any) {
-		const text = (args && typeof args.text === 'string') ? args.text : '';
-		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
-		const database = (args && typeof args.database === 'string') ? args.database : '';
-		const boxId = (args && typeof args.boxId === 'string') ? args.boxId : '';
-		if (!_win.vscode || typeof (_win.vscode as any).postMessage !== 'function') {
-			return null;
-		}
-		const requestId = 'kqlreq_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-		return await new Promise((resolve: any) => {
-			let timer: any = null;
-			try {
-				timer = setTimeout(() => {
-					try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
-					resolve(null);
-				}, 1500);
-			} catch (e) { console.error('[kusto]', e); }
-
-			__kustoKqlLanguageRequestResolversById[requestId] = {
-				resolve: (result: any) => {
-					try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
-					resolve(result);
-				}
-			};
-
-			try {
-				(_win.vscode as any).postMessage({
-					type: 'kqlLanguageRequest',
-					requestId,
-					method: 'textDocument/diagnostic',
-					params: { text, connectionId, database, boxId }
-				});
-			} catch {
-				try { delete __kustoKqlLanguageRequestResolversById[requestId]; } catch (e) { console.error('[kusto]', e); }
-				try { if (timer) clearTimeout(timer); } catch (e) { console.error('[kusto]', e); }
-				resolve(null);
-			}
-		});
-	};
-} catch (e) { console.error('[kusto]', e); }
-
-try {
 	window.__kustoRequestKqlTableReferences = async function (args: any) {
 		const text = (args && typeof args.text === 'string') ? args.text : '';
 		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
