@@ -95,7 +95,7 @@ try {
 // These functions abstract access to the connection/database state,
 // working with both the Lit <kw-query-section> element's public API.
 // Use these instead of document.getElementById(boxId + '_connection').
-function __kustoGetConnectionId( boxId: any) {
+export function __kustoGetConnectionId( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getConnectionId === 'function') return el.getConnectionId();
@@ -103,7 +103,7 @@ function __kustoGetConnectionId( boxId: any) {
 	return '';
 }
 
-function __kustoGetDatabase( boxId: any) {
+export function __kustoGetDatabase( boxId: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
 		if (el && typeof el.getDatabase === 'function') return el.getDatabase();
@@ -1807,7 +1807,7 @@ window.__kustoOnQueryValueChanged = function (boxId: any, queryText: any) {
 };
 
 // Called by main.ts when the connections list changes.
-window.__kustoOnConnectionsUpdated = function () {
+export function __kustoOnConnectionsUpdated() {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
 			updateMissingClustersForBox(id, _win.lastQueryTextByBoxId[id] || '');
@@ -1823,11 +1823,10 @@ window.__kustoOnConnectionsUpdated = function () {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-			window.__kustoUpdateFavoritesUiForAllBoxes();
-		}
+		__kustoUpdateFavoritesUiForAllBoxes();
 	} catch (e) { console.error('[kusto]', e); }
-};
+}
+window.__kustoOnConnectionsUpdated = __kustoOnConnectionsUpdated;
 
 function __kustoFindConnectionIdForClusterUrl( clusterUrl: any) {
 	return _findConnIdPure(clusterUrl, _win.connections || []);
@@ -1934,18 +1933,19 @@ function __kustoTryAutoEnterFavoritesModeForBox( boxId: any) {
 	try { delete __kustoAutoEnterFavoritesByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 }
 
-window.__kustoTryAutoEnterFavoritesModeForAllBoxes = function () {
+export function __kustoTryAutoEnterFavoritesModeForAllBoxes() {
 	try {
 		for (const id of (_win.queryBoxes || [])) {
 			try { __kustoTryAutoEnterFavoritesModeForBox(id); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoTryAutoEnterFavoritesModeForNewBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
-};
+}
+window.__kustoTryAutoEnterFavoritesModeForAllBoxes = __kustoTryAutoEnterFavoritesModeForAllBoxes;
 
 let __kustoDidDefaultFirstBoxToFavorites = false;
 
-window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
+export function __kustoMaybeDefaultFirstBoxToFavoritesMode() {
 	try {
 		if (__kustoDidDefaultFirstBoxToFavorites) return;
 		const hasAny = Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0;
@@ -1967,11 +1967,11 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 				desiredDb = pending.database || '';
 			}
 			if (!desiredCluster) {
-				const kwEl = _win.__kustoGetQuerySectionElement(id);
+				const kwEl = __kustoGetQuerySectionElement(id);
 				desiredCluster = kwEl ? _win.__kustoGetClusterUrl(id) : '';
 			}
 			if (!desiredDb) {
-				desiredDb = _win.__kustoGetDatabase(id);
+				desiredDb = __kustoGetDatabase(id);
 			}
 			if (desiredCluster && desiredDb) {
 				const fav = __kustoFindFavorite(desiredCluster, desiredDb);
@@ -1985,7 +1985,8 @@ window.__kustoMaybeDefaultFirstBoxToFavoritesMode = function () {
 		try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 		__kustoDidDefaultFirstBoxToFavorites = true;
 	} catch (e) { console.error('[kusto]', e); }
-};
+}
+window.__kustoMaybeDefaultFirstBoxToFavoritesMode = __kustoMaybeDefaultFirstBoxToFavoritesMode;
 
 let __kustoConfirmRemoveFavoriteCallbacksById = Object.create(null);
 
@@ -2086,13 +2087,14 @@ function __kustoUpdateFavoritesUiForBox( boxId: any) {
 	}
 }
 
-window.__kustoUpdateFavoritesUiForAllBoxes = function () {
+export function __kustoUpdateFavoritesUiForAllBoxes() {
 	try {
 		_win.queryBoxes.forEach((id: any) =>  {
 			try { __kustoUpdateFavoritesUiForBox(id); } catch (e) { console.error('[kusto]', e); }
 		});
 	} catch (e) { console.error('[kusto]', e); }
-};
+}
+window.__kustoUpdateFavoritesUiForAllBoxes = __kustoUpdateFavoritesUiForAllBoxes;
 
 function toggleFavoriteForBox( boxId: any) {
 	const id = String(boxId || '').trim();
@@ -2197,7 +2199,7 @@ function addMissingClusterConnections( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function updateConnectionSelects() {
+export function updateConnectionSelects() {
 	_win.queryBoxes.forEach((id: any) =>  {
 		const el = _win.__kustoGetQuerySectionElement(id);
 		if (el && typeof el.setConnections === 'function') {
@@ -2283,7 +2285,7 @@ function importConnectionsFromXmlFile( boxId: any) {
 	}
 }
 
-function parseKustoExplorerConnectionsXml( xmlText: any) {
+export function parseKustoExplorerConnectionsXml( xmlText: any) {
 	const text = String(xmlText || '');
 	if (!text.trim()) {
 		return [];
@@ -2371,7 +2373,7 @@ function refreshDatabases( boxId: any) {
 	});
 }
 
-function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
+export function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 	const errText = String(error || '');
 	const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
 	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
@@ -2464,7 +2466,7 @@ function onDatabasesError( boxId: any, error: any, responseConnectionId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId: any) {
+export function updateDatabaseSelect( boxId: any, databases: any, responseConnectionId: any) {
 	const kwEl = _win.__kustoGetQuerySectionElement(boxId);
 	if (responseConnectionId) {
 		const currentConnectionId = _win.__kustoGetConnectionId(boxId);

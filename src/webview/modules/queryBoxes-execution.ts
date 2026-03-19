@@ -25,7 +25,7 @@ export {};
 
 const _win = window;
 
-function __kustoSetResultsVisible( boxId: any, visible: any) {
+export function __kustoSetResultsVisible( boxId: any, visible: any) {
 	try {
 		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
 			window.__kustoResultsVisibleByBoxId = {};
@@ -449,7 +449,7 @@ function __kustoRestoreRunMode( boxId: any) {
 	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: any, active: any) {
+export function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: any, active: any) {
 	const ids = [String(sourceBoxId || '').trim(), String(comparisonBoxId || '').trim()].filter(Boolean);
 	for (const id of ids) {
 		const el = document.getElementById(id) as any;
@@ -470,7 +470,7 @@ function __kustoSetLinkedOptimizationMode( sourceBoxId: any, comparisonBoxId: an
 // Toggle buttons, toolbar actions, share modal, toolbar overflow, tools dropdown,
 // run modes, and global dropdown dismiss handlers are in queryBoxes-toolbar.ts.
 
-function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
+export function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any) {
 	const sourceState = getResultsState(sourceBoxId);
 	const comparisonState = getResultsState(comparisonBoxId);
 	
@@ -801,7 +801,7 @@ function __kustoEnsureOptimizePrepByBoxId() {
 	}
 }
 
-function __kustoHideOptimizePromptForBox( boxId: any) {
+export function __kustoHideOptimizePromptForBox( boxId: any) {
 	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (host) {
 		host.style.display = 'none';
@@ -833,7 +833,7 @@ function __kustoHideOptimizePromptForBox( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: any) {
+export function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: any) {
 	try {
 		const statusEl = document.getElementById(boxId + '_optimize_status') as any;
 		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
@@ -886,7 +886,7 @@ function __kustoSetOptimizeInProgress( boxId: any, inProgress: any, statusText: 
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoUpdateOptimizeStatus( boxId: any, statusText: any) {
+export function __kustoUpdateOptimizeStatus( boxId: any, statusText: any) {
 	try {
 		const statusEl = document.getElementById(boxId + '_optimize_status') as any;
 		if (!statusEl) return;
@@ -956,7 +956,7 @@ function __kustoSetLastOptimizeModelId( modelId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoApplyOptimizeQueryOptions( boxId: any, models: any, selectedModelId: any, promptText: any) {
+export function __kustoApplyOptimizeQueryOptions( boxId: any, models: any, selectedModelId: any, promptText: any) {
 	const host = document.getElementById(boxId + '_optimize_config') as any;
 	if (!host) {
 		return;
@@ -1099,7 +1099,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	}
 }
 
-async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: any, options: any) {
+export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: any, options: any) {
 	const editor = _win.queryEditors[boxId];
 	if (!editor) {
 		return '';
@@ -1508,7 +1508,7 @@ window.__kustoUpdateRunEnabledForAllBoxes = function () {
 
 // formatElapsed imported from ../shared/comparisonUtils.ts
 
-function setQueryExecuting( boxId: any, executing: any) {
+export function setQueryExecuting( boxId: any, executing: any) {
 	const runBtn = document.getElementById(boxId + '_run_btn') as any;
 	const runToggle = document.getElementById(boxId + '_run_toggle') as any;
 	const status = document.getElementById(boxId + '_exec_status') as any;
@@ -1605,7 +1605,7 @@ function cancelQuery( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function executeQuery( boxId: any, mode?: any) {
+export function executeQuery( boxId: any, mode?: any) {
 	const effectiveMode = mode || _win.getRunMode(boxId);
 	try {
 		if (typeof window.__kustoClearAutoFindInQueryEditor === 'function') {

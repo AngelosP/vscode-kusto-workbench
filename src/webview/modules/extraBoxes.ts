@@ -958,7 +958,7 @@ function runPythonBox( boxId: any) {
 	}
 }
 
-function onPythonResult( message: any) {
+export function onPythonResult( message: any) {
 	const boxId = message && message.boxId ? String(message.boxId) : '';
 	if (!boxId) {
 		return;
@@ -980,7 +980,7 @@ function onPythonResult( message: any) {
 	setPythonOutput(boxId, out);
 }
 
-function onPythonError( message: any) {
+export function onPythonError( message: any) {
 	const boxId = message && message.boxId ? String(message.boxId) : '';
 	if (!boxId) {
 		return;

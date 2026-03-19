@@ -5,11 +5,15 @@ import { buildSchemaInfo } from '../shared/schema-utils';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled, ensureResultsShownForTool } from './resultsState';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
-import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName } from './queryBoxes';
-import { addMarkdownBox } from './extraBoxes-markdown';
+import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase, updateConnectionSelects, updateDatabaseSelect, onDatabasesError, parseKustoExplorerConnectionsXml, __kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes, __kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated } from './queryBoxes';
+import { addMarkdownBox, __kustoMaximizeMarkdownBox } from './extraBoxes-markdown';
 import { addChartBox } from './extraBoxes-chart';
 import { addTransformationBox } from './extraBoxes-transformation';
-import { addPythonBox, addUrlBox } from './extraBoxes';
+import { addPythonBox, addUrlBox, onPythonResult, onPythonError } from './extraBoxes';
+import { __kustoEnsureAllEditorsWritableSoon } from './monaco-writable';
+import { updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons, updateCopilotInlineCompletionsToggleButtons, setRunMode } from './queryBoxes-toolbar';
+import { executeQuery, setQueryExecuting, __kustoSetResultsVisible, __kustoSetLinkedOptimizationMode, displayComparisonSummary, optimizeQueryWithCopilot, __kustoSetOptimizeInProgress, __kustoUpdateOptimizeStatus, __kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions } from './queryBoxes-execution';
+import { schedulePersist, handleDocumentDataMessage, getKqlxState, __kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoOnQueryResult } from './persistence';
 export {};
 
 const _win = window;
@@ -692,7 +696,7 @@ document.addEventListener('keydown', (event: any) => {
 		event.stopImmediatePropagation();
 	}
 	try {
-		_win.executeQuery(_win.activeQueryEditorBoxId);
+		executeQuery(_win.activeQueryEditorBoxId);
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
@@ -765,16 +769,14 @@ window.addEventListener('blur', () => {
 // textarea stuck readonly/disabled. Re-assert writability for all editors.
 window.addEventListener('focus', () => {
 	try {
-		if (typeof _win.__kustoEnsureAllEditorsWritableSoon === 'function') {
-			_win.__kustoEnsureAllEditorsWritableSoon();
-		}
+		__kustoEnsureAllEditorsWritableSoon();
 	} catch (e) { console.error('[kusto]', e); }
 });
 
 document.addEventListener('visibilitychange', () => {
 	try {
-		if (!document.hidden && typeof _win.__kustoEnsureAllEditorsWritableSoon === 'function') {
-			_win.__kustoEnsureAllEditorsWritableSoon();
+		if (!document.hidden) {
+			__kustoEnsureAllEditorsWritableSoon();
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Reset any stuck drag state when the tab visibility changes.
@@ -839,9 +841,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				let comparisonBoxId = '';
 				try {
-					if (typeof _win.optimizeQueryWithCopilot === 'function') {
-						comparisonBoxId = await _win.optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
-					}
+					comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					(_win.vscode as any).postMessage({
@@ -888,15 +888,9 @@ window.addEventListener('message', async (event: any) => {
 								window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
 							}
 						} catch (e) { console.error('[kusto]', e); }
-							if (typeof _win.__kustoSetCompatibilityMode === 'function') {
-								_win.__kustoSetCompatibilityMode(!!message.compatibilityMode);
-							} else {
-								window.__kustoCompatibilityMode = !!message.compatibilityMode;
-							}
+						__kustoSetCompatibilityMode(!!message.compatibilityMode);
 						try {
-							if (typeof _win.__kustoApplyDocumentCapabilities === 'function') {
-								_win.__kustoApplyDocumentCapabilities();
-							}
+							__kustoApplyDocumentCapabilities();
 						} catch (e) { console.error('[kusto]', e); }
 				} catch (e) { console.error('[kusto]', e); }
 				break;
@@ -904,16 +898,12 @@ window.addEventListener('message', async (event: any) => {
 			// The extension host has upgraded the file format from .kql/.csl to .kqlx.
 			// Exit compatibility mode and perform the originally-requested add.
 			try {
-				if (typeof _win.__kustoSetCompatibilityMode === 'function') {
-					_win.__kustoSetCompatibilityMode(false);
-				} else {
-					window.__kustoCompatibilityMode = false;
-				}
+				__kustoSetCompatibilityMode(false);
 			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const k = message && message.addKind ? String(message.addKind) : '';
-				if (k && typeof _win.__kustoRequestAddSection === 'function') {
-					_win.__kustoRequestAddSection(k);
+				if (k) {
+					__kustoRequestAddSection(k);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -921,16 +911,12 @@ window.addEventListener('message', async (event: any) => {
 			// The extension host has enabled a companion .kqlx metadata file for a .kql/.csl document.
 			// Exit compatibility mode and perform the originally-requested add.
 			try {
-				if (typeof _win.__kustoSetCompatibilityMode === 'function') {
-					_win.__kustoSetCompatibilityMode(false);
-				} else {
-					window.__kustoCompatibilityMode = false;
-				}
+				__kustoSetCompatibilityMode(false);
 			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const k = message && message.addKind ? String(message.addKind) : '';
-				if (k && typeof _win.__kustoRequestAddSection === 'function') {
-					_win.__kustoRequestAddSection(k);
+				if (k) {
+					__kustoRequestAddSection(k);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -958,30 +944,22 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
 			} catch (e) { console.error('[kusto]', e); }
-			_win.updateConnectionSelects();
+			updateConnectionSelects();
 			try {
-				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-					window.__kustoUpdateFavoritesUiForAllBoxes();
-				}
+				__kustoUpdateFavoritesUiForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
-					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
-				}
+				__kustoTryAutoEnterFavoritesModeForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
-				}
+				__kustoMaybeDefaultFirstBoxToFavoritesMode();
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoOnConnectionsUpdated === 'function') {
-					window.__kustoOnConnectionsUpdated();
-				}
+				__kustoOnConnectionsUpdated();
 			} catch (e) { console.error('[kusto]', e); }
-			try { _win.updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
-			try { _win.updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
-			try { _win.updateCopilotInlineCompletionsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { updateCopilotInlineCompletionsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
@@ -1017,7 +995,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 				}
 				// Persist after mutation
-				try { _win.schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 			// Respond to extension host if a requestId was provided
 			try {
@@ -1030,19 +1008,13 @@ window.addEventListener('message', async (event: any) => {
 		case 'favoritesData':
 			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			try {
-				if (typeof window.__kustoUpdateFavoritesUiForAllBoxes === 'function') {
-					window.__kustoUpdateFavoritesUiForAllBoxes();
-				}
+				__kustoUpdateFavoritesUiForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoTryAutoEnterFavoritesModeForAllBoxes === 'function') {
-					window.__kustoTryAutoEnterFavoritesModeForAllBoxes();
-				}
+				__kustoTryAutoEnterFavoritesModeForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoMaybeDefaultFirstBoxToFavoritesMode === 'function') {
-					window.__kustoMaybeDefaultFirstBoxToFavoritesMode();
-				}
+				__kustoMaybeDefaultFirstBoxToFavoritesMode();
 			} catch (e) { console.error('[kusto]', e); }
 			// If this update came from an "Add favorite" action in a specific box, automatically
 			// switch that box into Favorites mode.
@@ -1064,8 +1036,8 @@ window.addEventListener('message', async (event: any) => {
 			break;
 		case 'documentData':
 			try {
-				if (typeof _win.handleDocumentDataMessage === 'function') {
-					_win.handleDocumentDataMessage(message);
+				{
+					handleDocumentDataMessage(message);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1168,7 +1140,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			_win.updateDatabaseSelect(message.boxId, message.databases, message.connectionId);
+			updateDatabaseSelect(message.boxId, message.databases, message.connectionId);
 			break;
 		case 'databasesError':
 			// Reject pending database list request if this was a synthetic request id.
@@ -1181,19 +1153,13 @@ window.addEventListener('message', async (event: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof _win.onDatabasesError === 'function') {
-					_win.onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
-				} else {
-				__kustoDisplayBoxError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.');
-			}
+				onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'importConnectionsXmlText':
 			try {
 				const text = (typeof message.text === 'string') ? message.text : '';
-				const imported = (typeof _win.parseKustoExplorerConnectionsXml === 'function')
-					? _win.parseKustoExplorerConnectionsXml(text)
-					: [];
+				const imported = parseKustoExplorerConnectionsXml(text);
 				if (!imported || !imported.length) {
 					try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch (e) { console.error('[kusto]', e); }
 					break;
@@ -1217,9 +1183,7 @@ window.addEventListener('message', async (event: any) => {
 				// multiple queries are running and keeps comparison summaries in sync).
 				if (message.boxId) {
 					try {
-						if (typeof _win.setQueryExecuting === 'function') {
-							_win.setQueryExecuting(message.boxId, false);
-						}
+						setQueryExecuting(message.boxId, false);
 					} catch (e) { console.error('[kusto]', e); }
 					displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
 				} else {
@@ -1229,8 +1193,8 @@ window.addEventListener('message', async (event: any) => {
 				console.error('Failed to render query results:', e);
 			}
 			try {
-				if (message.boxId && typeof _win.__kustoOnQueryResult === 'function') {
-					_win.__kustoOnQueryResult(message.boxId, message.result);
+				if (message.boxId) {
+					__kustoOnQueryResult(message.boxId, message.result);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Check if this is a comparison box result
@@ -1242,7 +1206,7 @@ window.addEventListener('message', async (event: any) => {
 						const sourceState = getResultsState(metadata.sourceBoxId);
 						const comparisonState = getResultsState(message.boxId);
 						if (sourceState && comparisonState) {
-							_win.displayComparisonSummary(metadata.sourceBoxId, message.boxId);
+							displayComparisonSummary(metadata.sourceBoxId, message.boxId);
 						}
 					}
 				}
@@ -1256,7 +1220,7 @@ window.addEventListener('message', async (event: any) => {
 					const sourceState = getResultsState(message.boxId);
 					const comparisonState = getResultsState(comparisonBoxId);
 					if (sourceState && comparisonState) {
-						_win.displayComparisonSummary(message.boxId, comparisonBoxId);
+						displayComparisonSummary(message.boxId, comparisonBoxId);
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1271,15 +1235,13 @@ window.addEventListener('message', async (event: any) => {
 				const boxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
 				const err = (message && 'error' in message) ? message.error : 'Query execution failed.';
 				try {
-					if (boxId && typeof _win.setQueryExecuting === 'function') {
-						_win.setQueryExecuting(boxId, false);
+					if (boxId) {
+						setQueryExecuting(boxId, false);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				if (boxId) {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
 					__kustoRenderErrorUx(boxId, err, clientActivityId);
-				} else if (typeof _win.displayError === 'function') {
-					_win.displayError(err);
 				} else {
 					console.error('Query error (no error renderer available):', err);
 				}
@@ -1295,8 +1257,8 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			try {
 				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
-				if (cancelledBoxId && typeof _win.setQueryExecuting === 'function') {
-					_win.setQueryExecuting(cancelledBoxId, false);
+				if (cancelledBoxId) {
+					setQueryExecuting(cancelledBoxId, false);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			displayCancelled();
@@ -1305,20 +1267,15 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const boxId = (message && message.boxId) ? String(message.boxId) : '';
 				if (boxId) {
-					// Prefer the canonical setter so the toggle button and wrapper stay in sync.
-					if (typeof _win.__kustoSetResultsVisible === 'function') {
-						_win.__kustoSetResultsVisible(boxId, true);
-					} else {
-						ensureResultsShownForTool(boxId);
-					}
+					__kustoSetResultsVisible(boxId, true);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'pythonResult':
-			try { if (typeof _win.onPythonResult === 'function') _win.onPythonResult(message); } catch (e) { console.error('[kusto]', e); }
+			try { onPythonResult(message); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'pythonError':
-			try { if (typeof _win.onPythonError === 'function') _win.onPythonError(message); } catch (e) { console.error('[kusto]', e); }
+			try { onPythonError(message); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'urlContent':
 			// Handled by <kw-url-section> Lit component via window message listener.
@@ -1568,11 +1525,9 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof message.lastDatabase === 'string') {
 					_win.lastDatabase = message.lastDatabase;
 				}
-				_win.updateConnectionSelects();
+				updateConnectionSelects();
 				try {
-					if (typeof window.__kustoOnConnectionsUpdated === 'function') {
-						window.__kustoOnConnectionsUpdated();
-					}
+					__kustoOnConnectionsUpdated();
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const boxId = message.boxId || null;
@@ -1666,11 +1621,7 @@ window.addEventListener('message', async (event: any) => {
 				const boxId = message.boxId || '';
 				const status = message.status || '';
 				try {
-					if (typeof _win.__kustoSetOptimizeInProgress === 'function') {
-						_win.__kustoSetOptimizeInProgress(boxId, true, status);
-					} else if (typeof _win.__kustoUpdateOptimizeStatus === 'function') {
-						_win.__kustoUpdateOptimizeStatus(boxId, status);
-					}
+					__kustoSetOptimizeInProgress(boxId, true, status);
 				} catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1678,8 +1629,8 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const boxId = String(message.boxId || '');
 				const query = String(message.query || '');
-				if (boxId && typeof _win.optimizeQueryWithCopilot === 'function') {
-					Promise.resolve(_win.optimizeQueryWithCopilot(boxId, query));
+				if (boxId) {
+					Promise.resolve(optimizeQueryWithCopilot(boxId, query));
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1687,13 +1638,13 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const sourceBoxId = message.boxId || '';
 				try {
-					if (typeof _win.__kustoSetOptimizeInProgress === 'function') {
-						_win.__kustoSetOptimizeInProgress(sourceBoxId, false, '');
+					{
+						__kustoSetOptimizeInProgress(sourceBoxId, false, '');
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					if (typeof _win.__kustoHideOptimizePromptForBox === 'function') {
-						_win.__kustoHideOptimizePromptForBox(sourceBoxId);
+					{
+						__kustoHideOptimizePromptForBox(sourceBoxId);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				const optimizedQuery = message.optimizedQuery || '';
@@ -1707,7 +1658,7 @@ window.addEventListener('message', async (event: any) => {
 						if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 							sourceName = window.__kustoPickNextAvailableSectionLetterName(sourceBoxId);
 							nameEl.value = sourceName;
-							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+							try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						}
 						if (sourceName) {
 							queryName = sourceName;
@@ -1737,7 +1688,7 @@ window.addEventListener('message', async (event: any) => {
 					if (comparisonBoxId && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 						try {
 							comparisonEditor.setValue(prettifiedOptimizedQuery);
-							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+							try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						} catch (e) { console.error('[kusto]', e); }
 						// Name the optimized section "<source name> (optimized)".
 						try {
@@ -1745,7 +1696,7 @@ window.addEventListener('message', async (event: any) => {
 							if (nameEl) {
 								if (desiredOptimizedName) {
 									nameEl.value = desiredOptimizedName;
-									try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+									try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 								}
 							}
 						} catch (e) { console.error('[kusto]', e); }
@@ -1757,20 +1708,20 @@ window.addEventListener('message', async (event: any) => {
 							_win.optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
 						} catch (e) { console.error('[kusto]', e); }
 						try {
-							if (typeof _win.__kustoSetLinkedOptimizationMode === 'function') {
-								_win.__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
+							{
+								__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						try {
-							if (typeof _win.__kustoSetResultsVisible === 'function') {
-								_win.__kustoSetResultsVisible(sourceBoxId, false);
-								_win.__kustoSetResultsVisible(comparisonBoxId, false);
+							{
+								__kustoSetResultsVisible(sourceBoxId, false);
+								__kustoSetResultsVisible(comparisonBoxId, false);
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						try {
-							_win.executeQuery(sourceBoxId);
+							executeQuery(sourceBoxId);
 							setTimeout(() => {
-								try { _win.executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+								try { executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 							}, 100);
 						} catch (e) { console.error('[kusto]', e); }
 					}
@@ -1795,14 +1746,14 @@ window.addEventListener('message', async (event: any) => {
 					defaultResultsVisible: false
 				});
 				try {
-					if (typeof _win.__kustoSetResultsVisible === 'function') {
-						_win.__kustoSetResultsVisible(sourceBoxId, false);
-						_win.__kustoSetResultsVisible(comparisonBoxId, false);
+					{
+						__kustoSetResultsVisible(sourceBoxId, false);
+						__kustoSetResultsVisible(comparisonBoxId, false);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					if (typeof _win.__kustoSetLinkedOptimizationMode === 'function') {
-						_win.__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
+					{
+						__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				
@@ -1850,9 +1801,9 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				// Execute both queries for comparison
-				_win.executeQuery(sourceBoxId);
+				executeQuery(sourceBoxId);
 				setTimeout(() => {
-					_win.executeQuery(comparisonBoxId);
+					executeQuery(comparisonBoxId);
 				}, 100);
 				
 				// Restore the optimize button state on source box
@@ -1874,8 +1825,8 @@ window.addEventListener('message', async (event: any) => {
 				const models = message.models || [];
 				const selectedModelId = message.selectedModelId || '';
 				const promptText = message.promptText || '';
-				if (typeof _win.__kustoApplyOptimizeQueryOptions === 'function') {
-					_win.__kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText);
+				{
+					__kustoApplyOptimizeQueryOptions(boxId, models, selectedModelId, promptText);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1883,13 +1834,13 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const boxId = message.boxId || '';
 				try {
-					if (typeof _win.__kustoSetOptimizeInProgress === 'function') {
-						_win.__kustoSetOptimizeInProgress(boxId, false, '');
+					{
+						__kustoSetOptimizeInProgress(boxId, false, '');
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					if (typeof _win.__kustoHideOptimizePromptForBox === 'function') {
-						_win.__kustoHideOptimizePromptForBox(boxId);
+					{
+						__kustoHideOptimizePromptForBox(boxId);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
@@ -1937,8 +1888,8 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const boxId = String(message.boxId || '');
 				const executing = !!message.executing;
-				if (boxId && typeof _win.setQueryExecuting === 'function') {
-					_win.setQueryExecuting(boxId, executing);
+				if (boxId) {
+					setQueryExecuting(boxId, executing);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -2073,7 +2024,7 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				if (requestId && typeof _win.getKqlxState === 'function') {
-					const state = _win.getKqlxState();
+					const state = getKqlxState();
 					const sections = (state && state.sections) ? state.sections : [];
 					(_win.vscode as any).postMessage({ type: 'toolStateResponse', requestId, sections });
 				}
@@ -2175,7 +2126,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -2207,7 +2158,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2238,7 +2189,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2286,7 +2237,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2368,14 +2319,14 @@ window.addEventListener('message', async (event: any) => {
 					
 					// Execute if requested
 					if (input.execute && typeof _win.executeQuery === 'function') {
-						_win.executeQuery(sectionId);
+						executeQuery(sectionId);
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2430,7 +2381,7 @@ window.addEventListener('message', async (event: any) => {
 				}, 120000); // 2 minute timeout
 				
 				if (typeof _win.executeQuery === 'function') {
-					_win.executeQuery(sectionId);
+					executeQuery(sectionId);
 				} else {
 					window.removeEventListener('message', resultHandler);
 					(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false }, error: 'executeQuery not available' });
@@ -2475,9 +2426,7 @@ window.addEventListener('message', async (event: any) => {
 							// Fit to contents after updating - with retries to handle async layout
 							const fitToContents = () => {
 								try {
-									if (typeof _win.__kustoMaximizeMarkdownBox === 'function') {
-										_win.__kustoMaximizeMarkdownBox(sectionId);
-									}
+									__kustoMaximizeMarkdownBox(sectionId);
 								} catch (e) { console.error('[kusto]', e); }
 							};
 							// Apply immediately and with delays to handle async editor layout
@@ -2506,7 +2455,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2554,7 +2503,7 @@ window.addEventListener('message', async (event: any) => {
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2594,7 +2543,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
-				try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2629,8 +2578,8 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// VALIDATE: Check that connection and database are configured on this section
-					const currentConnectionId = window.__kustoGetConnectionId ? window.__kustoGetConnectionId(sectionId) : '';
-					const currentDatabase = window.__kustoGetDatabase ? window.__kustoGetDatabase(sectionId) : '';
+					const currentConnectionId = __kustoGetConnectionId(sectionId) || '';
+					const currentDatabase = __kustoGetDatabase(sectionId) || '';
 					
 					// Get cluster URL for context
 					let currentClusterUrl = '';
@@ -2674,7 +2623,7 @@ window.addEventListener('message', async (event: any) => {
 				// This prevents the Copilot-generated queries from having unwanted limits appended.
 				try {
 					if (typeof _win.setRunMode === 'function') {
-						_win.setRunMode(sectionId, 'plain');
+						setRunMode(sectionId, 'plain');
 					}
 				} catch (e) { console.error('[kusto]', e); }
 
@@ -2729,7 +2678,7 @@ window.addEventListener('message', async (event: any) => {
 					// Try to get from the result state (most reliable after display)
 					try {
 						if (typeof _win.__kustoGetResultsState === 'function') {
-							const resultState = _win.__kustoGetResultsState(sectionId);
+							const resultState = getResultsState(sectionId);
 							if (resultState) {
 								columns = Array.isArray(resultState.columns) ? resultState.columns : [];
 								rows = Array.isArray(resultState.rows) ? resultState.rows : [];
@@ -3295,7 +3244,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 
 			resyncArraysFromDom();
 			bestEffortRelayoutMovedEditors(draggingId);
-			try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
 			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 			draggingId = '';
@@ -3317,7 +3266,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						// Important: if the drop landed outside the container (e.g. over an editor/input),
 						// the container 'drop' handler may not fire. Persist the reverted DOM order so
 						// users can drag back to the original ordering and clear the dirty state.
-						try { _win.schedulePersist && _win.schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
+						try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
 						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 					}
@@ -3392,9 +3341,7 @@ function __kustoAddSectionFromDropdown( kind: any) {
 		if (btn) btn.setAttribute('aria-expanded', 'false');
 
 		// Add the section.
-		if (typeof _win.__kustoRequestAddSection === 'function') {
-			_win.__kustoRequestAddSection(kind);
-		}
+		__kustoRequestAddSection(kind);
 	} catch (e) { console.error('[kusto]', e); }
 }
 

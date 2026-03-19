@@ -54,7 +54,7 @@ _win.__kustoUpgradeRequestType = (_win.__kustoUpgradeRequestType as any) || 'req
 _win.__kustoCompatibilityTooltip = (_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
 _win.__kustoDocumentKind = (_win.__kustoDocumentKind as any) || '';
 
-function __kustoApplyDocumentCapabilities() {
+export function __kustoApplyDocumentCapabilities() {
 	try {
 		const allowed = Array.isArray((_win.__kustoAllowedSectionKinds as any))
 			? (_win.__kustoAllowedSectionKinds as any).map((k: any) => String(k))
@@ -90,7 +90,7 @@ function __kustoApplyDocumentCapabilities() {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoSetCompatibilityMode(enabled: any) {
+export function __kustoSetCompatibilityMode(enabled: any) {
 	try {
 		_win.__kustoCompatibilityMode = !!enabled;
 		const msg = String((_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.');
@@ -130,7 +130,7 @@ function __kustoSetCompatibilityMode(enabled: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoRequestAddSection(kind: any) {
+export function __kustoRequestAddSection(kind: any) {
 	const k = String(kind || '').trim();
 	if (!k) return;
 
@@ -222,7 +222,7 @@ function __kustoTryStoreQueryResult(boxId: any, result: any) {
 }
 
 // Called by main.js when query results arrive.
-function __kustoOnQueryResult(boxId: any, result: any) {
+export function __kustoOnQueryResult(boxId: any, result: any) {
 	__kustoTryStoreQueryResult(boxId, result);
 	try { schedulePersist && schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
@@ -371,7 +371,7 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function getKqlxState() {
+export function getKqlxState() {
 	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
 	try {
 		if ((_win.__kustoCompatibilityMode as any)) {
@@ -513,7 +513,7 @@ let __kustoLastPersistSignature = '';
 // trigger unnecessary persistDocument messages that would dirty the file.
 let __kustoLastCompatQueryText = '';
 
-function schedulePersist(reason?: any, immediate?: any) {
+export function schedulePersist(reason?: any, immediate?: any) {
 	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
 		return;
 	}
@@ -1157,7 +1157,7 @@ function __kustoApplyPendingAdds() {
 	return true;
 }
 
-function handleDocumentDataMessage(message: any) {
+export function handleDocumentDataMessage(message: any) {
 	__kustoDocumentDataApplyCount++;
 
 	// The extension host should only send documentData in response to requestDocument.

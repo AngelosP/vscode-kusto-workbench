@@ -9,7 +9,7 @@ const _win = window;
 
 // --- Toggle button functions ---
 
-function updateCaretDocsToggleButtons() {
+export function updateCaretDocsToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
 		const btn = document.getElementById(boxId + '_caret_docs_toggle') as any;
 		if (!btn) {
@@ -20,7 +20,7 @@ function updateCaretDocsToggleButtons() {
 	}
 }
 
-function updateAutoTriggerAutocompleteToggleButtons() {
+export function updateAutoTriggerAutocompleteToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
 		const btn = document.getElementById(boxId + '_auto_autocomplete_toggle') as any;
 		if (!btn) {
@@ -51,7 +51,7 @@ function toggleAutoTriggerAutocompleteEnabled() {
 	}
 }
 
-function updateCopilotInlineCompletionsToggleButtons() {
+export function updateCopilotInlineCompletionsToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
 		const btn = document.getElementById(boxId + '_copilot_inline_toggle') as any;
 		if (!btn) {
@@ -1354,7 +1354,7 @@ function getRunMode( boxId: any) {
 
 // getRunModeLabelText imported from ../shared/comparisonUtils.ts
 
-function setRunMode( boxId: any, mode: any) {
+export function setRunMode( boxId: any, mode: any) {
 	_win.runModesByBoxId[boxId] = (mode || 'take100');
 	const runBtn = document.getElementById(boxId + '_run_btn') as any;
 	if (runBtn) {

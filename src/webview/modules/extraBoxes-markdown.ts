@@ -207,7 +207,7 @@ const el = document.getElementById(String(boxId || ''));
 return (el && typeof (el as any).fitToContents === 'function') ? el as unknown as KwMarkdownSection : null;
 }
 
-function __kustoMaximizeMarkdownBox(boxId: any) {
+export function __kustoMaximizeMarkdownBox(boxId: any) {
 const el = _getLitEl(boxId);
 if (el) {
 const fit = () => { try { el.fitToContents(); } catch (e) { console.error('[kusto]', e); } };
