@@ -240,7 +240,6 @@ declare global {
 		__kustoTryAutoEnterFavoritesModeForBox: (boxId: string) => void;
 		__kustoFindConnectionIdForClusterUrl: (clusterUrl: string) => string;
 		__kustoTryApplyPendingFavoriteSelectionForBox: (boxId: string) => boolean;
-		__kustoSetElementDisplay: (el: HTMLElement | null, display: string) => void;
 		__kustoApplyFavoritesMode: (boxId: string, enabled: boolean) => void;
 
 		// =====================================================================
@@ -262,11 +261,6 @@ declare global {
 		toggleCaretDocsEnabled: () => void;
 		onQueryEditorToolbarAction: (boxId: string, action: string) => void;
 		__kustoShareCopyToClipboard: () => void;
-		closeToolsDropdown: (boxId: string) => void;
-		toggleToolbarOverflow: (boxId: string) => void;
-		toggleOverflowSubmenu: (element: HTMLElement, event: Event) => void;
-		closeToolbarOverflow: (boxId: string) => void;
-		toggleToolsDropdown: (boxId: string) => void;
 		__kustoApplyRunModeFromMenu: (boxId: string, mode: string) => void;
 		getRunModeLabelText: (mode: string) => string;
 		closeRunMenu: (boxId: string) => void;
@@ -332,7 +326,6 @@ declare global {
 		__kustoApplyResultsVisibility: (boxId: string) => void;
 		__kustoEnsureDisplayRowIndexMaps: (state: KustoResultsState) => void;
 		__kustoSetSplitCaretsVisible: (boxId: string, filtered: boolean) => void;
-		__kustoEnsureDisplayRowIndexMaps: (state: KustoResultsState) => void;
 		__kustoGetSaveIconSvg: () => string;
 		__kustoGetScrollToColumnIconSvg: () => string;
 		__kustoIsFilterSpecActive: (spec: any) => boolean;

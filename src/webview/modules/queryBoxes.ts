@@ -1833,13 +1833,6 @@ function __kustoTryApplyPendingFavoriteSelectionForBox( boxId: any) {
 	return true;
 }
 
-function __kustoSetElementDisplay( el: any, display: any) {
-	try {
-		if (!el) return;
-		el.style.display = display;
-	} catch (e) { console.error('[kusto]', e); }
-}
-
 function __kustoUpdateFavoritesUiForBox( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -1902,18 +1895,6 @@ window.__kustoEnterFavoritesModeForBox = function (boxId: any) {
 		__kustoUpdateFavoritesUiForBox(id);
 	} catch (e) { console.error('[kusto]', e); }
 };
-
-function __kustoGetTrashIconSvg() {
-	return (
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		'<path d="M6 2.5h4" />' +
-		'<path d="M3.5 4.5h9" />' +
-		'<path d="M5 4.5l.7 9h4.6l.7-9" />' +
-		'<path d="M6.6 7v4.8" />' +
-		'<path d="M9.4 7v4.8" />' +
-		'</svg>'
-	);
-}
 
 function addMissingClusterConnections( boxId: any) {
 	const id = String(boxId || '').trim();
@@ -2456,7 +2437,6 @@ window.toggleCachePopup = toggleCachePopup;
 // Schema functions (relocated from schema.ts) — __kustoRequestSchema bridge still needed by completions.
 window.__kustoRequestSchema = __kustoRequestSchema;
 // Connection/database/favorites bridges — only those with inline onclick consumers.
-window.__kustoGetTrashIconSvg = __kustoGetTrashIconSvg;
 window.addMissingClusterConnections = addMissingClusterConnections;
 window.updateConnectionSelects = updateConnectionSelects;
 
