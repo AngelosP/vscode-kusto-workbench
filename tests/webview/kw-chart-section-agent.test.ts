@@ -18,10 +18,10 @@ vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
 	__kustoGetChartValidationStatus: () => null,
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-chart.js', () => ({
-	__kustoMaximizeChartBox: vi.fn(),
-	__kustoDisposeChartEcharts: vi.fn(),
-	__kustoRenderChart: vi.fn(),
+vi.mock('../../src/webview/shared/chart-renderer.js', () => ({
+	maximizeChartBox: vi.fn(),
+	disposeChartEcharts: vi.fn(),
+	renderChart: vi.fn(),
 }));
 
 vi.mock('../../src/webview/modules/persistence.js', () => ({

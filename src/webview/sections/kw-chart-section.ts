@@ -3,7 +3,7 @@ import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../modules/persistence.js';
-import { __kustoMaximizeChartBox, __kustoDisposeChartEcharts, __kustoRenderChart } from '../modules/extraBoxes-chart.js';
+import { maximizeChartBox, disposeChartEcharts, renderChart } from '../shared/chart-renderer.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus } from '../modules/extraBoxes.js';
 import {
 	getDefaultXAxisSettings,
@@ -777,7 +777,7 @@ export class KwChartSection extends LitElement {
 
 	private _onFitToContents(): void {
 		try {
-			__kustoMaximizeChartBox(this.boxId);
+			maximizeChartBox(this.boxId);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -966,7 +966,7 @@ export class KwChartSection extends LitElement {
 			const isDark = this._isDarkTheme();
 			if (this._lastThemeDark !== isDark) {
 				this._lastThemeDark = isDark;
-				try { __kustoDisposeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
+				try { disposeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
 				this._renderChart();
 			}
 		});
@@ -1156,7 +1156,7 @@ export class KwChartSection extends LitElement {
 		if (!this._expanded) return;
 		this._refreshDatasets();
 		try {
-			__kustoRenderChart(this.boxId);
+			renderChart(this.boxId);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 

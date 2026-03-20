@@ -6,6 +6,7 @@ import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 import { setResultsState } from '../modules/resultsState.js';
 import { schedulePersist } from '../modules/persistence.js';
 import { __kustoGetChartDatasetsInDomOrder } from '../modules/extraBoxes.js';
+import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
 import {
 	tokenizeExpr,
 	parseExprToRpn,
@@ -930,7 +931,7 @@ export class KwTransformationSection extends LitElement {
 						}
 						// Refresh legacy UI.
 						try { w.__kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
-						try { w.__kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+						try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 					}
 					continue;
 				}

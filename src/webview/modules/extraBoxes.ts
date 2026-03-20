@@ -25,7 +25,8 @@ import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 import { getResultsState, getRawCellValue as _getRawCellValueFromState } from './resultsState';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
-import { __kustoUpdateChartBuilderUI, __kustoRenderChart, __kustoGetChartState } from './extraBoxes-chart';
+import { __kustoUpdateChartBuilderUI } from './extraBoxes-chart';
+import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
 import { __kustoUpdateTransformationBuilderUI, __kustoRenderTransformation } from './extraBoxes-transformation';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from './monaco-writable';
 import { __kustoAttachAutoResizeToContent } from './monaco-resize';
