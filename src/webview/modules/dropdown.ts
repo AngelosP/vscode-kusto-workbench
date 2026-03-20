@@ -5,11 +5,22 @@ import { escapeHtml as _escHtml } from './utils';
 
 const _win = window;
 
+export let toolbarScrollAtOpen = 0;
+
+// Trash icon SVG inlined to avoid circular dependency with queryBoxes.ts.
+const _trashIconSvg =
+	'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+	'<path d="M6 2.5h4" />' +
+	'<path d="M3.5 4.5h9" />' +
+	'<path d="M5 4.5l.7 9h4.6l.7-9" />' +
+	'<path d="M6.6 7v4.8" />' +
+	'<path d="M9.4 7v4.8" />' +
+	'</svg>';
+
+let _dd: Record<string, any>;
+
 (function initKustoDropdown() {
-	if (!_win.__kustoDropdown || typeof _win.__kustoDropdown !== 'object') {
-		_win.__kustoDropdown = {};
-	}
-	const dd = _win.__kustoDropdown as Record<string, unknown>;
+	const dd: Record<string, unknown> = {};
 
 	// SVG chevron-down icon matching VS Code's style
 	const chevronDownSvg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
@@ -133,7 +144,7 @@ const _win = window;
 			return emptyHtml || '<div class="kusto-dropdown-empty">No items.</div>';
 		}
 
-		const trashSvg = (typeof (_win.__kustoGetTrashIconSvg) === 'function') ? (_win.__kustoGetTrashIconSvg as any)() : '';
+		const trashSvg = _trashIconSvg;
 		const rows: string[] = [];
 
 		for (let idx = 0; idx < list.length; idx++) {
@@ -246,7 +257,7 @@ const _win = window;
 			btn.setAttribute('aria-expanded', 'true');
 			try { btn.classList && btn.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
 			// Capture scroll position for threshold-based dismiss (see queryBoxes-toolbar.ts scroll handler)
-			try { _win.__kustoToolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch (e) { console.error('[kusto]', e); }
+			try { toolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
 
 		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {
@@ -830,13 +841,17 @@ const _win = window;
 
 		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
 	};
+
+	// Store module-level reference for ES module exports below.
+	_dd = dd as Record<string, any>;
+	// Retain window bridge for external inline HTML onclick consumers
+	// (queryBoxes-toolbar.ts, kw-query-section.ts). Will be removed when those callers are converted.
+	_win.__kustoDropdown = dd;
 })();
 
 // ======================================================================
 // ES module exports — TypeScript callers import these directly.
-// The window.__kustoDropdown bridge is retained for inline HTML handlers.
 // ======================================================================
-const _dd = _win.__kustoDropdown as Record<string, any>;
 
 export function closeAllMenus(): void { _dd.closeAllMenus(); }
 export function closeMenuDropdown(buttonId: string, menuId: string): void { _dd.closeMenuDropdown(buttonId, menuId); }

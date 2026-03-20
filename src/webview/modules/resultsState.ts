@@ -1,41 +1,40 @@
 // Cross-section results state map and simplified Lit-only result routing.
 // Extracted from resultsTable-render.ts during legacy results table removal.
 
+import { pState } from '../shared/persistence-state';
+import { __kustoTryStoreQueryResult } from './persistence';
 import { __kustoSetResultsVisible, setQueryExecuting } from './queryBoxes-execution';
 import { __kustoNotifyResultsUpdated } from './extraBoxes';
-const _win = window;
 
 // ── Results state map ────────────────────────────────────────────────────────
 
+const _resultsByBoxId: Record<string, any> = {};
+export let currentResult: any = null;
+
+export function resetCurrentResult() {
+	currentResult = null;
+}
+
 export function ensureResultsStateMap() {
-	if (!_win.__kustoResultsByBoxId || typeof _win.__kustoResultsByBoxId !== 'object') {
-		_win.__kustoResultsByBoxId = {};
-	}
-	return _win.__kustoResultsByBoxId;
+	return _resultsByBoxId;
 }
 
 export function getResultsState(boxId: any) {
 	if (!boxId) {
 		return null;
 	}
-	const map = ensureResultsStateMap();
-	return map[boxId] || null;
+	return _resultsByBoxId[boxId] || null;
 }
 
 export function setResultsState(boxId: any, state: any) {
 	if (!boxId) {
 		return;
 	}
-	const map = ensureResultsStateMap();
-	map[boxId] = state;
+	_resultsByBoxId[boxId] = state;
 	// Backward-compat: keep the last rendered result as the "current" one.
-	try { _win.currentResult = state; } catch (e) { console.error('[kusto]', e); }
+	currentResult = state;
 	// Notify any dependent sections (charts/transformations) that this data source changed.
-	try {
-		if (typeof _win.__kustoNotifyResultsUpdated === 'function') {
-			__kustoNotifyResultsUpdated(boxId);
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
 // ── Raw cell value extraction ────────────────────────────────────────────────
@@ -63,7 +62,7 @@ export function getRawCellValue(cell: any) {
 
 export function ensureResultsShownForTool(boxId: any) {
 	try {
-		if (_win.__kustoResultsVisibleByBoxId && _win.__kustoResultsVisibleByBoxId[boxId] === false) {
+		if (pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false) {
 			__kustoSetResultsVisible(boxId, true);
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -99,7 +98,7 @@ export function displayResultForBox(result: any, boxId: any, options: any) {
 		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 		displayRowIndices, rowIndexToDisplayIndex
 	});
-	try { _win.__kustoTryStoreQueryResult(boxId, result); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoTryStoreQueryResult(boxId, result); } catch (e) { console.error('[kusto]', e); }
 }
 
 /**
@@ -107,7 +106,7 @@ export function displayResultForBox(result: any, boxId: any, options: any) {
  * Called by persistence.ts when restoring saved results from .kqlx files.
  */
 export function displayResult(result: any) {
-	const boxId = _win.lastExecutedBox;
+	const boxId = pState.lastExecutedBox;
 	if (!boxId) { return; }
 
 	try { setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }
@@ -119,7 +118,7 @@ export function displayResult(result: any) {
 }
 
 export function displayCancelled() {
-	const boxId = _win.lastExecutedBox;
+	const boxId = pState.lastExecutedBox;
 	if (!boxId) { return; }
 
 	try { setQueryExecuting(boxId, false); } catch (e) { console.error('[kusto]', e); }

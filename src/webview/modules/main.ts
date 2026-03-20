@@ -1,19 +1,21 @@
 // Main module — converted from legacy/main.js
 // Message dispatcher, keyboard shortcuts, drag-and-drop.
 // Window bridge exports at bottom for remaining legacy callers.
+import { pState } from '../shared/persistence-state';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled, ensureResultsShownForTool } from './resultsState';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
-import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase, updateConnectionSelects, updateDatabaseSelect, onDatabasesError, parseKustoExplorerConnectionsXml, __kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes, __kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated } from './queryBoxes';
+import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase, updateConnectionSelects, updateDatabaseSelect, onDatabasesError, parseKustoExplorerConnectionsXml, __kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes, __kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated, schemaRequestTokenByBoxId } from './queryBoxes';
 import { addMarkdownBox, __kustoMaximizeMarkdownBox } from './extraBoxes-markdown';
 import { addChartBox } from './extraBoxes-chart';
 import { addTransformationBox } from './extraBoxes-transformation';
-import { addPythonBox, addUrlBox, onPythonResult, onPythonError } from './extraBoxes';
+import { addPythonBox, addUrlBox, onPythonResult, onPythonError, __kustoRefreshAllDataSourceDropdowns, __kustoGetChartValidationStatus } from './extraBoxes';
 import { __kustoEnsureAllEditorsWritableSoon } from './monaco-writable';
 import { updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons, updateCopilotInlineCompletionsToggleButtons, setRunMode } from './queryBoxes-toolbar';
 import { executeQuery, setQueryExecuting, __kustoSetResultsVisible, __kustoSetLinkedOptimizationMode, displayComparisonSummary, optimizeQueryWithCopilot, __kustoSetOptimizeInProgress, __kustoUpdateOptimizeStatus, __kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions } from './queryBoxes-execution';
 import { schedulePersist, handleDocumentDataMessage, getKqlxState, __kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoOnQueryResult } from './persistence';
+import { __kustoControlCommandDocCache, __kustoControlCommandDocPending, __kustoCrossClusterSchemas } from './monaco';
 export {};
 
 const _win = window;
@@ -762,24 +764,17 @@ window.addEventListener('message', async (event: any) => {
 				const commandLower = String(message.commandLower || '').trim();
 				if (commandLower) {
 					try {
-						if (!window.__kustoControlCommandDocCache || typeof window.__kustoControlCommandDocCache !== 'object') {
-							window.__kustoControlCommandDocCache = {};
-						}
-					} catch (e) { console.error('[kusto]', e); }
-					try {
 						const ok = !!message.ok;
 						const syntax = ok && typeof message.syntax === 'string' ? String(message.syntax) : '';
 						const withArgs = ok && Array.isArray(message.withArgs) ? message.withArgs.map((s: any) => String(s)) : [];
-						window.__kustoControlCommandDocCache[commandLower] = {
+						__kustoControlCommandDocCache[commandLower] = {
 							syntax,
 							withArgs,
 							fetchedAt: Date.now()
 						};
 					} catch (e) { console.error('[kusto]', e); }
 					try {
-						if (window.__kustoControlCommandDocPending && typeof window.__kustoControlCommandDocPending === 'object') {
-							delete window.__kustoControlCommandDocPending[commandLower];
-						}
+						delete __kustoControlCommandDocPending[commandLower];
 					} catch (e) { console.error('[kusto]', e); }
 					try {
 						if (typeof window.__kustoRefreshActiveCaretDocs === 'function') {
@@ -813,15 +808,15 @@ window.addEventListener('message', async (event: any) => {
 			break;
 		case 'persistenceMode':
 				try {
-					window.__kustoIsSessionFile = !!message.isSessionFile;
+					pState.isSessionFile = !!message.isSessionFile;
 					try {
 						if (typeof message.documentUri === 'string') {
-							window.__kustoDocumentUri = String(message.documentUri);
+							pState.documentUri = String(message.documentUri);
 						}
 					} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (typeof message.documentKind === 'string') {
-								window.__kustoDocumentKind = String(message.documentKind);
+								pState.documentKind = String(message.documentKind);
 								try {
 									if (document && document.body && document.body.dataset) {
 										document.body.dataset.kustoDocumentKind = String(message.documentKind);
@@ -831,19 +826,19 @@ window.addEventListener('message', async (event: any) => {
 						} catch (e) { console.error('[kusto]', e); }
 						try {
 							if (Array.isArray(message.allowedSectionKinds)) {
-								window.__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
+								pState.allowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
 							}
 							if (typeof message.defaultSectionKind === 'string') {
-								window.__kustoDefaultSectionKind = String(message.defaultSectionKind);
+								pState.defaultSectionKind = String(message.defaultSectionKind);
 							}
 							if (typeof message.compatibilitySingleKind === 'string') {
-								window.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+								pState.compatibilitySingleKind = String(message.compatibilitySingleKind);
 							}
 							if (typeof message.upgradeRequestType === 'string') {
-								window.__kustoUpgradeRequestType = String(message.upgradeRequestType);
+								pState.upgradeRequestType = String(message.upgradeRequestType);
 							}
 							if (typeof message.compatibilityTooltip === 'string') {
-								window.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+								pState.compatibilityTooltip = String(message.compatibilityTooltip);
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						__kustoSetCompatibilityMode(!!message.compatibilityMode);
@@ -887,7 +882,7 @@ window.addEventListener('message', async (event: any) => {
 			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
 			_win.leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
 			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
-			try { window.__kustoCopilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
+			try { pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
 			_win.caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
 			_win.autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
 			_win.copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
@@ -922,16 +917,16 @@ window.addEventListener('message', async (event: any) => {
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
 			try {
-				if (!Array.isArray(window.__kustoDevNotesSections)) {
-					window.__kustoDevNotesSections = [];
+				if (!Array.isArray(pState.devNotesSections)) {
+					pState.devNotesSections = [];
 				}
 				const action = String(message.action || '');
 				if (action === 'add') {
 					// Ensure a single devnotes section exists
-					let dn = window.__kustoDevNotesSections.find((s: any) => s && s.type === 'devnotes');
+					let dn = pState.devNotesSections.find((s: any) => s && s.type === 'devnotes');
 					if (!dn) {
 						dn = { type: 'devnotes', id: 'devnotes_' + Date.now(), entries: [] };
-						window.__kustoDevNotesSections.push(dn);
+						pState.devNotesSections.push(dn);
 					}
 					if (!Array.isArray(dn.entries)) dn.entries = [];
 					// If superseding an existing entry, remove it first
@@ -945,7 +940,7 @@ window.addEventListener('message', async (event: any) => {
 				} else if (action === 'remove') {
 					const noteId = String(message.noteId || '');
 					if (noteId) {
-						for (const dn of window.__kustoDevNotesSections) {
+						for (const dn of pState.devNotesSections) {
 							if (dn && Array.isArray(dn.entries)) {
 								dn.entries = dn.entries.filter((e: any) => e && String(e.id) !== noteId);
 							}
@@ -1133,7 +1128,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryResult':
 			try {
 				if (message.boxId) {
-					window.lastExecutedBox = message.boxId;
+					pState.lastExecutedBox = message.boxId;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
@@ -1186,11 +1181,11 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryError':
 			try {
 				if (message && message.boxId) {
-					window.lastExecutedBox = message.boxId;
+					pState.lastExecutedBox = message.boxId;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				const boxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
+				const boxId = (message && message.boxId) ? String(message.boxId) : (pState.lastExecutedBox ? String(pState.lastExecutedBox) : '');
 				const err = (message && 'error' in message) ? message.error : 'Query execution failed.';
 				try {
 					if (boxId) {
@@ -1210,11 +1205,11 @@ window.addEventListener('message', async (event: any) => {
 		case 'queryCancelled':
 			try {
 				if (message.boxId) {
-					window.lastExecutedBox = message.boxId;
+					pState.lastExecutedBox = message.boxId;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (window.lastExecutedBox ? String(window.lastExecutedBox) : '');
+				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (pState.lastExecutedBox ? String(pState.lastExecutedBox) : '');
 				if (cancelledBoxId) {
 					setQueryExecuting(cancelledBoxId, false);
 				}
@@ -1245,8 +1240,8 @@ window.addEventListener('message', async (event: any) => {
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
-				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
-					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
+				if (tok && schemaRequestTokenByBoxId) {
+					const expected = schemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
 						break;
 					}
@@ -1405,8 +1400,8 @@ window.addEventListener('message', async (event: any) => {
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
-				if (tok && window && window.__kustoSchemaRequestTokenByBoxId) {
-					const expected = window.__kustoSchemaRequestTokenByBoxId[message.boxId];
+				if (tok && schemaRequestTokenByBoxId) {
+					const expected = schemaRequestTokenByBoxId[message.boxId];
 					if (expected && expected !== tok) {
 						break;
 					}
@@ -1466,9 +1461,7 @@ window.addEventListener('message', async (event: any) => {
 				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
 				
 				// Mark as error so we don't keep retrying
-				if (typeof window.__kustoCrossClusterSchemas !== 'undefined') {
-					window.__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
-				}
+				__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 			case 'connectionAdded':
@@ -1504,7 +1497,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotChatFirstTimeResult':
 			try {
 				// Update local flag so the dialog is never shown again.
-				window.__kustoCopilotChatFirstTimeDismissed = true;
+				pState.copilotChatFirstTimeDismissed = true;
 				const action = String(message.action || '');
 				if (action === 'proceed') {
 					// User chose to use the embedded copilot chat; toggle it open.
@@ -1981,7 +1974,7 @@ window.addEventListener('message', async (event: any) => {
 			// Extension is requesting the current sections state
 			try {
 				const requestId = String(message.requestId || '');
-				if (requestId && typeof _win.getKqlxState === 'function') {
+				if (requestId) {
 					const state = getKqlxState();
 					const sections = (state && state.sections) ? state.sections : [];
 					(_win.vscode as any).postMessage({ type: 'toolStateResponse', requestId, sections });
@@ -2372,8 +2365,8 @@ window.addEventListener('message', async (event: any) => {
 					const textValue = input.text ?? input.content;
 					if (textValue !== undefined) {
 						const textToSet = String(textValue);
-						window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
-						window.__kustoPendingMarkdownTextByBoxId[sectionId] = textToSet;
+						pState.pendingMarkdownTextByBoxId = pState.pendingMarkdownTextByBoxId || {};
+						pState.pendingMarkdownTextByBoxId[sectionId] = textToSet;
 						
 						// Try to update existing editor (exposed on window from extraBoxes.js)
 						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
@@ -2451,9 +2444,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// Get validation status to help agent verify configuration
-					if (typeof window.__kustoGetChartValidationStatus === 'function') {
-						validationStatus = window.__kustoGetChartValidationStatus(sectionId);
-					}
+					validationStatus = __kustoGetChartValidationStatus(sectionId);
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error configuring chart:', err);
 				}
@@ -2996,7 +2987,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			document.addEventListener('mousedown', (e: MouseEvent) => {
 				if (pending) return;
 				// Check compatibility mode
-				try { if (window.__kustoCompatibilityMode) return; } catch (e) { console.error('[kusto]', e); }
+				try { if (pState.compatibilityMode) return; } catch (e) { console.error('[kusto]', e); }
 				// Find handle across shadow DOM
 				const path = e.composedPath?.() ?? [];
 				let handle: HTMLElement | null = null;
@@ -3022,7 +3013,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			ensureGlobalDnDGuards();
 			try {
 				// Only allow reordering in .kqlx mode.
-				if (window.__kustoCompatibilityMode) {
+				if (pState.compatibilityMode) {
 					try { e.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 					try { e.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 					return;
@@ -3202,7 +3193,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 			bestEffortRelayoutMovedEditors(draggingId);
 			try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 			// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-			try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 			draggingId = '';
 			draggingOriginalNextSibling = null;
 		});
@@ -3224,7 +3215,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 						// users can drag back to the original ordering and clear the dirty state.
 						try { schedulePersist && schedulePersist('reorder'); } catch (e) { console.error('[kusto]', e); }
 						// Refresh Data dropdowns in Chart/Transformation sections to update position labels
-						try { window.__kustoRefreshAllDataSourceDropdowns && window.__kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
+						try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -3304,8 +3295,8 @@ function __kustoAddSectionFromDropdown( kind: any) {
 // Update dropdown item visibility based on allowed section kinds (mirrors __kustoApplyDocumentCapabilities logic).
 function __kustoUpdateAddSectionDropdownVisibility() {
 	try {
-		const allowed = Array.isArray(window.__kustoAllowedSectionKinds)
-			? window.__kustoAllowedSectionKinds.map((v: any) => String(v))
+		const allowed = Array.isArray(pState.allowedSectionKinds)
+			? pState.allowedSectionKinds.map((v: any) => String(v))
 			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 
 		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');

@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { html, render, nothing } from 'lit';
-import '../../src/webview/sections/kw-chart-section.js';
-import type { KwChartSection } from '../../src/webview/sections/kw-chart-section.js';
 
 // ── Window globals stubs ──────────────────────────────────────────────────────
 
@@ -14,13 +12,28 @@ const fakeDatasets = [
 	},
 ];
 
+// Mock modules that kw-chart-section imports directly
+vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
+	__kustoGetChartDatasetsInDomOrder: () => fakeDatasets,
+	__kustoGetChartValidationStatus: () => null,
+}));
+
+vi.mock('../../src/webview/modules/extraBoxes-chart.js', () => ({
+	__kustoMaximizeChartBox: vi.fn(),
+	__kustoDisposeChartEcharts: vi.fn(),
+	__kustoRenderChart: vi.fn(),
+}));
+
+vi.mock('../../src/webview/modules/persistence.js', () => ({
+	schedulePersist: vi.fn(),
+}));
+
+import '../../src/webview/sections/kw-chart-section.js';
+import type { KwChartSection } from '../../src/webview/sections/kw-chart-section.js';
+
 beforeEach(() => {
 	// Stub globals that kw-chart-section reads
 	(window as any).chartStateByBoxId = {};
-	(window as any).__kustoGetChartDatasetsInDomOrder = () => fakeDatasets;
-	(window as any).__kustoRenderChart = vi.fn();
-	(window as any).__kustoGetChartValidationStatus = () => null;
-	(window as any).schedulePersist = vi.fn();
 });
 
 // ── Test helpers ──────────────────────────────────────────────────────────────

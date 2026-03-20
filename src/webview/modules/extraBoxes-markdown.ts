@@ -1,5 +1,6 @@
 // Markdown box creation — thin bridge module.
 // Phase B1: Core logic moved to kw-markdown-section.ts (Lit component).
+import { pState } from '../shared/persistence-state';
 // This file retains: addMarkdownBox, removeMarkdownBox, reveal bridges,
 // and window bridge assignments for external callers (main.ts, persistence.ts).
 
@@ -14,7 +15,7 @@ window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
 const markdownEditors = window.__kustoMarkdownEditors;
 
 // Pending reveal payloads — queued before the editor is ready.
-window.__kustoPendingMarkdownRevealByBoxId = window.__kustoPendingMarkdownRevealByBoxId || {};
+pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
 
 // ── Reveal logic ────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ try {
 if (typeof window.__kustoRevealTextRangeFromHost !== 'function') {
 window.__kustoRevealTextRangeFromHost = (message: any) => {
 try {
-const kind = String(window.__kustoDocumentKind || '');
+const kind = String(pState.documentKind || '');
 if (kind !== 'md') return;
 
 const start = message?.start;
@@ -49,7 +50,7 @@ try {
 (_win.vscode as any)?.postMessage?.({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(apply)',
-detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
+detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
 });
 } catch (e) { console.error('[kusto]', e); }
 litEl.revealRange(payload);
@@ -59,11 +60,11 @@ try {
 (_win.vscode as any)?.postMessage?.({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(queued)',
-detail: `${String(window.__kustoDocumentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
+detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
 });
 } catch (e) { console.error('[kusto]', e); }
-window.__kustoPendingMarkdownRevealByBoxId = window.__kustoPendingMarkdownRevealByBoxId || {};
-window.__kustoPendingMarkdownRevealByBoxId![boxId] = payload;
+pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
+pState.pendingMarkdownRevealByBoxId![boxId] = payload;
 }
 } catch (e) { console.error('[kusto]', e); }
 };
@@ -89,8 +90,8 @@ window.__kustoMarkdownModeByBoxId[id] = rawMode;
 try {
 const initialText = options && typeof options.text === 'string' ? options.text : undefined;
 if (typeof initialText === 'string') {
-window.__kustoPendingMarkdownTextByBoxId = window.__kustoPendingMarkdownTextByBoxId || {};
-window.__kustoPendingMarkdownTextByBoxId[id] = initialText;
+pState.pendingMarkdownTextByBoxId = pState.pendingMarkdownTextByBoxId || {};
+pState.pendingMarkdownTextByBoxId[id] = initialText;
 }
 } catch (e) { console.error('[kusto]', e); }
 
@@ -103,13 +104,13 @@ litEl.setAttribute('box-id', id);
 
 // For plain .md files, enable full-page mode (no section chrome).
 try {
-if (String(window.__kustoDocumentKind || '') === 'md' || (options && options.mdAutoExpand)) {
+if (String(pState.documentKind || '') === 'md' || (options && options.mdAutoExpand)) {
 litEl.setAttribute('plain-md', '');
 }
 } catch (e) { console.error('[kusto]', e); }
 
 // Pass initial text if available.
-const pendingText = window.__kustoPendingMarkdownTextByBoxId?.[id];
+const pendingText = pState.pendingMarkdownTextByBoxId?.[id];
 if (typeof pendingText === 'string') {
 litEl.setAttribute('initial-text', pendingText);
 }
@@ -138,7 +139,7 @@ container.appendChild(litEl);
 // Apply persisted height.
 try {
 const h = options && typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
-const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+const isPlainMd = String(pState.documentKind || '') === 'md';
 if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
 litEl.setAttribute('editor-height-px', String(h));
 }
@@ -170,7 +171,7 @@ litEl.setExpanded(options.expanded);
 
 try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
 try {
-const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+const isPlainMd = String(pState.documentKind || '') === 'md';
 if (!isPlainMd) {
 const controls = document.querySelector('.add-controls');
 if (controls && typeof controls.scrollIntoView === 'function') {

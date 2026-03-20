@@ -2,8 +2,12 @@
 // Extracted from resultsTable-render.ts during legacy results table removal.
 import { escapeHtml } from './utils';
 import { ensureResultsShownForTool } from './resultsState';
+import { __kustoApplyResultsVisibility } from './queryBoxes-execution';
+import { lastRunCacheEnabledByBoxId } from './queryBoxes-execution';
+import { __kustoAutoFindInQueryEditor } from './monaco';
 
 const _win = window;
+let _errorLocationClickHandlerInstalled = false;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,7 +172,7 @@ function __kustoMaybeAdjustLocationForCacheLine(boxId: any, location: any) {
 	}
 	let cacheEnabled = false;
 	try {
-		cacheEnabled = !!(_win.__kustoLastRunCacheEnabledByBoxId && _win.__kustoLastRunCacheEnabledByBoxId[bid]);
+		cacheEnabled = !!(lastRunCacheEnabledByBoxId[bid]);
 	} catch {
 		cacheEnabled = false;
 	}
@@ -229,8 +233,8 @@ function __kustoNavigateToQueryLocation(event: any, boxId: any, line: any, col: 
 
 // Delegated click handler for clickable error locations.
 try {
-	if (!_win.__kustoErrorLocationClickHandlerInstalled) {
-		_win.__kustoErrorLocationClickHandlerInstalled = true;
+	if (!_errorLocationClickHandlerInstalled) {
+		_errorLocationClickHandlerInstalled = true;
 		document.addEventListener('click', (event) => {
 			try {
 				const target = event && event.target ? event.target : null;
@@ -325,16 +329,14 @@ export function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: 
 	resultsDiv.innerHTML = html;
 	resultsDiv.classList.add('visible');
 	try {
-		if (typeof _win.__kustoApplyResultsVisibility === 'function') {
-			_win.__kustoApplyResultsVisibility(bid);
-		}
+		__kustoApplyResultsVisibility(bid);
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Special UX: on SEM0139, auto-find the unresolved expression in the query editor.
 	try {
-		if (model && model.autoFindTerm && typeof _win.__kustoAutoFindInQueryEditor === 'function') {
+		if (model && model.autoFindTerm && __kustoAutoFindInQueryEditor) {
 			setTimeout(() => {
-				try { _win.__kustoAutoFindInQueryEditor(bid, String(model.autoFindTerm)); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoAutoFindInQueryEditor!(bid, String(model.autoFindTerm)); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
 		}
 	} catch (e) { console.error('[kusto]', e); }

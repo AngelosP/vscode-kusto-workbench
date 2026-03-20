@@ -4,6 +4,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
+import { schedulePersist } from '../modules/persistence.js';
+import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -612,9 +614,7 @@ export class KwUrlSection extends LitElement {
 		this._schedulePersist();
 		// Refresh Data dropdowns in Chart/Transformation sections.
 		try {
-			if (typeof window.__kustoRefreshAllDataSourceDropdowns === 'function') {
-				window.__kustoRefreshAllDataSourceDropdowns();
-			}
+			__kustoRefreshAllDataSourceDropdowns();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -922,8 +922,7 @@ export class KwUrlSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = window.schedulePersist;
-			if (typeof sp === 'function') sp();
+			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 

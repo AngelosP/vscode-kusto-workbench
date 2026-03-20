@@ -2,6 +2,7 @@
 // Custom KQL completion provider (DISABLED - monaco-kusto handles completions).
 // Pipe operator suggestions, dot-command completions, column inference.
 // Window bridge exports at bottom for remaining callers.
+import { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco';
 export {};
 
 const _win = window;
@@ -109,8 +110,8 @@ const __kustoCompletionProvider = {
 		// have detailed arg/return docs for every function.
 		try {
 			if (typeof window !== 'undefined' && window) {
-				if (!_win.__kustoGeneratedFunctionsMerged) {
-					_win.__kustoGeneratedFunctionsMerged = true;
+				if (!__kustoGeneratedFunctionsMerged) {
+					setGeneratedFunctionsMerged(true);
 					const raw = Array.isArray(_win.__kustoFunctionEntries) ? _win.__kustoFunctionEntries : [];
 					const docs = (_win.__kustoFunctionDocs && typeof _win.__kustoFunctionDocs === 'object') ? _win.__kustoFunctionDocs : null;
 					for (const ent of raw) {

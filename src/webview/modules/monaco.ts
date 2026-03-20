@@ -1,6 +1,8 @@
 // Monaco module — converted from legacy/monaco.js
 // Monaco Editor configuration, completions, column inference, caret docs overlay.
 // Window bridge exports at bottom for remaining legacy callers.
+import { pState } from '../shared/persistence-state';
+import { schedulePersist } from './persistence';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -69,6 +71,39 @@ let __kustoStatementSeparatorMinBlankLines = 1;
 let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
 let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
 let __kustoExtractStatementTextAtCursor: ((editor: any) => string | null) | null = null;
+
+// Exported module-level lets for cross-module ES imports (lazily assigned inside require callback).
+export let __kustoAutoFindInQueryEditor: ((boxId: any, term: any) => Promise<boolean>) | null = null;
+let __kustoAutoFindStateByBoxId: Record<string, any> = {};
+
+// Module-level state variables — converted from _win.__kusto* window bridges.
+// Group A: Internal state (only used within monaco.ts)
+let __kustoMarkersEnabledModels: Set<string> = new Set();
+let __kustoModelClusterMap: Record<string, string> = {};
+let __kustoMonacoDatabaseInContext: { clusterUrl: string; database: string } | null = null;
+let __kustoMonacoDatabaseInContextByModel: Record<string, { clusterUrl: string; database: string } | null> = {};
+let __kustoMonacoLoadedSchemas: Record<string, boolean> = {};
+let __kustoMonacoLoadedSchemasByModel: Record<string, Record<string, boolean>> = {};
+let __kustoMonacoInitialized = false;
+let __kustoMonacoInitializedByModel: Record<string, boolean> = {};
+let __kustoSchemaCache: Record<string, { rawSchemaJson: any; clusterUrl: string; database: string }> = {};
+let __kustoMonacoModelDisposeHookInstalled = false;
+let __kustoCrossClusterCheckTimeout: Record<string, any> = {};
+let __kustoWorkerInitialized = false;
+let __kustoWorkerNeedsSchemaReload = false;
+let __kustoLastFocusedBoxId: string | null = null;
+let __kustoCaretDocsLastHtmlByBoxId: Record<string, string> = {};
+let __kustoWebviewHasFocus = true;
+let __kustoWebviewFocusListenersInstalled = false;
+let __kustoCaretDocsViewportListenersInstalled = false;
+let __kustoLastMonacoInteractionAt = 0;
+// Group B: Cross-module state (exported for consumers in other modules)
+export let __kustoControlCommandDocCache: Record<string, any> = {};
+export let __kustoControlCommandDocPending: Record<string, any> = {};
+export let __kustoCrossClusterSchemas: Record<string, any> = {};
+export let __kustoMonacoInitRetryCountByBoxId: Record<string, number> = {};
+export let __kustoGeneratedFunctionsMerged = false;
+export function setGeneratedFunctionsMerged(v: boolean) { __kustoGeneratedFunctionsMerged = v; }
 
 // AMD globals loaded by require() — not available at module scope
 // but referenced inside the require() callback and other functions.
@@ -248,25 +283,25 @@ function ensureMonaco() {
 								const originalSetModelMarkers = monaco.editor.setModelMarkers;
 								
 								// Track which model URIs should have kusto markers enabled
-								_win.__kustoMarkersEnabledModels = new Set();
+								__kustoMarkersEnabledModels = new Set();
 								
 								// Track model URI -> normalized cluster URL mapping
 								// This allows us to suppress markers for models that don't match the current context
-								_win.__kustoModelClusterMap = {};
+								__kustoModelClusterMap = {};
 								
 								monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any) {
 									// Only intercept kusto markers
 									if (owner === 'kusto') {
 										const uri = model && model.uri ? model.uri.toString() : '';
-										if (!_win.__kustoMarkersEnabledModels.has(uri)) {
+										if (!__kustoMarkersEnabledModels.has(uri)) {
 											// Suppress markers for models that haven't been focused yet
 											return;
 										}
 										// CRITICAL: Suppress markers for models whose cluster doesn't match current context
 										// monaco-kusto validates ALL models when schema changes, but we only want errors
 										// for models that match the current schema context
-										const modelCluster = _win.__kustoModelClusterMap[uri];
-										const currentCluster = _win.__kustoMonacoDatabaseInContext?.clusterUrl;
+										const modelCluster = __kustoModelClusterMap[uri];
+										const currentCluster = __kustoMonacoDatabaseInContext?.clusterUrl;
 										if (modelCluster && currentCluster) {
 											const normalizeUrl = (url: any) => url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase() : '';
 											const modelClusterNorm = normalizeUrl(modelCluster);
@@ -284,8 +319,8 @@ function ensureMonaco() {
 __kustoEnableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
-									if (!_win.__kustoMarkersEnabledModels.has(uri)) {
-										_win.__kustoMarkersEnabledModels.add(uri);
+									if (!__kustoMarkersEnabledModels.has(uri)) {
+										__kustoMarkersEnabledModels.add(uri);
 									}
 								};
 								
@@ -294,7 +329,7 @@ __kustoEnableMarkersForModel = function(modelUri: any) {
 __kustoDisableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
-									_win.__kustoMarkersEnabledModels.delete(uri);
+									__kustoMarkersEnabledModels.delete(uri);
 									// Also clear any existing markers for this model
 									try {
 										const model = monaco.editor.getModels().find((m: any) => m.uri && m.uri.toString() === uri);
@@ -683,8 +718,8 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					const __kustoEnsureGeneratedFunctionsMerged = () => {
 						try {
 							if (typeof window === 'undefined' || !window) return;
-							if (_win.__kustoGeneratedFunctionsMerged) return;
-							_win.__kustoGeneratedFunctionsMerged = true;
+							if (__kustoGeneratedFunctionsMerged) return;
+							__kustoGeneratedFunctionsMerged = true;
 
 							const raw = Array.isArray(_win.__kustoFunctionEntries) ? _win.__kustoFunctionEntries : [];
 							const docs = (_win.__kustoFunctionDocs && typeof _win.__kustoFunctionDocs === 'object') ? _win.__kustoFunctionDocs : null;
@@ -776,13 +811,13 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 
 					const __kustoGetOrInitControlCommandDocCache = () => {
 						try {
-							if (!_win.__kustoControlCommandDocCache || typeof _win.__kustoControlCommandDocCache !== 'object') {
-								_win.__kustoControlCommandDocCache = {};
+							if (!__kustoControlCommandDocCache || typeof __kustoControlCommandDocCache !== 'object') {
+								__kustoControlCommandDocCache = {};
 							}
-							if (!_win.__kustoControlCommandDocPending || typeof _win.__kustoControlCommandDocPending !== 'object') {
-								_win.__kustoControlCommandDocPending = {};
+							if (!__kustoControlCommandDocPending || typeof __kustoControlCommandDocPending !== 'object') {
+								__kustoControlCommandDocPending = {};
 							}
-							return _win.__kustoControlCommandDocCache;
+							return __kustoControlCommandDocCache;
 						} catch {
 							return {};
 						}
@@ -890,9 +925,9 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 							if (entry && entry.fetchedAt && (now - entry.fetchedAt) < KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS && entry.syntax) {
 								return;
 							}
-							if (_win.__kustoControlCommandDocPending && _win.__kustoControlCommandDocPending[key]) return;
+							if (__kustoControlCommandDocPending && __kustoControlCommandDocPending[key]) return;
 							const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-							_win.__kustoControlCommandDocPending[key] = requestId;
+							__kustoControlCommandDocPending[key] = requestId;
 							try {
 								if (typeof _win.vscode !== 'undefined' && _win.vscode && typeof _win.vscode.postMessage === 'function') {
 									_win.vscode.postMessage({
@@ -1650,17 +1685,13 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					// This is separate from our UI schema cache - this tracks what's IN the worker
 					// IMPORTANT: monaco-kusto keeps schema state per Monaco model URI (workerAccessor(modelUri)).
 					// If we always target models[0], schema/context updates apply to the wrong query box.
-					_win.__kustoMonacoLoadedSchemas = _win.__kustoMonacoLoadedSchemas || {}; // legacy/global (kept for logs)
-					_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
-					_win.__kustoMonacoInitialized = false; // legacy/global (kept for logs)
-					_win.__kustoMonacoInitializedByModel = _win.__kustoMonacoInitializedByModel || {};
+					__kustoMonacoInitialized = false; // legacy/global (kept for logs)
 					// Track the current database in context: { clusterUrl, database }
-					_win.__kustoMonacoDatabaseInContext = null; // legacy/global (current focused model)
-					_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
+					__kustoMonacoDatabaseInContext = null; // legacy/global (current focused model)
 					
 					// Cache all raw schema data we receive, so we can re-add them after cluster switches
 					// Key: `${clusterUrl}|${database}`, Value: { rawSchemaJson, clusterUrl, database }
-					_win.__kustoSchemaCache = {};
+					__kustoSchemaCache = {};
 					
 					// Mutex to serialize schema operations - prevents race conditions during parallel loads
 					__kustoSchemaOperationQueue = Promise.resolve();
@@ -1691,24 +1722,23 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						// If we don't clean up per-model caches on dispose, a newly-created model can inherit
 						// stale loadedSchemas/context and autocomplete will be wrong immediately.
 						try {
-							_win.__kustoMonacoModelDisposeHookInstalled = _win.__kustoMonacoModelDisposeHookInstalled || false;
-							if (!_win.__kustoMonacoModelDisposeHookInstalled && monaco?.editor?.onWillDisposeModel) {
-								_win.__kustoMonacoModelDisposeHookInstalled = true;
+							if (!__kustoMonacoModelDisposeHookInstalled && monaco?.editor?.onWillDisposeModel) {
+								__kustoMonacoModelDisposeHookInstalled = true;
 								monaco.editor.onWillDisposeModel((model: any) => {
 									try {
 										const uriKey = model?.uri ? model.uri.toString() : null;
 										if (!uriKey) return;
-										if (_win.__kustoMonacoLoadedSchemasByModel && _win.__kustoMonacoLoadedSchemasByModel[uriKey]) {
-											try { delete _win.__kustoMonacoLoadedSchemasByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
+										if (__kustoMonacoLoadedSchemasByModel && __kustoMonacoLoadedSchemasByModel[uriKey]) {
+											try { delete __kustoMonacoLoadedSchemasByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										}
-										if (_win.__kustoMonacoDatabaseInContextByModel && _win.__kustoMonacoDatabaseInContextByModel[uriKey]) {
-											try { delete _win.__kustoMonacoDatabaseInContextByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
+										if (__kustoMonacoDatabaseInContextByModel && __kustoMonacoDatabaseInContextByModel[uriKey]) {
+											try { delete __kustoMonacoDatabaseInContextByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										}
-										if (_win.__kustoMonacoInitializedByModel && _win.__kustoMonacoInitializedByModel[uriKey]) {
-											try { delete _win.__kustoMonacoInitializedByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
+										if (__kustoMonacoInitializedByModel && __kustoMonacoInitializedByModel[uriKey]) {
+											try { delete __kustoMonacoInitializedByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										}
-										if (_win.__kustoModelClusterMap && _win.__kustoModelClusterMap[uriKey]) {
-											try { delete _win.__kustoModelClusterMap[uriKey]; } catch (e) { console.error('[kusto]', e); }
+										if (__kustoModelClusterMap && __kustoModelClusterMap[uriKey]) {
+											try { delete __kustoModelClusterMap[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										}
 									} catch (e) { console.error('[kusto]', e); }
 								});
@@ -1716,10 +1746,10 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						} catch (e) { console.error('[kusto]', e); }
 
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : models[0].uri.toString();
-						_win.__kustoMonacoLoadedSchemasByModel[modelKey] = _win.__kustoMonacoLoadedSchemasByModel[modelKey] || {};
-						_win.__kustoMonacoDatabaseInContextByModel[modelKey] = _win.__kustoMonacoDatabaseInContextByModel[modelKey] || null;
-						_win.__kustoMonacoInitializedByModel[modelKey] = !!_win.__kustoMonacoInitializedByModel[modelKey];
-						const perModelLoadedSchemas = _win.__kustoMonacoLoadedSchemasByModel[modelKey];
+						__kustoMonacoLoadedSchemasByModel[modelKey] = __kustoMonacoLoadedSchemasByModel[modelKey] || {};
+						__kustoMonacoDatabaseInContextByModel[modelKey] = __kustoMonacoDatabaseInContextByModel[modelKey] || null;
+						__kustoMonacoInitializedByModel[modelKey] = !!__kustoMonacoInitializedByModel[modelKey];
+						const perModelLoadedSchemas = __kustoMonacoLoadedSchemasByModel[modelKey];
 						
 						const schemaKey = `${clusterUrl}|${database}`;
 						// If this is a force refresh, invalidate the loaded tracking so we reload the schema
@@ -1738,7 +1768,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						};
 						
 						// Check if the current worker schema is for the same cluster (per model)
-						const currentContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+						const currentContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 						const currentClusterNormalized = normalizeClusterUrl(currentContext?.clusterUrl);
 						const newClusterNormalized = normalizeClusterUrl(clusterUrl);
 						const isSameCluster = currentContext && currentClusterNormalized === newClusterNormalized;
@@ -1833,21 +1863,21 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													// setSchemaFromShowSchema replaces the ENTIRE worker schema.
 													// We must only use it for the very first schema load across ALL models.
 													// After that, use addDatabaseToSchema to avoid wiping other models' schemas.
-													if (!_win.__kustoMonacoInitialized) {
+													if (!__kustoMonacoInitialized) {
 										// First schema: use setSchemaFromShowSchema to establish base with database in context
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-																_win.__kustoMonacoInitialized = true; // legacy
-																_win.__kustoMonacoInitializedByModel[modelKey] = true;
+																__kustoMonacoInitialized = true; // legacy
+																__kustoMonacoInitializedByModel[modelKey] = true;
 																perModelLoadedSchemas[schemaKey] = true;
 																// Keep legacy/global in sync for debugging only
-																_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
-																_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+																__kustoMonacoLoadedSchemas[schemaKey] = true;
+																__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 												
 												// Cache the schema for re-adding after cluster switches
-												_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+												__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 											} catch (schemaError) {
 												console.error('[monaco-kusto] setSchemaFromShowSchema failed:', schemaError);
 											}
@@ -1878,15 +1908,15 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																	} catch (e) { console.error('[kusto]', e); }
 																	perModelLoadedSchemas[schemaKey] = true;
 																	// Keep legacy/global in sync for debugging only
-																	_win.__kustoMonacoLoadedSchemas = {};
-																	_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
-																	_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																	_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
-													_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+																	__kustoMonacoLoadedSchemas = {};
+																	__kustoMonacoLoadedSchemas[schemaKey] = true;
+																	__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																	__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
+													__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 													
 																	// Re-add schemas from OTHER clusters that we have cached.
 																	// This keeps cross-cluster database references working after switching.
-																	const otherClusterSchemas = Object.keys(_win.__kustoSchemaCache || {})
+																	const otherClusterSchemas = Object.keys(__kustoSchemaCache || {})
 																		.filter(key => {
 																			const [cachedClusterUrl] = key.split('|');
 																			const cachedClusterNorm = normalizeClusterUrl(cachedClusterUrl);
@@ -1894,7 +1924,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																		});
 													
 													for (const otherKey of otherClusterSchemas) {
-														const cached = _win.__kustoSchemaCache[otherKey];
+														const cached = __kustoSchemaCache[otherKey];
 														if (cached && cached.rawSchemaJson) {
 															try {
 																// Use addDatabaseToSchema to add this without replacing
@@ -1956,11 +1986,11 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											// already has it and we can skip the addDatabaseToSchema call entirely.
 											// This also avoids "document is null" errors from the worker when the current
 											// model's document hasn't been synced to the worker yet.
-											const alreadyLoadedGlobally = !forceRefresh && !!_win.__kustoMonacoLoadedSchemas[schemaKey];
+											const alreadyLoadedGlobally = !forceRefresh && !!__kustoMonacoLoadedSchemas[schemaKey];
 											if (alreadyLoadedGlobally) {
 												// Schema already in worker from a previous model — just update per-model tracking
 												perModelLoadedSchemas[schemaKey] = true;
-												_win.__kustoSchemaCache[schemaKey] = _win.__kustoSchemaCache[schemaKey] || { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+												__kustoSchemaCache[schemaKey] = __kustoSchemaCache[schemaKey] || { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 												if (setAsContext) {
 													await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
 												}
@@ -1987,8 +2017,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 														await worker.addDatabaseToSchema(syncedUri, clusterUrl, databaseSchema);
 														perModelLoadedSchemas[schemaKey] = true;
 														// Keep legacy/global in sync for debugging only
-														_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
-														_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+														__kustoMonacoLoadedSchemas[schemaKey] = true;
+														__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 														
 																	// If requested, also switch context to this database.
 																	// NOTE: monaco-kusto's aggregated schema may not include newly-added databases
@@ -2015,9 +2045,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																					database: databaseSchema
 																				};
 																				await worker.setSchema(updatedSchema);
-																				_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
-																				_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: (existingDb || databaseSchema).name };
-																				_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+																				__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: (existingDb || databaseSchema).name };
+																				__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 																				contextSet = true;
 																			}
 																		} catch {
@@ -2038,13 +2067,13 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												if (typeof worker.setSchemaFromShowSchema === 'function') {
 													try {
 														await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-																			_win.__kustoMonacoInitialized = true; // legacy
-																			_win.__kustoMonacoInitializedByModel[modelKey] = true;
+																			__kustoMonacoInitialized = true; // legacy
+																			__kustoMonacoInitializedByModel[modelKey] = true;
 																			perModelLoadedSchemas[schemaKey] = true;
-																			_win.__kustoMonacoLoadedSchemas[schemaKey] = true;
-														_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
-																			_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
-																			_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+																			__kustoMonacoLoadedSchemas[schemaKey] = true;
+														__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+																			__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																			__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 													} catch (e) {
 														console.error('[monaco-kusto] Fallback setSchemaFromShowSchema failed:', e);
 													}
@@ -2077,7 +2106,7 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 							return false;
 						}
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : (modelUri as any).toString()) : models[0].uri.toString();
-						const currentContext = _win.__kustoMonacoDatabaseInContextByModel?.[modelKey] || _win.__kustoMonacoDatabaseInContext;
+						const currentContext = __kustoMonacoDatabaseInContextByModel?.[modelKey] || __kustoMonacoDatabaseInContext;
 						
 						// Check if already in this context (use normalized comparison for cluster URL)
 						const currentClusterNorm = normalizeClusterUrl(currentContext?.clusterUrl);
@@ -2129,9 +2158,8 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 							
 							await worker.setSchema(updatedSchema);
 							
-							_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
-							_win.__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
-							_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[modelKey];
+							__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
+							__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 							return true;
 							
 						} catch (e) {
@@ -2151,8 +2179,6 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							
 							// Debounce: track the most recent focus request
 							// If another focus came in for the same box, skip duplicate processing
-							_win.__kustoLastFocusedBoxId = _win.__kustoLastFocusedBoxId || null;
-							__kustoFocusInProgress = __kustoFocusInProgress || null;
 							
 							// If we're already processing this exact box, skip
 							if (__kustoFocusInProgress === boxId) {
@@ -2162,11 +2188,11 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							__kustoFocusInProgress = boxId;
 							
 							// Mark worker as initialized once a query box gets focus
-							_win.__kustoWorkerInitialized = true;
+							__kustoWorkerInitialized = true;
 							
 							// If we need to reload schemas after tab became visible, do it now
-							if (_win.__kustoWorkerNeedsSchemaReload) {
-								_win.__kustoWorkerNeedsSchemaReload = false;
+							if (__kustoWorkerNeedsSchemaReload) {
+								__kustoWorkerNeedsSchemaReload = false;
 								
 								// Re-request schema for the focused box (this will trigger load)
 								// Other box schemas will be loaded when they get focus
@@ -2214,8 +2240,7 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 									if (model && model.uri) {
 										const modelUri = model.uri.toString();
 										focusedModelUri = modelUri;
-										_win.__kustoModelClusterMap = _win.__kustoModelClusterMap || {};
-										_win.__kustoModelClusterMap[modelUri] = clusterUrl;
+										__kustoModelClusterMap[modelUri] = clusterUrl;
 									}
 								}
 							} catch (e) { console.error('[kusto]', e); }
@@ -2225,10 +2250,10 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							}
 							
 							const schemaKey = `${clusterUrl}|${database}`;
-							const currentContextForModel = _win.__kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || _win.__kustoMonacoDatabaseInContext;
+							const currentContextForModel = __kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || __kustoMonacoDatabaseInContext;
 											
 							// Check if this schema is already loaded in the worker
-							const perModelLoaded = _win.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
+							const perModelLoaded = __kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
 							const alreadyLoaded = !!perModelLoaded[schemaKey];
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							// This is the single source of truth - no duplicate caching
@@ -2309,18 +2334,15 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 											await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
 
 											// Update tracking state
-											_win.__kustoMonacoInitializedByModel = _win.__kustoMonacoInitializedByModel || {};
-											_win.__kustoMonacoInitializedByModel[focusedModelUri] = true;
-											const pl = _win.__kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
+											__kustoMonacoInitializedByModel[focusedModelUri] = true;
+											const pl = __kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
 											pl[schemaKey] = true;
-											if (_win.__kustoMonacoLoadedSchemasByModel) {
-												_win.__kustoMonacoLoadedSchemasByModel[focusedModelUri] = pl;
+											if (__kustoMonacoLoadedSchemasByModel) {
+												__kustoMonacoLoadedSchemasByModel[focusedModelUri] = pl;
 											}
-											_win.__kustoMonacoDatabaseInContextByModel = _win.__kustoMonacoDatabaseInContextByModel || {};
-											_win.__kustoMonacoDatabaseInContextByModel[focusedModelUri] = { clusterUrl, database: databaseInContext };
-											_win.__kustoMonacoDatabaseInContext = _win.__kustoMonacoDatabaseInContextByModel[focusedModelUri];
-											_win.__kustoSchemaCache = _win.__kustoSchemaCache || {};
-											_win.__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
+											__kustoMonacoDatabaseInContextByModel[focusedModelUri] = { clusterUrl, database: databaseInContext };
+											__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[focusedModelUri];
+											__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 										}
 									}
 								} catch (e) {
@@ -2383,7 +2405,7 @@ __kustoTriggerRevalidation = function(boxId: any) {
 
 					// Track which cross-cluster schemas have been loaded or requested
 					// Key: "clusterName|database" -> { status: 'pending'|'loaded'|'error', rawSchemaJson?: object }
-					_win.__kustoCrossClusterSchemas = {};
+					__kustoCrossClusterSchemas = {};
 
 					// Parse query text to extract cluster() and database() references
 					// Returns array of { clusterName, database } objects
@@ -2421,7 +2443,7 @@ __kustoExtractCrossClusterRefs = function (queryText: any) {
 							const database = match[1];
 							if (database) {
 								// Check if this database is different from the current context
-								const currentDb = _win.__kustoMonacoDatabaseInContext?.database;
+								const currentDb = __kustoMonacoDatabaseInContext?.database;
 								if (database.toLowerCase() !== currentDb?.toLowerCase()) {
 									const exists = refs.some(r => 
 										r.clusterName === null &&
@@ -2442,7 +2464,7 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 						// If clusterName is null, resolve it from current context
 						let resolvedClusterName = clusterName;
 						if (clusterName === null) {
-							const currentContext = _win.__kustoMonacoDatabaseInContext;
+							const currentContext = __kustoMonacoDatabaseInContext;
 							if (currentContext?.clusterUrl) {
 								// Extract cluster name from URL (e.g., https://ddtelvscode.kusto.windows.net -> ddtelvscode)
 								const urlMatch = currentContext.clusterUrl.match(/https?:\/\/([^.]+)/i);
@@ -2455,12 +2477,12 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 						const key = `${resolvedClusterName.toLowerCase()}|${database.toLowerCase()}`;
 						
 						// Skip if already loaded or pending
-						if (_win.__kustoCrossClusterSchemas[key]) {
+						if (__kustoCrossClusterSchemas[key]) {
 							return;
 						}
 
 						// Mark as pending
-						_win.__kustoCrossClusterSchemas[key] = { status: 'pending' };
+						__kustoCrossClusterSchemas[key] = { status: 'pending' };
 
 						const requestToken = 'crosscluster_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 						
@@ -2500,7 +2522,7 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 									schemaObj = JSON.parse(rawSchemaJson);
 								} catch (e) {
 									console.error('[monaco-kusto] Failed to parse cross-cluster schema JSON:', e);
-									_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Failed to parse schema' };
+									__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Failed to parse schema' };
 									return;
 								}
 							} else {
@@ -2508,7 +2530,7 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 							}
 
 							if (!schemaObj || !schemaObj.Databases) {
-								_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Invalid schema format' };
+								__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Invalid schema format' };
 								return;
 							}
 
@@ -2568,23 +2590,21 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 															// Update per-model tracking for ALL models
 															if (appliedCount > 0) {
 																for (const model of models) {
-																	_win.__kustoMonacoLoadedSchemasByModel = _win.__kustoMonacoLoadedSchemasByModel || {};
-																	_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = _win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
-																	_win.__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
+																	__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = __kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
+																	__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
 																}
 																}
 																// Keep legacy/global in sync for debugging only
-																_win.__kustoMonacoLoadedSchemas = _win.__kustoMonacoLoadedSchemas || {};
-																_win.__kustoMonacoLoadedSchemas[loadedKey] = true;
+																__kustoMonacoLoadedSchemas[loadedKey] = true;
 												
 																if (appliedCount > 0) {
-																	_win.__kustoCrossClusterSchemas[key] = { 
+																	__kustoCrossClusterSchemas[key] = { 
 																		status: 'loaded', 
 																		rawSchemaJson: schemaObj,
 																		clusterUrl
 																	};
 																} else {
-																	_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+																	__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
 																}
 											
 											// Show notification to user that cross-cluster schema was loaded
@@ -2597,13 +2617,13 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 												}
 											} catch (e) { console.error('[kusto]', e); }
 													} else {
-														_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
+														__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
 													}
 								}
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Failed to apply cross-cluster schema:', e);
-							_win.__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
+							__kustoCrossClusterSchemas[key] = { status: 'error', error: String(e) };
 						}
 					};
 
@@ -2738,7 +2758,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 						}
 					});
 					
-					_win.__kustoWorkerInitialized = true;
+					__kustoWorkerInitialized = true;
 					
 					// Start the theme observer to handle dynamic theme changes in VS Code
 					startMonacoThemeObserver(monaco);
@@ -2772,8 +2792,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 // Lazy loading state tracking
 // Monaco+Kusto worker is NOT loaded until user focuses a query box
 // This saves memory when files are opened but not actively edited
-_win.__kustoWorkerInitialized = false;
-_win.__kustoWorkerNeedsSchemaReload = false; // Set to true when tab becomes visible after being hidden
+// __kustoWorkerInitialized and __kustoWorkerNeedsSchemaReload are initialized at module scope.
 
 // Proactively start loading Monaco as soon as this script is loaded.
 // This reduces the time the UI appears as a non-interactive placeholder before the editor mounts.
@@ -2802,17 +2821,17 @@ try {
 				// This frees significant memory while keeping the basic worker alive
 				
 				// Mark that we need to reload schemas on next focus
-				_win.__kustoWorkerNeedsSchemaReload = true;
+				__kustoWorkerNeedsSchemaReload = true;
 				
 				// Clear the loaded schemas tracking
-				if (_win.__kustoMonacoLoadedSchemas) {
-					_win.__kustoMonacoLoadedSchemas = {};
+				if (__kustoMonacoLoadedSchemas) {
+					__kustoMonacoLoadedSchemas = {};
 				}
 				// Clear per-model tracking too (Monaco model URIs can be reused)
-				try { _win.__kustoMonacoLoadedSchemasByModel = {}; } catch (e) { console.error('[kusto]', e); }
-				try { _win.__kustoMonacoDatabaseInContextByModel = {}; } catch (e) { console.error('[kusto]', e); }
-				try { _win.__kustoMonacoInitializedByModel = {}; } catch (e) { console.error('[kusto]', e); }
-				_win.__kustoMonacoDatabaseInContext = null;
+				try { __kustoMonacoLoadedSchemasByModel = {}; } catch (e) { console.error('[kusto]', e); }
+				try { __kustoMonacoDatabaseInContextByModel = {}; } catch (e) { console.error('[kusto]', e); }
+				try { __kustoMonacoInitializedByModel = {}; } catch (e) { console.error('[kusto]', e); }
+				__kustoMonacoDatabaseInContext = null;
 				
 				// Optionally: Clear the schema from the worker to free memory
 				// This is async and may not complete before tab switch, but it's best effort
@@ -2903,7 +2922,7 @@ function initQueryEditor(boxId: any) {
 		// If persistence restore ran before Monaco init, apply the restored wrapper height now.
 		// This avoids layout glitches when the Copilot split-pane is installed.
 		try {
-			const pending = _win.__kustoPendingWrapperHeightPxByBoxId && _win.__kustoPendingWrapperHeightPxByBoxId[boxId];
+			const pending = pState.pendingWrapperHeightPxByBoxId && pState.pendingWrapperHeightPxByBoxId[boxId];
 			if (typeof pending === 'number' && Number.isFinite(pending) && pending > 0) {
 				let w = wrapper;
 				if (!w) {
@@ -2915,13 +2934,13 @@ function initQueryEditor(boxId: any) {
 					try { (w as any).dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 					// Also update the manual height map so __kustoGetWrapperHeightPx returns consistent values.
 					try {
-						if (!_win.__kustoManualQueryEditorHeightPxByBoxId || typeof _win.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
-							_win.__kustoManualQueryEditorHeightPxByBoxId = {};
+						if (!pState.manualQueryEditorHeightPxByBoxId || typeof pState.manualQueryEditorHeightPxByBoxId !== 'object') {
+							pState.manualQueryEditorHeightPxByBoxId = {};
 						}
-						_win.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(pending);
+						pState.manualQueryEditorHeightPxByBoxId[boxId] = Math.round(pending);
 					} catch (e) { console.error('[kusto]', e); }
 				}
-				try { delete _win.__kustoPendingWrapperHeightPxByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete pState.pendingWrapperHeightPxByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -2929,10 +2948,10 @@ function initQueryEditor(boxId: any) {
 		// to reduce async timing races in VS Code webviews.
 		let initialValue = '';
 		try {
-			const pending = _win.__kustoPendingQueryTextByBoxId && _win.__kustoPendingQueryTextByBoxId[boxId];
+			const pending = pState.pendingQueryTextByBoxId && pState.pendingQueryTextByBoxId[boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete _win.__kustoPendingQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete pState.pendingQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -3606,18 +3625,15 @@ function initQueryEditor(boxId: any) {
 
 		// SEM0139 helper: auto-select term and open Find-with-selection.
 		try {
-			if (!_win.__kustoAutoFindStateByBoxId || typeof _win.__kustoAutoFindStateByBoxId !== 'object') {
-				_win.__kustoAutoFindStateByBoxId = {};
-			}
-			if (typeof _win.__kustoAutoFindInQueryEditor !== 'function') {
-				_win.__kustoAutoFindInQueryEditor = async (boxId: any, term: any) => {
+			if (!__kustoAutoFindInQueryEditor) {
+				__kustoAutoFindInQueryEditor = async (boxId: any, term: any) => {
 					const bid = String(boxId || '').trim();
 					const t = String(term || '');
 					if (!bid || !t) return false;
 					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
 					if (!ed) return false;
 					try {
-						const state = _win.__kustoAutoFindStateByBoxId[bid];
+						const state = __kustoAutoFindStateByBoxId[bid];
 						if (state && state.term === t) {
 							return true;
 						}
@@ -3699,19 +3715,21 @@ function initQueryEditor(boxId: any) {
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try {
-						_win.__kustoAutoFindStateByBoxId[bid] = { term: usedTerm, ts: Date.now() };
+						__kustoAutoFindStateByBoxId[bid] = { term: usedTerm, ts: Date.now() };
 					} catch (e) { console.error('[kusto]', e); }
 					return true;
 				};
+				// Retain window bridge for kw-query-section.ts which reads window.__kustoAutoFindInQueryEditor.
+				_win.__kustoAutoFindInQueryEditor = __kustoAutoFindInQueryEditor;
 			}
 			if (typeof _win.__kustoClearAutoFindInQueryEditor !== 'function') {
 				_win.__kustoClearAutoFindInQueryEditor = (boxId: any) => {
 					const bid = String(boxId || '').trim();
 					if (!bid) return;
 					let had = false;
-					try { had = !!(_win.__kustoAutoFindStateByBoxId && _win.__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
+					try { had = !!(__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
 					if (!had) return;
-					try { delete _win.__kustoAutoFindStateByBoxId[bid]; } catch (e) { console.error('[kusto]', e); }
+					try { delete __kustoAutoFindStateByBoxId[bid]; } catch (e) { console.error('[kusto]', e); }
 					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
 					if (!ed) return;
 					try {
@@ -4457,10 +4475,10 @@ function initQueryEditor(boxId: any) {
 
 			// Persist last docs HTML across editor/overlay recreation (can happen if VS Code detaches the webview DOM).
 			try {
-				if (!_win.__kustoCaretDocsLastHtmlByBoxId || typeof _win.__kustoCaretDocsLastHtmlByBoxId !== 'object') {
-					_win.__kustoCaretDocsLastHtmlByBoxId = {};
+				if (!__kustoCaretDocsLastHtmlByBoxId || typeof __kustoCaretDocsLastHtmlByBoxId !== 'object') {
+					__kustoCaretDocsLastHtmlByBoxId = {};
 				}
-				const cached = _win.__kustoCaretDocsLastHtmlByBoxId[boxId];
+				const cached = __kustoCaretDocsLastHtmlByBoxId[boxId];
 				if (typeof cached === 'string' && cached.trim()) {
 					lastDocsHtml = cached;
 					lastHtml = cached;
@@ -4480,16 +4498,16 @@ function initQueryEditor(boxId: any) {
 			// In VS Code webviews, document.hasFocus() can be unreliable when the VS Code window
 			// loses focus. Track focus explicitly from window-level events.
 			try {
-				if (typeof _win.__kustoWebviewHasFocus !== 'boolean') {
-					_win.__kustoWebviewHasFocus = true;
+				if (typeof __kustoWebviewHasFocus !== 'boolean') {
+					__kustoWebviewHasFocus = true;
 				}
-				if (!_win.__kustoWebviewFocusListenersInstalled) {
-					_win.__kustoWebviewFocusListenersInstalled = true;
+				if (!__kustoWebviewFocusListenersInstalled) {
+					__kustoWebviewFocusListenersInstalled = true;
 					try {
 						window.addEventListener(
 							'blur',
 							() => {
-								try { _win.__kustoWebviewHasFocus = false; } catch (e) { console.error('[kusto]', e); }
+								try { __kustoWebviewHasFocus = false; } catch (e) { console.error('[kusto]', e); }
 								// After focus flips, refresh the active overlay once so it can freeze/restore docs.
 								try {
 									setTimeout(() => {
@@ -4504,12 +4522,12 @@ function initQueryEditor(boxId: any) {
 							true
 						);
 					} catch (e) { console.error('[kusto]', e); }
-					try { window.addEventListener('focus', () => { try { _win.__kustoWebviewHasFocus = true; } catch (e) { console.error('[kusto]', e); } }, true); } catch (e) { console.error('[kusto]', e); }
+					try { window.addEventListener('focus', () => { try { __kustoWebviewHasFocus = true; } catch (e) { console.error('[kusto]', e); } }, true); } catch (e) { console.error('[kusto]', e); }
 					try {
 						document.addEventListener('visibilitychange', () => {
 							try {
 								// When the tab becomes hidden, treat as unfocused.
-								_win.__kustoWebviewHasFocus = !document.hidden;
+								__kustoWebviewHasFocus = !document.hidden;
 							} catch (e) { console.error('[kusto]', e); }
 						}, true);
 					} catch (e) { console.error('[kusto]', e); }
@@ -4518,8 +4536,8 @@ function initQueryEditor(boxId: any) {
 
 			const isWebviewFocused = () => {
 				try {
-					if (typeof _win.__kustoWebviewHasFocus === 'boolean') {
-						return !!_win.__kustoWebviewHasFocus;
+					if (typeof __kustoWebviewHasFocus === 'boolean') {
+						return !!__kustoWebviewHasFocus;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
@@ -4584,7 +4602,7 @@ function initQueryEditor(boxId: any) {
 							try {
 								// If the overall VS Code/webview is unfocused, freeze regardless of Monaco state.
 								try {
-									if (typeof _win.__kustoWebviewHasFocus === 'boolean' && _win.__kustoWebviewHasFocus === false) {
+									if (typeof __kustoWebviewHasFocus === 'boolean' && __kustoWebviewHasFocus === false) {
 										hasFocus = false;
 										throw new Error('webview not focused');
 									}
@@ -4734,8 +4752,8 @@ function initQueryEditor(boxId: any) {
 						lastHtml = html;
 								lastDocsHtml = html;
 								try {
-									if (_win.__kustoCaretDocsLastHtmlByBoxId && typeof _win.__kustoCaretDocsLastHtmlByBoxId === 'object') {
-										_win.__kustoCaretDocsLastHtmlByBoxId[boxId] = html;
+									if (__kustoCaretDocsLastHtmlByBoxId && typeof __kustoCaretDocsLastHtmlByBoxId === 'object') {
+										__kustoCaretDocsLastHtmlByBoxId[boxId] = html;
 									}
 								} catch (e) { console.error('[kusto]', e); }
 						try {
@@ -4771,8 +4789,8 @@ function initQueryEditor(boxId: any) {
 					// Keep the overlay positioned correctly when the outer webview scrolls/resizes.
 					// Install once globally to avoid accumulating listeners per editor.
 					try {
-						if (!_win.__kustoCaretDocsViewportListenersInstalled) {
-							_win.__kustoCaretDocsViewportListenersInstalled = true;
+						if (!__kustoCaretDocsViewportListenersInstalled) {
+							__kustoCaretDocsViewportListenersInstalled = true;
 							const refreshActive = () => {
 								try {
 									if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
@@ -4862,16 +4880,16 @@ function initQueryEditor(boxId: any) {
 			try {
 				__kustoScheduleKustoDiagnostics(boxId, 250);
 			} catch (e) { console.error('[kusto]', e); }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			// Check for cross-cluster references and request their schemas
 			try {
 				if (__kustoCheckCrossClusterRefs != null) {
 					// Debounce the check to avoid excessive requests while typing
-					if (!_win.__kustoCrossClusterCheckTimeout) {
-						_win.__kustoCrossClusterCheckTimeout = {};
+					if (!__kustoCrossClusterCheckTimeout) {
+						__kustoCrossClusterCheckTimeout = {};
 					}
-					clearTimeout(_win.__kustoCrossClusterCheckTimeout[boxId]);
-					_win.__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
+					clearTimeout(__kustoCrossClusterCheckTimeout[boxId]);
+					__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
 						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
 					}, 500);
 				}
@@ -4883,7 +4901,7 @@ function initQueryEditor(boxId: any) {
 			try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
 			try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 			try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-			try { _win.__kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
@@ -4915,7 +4933,7 @@ function initQueryEditor(boxId: any) {
 				try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
 				try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
 				try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-				try { _win.__kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
 				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				syncPlaceholder();
 				scheduleDocUpdate();
@@ -5156,8 +5174,8 @@ function initQueryEditor(boxId: any) {
 					try { delete (w as any).dataset.kustoAutoResized; } catch (e) { console.error('[kusto]', e); }
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					if (!_win.__kustoManualQueryEditorHeightPxByBoxId || typeof _win.__kustoManualQueryEditorHeightPxByBoxId !== 'object') {
-						_win.__kustoManualQueryEditorHeightPxByBoxId = {};
+					if (!pState.manualQueryEditorHeightPxByBoxId || typeof pState.manualQueryEditorHeightPxByBoxId !== 'object') {
+						pState.manualQueryEditorHeightPxByBoxId = {};
 					}
 				} catch (e) { console.error('[kusto]', e); }
 
@@ -5188,8 +5206,8 @@ function initQueryEditor(boxId: any) {
 					const nextHeight = Math.max(minHeightPx, startHeight + delta);
 					(w as any).style.height = nextHeight + 'px';
 					try {
-						if (_win.__kustoManualQueryEditorHeightPxByBoxId && typeof _win.__kustoManualQueryEditorHeightPxByBoxId === 'object') {
-							_win.__kustoManualQueryEditorHeightPxByBoxId[boxId] = Math.round(nextHeight);
+						if (pState.manualQueryEditorHeightPxByBoxId && typeof pState.manualQueryEditorHeightPxByBoxId === 'object') {
+							pState.manualQueryEditorHeightPxByBoxId[boxId] = Math.round(nextHeight);
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
@@ -5200,7 +5218,7 @@ function initQueryEditor(boxId: any) {
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
-					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				};
 
 				document.addEventListener('mousemove', onMove, true);
@@ -5228,9 +5246,8 @@ function initQueryEditor(boxId: any) {
 
 		let attempt = 0;
 		try {
-			_win.__kustoMonacoInitRetryCountByBoxId = _win.__kustoMonacoInitRetryCountByBoxId || {};
-			attempt = (_win.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
-			_win.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+			attempt = (__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}

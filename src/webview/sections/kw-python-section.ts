@@ -1,8 +1,12 @@
+import { pState } from '../shared/persistence-state';
 import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
+import { schedulePersist } from '../modules/persistence.js';
+import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../modules/monaco-writable.js';
+import { __kustoAttachAutoResizeToContent } from '../modules/monaco-resize.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -277,14 +281,10 @@ export class KwPythonSection extends LitElement {
 			// Writable guards.
 			this._forceWritable(editor);
 			try {
-				if (typeof window.__kustoEnsureEditorWritableSoon === 'function') {
-					window.__kustoEnsureEditorWritableSoon(editor);
-				}
+				__kustoEnsureEditorWritableSoon(editor);
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				if (typeof window.__kustoInstallWritableGuard === 'function') {
-					window.__kustoInstallWritableGuard(editor);
-				}
+				__kustoInstallWritableGuard(editor);
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Mousedown force-writable.
@@ -297,9 +297,7 @@ export class KwPythonSection extends LitElement {
 
 			// Auto-resize.
 			try {
-				if (typeof window.__kustoAttachAutoResizeToContent === 'function') {
-					window.__kustoAttachAutoResizeToContent(editor, slotted);
-				}
+				__kustoAttachAutoResizeToContent(editor, slotted);
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Persist on content change.
@@ -344,9 +342,7 @@ export class KwPythonSection extends LitElement {
 
 	private _forceWritable(editor: MonacoEditor): void {
 		try {
-			if (typeof window.__kustoForceEditorWritable === 'function') {
-				window.__kustoForceEditorWritable(editor);
-			}
+			__kustoForceEditorWritable(editor);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -543,8 +539,7 @@ export class KwPythonSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = window.schedulePersist;
-			if (typeof sp === 'function') sp();
+			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -561,7 +556,7 @@ export class KwPythonSection extends LitElement {
 		if (!code) {
 			// Fallback: check pending code buffer (Monaco may not be ready yet).
 			try {
-				const pending = window.__kustoPendingPythonCodeByBoxId;
+				const pending = pState.pendingPythonCodeByBoxId;
 				if (pending && typeof pending[this.boxId] === 'string') {
 					code = pending[this.boxId];
 				}

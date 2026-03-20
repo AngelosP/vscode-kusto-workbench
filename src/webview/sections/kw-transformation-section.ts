@@ -4,6 +4,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 import { setResultsState } from '../modules/resultsState.js';
+import { schedulePersist } from '../modules/persistence.js';
+import { __kustoGetChartDatasetsInDomOrder } from '../modules/extraBoxes.js';
 import {
 	tokenizeExpr,
 	parseExprToRpn,
@@ -1227,12 +1229,9 @@ export class KwTransformationSection extends LitElement {
 
 	private _refreshDatasets(): void {
 		try {
-			const fn = window.__kustoGetChartDatasetsInDomOrder;
-			if (typeof fn === 'function') {
-				// Filter out this transformation's own ID to prevent circular dependency.
-				const all = fn() || [];
-				this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
-			}
+			// Filter out this transformation's own ID to prevent circular dependency.
+			const all = __kustoGetChartDatasetsInDomOrder() || [];
+			this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1577,8 +1576,7 @@ export class KwTransformationSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = window.schedulePersist;
-			if (typeof sp === 'function') sp();
+			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 

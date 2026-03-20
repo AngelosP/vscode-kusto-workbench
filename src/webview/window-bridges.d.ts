@@ -174,47 +174,22 @@ declare global {
 		// schema functions (relocated to queryBoxes.ts)
 		// =====================================================================
 		__kustoRequestSchema: (connectionId: string, database: string, forceRefresh?: boolean) => Promise<KustoSchemaInfo>;
-		__kustoSchemaRequestTokenByBoxId: Record<string, any>;
 
 		// =====================================================================
 		// persistence.ts
 		// =====================================================================
 		schedulePersist: (reason?: string, immediate?: boolean) => void;
-		getKqlxState: () => any;
 		handleDocumentDataMessage: (message: any) => void;
 		__kustoOnQueryResult: (boxId: string, result: any) => void;
-		__kustoTryStoreQueryResult: (boxId: string, result: any) => void;
 		__kustoRequestAddSection: (kind: string) => void;
 		__kustoSetCompatibilityMode: (enabled: boolean) => void;
 		__kustoApplyDocumentCapabilities: () => void;
 		__kustoGetWrapperHeightPx: (boxId: string, suffix: string) => number | undefined;
-		__kustoCompatibilityMode: boolean;
-		__kustoCompatibilitySingleKind: string | null;
-		__kustoCompatibilityTooltip: string | null;
-		__kustoIsSessionFile: boolean;
-		__kustoDocumentKind: string;
-		__kustoAllowedSectionKinds: string[] | null;
-		__kustoDefaultSectionKind: string | null;
-		__kustoDevNotesSections: any[];
-		__kustoPendingQueryTextByBoxId: Record<string, string>;
-		__kustoPendingMarkdownTextByBoxId: Record<string, string>;
-		__kustoPendingPythonCodeByBoxId: Record<string, string>;
-		__kustoPendingWrapperHeightPxByBoxId: Record<string, number>;
-		__kustoQueryResultJsonByBoxId: Record<string, any>;
-		__kustoQueryExpandedByBoxId: Record<string, boolean>;
-		__kustoQueryEditorPendingAdds: any[];
-		__kustoLastRunCacheEnabledByBoxId: Record<string, boolean>;
-		__kustoUpgradeRequestType: string | null;
-		__kustoResultsVisibleByBoxId: Record<string, boolean>;
 
 		// =====================================================================
 		// queryBoxes.ts
 		// =====================================================================
 		addQueryBox: (options?: any) => string;
-		removeQueryBox: (boxId: string) => void;
-		toggleQueryBoxVisibility: (boxId: string) => void;
-		__kustoMaximizeQueryBox: (boxId: string) => void;
-		__kustoManualQueryEditorHeightPxByBoxId: Record<string, number>;
 		__kustoLog: (_boxId?: string, _event?: string, _message?: string, _data?: any, _level?: string) => void;
 		fullyQualifyTablesInEditor: (boxId: string) => Promise<void>;
 		__kustoIndexToAlphaName: (index: number) => string;
@@ -229,8 +204,6 @@ declare global {
 		// =====================================================================
 		// queryBoxes.ts (connection/favorites — absorbed from queryBoxes-connection.ts)
 		// =====================================================================
-		promptAddConnectionFromDropdown: (boxId: string) => void;
-		importConnectionsFromXmlFile: (boxId: string) => void;
 		__kustoGetConnectionId: (boxId: string) => string;
 		__kustoGetDatabase: (boxId: string) => string;
 		__kustoGetCurrentClusterUrlForBox: (boxId: string) => string;
@@ -246,7 +219,6 @@ declare global {
 		__kustoUpdateFavoritesUiForAllBoxes: () => void;
 		__kustoTryAutoEnterFavoritesModeForAllBoxes: () => void;
 		__kustoFindFavorite: (clusterUrl: string, database: string) => KustoFavoriteInfo | null;
-		__kustoRestoreInProgress: boolean;
 		__kustoMarkNewBoxForFavoritesAutoEnter: (boxId: string) => void;
 		__kustoTryAutoEnterFavoritesModeForNewBox: (boxId: string) => void;
 		__kustoIsRunSelectionReady: (boxId: string) => boolean;
@@ -274,11 +246,8 @@ declare global {
 		// queryBoxes-toolbar.ts
 		// =====================================================================
 		initToolbarOverflow: (boxId: string) => void;
-		getRunMode: (boxId: string) => string;
 		setRunMode: (boxId: string, mode: string) => void;
 		closeAllRunMenus: () => void;
-		__kustoGetLastOptimizeModelId: () => string;
-		__kustoSetLastOptimizeModelId: (modelId: string) => void;
 		__kustoSetOptimizeInProgress: (boxId: string, inProgress: boolean, statusText: string) => void;
 		__kustoUpdateOptimizeStatus: (boxId: string, statusText: string) => void;
 		__kustoHideOptimizePromptForBox: (boxId: string) => void;
@@ -312,9 +281,6 @@ declare global {
 		displayError: (error: any) => void;
 		displayCancelled: () => void;
 		setQueryExecuting: (boxId: string, executing: boolean) => void;
-		lastExecutedBox: string | null;
-		__kustoSetResultsToolsVisible: (boxId: string, visible: boolean) => void;
-		__kustoHideResultsTools: (boxId: string) => void;
 		__kustoApplyComparisonSummaryVisibility: (boxId: string) => void;
 		__kustoUpdateComparisonSummaryToggleButton: (boxId: string) => void;
 		displayComparisonSummary: (sourceBoxId: string, comparisonBoxId: string) => void;
@@ -361,29 +327,11 @@ declare global {
 		__kustoNormalizeResultsColumnName: (col: KustoResultsColumn) => string;
 		__kustoNormalizeColumnNameForComparison: (name: string) => string;
 		__kustoBuildNameBasedColumnMapping: (state: KustoResultsState, names: string[]) => any;
-		__kustoTryParseNumber: (v: any) => number | null;
 		__kustoTryParseDateMs: (v: any) => number | null;
 		__kustoApplyResultsVisibility: (boxId: string) => void;
 		__kustoEnsureDisplayRowIndexMaps: (state: KustoResultsState) => void;
 		__kustoSetSplitCaretsVisible: (boxId: string, filtered: boolean) => void;
-		__kustoFormatCellDisplayValueForTable: (cell: any) => string;
-		__kustoUpdateQueryResultsToggleButton: (boxId: string) => void;
-		__kustoNotifyResultsUpdated: (boxId: string) => void;
-		__kustoClampResultsWrapperHeight: (boxId: string) => void;
-		__kustoActiveFilterPopover: any;
-		__kustoFilterGlobalCloseHandlerInstalled: boolean;
-		__kustoLastActiveResultsBoxId: string;
-		__kustoLastActiveResultsInteractionAt: number;
-		__kustoResultsCopyKeyHandlerInstalled: boolean;
-		__kustoResultsByBoxId: Record<string, KustoResultsState>;
-		currentResult: any;
-		currentAutocompleteIndex: number;
-		__kustoSortDnD: { boxId: string | null; fromIdx: number; dragEnabled: boolean };
-		__kustoErrorLocationClickHandlerInstalled: boolean;
-		__kustoClampInt: (value: number, min: number, max: number) => number;
-		__kustoSetCellSelectionState: (boxId: string, state: KustoResultsState, nextRow: number, nextCol: number, options?: any) => void;
-		__kustoNormalizeSortDirection: (dir: string) => string;
-		__kustoGetSortIconSvg: () => string;
+		__kustoEnsureDisplayRowIndexMaps: (state: KustoResultsState) => void;
 		__kustoGetSaveIconSvg: () => string;
 		__kustoGetScrollToColumnIconSvg: () => string;
 		__kustoIsFilterSpecActive: (spec: any) => boolean;
@@ -489,13 +437,11 @@ declare global {
 		// =====================================================================
 		__kustoGetResultsVisibilityIconSvg: () => string;
 		__kustoGetFilterIconSvg: (size?: number) => string;
-		__kustoGetTrashIconSvg: (size?: number) => string;
 		__kustoEscapeJsStringLiteral: (s: string) => string;
 		__kustoEscapeForHtmlAttribute: (s: string) => string;
 		__kustoEscapeForHtml: (s: string) => string;
 		__kustoSplitMenuEl: HTMLElement | null;
 		__kustoContextMenuEl: HTMLElement | null;
-		__kustoOpenShareModal: (boxId: string) => void;
 
 		__kustoGetAllResultsAsCsv: (boxId: string) => string;
 		__kustoGetResultsAsCsv: (boxId: string, mode: string) => string;
@@ -523,32 +469,7 @@ declare global {
 		// =====================================================================
 		// monaco.ts
 		// =====================================================================
-		__kustoMonacoInitialized: boolean;
-		__kustoMonacoInitializedByModel: Record<string, boolean>;
-		__kustoMonacoDatabaseInContext: { clusterUrl: string; database: string } | null;
-		__kustoMonacoDatabaseInContextByModel: Record<string, { clusterUrl: string; database: string }>;
-		__kustoMonacoLoadedSchemas: Record<string, any>;
-		__kustoMonacoLoadedSchemasByModel: Record<string, any>;
-		__kustoMonacoModelDisposeHookInstalled: boolean;
-		__kustoMarkersEnabledModels: Set<string>;
-		__kustoModelClusterMap: Record<string, string>;
-		__kustoSchemaCache: Record<string, any>;
-		__kustoGeneratedFunctionsMerged: boolean;
 		__kustoFunctionDocs: Record<string, any>;
-		__kustoControlCommandDocCache: Record<string, any>;
-		__kustoControlCommandDocPending: Record<string, any>;
-		__kustoWorkerInitialized: boolean;
-		__kustoWorkerNeedsSchemaReload: boolean;
-		__kustoLastFocusedBoxId: string | null;
-		__kustoLastMonacoInteractionAt: number;
-		__kustoMonacoInitRetryCountByBoxId: Record<string, number>;
-		__kustoCrossClusterSchemas: Record<string, any>;
-		__kustoCrossClusterCheckTimeout: Record<string, any>;
-		__kustoAutoFindStateByBoxId: Record<string, any>;
-		__kustoCaretDocsLastHtmlByBoxId: Record<string, string>;
-		__kustoCaretDocsViewportListenersInstalled: boolean;
-		__kustoWebviewHasFocus: boolean;
-		__kustoWebviewFocusListenersInstalled: boolean;
 		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean) => Promise<void>;
 		__kustoUpdateSchemaForFocusedBox: (boxId: string, enableMarkers?: boolean) => Promise<void>;
 		__kustoApplyCrossClusterSchema: (clusterName: string, clusterUrl: string, database: string, rawSchemaJson: any) => Promise<void>;
@@ -591,15 +512,11 @@ declare global {
 		// monaco-writable.ts
 		// =====================================================================
 		__kustoNormalizeTextareasWritable: () => void;
-		__kustoForceEditorWritable: (editor: any) => void;
-		__kustoInstallWritableGuard: (editor: any) => void;
-		__kustoEnsureEditorWritableSoon: (editor: any) => void;
 		__kustoEnsureAllEditorsWritableSoon: () => void;
 
 		// =====================================================================
 		// monaco-resize.ts
 		// =====================================================================
-		__kustoAttachAutoResizeToContent: (editor: any, containerEl?: any) => void;
 
 
 
@@ -640,7 +557,6 @@ declare global {
 		// =====================================================================
 		// Copilot chat — thin bridges (logic in kw-query-section.ts)
 		// =====================================================================
-		__kustoCopilotChatFirstTimeDismissed: boolean;
 		__kustoToggleCopilotChatForBox: (boxId: string) => void;
 		addCopilotQueryBox: (options?: any) => string;
 
@@ -655,9 +571,6 @@ declare global {
 		__kustoPythonEditors: Record<string, any>;
 		chartStateByBoxId: Record<string, any>;
 		transformationStateByBoxId: Record<string, any>;
-		__kustoRefreshAllDataSourceDropdowns: () => void;
-		__kustoGetChartValidationStatus: (boxId: string) => any;
-		__kustoGetChartDatasetsInDomOrder: () => any[];
 		__kustoConfigureChartFromTool: (boxId: string, config: any) => any;
 		__kustoConfigureChart: (boxId: string, config: any) => any;
 		__kustoCellToChartString: (cell: any) => string;
@@ -678,9 +591,6 @@ declare global {
 		// extraBoxes-chart.ts
 		// =====================================================================
 		__kustoChartBoxes: any[];
-		__kustoDisposeChartEcharts: (boxId: string) => void;
-		__kustoRenderChart: (boxId: string) => void;
-		__kustoMaximizeChartBox: (boxId: string) => void;
 		__kustoAutoFitChartIfClipped: (boxId: string) => void;
 		removeChartBox: (boxId: string) => void;
 		toggleChartBoxVisibility: (boxId: string) => void;
@@ -799,18 +709,6 @@ declare global {
 		// =====================================================================
 		__kustoMarkdownModeByBoxId?: Record<string, string>;
 		__kustoMarkdownExpandedByBoxId?: Record<string, boolean>;
-		__kustoResolvedImageSrcCache?: Record<string, string>;
-		__kustoPendingMarkdownRevealByBoxId?: Record<string, any>;
-
-		// =====================================================================
-		// persistence.ts (additional state)
-		// =====================================================================
-		__kustoDocumentUri?: string;
-
-		// =====================================================================
-		// dropdown.ts (state)
-		// =====================================================================
-		__kustoToolbarScrollAtOpen?: number;
 
 		// =====================================================================
 		// resultsTable.ts (additional)

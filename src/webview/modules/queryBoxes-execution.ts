@@ -20,6 +20,8 @@ import {
 	isValidConnectionIdForRun as __kustoIsValidConnectionIdForRun_pure,
 } from '../shared/comparisonUtils';
 import { escapeHtml } from './utils';
+import { pState } from '../shared/persistence-state';
+import { schedulePersist } from './persistence';
 import {
 __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
 __kustoSetSectionName, __kustoGetSectionName, __kustoPickNextAvailableSectionLetterName,
@@ -29,17 +31,16 @@ __kustoLog
 } from './queryBoxes';
 import { getRunModeLabelText } from '../shared/comparisonUtils';
 import { getRunMode, setRunMode, closeRunMenu } from './queryBoxes-toolbar';
-import { getResultsState } from './resultsState';
+import { getResultsState, ensureResultsStateMap } from './resultsState';
 export {};
+
+export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
 
 const _win = window;
 
 export function __kustoSetResultsVisible( boxId: any, visible: any) {
 	try {
-		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
-			window.__kustoResultsVisibleByBoxId = {};
-		}
-		window.__kustoResultsVisibleByBoxId[boxId] = !!visible;
+		pState.resultsVisibleByBoxId[boxId] = !!visible;
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoApplyResultsVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
@@ -71,7 +72,7 @@ function __kustoLockCacheForBenchmark( boxId: any) {
 			unitSelect.title = msg;
 		}
 		try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -98,7 +99,7 @@ function acceptOptimizations( comparisonBoxId: any) {
 		}
 		if (_win.queryEditors[sourceBoxId] && typeof _win.queryEditors[sourceBoxId].setValue === 'function') {
 			_win.queryEditors[sourceBoxId].setValue(optimizedQuery);
-			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
 		// Remove comparison box and clear metadata links.
@@ -122,7 +123,7 @@ export function __kustoUpdateQueryResultsToggleButton( boxId: any) {
 	}
 	let visible = true;
 	try {
-		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false);
 	} catch (e) { console.error('[kusto]', e); }
 	btn.classList.toggle('is-active', visible);
 	btn.setAttribute('aria-selected', visible ? 'true' : 'false');
@@ -152,7 +153,7 @@ export function __kustoApplyResultsVisibility( boxId: any) {
 		// without the surrounding *_results_wrapper.
 		let visible = true;
 		try {
-			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+			visible = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false);
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const body = document.getElementById(boxId + '_results_body') as any;
@@ -166,19 +167,11 @@ export function __kustoApplyResultsVisibility( boxId: any) {
 				resultsDiv.classList.toggle('is-results-hidden', !visible);
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try {
-			if (typeof _win.__kustoSetResultsToolsVisible === 'function') {
-				_win.__kustoSetResultsToolsVisible(boxId, visible);
-			}
-			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
-				_win.__kustoHideResultsTools(boxId);
-			}
-		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	let visible = true;
 	try {
-		visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+		visible = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false);
 	} catch (e) { console.error('[kusto]', e); }
 	// Only show wrapper when there's content.
 	const resultsDiv = document.getElementById(boxId + '_results') as any;
@@ -195,7 +188,7 @@ export function __kustoApplyResultsVisibility( boxId: any) {
 		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		let visible = true;
 		try {
-			visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[boxId] === false);
+			visible = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false);
 		} catch (e) { console.error('[kusto]', e); }
 		if (!visible) {
 			// Collapsed: header-only height, hide resizer.
@@ -228,14 +221,6 @@ export function __kustoApplyResultsVisibility( boxId: any) {
 		if (body) {
 			body.style.display = visible ? '' : 'none';
 		}
-		try {
-			if (typeof _win.__kustoSetResultsToolsVisible === 'function') {
-				_win.__kustoSetResultsToolsVisible(boxId, visible);
-			}
-			if (!visible && typeof _win.__kustoHideResultsTools === 'function') {
-				_win.__kustoHideResultsTools(boxId);
-			}
-		} catch (e) { console.error('[kusto]', e); }
 		const resizer = document.getElementById(boxId + '_results_resizer') as any;
 		if (resizer) {
 			// Cleaner UI: only show the resize handle when a successful results table is rendered.
@@ -314,11 +299,11 @@ export function __kustoApplyComparisonSummaryVisibility( boxId: any) {
 
 function toggleQueryResultsVisibility( boxId: any) {
 	try {
-		if (!window.__kustoResultsVisibleByBoxId || typeof window.__kustoResultsVisibleByBoxId !== 'object') {
-			window.__kustoResultsVisibleByBoxId = {};
+		if (!pState.resultsVisibleByBoxId || typeof pState.resultsVisibleByBoxId !== 'object') {
+			pState.resultsVisibleByBoxId = {};
 		}
-		const current = !(window.__kustoResultsVisibleByBoxId[boxId] === false);
-		window.__kustoResultsVisibleByBoxId[boxId] = !current;
+		const current = !(pState.resultsVisibleByBoxId[boxId] === false);
+		pState.resultsVisibleByBoxId[boxId] = !current;
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateQueryResultsToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoApplyResultsVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
@@ -327,7 +312,7 @@ function toggleQueryResultsVisibility( boxId: any) {
 			window.__kustoOnResultsVisibilityToggled(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function toggleComparisonSummaryVisibility( boxId: any) {
@@ -346,7 +331,7 @@ function toggleComparisonSummaryVisibility( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateComparisonSummaryToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoApplyComparisonSummaryVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureCacheBackupMap() {
@@ -421,7 +406,7 @@ function __kustoRestoreCacheSettings( boxId: any) {
 		try { toggleCacheControls(boxId); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 	try { delete map[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoEnsureRunModeBackupMap() {
@@ -936,7 +921,7 @@ function __kustoShowOptimizePromptLoading( boxId: any) {
 
 const __kustoOptimizeModelStorageKey = 'kusto.optimize.lastModelId';
 
-function __kustoGetLastOptimizeModelId() {
+export function __kustoGetLastOptimizeModelId() {
 	try {
 		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
 		if (state && state.lastOptimizeModelId) {
@@ -949,7 +934,7 @@ function __kustoGetLastOptimizeModelId() {
 	return '';
 }
 
-function __kustoSetLastOptimizeModelId( modelId: any) {
+export function __kustoSetLastOptimizeModelId( modelId: any) {
 	const id = String(modelId || '');
 	try {
 		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
@@ -1049,7 +1034,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
 			__kustoSetSectionName(boxId, sourceName);
-			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (sourceName) {
 			req.queryName = sourceName;
@@ -1163,7 +1148,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
 				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
 				__kustoSetSectionName(boxId, sourceNameForOptimize);
-				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			}
 			if (sourceNameForOptimize) {
 				desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
@@ -1218,7 +1203,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 				try {
 					if (desiredOptimizedName) {
 						__kustoSetSectionName(existingComparisonBoxId, desiredOptimizedName);
-						try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+						try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					} else {
 						const currentName = __kustoGetSectionName(existingComparisonBoxId);
 						let shouldReplace = !currentName;
@@ -1230,7 +1215,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 						}
 						if (shouldReplace) {
 							__kustoSetSectionName(existingComparisonBoxId, __kustoPickNextAvailableSectionLetterName(existingComparisonBoxId));
-							try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+							try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -1797,14 +1782,12 @@ export function executeQuery( boxId: any, mode?: any) {
 	// false mismatches when queries are otherwise unchanged.
 	try {
 		if (isComparisonBox && sourceBoxIdForComparison) {
-			const cacheMap = window.__kustoLastRunCacheEnabledByBoxId;
-			const sourceLastRunUsedCaching = !!(cacheMap && typeof cacheMap === 'object' && cacheMap[sourceBoxIdForComparison]);
+			const sourceLastRunUsedCaching = !!(lastRunCacheEnabledByBoxId[sourceBoxIdForComparison]);
 			if (sourceLastRunUsedCaching) {
 				// Prevent transient comparisons against stale cached source results.
 				try {
-					if (window.__kustoResultsByBoxId && typeof window.__kustoResultsByBoxId === 'object') {
-						delete window.__kustoResultsByBoxId[sourceBoxIdForComparison];
-					}
+					const resultsMap = ensureResultsStateMap();
+					delete resultsMap[sourceBoxIdForComparison];
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					__kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', {
@@ -1859,14 +1842,11 @@ export function executeQuery( boxId: any, mode?: any) {
 	// When caching is enabled, the extension injects an extra (hidden) first line,
 	// so error line numbers need to be adjusted for the visible editor.
 	try {
-		if (!window.__kustoLastRunCacheEnabledByBoxId || typeof window.__kustoLastRunCacheEnabledByBoxId !== 'object') {
-			window.__kustoLastRunCacheEnabledByBoxId = {};
-		}
-		window.__kustoLastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
+		lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled;
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Store the last executed box for result display
-	window.lastExecutedBox = boxId;
+	pState.lastExecutedBox = boxId;
 
 	(_win.vscode as any).postMessage({
 		type: 'executeQuery',
@@ -1883,7 +1863,6 @@ export function executeQuery( boxId: any, mode?: any) {
 
 // ── Window bridges for remaining legacy callers ──
 // __kustoSetResultsVisible bridge removed (D8) — exported, all consumers use ES imports.
-window.__kustoGetLastOptimizeModelId = __kustoGetLastOptimizeModelId;
-window.__kustoSetLastOptimizeModelId = __kustoSetLastOptimizeModelId;
+// __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId bridges removed (Option A) — exported.
 window.cancelQuery = cancelQuery;
 window.executeQuery = executeQuery;

@@ -1,9 +1,11 @@
+import { pState } from '../shared/persistence-state';
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown.js';
+import { schedulePersist } from '../modules/persistence.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -302,10 +304,10 @@ export class KwMarkdownSection extends LitElement {
 		// Resolve initial text: prefer pending buffer, then attribute.
 		let initialValue = this.initialText || '';
 		try {
-			const pending = window.__kustoPendingMarkdownTextByBoxId?.[this.boxId];
+			const pending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete pState.pendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -415,10 +417,10 @@ export class KwMarkdownSection extends LitElement {
 
 		// Check for late-arriving pending text.
 		try {
-			const latePending = window.__kustoPendingMarkdownTextByBoxId?.[this.boxId];
+			const latePending = pState.pendingMarkdownTextByBoxId?.[this.boxId];
 			if (typeof latePending === 'string') {
 				api.setValue(latePending);
-				try { delete window.__kustoPendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete pState.pendingMarkdownTextByBoxId[this.boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -430,7 +432,7 @@ export class KwMarkdownSection extends LitElement {
 
 		// Fix border issues.
 		try {
-			const isPlainMd = String(window.__kustoDocumentKind || '') === 'md';
+			const isPlainMd = String(pState.documentKind || '') === 'md';
 			const defaultUI = editorContainer.querySelector('.toastui-editor-defaultUI') as HTMLElement | null;
 			if (defaultUI) {
 				if (isPlainMd) {
@@ -775,7 +777,7 @@ export class KwMarkdownSection extends LitElement {
 	/** Reset scroll position for .md files after mode switch. */
 	private _resetMdScroll(): void {
 		try {
-			if (String(window.__kustoDocumentKind || '') === 'md') {
+			if (String(pState.documentKind || '') === 'md') {
 				document.body.scrollTop = 0;
 				document.documentElement.scrollTop = 0;
 			}
@@ -934,7 +936,7 @@ export class KwMarkdownSection extends LitElement {
 
 	private _scheduleMdAutoExpand(): void {
 		try {
-			if (String(window.__kustoDocumentKind || '') !== 'md') return;
+			if (String(pState.documentKind || '') !== 'md') return;
 			if (this._autoExpandTimer) clearTimeout(this._autoExpandTimer);
 			this._autoExpandTimer = setTimeout(() => {
 				try { this._autoExpandToContent(); } catch (e) { console.error('[kusto]', e); }
@@ -943,7 +945,7 @@ export class KwMarkdownSection extends LitElement {
 	}
 
 	private _autoExpandToContent(): void {
-		if (String(window.__kustoDocumentKind || '') !== 'md') return;
+		if (String(pState.documentKind || '') !== 'md') return;
 		const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
 		const editorContainer = this._getEditorContainer();
 		if (!wrapper || !editorContainer) return;
@@ -1096,8 +1098,7 @@ export class KwMarkdownSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = window.schedulePersist;
-			if (typeof sp === 'function') sp();
+			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1112,7 +1113,7 @@ export class KwMarkdownSection extends LitElement {
 		}
 		if (!text) {
 			try {
-				const pending = window.__kustoPendingMarkdownTextByBoxId;
+				const pending = pState.pendingMarkdownTextByBoxId;
 				if (pending && typeof pending[this.boxId] === 'string') {
 					text = pending[this.boxId];
 				}
@@ -1320,11 +1321,11 @@ export class KwMarkdownSection extends LitElement {
 	private static _rewriteToastUiImages(rootEl: HTMLElement): void {
 		try {
 			if (!rootEl?.querySelectorAll) return;
-			const baseUri = typeof window.__kustoDocumentUri === 'string' ? String(window.__kustoDocumentUri) : '';
+			const baseUri = typeof pState.documentUri === 'string' ? String(pState.documentUri) : '';
 			if (!baseUri) return;
 
-			window.__kustoResolvedImageSrcCache = window.__kustoResolvedImageSrcCache || {};
-			const cache = window.__kustoResolvedImageSrcCache;
+			pState.resolvedImageSrcCache = pState.resolvedImageSrcCache || {};
+			const cache = pState.resolvedImageSrcCache;
 
 			const imgs = rootEl.querySelectorAll('img');
 			for (const img of imgs) {
@@ -1362,7 +1363,7 @@ export class KwMarkdownSection extends LitElement {
 	/** Apply any pending markdown reveal that was queued before the editor initialized. */
 	private _tryApplyPendingReveal(): void {
 		try {
-			const map = window.__kustoPendingMarkdownRevealByBoxId;
+			const map = pState.pendingMarkdownRevealByBoxId;
 			const pending = map?.[this.boxId];
 			if (!pending) return;
 			try { if (map) delete map[this.boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -1376,8 +1377,8 @@ export class KwMarkdownSection extends LitElement {
 		const toast = this._editorApi?._toastui;
 		if (!toast || typeof toast.setSelection !== 'function') {
 			// Queue for later if editor not ready.
-			window.__kustoPendingMarkdownRevealByBoxId = window.__kustoPendingMarkdownRevealByBoxId || {};
-			window.__kustoPendingMarkdownRevealByBoxId[this.boxId] = payload;
+			pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
+			pState.pendingMarkdownRevealByBoxId[this.boxId] = payload;
 			return;
 		}
 

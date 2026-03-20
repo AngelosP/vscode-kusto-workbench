@@ -2,6 +2,9 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
+import { schedulePersist } from '../modules/persistence.js';
+import { __kustoMaximizeChartBox, __kustoDisposeChartEcharts, __kustoRenderChart } from '../modules/extraBoxes-chart.js';
+import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus } from '../modules/extraBoxes.js';
 import {
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
@@ -774,8 +777,7 @@ export class KwChartSection extends LitElement {
 
 	private _onFitToContents(): void {
 		try {
-			const fn = window.__kustoMaximizeChartBox;
-			if (typeof fn === 'function') fn(this.boxId);
+			__kustoMaximizeChartBox(this.boxId);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -964,7 +966,7 @@ export class KwChartSection extends LitElement {
 			const isDark = this._isDarkTheme();
 			if (this._lastThemeDark !== isDark) {
 				this._lastThemeDark = isDark;
-				try { window.__kustoDisposeChartEcharts?.(this.boxId); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoDisposeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
 				this._renderChart();
 			}
 		});
@@ -1104,10 +1106,7 @@ export class KwChartSection extends LitElement {
 	 */
 	public refreshDatasets(): void {
 		try {
-			const fn = window.__kustoGetChartDatasetsInDomOrder;
-			if (typeof fn === 'function') {
-				this._datasets = fn() || [];
-			}
+			this._datasets = __kustoGetChartDatasetsInDomOrder() || [];
 		} catch (e) { console.error('[kusto]', e); }
 		// Prune stale column references that no longer exist in the current dataset.
 		this._pruneStaleColumns();
@@ -1157,10 +1156,7 @@ export class KwChartSection extends LitElement {
 		if (!this._expanded) return;
 		this._refreshDatasets();
 		try {
-			const fn = window.__kustoRenderChart;
-			if (typeof fn === 'function') {
-				fn(this.boxId);
-			}
+			__kustoRenderChart(this.boxId);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1174,8 +1170,7 @@ export class KwChartSection extends LitElement {
 
 	private _schedulePersist(): void {
 		try {
-			const sp = window.schedulePersist;
-			if (typeof sp === 'function') sp();
+			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1236,11 +1231,8 @@ export class KwChartSection extends LitElement {
 
 		// Validation status
 		try {
-			const fn = window.__kustoGetChartValidationStatus;
-			if (typeof fn === 'function') {
-				const vs = fn(this.boxId);
-				if (vs) data.validation = vs;
-			}
+			const vs = __kustoGetChartValidationStatus(this.boxId);
+			if (vs) data.validation = vs;
 		} catch (e) { console.error('[kusto]', e); }
 
 		return data;

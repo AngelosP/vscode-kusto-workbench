@@ -1,6 +1,8 @@
 // Chart box creation, ECharts rendering, chart state management.
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
+import { pState } from '../shared/persistence-state';
+import { schedulePersist } from './persistence';
 
 import { isDarkTheme } from './monaco-theme';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
@@ -137,7 +139,7 @@ export function __kustoOnChartLegendPositionClicked( boxId: any) {
 	try { st.legendPosition = next; } catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateLegendPositionButtonUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoFormatNumber( value: any) {
@@ -307,7 +309,7 @@ export function __kustoOnSeriesColorChanged( boxId: any, inputEl: any) {
 		
 		// Re-render chart with new colors
 		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		// Update indicator
 		__kustoUpdateAxisLabelIndicator(id, 'y');
@@ -338,7 +340,7 @@ export function __kustoResetSeriesColor( boxId: any, colName: any, index: any) {
 		
 		// Re-render chart
 		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		
 		// Update indicator
 		__kustoUpdateAxisLabelIndicator(id, 'y');
@@ -2754,7 +2756,7 @@ export function __kustoRenderChart( boxId: any) {
 					requestAnimationFrame(() => {
 						try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
 					});
-					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -2845,7 +2847,7 @@ export function __kustoSetChartMode( boxId: any, mode: any) {
 	const st = __kustoGetChartState(id);
 	st.mode = m;
 	try { __kustoApplyChartMode(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateChartVisibilityToggleButton( boxId: any) {
@@ -2896,7 +2898,7 @@ export function toggleChartBoxVisibility( boxId: any) {
 	st.expanded = !st.expanded;
 	try { __kustoApplyChartBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizeChartBox( boxId: any) {
@@ -2928,7 +2930,7 @@ export function __kustoMaximizeChartBox( boxId: any) {
 				});
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -3116,7 +3118,7 @@ export function addChartBox( options: any) {
 					resizerEl.classList.remove('is-dragging');
 					document.body.style.cursor = prevCursor;
 					document.body.style.userSelect = prevUserSelect;
-					try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 				};
 				document.addEventListener('mousemove', onMove, true);
@@ -3125,7 +3127,7 @@ export function addChartBox( options: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -3145,7 +3147,7 @@ export function __kustoOnChartDataSourceChanged( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartTypeChanged( boxId: any) {
@@ -3158,7 +3160,7 @@ export function __kustoOnChartTypeChanged( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSelectChartType( boxId: any, chartType: any) {
@@ -3169,7 +3171,7 @@ export function __kustoSelectChartType( boxId: any, chartType: any) {
 	st.chartType = type;
 	try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartLabelsToggled( boxId: any) {
@@ -3193,7 +3195,7 @@ export function __kustoOnChartLabelsToggled( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 /** Handler for when the pie/funnel label mode dropdown changes */
@@ -3222,7 +3224,7 @@ export function __kustoOnChartLabelModeChanged( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 /** Handler for when the pie/funnel label density slider changes */
@@ -3241,7 +3243,7 @@ export function __kustoOnChartLabelDensityChanged( boxId: any, value: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateLabelSettingsIndicator(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnChartMappingChanged( boxId: any) {
@@ -3261,7 +3263,7 @@ export function __kustoOnChartMappingChanged( boxId: any) {
 		try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	}
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for Y column checkbox dropdown changes.
@@ -3308,7 +3310,7 @@ export function __kustoOnChartYCheckboxChanged( dropdownId: any) {
 		__kustoUpdateSeriesColorsUI(boxId, st2.yAxisSettings || {});
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for Tooltip column checkbox dropdown changes.
@@ -3337,7 +3339,7 @@ export function __kustoOnChartTooltipCheckboxChanged( dropdownId: any) {
 		updateCheckboxButtonText(textId, selected, '(none)');
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(boxId); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for funnel sort column dropdown changes.
@@ -3360,7 +3362,7 @@ export function __kustoOnChartFunnelSortChanged( boxId: any) {
 		__kustoUpdateFunnelSortUI(id);
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Handler for funnel sort direction toggle button.
@@ -3376,7 +3378,7 @@ export function __kustoOnChartFunnelSortDirToggle( boxId: any) {
 		__kustoUpdateFunnelSortUI(id);
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Update the funnel sort UI (direction button visibility and icon state).
@@ -3419,12 +3421,9 @@ export function removeChartBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 // ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoDisposeChartEcharts = __kustoDisposeChartEcharts;
-window.__kustoRenderChart = __kustoRenderChart;
-window.__kustoMaximizeChartBox = __kustoMaximizeChartBox;
 window.addChartBox = addChartBox;
 window.removeChartBox = removeChartBox;
 // DOM onclick bridges — referenced from innerHTML-generated chart builder HTML.

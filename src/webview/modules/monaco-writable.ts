@@ -133,7 +133,4 @@ export function __kustoEnsureAllEditorsWritableSoon() {
 
 // ── Window bridges ──────────────────────────────────────────────────────────
 window.__kustoNormalizeTextareasWritable = __kustoNormalizeTextareasWritable;
-window.__kustoForceEditorWritable = __kustoForceEditorWritable;
-window.__kustoInstallWritableGuard = __kustoInstallWritableGuard;
-window.__kustoEnsureEditorWritableSoon = __kustoEnsureEditorWritableSoon;
 window.__kustoEnsureAllEditorsWritableSoon = __kustoEnsureAllEditorsWritableSoon;

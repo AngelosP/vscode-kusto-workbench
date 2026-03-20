@@ -160,6 +160,3 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 		} catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
-
-// ── Window bridges ──────────────────────────────────────────────────────────
-window.__kustoAttachAutoResizeToContent = __kustoAttachAutoResizeToContent;

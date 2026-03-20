@@ -1,6 +1,8 @@
 // Extra boxes module — converted from legacy/extraBoxes.js
 // Chart, Transformation, Markdown, URL, Python box creation + ECharts rendering.
 // Window bridge exports at bottom for remaining legacy callers.
+import { pState } from '../shared/persistence-state';
+import { schedulePersist } from './persistence';
 export {};
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
@@ -25,6 +27,11 @@ import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
 import { __kustoUpdateChartBuilderUI, __kustoRenderChart, __kustoGetChartState } from './extraBoxes-chart';
 import { __kustoUpdateTransformationBuilderUI, __kustoRenderTransformation } from './extraBoxes-transformation';
+import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from './monaco-writable';
+import { __kustoAttachAutoResizeToContent } from './monaco-resize';
+import { tryParseFiniteNumber } from '../shared/transform-expr';
+import { tryParseDate } from '../shared/transform-expr';
+import { __kustoMonacoInitRetryCountByBoxId } from './monaco';
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
@@ -203,7 +210,7 @@ export function __kustoGetChartDatasetsInDomOrder() {
  * Refresh all Chart and Transformation section Data dropdowns.
  * Call this after sections are reordered, added, or removed to update position labels.
  */
-function __kustoRefreshAllDataSourceDropdowns() {
+export function __kustoRefreshAllDataSourceDropdowns() {
 	try {
 		const container = document.getElementById('queries-container') as any;
 		if (!container) return;
@@ -221,9 +228,6 @@ function __kustoRefreshAllDataSourceDropdowns() {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
-
-// Expose globally for use by main.js reorder logic
-try { window.__kustoRefreshAllDataSourceDropdowns = __kustoRefreshAllDataSourceDropdowns; } catch (e) { console.error('[kusto]', e); }
 
 /**
  * Configure a chart section programmatically (used by LLM tools).
@@ -314,7 +318,7 @@ try { window.__kustoConfigureChart = __kustoConfigureChartFromTool; } catch (e) 
  * @param {string} boxId - The chart section ID
  * @returns {object} Status object with validation details
  */
-function __kustoGetChartValidationStatus( boxId: any) {
+export function __kustoGetChartValidationStatus( boxId: any) {
 	try {
 		const id = String(boxId || '');
 		if (!id) return { valid: false, error: 'No chart ID provided' };
@@ -421,9 +425,6 @@ function __kustoGetChartValidationStatus( boxId: any) {
 	}
 }
 
-// Expose for tool calls
-try { window.__kustoGetChartValidationStatus = __kustoGetChartValidationStatus; } catch (e) { console.error('[kusto]', e); }
-
 /**
  * Configure a transformation section programmatically (used by LLM tools).
  * @param {string} boxId - The transformation section ID
@@ -467,11 +468,7 @@ export function __kustoCellToChartString( cell: any) {
 export function __kustoCellToChartNumber( cell: any) {
 	try {
 		const raw = __kustoGetRawCellValueForChart(cell);
-		if (typeof _win.__kustoTryParseNumber === 'function') {
-			return _win.__kustoTryParseNumber(raw);
-		}
-		const n = (typeof raw === 'number') ? raw : Number(raw);
-		return Number.isFinite(n) ? n : null;
+		return tryParseFiniteNumber(raw);
 	} catch {
 		return null;
 	}
@@ -480,11 +477,8 @@ export function __kustoCellToChartNumber( cell: any) {
 export function __kustoCellToChartTimeMs( cell: any) {
 	try {
 		const raw = __kustoGetRawCellValueForChart(cell);
-		if (typeof _win.__kustoTryParseDateMs === 'function') {
-			return _win.__kustoTryParseDateMs(raw);
-		}
-		const t = Date.parse(String(raw || ''));
-		return Number.isFinite(t) ? t : null;
+		const d = tryParseDate(raw);
+		return d ? d.getTime() : null;
 	} catch {
 		return null;
 	}
@@ -637,7 +631,7 @@ export function addPythonBox( options: any) {
 	litEl.setAttribute('box-id', id);
 
 	// Pass initial code if available.
-	const pendingCode = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[id];
+	const pendingCode = pState.pendingPythonCodeByBoxId && pState.pendingPythonCodeByBoxId[id];
 	if (typeof pendingCode === 'string') {
 		litEl.setAttribute('initial-code', pendingCode);
 	}
@@ -656,7 +650,7 @@ export function addPythonBox( options: any) {
 
 	container.appendChild(litEl);
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -677,7 +671,7 @@ function removePythonBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoMaximizePythonBox(boxId: any) {
@@ -752,10 +746,10 @@ function initPythonEditor( boxId: any) {
 		// Avoid editor.setValue() during init; pass initial value into create() to reduce timing races.
 		let initialValue = '';
 		try {
-			const pending = window.__kustoPendingPythonCodeByBoxId && window.__kustoPendingPythonCodeByBoxId[boxId];
+			const pending = pState.pendingPythonCodeByBoxId && pState.pendingPythonCodeByBoxId[boxId];
 			if (typeof pending === 'string') {
 				initialValue = pending;
-				try { delete window.__kustoPendingPythonCodeByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete pState.pendingPythonCodeByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -780,21 +774,13 @@ function initPythonEditor( boxId: any) {
 			if (typeof editor.onDidFocusEditorText === 'function') {
 				editor.onDidFocusEditorText(() => {
 					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-					try {
-						if (typeof _win.__kustoForceEditorWritable === 'function') {
-							__kustoForceEditorWritable(editor);
-						}
-					} catch (e) { console.error('[kusto]', e); }
+					try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
 			if (typeof editor.onDidFocusEditorWidget === 'function') {
 				editor.onDidFocusEditorWidget(() => {
 					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-					try {
-						if (typeof _win.__kustoForceEditorWritable === 'function') {
-							__kustoForceEditorWritable(editor);
-						}
-					} catch (e) { console.error('[kusto]', e); }
+					try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -802,35 +788,25 @@ function initPythonEditor( boxId: any) {
 		pythonEditors[boxId] = editor;
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
 		try {
-			if (typeof _win.__kustoEnsureEditorWritableSoon === 'function') {
-				__kustoEnsureEditorWritableSoon(editor);
-			}
+			__kustoEnsureEditorWritableSoon(editor);
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			if (typeof _win.__kustoInstallWritableGuard === 'function') {
-				__kustoInstallWritableGuard(editor);
-			}
+			__kustoInstallWritableGuard(editor);
 		} catch (e) { console.error('[kusto]', e); }
 		// If the editor is stuck non-interactive on click, force writable before focusing.
 		try {
 			container.addEventListener('mousedown', () => {
-				try {
-					if (typeof _win.__kustoForceEditorWritable === 'function') {
-						__kustoForceEditorWritable(editor);
-					}
-				} catch (e) { console.error('[kusto]', e); }
+				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
 			}, true);
 		} catch (e) { console.error('[kusto]', e); }
 		// Auto-resize editor to show full content, until the user manually resizes.
 		try {
-			if (typeof _win.__kustoAttachAutoResizeToContent === 'function') {
-				__kustoAttachAutoResizeToContent(editor, container);
-			}
+			__kustoAttachAutoResizeToContent(editor, container);
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			editor.onDidChangeModelContent(() => {
-				try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			});
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -887,7 +863,7 @@ function initPythonEditor( boxId: any) {
 						resizer.classList.remove('is-dragging');
 						document.body.style.cursor = previousCursor;
 						document.body.style.userSelect = previousUserSelect;
-						try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+						try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 					};
 
 					document.addEventListener('mousemove', onMove, true);
@@ -914,9 +890,8 @@ function initPythonEditor( boxId: any) {
 
 		let attempt = 0;
 		try {
-			window.__kustoMonacoInitRetryCountByBoxId = window.__kustoMonacoInitRetryCountByBoxId || {};
-			attempt = (window.__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
-			window.__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
+			attempt = (__kustoMonacoInitRetryCountByBoxId[boxId] || 0) + 1;
+			__kustoMonacoInitRetryCountByBoxId[boxId] = attempt;
 		} catch {
 			attempt = 1;
 		}
@@ -1023,7 +998,7 @@ export function addUrlBox( options: any) {
 
 	container.appendChild(litEl);
 
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const controls = document.querySelector('.add-controls');
 		if (controls && typeof controls.scrollIntoView === 'function') {
@@ -1040,14 +1015,13 @@ function removeUrlBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // (Legacy URL helpers removed — now handled by <kw-url-section> Lit component.)
 
 
 // ── Window bridges for remaining legacy callers ──
-window.__kustoGetChartDatasetsInDomOrder = __kustoGetChartDatasetsInDomOrder;
 window.addPythonBox = addPythonBox;
 window.removePythonBox = removePythonBox;
 window.addUrlBox = addUrlBox;

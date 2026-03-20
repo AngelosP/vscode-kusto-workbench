@@ -1,5 +1,7 @@
 // Transformation box creation, expression engine, pivot, derive, summarize.
 // Extracted from extraBoxes.ts (Phase 6 decomposition).
+import { pState } from '../shared/persistence-state';
+import { schedulePersist } from './persistence';
 
 import {
 	tryParseFiniteNumber as _tryParseFiniteNumber,
@@ -553,7 +555,7 @@ export function __kustoSetTransformationMode( boxId: any, mode: any) {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateTransformationVisibilityToggleButton( boxId: any) {
@@ -600,7 +602,7 @@ export function toggleTransformationBoxVisibility( boxId: any) {
 	st.expanded = !st.expanded;
 	try { __kustoApplyTransformationBoxVisibility(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoMaximizeTransformationBox( boxId: any) {
@@ -612,7 +614,7 @@ export function __kustoMaximizeTransformationBox( boxId: any) {
 		wrapper.style.height = desired + 'px';
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 		try { wrapper.dataset.kustoAutoFitActive = 'true'; } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -798,7 +800,7 @@ export function __kustoMaybeAutoFitTransformationBox( boxId: any) {
 		if (desired > current + 2 || (allowShrink && desired < current - 2)) {
 			wrapper.style.height = desired + 'px';
 			try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
-			try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (allowShrink) {
 			try { delete wrapper.dataset.kustoAutoFitAllowShrink; } catch (e) { console.error('[kusto]', e); }
@@ -824,7 +826,7 @@ export function removeTransformationBox( boxId: any) {
 			delete transformationStateByBoxId[id];
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetTransformationType( boxId: any, type: any) {
@@ -864,7 +866,7 @@ export function __kustoSetTransformationType( boxId: any, type: any) {
 		setTimeout(runFit, 0);
 		setTimeout(runFit, 80);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationDataSourceChanged( boxId: any) {
@@ -877,7 +879,7 @@ export function __kustoOnTransformationDataSourceChanged( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoSetCheckboxDropdownText( btnTextEl: any, selectedValues: any) {
@@ -959,7 +961,7 @@ export function __kustoToggleGroupByColumn( boxId: any, columnName: any) {
 	st.groupByColumns = Array.from(set);
 	try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoUpdateTransformationBuilderUI( boxId: any) {
@@ -1221,7 +1223,7 @@ export function __kustoOnTransformationDistinctChanged( boxId: any) {
 		setTimeout(runFit, 0);
 		setTimeout(runFit, 80);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnTransformationAggChanged( boxId: any, index: any, newFn: any, newCol: any, newName: any) {
@@ -1258,7 +1260,7 @@ export function __kustoOnTransformationAggChanged( boxId: any, index: any, newFn
 			}, 0);
 		} catch (e) { console.error('[kusto]', e); }
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddTransformationAgg( boxId: any) {
@@ -1292,7 +1294,7 @@ export function __kustoAddTransformationAgg( boxId: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
@@ -1328,7 +1330,7 @@ export function __kustoRemoveTransformationAgg( boxId: any, index: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 80);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Group-by column handlers for Summarize
@@ -1342,7 +1344,7 @@ export function __kustoOnGroupByColumnChanged( boxId: any, index: any, value: an
 		st.groupByColumns[i] = String(value || '');
 	}
 	try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddGroupByColumn( boxId: any, insertAfterIndex: any) {
@@ -1369,7 +1371,7 @@ export function __kustoAddGroupByColumn( boxId: any, insertAfterIndex: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveGroupByColumn( boxId: any, index: any) {
@@ -1387,7 +1389,7 @@ export function __kustoRemoveGroupByColumn( boxId: any, index: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Group-by drag and drop handlers
@@ -1481,7 +1483,7 @@ export function __kustoOnGroupByDrop( boxId: any, index: any, event: any) {
 		__kustoOnGroupByDragEnd(id, e);
 		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -1580,7 +1582,7 @@ export function __kustoOnAggDrop( boxId: any, toIndex: any, event: any) {
 		st.aggregations.splice(toInsert, 0, moved);
 		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoClearAggDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -1629,7 +1631,7 @@ export function __kustoOnCalculatedColumnChanged( boxId: any, index: any, field:
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoAddCalculatedColumn( boxId: any) {
@@ -1664,7 +1666,7 @@ export function __kustoAddCalculatedColumn( boxId: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
@@ -1705,7 +1707,7 @@ export function __kustoRemoveCalculatedColumn( boxId: any, index: any) {
 			try { __kustoMaybeAutoFitTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
 		}, 80);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoOnDeriveDragStart( boxId: any, index: any, event: any) {
@@ -1808,7 +1810,7 @@ export function __kustoOnDeriveDrop( boxId: any, toIndex: any, event: any) {
 		} catch (e) { console.error('[kusto]', e); }
 		try { __kustoUpdateTransformationBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoRenderTransformation(id); } catch (e) { console.error('[kusto]', e); }
-		try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoClearDeriveDropIndicators(id); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -1869,15 +1871,11 @@ export function __kustoOnTransformationPivotChanged( boxId: any) {
 		};
 		setTimeout(runFit, 0);
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoTryParseFiniteNumber( v: any) {
 	try {
-		if (typeof _win.__kustoTryParseNumber === 'function') {
-			const n = _win.__kustoTryParseNumber(v);
-			return (typeof n === 'number' && Number.isFinite(n)) ? n : null;
-		}
 		return _tryParseFiniteNumber(v);
 	} catch {
 		return null;
@@ -2260,7 +2258,7 @@ try {
 			if (!wrapper) return;
 			let visible = true;
 			try {
-				visible = !(window.__kustoResultsVisibleByBoxId && window.__kustoResultsVisibleByBoxId[id] === false);
+				visible = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[id] === false);
 			} catch (e) { console.error('[kusto]', e); }
 			if (!visible) {
 				// Mirror query-box collapse: hug content when results hidden.

@@ -3,6 +3,7 @@
 export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
+import { pState } from '../shared/persistence-state';
 import { displayResult } from './resultsState';
 import { addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls } from './queryBoxes';
 
@@ -16,15 +17,10 @@ const _win = window;
 // - debounced write-through: postMessage({type:'persistDocument'})
 
 let __kustoPersistenceEnabled = false;
-let __kustoRestoreInProgress = false;
 let __kustoPersistTimer: any = null;
 let __kustoDocumentDataApplyCount = 0;
 let __kustoHasAppliedDocument = false;
 let __kustoLastAppliedDocumentUri = '';
-// Set by the extension host; true for globalStorage/session.kqlx.
-if ((_win.__kustoIsSessionFile as any) === undefined) _win.__kustoIsSessionFile = false;
-// Set by the extension host; true for .kql/.csl files.
-if ((_win.__kustoCompatibilityMode as any) === undefined) _win.__kustoCompatibilityMode = false;
 
 // Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
@@ -48,17 +44,12 @@ function __kustoIsLeaveNoTraceCluster(clusterUrl: any) {
 // - allowedSectionKinds controls which add buttons are shown/enabled.
 // - defaultSectionKind controls which section we create for an empty document.
 // - upgradeRequestType controls which message we send when in compatibility mode.
-_win.__kustoAllowedSectionKinds = (_win.__kustoAllowedSectionKinds as any) || ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
-_win.__kustoDefaultSectionKind = (_win.__kustoDefaultSectionKind as any) || 'query';
-_win.__kustoCompatibilitySingleKind = (_win.__kustoCompatibilitySingleKind as any) || 'query';
-_win.__kustoUpgradeRequestType = (_win.__kustoUpgradeRequestType as any) || 'requestUpgradeToKqlx';
-_win.__kustoCompatibilityTooltip = (_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.';
-_win.__kustoDocumentKind = (_win.__kustoDocumentKind as any) || '';
+// Defaults are set in pState (shared/persistence-state.ts).
 
 export function __kustoApplyDocumentCapabilities() {
 	try {
-		const allowed = Array.isArray((_win.__kustoAllowedSectionKinds as any))
-			? (_win.__kustoAllowedSectionKinds as any).map((k: any) => String(k))
+		const allowed = Array.isArray(pState.allowedSectionKinds)
+			? pState.allowedSectionKinds.map((k: any) => String(k))
 			: ['query', 'markdown', 'python', 'url'];
 
 		// If no section kinds are allowed, hide the entire add-controls container.
@@ -93,8 +84,8 @@ export function __kustoApplyDocumentCapabilities() {
 
 export function __kustoSetCompatibilityMode(enabled: any) {
 	try {
-		_win.__kustoCompatibilityMode = !!enabled;
-		const msg = String((_win.__kustoCompatibilityTooltip as any) || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.');
+		pState.compatibilityMode = !!enabled;
+		const msg = String(pState.compatibilityTooltip || 'This file is in .kql/.csl mode. Click to upgrade to .kqlx and enable sections.');
 		const wrappers = document.querySelectorAll('.add-controls .add-control-wrapper');
 		for (const w of wrappers as any) {
 			try {
@@ -123,9 +114,7 @@ export function __kustoSetCompatibilityMode(enabled: any) {
 		// accidentally create extra sections that can't be persisted.
 		if (enabled) {
 			try {
-				if ((_win.__kustoQueryEditorPendingAdds as any) && typeof (_win.__kustoQueryEditorPendingAdds) === 'object') {
-					_win.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
-				}
+				pState.queryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 			} catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -137,8 +126,8 @@ export function __kustoRequestAddSection(kind: any) {
 
 	// Respect allowed section kinds.
 	try {
-		const allowed = Array.isArray((_win.__kustoAllowedSectionKinds as any))
-			? (_win.__kustoAllowedSectionKinds as any).map((v: any) => String(v))
+		const allowed = Array.isArray(pState.allowedSectionKinds)
+			? pState.allowedSectionKinds.map((v: any) => String(v))
 			: ['query', 'chart', 'markdown', 'python', 'url'];
 		if (allowed.length > 0 && !allowed.includes(k)) {
 			return;
@@ -147,12 +136,12 @@ export function __kustoRequestAddSection(kind: any) {
 
 	// For .kql/.csl compatibility files: offer upgrade instead of adding sections.
 	try {
-		if ((_win.__kustoCompatibilityMode as any)) {
+		if (pState.compatibilityMode) {
 			try {
 				// IMPORTANT: results persistence is debounced; if the user clicks "add chart" right
 				// after executing, the current resultJson may not have been sent to the extension yet.
 				// So capture the current state and send it along with the upgrade request.
-				const upgradeType = String((_win.__kustoUpgradeRequestType as any) || 'requestUpgradeToKqlx');
+				const upgradeType = String(pState.upgradeRequestType || 'requestUpgradeToKqlx');
 				let state = null;
 				try {
 					if (typeof getKqlxState === 'function') {
@@ -191,15 +180,7 @@ try {
 
 // During restore, Monaco editors are created asynchronously.
 // Stash initial values here so init*Editor can apply them once the editor exists.
-_win.__kustoPendingQueryTextByBoxId = (_win.__kustoPendingQueryTextByBoxId as any) || {};
-_win.__kustoPendingMarkdownTextByBoxId = (_win.__kustoPendingMarkdownTextByBoxId as any) || {};
-_win.__kustoPendingPythonCodeByBoxId = (_win.__kustoPendingPythonCodeByBoxId as any) || {};
-
-// Optional persisted query results (per box), stored as JSON text.
-// This stays in-memory and is included in getKqlxState.
-_win.__kustoQueryResultJsonByBoxId = (_win.__kustoQueryResultJsonByBoxId as any) || {};
-
-// Persisted query results are stored inline in the .kqlx document.
+// (State maps are in pState — shared/persistence-state.ts.)
 // Keep a cap to avoid ballooning the file, but try hard to keep *some* results
 // (e.g. truncate rows) instead of dropping them entirely.
 //
@@ -210,14 +191,14 @@ const __kustoMaxPersistedResultRowsHardCap = 5000;
 
 // byteLengthUtf8 is now imported from shared/persistence-utils.ts
 
-function __kustoTryStoreQueryResult(boxId: any, result: any) {
+export function __kustoTryStoreQueryResult(boxId: any, result: any) {
 	try {
 		if (!boxId) return;
 		const { json } = trySerializeQueryResult(result, __kustoMaxPersistedResultBytes, __kustoMaxPersistedResultRowsHardCap);
 		if (json) {
-			(_win.__kustoQueryResultJsonByBoxId as any)[boxId] = json;
+			pState.queryResultJsonByBoxId[boxId] = json;
 		} else {
-			delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
+			delete pState.queryResultJsonByBoxId[boxId];
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -246,7 +227,7 @@ function __kustoGetWrapperHeightPx(boxId: any, suffix: any) {
 	try {
 		// If the user manually resized, prefer the explicit height state.
 		try {
-			const map = (_win.__kustoManualQueryEditorHeightPxByBoxId as any);
+			const map = pState.manualQueryEditorHeightPxByBoxId;
 			const v = map ? map[boxId] : undefined;
 			if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
 				return Math.max(0, Math.round(v));
@@ -349,8 +330,7 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 		// Store the persisted height so toggling results back on restores it.
 		let resultsHidden = false;
 		try {
-			const m = (_win.__kustoResultsVisibleByBoxId as any);
-			resultsHidden = !!(m && m[boxId] === false);
+			resultsHidden = !!(pState.resultsVisibleByBoxId[boxId] === false);
 		} catch (e) { console.error('[kusto]', e); }
 		if (resultsHidden) {
 			try { wrapper.dataset.kustoPreviousHeight = clamped + 'px'; } catch (e) { console.error('[kusto]', e); }
@@ -375,8 +355,8 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 export function getKqlxState() {
 	// Compatibility mode (.kql/.csl/.md): only a single section is supported.
 	try {
-		if ((_win.__kustoCompatibilityMode as any)) {
-			const singleKind = String((_win.__kustoCompatibilitySingleKind as any) || 'query');
+		if (pState.compatibilityMode) {
+			const singleKind = String(pState.compatibilitySingleKind || 'query');
 			if (singleKind === 'markdown') {
 				let firstMarkdownBoxId = null;
 				try {
@@ -396,8 +376,8 @@ export function getKqlxState() {
 				} catch (e) { console.error('[kusto]', e); }
 				if (!text) {
 					try {
-						const pending = (_win.__kustoPendingMarkdownTextByBoxId as any) && firstMarkdownBoxId
-							? (_win.__kustoPendingMarkdownTextByBoxId as any)[firstMarkdownBoxId]
+						const pending = firstMarkdownBoxId
+							? pState.pendingMarkdownTextByBoxId[firstMarkdownBoxId]
 							: undefined;
 						if (typeof pending === 'string') {
 							text = pending;
@@ -443,8 +423,8 @@ export function getKqlxState() {
 					} catch (e) { console.error('[kusto]', e); }
 					// Persisted results (in-memory)
 					try {
-						if ((_win.__kustoQueryResultJsonByBoxId as any) && (_win.__kustoQueryResultJsonByBoxId as any)[firstQueryBoxId]) {
-							resultJson = String((_win.__kustoQueryResultJsonByBoxId as any)[firstQueryBoxId]);
+						if (pState.queryResultJsonByBoxId[firstQueryBoxId]) {
+							resultJson = String(pState.queryResultJsonByBoxId[firstQueryBoxId]);
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					// Favorites picker UI mode
@@ -494,10 +474,8 @@ export function getKqlxState() {
 
 	// Re-inject passthrough dev notes sections (hidden, no DOM elements)
 	try {
-		if (Array.isArray((_win.__kustoDevNotesSections as any))) {
-			for (const dn of (_win.__kustoDevNotesSections as any)) {
-				if (dn && dn.type === 'devnotes') sections.push(dn);
-			}
+		for (const dn of pState.devNotesSections) {
+			if (dn && dn.type === 'devnotes') sections.push(dn);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -515,7 +493,7 @@ let __kustoLastPersistSignature = '';
 let __kustoLastCompatQueryText = '';
 
 export function schedulePersist(reason?: any, immediate?: any) {
-	if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
+	if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 		return;
 	}
 	try {
@@ -536,11 +514,11 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				// thing we persist to disk is the section text itself. Cluster/database
 				// selection changes should NOT mark the document dirty because there is
 				// nowhere to save that metadata. Skip the persist if only metadata changed.
-				if ((_win.__kustoCompatibilityMode as any)) {
+				if (pState.compatibilityMode) {
 					try {
 						let compatQueryText = '';
 						const sections = (state && Array.isArray(state.sections)) ? state.sections : [];
-						const singleKind = String((_win.__kustoCompatibilitySingleKind as any) || 'query');
+						const singleKind = String(pState.compatibilitySingleKind || 'query');
 						let firstQ = null;
 						for (let si = 0; si < sections.length; si++) {
 							if (sections[si] && String(sections[si].type || '') === singleKind) {
@@ -588,10 +566,10 @@ try {
 	window.addEventListener('beforeunload', () => {
 		try {
 			// Only force a final flush for the session file.
-			if (!(_win.__kustoIsSessionFile as any)) {
+			if (!pState.isSessionFile) {
 				return;
 			}
-			if (!__kustoPersistenceEnabled || __kustoRestoreInProgress) {
+			if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 				return;
 			}
 			const state = getKqlxState();
@@ -627,17 +605,16 @@ function __kustoClearAllSections() {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Clear passthrough dev notes sections
-	try { _win.__kustoDevNotesSections = []; } catch (e) { console.error('[kusto]', e); }
+	try { pState.devNotesSections = []; } catch (e) { console.error('[kusto]', e); }
 }
 
 function applyKqlxState(state: any) {
-	__kustoRestoreInProgress = true;
-	_win.__kustoRestoreInProgress = true;
+	pState.restoreInProgress = true;
 	try {
 		__kustoPersistenceEnabled = false;
 
 		// Reset persisted results when loading a new document.
-		try { _win.__kustoQueryResultJsonByBoxId = {}; } catch (e) { console.error('[kusto]', e); }
+		try { pState.queryResultJsonByBoxId = {}; } catch (e) { console.error('[kusto]', e); }
 
 		__kustoClearAllSections();
 
@@ -670,8 +647,8 @@ function applyKqlxState(state: any) {
 		}
 
 		// Compatibility mode (single-section plain text files): force exactly one editor and ignore all other sections.
-		if ((_win.__kustoCompatibilityMode as any)) {
-			const singleKind = String((_win.__kustoCompatibilitySingleKind as any) || 'query');
+		if (pState.compatibilityMode) {
+			const singleKind = String(pState.compatibilitySingleKind || 'query');
 			let singleText = '';
 			let suggestedClusterUrl = '';
 			let suggestedDatabase = '';
@@ -692,7 +669,7 @@ function applyKqlxState(state: any) {
 			if (singleKind === 'markdown') {
 				// IMPORTANT: pass text via options so addMarkdownBox can stash it before
 				// initializing the TOAST UI editor (which triggers an immediate schedulePersist).
-				const isPlainMd = String((_win.__kustoDocumentKind as any) || '') === 'md';
+				const isPlainMd = String(pState.documentKind || '') === 'md';
 				// Initialize the compat text tracker so the first schedulePersist
 				// after restore recognizes the baseline and only sends persistDocument
 				// when the user actually edits the text (not just unrelated metadata).
@@ -729,7 +706,7 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				(_win.__kustoPendingQueryTextByBoxId as any)[boxId] = singleText;
+				pState.pendingQueryTextByBoxId[boxId] = singleText;
 			} catch (e) { console.error('[kusto]', e); }
 			// Initialize the compat query text tracker so the first schedulePersist
 			// after restore recognizes the baseline and only sends persistDocument
@@ -795,8 +772,8 @@ function applyKqlxState(state: any) {
 			if (t === 'devnotes') {
 				// Dev notes are hidden — store as passthrough, no DOM element
 				try {
-					_win.__kustoDevNotesSections = (_win.__kustoDevNotesSections as any) || [];
-					(_win.__kustoDevNotesSections as any).push(section);
+					pState.devNotesSections = pState.devNotesSections || [];
+					pState.devNotesSections.push(section);
 				} catch (e) { console.error('[kusto]', e); }
 				continue;
 			}
@@ -861,16 +838,13 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				// Monaco editor may not exist yet; store pending text for initQueryEditor.
 				try {
-					(_win.__kustoPendingQueryTextByBoxId as any)[boxId] = String(section.query || '');
+					pState.pendingQueryTextByBoxId[boxId] = String(section.query || '');
 				} catch (e) { console.error('[kusto]', e); }
 				// Restore per-query results visibility BEFORE displaying results,
 				// so displayResult sees the hidden state when creating kw-data-table.
 				try {
 					if (typeof section.resultsVisible === 'boolean') {
-						if (!((_win.__kustoResultsVisibleByBoxId as any)) || typeof (_win.__kustoResultsVisibleByBoxId) !== 'object') {
-							_win.__kustoResultsVisibleByBoxId = {};
-						}
-						(_win.__kustoResultsVisibleByBoxId as any)[boxId] = !!section.resultsVisible;
+						pState.resultsVisibleByBoxId[boxId] = !!section.resultsVisible;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				// Restore last result (if present + parseable).
@@ -878,7 +852,7 @@ function applyKqlxState(state: any) {
 					const rj = section.resultJson ? String(section.resultJson) : '';
 					if (rj) {
 						// Keep in-memory cache aligned with restored boxes.
-						(_win.__kustoQueryResultJsonByBoxId as any)[boxId] = rj;
+						pState.queryResultJsonByBoxId[boxId] = rj;
 						try {
 							const parsed = JSON.parse(rj);
 							if (parsed && typeof parsed === 'object') {
@@ -889,12 +863,12 @@ function applyKqlxState(state: any) {
 								} else if (typeof p.metadata.executionTime === 'undefined') {
 									p.metadata.executionTime = '';
 								}
-								_win.lastExecutedBox = boxId;
+								pState.lastExecutedBox = boxId;
 								displayResult(p);
 							}
 						} catch {
 							// If stored JSON is invalid, drop it.
-							delete (_win.__kustoQueryResultJsonByBoxId as any)[boxId];
+							delete pState.queryResultJsonByBoxId[boxId];
 						}
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -929,8 +903,7 @@ function applyKqlxState(state: any) {
 				// Monaco editor may initialize after restore; remember desired wrapper height for initQueryEditor.
 				try {
 					if (typeof section.editorHeightPx === 'number' && Number.isFinite(section.editorHeightPx) && section.editorHeightPx > 0) {
-						if (!(_win.__kustoPendingWrapperHeightPxByBoxId as any)) _win.__kustoPendingWrapperHeightPxByBoxId = {};
-						(_win.__kustoPendingWrapperHeightPxByBoxId as any)[boxId] = section.editorHeightPx;
+						pState.pendingWrapperHeightPxByBoxId[boxId] = section.editorHeightPx;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				// Apply persisted heights after any Copilot chat installation/reparenting.
@@ -1077,7 +1050,7 @@ function applyKqlxState(state: any) {
 				// Store pending code so the Lit component can pick it up during Monaco init.
 				const pendingId = section.id ? String(section.id) : ('python_' + Date.now());
 				try {
-					(_win.__kustoPendingPythonCodeByBoxId as any)[pendingId] = String(section.code || '');
+					pState.pendingPythonCodeByBoxId[pendingId] = String(section.code || '');
 				} catch (e) { console.error('[kusto]', e); }
 				const boxId = (_win.addPythonBox as any)({ id: pendingId });
 				// Set output, name, expanded, and height on the Lit element.
@@ -1121,8 +1094,7 @@ function applyKqlxState(state: any) {
 			}
 		}
 	} finally {
-		__kustoRestoreInProgress = false;
-		_win.__kustoRestoreInProgress = false;
+		pState.restoreInProgress = false;
 		__kustoPersistenceEnabled = true;
 		// Do not auto-persist immediately after restore: Monaco editors may not be ready yet,
 		// and persisting too early can overwrite loaded content with empty strings.
@@ -1130,18 +1102,18 @@ function applyKqlxState(state: any) {
 }
 
 function __kustoApplyPendingAdds() {
-	const pendingAdds = ((_win.__kustoQueryEditorPendingAdds as any) && typeof (_win.__kustoQueryEditorPendingAdds) === 'object')
-		? (_win.__kustoQueryEditorPendingAdds as any)
+	const pendingAdds = (pState.queryEditorPendingAdds && typeof (pState.queryEditorPendingAdds) === 'object')
+		? pState.queryEditorPendingAdds
 		: { query: 0, markdown: 0, python: 0, url: 0 };
 	// Reset counts so they don't replay on reload.
-	_win.__kustoQueryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+	pState.queryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
 
 	const pendingTotal = (pendingAdds.query || 0) + (pendingAdds.markdown || 0) + (pendingAdds.python || 0) + (pendingAdds.url || 0);
 	if (pendingTotal <= 0) {
 		return false;
 	}
-	const allowed = Array.isArray((_win.__kustoAllowedSectionKinds as any))
-		? (_win.__kustoAllowedSectionKinds as any).map((v: any) => String(v))
+	const allowed = Array.isArray(pState.allowedSectionKinds)
+		? pState.allowedSectionKinds.map((v: any) => String(v))
 		: ['query', 'markdown', 'python', 'url'];
 	if (allowed.includes('query')) {
 		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
@@ -1189,7 +1161,7 @@ export function handleDocumentDataMessage(message: any) {
 			if (typeof __kustoSetCompatibilityMode === 'function') {
 				__kustoSetCompatibilityMode(!!message.compatibilityMode);
 			} else {
-				_win.__kustoCompatibilityMode = !!message.compatibilityMode;
+				pState.compatibilityMode = !!message.compatibilityMode;
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1198,13 +1170,13 @@ export function handleDocumentDataMessage(message: any) {
 	// This prevents restore issues when messages arrive out-of-order.
 	try {
 		if (typeof message.documentUri === 'string') {
-			_win.__kustoDocumentUri = String(message.documentUri);
+			pState.documentUri = String(message.documentUri);
 		}
 		if (Array.isArray(message.allowedSectionKinds)) {
-			_win.__kustoAllowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
+			pState.allowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
 		}
 		if (typeof message.documentKind === 'string') {
-			_win.__kustoDocumentKind = String(message.documentKind);
+			pState.documentKind = String(message.documentKind);
 			try {
 				if (document && document.body && document.body.dataset) {
 					document.body.dataset.kustoDocumentKind = String(message.documentKind);
@@ -1212,16 +1184,16 @@ export function handleDocumentDataMessage(message: any) {
 			} catch (e) { console.error('[kusto]', e); }
 		}
 		if (typeof message.defaultSectionKind === 'string') {
-			_win.__kustoDefaultSectionKind = String(message.defaultSectionKind);
+			pState.defaultSectionKind = String(message.defaultSectionKind);
 		}
 		if (typeof message.compatibilitySingleKind === 'string') {
-			_win.__kustoCompatibilitySingleKind = String(message.compatibilitySingleKind);
+			pState.compatibilitySingleKind = String(message.compatibilitySingleKind);
 		}
 		if (typeof message.upgradeRequestType === 'string') {
-			_win.__kustoUpgradeRequestType = String(message.upgradeRequestType);
+			pState.upgradeRequestType = String(message.upgradeRequestType);
 		}
 		if (typeof message.compatibilityTooltip === 'string') {
-			_win.__kustoCompatibilityTooltip = String(message.compatibilityTooltip);
+			pState.compatibilityTooltip = String(message.compatibilityTooltip);
 		}
 		try {
 			if (typeof __kustoApplyDocumentCapabilities === 'function') {
@@ -1246,7 +1218,7 @@ export function handleDocumentDataMessage(message: any) {
 		if (!hasAny) {
 			const applied = __kustoApplyPendingAdds();
 			if (!applied) {
-				const k = String((_win.__kustoDefaultSectionKind as any) || 'query');
+				const k = String(pState.defaultSectionKind || 'query');
 				if (k === 'markdown') {
 					(_win.addMarkdownBox as any)();
 				} else {
@@ -1286,8 +1258,5 @@ export function handleDocumentDataMessage(message: any) {
 // ======================================================================
 // Window bridge: expose globals for remaining legacy callers
 // ======================================================================
-_win.schedulePersist = schedulePersist;
-_win.getKqlxState = getKqlxState;
-_win.__kustoTryStoreQueryResult = __kustoTryStoreQueryResult;
-_win.__kustoRequestAddSection = __kustoRequestAddSection;
+_win.schedulePersist = schedulePersist; // inline HTML onclick consumers
 

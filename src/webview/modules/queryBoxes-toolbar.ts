@@ -9,7 +9,7 @@ import {
 	fullyQualifyTablesInEditor
 } from './queryBoxes';
 import { executeQuery, __kustoIsRunSelectionReady } from './queryBoxes-execution';
-import { closeMenuDropdown, toggleMenuDropdown, wireMenuInteractions, renderMenuItemsHtml } from './dropdown';
+import { closeMenuDropdown, toggleMenuDropdown, wireMenuInteractions, renderMenuItemsHtml, toolbarScrollAtOpen, closeAllMenus } from './dropdown';
 
 const _win = window;
 
@@ -401,7 +401,7 @@ function copyQueryAsAdeLink( boxId: any) {
  * Opens the Share modal for a query section, allowing users to copy
  * title, query, and results to clipboard formatted for Teams.
  */
-function __kustoOpenShareModal( boxId: any) {
+export function __kustoOpenShareModal( boxId: any) {
 	if (!boxId) return;
 
 	const modal = document.getElementById('shareModal') as any;
@@ -581,9 +581,7 @@ function __kustoShareCopyToClipboard() {
 						// numbers have commas, dates are formatted, etc.
 						const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
 						const displayValue = hasHover ? cell.display : cell;
-						const formatted = (typeof _win.__kustoFormatCellDisplayValueForTable === 'function')
-							? _win.__kustoFormatCellDisplayValueForTable(displayValue)
-							: String(displayValue ?? '');
+						const formatted = String(displayValue ?? '');
 						vals.push(String(formatted ?? ''));
 					}
 					rowsData.push(vals);
@@ -1184,7 +1182,7 @@ function renderToolsMenuForBox( boxId: any) {
 			onSelectJs: (keyEnc: any) => {
 				return (
 					"onQueryEditorToolbarAction('" + id + "', '" + keyEnc + "');" +
-					" try{window.__kustoDropdown&&window.__kustoDropdown.closeMenuDropdown&&window.__kustoDropdown.closeMenuDropdown('" + id + "_tools_btn','" + id + "_tools_menu')}catch{}"
+					" closeToolsDropdown('" + id + "')"
 				);
 			}
 		});
@@ -1424,7 +1422,7 @@ document.addEventListener('click', (ev: any) => {
 	if (__kustoEventIsInsideDropdownUi(ev)) return;
 	closeAllRunMenus();
 	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
-	try { window.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 });
 
 // Close dropdowns on scroll/wheel so they don't float detached from their buttons.
@@ -1443,8 +1441,8 @@ document.addEventListener('scroll', (ev: any) => {
 	// Legacy dropdown module (used by tools, cache settings, etc.) — close with threshold
 	try {
 		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - (typeof window.__kustoToolbarScrollAtOpen === 'number' ? window.__kustoToolbarScrollAtOpen : 0)) > 20) {
-			window.__kustoDropdown?.closeAllMenus?.();
+		if (Math.abs(scrollY - toolbarScrollAtOpen) > 20) {
+			closeAllMenus();
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }, true); // Use capture to catch scroll events on nested scrollable elements
@@ -1455,7 +1453,7 @@ document.addEventListener('wheel', (ev: any) => {
 	// Run menus are ephemeral — close immediately on wheel
 	closeAllRunMenus();
 	// Legacy dropdown menus also close on wheel (users expect wheel to dismiss)
-	try { window.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 }, { passive: true });
 
 // ── Window bridges for remaining legacy callers ──
@@ -1465,7 +1463,6 @@ window.toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabl
 window.toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
 window.toggleCaretDocsEnabled = toggleCaretDocsEnabled;
 window.onQueryEditorToolbarAction = onQueryEditorToolbarAction;
-window.__kustoOpenShareModal = __kustoOpenShareModal;
 window.__kustoCloseShareModal = __kustoCloseShareModal;
 window.__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
 window.closeToolsDropdown = closeToolsDropdown;
@@ -1475,7 +1472,6 @@ window.toggleOverflowSubmenu = toggleOverflowSubmenu;
 window.closeToolbarOverflow = closeToolbarOverflow;
 window.toggleToolsDropdown = toggleToolsDropdown;
 window.__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
-window.getRunMode = getRunMode;
 window.setRunMode = setRunMode;
 window.closeAllRunMenus = closeAllRunMenus;
 window.toggleRunMenu = toggleRunMenu;
