@@ -764,6 +764,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let webviewInitialized = false;
 		let lastWebviewPersistAt = 0;
 
+		// Serialization chain: each applyEdit waits for the previous one to finish.
+		// This prevents concurrent applyEdit calls that cause VS Code's
+		// "has changed in the meantime" validation error.
+		let _persistChain: Promise<void> = Promise.resolve();
+
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		// When the document changes externally, refresh the webview to show the new content.
 		subscriptions.push(
@@ -1124,38 +1129,24 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 
 					// For non-session files, use the standard edit→save cycle.
-					// Re-read the document text immediately before building the edit range.
-					// The earlier `currentText` may be stale if async processing or another
-					// persist cycle modified the document in the meantime.
-					const freshText = document.getText();
-					const fullRange = new vscode.Range(
-						document.positionAt(0),
-						document.positionAt(freshText.length)
-					);
+					// Serialize through _persistChain so applyEdit calls never overlap.
+					await (_persistChain = _persistChain.then(async () => {
+						// Re-read the document text immediately before building the edit range.
+						// The earlier `currentText` may be stale if async processing or another
+						// persist cycle modified the document in the meantime.
+						const freshText = document.getText();
+						const fullRange = new vscode.Range(
+							document.positionAt(0),
+							document.positionAt(freshText.length)
+						);
 
-					const edit = new vscode.WorkspaceEdit();
-					edit.replace(document.uri, fullRange, nextText);
-					// Refresh the timestamp right before the write so the onDidChangeTextDocument
-					// guard still holds even if the earlier async processing took >500ms.
-					lastWebviewPersistAt = Date.now();
-					try {
+						const edit = new vscode.WorkspaceEdit();
+						edit.replace(document.uri, fullRange, nextText);
+						// Refresh the timestamp right before the write so the onDidChangeTextDocument
+						// guard still holds even if the earlier async processing took >500ms.
+						lastWebviewPersistAt = Date.now();
 						await vscode.workspace.applyEdit(edit);
-					} catch (editErr: any) {
-						// "has changed in the meantime" — retry once with a fresh range.
-						if (editErr?.message?.includes('changed in the meantime')) {
-							const retryText = document.getText();
-							const retryRange = new vscode.Range(
-								document.positionAt(0),
-								document.positionAt(retryText.length)
-							);
-							const retryEdit = new vscode.WorkspaceEdit();
-							retryEdit.replace(document.uri, retryRange, nextText);
-							lastWebviewPersistAt = Date.now();
-							await vscode.workspace.applyEdit(retryEdit);
-						} else {
-							throw editErr;
-						}
-					}
+					}).catch(() => { /* serialization chain — errors handled below */ }));
 
 					// If we just restored the file back to the exact on-disk content due to a reorder undo,
 					// force a save to ensure VS Code clears the dirty flag.

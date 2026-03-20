@@ -2635,17 +2635,94 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 						}
 					};
 
-					// --- Automatically trigger Copilot inline completions Provider ---
-					// Provides ghost-text completions using GitHub Copilot via the VS Code extension host
+					// --- Copilot inline completions Provider ---
+					// Uses an async provider that awaits the LLM response. The provider
+					// intentionally does NOT hook token.onCancellationRequested — Monaco
+					// aggressively cancels manual triggers, which would kill the pending
+					// request before the response arrives. Instead we let the promise
+					// resolve naturally and Monaco renders the items if it's still interested.
+
 					let __kustoInlineCompletionRequestId = 0;
+					// Content widget for the inline completion spinner.
+					const __kustoInlineSpinnerWidgets: Record<string, any> = {};
+
+					// CSS for the spinner — inject once.
+					try {
+						const spinnerStyle = document.createElement('style');
+						spinnerStyle.textContent = `
+							@keyframes kusto-inline-ghost-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+							.kusto-inline-spinner-widget {
+								display: inline-flex;
+								align-items: center;
+								gap: 4px;
+								pointer-events: none;
+								z-index: 1;
+								padding: 0 4px;
+								animation: kusto-inline-ghost-pulse 1.2s ease-in-out infinite;
+							}
+							.kusto-inline-spinner-icon {
+								display: inline-block;
+								width: 14px;
+								height: 14px;
+								color: var(--vscode-editorGhostText-foreground, rgba(128,128,128,0.7));
+							}
+							.kusto-inline-spinner-icon svg {
+								width: 100%;
+								height: 100%;
+							}
+							.kusto-inline-spinner-label {
+								font-size: 11px;
+								color: var(--vscode-editorGhostText-foreground, rgba(128,128,128,0.7));
+								font-style: italic;
+								white-space: nowrap;
+							}
+						`;
+						document.head.appendChild(spinnerStyle);
+					} catch { /* ignore */ }
+
+					const __kustoShowInlineSpinner = (editor: any, boxId: string, lineNumber: number, column: number) => {
+						try {
+							__kustoHideInlineSpinner(editor, boxId);
+							const domNode = document.createElement('div');
+							domNode.className = 'kusto-inline-spinner-widget';
+							domNode.innerHTML = '<span class="kusto-inline-spinner-icon"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 1C5.2 1 3 3.2 3 6v6c0 .3.1.6.4.8.2.2.5.2.8.1l1.3-.7 1.3.7c.3.2.7.2 1 0L8 12.2l.2.7c.3.2.7.2 1 0l1.3-.7 1.3.7c.3.1.6.1.8-.1.3-.2.4-.5.4-.8V6c0-2.8-2.2-5-5-5zm-2 6.5c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1zm4 0c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"/></svg></span>';
+							const widget = {
+								getId: () => 'kusto-inline-spinner-' + boxId,
+								getDomNode: () => domNode,
+								getPosition: () => ({
+									position: { lineNumber, column },
+									preference: [2, 1]
+								}),
+							};
+							editor.addContentWidget(widget);
+							__kustoInlineSpinnerWidgets[boxId] = widget;
+						} catch { /* ignore */ }
+					};
+					const __kustoHideInlineSpinner = (editor: any, boxId: string) => {
+						try {
+							const existing = __kustoInlineSpinnerWidgets[boxId];
+							if (existing) {
+								editor.removeContentWidget(existing);
+								delete __kustoInlineSpinnerWidgets[boxId];
+							}
+						} catch { /* ignore */ }
+					};
+
+					// The result handler is still needed for main.ts message dispatch.
+					// It resolves the pending promise.
+					_win.__kustoHandleInlineCompletionResult = (requestId: string, completions: any[]) => {
+						const pending = _win.copilotInlineCompletionRequests[requestId];
+						if (!pending || typeof pending.resolve !== 'function') return;
+						delete _win.copilotInlineCompletionRequests[requestId];
+						pending.resolve(completions || []);
+					};
+
 					monaco.languages.registerInlineCompletionsProvider('kusto', {
-						provideInlineCompletions: async function (model: any, position: any, context: any, token: any) {
+						provideInlineCompletions: async function (model: any, position: any, context: any, _token: any) {
 							try {
-								// triggerKind: 0 = automatic, 1 = manual (explicit)
 								const isManualTrigger = context && context.triggerKind === 1;
 
 								// Check if automatic inline completions are enabled
-								// The toggle only controls automatic triggers - manual triggers (SHIFT+SPACE) always work
 								if (!isManualTrigger && typeof _win.copilotInlineCompletionsEnabled !== 'undefined' && !_win.copilotInlineCompletionsEnabled) {
 									return { items: [] };
 								}
@@ -2663,30 +2740,40 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								const textBefore = fullText.substring(0, offset);
 								const textAfter = fullText.substring(offset);
 
-								// Don't trigger if line is empty and we're at the start
+								// Don't trigger if editor is empty
 								if (!textBefore.trim() && !textAfter.trim()) {
 									return { items: [] };
 								}
 
-								// Generate a unique request ID
 								const requestId = 'inline_' + (++__kustoInlineCompletionRequestId) + '_' + Date.now();
 
-								// Find the boxId for this model
+								// Find the boxId and editor
 								let boxId = '';
+								let editorForModel: any = null;
 								try {
 									const modelUri = model.uri ? model.uri.toString() : '';
 									if (typeof _win.queryEditorBoxByModelUri !== 'undefined' && modelUri) {
 										boxId = _win.queryEditorBoxByModelUri[modelUri] || '';
 									}
+									if (boxId && _win.queryEditors) {
+										editorForModel = _win.queryEditors[boxId] || null;
+									}
 								} catch (e) { console.error('[kusto]', e); }
 
-								// Create a promise that will be resolved when we get the response
-								const completionPromise = new Promise((resolve) => {
-									// Set a timeout to avoid hanging
+								// Show spinner
+								if (editorForModel && boxId) {
+									__kustoShowInlineSpinner(editorForModel, boxId, position.lineNumber, position.column);
+								}
+
+								// Create promise that resolves when the extension host responds.
+								// IMPORTANT: we do NOT hook token.onCancellationRequested — Monaco
+								// aggressively cancels especially for manual triggers, which would
+								// delete the pending request before the LLM can respond.
+								const completionPromise = new Promise<any[]>((resolve) => {
 									const timeoutId = setTimeout(() => {
 										delete _win.copilotInlineCompletionRequests[requestId];
 										resolve([]);
-									}, 5000);
+									}, 10000);
 
 									_win.copilotInlineCompletionRequests[requestId] = {
 										resolve: (completions: any) => {
@@ -2694,46 +2781,32 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 											resolve(completions);
 										}
 									};
-
-									// Handle cancellation
-									if (token && typeof token.onCancellationRequested === 'function') {
-										token.onCancellationRequested(() => {
-											clearTimeout(timeoutId);
-											delete _win.copilotInlineCompletionRequests[requestId];
-											resolve([]);
-										});
-									}
 								});
 
-								// Request completion from extension
-								console.log('[Kusto] Sending inline completion request', { requestId, boxId, textBeforeLen: textBefore.length, isManualTrigger });
+								// Send request to extension host
 								try {
 									_win.vscode!.postMessage({
 										type: 'requestCopilotInlineCompletion',
-										requestId: requestId,
-										boxId: boxId,
-										textBefore: textBefore,
-										textAfter: textAfter
+										requestId,
+										boxId,
+										textBefore,
+										textAfter
 									});
 								} catch (err) {
-									console.error('[Kusto] Failed to send inline completion request', err);
+									delete _win.copilotInlineCompletionRequests[requestId];
+									if (editorForModel && boxId) __kustoHideInlineSpinner(editorForModel, boxId);
 									return { items: [] };
 								}
 
-								// Wait for response
+								// Await response
 								const completions = await completionPromise;
-								console.log('[Kusto] Received completions', completions);
+
+								// Hide spinner
+								if (editorForModel && boxId) {
+									__kustoHideInlineSpinner(editorForModel, boxId);
+								}
+
 								if (!completions || !Array.isArray(completions) || completions.length === 0) {
-									console.log('[Kusto] No completions returned');
-									// Show notification only for manual triggers (SHIFT+SPACE)
-									if (isManualTrigger) {
-										try {
-											_win.vscode!.postMessage({
-												type: 'showInfo',
-												message: 'Copilot returned no inline suggestions. Often, trying again helps, especially after changing the position of the cursor.'
-											});
-										} catch (e) { console.error('[kusto]', e); }
-									}
 									return { items: [] };
 								}
 
@@ -2753,7 +2826,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								return { items: [] };
 							}
 						},
-						freeInlineCompletions: function (completions: any) {
+						freeInlineCompletions: function () {
 							// No cleanup needed
 						}
 					});
@@ -4397,8 +4470,18 @@ function initQueryEditor(boxId: any) {
 		// Shift+Space triggers Copilot inline suggestions (ghost text) on demand.
 		try {
 			editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Space, () => {
-				console.log('[Kusto] SHIFT+SPACE triggered - requesting inline suggestions');
-				editor.trigger('keyboard', 'editor.action.inlineSuggest.trigger', {});
+				console.log('[Kusto] SHIFT+SPACE pressed');
+				try {
+					// Try the action runner first (more reliable).
+					const action = editor.getAction('editor.action.inlineSuggest.trigger');
+					if (action) {
+						action.run().catch(() => { /* ignore */ });
+					} else {
+						editor.trigger('keyboard', 'editor.action.inlineSuggest.trigger', {});
+					}
+				} catch (e) {
+					console.error('[Kusto] SHIFT+SPACE trigger failed', e);
+				}
 			});
 		} catch (e) { console.error('[kusto]', e); }
 

@@ -273,6 +273,51 @@ document.addEventListener('keydown', (event: any) => {
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
+// VS Code can intercept Shift+Space in webviews; provide a reliable inline-suggestion trigger.
+document.addEventListener('keydown', (event: any) => {
+	try {
+		if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
+			return;
+		}
+		const isSpace = (event.code === 'Space') || (event.key === ' ');
+		if (!isSpace) {
+			return;
+		}
+		// Only handle when the key event originates from inside a Monaco editor.
+		try {
+			const t = event.target;
+			if (!t || !t.closest || !t.closest('.monaco-editor')) {
+				return;
+			}
+		} catch {
+			return;
+		}
+
+		const editor = __kustoGetFocusedMonacoEditor();
+		if (!editor) {
+			return;
+		}
+
+		// We are handling it; avoid double-triggering Monaco keybindings.
+		try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
+		try { event.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
+
+		// Trigger Copilot inline suggestions (ghost text).
+		// Try multiple approaches for robustness across Monaco versions.
+		try {
+			const action = editor.getAction('editor.action.inlineSuggest.trigger');
+			if (action) {
+				action.run().catch(() => { /* ignore */ });
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			editor.trigger('keyboard', 'editor.action.inlineSuggest.trigger', {});
+		} catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
+}, true);
+
 // --- KQL language service bridge (webview -> extension host) ---
 // Used to share a single semantic engine between the webview Monaco editor and VS Code text editors.
 // If the bridge is unavailable or times out, callers should fall back to local heuristics.
@@ -1542,8 +1587,19 @@ window.addEventListener('message', async (event: any) => {
 						for (const b of btns) {
 							applyToButton(b);
 						}
+						// Also update all kw-query-toolbar Lit elements.
+						try {
+							document.querySelectorAll('kw-query-toolbar').forEach((toolbar: any) => {
+								if (typeof toolbar.setCopilotChatEnabled === 'function') toolbar.setCopilotChatEnabled(available);
+							});
+						} catch (e) { console.error('[kusto]', e); }
 					} else {
 						applyToButton(document.getElementById(boxId + '_copilot_chat_toggle'));
+						// Also update the kw-query-toolbar Lit element.
+						try {
+							const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+							if (toolbar && typeof toolbar.setCopilotChatEnabled === 'function') toolbar.setCopilotChatEnabled(available);
+						} catch (e) { console.error('[kusto]', e); }
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
@@ -1949,19 +2005,13 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotInlineCompletionResult':
-			console.log('[Kusto] Received copilotInlineCompletionResult', message);
 			try {
 				const requestId = String(message.requestId || '');
-				console.log('[Kusto] Looking for pending request', requestId, 'in', Object.keys(_win.copilotInlineCompletionRequests));
-				if (requestId && _win.copilotInlineCompletionRequests[requestId]) {
-					const pending = _win.copilotInlineCompletionRequests[requestId];
-					delete _win.copilotInlineCompletionRequests[requestId];
-					if (typeof pending.resolve === 'function') {
-						console.log('[Kusto] Resolving with completions:', message.completions);
-						pending.resolve(message.completions || []);
-					}
-				} else {
-					console.log('[Kusto] No pending request found for', requestId);
+				const completions = message.completions || [];
+				// Delegate to the handler registered by the inline completions provider.
+				// This caches the result and re-triggers the inline suggest action.
+				if (typeof _win.__kustoHandleInlineCompletionResult === 'function') {
+					_win.__kustoHandleInlineCompletionResult(requestId, completions);
 				}
 			} catch (err: any) { console.error('[Kusto] Error handling completion result', err); }
 			break;

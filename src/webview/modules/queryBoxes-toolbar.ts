@@ -17,27 +17,29 @@ const _win = window;
 
 export function updateCaretDocsToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
-		const btn = document.getElementById(boxId + '_caret_docs_toggle') as any;
-		if (!btn) {
-			continue;
-		}
-		btn.setAttribute('aria-pressed', _win.caretDocsEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!_win.caretDocsEnabled);
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setCaretDocsActive === 'function') {
+				toolbar.setCaretDocsActive(!!_win.caretDocsEnabled);
+				continue;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
 export function updateAutoTriggerAutocompleteToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
-		const btn = document.getElementById(boxId + '_auto_autocomplete_toggle') as any;
-		if (!btn) {
-			continue;
-		}
-		btn.setAttribute('aria-pressed', _win.autoTriggerAutocompleteEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!_win.autoTriggerAutocompleteEnabled);
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
+				toolbar.setAutoCompleteActive(!!_win.autoTriggerAutocompleteEnabled);
+				continue;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
-function toggleAutoTriggerAutocompleteEnabled() {
+export function toggleAutoTriggerAutocompleteEnabled() {
 	_win.autoTriggerAutocompleteEnabled = !_win.autoTriggerAutocompleteEnabled;
 	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateAutoTriggerAutocompleteToggleButtons();
@@ -59,16 +61,17 @@ function toggleAutoTriggerAutocompleteEnabled() {
 
 export function updateCopilotInlineCompletionsToggleButtons() {
 	for (const boxId of _win.queryBoxes) {
-		const btn = document.getElementById(boxId + '_copilot_inline_toggle') as any;
-		if (!btn) {
-			continue;
-		}
-		btn.setAttribute('aria-pressed', _win.copilotInlineCompletionsEnabled ? 'true' : 'false');
-		btn.classList.toggle('is-active', !!_win.copilotInlineCompletionsEnabled);
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
+				toolbar.setCopilotInlineActive(!!_win.copilotInlineCompletionsEnabled);
+				continue;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 	}
 }
 
-function toggleCopilotInlineCompletionsEnabled() {
+export function toggleCopilotInlineCompletionsEnabled() {
 	_win.copilotInlineCompletionsEnabled = !_win.copilotInlineCompletionsEnabled;
 	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateCopilotInlineCompletionsToggleButtons();
@@ -78,7 +81,7 @@ function toggleCopilotInlineCompletionsEnabled() {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-function toggleCaretDocsEnabled() {
+export function toggleCaretDocsEnabled() {
 	_win.caretDocsEnabled = !_win.caretDocsEnabled;
 	updateCaretDocsToggleButtons();
 	// Hide existing overlays immediately when turning off.
@@ -142,7 +145,7 @@ function toggleCaretDocsEnabled() {
 
 // --- Toolbar action dispatcher ---
 
-function onQueryEditorToolbarAction( boxId: any, action: any) {
+export function onQueryEditorToolbarAction( boxId: any, action: any) {
 	// Focus the editor so Monaco widgets (find/replace) attach correctly.
 	try {
 		_win.activeQueryEditorBoxId = boxId;
@@ -644,26 +647,12 @@ function setToolbarActionBusy( boxId: any, action: any, busy: any) {
 		}
 
 		// If the action button is not present (because it lives inside a dropdown menu),
-		// reflect the busy state on the tools dropdown button.
+		// reflect the busy state on the tools dropdown button via the Lit element.
 		if (!btn && action === 'qualifyTables') {
-			const toolsBtn = document.getElementById(boxId + '_tools_btn') as any;
-			if (!toolsBtn) return;
 			try {
-				const icon = toolsBtn.querySelector('.qe-tools-icon');
-				const caret = toolsBtn.querySelector('.qe-toolbar-caret');
-				const spinner = toolsBtn.querySelector('.qe-tools-spinner');
-				if (busy) {
-					toolsBtn.classList.add('is-busy');
-					toolsBtn.setAttribute('aria-busy', 'true');
-					if (icon) icon.style.display = 'none';
-					if (caret) caret.style.display = 'none';
-					if (spinner) spinner.style.display = '';
-				} else {
-					toolsBtn.classList.remove('is-busy');
-					toolsBtn.removeAttribute('aria-busy');
-					if (icon) icon.style.display = '';
-					if (caret) caret.style.display = '';
-					if (spinner) spinner.style.display = 'none';
+				const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+				if (toolbar && typeof toolbar.setToolsBusy === 'function') {
+					toolbar.setToolsBusy(!!busy);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -700,32 +689,13 @@ const __kustoRunBtnResizeObservers: any = {};
 
 /**
  * Initialize toolbar overflow detection for a query box.
- * Uses ResizeObserver to detect when buttons overflow and shows a "..." menu.
+ * Now a no-op — the <kw-query-toolbar> Lit element sets up its own ResizeObserver
+ * in firstUpdated(). Kept as a window bridge for backward compatibility with
+ * callers like monaco.ts.
  */
 export function initToolbarOverflow( boxId: any) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	const toolbar = document.getElementById(id + '_toolbar') as any;
-	if (!toolbar) return;
-
-	// Clean up any existing observer
-	if (__kustoToolbarResizeObservers[id]) {
-		try { __kustoToolbarResizeObservers[id].disconnect(); } catch (e) { console.error('[kusto]', e); }
-	}
-
-	// Create new observer
-	const observer = new ResizeObserver(() => {
-		try { updateToolbarOverflow(id); } catch (e) { console.error('[kusto]', e); }
-	});
-	observer.observe(toolbar);
-	__kustoToolbarResizeObservers[id] = observer;
-
-	// Initial check
-	requestAnimationFrame(() => {
-		try { updateToolbarOverflow(id); } catch (e) { console.error('[kusto]', e); }
-	});
-
-	// Also initialize run button responsiveness
+	// Toolbar overflow is now managed by <kw-query-toolbar> internally.
+	// Also initialize run button responsiveness (still handled externally for now).
 	initRunButtonResponsive(boxId);
 }
 
@@ -1381,7 +1351,7 @@ export function closeRunMenu( boxId: any) {
 	}
 }
 
-function closeAllRunMenus() {
+export function closeAllRunMenus() {
 	if (!_win.queryBoxes) return;
 	_win.queryBoxes.forEach((id: any) => closeRunMenu(id));
 }

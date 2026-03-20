@@ -108,6 +108,7 @@ declare global {
 		autoTriggerAutocompleteEnabled: boolean;
 		copilotInlineCompletionsEnabled: boolean;
 		copilotInlineCompletionRequests: Record<string, any>;
+		__kustoHandleInlineCompletionResult?: (requestId: string, completions: any[]) => void;
 
 		// =====================================================================
 		// vscodeApi.js — VS Code API
@@ -591,53 +592,8 @@ declare global {
 		// extraBoxes-chart.ts
 		// =====================================================================
 		__kustoChartBoxes: any[];
-		__kustoAutoFitChartIfClipped: (boxId: string) => void;
 		removeChartBox: (boxId: string) => void;
-		toggleChartBoxVisibility: (boxId: string) => void;
-		__kustoApplyChartBoxVisibility: (boxId: string) => void;
-		__kustoApplyChartMode: (boxId: string) => void;
-		__kustoSetChartMode: (boxId: string, mode: string) => void;
-		__kustoUpdateChartModeButtons: (boxId: string) => void;
-		__kustoUpdateChartVisibilityToggleButton: (boxId: string) => void;
-		__kustoUpdateChartBuilderUI: (boxId: string) => void;
-		__kustoGetChartActiveCanvasElementId: (boxId: string) => string | null;
-		__kustoGetIsDarkThemeForEcharts: () => boolean;
-		__kustoSelectChartType: (boxId: string, chartType: string) => void;
-		__kustoOnChartYCheckboxChanged: (dropdownId: string) => void;
-		__kustoOnChartTooltipCheckboxChanged: (dropdownId: string) => void;
-		__kustoUpdateFunnelSortUI: (boxId: string) => void;
-		__kustoNormalizeLegendPosition: (pos: string) => string;
-		__kustoUpdateLegendPositionButtonUI: (boxId: string) => void;
-		__kustoOnChartLegendPositionClicked: (boxId: string,pos: string) => void;
-		__kustoFormatNumber: (n: number) => string;
-		__kustoComputeAxisFontSize: (container: HTMLElement) => number;
 		__kustoGetChartState: (boxId: string) => any;
-		__kustoGetDefaultAxisSettings: () => any;
-		__kustoHasCustomAxisSettings: (settings: any) => boolean;
-		__kustoGetDefaultYAxisSettings: () => any;
-		__kustoHasCustomYAxisSettings: (settings: any) => boolean;
-		__kustoOnSeriesColorChanged: (boxId: string, inputEl: any) => void;
-		__kustoResetSeriesColor: (boxId: string, colName: string, index: number) => void;
-		__kustoToggleAxisSettingsPopup: (boxId: string, axis: string) => void;
-		__kustoCloseAxisSettingsPopup: (boxId: string) => void;
-		__kustoCloseAllAxisSettingsPopups: () => void;
-		__kustoToggleLabelSettingsPopup: (boxId: string) => void;
-		__kustoCloseLabelSettingsPopup: (boxId: string) => void;
-		__kustoSyncLabelSettingsUI: (boxId: string) => void;
-		__kustoHasCustomLabelSettings: (boxId: string) => boolean;
-		__kustoUpdateLabelSettingsIndicator: (boxId: string) => void;
-		__kustoSyncAxisSettingsUI: (boxId: string) => void;
-		__kustoUpdateAxisLabelIndicator: (boxId: string) => void;
-		__kustoFormatUtcDateTime: (dateMs: number) => string;
-		__kustoComputeTimePeriodGranularity: (minMs: number, maxMs: number) => string;
-		__kustoFormatTimePeriodLabel: (dateMs: number, granularity: string) => string;
-		__kustoGenerateContinuousTimeLabels: (minMs: number, maxMs: number, count: number) => number[];
-		__kustoShouldShowTimeForUtcAxis: (data: any[]) => boolean;
-		__kustoComputeTimeAxisLabelRotation: (container: HTMLElement, labels: string[]) => number;
-		__kustoComputeCategoryLabelRotation: (container: HTMLElement, labels: string[]) => number;
-		__kustoMeasureLabelChars: (labels: string[]) => number;
-		__kustoRefreshChartsForThemeChange: () => void;
-		__kustoStartEchartsThemeObserver: () => void;
 
 		// =====================================================================
 		// extraBoxes-markdown.ts (thin bridge module)
@@ -657,71 +613,12 @@ declare global {
 		__kustoTransformationBoxes: any[];
 		__kustoConfigureTransformation: (boxId: string, config: any) => any;
 		__kustoRenderTransformation: (boxId: string) => void;
-		toggleTransformationBoxVisibility: (boxId: string) => void;
-		__kustoUpdateTransformationModeButtons: (boxId: string) => void;
-		__kustoApplyTransformationMode: (boxId: string) => void;
-		__kustoSetTransformationMode: (boxId: string, mode: string) => void;
-		__kustoUpdateTransformationVisibilityToggleButton: (boxId: string) => void;
-		__kustoComputeTransformationFitHeightPx: (boxId: string) => number;
-		__kustoMaybeAutoFitTransformationBox: (boxId: string) => void;
-		__kustoSetCheckboxDropdownText: (buttonTextId: string, selectedValues: string[], placeholder: string) => void;
-		__kustoBuildCheckboxMenuHtml: (items: any[], opts: any) => string;
-		__kustoToggleGroupByColumn: (boxId: string, column: string) => void;
-		__kustoUpdateTransformationBuilderUI: (boxId: string) => void;
-		__kustoOnTransformationAggChanged: (boxId: string) => void;
-		__kustoAddTransformationAgg: (boxId: string) => void;
-		__kustoRemoveTransformationAgg: (boxId: string, index: number) => void;
-		__kustoOnGroupByColumnChanged?: (boxId: string) => void;
-		__kustoAddGroupByColumn?: (boxId: string) => void;
-		__kustoRemoveGroupByColumn?: (boxId: string, index: number) => void;
-		__kustoOnGroupByDragStart?: (boxId: string, index: number) => void;
-		__kustoClearGroupByDropIndicators?: (boxId: string) => void;
-		__kustoOnGroupByDragOver?: (boxId: string, event: any) => void;
-		__kustoOnGroupByDragEnd?: (boxId: string) => void;
-		__kustoOnGroupByDrop?: (boxId: string) => void;
-		__kustoOnAggDragStart?: (boxId: string, index: number) => void;
-		__kustoClearAggDropIndicators?: (boxId: string) => void;
-		__kustoOnAggDragOver?: (boxId: string, event: any) => void;
-		__kustoOnAggDrop?: (boxId: string) => void;
-		__kustoOnAggDragEnd?: (boxId: string) => void;
-		__kustoOnCalculatedColumnChanged?: (boxId: string, index: number) => void;
-		__kustoAddCalculatedColumn?: (boxId: string) => void;
-		__kustoRemoveCalculatedColumn?: (boxId: string, index: number) => void;
-		__kustoOnDeriveDragStart?: (boxId: string, index: number) => void;
-		__kustoClearDeriveDropIndicators?: (boxId: string) => void;
-		__kustoOnDeriveDragOver?: (boxId: string, event: any) => void;
-		__kustoOnDeriveDrop?: (boxId: string) => void;
-		__kustoOnDeriveDragEnd?: (boxId: string) => void;
-		__kustoGroupByDragState?: any;
-		__kustoAggDragState?: any;
-		__kustoDeriveDragState?: any;
-		__kustoOnResultsVisibilityToggled?: ((boxId?: string) => void) | null;
-		__kustoRenderTransformationError?: (boxId: string, error: any) => void;
-		__kustoEnsureTransformationAutoExpandWhenResultsAppear?: (boxId: string) => void;
-		__kustoShowExpressionHelpTooltip?: (boxId: string, event: any) => void;
-		__kustoHideExpressionHelpTooltip?: () => void;
-		__kustoHideExpressionHelpTooltipImmediate?: () => void;
-		__kustoFormatDate?: (date: any) => string;
-		__kustoTryParseDate?: (v: any) => number | null;
 
 		// =====================================================================
 		// extraBoxes-markdown.ts (state — lazy-initialized)
 		// =====================================================================
 		__kustoMarkdownModeByBoxId?: Record<string, string>;
 		__kustoMarkdownExpandedByBoxId?: Record<string, boolean>;
-
-		// =====================================================================
-		// resultsTable.ts (additional)
-		// =====================================================================
-		__kustoGetRawCellValueForTransform?: (cell: any) => any;
-		__kustoTryParseFiniteNumber?: (v: any) => number | null;
-
-		// =====================================================================
-		// extraBoxes-transformation.ts (expression eval)
-		// =====================================================================
-		__kustoTokenizeExpr?: (expr: string) => any[];
-		__kustoParseExprToRpn?: (tokens: any[]) => any[];
-		__kustoEvalRpn?: (rpn: any[], row: any, colIndex: Record<string, number>) => any;
 
 		// =====================================================================
 		// main.ts (additional)

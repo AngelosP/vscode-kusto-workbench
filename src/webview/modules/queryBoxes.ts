@@ -181,31 +181,8 @@ export function addQueryBox( options: any) {
 	const container = document.getElementById('queries-container') as any;
 
 	// ── SVG icons used by toolbar buttons (light DOM) ──
-	// Header/connection row icons (cluster, database, refresh, favorites, schema, close,
-	// maximize, share) are now in kw-query-section.ts shadow DOM and deleted from here.
-
-	const caretDocsIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 3.5h10v9H3v-9z"/>' +
-		'<path d="M3 6h10"/>' +
-		'<path d="M5 8.2h6"/>' +
-		'<path d="M5 10.4h4.2"/>' +
-		'</svg>';
-
-	const autocompleteIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M3 4.5h10"/>' +
-		'<path d="M3 7.5h6"/>' +
-		'<path d="M3 10.5h4"/>' +
-		'<path d="M10.2 9.2l2.3 2.3"/>' +
-		'<path d="M12.5 9.2v2.3h-2.3"/>' +
-		'</svg>';
-
-	// Ghost icon for inline/ghost text completions
-	const ghostIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-		'<path d="M8 1C5.2 1 3 3.2 3 6v6c0 .3.1.6.4.8.2.2.5.2.8.1l1.3-.7 1.3.7c.3.2.7.2 1 0L8 12.2l.2.7c.3.2.7.2 1 0l1.3-.7 1.3.7c.3.1.6.1.8-.1.3-.2.4-.5.4-.8V6c0-2.8-2.2-5-5-5zm-2 6.5c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1zm4 0c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"/>' +
-		'</svg>';
+	// Toolbar buttons are now rendered by <kw-query-toolbar> (light DOM Lit element).
+	// Header/connection row icons are in kw-query-section.ts shadow DOM.
 
 	// Compare queries icon: two panels with left-right arrows showing comparison
 	// Simple bold design that reads well at small sizes
@@ -220,28 +197,6 @@ export function addQueryBox( options: any) {
 		'<path d="M9 6l-1.5 1.5L9 9" />' +
 		'</svg>';
 
-	const copilotLogoUri = (() => {
-		try {
-			return (window.__kustoQueryEditorConfig && window.__kustoQueryEditorConfig.copilotLogoUri)
-				? String(window.__kustoQueryEditorConfig.copilotLogoUri)
-				: '';
-		} catch {
-			return '';
-		}
-	})();
-	const copilotLogoHtml = copilotLogoUri
-		? ('<img class="copilot-logo" src="' + copilotLogoUri + '" alt="" aria-hidden="true" />')
-		: (
-			'<svg class="copilot-logo-svg" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-			'<rect x="3" y="3" width="10" height="9" rx="2" />' +
-			'<path d="M6 12v1" />' +
-			'<path d="M10 12v1" />' +
-			'<circle cx="6.5" cy="7" r=".8" fill="currentColor" stroke="none" />' +
-			'<circle cx="9.5" cy="7" r=".8" fill="currentColor" stroke="none" />' +
-			'<path d="M6.2 9.2c.6.5 1.2.8 1.8.8s1.2-.3 1.8-.8" />' +
-			'</svg>'
-		);
-
 	const optimizeOrAcceptHtml = isComparison
 		? ('<button class="accept-optimizations-btn" id="' + id + '_accept_btn" onclick="acceptOptimizations(\'' + id + '\')" disabled ' +
 			'title="Run both queries to compare results. This will be enabled when the optimized query has results." aria-label="Accept Optimizations">Accept Optimizations</button>')
@@ -254,89 +209,14 @@ export function addQueryBox( options: any) {
 			'</span>'
 		);
 
-	const toolsIconSvg = '<span class="codicon codicon-tools" aria-hidden="true"></span>';
-
-	const toolsDropdownHtml =
-		'<span class="qe-toolbar-menu-wrapper" id="' + id + '_tools_wrapper">' +
-			'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-toolbar-dropdown-btn" id="' + id + '_tools_btn" onclick="toggleToolsDropdown(\'' + id + '\'); event.stopPropagation();" title="Tools" aria-label="Tools" aria-haspopup="listbox" aria-expanded="false">' +
-				'<span class="qe-icon qe-tools-icon" aria-hidden="true">' + toolsIconSvg + '</span>' +
-				'<span class="qe-toolbar-caret" aria-hidden="true"><svg width="8" height="8" viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 2.5L4 5.5L6.5 2.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
-				'<span class="schema-spinner qe-tools-spinner" aria-hidden="true" style="display:none;"></span>' +
-			'</button>' +
-			'<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="' + id + '_tools_menu" role="listbox" tabindex="-1" style="display:none;"></div>' +
-		'</span>';
-	const toolbarHtml =
-		'<div class="query-editor-toolbar" role="toolbar" aria-label="Editor tools" id="' + id + '_toolbar">' +
-		'<div class="qe-toolbar-items">' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-undo-btn" data-qe-overflow-action="undo" data-qe-overflow-label="Undo" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'undo\')" title="Undo (Ctrl+Z)" aria-label="Undo">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn qe-redo-btn" data-qe-overflow-action="redo" data-qe-overflow-label="Redo" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'redo\')" title="Redo (Ctrl+Y)" aria-label="Redo">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="prettify" data-qe-overflow-label="Prettify query" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'prettify\')" title="Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>' +
-		'</span>' +
-		'</button>' +
-		toolsDropdownHtml +
-		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="search" data-qe-overflow-label="Search" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'search\')" title="Search\nFind in the current query">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M6.5 2a4.5 4.5 0 1 0 2.67 8.13l3.02 3.02a.75.75 0 0 0 1.06-1.06l-3.02-3.02A4.5 4.5 0 0 0 6.5 2zm0 1.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="replace" data-qe-overflow-label="Search and replace" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'replace\')" title="Search and replace\nFind and replace in the current query">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M2.5 4.5h8V3l3 2.5-3 2.5V6.5h-8v-2zM13.5 11.5h-8V13l-3-2.5 3-2.5v1.5h8v2z"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" id="' + id + '_auto_autocomplete_toggle" data-qe-overflow-action="autoAutocomplete" data-qe-overflow-label="Auto-completions as you type" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-auto-autocomplete-toggle' + (_win.autoTriggerAutocompleteEnabled ? ' is-active' : '') + '" onclick="toggleAutoTriggerAutocompleteEnabled()" title="Automatically trigger schema-based completions dropdown as you type\nShortcut for manual trigger: CTRL + SPACE" aria-pressed="' + (_win.autoTriggerAutocompleteEnabled ? 'true' : 'false') + '" aria-label="Automatically trigger schema-based completions dropdown as you type">' +
-		'<span class="qe-icon" aria-hidden="true">' + autocompleteIconSvg + '</span>' +
-		'</button>' +
-		'<button type="button" id="' + id + '_copilot_inline_toggle" data-qe-overflow-action="copilotInline" data-qe-overflow-label="Copilot inline suggestions" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle qe-copilot-inline-toggle' + (_win.copilotInlineCompletionsEnabled ? ' is-active' : '') + '" onclick="toggleCopilotInlineCompletionsEnabled()" title="Automatically trigger Copilot inline completions (ghost text) as you type\nShortcut for manual trigger: SHIFT + SPACE" aria-pressed="' + (_win.copilotInlineCompletionsEnabled ? 'true' : 'false') + '" aria-label="Copilot inline suggestions">' +
-		'<span class="qe-icon" aria-hidden="true">' + ghostIconSvg + '</span>' +
-		'</button>' +
-		'<button type="button" id="' + id + '_caret_docs_toggle" data-qe-overflow-action="caretDocs" data-qe-overflow-label="Smart documentation" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle' + (_win.caretDocsEnabled ? ' is-active' : '') + '" onclick="toggleCaretDocsEnabled()" title="Smart documentation\nShows Kusto documentation based on cursor placement (not on mouse hover; on actual cursor placement inside the editor)" aria-pressed="' + (_win.caretDocsEnabled ? 'true' : 'false') + '">' +
-		'<span class="qe-icon" aria-hidden="true">' + caretDocsIconSvg + '</span>' +
-		'</button>' +
-		'<button type="button" id="' + id + '_copilot_chat_toggle" data-qe-overflow-action="copilotChat" data-qe-overflow-label="Copilot chat" class="unified-btn-secondary query-editor-toolbar-btn query-editor-toolbar-toggle kusto-copilot-chat-toggle" onclick="__kustoToggleCopilotChatForBox(\'' + id + '\')" title="Copilot chat\nGenerate and run a query with GitHub Copilot" aria-pressed="false" aria-label="Toggle Copilot chat" disabled aria-disabled="true" data-kusto-disabled-by-copilot="1">' +
-		'<span class="qe-icon" aria-hidden="true">' + copilotLogoHtml + '</span>' +
-		'</button>' +
-		'<span class="query-editor-toolbar-sep" aria-hidden="true"></span>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="exportPowerBI" data-qe-overflow-label="Export to Power BI" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'exportPowerBI\')" title="Export to Power BI\nCopies a Power Query (M) snippet to your clipboard for pasting into Power BI">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>' +
-		'</span>' +
-		'</button>' +
-		'<button type="button" class="unified-btn-secondary query-editor-toolbar-btn" data-qe-overflow-action="copyAdeLink" data-qe-overflow-label="Share query as link" onclick="onQueryEditorToolbarAction(\'' + id + '\', \'copyAdeLink\')" title="Share query as link (Azure Data Explorer)\nCopies a shareable URL to your clipboard containing the cluster, database and active query" aria-label="Share query as link (Azure Data Explorer)">' +
-		'<span class="qe-icon" aria-hidden="true">' +
-		'<span class="codicon codicon-link" aria-hidden="true"></span>' +
-		'</span>' +
-		'</button>' +
-		'</div>' +
-		'<span class="qe-toolbar-overflow-wrapper" id="' + id + '_toolbar_overflow_wrapper">' +
-			'<button type="button" class="qe-toolbar-overflow-btn" id="' + id + '_toolbar_overflow_btn" onclick="toggleToolbarOverflow(\'' + id + '\'); event.stopPropagation();" title="More actions" aria-label="More actions" aria-haspopup="true" aria-expanded="false">' +
-				'<span aria-hidden="true">···</span>' +
-			'</button>' +
-			'<div class="qe-toolbar-overflow-menu kusto-dropdown-menu" id="' + id + '_toolbar_overflow_menu" role="menu" tabindex="-1" style="display:none;"></div>' +
-		'</span>' +
-		'</div>';
-
 	// ── Connection row is now rendered by <kw-query-section> shadow DOM ──
-	// No dropdown HTML generation needed — the Lit component handles cluster,
-	// database, favorites, refresh, favorite toggle, schema info popover.
+	// Toolbar is now rendered by <kw-query-toolbar> light DOM Lit element.
+	// No dropdown HTML or toolbar HTML generation needed.
 
 	const boxHtml =
 		'<kw-query-section class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '" box-id="' + id + '">' +
 		'<div class="query-editor-wrapper">' +
-		toolbarHtml +
+		'<kw-query-toolbar box-id="' + id + '"></kw-query-toolbar>' +
 		'<div class="qe-editor-clip">' +
 		'<div class="qe-caret-docs-banner" id="' + id + '_caret_docs" style="display:none;" role="status" aria-live="polite">' +
 		'<div class="qe-caret-docs-text" id="' + id + '_caret_docs_text"></div>' +
@@ -409,7 +289,15 @@ export function addQueryBox( options: any) {
 		container.insertAdjacentHTML('beforeend', boxHtml);
 	}
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
-	try { updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+	// Initialize toolbar toggle states from globals.
+	try {
+		const toolbar = document.querySelector('kw-query-toolbar[box-id="' + id + '"]') as any;
+		if (toolbar) {
+			if (typeof toolbar.setCaretDocsActive === 'function') toolbar.setCaretDocsActive(!!_win.caretDocsEnabled);
+			if (typeof toolbar.setAutoCompleteActive === 'function') toolbar.setAutoCompleteActive(!!_win.autoTriggerAutocompleteEnabled);
+			if (typeof toolbar.setCopilotInlineActive === 'function') toolbar.setCopilotInlineActive(!!_win.copilotInlineCompletionsEnabled);
+		}
+	} catch (e) { console.error('[kusto]', e); }
 	setRunMode(id, 'take100');
 
 	// ── Wire up <kw-query-section> event listeners ──

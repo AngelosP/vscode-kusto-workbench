@@ -61,6 +61,11 @@ export class CopilotService {
 	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; result: string; label: string }>();
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+	// Cache for Copilot model selection — avoids calling selectChatModels() on every inline completion request.
+	private _cachedInlineModel: vscode.LanguageModelChat | null = null;
+	private _cachedInlineModelAt = 0;
+	private static readonly INLINE_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 	constructor(private readonly host: CopilotServiceHost) {}
 
 	getCopilotLocalTools(): CopilotLocalTool[] {
@@ -491,19 +496,32 @@ export class CopilotService {
 		}
 
 		try {
-			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-			if (models.length === 0) {
-				this.host.postMessage({
-					type: 'copilotInlineCompletionResult',
-					requestId,
-					boxId,
-					completions: [],
-					error: 'Copilot not available'
-				} as any);
-				return;
+			// Use cached model if available (avoids ~200-500ms selectChatModels latency per request).
+			let model = this._cachedInlineModel;
+			if (!model || Date.now() - this._cachedInlineModelAt > CopilotService.INLINE_MODEL_CACHE_TTL_MS) {
+				const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+				if (models.length === 0) {
+					this.host.postMessage({
+						type: 'copilotInlineCompletionResult',
+						requestId,
+						boxId,
+						completions: [],
+						error: 'Copilot not available'
+					} as any);
+					return;
+				}
+				model = findPreferredDefaultCopilotModel(models)!;
+				this._cachedInlineModel = model;
+				this._cachedInlineModelAt = Date.now();
 			}
 
-			const model = findPreferredDefaultCopilotModel(models)!;
+			// Trim context to the most relevant portion to keep the prompt small and fast.
+			// For inline completions, the last ~2000 chars before cursor and ~500 after
+			// is more than enough context.
+			const maxBefore = 2000;
+			const maxAfter = 500;
+			const trimmedBefore = textBefore.length > maxBefore ? textBefore.slice(-maxBefore) : textBefore;
+			const trimmedAfter = textAfter.length > maxAfter ? textAfter.slice(0, maxAfter) : textAfter;
 
 			const prompt = `You are an expert Kusto Query Language (KQL) assistant providing inline code completions.
 Complete the following KQL code. Only return the completion text that should be inserted at the cursor position.
@@ -512,15 +530,15 @@ Return ONLY the raw KQL code to complete the line or statement.
 If you cannot provide a meaningful completion, return an empty string.
 
 KQL code before cursor:
-${textBefore}
+${trimmedBefore}
 
 KQL code after cursor:
-${textAfter}
+${trimmedAfter}
 
 Completion:`;
 
 			const cts = new vscode.CancellationTokenSource();
-			const timeoutId = setTimeout(() => cts.cancel(), 3000);
+			const timeoutId = setTimeout(() => cts.cancel(), 8000);
 
 			try {
 				const response = await model.sendRequest(

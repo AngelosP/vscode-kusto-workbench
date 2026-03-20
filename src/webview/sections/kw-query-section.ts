@@ -1594,10 +1594,10 @@ export class KwQuerySection extends LitElement {
 
 	private _setCopilotToggleButtonState(visible: boolean): void {
 		try {
-			const btn = document.getElementById(this.boxId + '_copilot_chat_toggle');
-			if (!btn) return;
-			btn.classList.toggle('is-active', !!visible);
-			btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + this.boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setCopilotChatActive === 'function') {
+				toolbar.setCopilotChatActive(!!visible);
+			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
