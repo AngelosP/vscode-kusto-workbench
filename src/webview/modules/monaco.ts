@@ -48,6 +48,7 @@ import { __kustoAttachAutoResizeToContent } from './monaco-resize';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 import { __kustoAutoSizeEditor, ensureSchemaForBox } from './queryBoxes';
 import { executeQuery } from './queryBoxes-execution';
+import { decideSchemaOperation } from '../shared/schema-decision';
 
 const _win = window;
 
@@ -1767,38 +1768,39 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 							return normalized;
 						};
 						
-						// Check if the current worker schema is for the same cluster (per model)
-						const currentContext = __kustoMonacoDatabaseInContextByModel[modelKey];
-						const currentClusterNormalized = normalizeClusterUrl(currentContext?.clusterUrl);
-						const newClusterNormalized = normalizeClusterUrl(clusterUrl);
-						const isSameCluster = currentContext && currentClusterNormalized === newClusterNormalized;
-						const isSameDatabase = isSameCluster && currentContext?.database?.toLowerCase() === database?.toLowerCase();
-						
-						// If already loaded, we might still need to switch context
-						// BUT: we need to verify the cluster is still the same - if user switched clusters,
-						// the schema was replaced and we need to reload
+						// Use the extracted pure decision function to determine the operation.
+						// IMPORTANT: Use the GLOBAL context, not per-model. The Monaco-kusto worker
+						// schema is global — when any model does a replace, ALL models share the
+						// new schema. Per-model context becomes stale after another model's replace.
+						const currentContext = __kustoMonacoDatabaseInContext;
+						const operation = decideSchemaOperation({
+							globalInitialized: __kustoMonacoInitialized,
+							perModelLoaded: alreadyLoaded,
+							currentClusterUrl: currentContext?.clusterUrl ?? null,
+							currentDatabase: currentContext?.database ?? null,
+							newClusterUrl: clusterUrl,
+							newDatabase: database,
+							setAsContext,
+							forceRefresh,
+						});
+
+						// ── Schema diagnostics: decision ──
+						console.log(
+							'%c[schema-diag] DECISION: %s | schema: %s | model: %s | setAsContext: %s | forceRefresh: %s | perModelLoaded: %s | globalInit: %s | ctx: %s/%s',
+							'color:#ff0;font-weight:bold',
+							operation.action + ('reason' in operation ? ` (${(operation as any).reason})` : ''),
+							schemaKey, modelKey.replace(/.*\//, ''),
+							setAsContext, forceRefresh, alreadyLoaded, __kustoMonacoInitialized,
+							currentContext?.clusterUrl || '(none)', currentContext?.database || '(none)'
+						);
+
+						if (operation.action === 'skip') {
+							return;
+						}
+						// If the decision says we need to act but the schema was "already loaded",
+						// clear the per-model tracking so the load/replace can proceed.
 						if (alreadyLoaded) {
-							if (setAsContext) {
-								if (!isSameCluster) {
-									// Cluster has changed! The schema we "loaded" is no longer in the worker.
-									// We need to reload it. Remove from loaded tracking and continue.
-									delete perModelLoadedSchemas[schemaKey];
-									// Fall through to the loading logic below
-								} else if (isSameDatabase) {
-									// Same cluster AND same database - nothing to do
-									return;
-								} else {
-									// Same cluster, different database - try to switch context
-									const switched = await __kustoSetDatabaseInContext!(clusterUrl, database, modelKey);
-									if (switched) {
-										return;
-									}
-									// Context switch failed, fall through to do a full schema load
-									delete perModelLoadedSchemas[schemaKey];
-								}
-							} else {
-								return;
-							}
+							delete perModelLoadedSchemas[schemaKey];
 						}
 						
 						try {
@@ -1859,42 +1861,24 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 										}
 									}
 									
-													// Use the GLOBAL init flag to decide between set (replace) vs add.
-													// setSchemaFromShowSchema replaces the ENTIRE worker schema.
-													// We must only use it for the very first schema load across ALL models.
-													// After that, use addDatabaseToSchema to avoid wiping other models' schemas.
-													if (!__kustoMonacoInitialized) {
+									// ── Execute the operation decided by decideSchemaOperation ──
+									if (operation.action === 'first-load') {
 										// First schema: use setSchemaFromShowSchema to establish base with database in context
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-																__kustoMonacoInitialized = true; // legacy
+																__kustoMonacoInitialized = true;
 																__kustoMonacoInitializedByModel[modelKey] = true;
 																perModelLoadedSchemas[schemaKey] = true;
-																// Keep legacy/global in sync for debugging only
 																__kustoMonacoLoadedSchemas[schemaKey] = true;
 																__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
 																__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
-												
-												// Cache the schema for re-adding after cluster switches
 												__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 											} catch (schemaError) {
 												console.error('[monaco-kusto] setSchemaFromShowSchema failed:', schemaError);
 											}
 										}
-									} else {
-										// Subsequent schemas: decide whether to add or replace based on cluster
-										// Use the isSameCluster value computed at the top of the function
-									
-										// If setAsContext is true and we're switching to a different cluster,
-										// we need to replace the schema entirely (not add to it)
-										// because __kustoSetDatabaseInContext looks for the database in the current cluster's schema.
-										// NOTE: forceRefresh deliberately uses the ADD path (addDatabaseToSchema) rather than
-										// REPLACE (setSchemaFromShowSchema). REPLACE wipes ALL loaded schemas which breaks
-										// fully-qualified cross-cluster/cross-database table references. The ADD path
-										// updates just the refreshed database's schema without disturbing others.
-										const needsReplace = setAsContext && !isSameCluster;
-										if (needsReplace) {
+									} else if (operation.action === 'replace') {
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
 												try {
 																	// Remember what other clusters we had loaded for THIS model before replacing
@@ -1907,23 +1891,38 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																		Object.keys(perModelLoadedSchemas).forEach(k => delete perModelLoadedSchemas[k]);
 																	} catch (e) { console.error('[kusto]', e); }
 																	perModelLoadedSchemas[schemaKey] = true;
-																	// Keep legacy/global in sync for debugging only
+																	// Worker schema is global — invalidate ALL other models'
+																	// per-model tracking since the replace wiped everything.
+																	try {
+																		for (const uri of Object.keys(__kustoMonacoLoadedSchemasByModel)) {
+																			if (uri !== modelKey) {
+																				const otherLoaded = __kustoMonacoLoadedSchemasByModel[uri];
+																				if (otherLoaded) Object.keys(otherLoaded).forEach(k => delete otherLoaded[k]);
+																			}
+																		}
+																	} catch (e) { console.error('[kusto]', e); }
+																	// Keep legacy/global in sync
 																	__kustoMonacoLoadedSchemas = {};
 																	__kustoMonacoLoadedSchemas[schemaKey] = true;
 																	__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
 																	__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 													__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 													
-																	// Re-add schemas from OTHER clusters that we have cached.
-																	// This keeps cross-cluster database references working after switching.
-																	const otherClusterSchemas = Object.keys(__kustoSchemaCache || {})
-																		.filter(key => {
-																			const [cachedClusterUrl] = key.split('|');
-																			const cachedClusterNorm = normalizeClusterUrl(cachedClusterUrl);
-																			return cachedClusterNorm && cachedClusterNorm !== newClusterNormalized;
-																		});
+																	// Re-add ALL other schemas that we have cached.
+																	// This keeps both cross-cluster and cross-database references working.
+																	const otherSchemas = Object.keys(__kustoSchemaCache || {})
+																		.filter(key => key !== schemaKey);
 													
-													for (const otherKey of otherClusterSchemas) {
+													// ── Schema diagnostics: replace completed ──
+													console.log(
+														'%c[schema-diag] REPLACE done → new context: %s/%s | re-adding %d other schemas: %s',
+														'color:#0f0',
+														clusterUrl, databaseInContext,
+														otherSchemas.length,
+														otherSchemas.join(', ') || '(none)'
+													);
+													
+													for (const otherKey of otherSchemas) {
 														const cached = __kustoSchemaCache[otherKey];
 														if (cached && cached.rawSchemaJson) {
 															try {
@@ -1957,12 +1956,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													// CRITICAL FIX: Clear markers for all boxes that DON'T match the new context
 													// setSchemaFromShowSchema validates ALL models against new context, which is wrong for other boxes
 													const newClusterNorm = normalizeClusterUrl(clusterUrl);
-													const allQueryBoxes = document.querySelectorAll('.query-box[data-box-id]');
+													const allQueryBoxes = document.querySelectorAll('kw-query-section.query-box[box-id]');
 													allQueryBoxes.forEach(box => {
-														const boxId = box.getAttribute('data-box-id');
-														const boxEditor = _win.__kustoEditors?.[boxId as string];
+														const otherBoxId = box.getAttribute('box-id');
+														const boxEditor = _win.queryEditors?.[otherBoxId as string];
 														if (boxEditor) {
-															const boxCluster = box.getAttribute('data-cluster-url');
+															const boxCluster = typeof (box as any).getClusterUrl === 'function' ? (box as any).getClusterUrl() : '';
 															const boxClusterNorm = boxCluster ? normalizeClusterUrl(boxCluster) : null;
 															if (boxClusterNorm && boxClusterNorm !== newClusterNorm) {
 																// This box uses a different cluster - clear its markers (they were set with wrong context)
@@ -1978,23 +1977,31 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													console.error('[monaco-kusto] REPLACE: setSchemaFromShowSchema failed:', schemaError);
 												}
 											}
-										} else {
-											// Same cluster or not setting as context: use addDatabaseToSchema to ADD without replacing
+									} else if (operation.action === 'add') {
 											//
 											// IMPORTANT: The kusto worker schema is GLOBAL — shared across all Monaco models.
 											// If another model already loaded this exact schema (same schemaKey), the worker
 											// already has it and we can skip the addDatabaseToSchema call entirely.
 											// This also avoids "document is null" errors from the worker when the current
 											// model's document hasn't been synced to the worker yet.
-											const alreadyLoadedGlobally = !forceRefresh && !!__kustoMonacoLoadedSchemas[schemaKey];
+											let alreadyLoadedGlobally = !forceRefresh && !!__kustoMonacoLoadedSchemas[schemaKey];
 											if (alreadyLoadedGlobally) {
 												// Schema already in worker from a previous model — just update per-model tracking
 												perModelLoadedSchemas[schemaKey] = true;
 												__kustoSchemaCache[schemaKey] = __kustoSchemaCache[schemaKey] || { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
 												if (setAsContext) {
-													await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
+													const switched = await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
+													if (!switched) {
+														// Context switch failed — database not found in current worker schema.
+														// This can happen if the global tracking is stale (e.g. after a replace wiped schemas).
+														// Clear tracking so the full addDatabaseToSchema path runs below.
+														delete __kustoMonacoLoadedSchemas[schemaKey];
+														delete perModelLoadedSchemas[schemaKey];
+														alreadyLoadedGlobally = false;
+													}
 												}
-											} else if (typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
+											}
+											if (!alreadyLoadedGlobally && typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
 												try {
 													// First normalize the raw schema to get the Database object
 													const engineSchema = await worker.normalizeSchema(schemaObj, clusterUrl, databaseInContext);
@@ -2062,7 +2069,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												} catch (addError) {
 													console.error('[monaco-kusto] ADD: addDatabaseToSchema failed:', addError);
 												}
-											} else {
+											} else if (!alreadyLoadedGlobally) {
 												// Fallback: just use setSchemaFromShowSchema (will replace, but better than nothing)
 												if (typeof worker.setSchemaFromShowSchema === 'function') {
 													try {
@@ -2079,7 +2086,6 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													}
 												}
 											}
-										}
 									}
 								}
 							}
@@ -2177,10 +2183,7 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 						try {
 							if (!boxId) return;
 							
-							// Debounce: track the most recent focus request
-							// If another focus came in for the same box, skip duplicate processing
-							
-							// If we're already processing this exact box, skip
+							// Debounce: skip if we're already processing this exact box
 							if (__kustoFocusInProgress === boxId) {
 								return;
 							}
@@ -2193,10 +2196,22 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							// If we need to reload schemas after tab became visible, do it now
 							if (__kustoWorkerNeedsSchemaReload) {
 								__kustoWorkerNeedsSchemaReload = false;
-								
-								// Re-request schema for the focused box (this will trigger load)
-								// Other box schemas will be loaded when they get focus
 							}
+							
+							// ── Schema diagnostics: focus switch ──
+							try {
+								const diagEl = document.getElementById(boxId) as any;
+								const diagName = diagEl?.getName ? diagEl.getName() : boxId;
+								const diagCluster = diagEl?.getClusterUrl ? diagEl.getClusterUrl() : '(none)';
+								const diagDb = diagEl?.getDatabase ? diagEl.getDatabase() : '(none)';
+								const diagCtx = __kustoMonacoDatabaseInContext;
+								console.log(
+									'%c[schema-diag] FOCUS → section: %s | cluster: %s | database: %s | current-context: %s/%s',
+									'color:#0f0;font-weight:bold',
+									diagName, diagCluster, diagDb,
+									diagCtx?.clusterUrl || '(none)', diagCtx?.database || '(none)'
+								);
+							} catch (e) { /* ignore diag errors */ }
 							
 							// Get the connection and database for this box
 							let ownerId = boxId;
@@ -2216,8 +2231,6 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							}
 							
 							// Enable markers for this editor's model AFTER confirming connection context (lazy diagnostics)
-							// This allows red squiggles to show after focus, but only when we have schema context
-							// Only enable if explicitly requested (i.e., on actual focus, not just visibility)
 							if (enableMarkers) {
 								__kustoEnableMarkersForBox!(boxId);
 							}
@@ -2230,17 +2243,15 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 								return;
 							}
 							
-							let focusedModelUri = null;
+							let focusedModelUri: string | null = null;
 							// Register model→cluster mapping for marker suppression
-							// This allows the interceptor to suppress markers for models that don't match current context
 							try {
 								const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
 								if (editor && typeof editor.getModel === 'function') {
 									const model = editor.getModel();
 									if (model && model.uri) {
-										const modelUri = model.uri.toString();
-										focusedModelUri = modelUri;
-										__kustoModelClusterMap[modelUri] = clusterUrl;
+										focusedModelUri = model.uri.toString();
+										__kustoModelClusterMap[focusedModelUri] = clusterUrl;
 									}
 								}
 							} catch (e) { console.error('[kusto]', e); }
@@ -2249,122 +2260,40 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 								return;
 							}
 							
-							const schemaKey = `${clusterUrl}|${database}`;
-							const currentContextForModel = __kustoMonacoDatabaseInContextByModel?.[focusedModelUri] || __kustoMonacoDatabaseInContext;
-											
-							// Check if this schema is already loaded in the worker
-							const perModelLoaded = __kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
-							const alreadyLoaded = !!perModelLoaded[schemaKey];
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
-							// This is the single source of truth - no duplicate caching
 							const schema = typeof _win.schemaByBoxId !== 'undefined' ? _win.schemaByBoxId[boxId] : null;
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
 							
-							if (alreadyLoaded) {
-								// Schema is marked as loaded, but we need to verify the cluster is still the same
-								// If user switched clusters, the worker schema was replaced and we need to reload
-								const currentContext = currentContextForModel;
-								
-								// Normalize cluster URLs for comparison
-								const normalizeClusterUrl = (url: any) => {
-									if (!url) return '';
-									let normalized = String(url).trim().toLowerCase();
-									normalized = normalized.replace(/^https?:\/\//, '');
-									normalized = normalized.replace(/\/+$/, '');
-									return normalized;
-								};
-								
-								const currentClusterNormalized = normalizeClusterUrl(currentContext?.clusterUrl);
-								const focusedClusterNormalized = normalizeClusterUrl(clusterUrl);
-								const isSameCluster = currentContext && currentClusterNormalized === focusedClusterNormalized;
-								
-								if (!isSameCluster) {
-									// Cluster changed! The "loaded" schema is no longer in the worker.
-									// Remove from loaded tracking and fall through to loading logic
-									try {
-										delete perModelLoaded[schemaKey];
-									} catch (e) { console.error('[kusto]', e); }
-									// Continue to the loading logic below instead of returning
-								} else {
-									// Same cluster, try to switch context
-									let contextSwitched = false;
-									if (__kustoSetDatabaseInContext != null) {
-										contextSwitched = await __kustoSetDatabaseInContext!(clusterUrl, database, focusedModelUri);
-									}
-									
-									if (contextSwitched) {
-										// Context switch succeeded, trigger re-validation
-										__kustoTriggerRevalidation!(boxId);
-										return;
-									} else {
-										// Context switch failed (database not found in current schema)
-										// This can happen when databases get out of sync.
-										// Fall through to do a full schema reload.
-										try {
-											delete perModelLoaded[schemaKey];
-										} catch (e) { console.error('[kusto]', e); }
-									}
-								}
-							}
-							
 							if (rawSchemaJson) {
-								// Load the schema AND set as context (setAsContext = true).
-								// Use setSchemaFromShowSchema directly to GUARANTEE the correct
-								// database is set as context. The addDatabaseToSchema path can
-								// fail to switch context if the worker state was replaced by
-								// another model's setSchemaFromShowSchema during initial load.
-								try {
-									if (monaco?.languages?.kusto?.getKustoWorker) {
-										const workerAccessor = await monaco.languages.kusto.getKustoWorker();
-										const worker = await workerAccessor(monaco.Uri.parse(focusedModelUri));
-										if (worker && typeof worker.setSchemaFromShowSchema === 'function') {
-											let schemaObj = rawSchemaJson;
-											if (typeof schemaObj === 'string') {
-												try { schemaObj = JSON.parse(schemaObj); } catch (e) { console.error('[kusto]', e); }
-											}
-											if (schemaObj && schemaObj.Databases && !schemaObj.Plugins) {
-												schemaObj = { Plugins: [], ...schemaObj };
-											}
-											let databaseInContext = database;
-											if (schemaObj?.Databases) {
-												const dbKeys = Object.keys(schemaObj.Databases);
-												const matchedKey = dbKeys.find((k: string) => k.toLowerCase() === database.toLowerCase());
-												if (matchedKey) databaseInContext = matchedKey;
-											}
-											await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-
-											// Update tracking state
-											__kustoMonacoInitializedByModel[focusedModelUri] = true;
-											const pl = __kustoMonacoLoadedSchemasByModel?.[focusedModelUri] || {};
-											pl[schemaKey] = true;
-											if (__kustoMonacoLoadedSchemasByModel) {
-												__kustoMonacoLoadedSchemasByModel[focusedModelUri] = pl;
-											}
-											__kustoMonacoDatabaseInContextByModel[focusedModelUri] = { clusterUrl, database: databaseInContext };
-											__kustoMonacoDatabaseInContext = __kustoMonacoDatabaseInContextByModel[focusedModelUri];
-											__kustoSchemaCache[schemaKey] = { rawSchemaJson: schemaObj, clusterUrl, database: databaseInContext };
-										}
-									}
-								} catch (e) {
-									// Fallback: try the queued path
-									if (__kustoSetMonacoKustoSchema != null) {
-										await __kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
-									}
-								}
+								// Delegate to the queued schema loader with setAsContext=true.
+								// This ensures all schema operations are serialized and tracking
+								// state (global + per-model) is properly updated. The queued
+								// function handles first-load vs add vs replace logic correctly,
+								// including the "already loaded, just switch context" optimization.
+								await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 								
 								// Trigger re-validation with the newly loaded schema
 								__kustoTriggerRevalidation!(boxId);
 							} else {
-								// Request a fresh schema fetch which will include rawSchemaJson
-								// Markers will be enabled when schema loads
-								if (typeof ensureSchemaForBox === 'function') {
-									ensureSchemaForBox(boxId, true); // force refresh to get rawSchemaJson
+								// No rawSchemaJson in schemaByBoxId yet. Check if the schema
+								// was previously loaded and cached in __kustoSchemaCache.
+								const schemaKey = `${clusterUrl}|${database}`;
+								const cachedSchema = __kustoSchemaCache[schemaKey];
+								if (cachedSchema && cachedSchema.rawSchemaJson) {
+									await _win.__kustoSetMonacoKustoSchema(cachedSchema.rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+									__kustoTriggerRevalidation!(boxId);
+								} else {
+									// No cached schema anywhere — trigger a schema fetch.
+									// When the schema arrives via 'schemaData' message, the handler
+									// will call __kustoSetMonacoKustoSchema.
+									if (typeof ensureSchemaForBox === 'function') {
+										ensureSchemaForBox(boxId, true);
+									}
 								}
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Error updating schema for focused box:', e);
 						} finally {
-							// Clear the in-progress flag
 							if (__kustoFocusInProgress === boxId) {
 								__kustoFocusInProgress = null;
 							}
@@ -2419,14 +2348,33 @@ __kustoExtractCrossClusterRefs = function (queryText: any) {
 						// cluster("name").database("dbname")
 						// cluster(name).database(dbname) - without quotes
 						const clusterDbPattern = /cluster\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)\s*\.\s*database\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
+						// Get current context to skip refs that match the active connection
+						const currentCtx = __kustoMonacoDatabaseInContext;
+						const currentClusterShort = currentCtx?.clusterUrl
+							? (currentCtx.clusterUrl.match(/https?:\/\/([^.]+)/i)?.[1] || '').toLowerCase()
+							: '';
+						const currentDbLower = (currentCtx?.database || '').toLowerCase();
 						let match;
 						while ((match = clusterDbPattern.exec(queryText)) !== null) {
 							const clusterName = match[1];
 							const database = match[2];
 							if (clusterName && database) {
+								// Skip if this ref matches the current connection — it's a no-op,
+								// the schema for the active cluster+database is already loaded.
+								if (currentClusterShort && currentDbLower &&
+									clusterName.toLowerCase() === currentClusterShort &&
+									database.toLowerCase() === currentDbLower) {
+									continue;
+								}
+								// Also skip if the ref matches the full cluster URL
+								if (currentCtx?.clusterUrl && currentDbLower &&
+									clusterName.toLowerCase() === currentCtx.clusterUrl.toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '') &&
+									database.toLowerCase() === currentDbLower) {
+									continue;
+								}
 								// Avoid duplicates
 								const exists = refs.some(r => 
-									r.clusterName.toLowerCase() === clusterName.toLowerCase() &&
+									r.clusterName?.toLowerCase() === clusterName.toLowerCase() &&
 									r.database.toLowerCase() === database.toLowerCase()
 								);
 								if (!exists) {
@@ -2577,7 +2525,6 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 // The kusto worker schema is GLOBAL — one addDatabaseToSchema call
 															// applies to all models. Use models[0].uri which is guaranteed to
 															// have its document synced (avoids "document is null" errors).
-															const loadedKey = `${clusterUrl}|${database}`;
 															let appliedCount = 0;
 															try {
 																const syncedModel = models[0];
@@ -2587,15 +2534,14 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 																	appliedCount++;
 																}
 															} catch (e) { console.error('[kusto]', e); }
-															// Update per-model tracking for ALL models
-															if (appliedCount > 0) {
-																for (const model of models) {
-																	__kustoMonacoLoadedSchemasByModel[model.uri.toString()] = __kustoMonacoLoadedSchemasByModel[model.uri.toString()] || {};
-																	__kustoMonacoLoadedSchemasByModel[model.uri.toString()][loadedKey] = true;
-																}
-																}
-																// Keep legacy/global in sync for debugging only
-																__kustoMonacoLoadedSchemas[loadedKey] = true;
+															// NOTE: Do NOT update __kustoMonacoLoadedSchemas or
+															// __kustoMonacoLoadedSchemasByModel here. Cross-cluster/
+															// cross-database schemas added via addDatabaseToSchema are
+															// supplementary references only — they must NOT interfere
+															// with the primary schema tracking used by needsReplace and
+															// the alreadyLoaded logic. If we mark them as loaded, the
+															// next focus-switch incorrectly thinks the primary schema
+															// is already set and skips the context switch.
 												
 																if (appliedCount > 0) {
 																	__kustoCrossClusterSchemas[key] = { 
@@ -2630,6 +2576,16 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 					// Check for cross-cluster references in a query and request schemas
 __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 						const refs = __kustoExtractCrossClusterRefs!(queryText);
+						if (refs.length > 0) {
+							const diagCtx = __kustoMonacoDatabaseInContext;
+							console.log(
+								'%c[schema-diag] FQ-REFS in %s | current-context: %s/%s | refs:',
+								'color:#f80;font-weight:bold',
+								boxId,
+								diagCtx?.clusterUrl || '(none)', diagCtx?.database || '(none)',
+								refs.map(r => `${r.clusterName || '(same-cluster)'}/${r.database}`)
+							);
+						}
 						for (const ref of refs) {
 							__kustoRequestCrossClusterSchema!(ref.clusterName, ref.database, boxId);
 						}

@@ -1228,6 +1228,21 @@ export function handleDocumentDataMessage(message: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
+	// ── Schema diagnostics: log all sections on file open ──
+	try {
+		const allBoxIds: string[] = Array.isArray((_win.queryBoxes as any)) ? (_win.queryBoxes as any) : [];
+		const sectionSummary = allBoxIds.map((bid: string) => {
+			const el = document.getElementById(bid) as any;
+			if (!el || typeof el.getConnectionId !== 'function') return null;
+			const connId = el.getConnectionId();
+			const db = el.getDatabase();
+			const cluster = el.getClusterUrl ? el.getClusterUrl() : '';
+			const name = el.getName ? el.getName() : bid;
+			return { boxId: bid, name, cluster: cluster || '(none)', database: db || '(none)', connectionId: connId || '(none)' };
+		}).filter(Boolean);
+		console.log('%c[schema-diag] FILE OPENED — sections:', 'color:#0af;font-weight:bold', sectionSummary);
+	} catch (e) { console.error('[schema-diag]', e); }
+
 	// Update monaco-kusto schema for the FIRST visible/expanded Kusto section only
 	// Monaco-kusto can only have ONE schema in context at a time, so we only load for the first box.
 	// When user clicks on another box, that box's schema will be loaded via __kustoUpdateSchemaForFocusedBox.
