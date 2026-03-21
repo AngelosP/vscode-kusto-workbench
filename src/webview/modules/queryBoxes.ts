@@ -180,106 +180,13 @@ export function addQueryBox( options: any) {
 
 	const container = document.getElementById('queries-container') as any;
 
-	// ── SVG icons used by toolbar buttons (light DOM) ──
-	// Toolbar buttons are now rendered by <kw-query-toolbar> (light DOM Lit element).
-	// Header/connection row icons are in kw-query-section.ts shadow DOM.
-
-	// Compare queries icon: two panels with left-right arrows showing comparison
-	// Simple bold design that reads well at small sizes
-	const diffIconSvg =
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-		// Left panel
-		'<rect x="1.5" y="3" width="4.5" height="10" rx="1" />' +
-		// Right panel
-		'<rect x="10" y="3" width="4.5" height="10" rx="1" />' +
-		// Comparison arrows in center: arrows pointing toward each other
-		'<path d="M7 6l1.5 1.5L7 9" />' +
-		'<path d="M9 6l-1.5 1.5L9 9" />' +
-		'</svg>';
-
-	const optimizeOrAcceptHtml = isComparison
-		? ('<button class="accept-optimizations-btn" id="' + id + '_accept_btn" onclick="acceptOptimizations(\'' + id + '\')" disabled ' +
-			'title="Run both queries to compare results. This will be enabled when the optimized query has results." aria-label="Accept Optimizations">Accept Optimizations</button>')
-		: (
-			'<span class="optimize-inline" id="' + id + '_optimize_inline">' +
-				'<button class="optimize-query-btn" id="' + id + '_optimize_btn" onclick="optimizeQueryWithCopilot(\'' + id + '\', null, { skipExecute: true })" ' +
-					'title="Compare two queries" aria-label="Compare two queries">' +
-					diffIconSvg +
-				'</button>' +
-			'</span>'
-		);
-
-	// ── Connection row is now rendered by <kw-query-section> shadow DOM ──
-	// Toolbar is now rendered by <kw-query-toolbar> light DOM Lit element.
-	// No dropdown HTML or toolbar HTML generation needed.
-
+	// ── The light DOM body (toolbar, editor, actions, results) is now created
+	// by the <kw-query-section> Lit component in its connectedCallback.
+	// This function just creates the host element with attributes.
 	const boxHtml =
-		'<kw-query-section class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '" box-id="' + id + '">' +
-		'<div class="query-editor-wrapper">' +
-		'<kw-query-toolbar box-id="' + id + '"></kw-query-toolbar>' +
-		'<div class="qe-editor-clip">' +
-		'<div class="qe-caret-docs-banner" id="' + id + '_caret_docs" style="display:none;" role="status" aria-live="polite">' +
-		'<div class="qe-caret-docs-text" id="' + id + '_caret_docs_text"></div>' +
-		'</div>' +
-		'<div class="qe-missing-clusters-banner" id="' + id + '_missing_clusters" style="display:none;" role="status" aria-live="polite">' +
-		'<div class="qe-missing-clusters-text" id="' + id + '_missing_clusters_text"></div>' +
-		'<div class="qe-missing-clusters-actions">' +
-		'<button type="button" class="unified-btn-primary qe-missing-clusters-btn" onclick="addMissingClusterConnections(\'' + id + '\')">Add connections</button>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-editor" id="' + id + '_query_editor"></div>' +
-		'<div class="query-editor-placeholder" id="' + id + '_query_placeholder">Enter your KQL query here...</div>' +
-		'<div class="query-editor-resizer" id="' + id + '_query_resizer" title="Drag to resize editor\nDouble-click to fit to contents"></div>' +
-		'</div>' +
-		'</div>' +
-		'<div class="query-actions">' +
-		'<div class="query-run">' +
-		'<div class="unified-btn-split" id="' + id + '_run_split">' +
-		'<button class="unified-btn-split-main" id="' + id + '_run_btn" onclick="executeQuery(\'' + id + '\')" disabled title="Run Query (take 100)\nSelect a cluster and database first (or select a favorite)">▶<span class="run-btn-label"> Run Query (take 100)</span></button>' +
-		'<button class="unified-btn-split-toggle" id="' + id + '_run_toggle" onclick="toggleRunMenu(\'' + id + '\'); event.stopPropagation();" aria-label="Run query options" title="Run query options"><svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg></button>' +
-		'<div class="unified-btn-split-menu" id="' + id + '_run_menu" role="menu">' +
-		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'plain\');">Run Query</div>' +
-		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'take100\');">Run Query (take 100)</div>' +
-		'<div class="unified-btn-split-menu-item" role="menuitem" onclick="__kustoApplyRunModeFromMenu(\'' + id + '\', \'sample100\');">Run Query (sample 100)</div>' +
-		'</div>' +
-		'</div>' +
-		optimizeOrAcceptHtml +
-		'' +
-		'<span class="query-exec-status" id="' + id + '_exec_status" style="display: none;">' +
-		'<span class="query-spinner" aria-hidden="true"></span>' +
-		'<span id="' + id + '_exec_elapsed">0:00</span>' +
-		'</span>' +
-		'<button class="refresh-btn cancel-btn" id="' + id + '_cancel_btn" onclick="cancelQuery(\'' + id + '\')" style="display: none;" title="Cancel running query" aria-label="Cancel running query">' +
-		'<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">' +
-		'<circle cx="8" cy="8" r="6" />' +
-		'<path d="M5.5 5.5l5 5" />' +
-		'<path d="M10.5 5.5l-5 5" />' +
-		'</svg>' +
-		'</button>' +
-		'</div>' +
-		'<div class="cache-controls">' +
-		'<span class="cache-label" id="' + id + '_cache_label" onclick="toggleCachePopup(\'' + id + '\')" title="Click to configure cache duration">Cache results</span>' +
-		'<input type="checkbox" id="' + id + '_cache_enabled" checked onchange="toggleCachePill(\'' + id + '\'); try{schedulePersist()}catch{}" class="cache-checkbox" title="Toggle result caching" />' +
-		'<div class="cache-popup" id="' + id + '_cache_popup">' +
-		'<div class="cache-popup-content">' +
-		'<span class="cache-popup-label">Cache results for</span>' +
-		'<div class="cache-popup-inputs">' +
-		'<input type="number" id="' + id + '_cache_value" value="1" min="1" oninput="try{schedulePersist()}catch{}" />' +
-		'<select id="' + id + '_cache_unit" onchange="try{schedulePersist()}catch{}">' +
-		'<option value="minutes">Minutes</option>' +
-		'<option value="hours">Hours</option>' +
-		'<option value="days" selected>Days</option>' +
-		'</select>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'</div>' +
-		'<div class="results-wrapper" id="' + id + '_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">' +
-		'<div class="results" id="' + id + '_results"></div>' +
-		'<div class="query-editor-resizer" id="' + id + '_results_resizer" title="Drag to resize results\nDouble-click to fit to contents"></div>' +
-		'</div>' +
-		'</kw-query-section>';
+		'<kw-query-section class="query-box' + (isComparison ? ' is-optimized-comparison' : '') + '" id="' + id + '" box-id="' + id + '"' +
+		(isComparison ? ' is-comparison' : '') +
+		'></kw-query-section>';
 
 	// Insert into the DOM — after a specific section or at the end.
 	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;

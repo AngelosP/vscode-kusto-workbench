@@ -1,5 +1,5 @@
 import { pState } from '../shared/persistence-state';
-import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-query-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
@@ -21,7 +21,7 @@ import {
 	__kustoSetSectionName,
 } from '../modules/queryBoxes.js';
 import { __kustoOpenShareModal, getRunMode } from '../modules/queryBoxes-toolbar.js';
-import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from '../modules/queryBoxes-execution.js';
+import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from '../modules/queryBoxes-execution.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
 import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../modules/monaco-prettify.js';
@@ -97,6 +97,16 @@ const clusterPickerIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16
 const shareIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 3zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M4 6a2 2 0 1 1-.001 4.001A2 2 0 0 1 4 6zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M12 9a2 2 0 1 1-.001 4.001A2 2 0 0 1 12 9zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M5.5 7.5l5-2.5M5.5 8.5l5 2.5" stroke="currentColor" stroke-width="1" fill="none"/></svg>`;
 
 
+// ── Light DOM SVG icons (for elements rendered into the host's light DOM) ─────
+
+/** Compare queries icon: two panels with left-right arrows showing comparison */
+const diffIconLightSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="1.5" y="3" width="4.5" height="10" rx="1" /><rect x="10" y="3" width="4.5" height="10" rx="1" /><path d="M7 6l1.5 1.5L7 9" /><path d="M9 6l-1.5 1.5L9 9" /></svg>`;
+
+/** Down chevron for run-mode split dropdown */
+const downChevronSvg = html`<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>`;
+
+/** Cancel/stop icon */
+const cancelIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6" /><path d="M5.5 5.5l5 5" /><path d="M10.5 5.5l-5 5" /></svg>`;
 
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -150,6 +160,18 @@ export class KwQuerySection extends LitElement {
 	@property({ type: String, reflect: true, attribute: 'box-id' })
 	boxId = '';
 
+	/** Whether this is an optimization comparison section. Set by addQueryBox. */
+	@property({ type: Boolean, attribute: 'is-comparison' })
+	isComparison = false;
+
+	// ── Light DOM content guard ───────────────────────────────────────────────
+	// The light DOM body (toolbar, editor, actions, results) is created ONCE in
+	// connectedCallback via litRender. It must never be re-rendered because
+	// external code (Monaco editor init, Copilot chat install, result rendering)
+	// mutates these DOM nodes. The guard flag prevents re-creation on
+	// disconnect/reconnect (e.g. section reorder).
+	private _lightDomCreated = false;
+
 	// ── Connection row reactive state ─────────────────────────────────────────
 
 	@state() private _connections: KustoConnection[] = [];
@@ -196,12 +218,135 @@ export class KwQuerySection extends LitElement {
 		super.connectedCallback();
 		document.addEventListener('mousedown', this._closeSchemaPopoverBound);
 		document.addEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
+		// Create the light DOM body once. See _lightDomCreated guard comment above.
+		if (!this._lightDomCreated && this.boxId) {
+			this._lightDomCreated = true;
+			this._createLightDomContent();
+		}
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		document.removeEventListener('mousedown', this._closeSchemaPopoverBound);
 		document.removeEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
+	}
+
+	// ── Light DOM content (created once — never re-rendered) ──────────────────
+
+	/**
+	 * Populate the host element's light DOM with the query section body:
+	 * toolbar, editor clip, action bar, and results wrapper.
+	 *
+	 * Uses lit-html's `render()` so the template is a clean tagged-template
+	 * with proper `@click` handlers instead of inline `onclick="..."` strings.
+	 *
+	 * **WARNING**: This must only be called ONCE per element. External code
+	 * (Monaco, Copilot chat, result tables) mutates these DOM nodes after
+	 * creation. A second `litRender` call would clobber those mutations.
+	 */
+	private _createLightDomContent(): void {
+		const id = this.boxId;
+		const isComp = this.isComparison;
+
+		// Shorthand helpers for window global calls (conservative — avoids
+		// exporting local functions from other modules).
+		const callGlobal = (name: string, ...args: unknown[]) => {
+			const fn = (window as any)[name];
+			if (typeof fn === 'function') fn(...args);
+		};
+
+		litRender(html`
+			<div class="query-editor-wrapper">
+				<kw-query-toolbar box-id=${id}></kw-query-toolbar>
+				<div class="qe-editor-clip">
+					<div class="qe-caret-docs-banner" id="${id}_caret_docs" style="display:none;" role="status" aria-live="polite">
+						<div class="qe-caret-docs-text" id="${id}_caret_docs_text"></div>
+					</div>
+					<div class="qe-missing-clusters-banner" id="${id}_missing_clusters" style="display:none;" role="status" aria-live="polite">
+						<div class="qe-missing-clusters-text" id="${id}_missing_clusters_text"></div>
+						<div class="qe-missing-clusters-actions">
+							<button type="button" class="unified-btn-primary qe-missing-clusters-btn"
+								@click=${() => callGlobal('addMissingClusterConnections', id)}>Add connections</button>
+						</div>
+					</div>
+					<div class="query-editor" id="${id}_query_editor"></div>
+					<div class="query-editor-placeholder" id="${id}_query_placeholder">Enter your KQL query here...</div>
+					<div class="query-editor-resizer" id="${id}_query_resizer" title=${'Drag to resize editor\nDouble-click to fit to contents'}></div>
+				</div>
+			</div>
+			<div class="query-actions">
+				<div class="query-run">
+					<div class="unified-btn-split" id="${id}_run_split">
+						<button class="unified-btn-split-main" id="${id}_run_btn"
+							@click=${() => callGlobal('executeQuery', id)}
+							disabled
+							title=${'Run Query (take 100)\nSelect a cluster and database first (or select a favorite)'}>▶<span class="run-btn-label"> Run Query (take 100)</span></button>
+						<button class="unified-btn-split-toggle" id="${id}_run_toggle"
+							@click=${(e: Event) => { callGlobal('toggleRunMenu', id); e.stopPropagation(); }}
+							aria-label="Run query options" title="Run query options">${downChevronSvg}</button>
+						<div class="unified-btn-split-menu" id="${id}_run_menu" role="menu">
+							<div class="unified-btn-split-menu-item" role="menuitem"
+								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'plain')}>Run Query</div>
+							<div class="unified-btn-split-menu-item" role="menuitem"
+								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'take100')}>Run Query (take 100)</div>
+							<div class="unified-btn-split-menu-item" role="menuitem"
+								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'sample100')}>Run Query (sample 100)</div>
+						</div>
+					</div>
+					${isComp ? html`
+						<button class="accept-optimizations-btn" id="${id}_accept_btn"
+							@click=${() => acceptOptimizations(id)}
+							disabled
+							title="Run both queries to compare results. This will be enabled when the optimized query has results."
+							aria-label="Accept Optimizations">Accept Optimizations</button>
+					` : html`
+						<span class="optimize-inline" id="${id}_optimize_inline">
+							<button class="optimize-query-btn" id="${id}_optimize_btn"
+								@click=${() => optimizeQueryWithCopilot(id, null, { skipExecute: true })}
+								title="Compare two queries" aria-label="Compare two queries">
+								${diffIconLightSvg}
+							</button>
+						</span>
+					`}
+					<span class="query-exec-status" id="${id}_exec_status" style="display: none;">
+						<span class="query-spinner" aria-hidden="true"></span>
+						<span id="${id}_exec_elapsed">0:00</span>
+					</span>
+					<button class="refresh-btn cancel-btn" id="${id}_cancel_btn"
+						@click=${() => callGlobal('cancelQuery', id)}
+						style="display: none;" title="Cancel running query" aria-label="Cancel running query">
+						${cancelIconSvg}
+					</button>
+				</div>
+				<div class="cache-controls">
+					<span class="cache-label" id="${id}_cache_label"
+						@click=${() => callGlobal('toggleCachePopup', id)}
+						title="Click to configure cache duration">Cache results</span>
+					<input type="checkbox" id="${id}_cache_enabled" checked
+						@change=${() => { callGlobal('toggleCachePill', id); try { schedulePersist(); } catch { /* ignore */ } }}
+						class="cache-checkbox" title="Toggle result caching" />
+					<div class="cache-popup" id="${id}_cache_popup">
+						<div class="cache-popup-content">
+							<span class="cache-popup-label">Cache results for</span>
+							<div class="cache-popup-inputs">
+								<input type="number" id="${id}_cache_value" value="1" min="1"
+									@input=${() => { try { schedulePersist(); } catch { /* ignore */ } }} />
+								<select id="${id}_cache_unit"
+									@change=${() => { try { schedulePersist(); } catch { /* ignore */ } }}>
+									<option value="minutes">Minutes</option>
+									<option value="hours">Hours</option>
+									<option value="days" selected>Days</option>
+								</select>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="results-wrapper" id="${id}_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">
+				<div class="results" id="${id}_results"></div>
+				<div class="query-editor-resizer" id="${id}_results_resizer" title=${'Drag to resize results\nDouble-click to fit to contents'}></div>
+			</div>
+		`, this);
 	}
 
 	// ── Render ─────────────────────────────────────────────────────────────────

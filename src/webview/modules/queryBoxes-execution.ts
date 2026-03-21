@@ -89,7 +89,7 @@ function __kustoUpdateAcceptOptimizationsButton( comparisonBoxId: any, enabled: 
 	btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 }
 
-function acceptOptimizations( comparisonBoxId: any) {
+export function acceptOptimizations( comparisonBoxId: any) {
 	try {
 		const meta = (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) ? _win.optimizationMetadataByBoxId[comparisonBoxId] : null;
 		const sourceBoxId = meta && meta.sourceBoxId ? meta.sourceBoxId : '';
