@@ -25,26 +25,8 @@ export async function getQueryEditorHtml(
 		return `${uri}${sep}v=${encodeURIComponent(cacheBuster)}`;
 	};
 
-	const queryEditorCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.css')).toString()
-	);
-	const buttonsCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-buttons.css')).toString()
-	);
-	const addControlsCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-add-controls.css')).toString()
-	);
-	const copilotChatCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-copilot-chat.css')).toString()
-	);
-	const chartBuilderCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-chart-builder.css')).toString()
-	);
-	const resultsCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-results.css')).toString()
-	);
-	const modalsCssUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor-modals.css')).toString()
+	const appCssBundleUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css')).toString()
 	);
 	const toastUiEditorCssUri = withCacheBuster(
 		webview
@@ -106,6 +88,13 @@ export async function getQueryEditorHtml(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.js')).toString()
 	);
 
+	const echartsUrl = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'queryEditor', 'vendor', 'echarts', 'echarts.webview.js')).toString()
+	);
+	const toastUiEditorUrl = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'queryEditor', 'vendor', 'toastui-editor', 'toastui-editor.webview.js')).toString()
+	);
+
 	const copilotLogoUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'images', 'copilot-button-logo.png')).toString()
 	);
@@ -151,22 +140,20 @@ export async function getQueryEditorHtml(
 	}
 
 	return template
-		.replaceAll('{{queryEditorCssUri}}', queryEditorCssUri)
-		.replaceAll('{{buttonsCssUri}}', buttonsCssUri)
-		.replaceAll('{{addControlsCssUri}}', addControlsCssUri)
-		.replaceAll('{{copilotChatCssUri}}', copilotChatCssUri)
-		.replaceAll('{{chartBuilderCssUri}}', chartBuilderCssUri)
-		.replaceAll('{{resultsCssUri}}', resultsCssUri)
-		.replaceAll('{{modalsCssUri}}', modalsCssUri)
-		.replaceAll('{{toastUiEditorCssUri}}', toastUiEditorCssUri)
-		.replaceAll('{{toastUiEditorDarkCssUri}}', toastUiEditorDarkCssUri)
-		.replaceAll('{{toastUiEditorColorSyntaxCssUri}}', toastUiEditorColorSyntaxCssUri)
-		.replaceAll('{{tuiColorPickerCssUri}}', tuiColorPickerCssUri)
+		.replaceAll('{{appCssBundleUri}}', appCssBundleUri)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
 		.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
 		.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))
 		.replaceAll('{{monacoWorkersJson}}', JSON.stringify(monacoWorkers))
+		.replaceAll('{{echartsUrl}}', echartsUrl)
+		.replaceAll('{{toastUiEditorUrl}}', toastUiEditorUrl)
+		.replaceAll('{{toastUiCssUrlsJson}}', JSON.stringify([
+			toastUiEditorCssUri,
+			toastUiEditorDarkCssUri,
+			tuiColorPickerCssUri,
+			toastUiEditorColorSyntaxCssUri,
+		]))
 		.replaceAll('{{cacheBuster}}', cacheBuster);
 }

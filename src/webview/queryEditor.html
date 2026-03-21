@@ -6,17 +6,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Kusto Query Editor</title>
 	<link rel="stylesheet" href="{{monacoCssUri}}">
-	<link rel="stylesheet" href="{{toastUiEditorCssUri}}">
-	<link rel="stylesheet" href="{{toastUiEditorDarkCssUri}}">
-	<link rel="stylesheet" href="{{tuiColorPickerCssUri}}">
-	<link rel="stylesheet" href="{{toastUiEditorColorSyntaxCssUri}}">
-	<link rel="stylesheet" href="{{queryEditorCssUri}}">
-	<link rel="stylesheet" href="{{buttonsCssUri}}">
-	<link rel="stylesheet" href="{{addControlsCssUri}}">
-	<link rel="stylesheet" href="{{copilotChatCssUri}}">
-	<link rel="stylesheet" href="{{chartBuilderCssUri}}">
-	<link rel="stylesheet" href="{{resultsCssUri}}">
-	<link rel="stylesheet" href="{{modalsCssUri}}">
+	<link rel="stylesheet" href="{{appCssBundleUri}}">
 </head>
 
 <body>
@@ -173,7 +163,10 @@
 			monacoLoaderUri: "{{monacoLoaderUri}}",
 			monacoWorkers: {{monacoWorkersJson}},
 			cacheBuster: "{{cacheBuster}}",
-			copilotLogoUri: "{{copilotLogoUri}}"
+			copilotLogoUri: "{{copilotLogoUri}}",
+			echartsUrl: "{{echartsUrl}}",
+			toastUiEditorUrl: "{{toastUiEditorUrl}}",
+			toastUiCssUrls: {{toastUiCssUrlsJson}}
 		};
 	</script>
 	<script src="{{queryEditorJsUri}}"></script>

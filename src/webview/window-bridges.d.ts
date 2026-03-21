@@ -125,6 +125,9 @@ declare global {
 			cacheBuster?: string;
 			copilotLogoUri?: string;
 			monacoEditorWorkerUri?: string;
+			echartsUrl?: string;
+			toastUiEditorUrl?: string;
+			toastUiCssUrls?: string[];
 		};
 		MonacoEnvironment?: Record<string, any>;
 

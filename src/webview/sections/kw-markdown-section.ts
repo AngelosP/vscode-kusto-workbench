@@ -6,6 +6,7 @@ import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown.js';
 import { schedulePersist } from '../modules/persistence.js';
+import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -286,6 +287,8 @@ export class KwMarkdownSection extends LitElement {
 		} catch { ToastEditor = null; }
 
 		if (!ToastEditor) {
+			// Trigger lazy load — the retries will pick it up once loaded.
+			ensureToastUiLoaded().catch(() => {});
 			this._retryEditorInit();
 			return;
 		}
@@ -493,6 +496,8 @@ export class KwMarkdownSection extends LitElement {
 		} catch { ToastEditor = null; }
 
 		if (!ToastEditor) {
+			// Trigger lazy load — the retries will pick it up once loaded.
+			ensureToastUiLoaded().catch(() => {});
 			this._retryViewerInit(initialValue);
 			return;
 		}
@@ -1260,16 +1265,19 @@ export class KwMarkdownSection extends LitElement {
 	private static _applyThemeToHost(hostEl: HTMLElement | null, isDark: boolean): void {
 		if (!hostEl) return;
 		try {
+			// Always toggle on the host element itself — TOAST UI's constructor
+			// adds `toastui-editor-dark` to the `el` option (our host) when
+			// `theme: 'dark'` is passed. Without this, ancestor-descendant CSS
+			// selectors like `.toastui-editor-dark .ProseMirror { color: #fff }`
+			// would still match after switching to a light theme.
+			hostEl.classList.toggle('toastui-editor-dark', isDark);
+
+			// Also toggle on .toastui-editor-defaultUI elements (if present)
+			// so combined selectors like `.toastui-editor-dark.toastui-editor-defaultUI`
+			// work correctly.
 			const roots = hostEl.querySelectorAll('.toastui-editor-defaultUI');
-			if (roots.length > 0) {
-				for (const el of roots) {
-					try { el.classList.toggle('toastui-editor-dark', isDark); } catch (e) { console.error('[kusto]', e); }
-				}
-			} else {
-				// TOAST UI viewer (Preview mode) doesn't use .toastui-editor-defaultUI.
-				// Toggle the class on the host element itself so the descendant CSS
-				// selectors (.toastui-editor-dark .toastui-editor-contents p) still match.
-				hostEl.classList.toggle('toastui-editor-dark', isDark);
+			for (const el of roots) {
+				try { el.classList.toggle('toastui-editor-dark', isDark); } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 	}

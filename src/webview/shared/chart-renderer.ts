@@ -5,6 +5,7 @@ import { schedulePersist } from '../modules/persistence';
 import { isDarkTheme } from '../modules/monaco-theme';
 import { escapeHtml } from '../modules/utils';
 import { getResultsState } from '../modules/resultsState';
+import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
 	getRawCellValue,
 	cellToChartString,
@@ -284,9 +285,14 @@ export function renderChart(boxId: any) {
 	const canvas = document.getElementById(canvasId) as any;
 	if (!canvas) return;
 
-	// If ECharts isn't loaded yet, show a simple placeholder.
+	// If ECharts isn't loaded yet, show a placeholder and trigger lazy load.
 	if (!window.echarts || typeof window.echarts.init !== 'function') {
 		try { canvas.textContent = 'Loading chart…'; } catch (e) { console.error('[kusto]', e); }
+		ensureEchartsLoaded().then(() => {
+			for (const cid of (chartBoxes || [])) {
+				try { renderChart(cid); } catch (e) { console.error('[kusto]', e); }
+			}
+		}).catch((e) => { console.error('[kusto] ECharts lazy load failed:', e); });
 		return;
 	}
 

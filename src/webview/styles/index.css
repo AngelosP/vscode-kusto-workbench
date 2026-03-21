@@ -1,0 +1,8 @@
+/* CSS bundle entry point — order matches the original <link> tag order in queryEditor.html */
+@import './queryEditor.css';
+@import './queryEditor-buttons.css';
+@import './queryEditor-add-controls.css';
+@import './queryEditor-copilot-chat.css';
+@import './queryEditor-chart-builder.css';
+@import './queryEditor-results.css';
+@import './queryEditor-modals.css';

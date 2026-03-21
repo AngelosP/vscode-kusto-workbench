@@ -32,14 +32,6 @@ async function main() {
 	const webviewSrcDir = path.join(__dirname, 'src', 'webview');
 	const webviewDistDir = path.join(__dirname, 'dist', 'webview');
 	try {
-		// CSS
-		const stylesSrc = path.join(webviewSrcDir, 'styles');
-		const stylesDest = path.join(webviewDistDir, 'styles');
-		await fs.promises.mkdir(stylesDest, { recursive: true });
-		if (fs.promises.cp) {
-			await fs.promises.cp(stylesSrc, stylesDest, { recursive: true, force: true });
-		}
-
 		// Vendor libs (marked, purify, toastui CSS — skip dead toastui-editor.js UMD build)
 		const vendorSrc = path.join(webviewSrcDir, 'vendor');
 		const vendorDest = path.join(webviewDistDir, 'vendor');
@@ -69,12 +61,16 @@ async function main() {
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
 	}
 
-	// Monaco assets are used directly by the webview (not bundled into extension.js).
-	// Copy them into dist so they are included in the VSIX (node_modules is excluded).
 	// Skip unused language workers (css, html, json, ts) — only editor.worker is needed for KQL.
+	// Also skip entire unused language directories (css, html, json, typescript).
+	// These provide full IntelliSense for those languages but we only create 'kusto'
+	// and 'python' models. Kusto comes from @kusto/monaco-kusto (copied separately),
+	// and python only needs basic-languages/ for syntax highlighting.
+	// If a new language model is added, remove its directory from this set.
 	const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs');
 	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
 	const unusedWorkerPattern = /^(css|html|json|ts)\.worker\.[0-9a-f]+\.js$/i;
+	const unusedLanguageDirs = new Set(['css', 'html', 'json', 'typescript']);
 	try {
 		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
 		// Node 16+ supports fs.promises.cp with a filter
@@ -82,13 +78,25 @@ async function main() {
 			await fs.promises.cp(monacoSrc, monacoDest, {
 				recursive: true,
 				force: true,
-				filter: (src) => !unusedWorkerPattern.test(path.basename(src))
+				filter: (src) => {
+					if (unusedWorkerPattern.test(path.basename(src))) return false;
+					const rel = path.relative(monacoSrc, src);
+					const parts = rel.split(path.sep);
+					if (parts[0] === 'language' && parts.length > 1 && unusedLanguageDirs.has(parts[1])) return false;
+					return true;
+				}
 			});
 		} else {
 			console.warn('[watch] fs.promises.cp not available; Monaco assets may be missing');
 		}
 	} catch (e) {
 		console.warn('[watch] failed to copy Monaco assets:', e && e.message ? e.message : e);
+	}
+
+	// Clean up stale language dirs from previous builds that are now excluded.
+	for (const lang of unusedLanguageDirs) {
+		const staleDir = path.join(monacoDest, 'language', lang);
+		try { await fs.promises.rm(staleDir, { recursive: true, force: true }); } catch { /* ignore */ }
 	}
 
 	// Monaco-Kusto assets provide the official Kusto language service (completions, diagnostics, etc.).
@@ -183,6 +191,26 @@ async function main() {
 		console.warn('[watch] failed to bundle ECharts:', e && e.message ? e.message : e);
 	}
 
+	// App CSS bundle — combines all queryEditor-*.css into a single file.
+	const cssBundleOutfile = path.join(__dirname, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
+	try {
+		const cssCtx = await esbuild.context({
+			entryPoints: [path.join(__dirname, 'src', 'webview', 'styles', 'index.css')],
+			bundle: true,
+			minify: production,
+			outfile: cssBundleOutfile,
+			logLevel: 'silent',
+		});
+		if (watch) {
+			await cssCtx.watch();
+		} else {
+			await cssCtx.rebuild();
+			await cssCtx.dispose();
+		}
+	} catch (e) {
+		console.warn('[watch] failed to bundle app CSS:', e && e.message ? e.message : e);
+	}
+
 	// Webview Lit components bundle (browser target, ESM → IIFE for <script> usage).
 	try {
 		const webviewCtx = await esbuild.context({
@@ -234,7 +262,6 @@ async function main() {
 		// Legacy JS, CSS, queryEditor.js/html are copied once at startup but
 		// need to be re-copied when edited during development.
 		const watchCopyTargets = [
-			{ src: path.join(webviewSrcDir, 'styles'), dest: path.join(webviewDistDir, 'styles') },
 		];
 		const singleFileCopyTargets = [
 			{ src: path.join(webviewSrcDir, 'queryEditor.js'), dest: path.join(webviewDistDir, 'queryEditor.js') },
