@@ -23,8 +23,7 @@
     "workspaceContains:**/*.kql",
     "workspaceContains:**/*.csl",
     "workspaceContains:**/*.kqlx",
-    "workspaceContains:**/*.mdx",
-    "onStartupFinished"
+    "workspaceContains:**/*.mdx"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -1146,7 +1145,8 @@
     "test": "vscode-test",
     "test:webview": "vitest run",
     "test:webview:coverage": "vitest run --coverage",
-    "test:webview:watch": "vitest"
+    "test:webview:watch": "vitest",
+    "bundle-size": "node scripts/bundle-size.mjs"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",
@@ -1173,7 +1173,6 @@
     "@toast-ui/editor": "^3.2.2",
     "@toast-ui/editor-plugin-color-syntax": "^3.1.0",
     "azure-kusto-data": "^7.0.3",
-    "azure-kusto-ingest": "^7.0.3",
     "echarts": "^5.5.1",
     "lit": "^3.3.2",
     "monaco-editor": "^0.52.0"

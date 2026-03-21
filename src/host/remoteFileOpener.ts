@@ -753,7 +753,7 @@ export async function openRemoteFile(context: vscode.ExtensionContext, remoteUrl
  * Handles a plain HTTP/HTTPS URL with a known file extension.
  */
 async function openPlainRemoteFile(
-	context: vscode.ExtensionContext,
+	_context: vscode.ExtensionContext,
 	remoteUrl: string,
 	detectedExt: string,
 	remoteDir: vscode.Uri,

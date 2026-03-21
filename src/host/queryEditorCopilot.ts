@@ -657,7 +657,7 @@ Completion:`;
 	private async getExtendedSchemaToolResult(
 		connection: KustoConnection,
 		database: string,
-		boxId: string,
+		_boxId: string,
 		token: vscode.CancellationToken,
 		model?: vscode.LanguageModelChat
 	): Promise<{ result: string; label: string; prunePhase?: number }> {
