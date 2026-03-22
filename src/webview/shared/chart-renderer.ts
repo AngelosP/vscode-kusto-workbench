@@ -258,9 +258,39 @@ export function disposeChartEcharts(boxId: any) {
 
 // ── Render ─────────────────────────────────────────────────────────────────────
 
+// Per-box mouse-hover tracking.  When the mouse is over a chart canvas we must
+// NOT call setOption — ECharts processes mousemove synchronously and replacing
+// the internal data mid-event causes "Cannot read properties of undefined
+// (reading 'getRawIndex')" crashes.  Instead we defer the render until the
+// mouse leaves the canvas.
+const _chartMouseOverBoxes: Set<string> = new Set();
+const _chartDeferredRenders: Set<string> = new Set();
+
+function _installChartMouseGuard(boxId: string, canvas: HTMLElement) {
+	const key = '__kustoMouseGuard';
+	if ((canvas as any)[key]) return;
+	(canvas as any)[key] = true;
+	canvas.addEventListener('mouseenter', () => { _chartMouseOverBoxes.add(boxId); }, { passive: true });
+	canvas.addEventListener('mouseleave', () => {
+		_chartMouseOverBoxes.delete(boxId);
+		if (_chartDeferredRenders.has(boxId)) {
+			_chartDeferredRenders.delete(boxId);
+			try { renderChart(boxId); } catch (e) { console.error('[kusto]', e); }
+		}
+	}, { passive: true });
+}
+
 export function renderChart(boxId: any) {
 	const id = String(boxId || '');
 	if (!id) return;
+
+	// Defer if the mouse is currently over this chart canvas to avoid
+	// ECharts internal crash from data replacement during mousemove.
+	if (_chartMouseOverBoxes.has(id)) {
+		_chartDeferredRenders.add(id);
+		return;
+	}
+
 	try { startEchartsThemeObserver(); } catch (e) { console.error('[kusto]', e); }
 	const st = getChartState(id);
 
@@ -449,10 +479,13 @@ export function renderChart(boxId: any) {
 		};
 		// Axis tooltips (line, area, bar): NOT enterable — the tooltip follows the
 		// crosshair, so "entering" it just causes jitter as the axis position shifts.
+		// showDelay + hideDelay prevent rapid flickering when data points are dense.
 		const tooltipAxis = {
 			confine: true,
 			enterable: false,
-			transitionDuration: 0,
+			showDelay: 60,
+			hideDelay: 120,
+			transitionDuration: 0.08,
 			extraCssText: tooltipCss
 		};
 
@@ -1519,6 +1552,9 @@ export function renderChart(boxId: any) {
 			} catch (e) { console.error('[kusto]', e); }
 		});
 	} catch (e) { console.error('[kusto]', e); }
+
+	// Install mouse guard for deferred rendering.
+	try { _installChartMouseGuard(id, canvas); } catch (e) { console.error('[kusto]', e); }
 
 	// Keep the chart responsive to wrapper width changes.
 	// IMPORTANT: Only react to WIDTH changes.  The wrapper has height:auto so its
