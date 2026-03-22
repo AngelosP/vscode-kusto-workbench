@@ -281,6 +281,11 @@ declare global {
 		setQueryExecuting: (boxId: string, executing: boolean) => void;
 		__kustoApplyComparisonSummaryVisibility: (boxId: string) => void;
 		__kustoUpdateComparisonSummaryToggleButton: (boxId: string) => void;
+		__kustoUpdateQueryResultsToggleButton?: (boxId: string) => void;
+		__kustoApplyChartBoxVisibility?: (boxId: string, visible?: boolean) => void;
+		__kustoApplyChartMode?: (boxId: string, mode?: string) => void;
+		__kustoClampResultsWrapperHeight?: (boxId: string) => void;
+		__kustoQueryExpandedByBoxId?: Record<string, boolean>;
 		displayComparisonSummary: (sourceBoxId: string, comparisonBoxId: string) => void;
 		toggleQueryResultsVisibility: (boxId: string) => void;
 		cancelQuery: (boxId: string) => void;

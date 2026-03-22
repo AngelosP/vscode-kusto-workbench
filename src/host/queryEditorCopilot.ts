@@ -378,11 +378,11 @@ export class CopilotService {
 	}
 
 	formatCopilotModelLabel(model: vscode.LanguageModelChat): string {
-		const vendor = String((model as any).vendor ?? 'copilot');
-		const family = String((model as any).family ?? '').trim();
-		const version = String((model as any).version ?? '').trim();
-		const name = String((model as any).name ?? '').trim();
-		const id = String((model as any).id ?? '').trim();
+		const vendor = String(model.vendor ?? 'copilot');
+		const family = String(model.family ?? '').trim();
+		const version = String(model.version ?? '').trim();
+		const name = String(model.name ?? '').trim();
+		const id = String(model.id ?? '').trim();
 
 		const primary = name || [family, version].filter(Boolean).join(' ') || id || 'model';
 		return vendor && vendor !== 'copilot' ? `${vendor}: ${primary}` : primary;
@@ -419,7 +419,7 @@ export class CopilotService {
 			return;
 		}
 		try {
-			this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId: id, status: 'Canceling…' } as any);
+			this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId: id, status: 'Canceling…' });
 		} catch {
 			// ignore
 		}
@@ -507,7 +507,7 @@ export class CopilotService {
 						boxId,
 						completions: [],
 						error: 'Copilot not available'
-					} as any);
+					});
 					return;
 				}
 				model = findPreferredDefaultCopilotModel(models)!;
@@ -567,7 +567,7 @@ Completion:`;
 					requestId,
 					boxId,
 					completions
-				} as any);
+				});
 			} catch (err) {
 				clearTimeout(timeoutId);
 				if (err instanceof vscode.CancellationError) {
@@ -576,7 +576,7 @@ Completion:`;
 						requestId,
 						boxId,
 						completions: []
-					} as any);
+					});
 				} else {
 					throw err;
 				}
@@ -593,7 +593,7 @@ Completion:`;
 				boxId,
 				completions: [],
 				error: errorMsg
-			} as any);
+			});
 		}
 	}
 
@@ -613,13 +613,13 @@ Completion:`;
 					models: [],
 					selectedModelId: '',
 					tools: this.getCopilotLocalTools()
-				} as any);
+				});
 				this.host.postMessage({
 					type: 'copilotWriteQueryStatus',
 					boxId,
 					status:
 						'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.'
-				} as any);
+				});
 				return;
 			}
 
@@ -642,7 +642,7 @@ Completion:`;
 				models: modelOptions,
 				selectedModelId,
 				tools: this.getCopilotLocalTools()
-			} as any);
+			});
 		} catch {
 			this.host.postMessage({
 				type: 'copilotWriteQueryOptions',
@@ -650,7 +650,7 @@ Completion:`;
 				models: [],
 				selectedModelId: '',
 				tools: this.getCopilotLocalTools()
-			} as any);
+			});
 		}
 	}
 
@@ -967,7 +967,7 @@ Completion:`;
 					boxId,
 					ok: false,
 					message: 'Select a connection and database, then enter what you want the query to do.'
-				} as any);
+				});
 			} catch {
 				// ignore
 			}
@@ -994,7 +994,7 @@ Completion:`;
 
 		const postStatus = (status: string, detail?: string) => {
 			try {
-				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status, detail: detail || '' } as any);
+				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status, detail: detail || '' });
 			} catch {
 				// ignore
 			}
@@ -1004,7 +1004,7 @@ Completion:`;
 			const text = String(narrative || '').trim();
 			if (!text) return;
 			try {
-				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, role: 'assistant' } as any);
+				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, role: 'assistant' });
 			} catch {
 				// ignore
 			}
@@ -1018,7 +1018,7 @@ Completion:`;
 					boxId,
 					ok: false,
 					message: 'GitHub Copilot is not available. Enable Copilot in VS Code to use this feature.'
-				} as any);
+				});
 				return;
 			}
 			let model: vscode.LanguageModelChat | undefined;
@@ -1047,7 +1047,7 @@ Completion:`;
 					boxId,
 					ok: false,
 					message: 'Connection not found. Select a valid connection and try again.'
-				} as any);
+				});
 				return;
 			}
 
@@ -1073,7 +1073,7 @@ Completion:`;
 							entryId: rulesEntryId,
 							filePath: generalRules.filePath,
 							preview: generalRules.content
-						} as any);
+						});
 					} catch {
 						// ignore
 					}
@@ -1098,7 +1098,7 @@ Completion:`;
 							boxId,
 							entryId: devNotesEntryId,
 							preview: devNotesContent
-						} as any);
+						});
 					} catch {
 						// ignore
 					}
@@ -1121,7 +1121,7 @@ Completion:`;
 						boxId,
 						entryId: userMessageEntryId,
 						queryText: currentQuery
-					} as any);
+					});
 				} catch {
 					// ignore
 				}
@@ -1219,7 +1219,7 @@ Completion:`;
 								tool: 'get_extended_schema',
 								label: schemaToolResult.label,
 								json: schemaToolResult.result
-							} as any);
+							});
 						} catch {
 							// ignore
 						}
@@ -1254,7 +1254,7 @@ Completion:`;
 								tool: 'get_query_optimization_best_practices',
 								label: 'optimize-query-rules.md',
 								json: bestPracticesResult
-							} as any);
+							});
 						} catch {
 							// ignore
 						}
@@ -1325,7 +1325,7 @@ Completion:`;
 									query,
 									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
 									result
-								} as any);
+								});
 							} catch {
 								// ignore
 							}
@@ -1353,7 +1353,7 @@ Completion:`;
 									query,
 									resultSummary: 'Error',
 									errorMessage: errMsg
-								} as any);
+								});
 							} catch {
 								// ignore
 							}
@@ -1412,7 +1412,7 @@ Completion:`;
 									tool: 'search_cached_schemas',
 									label,
 									json: resultText
-								} as any);
+								});
 							} catch {
 								// ignore
 							}
@@ -1437,7 +1437,7 @@ Completion:`;
 									tool: 'search_cached_schemas',
 									label: `Search failed: ${errMsg}`,
 									json: `Search error: ${errMsg}`
-								} as any);
+								});
 							} catch {
 								// ignore
 							}
@@ -1467,7 +1467,7 @@ Completion:`;
 								boxId,
 								ok: false,
 								message: 'Failed to prepare comparison editor.'
-							} as any);
+							});
 							return;
 						}
 
@@ -1478,7 +1478,7 @@ Completion:`;
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
 							const result = await this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey).promise;
 							try {
-								this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId } as any);
+								this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
 							} catch {
 								// ignore
 							}
@@ -1491,7 +1491,7 @@ Completion:`;
 								boxId,
 								ok: false,
 								message: 'Failed to prepare comparison editor.'
-							} as any);
+							});
 							return;
 						}
 
@@ -1507,7 +1507,7 @@ Completion:`;
 						} catch (error) {
 							this.host.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
 							try {
-								this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+								this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 							} catch {
 								// ignore
 							}
@@ -1516,7 +1516,7 @@ Completion:`;
 								boxId,
 								ok: false,
 								message: 'Query failed to execute.'
-							} as any);
+							});
 							return;
 						}
 
@@ -1536,7 +1536,7 @@ Completion:`;
 									boxId,
 									ok: false,
 									message: 'Failed to prepare comparison editor.'
-								} as any);
+								});
 								return;
 							}
 							try {
@@ -1557,7 +1557,7 @@ Completion:`;
 										type: 'queryError',
 										error: 'Query failed to execute.',
 										boxId: comparisonBoxId
-									} as any);
+									});
 								} catch {
 									// ignore
 								}
@@ -1567,7 +1567,7 @@ Completion:`;
 										boxId,
 										ok: false,
 										message: 'Query failed to execute.'
-									} as any);
+									});
 									return;
 								}
 
@@ -1623,7 +1623,7 @@ Completion:`;
 								boxId,
 								ok: false,
 								message: 'Query failed to execute.'
-							} as any);
+							});
 							return;
 						}
 
@@ -1633,7 +1633,7 @@ Completion:`;
 							ok: true,
 							message:
 								'Optimized query has been provided, please check the results to make sure the same data is being returned. Keep in mind that count() and dcount() can return slightly different values by design, so we cannot expect a 100% match the entire time.'
-						} as any);
+						});
 						return;
 					}
 
@@ -1648,14 +1648,14 @@ Completion:`;
 						}
 
 						try {
-							this.host.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query } as any);
+							this.host.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query });
 						} catch {
 							// ignore
 						}
 
 						postStatus('Running query…');
 						try {
-							this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true } as any);
+							this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true });
 						} catch {
 							// ignore
 						}
@@ -1677,22 +1677,22 @@ Completion:`;
 						try {
 							const result = await promise;
 							if (isActive()) {
-								this.host.postMessage({ type: 'queryResult', result, boxId } as any);
-								this.host.postMessage({ type: 'ensureResultsVisible', boxId } as any);
-								this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
+								this.host.postMessage({ type: 'queryResult', result, boxId });
+								this.host.postMessage({ type: 'ensureResultsVisible', boxId });
+								this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
 								this.host.postMessage({
 									type: 'copilotWriteQueryDone',
 									boxId,
 									ok: true,
 									message: 'Query ran successfully. Review the results and adjust if needed.'
-								} as any);
+								});
 								return;
 							}
 						} catch (error) {
-							if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
+							if ((error as Record<string, unknown>)?.name === 'QueryCancelledError' || (error as Record<string, unknown>)?.isCancelled === true) {
 								if (isActive()) {
 									try {
-										this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false } as any);
+										this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
 									} catch {
 										// ignore
 									}
@@ -1704,7 +1704,7 @@ Completion:`;
 							this.host.logQueryExecutionError(error, connection, database, boxId, finalQuery);
 							if (isActive()) {
 								try {
-									this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId } as any);
+									this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 								} catch {
 									// ignore
 								}
@@ -1731,7 +1731,7 @@ Completion:`;
 								type: 'updateDevNotes',
 								action: 'remove',
 								noteId
-							} as any);
+							});
 							toolResult = `Development note removed (id: ${noteId}).`;
 						} else if (!content) {
 							toolResult = 'Error: content is required when creating a new note. To remove an existing note, provide its noteId with empty content.';
@@ -1754,7 +1754,7 @@ Completion:`;
 								action: noteId ? 'supersede' : 'add',
 								entry,
 								supersededId: noteId || undefined
-							} as any);
+							});
 							toolResult = `Development note saved (id: ${newNoteId}, category: ${category}).` +
 								(noteId ? ` Superseded note: ${noteId}.` : '');
 						}
@@ -1778,7 +1778,7 @@ Completion:`;
 								category,
 								content: content || noteId,
 								result: toolResult
-							} as any);
+							});
 						} catch { /* ignore */ }
 						continue;
 					}
@@ -1809,7 +1809,7 @@ Completion:`;
 								boxId,
 								entryId: questionEntryId,
 								question
-							} as any);
+							});
 						} catch {
 							// ignore
 						}
@@ -1828,7 +1828,7 @@ Completion:`;
 							boxId,
 							ok: true,
 							message: ''
-						} as any);
+						});
 						return;
 					}
 				}
@@ -1857,7 +1857,7 @@ Completion:`;
 				boxId,
 				ok: false,
 				message: 'I could not produce a query that runs successfully. Review the latest error and refine your request.'
-			} as any);
+			});
 		} catch (err) {
 			const msg = this.host.getErrorMessage(err);
 			const canceled = cts.token.isCancellationRequested || /canceled|cancelled/i.test(msg);
@@ -1868,7 +1868,7 @@ Completion:`;
 						boxId,
 						ok: false,
 						message: 'Canceled.'
-					} as any);
+					});
 				} catch {
 					// ignore
 				}
@@ -1880,7 +1880,7 @@ Completion:`;
 					boxId,
 					ok: false,
 					message: `Copilot request failed: ${msg}`
-				} as any);
+				});
 			} catch {
 				// ignore
 			}
@@ -1993,7 +1993,7 @@ ${query}
 			return;
 		}
 		try {
-			this.host.postMessage({ type: 'optimizeQueryStatus', boxId: id, status: 'Canceling…' } as any);
+			this.host.postMessage({ type: 'optimizeQueryStatus', boxId: id, status: 'Canceling…' });
 		} catch {
 			// ignore
 		}
@@ -2027,7 +2027,7 @@ ${query}
 
 		const postStatus = (status: string) => {
 			try {
-				this.host.postMessage({ type: 'optimizeQueryStatus', boxId: id, status } as any);
+				this.host.postMessage({ type: 'optimizeQueryStatus', boxId: id, status });
 			} catch {
 				// ignore
 			}

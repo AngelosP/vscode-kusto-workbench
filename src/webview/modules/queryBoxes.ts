@@ -1,6 +1,7 @@
 // Query boxes module — converted from legacy/queryBoxes.js
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
 import './queryBoxes-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from './queryBoxes-execution';
@@ -35,7 +36,7 @@ export function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: a
 function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
 	const used = new Set();
 	try {
-		const container = document.getElementById('queries-container') as any;
+		const container = document.getElementById('queries-container');
 		if (container) {
 			const children = Array.from(container.children || []);
 			for (const child of children as any[]) {
@@ -178,7 +179,7 @@ export function addQueryBox( options: any) {
 		_win.queryBoxes.push(id);
 	}
 
-	const container = document.getElementById('queries-container') as any;
+	const container = document.getElementById('queries-container');
 
 	// ── The light DOM body (toolbar, editor, actions, results) is now created
 	// by the <kw-query-section> Lit component in its connectedCallback.
@@ -221,7 +222,7 @@ export function addQueryBox( options: any) {
 			// Persist selection.
 			try {
 				if (!pState.restoreInProgress) {
-					(_win.vscode as any).postMessage({
+					postMessageToHost({
 						type: 'saveLastSelection',
 						connectionId: String(detail.connectionId || ''),
 						database: ''
@@ -244,11 +245,11 @@ export function addQueryBox( options: any) {
 					if (cached && cached.length > 0) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
 						// Background refresh
-						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
 					} else {
 						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
-						(_win.vscode as any).postMessage({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			}
@@ -587,7 +588,7 @@ export function addQueryBox( options: any) {
 	
 	// Check Copilot availability for this box
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'checkCopilotAvailability',
 			boxId: id
 		});
@@ -821,17 +822,17 @@ export async function fullyQualifyTablesInEditor( boxId: any) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -840,7 +841,7 @@ export async function fullyQualifyTablesInEditor( boxId: any) {
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
 		try { ensureSchemaForBox(boxId); } catch (e) { console.error('[kusto]', e); }
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Schema not loaded yet. Wait for “Schema loaded” then try again.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -1766,9 +1767,9 @@ function toggleFavoriteForBox( boxId: any) {
 	if (!clusterUrl || !database) return;
 	const existing = __kustoFindFavorite(clusterUrl, database);
 	if (existing) {
-		(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+		postMessageToHost({ type: 'removeFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
 	} else {
-		(_win.vscode as any).postMessage({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
+		postMessageToHost({ type: 'requestAddFavorite', clusterUrl: clusterUrl, database: database, boxId: id });
 	}
 }
 
@@ -1776,7 +1777,7 @@ function removeFavorite( clusterUrl: any, database: any) {
 	const c = String(clusterUrl || '').trim();
 	const d = String(database || '').trim();
 	if (!c || !d) return;
-	(_win.vscode as any).postMessage({ type: 'removeFavorite', clusterUrl: c, database: d });
+	postMessageToHost({ type: 'removeFavorite', clusterUrl: c, database: d });
 }
 
 export function closeAllFavoritesDropdowns() {
@@ -1841,7 +1842,7 @@ function addMissingClusterConnections( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'addConnectionsForClusters',
 			boxId: id,
 			clusterUrls: clusters
@@ -1866,15 +1867,15 @@ export function updateConnectionSelects() {
 
 export function promptAddConnectionFromDropdown( boxId: any) {
 	try {
-		(_win.vscode as any).postMessage({ type: 'promptAddConnection', boxId: boxId });
+		postMessageToHost({ type: 'promptAddConnection', boxId: boxId });
 	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function importConnectionsFromXmlFile( boxId: any) {
 	try {
-		(_win.vscode as any).postMessage({ type: 'promptImportConnectionsXml', boxId: boxId });
+		postMessageToHost({ type: 'promptImportConnectionsXml', boxId: boxId });
 	} catch (e: any) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Failed to open file picker: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -1959,7 +1960,7 @@ function refreshDatabases( boxId: any) {
 		kwEl.setRefreshLoading(true);
 		kwEl.setDatabasesLoading(true);
 	}
-	(_win.vscode as any).postMessage({
+	postMessageToHost({
 		type: 'refreshDatabases',
 		connectionId: connectionId,
 		boxId: boxId
@@ -2107,24 +2108,24 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 	if (!boxId) {
 		return;
 	}
-	if (!forceRefresh && (_win.schemaByBoxId as any)[boxId]) {
+	if (!forceRefresh && _win.schemaByBoxId[boxId]) {
 		return;
 	}
-	if ((_win.schemaFetchInFlightByBoxId as any)[boxId]) {
+	if (_win.schemaFetchInFlightByBoxId[boxId]) {
 		return;
 	}
 	const now = Date.now();
-	const last = (_win.lastSchemaRequestAtByBoxId as any)[boxId] || 0;
+	const last = _win.lastSchemaRequestAtByBoxId[boxId] || 0;
 	// Avoid spamming schema fetch requests if autocomplete is invoked repeatedly.
 	if (!forceRefresh && now - last < 1500) {
 		return;
 	}
-	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = now;
+	_win.lastSchemaRequestAtByBoxId[boxId] = now;
 
 	let ownerId = boxId;
 	try {
 		if (typeof (_win.__kustoGetSelectionOwnerBoxId) === 'function') {
-			ownerId = (_win.__kustoGetSelectionOwnerBoxId as any)(boxId) || boxId;
+			ownerId = _win.__kustoGetSelectionOwnerBoxId(boxId) || boxId;
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	const connectionId = __kustoGetConnectionId(ownerId);
@@ -2134,7 +2135,7 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 	}
 
 	// Set loading state.
-	(_win.schemaFetchInFlightByBoxId as any)[boxId] = true;
+	_win.schemaFetchInFlightByBoxId[boxId] = true;
 	try {
 		const kwEl = __kustoGetQuerySectionElement(boxId);
 		if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
@@ -2147,7 +2148,7 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 		requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		schemaRequestTokenByBoxId[boxId] = requestToken;
 	} catch (e) { console.error('[kusto]', e); }
-	(_win.vscode as any).postMessage({
+	postMessageToHost({
 		type: 'prefetchSchema',
 		connectionId,
 		database,
@@ -2159,14 +2160,14 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 
 function onDatabaseChanged(boxId: string): void {
 	// Clear any prior schema so it matches the newly selected DB.
-	delete (_win.schemaByBoxId as any)[boxId];
+	delete _win.schemaByBoxId[boxId];
 	// Clear request throttling/in-flight so we can fetch immediately for the new DB.
 	try {
 		if (_win.schemaFetchInFlightByBoxId) {
-			(_win.schemaFetchInFlightByBoxId as any)[boxId] = false;
+			_win.schemaFetchInFlightByBoxId[boxId] = false;
 		}
 		if (_win.lastSchemaRequestAtByBoxId) {
-			(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
+			_win.lastSchemaRequestAtByBoxId[boxId] = 0;
 		}
 		if (schemaRequestTokenByBoxId) {
 			delete schemaRequestTokenByBoxId[boxId];
@@ -2184,7 +2185,7 @@ function onDatabaseChanged(boxId: string): void {
 		if (!pState.restoreInProgress) {
 			const connectionId = __kustoGetConnectionId(boxId);
 			const database = __kustoGetDatabase(boxId);
-			(_win.vscode as any).postMessage({
+			postMessageToHost({
 				type: 'saveLastSelection',
 				connectionId: String(connectionId || ''),
 				database: String(database || '')
@@ -2195,22 +2196,22 @@ function onDatabaseChanged(boxId: string): void {
 	// Update monaco-kusto schema if we have a cached schema for the new database
 	try {
 		if (typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
-			(_win.__kustoUpdateSchemaForFocusedBox as any)(boxId);
+			_win.__kustoUpdateSchemaForFocusedBox(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof (_win.__kustoUpdateFavoritesUiForBox) === 'function') {
-			(_win.__kustoUpdateFavoritesUiForBox as any)(boxId);
+			_win.__kustoUpdateFavoritesUiForBox(boxId);
 		} else if (typeof (_win.__kustoUpdateFavoritesUiForAllBoxes) === 'function') {
-			(_win.__kustoUpdateFavoritesUiForAllBoxes as any)();
+			_win.__kustoUpdateFavoritesUiForAllBoxes();
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof (_win.__kustoUpdateRunEnabledForBox) === 'function') {
-			(_win.__kustoUpdateRunEnabledForBox as any)(boxId);
+			_win.__kustoUpdateRunEnabledForBox(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	try { if (typeof (_win.schedulePersist) === 'function') (_win.schedulePersist as any)(); } catch (e) { console.error('[kusto]', e); }
+	try { if (typeof (_win.schedulePersist) === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 function refreshSchema(boxId: string): void {
@@ -2226,7 +2227,7 @@ function refreshSchema(boxId: string): void {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	(_win.lastSchemaRequestAtByBoxId as any)[boxId] = 0;
+	_win.lastSchemaRequestAtByBoxId[boxId] = 0;
 	ensureSchemaForBox(boxId, true);
 }
 
@@ -2249,13 +2250,13 @@ async function __kustoRequestSchema(connectionId: string, database: string, forc
 		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		const p = new Promise((resolve, reject) => {
 			try {
-				(_win.schemaRequestResolversByBoxId as any)[reqBoxId] = { resolve, reject, key };
+				_win.schemaRequestResolversByBoxId[reqBoxId] = { resolve, reject, key };
 			} catch (e) {
 				reject(e);
 			}
 		});
 		try {
-			(_win.vscode as any).postMessage({
+			postMessageToHost({
 				type: 'prefetchSchema',
 				connectionId: cid,
 				database: db,
@@ -2263,7 +2264,7 @@ async function __kustoRequestSchema(connectionId: string, database: string, forc
 				forceRefresh: !!forceRefresh
 			});
 		} catch (e) {
-			try { delete (_win.schemaRequestResolversByBoxId as any)[reqBoxId]; } catch (e) { console.error('[kusto]', e); }
+			try { delete _win.schemaRequestResolversByBoxId[reqBoxId]; } catch (e) { console.error('[kusto]', e); }
 			throw e;
 		}
 		return await p;
@@ -2324,13 +2325,13 @@ async function __kustoRequestDatabases(connectionId: string, forceRefresh?: bool
 		}
 
 		try {
-			(_win.vscode as any).postMessage({
+			postMessageToHost({
 				type: forceRefresh ? 'refreshDatabases' : 'getDatabases',
 				connectionId: cid,
 				boxId: requestId
 			});
 		} catch (e) {
-			try { delete (_win.databasesRequestResolversByBoxId as any)[requestId]; } catch (e) { console.error('[kusto]', e); }
+			try { delete _win.databasesRequestResolversByBoxId[requestId]; } catch (e) { console.error('[kusto]', e); }
 			reject(e);
 		}
 	});

@@ -1,5 +1,6 @@
 // Query execution, result handling, comparison, optimization — extracted from queryBoxes.ts
 // Window bridge exports at bottom for remaining legacy callers.
+import { postMessageToHost } from '../shared/webview-messages';
 import {
 	normalizeCellForComparison as __kustoNormalizeCellForComparison,
 	rowKeyForComparison as __kustoRowKeyForComparison,
@@ -112,7 +113,7 @@ export function acceptOptimizations( comparisonBoxId: any) {
 				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Optimizations accepted: source query updated.' }); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -772,7 +773,7 @@ export function displayComparisonSummary( sourceBoxId: any, comparisonBoxId: any
 
 	// Notify the extension backend so it can coordinate validation retries.
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'comparisonSummary',
 			sourceBoxId: String(sourceBoxId || ''),
 			comparisonBoxId: String(comparisonBoxId || ''),
@@ -897,7 +898,7 @@ function __kustoCancelOptimizeQuery( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'cancelOptimizeQuery',
 			boxId: String(boxId || '')
 		});
@@ -923,7 +924,7 @@ const __kustoOptimizeModelStorageKey = 'kusto.optimize.lastModelId';
 
 export function __kustoGetLastOptimizeModelId() {
 	try {
-		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
+		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && _win.vscode.getState) ? (_win.vscode.getState() || {}) : {};
 		if (state && state.lastOptimizeModelId) {
 			return String(state.lastOptimizeModelId);
 		}
@@ -937,10 +938,10 @@ export function __kustoGetLastOptimizeModelId() {
 export function __kustoSetLastOptimizeModelId( modelId: any) {
 	const id = String(modelId || '');
 	try {
-		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
+		const state = (typeof _win.vscode !== 'undefined' && _win.vscode && _win.vscode.getState) ? (_win.vscode.getState() || {}) : {};
 		state.lastOptimizeModelId = id;
-		if (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).setState) {
-			(_win.vscode as any).setState(state);
+		if (typeof _win.vscode !== 'undefined' && _win.vscode && _win.vscode.setState) {
+			_win.vscode.setState(state);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
@@ -1021,7 +1022,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	const pending = __kustoEnsureOptimizePrepByBoxId();
 	const req = pending[boxId];
 	if (!req) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Optimization request is no longer available. Please try again.' }); } catch (e) { console.error('[kusto]', e); }
 		__kustoHideOptimizePromptForBox(boxId);
 		return;
 	}
@@ -1067,7 +1068,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'optimizeQuery',
 			query: String(req.query || ''),
 			connectionId: String(req.connectionId || ''),
@@ -1080,7 +1081,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 		delete pending[boxId];
 	} catch (err: any) {
 		console.error('Error sending optimization request:', err);
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch (e) { console.error('[kusto]', e); }
 		// Restore button state
 		if (optimizeBtn) {
 			optimizeBtn.disabled = false;
@@ -1119,13 +1120,13 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	const query = model.getValue() || '';
 	if (!query.trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No query to compare' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'No query to compare' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	const overrideText = (typeof comparisonQueryOverride === 'string') ? String(comparisonQueryOverride || '') : '';
 	// eslint-disable-next-line eqeqeq
 	if (comparisonQueryOverride != null && !overrideText.trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No comparison query provided' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'No comparison query provided' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	// Optimization naming rule (applies when we are creating an "optimized" comparison section):
@@ -1159,11 +1160,11 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 
@@ -1271,7 +1272,7 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 		});
 	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }
 		return '';
 	}
 
@@ -1590,7 +1591,7 @@ function cancelQuery( boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		(_win.vscode as any).postMessage({ type: 'cancelQuery', boxId: boxId });
+		postMessageToHost({ type: 'cancelQuery', boxId: boxId });
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -1731,7 +1732,7 @@ export function executeQuery( boxId: any, mode?: any) {
 				} else {
 					// Cursor is on a separator line between statements.
 					try {
-						(_win.vscode as any).postMessage({
+						postMessageToHost({
 							type: 'showInfo',
 							message: 'Place the cursor inside a query statement (not on a separator) to run that statement.'
 						});
@@ -1816,7 +1817,7 @@ export function executeQuery( boxId: any, mode?: any) {
 				connectionId,
 				database
 			}, 'warn');
-			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1826,11 +1827,11 @@ export function executeQuery( boxId: any, mode?: any) {
 	}
 
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
@@ -1848,7 +1849,7 @@ export function executeQuery( boxId: any, mode?: any) {
 	// Store the last executed box for result display
 	pState.lastExecutedBox = boxId;
 
-	(_win.vscode as any).postMessage({
+	postMessageToHost({
 		type: 'executeQuery',
 		query,
 		queryMode: effectiveMode,

@@ -20,7 +20,7 @@ const _trashIconSvg =
 let _dd: Record<string, any>;
 
 (function initKustoDropdown() {
-	const dd: Record<string, unknown> = {};
+	const dd: Record<string, any> = {};
 
 	// SVG chevron-down icon matching VS Code's style
 	const chevronDownSvg = '<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
@@ -239,8 +239,8 @@ let _dd: Record<string, any>;
 		} catch (e) { console.error('[kusto]', e); }
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { if (typeof (_win.closeAllRunMenus) === 'function') (_win.closeAllRunMenus as any)(); } catch (e) { console.error('[kusto]', e); }
-		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
+		try { if (typeof (_win.closeAllRunMenus) === 'function') _win.closeAllRunMenus(); } catch (e) { console.error('[kusto]', e); }
+		try { dd.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) {
 			return;
@@ -304,13 +304,13 @@ let _dd: Record<string, any>;
 
 		try {
 			if (dd && typeof (dd.wireCloseOnFocusOut) === 'function') {
-				(dd.wireCloseOnFocusOut as any)(btn, menu);
+				dd.wireCloseOnFocusOut(btn, menu);
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		try {
 			if (dd && typeof (dd.wireMenuInteractions) === 'function') {
-				(dd.wireMenuInteractions as any)(menu);
+				dd.wireMenuInteractions(menu);
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -340,11 +340,11 @@ let _dd: Record<string, any>;
 		if (!wrapper) return;
 
 		try {
-			if ((wrapper as any).dataset && (wrapper as any).dataset.kustoCloseOnBlurWired === '1') {
+			if (wrapper.dataset && wrapper.dataset.kustoCloseOnBlurWired === '1') {
 				return;
 			}
-			if ((wrapper as any).dataset) {
-				(wrapper as any).dataset.kustoCloseOnBlurWired = '1';
+			if (wrapper.dataset) {
+				wrapper.dataset.kustoCloseOnBlurWired = '1';
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -398,8 +398,8 @@ let _dd: Record<string, any>;
 			try { itemEl.scrollIntoView({ block: 'nearest' }); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const idx = items.indexOf(itemEl);
-				if (idx >= 0 && (menuEl as any).dataset) {
-					(menuEl as any).dataset.kustoActiveIndex = String(idx);
+				if (idx >= 0 && menuEl.dataset) {
+					menuEl.dataset.kustoActiveIndex = String(idx);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
@@ -423,7 +423,7 @@ let _dd: Record<string, any>;
 	dd.wireMenuInteractions = function (menuEl: HTMLElement) {
 		if (!menuEl) return;
 		try {
-			if ((menuEl as any).dataset && (menuEl as any).dataset.kustoMenuWired === '1') {
+			if (menuEl.dataset && menuEl.dataset.kustoMenuWired === '1') {
 				const items = getMenuItems(menuEl);
 				const hasActive = items.some((it) => it.classList && it.classList.contains('is-active'));
 				if (!hasActive) {
@@ -435,8 +435,8 @@ let _dd: Record<string, any>;
 		} catch (e) { console.error('[kusto]', e); }
 
 		try {
-			if ((menuEl as any).dataset) {
-				(menuEl as any).dataset.kustoMenuWired = '1';
+			if (menuEl.dataset) {
+				menuEl.dataset.kustoMenuWired = '1';
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -466,8 +466,8 @@ let _dd: Record<string, any>;
 
 			let idx = -1;
 			try {
-				if ((menuEl as any).dataset && typeof (menuEl as any).dataset.kustoActiveIndex === 'string') {
-					idx = parseInt((menuEl as any).dataset.kustoActiveIndex, 10);
+				if (menuEl.dataset && typeof menuEl.dataset.kustoActiveIndex === 'string') {
+					idx = parseInt(menuEl.dataset.kustoActiveIndex, 10);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			if (!(idx >= 0 && idx < items.length)) {
@@ -512,7 +512,7 @@ let _dd: Record<string, any>;
 				}
 				case 'Escape': {
 					prevent();
-					try { dd && (dd.closeAllMenus as any) && (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
+					try { dd && dd.closeAllMenus && dd.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 				default:
@@ -604,7 +604,7 @@ let _dd: Record<string, any>;
 		}
 
 		try {
-			menu.innerHTML = (dd.renderMenuItemsHtml as any)(items, {
+			menu.innerHTML = dd.renderMenuItemsHtml(items, {
 				dropdownId: id,
 				onSelectJs: (keyEnc: string) => "window.__kustoDropdown.selectFromMenu('" + id + "', '" + keyEnc + "')"
 			});
@@ -632,12 +632,12 @@ let _dd: Record<string, any>;
 		} catch {
 			try {
 				if (typeof select.onchange === 'function') {
-					(select as any).onchange();
+					select.onchange(new Event('change'));
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
-		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
+		try { dd.syncSelectBackedDropdown(id); } catch (e) { console.error('[kusto]', e); }
+		try { dd.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 	};
 
 	dd.toggleSelectMenu = function (selectId: string) {
@@ -653,15 +653,15 @@ let _dd: Record<string, any>;
 		if (btn.disabled) return;
 
 		try {
-			(dd.toggleMenuDropdown as any)({
+			dd.toggleMenuDropdown({
 				buttonId: btn.id,
 				menuId: menu.id,
 				beforeOpen: () => {
-					try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
+					try { dd.syncSelectBackedDropdown(id); } catch (e) { console.error('[kusto]', e); }
 				}
 			});
 		} catch {
-			try { (dd.syncSelectBackedDropdown as any)(id); } catch (e) { console.error('[kusto]', e); }
+			try { dd.syncSelectBackedDropdown(id); } catch (e) { console.error('[kusto]', e); }
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 			try { menu.focus(); } catch (e) { console.error('[kusto]', e); }
@@ -780,7 +780,7 @@ let _dd: Record<string, any>;
 		if (btn.disabled) return;
 
 		const wasOpen = String(menu.style.display || '') === 'block';
-		try { (dd.closeAllMenus as any)(); } catch (e) { console.error('[kusto]', e); }
+		try { dd.closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) return;
 
@@ -827,16 +827,16 @@ let _dd: Record<string, any>;
 		} catch (e) { console.error('[kusto]', e); }
 
 		try {
-			if (!(menu as any).dataset.kustoStopPropagationWired) {
+			if (!menu.dataset.kustoStopPropagationWired) {
 				menu.addEventListener('click', (ev) => {
 					try { ev.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 				});
-				(menu as any).dataset.kustoStopPropagationWired = '1';
+				menu.dataset.kustoStopPropagationWired = '1';
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		try {
-			(dd.wireCloseOnFocusOut as any)(btn, menu);
+			dd.wireCloseOnFocusOut(btn, menu);
 		} catch (e) { console.error('[kusto]', e); }
 
 		try { menu.focus(); } catch (e) { console.error('[kusto]', e); }

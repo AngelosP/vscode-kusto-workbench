@@ -1,4 +1,5 @@
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages';
 import { LitElement, html, nothing, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-query-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -1485,7 +1486,7 @@ export class KwQuerySection extends LitElement {
 			if (pane?.style) pane.style.flex = '0 1 ' + next + 'px';
 		} catch (e) { console.error('[kusto]', e); }
 		this._copilotChatWidthPx = next;
-		try { const ed = (window.queryEditors as any)?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		try { const ed = window.queryEditors?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	public setCopilotChatVisible(visible: boolean): void {
@@ -1514,7 +1515,7 @@ export class KwQuerySection extends LitElement {
 			} catch (e) { console.error('[kusto]', e); }
 		}
 		this._setCopilotToggleButtonState(next);
-		try { const ed = (window.queryEditors as any)?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		try { const ed = window.queryEditors?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1522,7 +1523,7 @@ export class KwQuerySection extends LitElement {
 		const id = this.boxId;
 		if (!id) return;
 		if (!pState.copilotChatFirstTimeDismissed) {
-			try { (window.vscode as any).postMessage({ type: 'copilotChatFirstTimeCheck', boxId: id }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'copilotChatFirstTimeCheck', boxId: id }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 		this.setCopilotChatVisible(!this._copilotChatVisible);
@@ -1531,7 +1532,7 @@ export class KwQuerySection extends LitElement {
 	public disposeCopilotChat(): void {
 		const id = this.boxId;
 		if (!id) return;
-		try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: id }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: id }); } catch (e) { console.error('[kusto]', e); }
 		if (this._copilotSplitObserver) {
 			this._copilotSplitObserver.disconnect();
 			this._copilotSplitObserver = null;
@@ -1600,7 +1601,7 @@ export class KwQuerySection extends LitElement {
 			this._wireCopilotChatEvents(chatEl, boxId, chatPane, split, splitter);
 
 			// Ask extension for model list + default selection.
-			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
 
 			// ResizeObserver: re-layout Monaco when split crosses auto-hide threshold.
 			try {
@@ -1612,7 +1613,7 @@ export class KwQuerySection extends LitElement {
 						const isBelowNow = w > 0 && w <= AUTO_HIDE_THRESHOLD;
 						if (isBelowNow !== wasBelowThreshold) {
 							wasBelowThreshold = isBelowNow;
-							const ed = (window.queryEditors as any)?.[boxId];
+							const ed = window.queryEditors?.[boxId];
 							if (ed?.layout) ed.layout();
 						}
 					} catch (e) { console.error('[kusto]', e); }
@@ -1631,12 +1632,12 @@ export class KwQuerySection extends LitElement {
 			if (!connectionId) { chatEl.appendMessage('notification', 'Select a cluster connection first.'); return; }
 			if (!database) { chatEl.appendMessage('notification', 'Select a database first.'); return; }
 			let currentQuery = '';
-			try { const ed = (window.queryEditors as any)?.[boxId]; currentQuery = ed ? (ed.getValue() || '') : ''; } catch (e) { console.error('[kusto]', e); }
+			try { const ed = window.queryEditors?.[boxId]; currentQuery = ed ? (ed.getValue() || '') : ''; } catch (e) { console.error('[kusto]', e); }
 			const modelId = ((document.getElementById(boxId + '_copilot_model') || {}) as any).value || '';
 			try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
 			chatEl.setRunning(true);
 			try {
-				(window.vscode as any).postMessage({
+				postMessageToHost({
 					type: 'startCopilotWriteQuery', boxId: String(boxId),
 					connectionId: String(connectionId || ''), database: String(database || ''),
 					currentQuery: String(currentQuery || ''), request: String(text || ''),
@@ -1647,27 +1648,27 @@ export class KwQuerySection extends LitElement {
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-cancel', () => {
-			try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId }); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		chatEl.addEventListener('copilot-clear', () => {
 			chatEl.clearConversation();
-			try { (window.vscode as any).postMessage({ type: 'clearCopilotConversation', boxId }); } catch (e) { console.error('[kusto]', e); }
-			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'clearCopilotConversation', boxId }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		chatEl.addEventListener('copilot-close', () => { this.setCopilotChatVisible(false); });
 
 		chatEl.addEventListener('copilot-view-tool', ((e: CustomEvent) => {
-			try { (window.vscode as any).postMessage({ type: 'openToolResultInEditor', boxId, tool: e.detail.tool, label: e.detail.label, content: e.detail.content }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'openToolResultInEditor', boxId, tool: e.detail.tool, label: e.detail.label, content: e.detail.content }); } catch (e) { console.error('[kusto]', e); }
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-remove-entry', ((e: CustomEvent) => {
-			try { (window.vscode as any).postMessage({ type: 'removeFromCopilotHistory', boxId, entryId: e.detail.entryId }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'removeFromCopilotHistory', boxId, entryId: e.detail.entryId }); } catch (e) { console.error('[kusto]', e); }
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-open-preview', ((e: CustomEvent) => {
-			try { (window.vscode as any).postMessage({ type: 'openMarkdownPreview', filePath: e.detail.filePath }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'openMarkdownPreview', filePath: e.detail.filePath }); } catch (e) { console.error('[kusto]', e); }
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-insert-query', ((e: CustomEvent) => {
@@ -1700,7 +1701,7 @@ export class KwQuerySection extends LitElement {
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-open-agent', () => {
-			try { (window.vscode as any).postMessage({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		// ── Splitter drag ─────────────────────────────────────────────────
@@ -1722,7 +1723,7 @@ export class KwQuerySection extends LitElement {
 				const next = KwQuerySection._clampNumber(startW - delta, KwQuerySection._MIN_CHAT_WIDTH_PX, max);
 				try { chatPane.style.flex = '0 1 ' + next + 'px'; } catch (e) { console.error('[kusto]', e); }
 				this._copilotChatWidthPx = next;
-				try { const ed = (window.queryEditors as any)?.[boxId]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+				try { const ed = window.queryEditors?.[boxId]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
 			};
 			const onUp = () => {
 				document.removeEventListener('mousemove', onMove, true);
@@ -1757,7 +1758,7 @@ export class KwQuerySection extends LitElement {
 
 	private static _setQueryText(boxId: string, queryText: string): void {
 		try {
-			const editor = (window.queryEditors as any)?.[boxId];
+			const editor = window.queryEditors?.[boxId];
 			if (!editor) return;
 			const model = editor.getModel?.();
 			if (!model) return;
@@ -1881,8 +1882,8 @@ export class KwQuerySection extends LitElement {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl) {
 			chatEl.clearConversation();
-			try { (window.vscode as any).postMessage({ type: 'clearCopilotConversation', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
-			try { (window.vscode as any).postMessage({ type: 'prepareCopilotWriteQuery', boxId: String(this.boxId || '') }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'clearCopilotConversation', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(this.boxId || '') }); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
 
@@ -1896,7 +1897,7 @@ export class KwQuerySection extends LitElement {
 	public copilotWriteQueryCancel(): void {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl && !chatEl.isRunning()) return;
-		try { (window.vscode as any).postMessage({ type: 'cancelCopilotWriteQuery', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────

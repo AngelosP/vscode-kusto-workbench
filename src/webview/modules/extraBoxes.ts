@@ -2,8 +2,8 @@
 // Chart, Transformation, Markdown, URL, Python box creation + ECharts rendering.
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
-export {};
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 // NOTE: Sub-modules initialize their own state on window (chartStateByBoxId, etc.)
@@ -169,7 +169,7 @@ try {
 export function __kustoGetChartDatasetsInDomOrder() {
 	const out = [];
 	try {
-		const container = document.getElementById('queries-container') as any;
+		const container = document.getElementById('queries-container');
 		const children = container ? Array.from(container.children || []) as any[] : [];
 		// Calculate position among all sections (1-based)
 		let sectionIndex = 0;
@@ -213,7 +213,7 @@ export function __kustoGetChartDatasetsInDomOrder() {
  */
 export function __kustoRefreshAllDataSourceDropdowns() {
 	try {
-		const container = document.getElementById('queries-container') as any;
+		const container = document.getElementById('queries-container');
 		if (!container) return;
 		const children = Array.from(container.children || []) as any[];
 		for (const child of children) {
@@ -622,7 +622,7 @@ export function addPythonBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
 	pythonBoxes.push(id);
 
-	const container = document.getElementById('queries-container') as any;
+	const container = document.getElementById('queries-container');
 	if (!container) {
 		return;
 	}
@@ -928,7 +928,7 @@ function runPythonBox( boxId: any) {
 	const code = model ? model.getValue() : '';
 	setPythonOutput(boxId, 'Running…');
 	try {
-		(_win.vscode as any).postMessage({ type: 'executePython', boxId, code });
+		postMessageToHost({ type: 'executePython', boxId, code });
 	} catch (e: any) {
 		setPythonOutput(boxId, 'Failed to send run request.');
 	}
@@ -968,7 +968,7 @@ export function addUrlBox( options: any) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
 
-	const container = document.getElementById('queries-container') as any;
+	const container = document.getElementById('queries-container');
 	if (!container) {
 		return;
 	}

@@ -696,7 +696,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 			// Send the formatted content back to the webview so it can write
 			// both text/html and text/plain to the clipboard via the browser API.
-			this.postMessage({ type: 'shareContentReady', html, text } as any);
+			this.postMessage({ type: 'shareContentReady', html, text });
 			vscode.window.showInformationMessage('Copied to clipboard and ready to paste into Teams.');
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
@@ -828,7 +828,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					requestId,
 					boxId: sourceBoxId,
 					query: comparisonQuery
-				} as any);
+				});
 			} catch (e) {
 				try {
 					clearTimeout(timer);
@@ -941,7 +941,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const commandLower = String(message.commandLower || '').toLowerCase();
 		const href = String(message.href || '');
 		if (!requestId || !commandLower || !href) {
-			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] } as any);
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] });
 			return;
 		}
 
@@ -949,7 +949,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const now = Date.now();
 			const cached = this.controlCommandSyntaxCache.get(commandLower);
 			if (cached && (now - cached.timestamp) < this.CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS) {
-				this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax: cached.syntax, withArgs: cached.withArgs } as any);
+				this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax: cached.syntax, withArgs: cached.withArgs });
 				return;
 			}
 
@@ -961,10 +961,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const syntax = this.extractControlCommandSyntaxFromLearnHtml(html);
 			const withArgs = this.extractWithArgsFromSyntax(syntax);
 			this.controlCommandSyntaxCache.set(commandLower, { timestamp: Date.now(), syntax, withArgs });
-			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax, withArgs } as any);
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: true, syntax, withArgs });
 		} catch (err) {
 			this.controlCommandSyntaxCache.set(commandLower, { timestamp: Date.now(), syntax: '', withArgs: [], error: this.getErrorMessage(err) });
-			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] } as any);
+			this.postMessage({ type: 'controlCommandSyntaxResult', requestId, commandLower, ok: false, syntax: '', withArgs: [] });
 		}
 	}
 
@@ -1015,7 +1015,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 		const reply = (payload: { ok: boolean; uri?: string; error?: string }) => {
 			try {
-				this.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload } as any);
+				this.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload });
 			} catch {
 				// ignore
 			}

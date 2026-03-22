@@ -2,6 +2,7 @@
 // Extracted from queryBoxes.ts (Phase 6 decomposition).
 // Window bridge exports at bottom for remaining legacy callers.
 import { getRunModeLabelText } from '../shared/comparisonUtils';
+import { postMessageToHost } from '../shared/webview-messages';
 import { getResultsState } from './resultsState';
 import {
 	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetSectionName,
@@ -45,7 +46,7 @@ export function toggleAutoTriggerAutocompleteEnabled() {
 	updateAutoTriggerAutocompleteToggleButtons();
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
-		(_win.vscode as any).postMessage({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!_win.autoTriggerAutocompleteEnabled });
+		postMessageToHost({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!_win.autoTriggerAutocompleteEnabled });
 	} catch (e) { console.error('[kusto]', e); }
 
 	// When enabling, kick once for the currently focused editor (matches ADX feel).
@@ -77,7 +78,7 @@ export function toggleCopilotInlineCompletionsEnabled() {
 	updateCopilotInlineCompletionsToggleButtons();
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
-		(_win.vscode as any).postMessage({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!_win.copilotInlineCompletionsEnabled });
+		postMessageToHost({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!_win.copilotInlineCompletionsEnabled });
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -138,7 +139,7 @@ export function toggleCaretDocsEnabled() {
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	try {
-		(_win.vscode as any).postMessage({ type: 'setCaretDocsEnabled', enabled: !!_win.caretDocsEnabled });
+		postMessageToHost({ type: 'setCaretDocsEnabled', enabled: !!_win.caretDocsEnabled });
 	} catch (e) { console.error('[kusto]', e); }
 	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
@@ -348,7 +349,7 @@ function copyQueryAsAdeLink( boxId: any) {
 					query = statement;
 				} else {
 					try {
-						(_win.vscode as any).postMessage({
+						postMessageToHost({
 							type: 'showInfo',
 							message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
 						});
@@ -377,20 +378,20 @@ function copyQueryAsAdeLink( boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	if (!String(query || '').trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'There is no query text to share.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'There is no query text to share.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!String(connectionId || '').trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!String(database || '').trim()) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select a database first.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Select a database first.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'copyAdeLink',
 			query,
 			connectionId,
@@ -522,7 +523,7 @@ function __kustoShareCopyToClipboard() {
 	const includeResults = !!(document.getElementById('shareModal_chk_results') as any || {}).checked;
 
 	if (!includeTitle && !includeQuery && !includeResults) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -601,7 +602,7 @@ function __kustoShareCopyToClipboard() {
 
 	// Send to extension to build ADE link and copy to clipboard.
 	try {
-		(_win.vscode as any).postMessage({
+		postMessageToHost({
 			type: 'shareToClipboard',
 			boxId,
 			includeTitle,
@@ -791,7 +792,7 @@ async function exportQueryToPowerBI( boxId: any) {
 				query = statement;
 			} else {
 				try {
-					(_win.vscode as any).postMessage({
+					postMessageToHost({
 						type: 'showInfo',
 						message: 'Place the cursor inside a query statement (not on a separator) to export that statement to Power BI.'
 					});
@@ -803,17 +804,17 @@ async function exportQueryToPowerBI( boxId: any) {
 	const connectionId = __kustoGetConnectionId(boxId);
 	const database = __kustoGetDatabase(boxId);
 	if (!connectionId) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	if (!database) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
 
@@ -835,7 +836,7 @@ async function exportQueryToPowerBI( boxId: any) {
 		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
 			await navigator.clipboard.writeText(m);
 			try {
-				(_win.vscode as any).postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+				postMessageToHost({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
 			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
@@ -858,10 +859,10 @@ async function exportQueryToPowerBI( boxId: any) {
 			throw new Error('copy failed');
 		}
 		try {
-			(_win.vscode as any).postMessage({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
+			postMessageToHost({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' });
 		} catch (e) { console.error('[kusto]', e); }
 	} catch {
-		try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+		try { postMessageToHost({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 

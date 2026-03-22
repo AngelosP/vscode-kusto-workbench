@@ -528,7 +528,7 @@ export class KustoQueryClient {
 		if (!map || typeof map !== 'object') {
 			return undefined;
 		}
-		const v = (map as any)[clusterEndpoint];
+		const v = map[clusterEndpoint];
 		return typeof v === 'string' && v ? v : undefined;
 	}
 
@@ -575,14 +575,12 @@ export class KustoQueryClient {
 		return !!(t && (Date.now() - t) < KustoQueryClient.AUTH_CANCEL_SUPPRESS_MS);
 	}
 
-	private createAuthCancelledError(): Error {
-		const err = new Error('Sign-in cancelled');
-		(err as any).isCancelled = true;
-		return err;
+	private createAuthCancelledError(): QueryCancelledError {
+		return new QueryCancelledError('Sign-in cancelled');
 	}
 
 	private isAuthError(error: unknown): boolean {
-		const anyErr = error as any;
+		const anyErr = error as Record<string, unknown>;
 		// User cancelled sign-in: do not treat as an auth error (otherwise we may retry and prompt again).
 		if (anyErr?.isCancelled === true || this.isLikelyCancellationError(error)) {
 			return false;
@@ -913,7 +911,7 @@ export class KustoQueryClient {
 	}
 
 	private isLikelyCancellationError(error: unknown): boolean {
-		const anyErr = error as any;
+		const anyErr = error as Record<string, unknown>;
 		if (anyErr?.isCancelled === true) {
 			return true;
 		}
@@ -1072,8 +1070,9 @@ export class KustoQueryClient {
 					rowArray.push(...row);
 				} else {
 					// If it's an object, extract values based on column order
+					const rowObj = row as Record<string, unknown>;
 					for (const col of primaryResults.columns) {
-						const value = (row as any)[col.name] ?? (row as any)[col.ordinal];
+						const value = rowObj[col.name] ?? rowObj[col.ordinal];
 						rowArray.push(value);
 					}
 				}
@@ -1099,8 +1098,8 @@ export class KustoQueryClient {
 			if (error instanceof Error) {
 				errorMessage = error.message;
 				// Check if there's additional error info from Kusto
-				if ((error as any).response?.data) {
-					errorMessage = JSON.stringify((error as any).response.data);
+				if ((error as Record<string, any>).response?.data) {
+					errorMessage = JSON.stringify((error as Record<string, any>).response.data);
 				}
 			} else {
 				errorMessage = String(error);
@@ -1232,8 +1231,9 @@ export class KustoQueryClient {
 					if (Array.isArray(row)) {
 						rowArray.push(...row);
 					} else {
+						const rowObj = row as Record<string, unknown>;
 						for (const col of primaryResults.columns) {
-							const value = (row as any)[col.name] ?? (row as any)[col.ordinal];
+							const value = rowObj[col.name] ?? rowObj[col.ordinal];
 							rowArray.push(value);
 						}
 					}
@@ -1267,8 +1267,8 @@ export class KustoQueryClient {
 				let errorMessage = 'Unknown error';
 				if (error instanceof Error) {
 					errorMessage = error.message;
-					if ((error as any).response?.data) {
-						errorMessage = JSON.stringify((error as any).response.data);
+					if ((error as Record<string, any>).response?.data) {
+						errorMessage = JSON.stringify((error as Record<string, any>).response.data);
 					}
 				} else {
 					errorMessage = String(error);
@@ -1360,7 +1360,7 @@ export class KustoQueryClient {
 				if (isJsonCommand) {
 					// The schema can be in different shapes depending on the driver
 					for (const key of Object.keys(rowCandidate)) {
-						const val = (rowCandidate as any)[key];
+						const val = (rowCandidate as Record<string, any>)[key];
 						if (val && typeof val === 'object' && val.Databases) {
 							// This is already the parsed JSON object
 							rawSchemaJson = val;
@@ -1380,7 +1380,7 @@ export class KustoQueryClient {
 						}
 					}
 					// If still not found, try the row itself
-					if (!rawSchemaJson && (rowCandidate as any).Databases) {
+					if (!rawSchemaJson && (rowCandidate as Record<string, any>).Databases) {
 						rawSchemaJson = rowCandidate;
 					}
 				}
@@ -1393,7 +1393,7 @@ export class KustoQueryClient {
 				}
 
 				for (const key of Object.keys(rowCandidate)) {
-					const val = (rowCandidate as any)[key];
+					const val = (rowCandidate as Record<string, any>)[key];
 					if (val && typeof val === 'object') {
 						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
@@ -1438,9 +1438,10 @@ export class KustoQueryClient {
 
 		if (primary.rows) {
 			for (const row of primary.rows()) {
-				const tableName = tableCol ? (row as any)[tableCol] : (row as any)['TableName'];
-				const columnName = columnCol ? (row as any)[columnCol] : (row as any)['ColumnName'];
-				const columnType = typeCol ? (row as any)[typeCol] : (row as any)['ColumnType'];
+				const rowObj = row as Record<string, unknown>;
+				const tableName = tableCol ? rowObj[tableCol] : rowObj['TableName'];
+				const columnName = columnCol ? rowObj[columnCol] : rowObj['ColumnName'];
+				const columnType = typeCol ? rowObj[typeCol] : rowObj['ColumnType'];
 				if (!tableName || !columnName) {
 					continue;
 				}
@@ -1478,7 +1479,7 @@ export class KustoQueryClient {
 				}
 
 				for (const key of Object.keys(rowCandidate)) {
-					const val = (rowCandidate as any)[key];
+					const val = (rowCandidate as Record<string, any>)[key];
 					if (val && typeof val === 'object') {
 						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
@@ -1523,9 +1524,10 @@ export class KustoQueryClient {
 
 		if (primary.rows) {
 			for (const row of primary.rows()) {
-				const tableName = tableCol ? (row as any)[tableCol] : (row as any)['TableName'];
-				const columnName = columnCol ? (row as any)[columnCol] : (row as any)['ColumnName'];
-				const columnType = typeCol ? (row as any)[typeCol] : (row as any)['ColumnType'];
+				const rowObj = row as Record<string, unknown>;
+				const tableName = tableCol ? rowObj[tableCol] : rowObj['TableName'];
+				const columnName = columnCol ? rowObj[columnCol] : rowObj['ColumnName'];
+				const columnType = typeCol ? rowObj[typeCol] : rowObj['ColumnType'];
 				if (!tableName || !columnName) {
 					continue;
 				}

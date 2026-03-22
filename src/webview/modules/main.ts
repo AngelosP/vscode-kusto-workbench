@@ -2,6 +2,7 @@
 // Message dispatcher, keyboard shortcuts, drag-and-drop.
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled, ensureResultsShownForTool } from './resultsState';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
@@ -331,7 +332,7 @@ try {
 	window.__kustoResolveResourceUri = async function (args: any) {
 		const p = (args && typeof args.path === 'string') ? String(args.path) : '';
 		const baseUri = (args && typeof args.baseUri === 'string') ? String(args.baseUri) : '';
-		if (!p || !_win.vscode || typeof (_win.vscode as any).postMessage !== 'function') {
+		if (!p || !_win.vscode?.postMessage) {
 			return null;
 		}
 		const requestId = 'resuri_' + Date.now() + '_' + Math.random().toString(16).slice(2);
@@ -352,7 +353,7 @@ try {
 			};
 
 			try {
-				(_win.vscode as any).postMessage({
+				postMessageToHost({
 					type: 'resolveResourceUri',
 					requestId,
 					path: p,
@@ -373,7 +374,7 @@ try {
 		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
 		const database = (args && typeof args.database === 'string') ? args.database : '';
 		const boxId = (args && typeof args.boxId === 'string') ? args.boxId : '';
-		if (!_win.vscode || typeof (_win.vscode as any).postMessage !== 'function') {
+		if (!_win.vscode?.postMessage) {
 			return null;
 		}
 		const requestId = 'kqlreq_' + Date.now() + '_' + Math.random().toString(16).slice(2);
@@ -394,7 +395,7 @@ try {
 			};
 
 			try {
-				(_win.vscode as any).postMessage({
+				postMessageToHost({
 					type: 'kqlLanguageRequest',
 					requestId,
 					method: 'kusto/findTableReferences',
@@ -842,7 +843,7 @@ window.addEventListener('message', async (event: any) => {
 					comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					(_win.vscode as any).postMessage({
+					postMessageToHost({
 						type: 'comparisonBoxEnsured',
 						requestId,
 						sourceBoxId: boxId,
@@ -998,7 +999,7 @@ window.addEventListener('message', async (event: any) => {
 			// Respond to extension host if a requestId was provided
 			try {
 				if (message.requestId) {
-					(_win.vscode as any).postMessage({ type: 'updateDevNotesResponse', requestId: message.requestId, success: true });
+					postMessageToHost({ type: 'updateDevNotesResponse', requestId: message.requestId, success: true });
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1049,7 +1050,7 @@ window.addEventListener('message', async (event: any) => {
 					const el = e && typeof e.line === 'number' ? e.line : sl;
 					const ec = e && typeof e.character === 'number' ? e.character : sc;
 					const matchLen = (message && typeof message.matchText === 'string') ? String(message.matchText).length : 0;
-					(_win.vscode as any).postMessage({
+					postMessageToHost({
 						type: 'debugMdSearchReveal',
 						phase: 'revealTextRange(received)',
 						detail: `${String(message.documentUri || '')} ${sl}:${sc}-${el}:${ec} matchLen=${matchLen}`
@@ -1058,7 +1059,7 @@ window.addEventListener('message', async (event: any) => {
 				if (typeof window.__kustoRevealTextRangeFromHost === 'function') {
 					window.__kustoRevealTextRangeFromHost(message);
 					try {
-						(_win.vscode as any).postMessage({
+						postMessageToHost({
 							type: 'debugMdSearchReveal',
 							phase: 'revealTextRange(dispatched)',
 							detail: `${String(message.documentUri || '')}`
@@ -1159,16 +1160,16 @@ window.addEventListener('message', async (event: any) => {
 				const text = (typeof message.text === 'string') ? message.text : '';
 				const imported = parseKustoExplorerConnectionsXml(text);
 				if (!imported || !imported.length) {
-					try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch (e) { console.error('[kusto]', e); }
+					try { postMessageToHost({ type: 'showInfo', message: 'No connections found in the selected XML file.' }); } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
-				(_win.vscode as any).postMessage({ type: 'importConnectionsFromXml', connections: imported, boxId: message.boxId });
+				postMessageToHost({ type: 'importConnectionsFromXml', connections: imported, boxId: message.boxId });
 			} catch (e: any) {
-				try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
+				try { postMessageToHost({ type: 'showInfo', message: 'Failed to import connections: ' + (e && e.message ? e.message : String(e)) }); } catch (e) { console.error('[kusto]', e); }
 			}
 			break;
 		case 'importConnectionsXmlError':
-			try { (_win.vscode as any).postMessage({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'queryResult':
 			try {
@@ -1314,7 +1315,7 @@ window.addEventListener('message', async (event: any) => {
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
 			_win.schemaByBoxId[message.boxId] = message.schema;
-			(_win.schemaFetchInFlightByBoxId as any)[message.boxId] = false;
+			_win.schemaFetchInFlightByBoxId[message.boxId] = false;
 			
 			// Update monaco-kusto with the raw schema JSON if available
 			// With aggregate schema approach, we always push schemas to monaco-kusto
@@ -1462,7 +1463,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
-			(_win.schemaFetchInFlightByBoxId as any)[message.boxId] = false;
+			_win.schemaFetchInFlightByBoxId[message.boxId] = false;
 			try {
 				const hasSchema = !!(_win.schemaByBoxId && _win.schemaByBoxId[message.boxId]);
 				if (!hasSchema) {
@@ -2027,12 +2028,12 @@ window.addEventListener('message', async (event: any) => {
 				if (requestId) {
 					const state = getKqlxState();
 					const sections = (state && state.sections) ? state.sections : [];
-					(_win.vscode as any).postMessage({ type: 'toolStateResponse', requestId, sections });
+					postMessageToHost({ type: 'toolStateResponse', requestId, sections });
 				}
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error getting state:', err);
 				try {
-					(_win.vscode as any).postMessage({ type: 'toolStateResponse', requestId: message.requestId, sections: [] });
+					postMessageToHost({ type: 'toolStateResponse', requestId: message.requestId, sections: [] });
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			break;
@@ -2126,11 +2127,11 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error adding section:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2158,10 +2159,10 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error removing section:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2189,10 +2190,10 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error collapsing section:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2205,7 +2206,7 @@ window.addEventListener('message', async (event: any) => {
 				let error = '';
 				
 				try {
-					const container = document.getElementById('queries-container') as any;
+					const container = document.getElementById('queries-container');
 					if (!container) {
 						error = 'Container not found';
 					} else {
@@ -2237,10 +2238,10 @@ window.addEventListener('message', async (event: any) => {
 					error = err.message || String(err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2288,7 +2289,7 @@ window.addEventListener('message', async (event: any) => {
 						} else {
 							// Connection not found - return error with available connections
 							const availableConnections = (_win.connections || []).map((c: any) => c && c.clusterUrl ? String(c.clusterUrl) : '').filter(Boolean);
-							(_win.vscode as any).postMessage({ 
+							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
 								result: { 
@@ -2326,10 +2327,10 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2358,14 +2359,14 @@ window.addEventListener('message', async (event: any) => {
 								preview = JSON.stringify({ columns, rows: previewRows, totalRows: rowCount }, null, 2);
 							} catch (e) { console.error('[kusto]', e); }
 							
-							(_win.vscode as any).postMessage({ 
+							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
 								result: { success: true, rowCount, columns, resultPreview: preview }
 							});
 						} else if (resultMsg && resultMsg.type === 'queryError' && resultMsg.boxId === sectionId) {
 							window.removeEventListener('message', resultHandler);
-							(_win.vscode as any).postMessage({ 
+							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
 								result: { success: false, error: resultMsg.error || 'Query execution failed' }
@@ -2385,10 +2386,10 @@ window.addEventListener('message', async (event: any) => {
 					executeQuery(sectionId);
 				} else {
 					window.removeEventListener('message', resultHandler);
-					(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false }, error: 'executeQuery not available' });
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false }, error: 'executeQuery not available' });
 				}
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2455,10 +2456,10 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error updating markdown section:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2501,10 +2502,10 @@ window.addEventListener('message', async (event: any) => {
 				
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
+				postMessageToHost({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2541,10 +2542,10 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring transformation:', err);
 				}
 				
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
-				(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;
 		
@@ -2572,7 +2573,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					if (!sectionId) {
-						(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'No query section available' } });
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'No query section available' } });
 						return;
 					}
 					
@@ -2590,7 +2591,7 @@ window.addEventListener('message', async (event: any) => {
 					} catch (e) { console.error('[kusto]', e); }
 					
 					if (!currentConnectionId) {
-						(_win.vscode as any).postMessage({ 
+						postMessageToHost({ 
 							type: 'toolResponse', 
 							requestId, 
 							result: { 
@@ -2604,7 +2605,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					if (!currentDatabase) {
-						(_win.vscode as any).postMessage({ 
+						postMessageToHost({ 
 							type: 'toolResponse', 
 							requestId, 
 							result: { 
@@ -2640,7 +2641,7 @@ window.addEventListener('message', async (event: any) => {
 				// Step 2: Paste the question into the chat input
 				const chatInput = document.getElementById(sectionId + '_copilot_input') as any;
 				if (!chatInput) {
-					(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot chat input not found. Is Copilot available?' } });
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot chat input not found. Is Copilot available?' } });
 					return;
 				}
 				chatInput.value = question;
@@ -2698,7 +2699,7 @@ window.addEventListener('message', async (event: any) => {
 						rows = rows.slice(0, 100);
 					}
 					
-					(_win.vscode as any).postMessage({ 
+					postMessageToHost({ 
 						type: 'toolResponse', 
 						requestId, 
 						result: { 
@@ -2733,7 +2734,7 @@ window.addEventListener('message', async (event: any) => {
 								// 'copilotWriteQueryDone' handler already does it, and calling
 								// it again produces a duplicate "Canceled." notification.
 								
-								(_win.vscode as any).postMessage({ 
+								postMessageToHost({ 
 									type: 'toolResponse', 
 									requestId, 
 									result: { 
@@ -2769,7 +2770,7 @@ window.addEventListener('message', async (event: any) => {
 							responded = true;
 							window.removeEventListener('message', resultHandler);
 							
-							(_win.vscode as any).postMessage({ 
+							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
 								result: { 
@@ -2801,7 +2802,7 @@ window.addEventListener('message', async (event: any) => {
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						
-						(_win.vscode as any).postMessage({ 
+						postMessageToHost({ 
 							type: 'toolResponse', 
 							requestId, 
 							result: { 
@@ -2827,13 +2828,13 @@ window.addEventListener('message', async (event: any) => {
 						// Clean up and report error
 						clearTimeout(timeoutId);
 						window.removeEventListener('message', resultHandler);
-						(_win.vscode as any).postMessage({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
 					}
 				}
 				
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error delegating to Copilot:', err);
-					(_win.vscode as any).postMessage({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
+					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
 				}
 			})();
 			break;
@@ -2862,10 +2863,10 @@ window.addEventListener('message', async (event: any) => {
 			// Clear the cached model selection from webview state and localStorage
 			try {
 				// Clear from vscode state
-				const state = (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).getState) ? ((_win.vscode as any).getState() || {}) : {};
+				const state = (typeof _win.vscode !== 'undefined' && _win.vscode && _win.vscode.getState) ? (_win.vscode.getState() || {}) : {};
 				delete state.lastOptimizeModelId;
-				if (typeof _win.vscode !== 'undefined' && _win.vscode && (_win.vscode as any).setState) {
-					(_win.vscode as any).setState(state);
+				if (typeof _win.vscode !== 'undefined' && _win.vscode && _win.vscode.setState) {
+					_win.vscode.setState(state);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
@@ -2878,12 +2879,12 @@ window.addEventListener('message', async (event: any) => {
 
 // Request connections on load (only in the query editor webview, not side-panel webviews
 // like cached-values or connection-manager that also load the bundle).
-if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
-	(_win.vscode as any).postMessage({ type: 'getConnections' });
+if (_win.vscode?.postMessage) {
+	postMessageToHost({ type: 'getConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
-	try { (_win.vscode as any).postMessage({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }
+	try { postMessageToHost({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }
 	// Request document state on load (.kqlx custom editor)
-	try { (_win.vscode as any).postMessage({ type: 'requestDocument' }); } catch (e) { console.error('[kusto]', e); }
+	try { postMessageToHost({ type: 'requestDocument' }); } catch (e) { console.error('[kusto]', e); }
 }
 
 // Initial content is now driven by the .kqlx document state.
@@ -2892,7 +2893,7 @@ if (_win.vscode && typeof (_win.vscode as any).postMessage === 'function') {
 // Reorders DOM children of #queries-container, then persistence saves the new order.
 (function __kustoInstallSectionReorder() {
 	const tryInstall = () => {
-		const container = document.getElementById('queries-container') as any;
+		const container = document.getElementById('queries-container');
 		if (!container) {
 			setTimeout(tryInstall, 50);
 			return;

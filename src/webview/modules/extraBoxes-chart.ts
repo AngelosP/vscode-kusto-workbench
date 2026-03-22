@@ -74,7 +74,7 @@ if (options && options.yAxisSettings && typeof options.yAxisSettings === 'object
 st.yAxisSettings = { ...getDefaultYAxisSettings(), ...st.yAxisSettings, ...options.yAxisSettings };
 }
 
-const container = document.getElementById('queries-container') as any;
+const container = document.getElementById('queries-container');
 if (!container) return;
 
 // ── Create Lit element as primary ──

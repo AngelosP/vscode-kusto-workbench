@@ -47,7 +47,7 @@ const payload = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchT
 const litEl = document.getElementById(boxId) as KwMarkdownSection | null;
 if (litEl && typeof litEl.revealRange === 'function') {
 try {
-(_win.vscode as any)?.postMessage?.({
+_win.vscode?.postMessage?.({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(apply)',
 detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
@@ -57,7 +57,7 @@ litEl.revealRange(payload);
 } else {
 // Editor not ready — queue for later.
 try {
-(_win.vscode as any)?.postMessage?.({
+_win.vscode?.postMessage?.({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(queued)',
 detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`

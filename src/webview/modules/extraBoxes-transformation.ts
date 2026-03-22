@@ -164,7 +164,7 @@ export function addTransformationBox(options: any) {
 	st.pivotAggregation = (options && typeof options.pivotAggregation === 'string') ? String(options.pivotAggregation) : (st.pivotAggregation || 'sum');
 	st.pivotMaxColumns = (options && typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns)) ? options.pivotMaxColumns : (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 100);
 
-	const container = document.getElementById('queries-container') as any;
+	const container = document.getElementById('queries-container');
 	if (!container) return;
 
 	const litEl = document.createElement('kw-transformation-section');

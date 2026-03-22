@@ -3,6 +3,7 @@
 export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
+import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
 import { displayResult } from './resultsState';
 import { addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls } from './queryBoxes';
@@ -33,7 +34,7 @@ function __kustoNormalizeClusterUrl(clusterUrl: any) {
  */
 function __kustoIsLeaveNoTraceCluster(clusterUrl: any) {
 	try {
-		const list = (_win.leaveNoTraceClusters as any);
+		const list = _win.leaveNoTraceClusters;
 		return isLeaveNoTraceCluster(clusterUrl, Array.isArray(list) ? list : []);
 	} catch {
 		return false;
@@ -141,7 +142,6 @@ export function __kustoRequestAddSection(kind: any) {
 				// IMPORTANT: results persistence is debounced; if the user clicks "add chart" right
 				// after executing, the current resultJson may not have been sent to the extension yet.
 				// So capture the current state and send it along with the upgrade request.
-				const upgradeType = String(pState.upgradeRequestType || 'requestUpgradeToKqlx');
 				let state = null;
 				try {
 					if (typeof getKqlxState === 'function') {
@@ -152,10 +152,14 @@ export function __kustoRequestAddSection(kind: any) {
 				// doesn't look at the upgrade payload (or if ordering differs).
 				try {
 					if (state) {
-						(_win.vscode as any).postMessage({ type: 'persistDocument', state, reason: 'upgrade' });
+						postMessageToHost({ type: 'persistDocument', state, reason: 'upgrade' });
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				(_win.vscode as any).postMessage({ type: upgradeType, addKind: k, state });
+				if (pState.upgradeRequestType === 'requestUpgradeToMdx') {
+					postMessageToHost({ type: 'requestUpgradeToMdx', addKind: k, state });
+				} else {
+					postMessageToHost({ type: 'requestUpgradeToKqlx', addKind: k, state });
+				}
 			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
@@ -163,11 +167,11 @@ export function __kustoRequestAddSection(kind: any) {
 
 	// Normal .kqlx flow.
 	if (k === 'query') return addQueryBox();
-	if (k === 'chart') return (_win.addChartBox as any)();
-	if (k === 'transformation') return (_win.addTransformationBox as any)();
-	if (k === 'markdown') return (_win.addMarkdownBox as any)();
-	if (k === 'python') return (_win.addPythonBox as any)();
-	if (k === 'url') return (_win.addUrlBox as any)();
+	if (k === 'chart') return _win.addChartBox();
+	if (k === 'transformation') return _win.addTransformationBox();
+	if (k === 'markdown') return _win.addMarkdownBox();
+	if (k === 'python') return _win.addPythonBox();
+	if (k === 'url') return _win.addUrlBox();
 	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
 }
 
@@ -270,7 +274,7 @@ function __kustoSetWrapperHeightPx(boxId: any, suffix: any, heightPx: any) {
 			wrapper.dataset.kustoUserResized = 'true';
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			const editor = ((_win.queryEditors as any) && (_win.queryEditors as any)[boxId]) ? (_win.queryEditors as any)[boxId] : null;
+			const editor = (_win.queryEditors && _win.queryEditors[boxId]) ? _win.queryEditors[boxId] : null;
 			if (editor && typeof editor.layout === 'function') {
 				editor.layout();
 			}
@@ -344,7 +348,7 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 			setTimeout(() => {
 				try {
 					if (typeof (_win.__kustoClampResultsWrapperHeight) === 'function') {
-						(_win.__kustoClampResultsWrapperHeight as any)(boxId);
+						_win.__kustoClampResultsWrapperHeight(boxId);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			}, 0);
@@ -360,7 +364,7 @@ export function getKqlxState() {
 			if (singleKind === 'markdown') {
 				let firstMarkdownBoxId = null;
 				try {
-					const ids = Array.isArray((_win.__kustoMarkdownBoxes as any)) ? (_win.__kustoMarkdownBoxes as any) : [];
+					const ids = Array.isArray(_win.__kustoMarkdownBoxes) ? _win.__kustoMarkdownBoxes : [];
 					for (const id of ids) {
 						if (typeof id === 'string' && id.startsWith('markdown_')) {
 							firstMarkdownBoxId = id;
@@ -370,8 +374,8 @@ export function getKqlxState() {
 				} catch (e) { console.error('[kusto]', e); }
 				let text = '';
 				try {
-					text = (firstMarkdownBoxId && (_win.__kustoMarkdownEditors as any) && (_win.__kustoMarkdownEditors as any)[firstMarkdownBoxId])
-						? ((_win.__kustoMarkdownEditors as any)[firstMarkdownBoxId].getValue() || '')
+					text = (firstMarkdownBoxId && _win.__kustoMarkdownEditors && _win.__kustoMarkdownEditors[firstMarkdownBoxId])
+						? (_win.__kustoMarkdownEditors[firstMarkdownBoxId].getValue() || '')
 						: '';
 				} catch (e) { console.error('[kusto]', e); }
 				if (!text) {
@@ -385,15 +389,15 @@ export function getKqlxState() {
 					} catch (e) { console.error('[kusto]', e); }
 				}
 				return {
-					caretDocsEnabled: (typeof (_win.caretDocsEnabled as any) === 'boolean') ? (_win.caretDocsEnabled as any) : true,
-					autoTriggerAutocompleteEnabled: (typeof (_win.autoTriggerAutocompleteEnabled as any) === 'boolean') ? (_win.autoTriggerAutocompleteEnabled as any) : false,
+					caretDocsEnabled: (typeof _win.caretDocsEnabled === 'boolean') ? _win.caretDocsEnabled : true,
+					autoTriggerAutocompleteEnabled: (typeof _win.autoTriggerAutocompleteEnabled === 'boolean') ? _win.autoTriggerAutocompleteEnabled : false,
 					sections: [{ type: 'markdown', text }]
 				};
 			}
 
 			let firstQueryBoxId = null;
 			try {
-				const ids = Array.isArray((_win.queryBoxes as any)) ? (_win.queryBoxes as any) : [];
+				const ids = Array.isArray(_win.queryBoxes) ? _win.queryBoxes : [];
 				for (const id of ids) {
 					if (typeof id === 'string' && id.startsWith('query_')) {
 						firstQueryBoxId = id;
@@ -401,8 +405,8 @@ export function getKqlxState() {
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			const q = (firstQueryBoxId && (_win.queryEditors as any) && (_win.queryEditors as any)[firstQueryBoxId])
-				? ((_win.queryEditors as any)[firstQueryBoxId].getValue() || '')
+			const q = (firstQueryBoxId && _win.queryEditors && _win.queryEditors[firstQueryBoxId])
+				? (_win.queryEditors[firstQueryBoxId].getValue() || '')
 				: '';
 			let clusterUrl = '';
 			let database = '';
@@ -412,14 +416,14 @@ export function getKqlxState() {
 				if (firstQueryBoxId) {
 					// Selection (clusterUrl + database)
 					try {
-						const connectionId = (_win.__kustoGetConnectionId as any) ? (_win.__kustoGetConnectionId as any)(firstQueryBoxId) : '';
-						if (connectionId && Array.isArray((_win.connections as any))) {
-							const conn = ((_win.connections as any) || []).find((c: any) => c && String(c.id || '') === String(connectionId));
+						const connectionId = _win.__kustoGetConnectionId ? _win.__kustoGetConnectionId(firstQueryBoxId) : '';
+						if (connectionId && Array.isArray(_win.connections)) {
+							const conn = (_win.connections || []).find((c: any) => c && String(c.id || '') === String(connectionId));
 							clusterUrl = conn ? String(conn.clusterUrl || '') : '';
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try {
-						database = (_win.__kustoGetDatabase as any) ? (_win.__kustoGetDatabase as any)(firstQueryBoxId) : '';
+						database = _win.__kustoGetDatabase ? _win.__kustoGetDatabase(firstQueryBoxId) : '';
 					} catch (e) { console.error('[kusto]', e); }
 					// Persisted results (in-memory)
 					try {
@@ -429,15 +433,15 @@ export function getKqlxState() {
 					} catch (e) { console.error('[kusto]', e); }
 					// Favorites picker UI mode
 					try {
-						if (typeof (_win.favoritesModeByBoxId as any) === 'object' && (_win.favoritesModeByBoxId as any) && Object.prototype.hasOwnProperty.call((_win.favoritesModeByBoxId as any), firstQueryBoxId)) {
-							favoritesMode = !!(_win.favoritesModeByBoxId as any)[firstQueryBoxId];
+						if (typeof _win.favoritesModeByBoxId === 'object' && _win.favoritesModeByBoxId && Object.prototype.hasOwnProperty.call(_win.favoritesModeByBoxId, firstQueryBoxId)) {
+							favoritesMode = !!_win.favoritesModeByBoxId[firstQueryBoxId];
 						}
 					} catch (e) { console.error('[kusto]', e); }
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			return {
-				caretDocsEnabled: (typeof (_win.caretDocsEnabled as any) === 'boolean') ? (_win.caretDocsEnabled as any) : true,
-				autoTriggerAutocompleteEnabled: (typeof (_win.autoTriggerAutocompleteEnabled as any) === 'boolean') ? (_win.autoTriggerAutocompleteEnabled as any) : false,
+				caretDocsEnabled: (typeof _win.caretDocsEnabled === 'boolean') ? _win.caretDocsEnabled : true,
+				autoTriggerAutocompleteEnabled: (typeof _win.autoTriggerAutocompleteEnabled === 'boolean') ? _win.autoTriggerAutocompleteEnabled : false,
 				sections: [
 					{
 						type: 'query',
@@ -480,8 +484,8 @@ export function getKqlxState() {
 	} catch (e) { console.error('[kusto]', e); }
 
 	return {
-		caretDocsEnabled: (typeof (_win.caretDocsEnabled as any) === 'boolean') ? (_win.caretDocsEnabled as any) : true,
-		autoTriggerAutocompleteEnabled: (typeof (_win.autoTriggerAutocompleteEnabled as any) === 'boolean') ? (_win.autoTriggerAutocompleteEnabled as any) : false,
+		caretDocsEnabled: (typeof _win.caretDocsEnabled === 'boolean') ? _win.caretDocsEnabled : true,
+		autoTriggerAutocompleteEnabled: (typeof _win.autoTriggerAutocompleteEnabled === 'boolean') ? _win.autoTriggerAutocompleteEnabled : false,
 		sections
 	};
 }
@@ -548,7 +552,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				if (sig) {
 					__kustoLastPersistSignature = sig;
 				}
-				(_win.vscode as any).postMessage({ type: 'persistDocument', state, reason: r });
+				postMessageToHost({ type: 'persistDocument', state, reason: r });
 			} catch (e) { console.error('[kusto]', e); }
 		};
 		if (immediate) {
@@ -573,35 +577,35 @@ try {
 				return;
 			}
 			const state = getKqlxState();
-			(_win.vscode as any).postMessage({ type: 'persistDocument', state, flush: true, reason: 'flush' });
+			postMessageToHost({ type: 'persistDocument', state, flush: true, reason: 'flush' });
 		} catch (e) { console.error('[kusto]', e); }
 	});
 } catch (e) { console.error('[kusto]', e); }
 
 function __kustoClearAllSections() {
 	try {
-		for (const id of ((_win.queryBoxes as any) || []).slice()) {
+		for (const id of (_win.queryBoxes || []).slice()) {
 			try { removeQueryBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		for (const id of ((_win.__kustoChartBoxes as any) || []).slice()) {
-			try { (_win.removeChartBox as any)(id); } catch (e) { console.error('[kusto]', e); }
+		for (const id of (_win.__kustoChartBoxes || []).slice()) {
+			try { _win.removeChartBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		for (const id of ((_win.__kustoMarkdownBoxes as any) || []).slice()) {
-			try { (_win.removeMarkdownBox as any)(id); } catch (e) { console.error('[kusto]', e); }
+		for (const id of (_win.__kustoMarkdownBoxes || []).slice()) {
+			try { _win.removeMarkdownBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		for (const id of ((_win.__kustoPythonBoxes as any) || []).slice()) {
-			try { (_win.removePythonBox as any)(id); } catch (e) { console.error('[kusto]', e); }
+		for (const id of (_win.__kustoPythonBoxes || []).slice()) {
+			try { _win.removePythonBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		for (const id of ((_win.__kustoUrlBoxes as any) || []).slice()) {
-			try { (_win.removeUrlBox as any)(id); } catch (e) { console.error('[kusto]', e); }
+		for (const id of (_win.__kustoUrlBoxes || []).slice()) {
+			try { _win.removeUrlBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Clear passthrough dev notes sections
@@ -624,26 +628,26 @@ function applyKqlxState(state: any) {
 		// Only fall back to document state if the user has never explicitly toggled the feature.
 		const userSet = (() => {
 			try {
-				return !!(_win.__kustoCaretDocsEnabledUserSet as any);
+				return !!_win.__kustoCaretDocsEnabledUserSet;
 			} catch {
 				return false;
 			}
 		})();
 		if (!userSet && typeof s.caretDocsEnabled === 'boolean') {
-			(_win.caretDocsEnabled as any) = !!s.caretDocsEnabled;
-			try { (_win.updateCaretDocsToggleButtons as any)(); } catch (e) { console.error('[kusto]', e); }
+			_win.caretDocsEnabled = !!s.caretDocsEnabled;
+			try { _win.updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 		}
 
 		const autoUserSet = (() => {
 			try {
-				return !!(_win.__kustoAutoTriggerAutocompleteEnabledUserSet as any);
+				return !!_win.__kustoAutoTriggerAutocompleteEnabledUserSet;
 			} catch {
 				return false;
 			}
 		})();
 		if (!autoUserSet && typeof s.autoTriggerAutocompleteEnabled === 'boolean') {
-			(_win.autoTriggerAutocompleteEnabled as any) = !!s.autoTriggerAutocompleteEnabled;
-			try { (_win.updateAutoTriggerAutocompleteToggleButtons as any)(); } catch (e) { console.error('[kusto]', e); }
+			_win.autoTriggerAutocompleteEnabled = !!s.autoTriggerAutocompleteEnabled;
+			try { _win.updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 		}
 
 		// Compatibility mode (single-section plain text files): force exactly one editor and ignore all other sections.
@@ -674,7 +678,7 @@ function applyKqlxState(state: any) {
 				// after restore recognizes the baseline and only sends persistDocument
 				// when the user actually edits the text (not just unrelated metadata).
 				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
-				(_win.addMarkdownBox as any)({ text: singleText, mdAutoExpand: isPlainMd });
+				_win.addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
 				return;
 			}
 			const boxId = addQueryBox();
@@ -682,7 +686,7 @@ function applyKqlxState(state: any) {
 			try {
 				const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
 				const db = String(suggestedDatabase || '').trim();
-				const kwEl = (_win.__kustoGetQuerySectionElement as any) ? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+				const kwEl = _win.__kustoGetQuerySectionElement ? _win.__kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl) {
 					if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
 						kwEl.setDesiredClusterUrl(desiredClusterUrl);
@@ -694,14 +698,14 @@ function applyKqlxState(state: any) {
 				// If this suggested selection exists in favorites, switch to Favorites mode by default.
 				try {
 					if (desiredClusterUrl && db && typeof (_win.__kustoSetAutoEnterFavoritesForBox) === 'function') {
-						(_win.__kustoSetAutoEnterFavoritesForBox as any)(boxId, desiredClusterUrl, db);
+						_win.__kustoSetAutoEnterFavoritesForBox(boxId, desiredClusterUrl, db);
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				// Ensure dropdowns see the desired selection once (_win.connections as any)/favorites are available.
+				// Ensure dropdowns see the desired selection once _win.connections/favorites are available.
 				try { updateConnectionSelects(); } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof (_win.__kustoTryAutoEnterFavoritesModeForAllBoxes) === 'function') {
-						(_win.__kustoTryAutoEnterFavoritesModeForAllBoxes as any)();
+						_win.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
@@ -746,7 +750,7 @@ function applyKqlxState(state: any) {
 			try {
 				const key = normalizeClusterUrlKey(clusterUrl);
 				if (!key) return '';
-				for (const c of ((_win.connections as any) || [])) {
+				for (const c of (_win.connections || [])) {
 					if (!c) continue;
 					const ck = normalizeClusterUrlKey(c.clusterUrl || '');
 					if (ck && ck === key) {
@@ -756,7 +760,7 @@ function applyKqlxState(state: any) {
 				// Fallback: match by short-name key.
 				const sk = clusterShortNameKey(clusterUrl);
 				if (sk) {
-					for (const c of ((_win.connections as any) || [])) {
+					for (const c of (_win.connections || [])) {
 						if (!c) continue;
 						const ck2 = clusterShortNameKey(c.clusterUrl || '');
 						if (ck2 && ck2 === sk) {
@@ -786,17 +790,17 @@ function applyKqlxState(state: any) {
 					database: String(section.database || '')
 				});
 				try {
-					if ((_win.__kustoSetSectionName as any)) (_win.__kustoSetSectionName as any)(boxId, String(section.name || ''));
+					if (_win.__kustoSetSectionName) _win.__kustoSetSectionName(boxId, String(section.name || ''));
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const desiredClusterUrl = String(section.clusterUrl || '');
 					const resolvedConnectionId = desiredClusterUrl ? findConnectionIdByClusterUrl(desiredClusterUrl) : '';
 					const db = String(section.database || '');
-					const kwEl = (_win.__kustoGetQuerySectionElement as any) ? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+					const kwEl = _win.__kustoGetQuerySectionElement ? _win.__kustoGetQuerySectionElement(boxId) : null;
 					// If this saved selection exists in favorites, switch to Favorites mode by default.
 					try {
 						if (desiredClusterUrl && db && typeof (_win.__kustoSetAutoEnterFavoritesForBox) === 'function') {
-							(_win.__kustoSetAutoEnterFavoritesForBox as any)(boxId, desiredClusterUrl, db);
+							_win.__kustoSetAutoEnterFavoritesForBox(boxId, desiredClusterUrl, db);
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					if (kwEl) {
@@ -816,13 +820,13 @@ function applyKqlxState(state: any) {
 								}));
 							} catch (e) { console.error('[kusto]', e); }
 						} else {
-							// Try again after (_win.connections as any) are populated.
+							// Try again after _win.connections are populated.
 							try { updateConnectionSelects(); } catch (e) { console.error('[kusto]', e); }
 						}
 					}
 					try {
 						if (typeof (_win.__kustoTryAutoEnterFavoritesModeForAllBoxes) === 'function') {
-							(_win.__kustoTryAutoEnterFavoritesModeForAllBoxes as any)();
+							_win.__kustoTryAutoEnterFavoritesModeForAllBoxes();
 						}
 					} catch (e) { console.error('[kusto]', e); }
 				} catch (e) { console.error('[kusto]', e); }
@@ -832,7 +836,7 @@ function applyKqlxState(state: any) {
 				try {
 					if (typeof section.favoritesMode === 'boolean') {
 						if (typeof (_win.__kustoSetFavoritesModeForBox) === 'function') {
-							(_win.__kustoSetFavoritesModeForBox as any)(boxId, !!section.favoritesMode);
+							_win.__kustoSetFavoritesModeForBox(boxId, !!section.favoritesMode);
 						}
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -873,7 +877,7 @@ function applyKqlxState(state: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
-					(_win.setRunMode as any)(boxId, String(section.runMode || 'take100'));
+					_win.setRunMode(boxId, String(section.runMode || 'take100'));
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const ce = document.getElementById(boxId + '_cache_enabled');
@@ -887,14 +891,14 @@ function applyKqlxState(state: any) {
 				// Apply results visibility UI (toggle button + legacy results wrapper).
 				try {
 					if (typeof section.resultsVisible === 'boolean') {
-						try { (_win.__kustoUpdateQueryResultsToggleButton as any) && (_win.__kustoUpdateQueryResultsToggleButton as any)(boxId); } catch (e) { console.error('[kusto]', e); }
-						try { (_win.__kustoApplyResultsVisibility as any) && (_win.__kustoApplyResultsVisibility as any)(boxId); } catch (e) { console.error('[kusto]', e); }
+						try { _win.__kustoUpdateQueryResultsToggleButton && _win.__kustoUpdateQueryResultsToggleButton(boxId); } catch (e) { console.error('[kusto]', e); }
+						try { _win.__kustoApplyResultsVisibility && _win.__kustoApplyResultsVisibility(boxId); } catch (e) { console.error('[kusto]', e); }
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				// Copilot chat always starts closed — visibility is not restored from persisted state.
 				try {
 					if (typeof section.copilotChatWidthPx === 'number') {
-						const kwEl = (_win.__kustoGetQuerySectionElement as any) ? (_win.__kustoGetQuerySectionElement as any)(boxId) : null;
+						const kwEl = _win.__kustoGetQuerySectionElement ? _win.__kustoGetQuerySectionElement(boxId) : null;
 						if (kwEl && typeof kwEl.setCopilotChatWidthPx === 'function') {
 							kwEl.setCopilotChatWidthPx(section.copilotChatWidthPx);
 						}
@@ -915,7 +919,7 @@ function applyKqlxState(state: any) {
 						try { __kustoSetWrapperHeightPx(boxId, '_query_editor', section.editorHeightPx); } catch (e) { console.error('[kusto]', e); }
 						try { __kustoSetQueryResultsOutputHeightPx(boxId, section.resultsHeightPx); } catch (e) { console.error('[kusto]', e); }
 						try {
-							const editor = ((_win.queryEditors as any) && (_win.queryEditors as any)[boxId]) ? (_win.queryEditors as any)[boxId] : null;
+							const editor = (_win.queryEditors && _win.queryEditors[boxId]) ? _win.queryEditors[boxId] : null;
 							if (editor && typeof editor.layout === 'function') {
 								editor.layout();
 							}
@@ -926,7 +930,7 @@ function applyKqlxState(state: any) {
 			}
 
 			if (t === 'chart') {
-				const boxId = (_win.addChartBox as any)({
+				const boxId = _win.addChartBox({
 					id: (section.id ? String(section.id) : undefined),
 					name: String(section.name || ''),
 					mode: (typeof section.mode === 'string') ? String(section.mode) : 'edit',
@@ -950,11 +954,11 @@ function applyKqlxState(state: any) {
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.
-					if (typeof (_win.__kustoApplyChartMode as any) === 'function') {
-						(_win.__kustoApplyChartMode as any)(boxId);
+					if (typeof _win.__kustoApplyChartMode === 'function') {
+						_win.__kustoApplyChartMode(boxId);
 					}
-					if (typeof (_win.__kustoApplyChartBoxVisibility as any) === 'function') {
-						(_win.__kustoApplyChartBoxVisibility as any)(boxId);
+					if (typeof _win.__kustoApplyChartBoxVisibility === 'function') {
+						_win.__kustoApplyChartBoxVisibility(boxId);
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				continue;
@@ -991,7 +995,7 @@ function applyKqlxState(state: any) {
 							}));
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				const boxId = (_win.addTransformationBox as any)({
+				const boxId = _win.addTransformationBox({
 					id: (section.id ? String(section.id) : undefined),
 					name: String(section.name || ''),
 					mode: (typeof section.mode === 'string') ? String(section.mode) : 'edit',
@@ -1029,7 +1033,7 @@ function applyKqlxState(state: any) {
 						}
 					} catch (e) { console.error('[kusto]', e); }
 				}
-				const boxId = (_win.addMarkdownBox as any)({
+				const boxId = _win.addMarkdownBox({
 					id: (section.id ? String(section.id) : undefined),
 					text: String(section.text || ''),
 					editorHeightPx: section.editorHeightPx,
@@ -1052,7 +1056,7 @@ function applyKqlxState(state: any) {
 				try {
 					pState.pendingPythonCodeByBoxId[pendingId] = String(section.code || '');
 				} catch (e) { console.error('[kusto]', e); }
-				const boxId = (_win.addPythonBox as any)({ id: pendingId });
+				const boxId = _win.addPythonBox({ id: pendingId });
 				// Set output, name, expanded, and height on the Lit element.
 				try {
 					const el = document.getElementById(boxId);
@@ -1073,7 +1077,7 @@ function applyKqlxState(state: any) {
 			}
 
 			if (t === 'url') {
-				const boxId = (_win.addUrlBox as any)({
+				const boxId = _win.addUrlBox({
 					id: (section.id ? String(section.id) : undefined),
 					name: String(section.name || ''),
 					url: String(section.url || ''),
@@ -1119,13 +1123,13 @@ function __kustoApplyPendingAdds() {
 		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
 	}
 	if (allowed.includes('markdown')) {
-		for (let i = 0; i < (pendingAdds.markdown || 0); i++) (_win.addMarkdownBox as any)();
+		for (let i = 0; i < (pendingAdds.markdown || 0); i++) _win.addMarkdownBox();
 	}
 	if (allowed.includes('python')) {
-		for (let i = 0; i < (pendingAdds.python || 0); i++) (_win.addPythonBox as any)();
+		for (let i = 0; i < (pendingAdds.python || 0); i++) _win.addPythonBox();
 	}
 	if (allowed.includes('url')) {
-		for (let i = 0; i < (pendingAdds.url || 0); i++) (_win.addUrlBox as any)();
+		for (let i = 0; i < (pendingAdds.url || 0); i++) _win.addUrlBox();
 	}
 	return true;
 }
@@ -1214,13 +1218,13 @@ export function handleDocumentDataMessage(message: any) {
 
 	// If the doc is empty, initialize UX content.
 	try {
-		const hasAny = ((_win.queryBoxes as any) && (_win.queryBoxes as any).length) || ((_win.__kustoMarkdownBoxes as any) && (_win.__kustoMarkdownBoxes as any).length) || ((_win.__kustoPythonBoxes as any) && (_win.__kustoPythonBoxes as any).length) || ((_win.__kustoUrlBoxes as any) && (_win.__kustoUrlBoxes as any).length);
+		const hasAny = (_win.queryBoxes && _win.queryBoxes.length) || (_win.__kustoMarkdownBoxes && _win.__kustoMarkdownBoxes.length) || (_win.__kustoPythonBoxes && _win.__kustoPythonBoxes.length) || (_win.__kustoUrlBoxes && _win.__kustoUrlBoxes.length);
 		if (!hasAny) {
 			const applied = __kustoApplyPendingAdds();
 			if (!applied) {
 				const k = String(pState.defaultSectionKind || 'query');
 				if (k === 'markdown') {
-					(_win.addMarkdownBox as any)();
+					_win.addMarkdownBox();
 				} else {
 					addQueryBox();
 				}
@@ -1230,7 +1234,7 @@ export function handleDocumentDataMessage(message: any) {
 
 	// ── Schema diagnostics: log all sections on file open ──
 	try {
-		const allBoxIds: string[] = Array.isArray((_win.queryBoxes as any)) ? (_win.queryBoxes as any) : [];
+		const allBoxIds: string[] = Array.isArray(_win.queryBoxes) ? _win.queryBoxes : [];
 		const sectionSummary = allBoxIds.map((bid: string) => {
 			const el = document.getElementById(bid) as any;
 			if (!el || typeof el.getConnectionId !== 'function') return null;
@@ -1249,16 +1253,16 @@ export function handleDocumentDataMessage(message: any) {
 	try {
 		setTimeout(() => {
 			try {
-				if (typeof (_win.queryBoxes as any) !== 'undefined' && Array.isArray((_win.queryBoxes as any))) {
-					for (const boxId of (_win.queryBoxes as any)) {
+				if (typeof _win.queryBoxes !== 'undefined' && Array.isArray(_win.queryBoxes)) {
+					for (const boxId of _win.queryBoxes) {
 						// Check if this box is expanded (visible)
 						let expanded = true;
 						try {
-							expanded = !((_win.__kustoQueryExpandedByBoxId as any) && (_win.__kustoQueryExpandedByBoxId as any)[boxId] === false);
+							expanded = !(_win.__kustoQueryExpandedByBoxId && _win.__kustoQueryExpandedByBoxId[boxId] === false);
 						} catch (e) { console.error('[kusto]', e); }
 						if (expanded && typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
 							// Only request schema for the first expanded box, then break
-							(_win.__kustoUpdateSchemaForFocusedBox as any)(boxId);
+							_win.__kustoUpdateSchemaForFocusedBox(boxId);
 							break;
 						}
 					}
