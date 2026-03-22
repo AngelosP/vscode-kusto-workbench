@@ -21,7 +21,7 @@ import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-se
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from '../modules/extraBoxes';
-import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../modules/queryBoxes-toolbar';
+import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
 import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';
 

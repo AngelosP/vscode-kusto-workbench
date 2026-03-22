@@ -20,13 +20,13 @@ $bridges = @{
     'displayComparisonSummary' = 'modules/queryBoxes-execution.ts'
     'optimizeQueryWithCopilot' = 'modules/queryBoxes-execution.ts'
     'formatElapsed' = 'modules/queryBoxes-execution.ts'
-    # modules/queryBoxes-toolbar.ts
-    'updateCopilotInlineCompletionsToggleButtons' = 'modules/queryBoxes-toolbar.ts'
-    'closeToolsDropdown' = 'modules/queryBoxes-toolbar.ts'
-    'toggleOverflowSubmenu' = 'modules/queryBoxes-toolbar.ts'
-    'closeToolbarOverflow' = 'modules/queryBoxes-toolbar.ts'
-    'getRunModeLabelText' = 'modules/queryBoxes-toolbar.ts'
-    'closeRunMenu' = 'modules/queryBoxes-toolbar.ts'
+    # sections/kw-query-toolbar.ts
+    'updateCopilotInlineCompletionsToggleButtons' = 'sections/kw-query-toolbar.ts'
+    'closeToolsDropdown' = 'sections/kw-query-toolbar.ts'
+    'toggleOverflowSubmenu' = 'sections/kw-query-toolbar.ts'
+    'closeToolbarOverflow' = 'sections/kw-query-toolbar.ts'
+    'getRunModeLabelText' = 'sections/kw-query-toolbar.ts'
+    'closeRunMenu' = 'sections/kw-query-toolbar.ts'
     # modules/extraBoxes.ts
     '__kustoGetRawCellValueForChart' = 'modules/extraBoxes.ts'
     '__kustoCellToChartString' = 'modules/extraBoxes.ts'

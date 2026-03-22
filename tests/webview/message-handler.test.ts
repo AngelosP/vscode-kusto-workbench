@@ -108,7 +108,7 @@ vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
 	__kustoGetChartValidationStatus: vi.fn(() => null),
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes-toolbar.js', () => ({
+vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	updateCaretDocsToggleButtons: mocks.updateCaretDocsToggleButtons,
 	updateAutoTriggerAutocompleteToggleButtons: mocks.updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons: mocks.updateCopilotInlineCompletionsToggleButtons,

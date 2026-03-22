@@ -33,7 +33,7 @@ import {
 	__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
 	__kustoLog,
 } from '../modules/queryBoxes';
-import { getRunMode, setRunMode, closeRunMenu } from '../modules/queryBoxes-toolbar';
+import { getRunMode, setRunMode, closeRunMenu } from './kw-query-toolbar';
 import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,

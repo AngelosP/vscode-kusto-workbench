@@ -82,7 +82,7 @@ import {
 import {
 	updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons, setRunMode,
-} from './queryBoxes-toolbar';
+} from '../sections/kw-query-toolbar';
 import {
 	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
@@ -147,7 +147,7 @@ const newMain = `// Main module — initialization orchestrator.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
-import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from './queryBoxes-toolbar';
+import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar';
 import { __kustoRequestAddSection } from './persistence';
 
 // Side-effect imports — register event handlers on import.

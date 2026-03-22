@@ -25,7 +25,7 @@ import {
 import {
 	updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons, setRunMode,
-} from '../modules/queryBoxes-toolbar';
+} from '../sections/kw-query-toolbar';
 import {
 	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,

@@ -149,7 +149,7 @@ vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
 	urlBoxes: testState.urlBoxes,
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes-toolbar.js', () => ({
+vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	setRunMode: vi.fn(),
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),

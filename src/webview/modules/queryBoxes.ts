@@ -33,7 +33,6 @@ import {
 	lastConnectionId,
 	lastDatabase,
 } from '../core/state';
-import './queryBoxes-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -287,7 +286,7 @@ export function addQueryBox( options: any) {
 			if (typeof toolbar.setCopilotInlineActive === 'function') toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	setRunMode(id, 'take100');
+	try { if (typeof window.setRunMode === 'function') window.setRunMode(id, 'take100'); } catch (e) { console.error('[kusto]', e); }
 
 	// ── Wire up <kw-query-section> event listeners ──
 	const kwEl = document.getElementById(id) as any;

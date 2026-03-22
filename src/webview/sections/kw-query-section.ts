@@ -21,7 +21,7 @@ import {
 	importConnectionsFromXmlFile,
 	__kustoSetSectionName,
 } from '../modules/queryBoxes.js';
-import { __kustoOpenShareModal, getRunMode } from '../modules/queryBoxes-toolbar.js';
+import { __kustoOpenShareModal, getRunMode } from './kw-query-toolbar.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';

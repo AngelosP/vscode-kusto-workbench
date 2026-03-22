@@ -87,12 +87,7 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | `monaco/completions.ts` | Completion providers (columns, functions, tables) |
 | `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
 | `modules/queryBoxes.ts` | Query section creation, Monaco setup, toolbar wiring |
-| `modules/queryBoxes-execution.ts` | Query execution, results display, optimization |
-| `modules/queryBoxes-toolbar.ts` | Toolbar controls (caret docs, autocomplete, run mode, share) |
 | `modules/extraBoxes.ts` | Python/URL section creation + shared chart/data-source utilities |
-| `modules/extraBoxes-chart.ts` | Chart section creation and ECharts rendering |
-| `modules/extraBoxes-transformation.ts` | Transformation section creation |
-| `modules/extraBoxes-markdown.ts` | Markdown section creation |
 | `modules/dropdown.ts` | Custom dropdown/menu component |
 | `modules/errorUtils.ts` | User-facing error rendering helpers |
 
@@ -101,6 +96,8 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | Component | File | Purpose |
 | --------- | ---- | ------- |
 | `kw-query-section` | `kw-query-section.ts` | KQL query editor with connection picker, execution, results |
+| `kw-query-toolbar` | `kw-query-toolbar.ts` | Query toolbar actions (toggles, share, run modes, tools) |
+| `toolbar-overflow.controller` | `toolbar-overflow.controller.ts` | ReactiveController for toolbar overflow detection and resize handling |
 | `kw-chart-section` | `kw-chart-section.ts` | Chart builder (line, area, bar, scatter, pie, funnel via ECharts) |
 | `kw-transformation-section` | `kw-transformation-section.ts` | Data transformation expressions |
 | `kw-markdown-section` | `kw-markdown-section.ts` | Rich text / documentation (Toast UI editor) |

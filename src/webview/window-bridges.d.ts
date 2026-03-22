@@ -246,7 +246,7 @@ declare global {
 		__kustoApplyFavoritesMode: (boxId: string, enabled: boolean) => void;
 
 		// =====================================================================
-		// queryBoxes-toolbar.ts
+		// sections/kw-query-toolbar.ts
 		// =====================================================================
 		initToolbarOverflow: (boxId: string) => void;
 		setRunMode: (boxId: string, mode: string) => void;

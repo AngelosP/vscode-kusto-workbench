@@ -11,14 +11,741 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
+import { getRunModeLabelText } from '../shared/comparisonUtils.js';
+import { postMessageToHost } from '../shared/webview-messages.js';
+import { getResultsState } from '../core/results-state.js';
 import {
-	onQueryEditorToolbarAction,
-	toggleCaretDocsEnabled,
-	toggleAutoTriggerAutocompleteEnabled,
-	toggleCopilotInlineCompletionsEnabled,
-	closeRunMenu as closeRunMenuFn,
-} from '../modules/queryBoxes-toolbar.js';
-import { closeAllFavoritesDropdowns } from '../modules/queryBoxes.js';
+	__kustoGetConnectionId,
+	__kustoGetDatabase,
+	__kustoGetSectionName,
+	closeAllFavoritesDropdowns,
+	fullyQualifyTablesInEditor,
+} from '../modules/queryBoxes.js';
+import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.controller.js';
+import { toolbarScrollAtOpen, closeAllMenus } from '../modules/dropdown.js';
+import { schedulePersist } from '../core/persistence.js';
+import {
+	activeQueryEditorBoxId,
+	caretDocOverlaysByBoxId,
+	qualifyTablesInFlightByBoxId,
+	runModesByBoxId,
+	optimizationMetadataByBoxId,
+	caretDocsEnabled,
+	setCaretDocsEnabled,
+	autoTriggerAutocompleteEnabled,
+	setAutoTriggerAutocompleteEnabled,
+	copilotInlineCompletionsEnabled,
+	setCopilotInlineCompletionsEnabled,
+	setActiveQueryEditorBoxId,
+	queryBoxes,
+	queryEditors,
+	connections,
+} from '../core/state.js';
+import { ToolbarOverflowController } from './toolbar-overflow.controller.js';
+
+// Toolbar runtime logic previously in modules/queryBoxes-toolbar.ts
+
+export function updateCaretDocsToggleButtons(): void {
+	for (const boxId of queryBoxes) {
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setCaretDocsActive === 'function') {
+				toolbar.setCaretDocsActive(!!caretDocsEnabled);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+export function updateAutoTriggerAutocompleteToggleButtons(): void {
+	for (const boxId of queryBoxes) {
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
+				toolbar.setAutoCompleteActive(!!autoTriggerAutocompleteEnabled);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+export function toggleAutoTriggerAutocompleteEnabled(): void {
+	setAutoTriggerAutocompleteEnabled(!autoTriggerAutocompleteEnabled);
+	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
+	updateAutoTriggerAutocompleteToggleButtons();
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { postMessageToHost({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!autoTriggerAutocompleteEnabled }); } catch (e) { console.error('[kusto]', e); }
+
+	if (autoTriggerAutocompleteEnabled) {
+		try {
+			const boxId = (typeof activeQueryEditorBoxId === 'string') ? activeQueryEditorBoxId : null;
+			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+export function updateCopilotInlineCompletionsToggleButtons(): void {
+	for (const boxId of queryBoxes) {
+		try {
+			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+			if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
+				toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+export function toggleCopilotInlineCompletionsEnabled(): void {
+	setCopilotInlineCompletionsEnabled(!copilotInlineCompletionsEnabled);
+	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
+	updateCopilotInlineCompletionsToggleButtons();
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { postMessageToHost({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!copilotInlineCompletionsEnabled }); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function toggleCaretDocsEnabled(): void {
+	setCaretDocsEnabled(!caretDocsEnabled);
+	updateCaretDocsToggleButtons();
+	if (!caretDocsEnabled) {
+		try {
+			for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
+				const overlay = caretDocOverlaysByBoxId[key];
+				if (overlay && typeof overlay.hide === 'function') {
+					overlay.hide();
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	} else {
+		try {
+			const watermarkTitle = 'Smart documentation';
+			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
+			for (const boxId of queryBoxes) {
+				try {
+					const banner = document.getElementById(boxId + '_caret_docs') as any;
+					const text = document.getElementById(boxId + '_caret_docs_text') || banner;
+					if (banner) banner.style.display = 'flex';
+					if (text) {
+						text.innerHTML =
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-title">' +
+							watermarkTitle +
+							'</div>' +
+							'<div class="qe-caret-docs-line qe-caret-docs-watermark-body">' +
+							watermarkBody +
+							'</div>';
+						if (text.classList) text.classList.add('is-watermark');
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try {
+			const overlays = (typeof caretDocOverlaysByBoxId !== 'undefined') ? caretDocOverlaysByBoxId : null;
+			if (overlays && typeof overlays === 'object') {
+				for (const key of Object.keys(overlays)) {
+					try {
+						const o = overlays[key];
+						if (o && typeof o.update === 'function') o.update();
+					} catch (e) { console.error('[kusto]', e); }
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+	try { postMessageToHost({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled }); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function onQueryEditorToolbarAction(boxId: any, action: any): void {
+	try {
+		setActiveQueryEditorBoxId(boxId);
+		if (queryEditors[boxId]) queryEditors[boxId].focus();
+	} catch (e) { console.error('[kusto]', e); }
+
+	if (action === 'undo') {
+		try {
+			const editor = queryEditors[boxId];
+			if (editor) editor.trigger('toolbar', 'undo', null);
+		} catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (action === 'redo') {
+		try {
+			const editor = queryEditors[boxId];
+			if (editor) editor.trigger('toolbar', 'redo', null);
+		} catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (action === 'search') return runMonacoAction(boxId, 'actions.find');
+	if (action === 'replace') return runMonacoAction(boxId, 'editor.action.startFindReplaceAction');
+	if (action === 'prettify') {
+		try {
+			if (typeof window.__kustoPrettifyQueryForBoxId === 'function') {
+				window.__kustoPrettifyQueryForBoxId(boxId);
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return runMonacoAction(boxId, 'editor.action.formatDocument');
+	}
+	if (action === 'singleLine') {
+		try {
+			if (typeof window.__kustoCopySingleLineQueryForBoxId === 'function') {
+				window.__kustoCopySingleLineQueryForBoxId(boxId);
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (action === 'autocomplete') {
+		try {
+			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
+				window.__kustoTriggerAutocompleteForBoxId(boxId);
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return runMonacoAction(boxId, 'editor.action.triggerSuggest');
+	}
+	if (action === 'doubleToSingle') return replaceAllInEditor(boxId, '"', "'");
+	if (action === 'singleToDouble') return replaceAllInEditor(boxId, "'", '"');
+	if (action === 'exportPowerBI') return void exportQueryToPowerBI(boxId);
+	if (action === 'copyAdeLink') return copyQueryAsAdeLink(boxId);
+	if (action === 'qualifyTables') {
+		try {
+			if (qualifyTablesInFlightByBoxId && qualifyTablesInFlightByBoxId[boxId]) return;
+		} catch (e) { console.error('[kusto]', e); }
+		try { qualifyTablesInFlightByBoxId[boxId] = true; } catch (e) { console.error('[kusto]', e); }
+		try { setToolbarActionBusy(boxId, 'qualifyTables', true); } catch (e) { console.error('[kusto]', e); }
+		(async () => {
+			try {
+				await fullyQualifyTablesInEditor(boxId);
+			} finally {
+				try { qualifyTablesInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
+				try { setToolbarActionBusy(boxId, 'qualifyTables', false); } catch (e) { console.error('[kusto]', e); }
+			}
+		})();
+	}
+}
+
+function copyQueryAsAdeLink(boxId: any): void {
+	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+	let query = editor ? editor.getValue() : '';
+	try {
+		if (editor) {
+			const model = editor.getModel && editor.getModel();
+			const blocks = (model && typeof window.__kustoGetStatementBlocksFromModel === 'function')
+				? window.__kustoGetStatementBlocksFromModel(model)
+				: [];
+			if (blocks && blocks.length > 1) {
+				const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
+					? window.__kustoExtractStatementTextAtCursor(editor)
+					: null;
+				if (statement) {
+					query = statement;
+				} else {
+					try {
+						postMessageToHost({
+							type: 'showInfo',
+							message: 'Place the cursor inside a query statement (not on a separator) to copy a Data Explorer link for that statement.'
+						});
+					} catch (e) { console.error('[kusto]', e); }
+					return;
+				}
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	let connectionId = __kustoGetConnectionId(boxId);
+	let database = __kustoGetDatabase(boxId);
+	try {
+		const meta = optimizationMetadataByBoxId[boxId];
+		if (meta && meta.isComparison && meta.sourceBoxId) {
+			const sourceBoxId = String(meta.sourceBoxId || '');
+			const srcConnId = __kustoGetConnectionId(sourceBoxId);
+			const srcDb = __kustoGetDatabase(sourceBoxId);
+			if (srcConnId) connectionId = srcConnId;
+			if (srcDb) database = srcDb;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	if (!String(query || '').trim()) {
+		try { postMessageToHost({ type: 'showInfo', message: 'There is no query text to share.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (!String(connectionId || '').trim()) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Select a cluster connection first.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (!String(database || '').trim()) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Select a database first.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+
+	try { postMessageToHost({ type: 'copyAdeLink', query, connectionId, database, boxId }); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoOpenShareModal(boxId: any): void {
+	if (!boxId) return;
+	const modal = document.getElementById('shareModal') as any;
+	if (!modal) return;
+
+	modal.dataset.boxId = boxId;
+	const sectionName = __kustoGetSectionName(boxId);
+	const titleEl = document.getElementById('shareModal_title') as any;
+	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
+
+	const state = getResultsState(boxId);
+	const hasResults = !!(state && Array.isArray(state.columns) && state.columns.length > 0 && Array.isArray(state.rows) && state.rows.length > 0);
+	const totalRows = hasResults ? state.rows.length : 0;
+	const resultsCheck = document.getElementById('shareModal_chk_results') as any;
+	if (resultsCheck) {
+		resultsCheck.checked = hasResults;
+		resultsCheck.disabled = !hasResults;
+	}
+	const resultsLabel = document.getElementById('shareModal_label_results') as any;
+	if (resultsLabel) resultsLabel.classList.toggle('share-modal-option-disabled', !hasResults);
+
+	const rowLimitInput = document.getElementById('shareModal_rowLimit') as any;
+	if (rowLimitInput) {
+		rowLimitInput.max = String(totalRows || 200);
+		rowLimitInput.value = String(Math.min(totalRows || 10, 10));
+		rowLimitInput.disabled = !hasResults;
+	}
+	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup') as any;
+	if (rowLimitGroup) rowLimitGroup.style.display = hasResults ? '' : 'none';
+	const resultsSubtitle = document.getElementById('shareModal_results_subtitle') as any;
+	if (resultsSubtitle) resultsSubtitle.textContent = 'Formatted as a table';
+	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal') as any;
+	if (rowLimitTotal) rowLimitTotal.textContent = 'of ' + totalRows.toLocaleString() + ' rows';
+
+	let connectionId = '';
+	let database = '';
+	try {
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		const meta = optimizationMetadataByBoxId[boxId];
+		if (meta && meta.isComparison && meta.sourceBoxId) {
+			const src = String(meta.sourceBoxId || '');
+			const srcConnId = __kustoGetConnectionId(src);
+			const srcDb = __kustoGetDatabase(src);
+			if (srcConnId) connectionId = srcConnId;
+			if (srcDb) database = srcDb;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const hasLink = !!(String(connectionId || '').trim() && String(database || '').trim());
+	const linkCheck = document.getElementById('shareModal_chk_title') as any;
+	if (linkCheck) {
+		linkCheck.checked = hasLink;
+		linkCheck.disabled = !hasLink;
+	}
+	const linkLabel = document.getElementById('shareModal_label_title') as any;
+	if (linkLabel) linkLabel.classList.toggle('share-modal-option-disabled', !hasLink);
+
+	const linkSubtitle = document.getElementById('shareModal_link_subtitle') as any;
+	if (linkSubtitle) {
+		linkSubtitle.textContent = hasLink ? 'Includes a Direct link to query (Azure Data Explorer)' : 'Select a cluster and database to include a link';
+	}
+
+	const queryCheck = document.getElementById('shareModal_chk_query') as any;
+	if (queryCheck) {
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		const hasQuery = !!(editor && String(editor.getValue() || '').trim());
+		queryCheck.checked = hasQuery;
+		queryCheck.disabled = !hasQuery;
+	}
+
+	modal.classList.add('visible');
+}
+
+export function __kustoCloseShareModal(event?: any): void {
+	if (event && event.target && event.target.id !== 'shareModal') return;
+	const modal = document.getElementById('shareModal') as any;
+	if (modal) modal.classList.remove('visible');
+}
+
+export function __kustoShareCopyToClipboard(): void {
+	const modal = document.getElementById('shareModal') as any;
+	if (!modal) return;
+	const boxId = modal.dataset.boxId;
+	if (!boxId) return;
+
+	const includeTitle = !!(document.getElementById('shareModal_chk_title') as any || {}).checked;
+	const includeQuery = !!(document.getElementById('shareModal_chk_query') as any || {}).checked;
+	const includeResults = !!(document.getElementById('shareModal_chk_results') as any || {}).checked;
+	if (!includeTitle && !includeQuery && !includeResults) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Select at least one section to share.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+
+	let queryText = '';
+	try {
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
+		queryText = editor ? (editor.getValue() || '') : '';
+	} catch (e) { console.error('[kusto]', e); }
+
+	let connectionId = '';
+	let database = '';
+	try {
+		connectionId = __kustoGetConnectionId(boxId);
+		database = __kustoGetDatabase(boxId);
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		const meta = optimizationMetadataByBoxId[boxId];
+		if (meta && meta.isComparison && meta.sourceBoxId) {
+			const src = String(meta.sourceBoxId || '');
+			const srcConnId = __kustoGetConnectionId(src);
+			const srcDb = __kustoGetDatabase(src);
+			if (srcConnId) connectionId = srcConnId;
+			if (srcDb) database = srcDb;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	let columns: any[] = [];
+	let rowsData: any[] = [];
+	let totalRows = 0;
+	if (includeResults) {
+		try {
+			const state = getResultsState(boxId);
+			if (state && Array.isArray(state.columns) && Array.isArray(state.rows)) {
+				columns = state.columns.map((c: any) => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
+				totalRows = state.rows.length;
+				let rowLimit = 10;
+				try {
+					const rlInput = document.getElementById('shareModal_rowLimit') as any;
+					if (rlInput) {
+						const parsed = parseInt(rlInput.value, 10);
+						if (parsed > 0) rowLimit = parsed;
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				const maxRows = Math.min(totalRows, rowLimit);
+				for (let i = 0; i < maxRows; i++) {
+					const row = state.rows[i];
+					if (!Array.isArray(row)) continue;
+					const vals: any[] = [];
+					for (let j = 0; j < row.length; j++) {
+						const cell = row[j];
+						const hasHover = typeof cell === 'object' && cell !== null && 'display' in cell && 'full' in cell;
+						const displayValue = hasHover ? cell.display : cell;
+						const formatted = String(displayValue ?? '');
+						vals.push(String(formatted ?? ''));
+					}
+					rowsData.push(vals);
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	let sectionName = '';
+	try { sectionName = __kustoGetSectionName(boxId); } catch (e) { console.error('[kusto]', e); }
+
+	try {
+		postMessageToHost({
+			type: 'shareToClipboard',
+			boxId,
+			includeTitle,
+			includeQuery,
+			includeResults,
+			sectionName,
+			queryText,
+			connectionId,
+			database,
+			columns,
+			rowsData,
+			totalRows
+		});
+	} catch (e) { console.error('[kusto]', e); }
+
+	__kustoCloseShareModal();
+}
+
+function setToolbarActionBusy(boxId: any, action: any, busy: any): void {
+	try {
+		const root = document.getElementById(boxId) as any;
+		if (!root) return;
+		const btn = root.querySelector('.query-editor-toolbar-btn[data-qe-action="' + action + '"]');
+		if (btn) {
+			if (busy) {
+				if (!btn.dataset.qePrevHtml) btn.dataset.qePrevHtml = btn.innerHTML;
+				btn.disabled = true;
+				btn.setAttribute('aria-busy', 'true');
+				btn.innerHTML = '<span class="schema-spinner" aria-hidden="true"></span>';
+			} else {
+				btn.disabled = false;
+				btn.removeAttribute('aria-busy');
+				if (btn.dataset.qePrevHtml) {
+					btn.innerHTML = btn.dataset.qePrevHtml;
+					delete btn.dataset.qePrevHtml;
+				}
+			}
+		}
+		if (!btn && action === 'qualifyTables') {
+			try {
+				const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+				if (toolbar && typeof toolbar.setToolsBusy === 'function') {
+					toolbar.setToolsBusy(!!busy);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+const __kustoRunBtnResizeObservers: Record<string, ResizeObserver> = {};
+
+export function initToolbarOverflow(boxId: any): void {
+	initRunButtonResponsive(boxId);
+}
+
+function initRunButtonResponsive(boxId: any): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const queryBox = document.getElementById(id) as any;
+	if (!queryBox) return;
+
+	if (__kustoRunBtnResizeObservers[id]) {
+		try { __kustoRunBtnResizeObservers[id].disconnect(); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	const observer = new ResizeObserver(() => {
+		try { updateRunButtonResponsive(id); } catch (e) { console.error('[kusto]', e); }
+	});
+	observer.observe(queryBox);
+	__kustoRunBtnResizeObservers[id] = observer;
+
+	requestAnimationFrame(() => {
+		try { updateRunButtonResponsive(id); } catch (e) { console.error('[kusto]', e); }
+	});
+}
+
+function updateRunButtonResponsive(boxId: any): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const runBtn = document.getElementById(id + '_run_btn') as any;
+	if (!runBtn) return;
+	const queryBox = document.getElementById(id) as any;
+	if (!queryBox) return;
+	const boxWidth = queryBox.offsetWidth;
+	if (boxWidth < 400) runBtn.classList.add('is-compact');
+	else runBtn.classList.remove('is-compact');
+}
+
+function runMonacoAction(boxId: any, actionId: any): void {
+	const editor = queryEditors[boxId];
+	if (!editor) return;
+	try {
+		const action = editor.getAction(actionId);
+		if (action && typeof action.run === 'function') {
+			action.run();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function replaceAllInEditor(boxId: any, from: any, to: any): void {
+	const editor = queryEditors[boxId];
+	if (!editor) return;
+	const model = editor.getModel();
+	if (!model) return;
+	const value = model.getValue();
+	if (!value) return;
+	const next = value.split(from).join(to);
+	if (next === value) return;
+	try {
+		editor.executeEdits('toolbar', [{ range: model.getFullModelRange(), text: next }]);
+		editor.focus();
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+async function exportQueryToPowerBI(boxId: any): Promise<void> {
+	const editor = queryEditors[boxId];
+	if (!editor) return;
+	const model = editor.getModel();
+	if (!model) return;
+	let query = model.getValue() || '';
+	try {
+		const blocks = (typeof window.__kustoGetStatementBlocksFromModel === 'function')
+			? window.__kustoGetStatementBlocksFromModel(model)
+			: [];
+		if (blocks && blocks.length > 1) {
+			const statement = (typeof window.__kustoExtractStatementTextAtCursor === 'function')
+				? window.__kustoExtractStatementTextAtCursor(editor)
+				: null;
+			if (statement) query = statement;
+			else {
+				try {
+					postMessageToHost({
+						type: 'showInfo',
+						message: 'Place the cursor inside a query statement (not on a separator) to export that statement to Power BI.'
+					});
+				} catch (e) { console.error('[kusto]', e); }
+				return;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const connectionId = __kustoGetConnectionId(boxId);
+	const database = __kustoGetDatabase(boxId);
+	if (!connectionId) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	if (!database) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+	const conn = (connections || []).find((c: any) => c && c.id === connectionId);
+	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
+	if (!clusterUrl) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+
+	const normalizedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+	const escapeMString = (s: any) => String(s).replace(/"/g, '""');
+	const indentedQuery = normalizedQuery.split('\n').map((l: any) => '        ' + escapeMString(l)).join('\n');
+	const m =
+		'let\n' +
+		'    Query = Text.Combine({"\n' +
+		indentedQuery + '\n' +
+		'    "}, ""),\n' +
+		'    Source = AzureDataExplorer.Contents("' + escapeMString(clusterUrl) + '", "' + escapeMString(database) + '", Query)\n' +
+		'in\n' +
+		'    Source';
+
+	try {
+		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+			await navigator.clipboard.writeText(m);
+			try { postMessageToHost({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	try {
+		const ta = document.createElement('textarea');
+		ta.value = m;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		ta.style.top = '0';
+		(document.body || document.documentElement).appendChild(ta);
+		ta.focus();
+		ta.select();
+		const ok = document.execCommand('copy');
+		try { ta.parentNode && ta.parentNode.removeChild(ta); } catch (e) { console.error('[kusto]', e); }
+		if (!ok) throw new Error('copy failed');
+		try { postMessageToHost({ type: 'showInfo', message: 'Power BI query copied to clipboard. Paste it into Power BI.' }); } catch (e) { console.error('[kusto]', e); }
+	} catch {
+		try { postMessageToHost({ type: 'showInfo', message: 'Failed to copy Power BI query to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+function __kustoApplyRunModeFromMenu(boxId: any, mode: any): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	setRunMode(id, mode);
+	try {
+		if (__kustoIsRunSelectionReady(id)) {
+			executeQuery(id, mode);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { closeRunMenu(id); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function getRunMode(boxId: any): string {
+	return runModesByBoxId[boxId] || 'take100';
+}
+
+export function setRunMode(boxId: any, mode: any): void {
+	runModesByBoxId[boxId] = (mode || 'take100');
+	const runBtn = document.getElementById(boxId + '_run_btn') as any;
+	if (runBtn) {
+		const labelSpan = runBtn.querySelector('.run-btn-label');
+		const labelText = getRunModeLabelText(runModesByBoxId[boxId]);
+		if (labelSpan) labelSpan.textContent = ' ' + labelText;
+		const isEnabled = !runBtn.disabled;
+		runBtn.title = labelText + (isEnabled ? '' : '\nSelect a cluster and database first (or select a favorite)');
+	}
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function closeRunMenu(boxId: any): void {
+	const menu = document.getElementById(boxId + '_run_menu') as any;
+	if (menu) menu.style.display = 'none';
+}
+
+export function closeAllRunMenus(): void {
+	if (!queryBoxes) return;
+	queryBoxes.forEach((id: any) => closeRunMenu(id));
+}
+
+export function toggleRunMenu(boxId: any): void {
+	const menu = document.getElementById(boxId + '_run_menu') as any;
+	if (!menu) return;
+	const next = menu.style.display === 'block' ? 'none' : 'block';
+	closeAllRunMenus();
+	menu.style.display = next;
+}
+
+const __kustoEventIsInsideDropdownUi = (ev: any): boolean => {
+	try {
+		const t = ev && ev.target ? ev.target : null;
+		if (!t || !t.closest) return false;
+		return !!(
+			t.closest('.kusto-dropdown-menu') ||
+			t.closest('.kusto-favorites-menu') ||
+			t.closest('.kusto-dropdown-btn') ||
+			t.closest('.kusto-favorites-btn') ||
+			t.closest('.kusto-dropdown-wrapper') ||
+			t.closest('.qe-toolbar-dropdown-menu') ||
+			t.closest('.qe-toolbar-overflow-menu')
+		);
+	} catch {
+		return false;
+	}
+};
+
+document.addEventListener('click', (ev: any) => {
+	if (__kustoEventIsInsideDropdownUi(ev)) return;
+	closeAllRunMenus();
+	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
+	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
+});
+
+document.addEventListener('scroll', (ev: any) => {
+	try {
+		const target = ev && ev.target ? ev.target : null;
+		if (target && target.closest && (target.closest('.kusto-dropdown-menu') || target.closest('.kusto-favorites-menu'))) {
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	closeAllRunMenus();
+	try {
+		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
+		if (Math.abs(scrollY - toolbarScrollAtOpen) > 20) {
+			closeAllMenus();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}, true);
+
+document.addEventListener('wheel', (ev: any) => {
+	if (__kustoEventIsInsideDropdownUi(ev)) return;
+	closeAllRunMenus();
+	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
+}, { passive: true });
+
+window.updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
+window.updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;
+window.toggleAutoTriggerAutocompleteEnabled = toggleAutoTriggerAutocompleteEnabled;
+window.toggleCopilotInlineCompletionsEnabled = toggleCopilotInlineCompletionsEnabled;
+window.toggleCaretDocsEnabled = toggleCaretDocsEnabled;
+window.onQueryEditorToolbarAction = onQueryEditorToolbarAction;
+window.__kustoCloseShareModal = __kustoCloseShareModal;
+window.__kustoShareCopyToClipboard = __kustoShareCopyToClipboard;
+window.initToolbarOverflow = initToolbarOverflow;
+window.__kustoApplyRunModeFromMenu = __kustoApplyRunModeFromMenu;
+window.setRunMode = setRunMode;
+window.closeRunMenu = closeRunMenu;
+window.closeAllRunMenus = closeAllRunMenus;
+window.getRunModeLabelText = getRunModeLabelText;
+window.toggleRunMenu = toggleRunMenu;
 
 // ─── SVG icon templates (raw strings, rendered via unsafeHTML-free innerHTML) ──
 
@@ -98,9 +825,7 @@ export class KwQueryToolbar extends LitElement {
 	@state() private _overflowMenuOpen = false;
 	// Track which overflow submenu items are expanded (accordion)
 	@state() private _overflowToolsExpanded = false;
-
-	// ── ResizeObservers ───────────────────────────────────────────────────────
-	private _toolbarResizeObserver: ResizeObserver | null = null;
+	private _overflowController = new ToolbarOverflowController(this as any);
 
 	// ── Bound handlers for cleanup ────────────────────────────────────────────
 	private _closeToolsOnOutside = this._onOutsideClickCloseTools.bind(this);
@@ -150,18 +875,14 @@ export class KwQueryToolbar extends LitElement {
 	}
 
 	override firstUpdated(): void {
-		// Set up toolbar overflow detection.
-		this._initOverflowDetection();
+		this._overflowController.start();
 		// Run button responsive behavior is handled by initToolbarOverflow() in
-		// queryBoxes-toolbar.ts (called from monaco.ts after editor initialization).
+		// this module (called from monaco.ts after editor initialization).
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		if (this._toolbarResizeObserver) {
-			this._toolbarResizeObserver.disconnect();
-			this._toolbarResizeObserver = null;
-		}
+		this._overflowController.stop();
 		this._removeMenuDismissListeners();
 	}
 
@@ -464,7 +1185,7 @@ export class KwQueryToolbar extends LitElement {
 		e.stopPropagation();
 		const wasOpen = this._toolsMenuOpen;
 		// Close other menus first.
-		try { closeRunMenuFn(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		try { closeRunMenu(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 		this._closeOverflow();
 		this._toolsMenuOpen = !wasOpen;
@@ -486,7 +1207,7 @@ export class KwQueryToolbar extends LitElement {
 		e.stopPropagation();
 		const wasOpen = this._overflowMenuOpen;
 		// Close other menus first.
-		try { closeRunMenuFn(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		try { closeRunMenu(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 		this._closeTools();
 		this._overflowMenuOpen = !wasOpen;
@@ -614,122 +1335,8 @@ export class KwQueryToolbar extends LitElement {
 		});
 	}
 
-	// ── Overflow detection ────────────────────────────────────────────────────
-
-	// Cached natural widths of each toolbar child (measured once on first render when all are visible).
-	private _cachedItemWidths: number[] | null = null;
-
-	private _initOverflowDetection(): void {
-		// Observe the toolbar itself AND the query-editor-wrapper (whose width
-		// changes when the Copilot chat panel opens/closes or the window resizes).
-		const toolbar = this.querySelector('#' + CSS.escape(this.boxId + '_toolbar'));
-		if (!toolbar) return;
-		if (this._toolbarResizeObserver) {
-			this._toolbarResizeObserver.disconnect();
-		}
-		const scheduleOverflow = () => {
-			this._computeOverflow();
-		};
-		this._toolbarResizeObserver = new ResizeObserver(scheduleOverflow);
-		this._toolbarResizeObserver.observe(toolbar);
-		// Also observe the query-editor-wrapper to catch width changes from
-		// the Copilot chat panel opening/closing — the toolbar itself doesn't
-		// resize, its parent does.
-		const wrapper = toolbar.closest('.query-editor-wrapper');
-		if (wrapper) this._toolbarResizeObserver.observe(wrapper);
-		// Cache natural widths before any overflow is applied.
-		requestAnimationFrame(() => {
-			this._cacheItemWidths();
-			this._computeOverflow();
-		});
-	}
-
-	/** Measure and cache the natural width of each toolbar item (before overflow hides any). */
-	private _cacheItemWidths(): void {
-		if (this._cachedItemWidths) return; // Already cached.
-		const toolbar = this.querySelector('#' + CSS.escape(this.boxId + '_toolbar')) as HTMLElement | null;
-		const itemsContainer = toolbar?.querySelector('.qe-toolbar-items') as HTMLElement | null;
-		if (!itemsContainer) return;
-		const items = Array.from(itemsContainer.children) as HTMLElement[];
-		if (!items.length) return;
-		// Only cache if no items are currently hidden (all widths > 0).
-		const widths = items.map(item => item.offsetWidth);
-		if (widths.some(w => w === 0)) return; // Some items hidden, can't cache yet.
-		this._cachedItemWidths = widths;
-	}
-
-	private _computeOverflow(): void {
-		const toolbar = this.querySelector('#' + CSS.escape(this.boxId + '_toolbar')) as HTMLElement | null;
-		const itemsContainer = toolbar?.querySelector('.qe-toolbar-items') as HTMLElement | null;
-		if (!toolbar || !itemsContainer) return;
-
-		const items = Array.from(itemsContainer.children) as HTMLElement[];
-		if (!items.length) return;
-
-		// Re-cache if item count changed (e.g., Lit re-rendered more/fewer buttons).
-		if (this._cachedItemWidths && this._cachedItemWidths.length !== items.length) {
-			this._cachedItemWidths = null;
-		}
-
-		// Try to cache widths if we don't have them yet.
-		if (!this._cachedItemWidths) {
-			this._cacheItemWidths();
-		}
-
-		const toolbarStyle = getComputedStyle(toolbar);
-		const paddingLeft = parseFloat(toolbarStyle.paddingLeft) || 0;
-		const paddingRight = parseFloat(toolbarStyle.paddingRight) || 0;
-		const gap = parseFloat(getComputedStyle(itemsContainer).gap) || 4;
-		const overflowBtnWidth = 36;
-		const availableWidth = toolbar.clientWidth - paddingLeft - paddingRight - overflowBtnWidth - gap;
-
-		const prevOverflow = this._overflowStartIndex;
-		let totalWidth = 0;
-		let newOverflowStart = -1;
-
-		// Track which DOM child index corresponds to which "button index"
-		// (button index = non-separator items; matches the btnIndex counter in render()).
-		let btnIdx = 0;
-
-		for (let i = 0; i < items.length; i++) {
-			const item = items[i];
-			const isSep = item.classList.contains('query-editor-toolbar-sep');
-			// Use cached width if available; otherwise use live measurement.
-			const rawWidth = this._cachedItemWidths ? this._cachedItemWidths[i] : item.offsetWidth;
-			const itemWidth = rawWidth + (i > 0 ? gap : 0);
-			totalWidth += itemWidth;
-
-			if (totalWidth > availableWidth && newOverflowStart === -1) {
-				// The overflow starts at this item. But if this is a non-separator,
-				// try to back up to the previous separator for a clean visual break.
-				newOverflowStart = btnIdx;
-				// Walk backwards to find a separator to use as the break point.
-				for (let j = i - 1; j >= 0; j--) {
-					if (items[j].classList.contains('query-editor-toolbar-sep')) {
-						// Count non-separator items before this separator.
-						newOverflowStart = this._countButtonsBefore(items, j);
-						break;
-					}
-				}
-				break; // No need to continue.
-			}
-
-			if (!isSep) btnIdx++;
-		}
-
-		if (newOverflowStart !== prevOverflow) {
-			this._overflowStartIndex = newOverflowStart;
-		}
-	}
-
-	/** Count how many non-separator items appear before index `upTo`. */
-	private _countButtonsBefore(items: HTMLElement[], upTo: number): number {
-		let count = 0;
-		for (let i = 0; i < upTo; i++) {
-			if (!items[i].classList.contains('query-editor-toolbar-sep')) count++;
-		}
-		return count;
-	}
+	public getOverflowStartIndex(): number { return this._overflowStartIndex; }
+	public setOverflowStartIndex(index: number): void { this._overflowStartIndex = index; }
 
 	// ── Public API (called by legacy code) ────────────────────────────────────
 
