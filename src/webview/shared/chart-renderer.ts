@@ -479,13 +479,14 @@ export function renderChart(boxId: any) {
 		};
 		// Axis tooltips (line, area, bar): NOT enterable — the tooltip follows the
 		// crosshair, so "entering" it just causes jitter as the axis position shifts.
-		// showDelay + hideDelay prevent rapid flickering when data points are dense.
+		// NOTE: Do NOT use showDelay here — it creates an internal setTimeout that
+		// survives past setOption({ notMerge: true }) and crashes when the timer
+		// fires after the tooltip DOM has been destroyed.
 		const tooltipAxis = {
 			confine: true,
 			enterable: false,
-			showDelay: 60,
 			hideDelay: 120,
-			transitionDuration: 0.08,
+			transitionDuration: 0.15,
 			extraCssText: tooltipCss
 		};
 
@@ -516,6 +517,17 @@ export function renderChart(boxId: any) {
 			}
 		})();
 
+		// Format ISO 8601 date-time strings the same way the data table does:
+		// "2026-03-22T14:30:00.000Z" → "2026-03-22 14:30:00"
+		const fmtDateForTooltip = (s: string): string | null => {
+			if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(s)) {
+				if (!Number.isFinite(Date.parse(s))) return null;
+				return s.replace('T', ' ').replace(/\.\d+Z?$/, '').replace(/Z$/, '');
+			}
+			if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return s;
+			return null;
+		};
+
 		const getTooltipPayloadForRow = (row: any) => {
 			try {
 				if (!tooltipColNames.length) return null;
@@ -533,7 +545,9 @@ export function renderChart(boxId: any) {
 						out[colName] = formatNumber(raw);
 						continue;
 					}
-					out[colName] = cellToChartString(cell);
+					const str = cellToChartString(cell);
+					const dateFmt = fmtDateForTooltip(str);
+					out[colName] = dateFmt !== null ? dateFmt : str;
 				}
 				return out;
 			} catch {
@@ -549,7 +563,10 @@ export function renderChart(boxId: any) {
 					const rawVal = payload && Object.prototype.hasOwnProperty.call(payload, colName) ? payload[colName] : '';
 					const s = String(rawVal ?? '');
 					if (!s) continue;
-					lines.push(`<div style="opacity:0.8; font-size:11px"><span style="opacity:0.7">${escHtml(colName)}</span> ${escHtml(s)}</div>`);
+					lines.push(
+						`<div style="display:block; opacity:0.85; font-size:11px; padding:1px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">` +
+						`<span style="opacity:0.6">${escHtml(colName)}:</span> ${escHtml(s)}</div>`
+					);
 				}
 				lines.push('</div>');
 			} catch (e) { console.error('[kusto]', e); }
@@ -1413,7 +1430,11 @@ export function renderChart(boxId: any) {
 						trigger: 'axis',
 						axisPointer: {
 							type: 'shadow',
-							snap: true
+							snap: true,
+							// Smooth the pointer so small mouse jitter doesn't
+							// constantly flip between adjacent dense data points.
+							animation: true,
+							animationDurationUpdate: 120
 						},
 						formatter: (params: any) => {
 							try {
@@ -1510,6 +1531,11 @@ export function renderChart(boxId: any) {
 				canvas.removeChild(child);
 			}
 		}
+		// Dismiss any visible tooltip BEFORE setOption with notMerge — the full
+		// option replacement destroys the tooltip's internal DOM node, and any
+		// pending tooltip animation/update that still holds the old reference
+		// would crash with "Cannot set properties of null (setting 'innerHTML')".
+		try { inst.dispatchAction({ type: 'hideTip' }); } catch (e) { console.error('[kusto]', e); }
 		inst.setOption(option || {}, { notMerge: true, lazyUpdate: true, silent: true });
 
 		const isNowRendering = true;
