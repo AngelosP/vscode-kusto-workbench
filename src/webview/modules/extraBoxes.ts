@@ -5,13 +5,6 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from '../core/persistence';
 
-// Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
-// NOTE: Sub-modules initialize their own state on window (chartStateByBoxId, etc.)
-// before reading it, so import order is safe regardless of hoisting.
-import './extraBoxes-chart';
-import './extraBoxes-transformation';
-import './extraBoxes-markdown';
-
 import {
 	getRawCellValue as _getRawCellValue,
 	cellToChartString as _cellToChartString,
@@ -25,15 +18,35 @@ import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/ut
 import { getResultsState, getRawCellValue as _getRawCellValueFromState } from '../core/results-state';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
-import { __kustoUpdateChartBuilderUI } from './extraBoxes-chart';
 import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
-import { __kustoUpdateTransformationBuilderUI, __kustoRenderTransformation } from './extraBoxes-transformation';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber } from '../shared/transform-expr';
 import { tryParseDate } from '../shared/transform-expr';
 import { __kustoMonacoInitRetryCountByBoxId } from '../monaco/monaco';
 import { setActiveMonacoEditor } from '../core/state';
+
+const __kustoUpdateChartBuilderUI = (boxId: any) => {
+	try {
+		const fn = (_win as any).__kustoUpdateChartBuilderUI;
+		if (typeof fn === 'function') fn(boxId);
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+const __kustoUpdateTransformationBuilderUI = (boxId: any) => {
+	try {
+		const fn = (_win as any).__kustoUpdateTransformationBuilderUI;
+		if (typeof fn === 'function') fn(boxId);
+	} catch (e) { console.error('[kusto]', e); }
+};
+
+const __kustoRenderTransformation = (boxId: any) => {
+	try {
+		const fn = (_win as any).__kustoRenderTransformation;
+		if (typeof fn === 'function') fn(boxId);
+	} catch (e) { console.error('[kusto]', e); }
+};
+
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
@@ -41,8 +54,7 @@ const _win = window;
 // - URL: URL input + expand/collapse content viewer; content fetched by extension host
 // - Transformation: Data manipulation section (derive, summarize, pivot, etc.)
 
-// Sub-module box arrays are initialized on window in their respective files
-// (extraBoxes-markdown.ts, extraBoxes-chart.ts, extraBoxes-transformation.ts).
+// Section modules initialize these arrays on window.
 // Read references from window so all modules share the same arrays.
 let markdownBoxes: any[] = window.__kustoMarkdownBoxes || [];
 let chartBoxes: any[] = window.__kustoChartBoxes || [];

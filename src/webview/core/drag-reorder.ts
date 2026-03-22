@@ -4,7 +4,7 @@ import { schedulePersist } from './persistence';
 import { pState } from '../shared/persistence-state';
 import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes';
 import { queryEditors, setQueryBoxes } from './state';
-import { markdownBoxes, markdownEditors } from '../modules/extraBoxes-markdown';
+import { markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { pythonBoxes, urlBoxes } from '../modules/extraBoxes';
 import { safeRun } from '../shared/safe-run';
 

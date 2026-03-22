@@ -7,7 +7,7 @@ import { safeRun } from '../shared/safe-run';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from '../modules/errorUtils';
 import {
-	addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
+	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
 	__kustoGetConnectionId, __kustoGetDatabase,
 	updateConnectionSelects, updateDatabaseSelect, onDatabasesError,
 	parseKustoExplorerConnectionsXml,
@@ -15,11 +15,11 @@ import {
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
 	schemaRequestTokenByBoxId,
 } from '../modules/queryBoxes';
-import { addMarkdownBox, __kustoMaximizeMarkdownBox } from '../modules/extraBoxes-markdown';
-import { addChartBox } from '../modules/extraBoxes-chart';
-import { addTransformationBox } from '../modules/extraBoxes-transformation';
+import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
+import { addChartBox, removeChartBox } from '../sections/kw-chart-section';
+import { addTransformationBox, removeTransformationBox } from '../sections/kw-transformation-section';
 import {
-	addPythonBox, addUrlBox, onPythonResult, onPythonError,
+	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
 	__kustoGetChartValidationStatus,
 } from '../modules/extraBoxes';
 import {
@@ -1490,11 +1490,35 @@ window.addEventListener('message', async (event: any) => {
 				let success = false;
 				
 				try {
-					const sectionEl = document.getElementById(sectionId) as any;
-					if (sectionEl && typeof sectionEl.remove === 'function') {
-						sectionEl.remove();
+					if (!sectionId) {
+						success = false;
+					} else if (sectionId.startsWith('query_') || sectionId.startsWith('copilotQuery_')) {
+						removeQueryBox(sectionId);
 						success = true;
-						// Clean up any associated state
+					} else if (sectionId.startsWith('chart_')) {
+						removeChartBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('transformation_')) {
+						removeTransformationBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('markdown_')) {
+						removeMarkdownBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('python_')) {
+						removePythonBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('url_')) {
+						removeUrlBox(sectionId);
+						success = true;
+					} else {
+						const sectionEl = document.getElementById(sectionId) as any;
+						if (sectionEl && typeof sectionEl.remove === 'function') {
+							sectionEl.remove();
+							success = true;
+						}
+					}
+
+					if (success) {
 						if (queryEditors && queryEditors[sectionId]) {
 							delete queryEditors[sectionId];
 						}

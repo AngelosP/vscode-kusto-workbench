@@ -438,10 +438,22 @@ export function renderChart(boxId: any) {
 
 	let option = null;
 	try {
+		const tooltipCss = 'max-width:520px; max-height:320px; overflow:auto; padding:8px 12px; line-height:1.6; font-size:12px; border-radius:4px;';
+		// Item tooltips (pie, funnel, scatter): enterable so user can select text.
 		const tooltipCommon = {
 			confine: true,
 			enterable: true,
-			extraCssText: 'max-width:520px; max-height:320px; overflow:auto; pointer-events:auto;'
+			hideDelay: 200,
+			transitionDuration: 0,
+			extraCssText: tooltipCss + ' pointer-events:auto;'
+		};
+		// Axis tooltips (line, area, bar): NOT enterable — the tooltip follows the
+		// crosshair, so "entering" it just causes jitter as the axis position shifts.
+		const tooltipAxis = {
+			confine: true,
+			enterable: false,
+			transitionDuration: 0,
+			extraCssText: tooltipCss
 		};
 
 		const escHtml = (v: any) => {
@@ -464,7 +476,7 @@ export function renderChart(boxId: any) {
 			try {
 				const desired = Array.isArray(st.tooltipColumns) ? st.tooltipColumns : [];
 				const normalized = desired.map((c: any) => String(c || '')).filter(Boolean);
-				const available = new Set(cols.map((c: any) => String(c || '')));
+				const available = new Set(colNames);
 				return normalized.filter((c: any) => available.has(c));
 			} catch {
 				return [];
@@ -496,15 +508,17 @@ export function renderChart(boxId: any) {
 			}
 		};
 
-		const appendTooltipColumnsHtmlLines = (lines: any, payload: any, indentPx: any) => {
+		const appendTooltipColumnsHtmlLines = (lines: any, payload: any, _indentPx: any) => {
 			try {
 				if (!payload || !tooltipColNames.length) return;
+				lines.push('<div style="border-top:1px solid rgba(128,128,128,0.25); margin:4px 0 2px; padding-top:4px">');
 				for (const colName of tooltipColNames) {
 					const rawVal = payload && Object.prototype.hasOwnProperty.call(payload, colName) ? payload[colName] : '';
 					const s = String(rawVal ?? '');
 					if (!s) continue;
-					lines.push(`<span style="opacity:0.85"><strong>${escHtml(colName)}</strong>: ${escHtml(s)}</span>`);
+					lines.push(`<div style="opacity:0.8; font-size:11px"><span style="opacity:0.7">${escHtml(colName)}</span> ${escHtml(s)}</div>`);
 				}
+				lines.push('</div>');
 			} catch (e) { console.error('[kusto]', e); }
 		};
 
@@ -706,10 +720,14 @@ export function renderChart(boxId: any) {
 								const name = params && params.name ? params.name : '';
 								const value = params && typeof params.value === 'number' ? formatNumber(params.value) : '';
 								const percent = params && typeof params.percent === 'number' ? params.percent.toFixed(1) : '';
-								const lines = [`${escHtml(name)}`, `<strong>${escHtml(valueColName)}</strong>: ${escHtml(value)} (${escHtml(percent)}%)`];
+								const marker = params && params.marker ? params.marker : '';
+								const lines = [
+									`<div style="font-weight:600; margin-bottom:2px">${escHtml(name)}</div>`,
+									`<div>${marker}<strong>${escHtml(valueColName)}</strong>: ${escHtml(value)} <span style="opacity:0.7">(${escHtml(percent)}%)</span></div>`
+								];
 								const payload = params && params.data && params.data.__kustoTooltip ? params.data.__kustoTooltip : null;
 								appendTooltipColumnsHtmlLines(lines, payload, 0);
-								return lines.join('<br/>');
+								return lines.join('');
 							} catch {
 								return '';
 							}
@@ -793,10 +811,14 @@ export function renderChart(boxId: any) {
 								const name = params && params.name ? params.name : '';
 								const value = params && typeof params.value === 'number' ? formatNumber(params.value) : '';
 								const percent = maxValue > 0 && params && typeof params.value === 'number' ? ((params.value / maxValue) * 100).toFixed(1) : '0.0';
-								const lines = [`${escHtml(name)}`, `<strong>${escHtml(valueColName)}</strong>: ${escHtml(value)} (${escHtml(percent)}%)`];
+								const marker = params && params.marker ? params.marker : '';
+								const lines = [
+									`<div style="font-weight:600; margin-bottom:2px">${escHtml(name)}</div>`,
+									`<div>${marker}<strong>${escHtml(valueColName)}</strong>: ${escHtml(value)} <span style="opacity:0.7">(${escHtml(percent)}%)</span></div>`
+								];
 								const payload = params && params.data && params.data.__kustoTooltip ? params.data.__kustoTooltip : null;
 								appendTooltipColumnsHtmlLines(lines, payload, 0);
-								return lines.join('<br/>');
+								return lines.join('');
 							} catch {
 								return '';
 							}
@@ -925,10 +947,14 @@ export function renderChart(boxId: any) {
 								const y = v && v.length > 1 ? v[1] : null;
 								const xStr = useTime ? formatUtcDateTime(x, showTime) : formatNumber(x);
 								const yStr = formatNumber(y);
-								const lines = [`<strong>${escHtml(xColName)}</strong>: ${escHtml(xStr)}`, `<strong>${escHtml(yColName)}</strong>: ${escHtml(yStr)}`];
+								const marker = params && params.marker ? params.marker : '';
+								const lines = [
+									`<div><strong>${escHtml(xColName)}</strong>: ${escHtml(xStr)}</div>`,
+									`<div>${marker}<strong>${escHtml(yColName)}</strong>: ${escHtml(yStr)}</div>`
+								];
 								const payload = params && params.data && params.data.__kustoTooltip ? params.data.__kustoTooltip : null;
 								appendTooltipColumnsHtmlLines(lines, payload, 0);
-								return lines.join('<br/>');
+								return lines.join('');
 							} catch {
 								return '';
 							}
@@ -1350,7 +1376,7 @@ export function renderChart(boxId: any) {
 					},
 					legend: legendOpt,
 					tooltip: {
-						...tooltipCommon,
+						...tooltipAxis,
 						trigger: 'axis',
 						axisPointer: {
 							type: 'shadow',
@@ -1361,8 +1387,17 @@ export function renderChart(boxId: any) {
 								const arr = Array.isArray(params) ? params : (params ? [params] : []);
 								const first = arr.length ? arr[0] : null;
 								let axisValue = first ? (first.axisValue ?? first.axisValueLabel ?? (first.data && first.data.name)) : null;
-									const title = String(axisValue || '');
-								let lines = [`<strong>${escHtml(xColName)}</strong>: ${escHtml(title)}`];
+								const title = String(axisValue || '');
+								let lines = [`<div style="font-weight:600; margin-bottom:4px">${escHtml(title)}</div>`];
+
+								for (const p of arr) {
+									const seriesName = p && p.seriesName ? p.seriesName : '';
+									const marker = p && p.marker ? p.marker : '';
+									const rawData = p && p.data ? p.data : null;
+									const v = rawData ? (Array.isArray(rawData) ? rawData[1] : (rawData.value !== undefined ? rawData.value : rawData)) : '';
+									const formatted = (typeof v === 'number') ? formatNumber(v) : String(v ?? '');
+									lines.push(`<div>${marker}<strong>${escHtml(seriesName)}</strong>: ${escHtml(formatted)}</div>`);
+								}
 
 								let tooltipPayloadOnce = null;
 								try {
@@ -1377,14 +1412,7 @@ export function renderChart(boxId: any) {
 								} catch (e) { console.error('[kusto]', e); }
 								appendTooltipColumnsHtmlLines(lines, tooltipPayloadOnce, 0);
 
-								for (const p of arr) {
-									const seriesName = p && p.seriesName ? p.seriesName : '';
-									const rawData = p && p.data ? p.data : null;
-									const v = rawData ? (Array.isArray(rawData) ? rawData[1] : (rawData.value !== undefined ? rawData.value : rawData)) : '';
-									const formatted = (typeof v === 'number') ? formatNumber(v) : String(v ?? '');
-									lines.push(`<strong>${escHtml(seriesName)}</strong>: ${escHtml(formatted)}`);
-								}
-								return lines.join('<br/>');
+								return lines.join('');
 							} catch {
 								return '';
 							}
@@ -1449,7 +1477,7 @@ export function renderChart(boxId: any) {
 				canvas.removeChild(child);
 			}
 		}
-		inst.setOption(option || {}, true);
+		inst.setOption(option || {}, { notMerge: true, lazyUpdate: true, silent: true });
 
 		const isNowRendering = true;
 		if (!wasRendering && isNowRendering) {
@@ -1467,7 +1495,11 @@ export function renderChart(boxId: any) {
 					}
 
 					requestAnimationFrame(() => {
-						try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
+						try {
+							if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+								inst.resize();
+							}
+						} catch (e) { console.error('[kusto]', e); }
 					});
 					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				}
@@ -1475,40 +1507,74 @@ export function renderChart(boxId: any) {
 		}
 		st.__wasRendering = isNowRendering;
 	} catch (e) { console.error('[kusto]', e); }
+	// Resize once after the browser has laid out the canvas.  Guard against
+	// zero-dimension canvases (e.g. hidden containers) to avoid the ECharts
+	// "Can't get DOM width or height" warning.
 	try {
 		requestAnimationFrame(() => {
-			try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+					inst.resize();
+				}
+			} catch (e) { console.error('[kusto]', e); }
 		});
 	} catch (e) { console.error('[kusto]', e); }
 
-	// Keep the chart responsive to wrapper/canvas resizes.
+	// Keep the chart responsive to wrapper width changes.
+	// IMPORTANT: Only react to WIDTH changes.  The wrapper has height:auto so its
+	// height is determined by the canvas child.  inst.resize() sets the canvas size
+	// to match the container, which changes the wrapper height, which would fire
+	// the ResizeObserver again → infinite loop.  By tracking width only, the loop
+	// is broken: inst.resize() doesn't change the wrapper's width.
 	try {
 		if (!st.__resizeObserver && typeof ResizeObserver !== 'undefined') {
-			st.__resizeObserver = new ResizeObserver(() => {
-				try { inst.resize(); } catch (e) { console.error('[kusto]', e); }
+			let lastObservedWidth = 0;
+			let pendingWidth = 0;
+			let resizeRaf = 0;
+			st.__resizeObserver = new ResizeObserver((entries) => {
+				let newWidth = 0;
 				try {
-					const w = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0;
-					if (st.__lastTimeAxis) {
-						const rotate = computeTimeAxisLabelRotation(w, st.__lastTimeAxis.labelCount, st.__lastTimeAxis.showTime);
-						if (rotate !== st.__lastTimeAxis.rotate) {
-							st.__lastTimeAxis.rotate = rotate;
-							try {
-								inst.setOption({ xAxis: { axisLabel: { rotate } } });
-							} catch (e) { console.error('[kusto]', e); }
-						}
-					} else if (st.__lastCategoryAxis) {
-						const ca = st.__lastCategoryAxis;
-						const rotate = computeCategoryLabelRotation(w, ca.labelCount, ca.avgLabelChars, ca.maxLabelChars);
-						if (rotate !== ca.rotate) {
-							ca.rotate = rotate;
-							try {
-								inst.setOption({ xAxis: { axisLabel: { rotate } } });
-							} catch (e) { console.error('[kusto]', e); }
-						}
+					for (const entry of entries) {
+						const cr = entry.contentRect;
+						if (cr && cr.width > 0) newWidth = Math.round(cr.width);
 					}
 				} catch (e) { console.error('[kusto]', e); }
+				if (!newWidth) return;
+				pendingWidth = newWidth;
+				if (resizeRaf) return;
+				resizeRaf = requestAnimationFrame(() => {
+					resizeRaf = 0;
+					const width = pendingWidth;
+					// Ignore tiny jitter (1px oscillation) to avoid resize feedback loops.
+					if (!width || (lastObservedWidth && Math.abs(width - lastObservedWidth) < 2)) return;
+					lastObservedWidth = width;
+					try {
+						if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+							inst.resize();
+						}
+					} catch (e) { console.error('[kusto]', e); }
+					try {
+						if (st.__lastTimeAxis) {
+							const rotate = computeTimeAxisLabelRotation(width, st.__lastTimeAxis.labelCount, st.__lastTimeAxis.showTime);
+							if (rotate !== st.__lastTimeAxis.rotate) {
+								st.__lastTimeAxis.rotate = rotate;
+								try {
+									inst.setOption({ xAxis: { axisLabel: { rotate } } }, { lazyUpdate: true, silent: true });
+								} catch (e) { console.error('[kusto]', e); }
+							}
+						} else if (st.__lastCategoryAxis) {
+							const ca = st.__lastCategoryAxis;
+							const rotate = computeCategoryLabelRotation(width, ca.labelCount, ca.avgLabelChars, ca.maxLabelChars);
+							if (rotate !== ca.rotate) {
+								ca.rotate = rotate;
+								try {
+									inst.setOption({ xAxis: { axisLabel: { rotate } } }, { lazyUpdate: true, silent: true });
+								} catch (e) { console.error('[kusto]', e); }
+							}
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				});
 			});
-			try { st.__resizeObserver.observe(canvas); } catch (e) { console.error('[kusto]', e); }
 			try {
 				const wrapper = document.getElementById(id + '_chart_wrapper') as any;
 				if (wrapper) st.__resizeObserver.observe(wrapper);

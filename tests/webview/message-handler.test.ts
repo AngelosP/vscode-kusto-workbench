@@ -82,22 +82,27 @@ vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
 	schemaRequestTokenByBoxId: {},
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-markdown.js', () => ({
+vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	addMarkdownBox: vi.fn(() => 'markdown_1'),
+	removeMarkdownBox: vi.fn(),
 	__kustoMaximizeMarkdownBox: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-chart.js', () => ({
+vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
 	addChartBox: vi.fn(() => 'chart_1'),
+	removeChartBox: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-transformation.js', () => ({
+vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
 	addTransformationBox: vi.fn(() => 'transformation_1'),
+	removeTransformationBox: vi.fn(),
 }));
 
 vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
 	addPythonBox: vi.fn(() => 'python_1'),
 	addUrlBox: vi.fn(() => 'url_1'),
+	removePythonBox: vi.fn(),
+	removeUrlBox: vi.fn(),
 	onPythonResult: mocks.onPythonResult,
 	onPythonError: mocks.onPythonError,
 	__kustoGetChartValidationStatus: vi.fn(() => null),

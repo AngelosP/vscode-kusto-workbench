@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const testState = vi.hoisted(() => {
 	const queryBoxes: string[] = [];
 	const chartBoxes: string[] = [];
+	const transformationBoxes: string[] = [];
 	const markdownBoxes: string[] = [];
 	const pythonBoxes: string[] = [];
 	const urlBoxes: string[] = [];
@@ -26,6 +27,7 @@ const testState = vi.hoisted(() => {
 	return {
 		queryBoxes,
 		chartBoxes,
+		transformationBoxes,
 		markdownBoxes,
 		pythonBoxes,
 		urlBoxes,
@@ -58,7 +60,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		documentUri: '',
 		compatibilityTooltip: '',
 		restoreInProgress: false,
-		queryEditorPendingAdds: { query: 0, markdown: 0, python: 0, url: 0 },
+		queryEditorPendingAdds: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 },
 		pendingQueryTextByBoxId: {} as Record<string, string>,
 		pendingMarkdownTextByBoxId: {} as Record<string, string>,
 		pendingWrapperHeightPxByBoxId: {} as Record<string, number>,
@@ -105,17 +107,22 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-chart.js', () => ({
+vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
 	addChartBox: vi.fn(),
 	removeChartBox: vi.fn(),
 	chartBoxes: testState.chartBoxes,
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-transformation.js', () => ({
+vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
 	addTransformationBox: vi.fn(),
+	removeTransformationBox: vi.fn((id: string) => {
+		const idx = testState.transformationBoxes.indexOf(id);
+		if (idx >= 0) testState.transformationBoxes.splice(idx, 1);
+	}),
+	transformationBoxes: testState.transformationBoxes,
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes-markdown.js', () => ({
+vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	addMarkdownBox: testState.addMarkdownBox,
 	removeMarkdownBox: vi.fn((id: string) => {
 		const idx = testState.markdownBoxes.indexOf(id);

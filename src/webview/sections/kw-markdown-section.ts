@@ -1,4 +1,5 @@
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages.js';
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -39,6 +40,61 @@ interface ToastViewerApi {
 	dispose(): void;
 }
 
+window.__kustoMarkdownBoxes = window.__kustoMarkdownBoxes || [];
+window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
+export const markdownBoxes: string[] = window.__kustoMarkdownBoxes;
+export const markdownEditors = window.__kustoMarkdownEditors;
+
+// Pending reveal payloads can arrive before editor initialization.
+pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
+
+try {
+	if (typeof window.__kustoRevealTextRangeFromHost !== 'function') {
+		window.__kustoRevealTextRangeFromHost = (message: any) => {
+			try {
+				const kind = String(pState.documentKind || '');
+				if (kind !== 'md') return;
+
+				const start = message?.start;
+				const end = message?.end;
+				const sl = start && typeof start.line === 'number' ? start.line : 0;
+				const sc = start && typeof start.character === 'number' ? start.character : 0;
+				const el = end && typeof end.line === 'number' ? end.line : sl;
+				const ec = end && typeof end.character === 'number' ? end.character : sc;
+				const matchText = typeof message?.matchText === 'string' ? String(message.matchText) : '';
+				const startOffset = typeof message?.startOffset === 'number' ? message.startOffset : undefined;
+				const endOffset = typeof message?.endOffset === 'number' ? message.endOffset : undefined;
+
+				const boxId = markdownBoxes.length ? String(markdownBoxes[0] || '') : '';
+				if (!boxId) return;
+
+				const payload = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchText, startOffset, endOffset };
+				const litEl = document.getElementById(boxId) as any;
+				if (litEl && typeof litEl.revealRange === 'function') {
+					try {
+						postMessageToHost({
+							type: 'debugMdSearchReveal',
+							phase: 'markdownReveal(apply)',
+							detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
+						} as any);
+					} catch (e) { console.error('[kusto]', e); }
+					litEl.revealRange(payload);
+				} else {
+					try {
+						postMessageToHost({
+							type: 'debugMdSearchReveal',
+							phase: 'markdownReveal(queued)',
+							detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
+						} as any);
+					} catch (e) { console.error('[kusto]', e); }
+					pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
+					pState.pendingMarkdownRevealByBoxId[boxId] = payload;
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		};
+	}
+} catch (e) { console.error('[kusto]', e); }
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 /**
@@ -50,6 +106,103 @@ interface ToastViewerApi {
  */
 @customElement('kw-markdown-section')
 export class KwMarkdownSection extends LitElement {
+	public static addMarkdownBox(options: Record<string, unknown> = {}): string {
+		const id = (typeof options.id === 'string' && options.id) ? String(options.id) : ('markdown_' + Date.now());
+		markdownBoxes.push(id);
+
+		try {
+			const rawMode = typeof options.mode !== 'undefined' ? String(options.mode || '').toLowerCase() : '';
+			if (rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg') {
+				window.__kustoMarkdownModeByBoxId = window.__kustoMarkdownModeByBoxId || {};
+				window.__kustoMarkdownModeByBoxId[id] = rawMode;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try {
+			const initialText = typeof options.text === 'string' ? options.text : undefined;
+			if (typeof initialText === 'string') {
+				pState.pendingMarkdownTextByBoxId = pState.pendingMarkdownTextByBoxId || {};
+				pState.pendingMarkdownTextByBoxId[id] = initialText;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		const container = document.getElementById('queries-container');
+		if (!container) return id;
+
+		const litEl = document.createElement('kw-markdown-section') as KwMarkdownSection;
+		litEl.id = id;
+		litEl.setAttribute('box-id', id);
+
+		try {
+			if (String(pState.documentKind || '') === 'md' || options.mdAutoExpand) {
+				litEl.setAttribute('plain-md', '');
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		const pendingText = pState.pendingMarkdownTextByBoxId?.[id];
+		if (typeof pendingText === 'string') {
+			litEl.setAttribute('initial-text', pendingText);
+		}
+
+		const editorDiv = document.createElement('div');
+		editorDiv.className = 'kusto-markdown-editor';
+		editorDiv.id = id + '_md_editor';
+		editorDiv.slot = 'editor';
+		litEl.appendChild(editorDiv);
+
+		const viewerDiv = document.createElement('div');
+		viewerDiv.className = 'markdown-viewer';
+		viewerDiv.id = id + '_md_viewer';
+		viewerDiv.slot = 'viewer';
+		viewerDiv.style.display = 'none';
+		litEl.appendChild(viewerDiv);
+
+		litEl.addEventListener('section-remove', (e: any) => {
+			try { removeMarkdownBox(e?.detail?.boxId || id); } catch (err) { console.error('[kusto]', err); }
+		});
+
+		container.appendChild(litEl);
+
+		try {
+			const h = typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
+			const isPlainMd = String(pState.documentKind || '') === 'md';
+			if (!isPlainMd && typeof h === 'number' && Number.isFinite(h) && h > 0) {
+				litEl.setAttribute('editor-height-px', String(h));
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try {
+			const rawMode = typeof options.mode !== 'undefined' ? String(options.mode || '').toLowerCase() : '';
+			if (rawMode === 'preview' || rawMode === 'markdown' || rawMode === 'wysiwyg') {
+				litEl.setMarkdownMode(rawMode as any);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try {
+			if (typeof options.title === 'string' && options.title) {
+				litEl.setTitle(options.title);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try {
+			if (typeof options.expanded === 'boolean') {
+				litEl.setExpanded(options.expanded);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			const isPlainMd = String(pState.documentKind || '') === 'md';
+			if (!isPlainMd) {
+				const controls = document.querySelector('.add-controls');
+				if (controls && typeof controls.scrollIntoView === 'function') {
+					controls.scrollIntoView({ block: 'end' });
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		return id;
+	}
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -476,6 +629,11 @@ export class KwMarkdownSection extends LitElement {
 	// ── TOAST UI Viewer Init ──────────────────────────────────────────────────
 
 	private _initViewer(initialValue: string): void {
+		// Invalidate any pending retries from a previous _initViewer call so they
+		// don't overwrite this viewer with stale (possibly empty) content.
+		this._viewerInitRetryGeneration++;
+		this._viewerInitRetryCount = 0;
+
 		const viewerContainer = this._getViewerContainer();
 		if (!viewerContainer) return;
 
@@ -576,12 +734,20 @@ export class KwMarkdownSection extends LitElement {
 	}
 
 	private _viewerInitRetryCount = 0;
+	private _viewerInitRetryGeneration = 0;
 	private _retryViewerInit(initialValue: string): void {
 		this._viewerInitRetryCount++;
 		const delays = [50, 250, 1000, 2000, 4000];
 		if (this._viewerInitRetryCount > delays.length) return;
 		const delay = delays[this._viewerInitRetryCount - 1];
-		setTimeout(() => { try { this._initViewer(initialValue); } catch (e) { console.error('[kusto]', e); } }, delay);
+		const gen = this._viewerInitRetryGeneration;
+		setTimeout(() => {
+			try {
+				// If a newer _initViewer call has started, abandon this stale retry.
+				if (gen !== this._viewerInitRetryGeneration) return;
+				this._initViewer(initialValue);
+			} catch (e) { console.error('[kusto]', e); }
+		}, delay);
 	}
 
 	// ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -1496,6 +1662,79 @@ export class KwMarkdownSection extends LitElement {
 		setTimeout(applySelection, 150);
 	}
 }
+
+function _getLitEl(boxId: unknown): KwMarkdownSection | null {
+	const el = document.getElementById(String(boxId || ''));
+	return (el && typeof (el as any).fitToContents === 'function') ? (el as KwMarkdownSection) : null;
+}
+
+export function addMarkdownBox(options: Record<string, unknown> = {}): string {
+	return KwMarkdownSection.addMarkdownBox(options);
+}
+
+export function removeMarkdownBox(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	if (markdownEditors[id]) {
+		try { markdownEditors[id].dispose(); } catch (e) { console.error('[kusto]', e); }
+		delete markdownEditors[id];
+	}
+	const idx = markdownBoxes.indexOf(id);
+	if (idx >= 0) markdownBoxes.splice(idx, 1);
+	const box = document.getElementById(id);
+	if (box?.parentNode) box.parentNode.removeChild(box);
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
+			delete window.__kustoMarkdownModeByBoxId[id];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoMaximizeMarkdownBox(boxId: unknown): void {
+	const el = _getLitEl(boxId);
+	if (!el) return;
+	const fit = () => { try { el.fitToContents(); } catch (e) { console.error('[kusto]', e); } };
+	fit();
+	setTimeout(fit, 50);
+	setTimeout(fit, 150);
+	setTimeout(fit, 350);
+}
+
+export function __kustoSetMarkdownMode(boxId: unknown, mode: unknown): void {
+	const el = _getLitEl(boxId);
+	if (el) el.setMarkdownMode(mode as any);
+}
+
+export function __kustoApplyMarkdownEditorMode(boxId: unknown): void {
+	const el = _getLitEl(boxId);
+	if (el) el.applyEditorMode();
+}
+
+export function __kustoGetMarkdownMode(boxId: unknown): 'preview' | 'markdown' | 'wysiwyg' {
+	try {
+		const map = window.__kustoMarkdownModeByBoxId;
+		const v = map && boxId ? String(map[String(boxId)] || '') : '';
+		if (v === 'preview' || v === 'markdown' || v === 'wysiwyg') return v;
+	} catch (e) { console.error('[kusto]', e); }
+	return 'wysiwyg';
+}
+
+export function getToastUiPlugins(ToastEditor: any): any[] {
+	return (KwMarkdownSection as any)._getToastUiPlugins(ToastEditor);
+}
+
+function __kustoApplyToastUiThemeAll(): void {
+	try { KwMarkdownSection.applyThemeAll(); } catch (e) { console.error('[kusto]', e); }
+}
+
+window.__kustoMaximizeMarkdownBox = __kustoMaximizeMarkdownBox;
+window.__kustoSetMarkdownMode = __kustoSetMarkdownMode;
+window.__kustoApplyMarkdownEditorMode = __kustoApplyMarkdownEditorMode;
+window.getToastUiPlugins = getToastUiPlugins;
+window.addMarkdownBox = addMarkdownBox;
+window.removeMarkdownBox = removeMarkdownBox;
+window.__kustoApplyToastUiThemeAll = __kustoApplyToastUiThemeAll;
 
 declare global {
 	interface HTMLElementTagNameMap {

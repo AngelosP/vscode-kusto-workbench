@@ -17,9 +17,9 @@ import {
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled
 } from './state';
-import { addChartBox, removeChartBox, chartBoxes } from '../modules/extraBoxes-chart';
-import { addTransformationBox } from '../modules/extraBoxes-transformation';
-import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../modules/extraBoxes-markdown';
+import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
+import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
+import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from '../modules/extraBoxes';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../modules/queryBoxes-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../modules/queryBoxes-execution';
@@ -609,6 +609,11 @@ function __kustoClearAllSections() {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
+		for (const id of (transformationBoxes || []).slice()) {
+			try { removeTransformationBox(id); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
 		for (const id of (markdownBoxes || []).slice()) {
 			try { removeMarkdownBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1119,19 +1124,31 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 function __kustoApplyPendingAdds() {
 	const pendingAdds = (pState.queryEditorPendingAdds && typeof (pState.queryEditorPendingAdds) === 'object')
 		? pState.queryEditorPendingAdds
-		: { query: 0, markdown: 0, python: 0, url: 0 };
+		: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 	// Reset counts so they don't replay on reload.
-	pState.queryEditorPendingAdds = { query: 0, markdown: 0, python: 0, url: 0 };
+	pState.queryEditorPendingAdds = { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 };
 
-	const pendingTotal = (pendingAdds.query || 0) + (pendingAdds.markdown || 0) + (pendingAdds.python || 0) + (pendingAdds.url || 0);
+	const pendingTotal =
+		(pendingAdds.query || 0) +
+		(pendingAdds.chart || 0) +
+		(pendingAdds.transformation || 0) +
+		(pendingAdds.markdown || 0) +
+		(pendingAdds.python || 0) +
+		(pendingAdds.url || 0);
 	if (pendingTotal <= 0) {
 		return false;
 	}
 	const allowed = Array.isArray(pState.allowedSectionKinds)
 		? pState.allowedSectionKinds.map((v: any) => String(v))
-		: ['query', 'markdown', 'python', 'url'];
+		: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 	if (allowed.includes('query')) {
 		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
+	}
+	if (allowed.includes('chart')) {
+		for (let i = 0; i < (pendingAdds.chart || 0); i++) addChartBox();
+	}
+	if (allowed.includes('transformation')) {
+		for (let i = 0; i < (pendingAdds.transformation || 0); i++) addTransformationBox();
 	}
 	if (allowed.includes('markdown')) {
 		for (let i = 0; i < (pendingAdds.markdown || 0); i++) addMarkdownBox();

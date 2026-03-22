@@ -3,8 +3,19 @@ import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
-import { maximizeChartBox, disposeChartEcharts, renderChart } from '../shared/chart-renderer.js';
-import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus } from '../modules/extraBoxes.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import {
+	maximizeChartBox,
+	disposeChartEcharts,
+	renderChart,
+	getChartState,
+	getChartMinResizeHeight,
+} from '../shared/chart-renderer.js';
+import {
+	__kustoGetChartDatasetsInDomOrder,
+	__kustoGetChartValidationStatus,
+	__kustoCleanupSectionModeResizeObserver,
+} from '../modules/extraBoxes.js';
 import {
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
@@ -98,6 +109,32 @@ const LEGEND_CYCLE = ['top', 'right', 'bottom', 'left'] as const;
 
 const SVG_CARET = '<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
+// Keep legacy global state arrays/maps in one place.
+window.chartStateByBoxId = window.chartStateByBoxId || {};
+window.__kustoChartBoxes = window.__kustoChartBoxes || [];
+export const chartBoxes: string[] = window.__kustoChartBoxes;
+
+// Re-export rendering functions for existing callers.
+export {
+	getChartState as __kustoGetChartState,
+	renderChart as __kustoRenderChart,
+	disposeChartEcharts as __kustoDisposeChartEcharts,
+	maximizeChartBox as __kustoMaximizeChartBox,
+	getChartMinResizeHeight as __kustoGetChartMinResizeHeight,
+};
+
+export function __kustoUpdateChartBuilderUI(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	try {
+		const el = document.getElementById(id) as any;
+		if (el && typeof el.refreshDatasets === 'function') {
+			if (typeof el.syncFromGlobalState === 'function') el.syncFromGlobalState();
+			el.refreshDatasets();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function esc(s: unknown): string {
@@ -118,6 +155,155 @@ function esc(s: unknown): string {
  */
 @customElement('kw-chart-section')
 export class KwChartSection extends LitElement {
+	public static addChartBox(options: Record<string, unknown> = {}): string {
+		const id = typeof options.id === 'string' && options.id
+			? String(options.id)
+			: ('chart_' + Date.now());
+		chartBoxes.push(id);
+
+		const st = getChartState(id);
+		st.mode = (typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
+		st.expanded = typeof options.expanded === 'boolean' ? !!options.expanded : true;
+		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
+		st.chartType = typeof options.chartType === 'string' ? String(options.chartType) : (st.chartType || 'area');
+		st.xColumn = typeof options.xColumn === 'string' ? String(options.xColumn) : (st.xColumn || '');
+		st.yColumn = typeof options.yColumn === 'string' ? String(options.yColumn) : (st.yColumn || '');
+		st.yColumns = Array.isArray(options.yColumns)
+			? options.yColumns.filter((c: unknown) => c)
+			: (st.yColumns || (st.yColumn ? [st.yColumn] : []));
+		st.legendColumn = typeof options.legendColumn === 'string' ? String(options.legendColumn) : (st.legendColumn || '');
+		st.legendPosition = typeof options.legendPosition === 'string' ? String(options.legendPosition) : (st.legendPosition || 'top');
+		st.labelColumn = typeof options.labelColumn === 'string' ? String(options.labelColumn) : (st.labelColumn || '');
+		st.valueColumn = typeof options.valueColumn === 'string' ? String(options.valueColumn) : (st.valueColumn || '');
+		st.showDataLabels = typeof options.showDataLabels === 'boolean' ? !!options.showDataLabels : (st.showDataLabels || false);
+		st.labelMode = typeof options.labelMode === 'string' ? String(options.labelMode) : (st.labelMode || 'auto');
+		st.labelDensity = typeof options.labelDensity === 'number' ? options.labelDensity : (typeof st.labelDensity === 'number' ? st.labelDensity : 50);
+		st.tooltipColumns = Array.isArray(options.tooltipColumns)
+			? options.tooltipColumns.filter((c: unknown) => c)
+			: (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
+		st.sortColumn = typeof options.sortColumn === 'string' ? String(options.sortColumn) : (st.sortColumn || '');
+		st.sortDirection = typeof options.sortDirection === 'string' ? String(options.sortDirection) : (st.sortDirection || '');
+		if (options.xAxisSettings && typeof options.xAxisSettings === 'object') {
+			st.xAxisSettings = { ...getDefaultXAxisSettings(), ...st.xAxisSettings, ...options.xAxisSettings };
+		}
+		if (options.yAxisSettings && typeof options.yAxisSettings === 'object') {
+			st.yAxisSettings = { ...getDefaultYAxisSettings(), ...st.yAxisSettings, ...options.yAxisSettings };
+		}
+
+		const container = document.getElementById('queries-container');
+		if (!container) return id;
+
+		const litEl = document.createElement('kw-chart-section') as KwChartSection;
+		litEl.id = id;
+		litEl.setAttribute('box-id', id);
+		if (typeof options.editorHeightPx === 'number') {
+			litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
+		}
+
+		const chartWrapper = document.createElement('div');
+		chartWrapper.id = id + '_chart_wrapper';
+		chartWrapper.className = 'query-editor-wrapper';
+		chartWrapper.setAttribute('slot', 'chart-content');
+		chartWrapper.style.border = 'none';
+		chartWrapper.style.overflow = 'visible';
+		chartWrapper.style.height = 'auto';
+		chartWrapper.style.minHeight = '0';
+
+		const editContainer = document.createElement('div');
+		editContainer.id = id + '_chart_edit';
+		editContainer.style.display = 'flex';
+		editContainer.style.flexDirection = 'column';
+		editContainer.style.height = '100%';
+		editContainer.style.minHeight = '0';
+
+		const canvasEdit = document.createElement('div');
+		canvasEdit.className = 'kusto-chart-canvas';
+		canvasEdit.id = id + '_chart_canvas_edit';
+		canvasEdit.style.minHeight = '140px';
+		canvasEdit.style.flex = '1 1 auto';
+		editContainer.appendChild(canvasEdit);
+		chartWrapper.appendChild(editContainer);
+
+		const previewContainer = document.createElement('div');
+		previewContainer.id = id + '_chart_preview';
+		previewContainer.style.display = 'none';
+		previewContainer.style.flexDirection = 'column';
+		previewContainer.style.height = '100%';
+		previewContainer.style.minHeight = '0';
+
+		const canvasPreview = document.createElement('div');
+		canvasPreview.className = 'kusto-chart-canvas';
+		canvasPreview.id = id + '_chart_canvas_preview';
+		canvasPreview.style.minHeight = '140px';
+		canvasPreview.style.flex = '1 1 auto';
+		previewContainer.appendChild(canvasPreview);
+		chartWrapper.appendChild(previewContainer);
+
+		const resizerEl = document.createElement('div');
+		resizerEl.id = id + '_chart_resizer';
+		resizerEl.className = 'query-editor-resizer';
+		resizerEl.title = 'Drag to resize\nDouble-click to fit to contents';
+		chartWrapper.appendChild(resizerEl);
+		litEl.appendChild(chartWrapper);
+
+		litEl.applyOptions(st);
+		litEl.addEventListener('section-remove', (e: any) => {
+			try {
+				const detail = e && e.detail ? e.detail : {};
+				const removeId = detail.boxId || id;
+				removeChartBox(removeId);
+			} catch (err) { console.error('[kusto]', err); }
+		});
+
+		container.insertAdjacentElement('beforeend', litEl);
+
+		resizerEl.addEventListener('dblclick', () => {
+			try { maximizeChartBox(id); } catch (e) { console.error('[kusto]', e); }
+		});
+		resizerEl.addEventListener('mousedown', (e: MouseEvent) => {
+			try { e.preventDefault(); e.stopPropagation(); } catch (err) { console.error('[kusto]', err); }
+			try { chartWrapper.dataset.kustoUserResized = 'true'; } catch (err) { console.error('[kusto]', err); }
+			resizerEl.classList.add('is-dragging');
+			const prevCursor = document.body.style.cursor;
+			const prevUserSelect = document.body.style.userSelect;
+			document.body.style.cursor = 'ns-resize';
+			document.body.style.userSelect = 'none';
+			const startPageY = e.clientY + getScrollY();
+			const startHeight = chartWrapper.getBoundingClientRect().height;
+			try { chartWrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px'; } catch (err) { console.error('[kusto]', err); }
+			const maxH = 900;
+			const onMove = (moveEvent: MouseEvent) => {
+				try { maybeAutoScrollWhileDragging(moveEvent.clientY); } catch (err) { console.error('[kusto]', err); }
+				const pageY = moveEvent.clientY + getScrollY();
+				const delta = pageY - startPageY;
+				const currentMinH = getChartMinResizeHeight(id);
+				const nextHeight = Math.max(currentMinH, Math.min(maxH, startHeight + delta));
+				chartWrapper.style.height = nextHeight + 'px';
+				try { renderChart(id); } catch (err) { console.error('[kusto]', err); }
+			};
+			const onUp = () => {
+				document.removeEventListener('mousemove', onMove, true);
+				document.removeEventListener('mouseup', onUp, true);
+				resizerEl.classList.remove('is-dragging');
+				document.body.style.cursor = prevCursor;
+				document.body.style.userSelect = prevUserSelect;
+				try { schedulePersist(); } catch (err) { console.error('[kusto]', err); }
+				try { renderChart(id); } catch (err) { console.error('[kusto]', err); }
+			};
+			document.addEventListener('mousemove', onMove, true);
+			document.addEventListener('mouseup', onUp, true);
+		});
+
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			const controls = document.querySelector('.add-controls');
+			if (controls && typeof controls.scrollIntoView === 'function') {
+				controls.scrollIntoView({ block: 'end' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
+		return id;
+	}
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -1106,10 +1292,26 @@ export class KwChartSection extends LitElement {
 	 */
 	public refreshDatasets(): void {
 		try {
-			this._datasets = __kustoGetChartDatasetsInDomOrder() || [];
+			const fresh = __kustoGetChartDatasetsInDomOrder() || [];
+			// Only update if datasets actually changed — avoids constant Lit re-renders
+			// that thrash layout and starve Monaco's syntax highlighting worker.
+			if (!this._datasetsEqual(this._datasets, fresh)) {
+				this._datasets = fresh;
+			}
 		} catch (e) { console.error('[kusto]', e); }
 		// Prune stale column references that no longer exist in the current dataset.
 		this._pruneStaleColumns();
+	}
+
+	/** Shallow compare dataset lists by id, label, and column count to avoid unnecessary re-renders. */
+	private _datasetsEqual(a: DatasetEntry[], b: DatasetEntry[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i].id !== b[i].id || a[i].label !== b[i].label ||
+				(a[i].columns?.length ?? 0) !== (b[i].columns?.length ?? 0) ||
+				(a[i].rows?.length ?? 0) !== (b[i].rows?.length ?? 0)) return false;
+		}
+		return true;
 	}
 
 	/** Remove column selections that don't exist in the current dataset columns. */
@@ -1284,6 +1486,27 @@ export class KwChartSection extends LitElement {
 		return this._name;
 	}
 }
+
+export function addChartBox(options: Record<string, unknown> = {}): string {
+	return KwChartSection.addChartBox(options);
+}
+
+export function removeChartBox(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	try { disposeChartEcharts(id); } catch (e) { console.error('[kusto]', e); }
+	try { delete window.chartStateByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
+	const idx = chartBoxes.indexOf(id);
+	if (idx >= 0) chartBoxes.splice(idx, 1);
+	const box = document.getElementById(id);
+	if (box?.parentNode) box.parentNode.removeChild(box);
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+window.addChartBox = addChartBox;
+window.removeChartBox = removeChartBox;
+window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
 
 // Declare the custom element type for TypeScript
 declare global {

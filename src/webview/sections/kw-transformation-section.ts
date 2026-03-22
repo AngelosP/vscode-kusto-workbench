@@ -16,6 +16,7 @@ import {
 } from '../shared/transform-expr.js';
 import { normalizeResultsColumnName } from '../shared/data-utils.js';
 import '../components/kw-section-shell.js';
+import { __kustoCleanupSectionModeResizeObserver } from '../modules/extraBoxes.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,10 +100,133 @@ function esc(s: unknown): string {
 		.replace(/'/g, '&#39;');
 }
 
+window.transformationStateByBoxId = window.transformationStateByBoxId || {};
+window.__kustoTransformationBoxes = window.__kustoTransformationBoxes || [];
+const transformationStateByBoxId = window.transformationStateByBoxId;
+export const transformationBoxes: string[] = window.__kustoTransformationBoxes;
+
+export function __kustoGetTransformationState(boxId: unknown): Record<string, unknown> {
+	try {
+		const id = String(boxId || '');
+		if (!id) return { mode: 'edit', expanded: true };
+		if (!transformationStateByBoxId[id] || typeof transformationStateByBoxId[id] !== 'object') {
+			transformationStateByBoxId[id] = {
+				mode: 'edit',
+				expanded: true,
+				dataSourceId: '',
+				transformationType: 'derive',
+				deriveColumns: [{ name: '', expression: '' }],
+				deriveColumnName: '',
+				deriveExpression: '',
+				distinctColumn: '',
+				groupByColumns: [],
+				aggregations: [{ function: 'count', column: '' }],
+				pivotRowKeyColumn: '',
+				pivotColumnKeyColumn: '',
+				pivotValueColumn: '',
+				pivotAggregation: 'sum',
+				pivotMaxColumns: 100,
+			};
+		}
+		const st = transformationStateByBoxId[id] as any;
+		if (!Array.isArray(st.deriveColumns) || st.deriveColumns.length === 0) {
+			const n = typeof st.deriveColumnName === 'string' ? st.deriveColumnName : '';
+			const e = typeof st.deriveExpression === 'string' ? st.deriveExpression : '';
+			st.deriveColumns = [{ name: n || '', expression: e || '' }];
+		}
+		return st;
+	} catch {
+		return { mode: 'edit', expanded: true };
+	}
+}
+
+export function __kustoUpdateTransformationBuilderUI(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	try {
+		const el = document.getElementById(id) as any;
+		if (el && typeof el.refresh === 'function') {
+			el.refresh();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoRenderTransformation(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	try {
+		const el = document.getElementById(id) as any;
+		if (el && typeof el.refresh === 'function') {
+			el.refresh();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 @customElement('kw-transformation-section')
 export class KwTransformationSection extends LitElement {
+	public static addTransformationBox(options: Record<string, unknown> = {}): string {
+		const id = (typeof options.id === 'string' && options.id) ? String(options.id) : ('transformation_' + Date.now());
+		transformationBoxes.push(id);
+		const st = __kustoGetTransformationState(id) as any;
+
+		st.mode = (typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
+		st.expanded = typeof options.expanded === 'boolean' ? !!options.expanded : true;
+		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
+		st.transformationType = typeof options.transformationType === 'string' ? String(options.transformationType) : (st.transformationType || 'derive');
+		st.distinctColumn = typeof options.distinctColumn === 'string' ? String(options.distinctColumn) : (st.distinctColumn || '');
+		st.deriveColumns = Array.isArray(options.deriveColumns)
+			? options.deriveColumns
+			: (Array.isArray(st.deriveColumns) ? st.deriveColumns : [{ name: '', expression: '' }]);
+		if (!Array.isArray(options.deriveColumns) && (typeof options.deriveColumnName === 'string' || typeof options.deriveExpression === 'string')) {
+			const n = typeof options.deriveColumnName === 'string' ? String(options.deriveColumnName) : '';
+			const e = typeof options.deriveExpression === 'string' ? String(options.deriveExpression) : '';
+			st.deriveColumns = [{ name: n, expression: e }];
+		}
+		const first = Array.isArray(st.deriveColumns) && st.deriveColumns.length ? st.deriveColumns[0] : { name: '', expression: '' };
+		st.deriveColumnName = String((first && first.name) || '');
+		st.deriveExpression = String((first && first.expression) || '');
+		st.groupByColumns = Array.isArray(options.groupByColumns)
+			? options.groupByColumns.filter((c: unknown) => c)
+			: (Array.isArray(st.groupByColumns) ? st.groupByColumns : []);
+		st.aggregations = Array.isArray(options.aggregations)
+			? options.aggregations
+			: (Array.isArray(st.aggregations) ? st.aggregations : [{ function: 'count', column: '' }]);
+		st.pivotRowKeyColumn = typeof options.pivotRowKeyColumn === 'string' ? String(options.pivotRowKeyColumn) : (st.pivotRowKeyColumn || '');
+		st.pivotColumnKeyColumn = typeof options.pivotColumnKeyColumn === 'string' ? String(options.pivotColumnKeyColumn) : (st.pivotColumnKeyColumn || '');
+		st.pivotValueColumn = typeof options.pivotValueColumn === 'string' ? String(options.pivotValueColumn) : (st.pivotValueColumn || '');
+		st.pivotAggregation = typeof options.pivotAggregation === 'string' ? String(options.pivotAggregation) : (st.pivotAggregation || 'sum');
+		st.pivotMaxColumns = (typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns))
+			? options.pivotMaxColumns
+			: (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 100);
+
+		const container = document.getElementById('queries-container');
+		if (!container) return id;
+
+		const litEl = document.createElement('kw-transformation-section') as KwTransformationSection;
+		litEl.id = id;
+		litEl.setAttribute('box-id', id);
+		litEl.applyOptions(options);
+
+		litEl.addEventListener('section-remove', (e: any) => {
+			try {
+				const detail = e && e.detail ? e.detail : {};
+				const removeId = detail.boxId || id;
+				removeTransformationBox(removeId);
+			} catch (err) { console.error('[kusto]', err); }
+		});
+
+		container.insertAdjacentElement('beforeend', litEl);
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			const controls = document.querySelector('.add-controls');
+			if (controls && typeof controls.scrollIntoView === 'function') {
+				controls.scrollIntoView({ block: 'end' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return id;
+	}
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -1722,6 +1846,53 @@ export class KwTransformationSection extends LitElement {
 		}
 	}
 }
+
+export function addTransformationBox(options: Record<string, unknown> = {}): string {
+	return KwTransformationSection.addTransformationBox(options);
+}
+
+export function removeTransformationBox(boxId: unknown): void {
+	const id = String(boxId || '');
+	if (!id) return;
+	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
+	try {
+		const el = document.getElementById(id) as any;
+		if (el && el.parentElement) {
+			el.parentElement.removeChild(el);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const idx = transformationBoxes.indexOf(id);
+	if (idx >= 0) transformationBoxes.splice(idx, 1);
+	try {
+		if (transformationStateByBoxId && typeof transformationStateByBoxId === 'object') {
+			delete transformationStateByBoxId[id];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoConfigureTransformationFromTool(boxId: unknown, config: unknown): boolean {
+	try {
+		const id = String(boxId || '');
+		if (!id) return false;
+		if (!config || typeof config !== 'object') return false;
+
+		const el = document.getElementById(id) as any;
+		if (el && typeof el.configure === 'function') {
+			return el.configure(config);
+		}
+		return false;
+	} catch (err: any) {
+		console.error('[Kusto] Error configuring transformation:', err);
+		return false;
+	}
+}
+
+window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool;
+window.__kustoRenderTransformation = __kustoRenderTransformation;
+window.__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
+window.__kustoGetTransformationState = __kustoGetTransformationState;
+window.addTransformationBox = addTransformationBox;
 
 // Declare the custom element type for TypeScript
 declare global {
