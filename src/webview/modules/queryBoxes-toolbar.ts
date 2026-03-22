@@ -3,7 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import { getRunModeLabelText } from '../shared/comparisonUtils';
 import { postMessageToHost } from '../shared/webview-messages';
-import { getResultsState } from './resultsState';
+import { getResultsState } from '../core/results-state';
 import {
 	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetSectionName,
 	closeAllFavoritesDropdowns,
@@ -11,7 +11,7 @@ import {
 } from './queryBoxes';
 import { executeQuery, __kustoIsRunSelectionReady } from './queryBoxes-execution';
 import { toolbarScrollAtOpen, closeAllMenus } from './dropdown';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 import {
 	queryBoxes, queryEditors, connections,
 	caretDocsEnabled, setCaretDocsEnabled,
@@ -20,7 +20,7 @@ import {
 	activeQueryEditorBoxId, setActiveQueryEditorBoxId,
 	caretDocOverlaysByBoxId, optimizationMetadataByBoxId,
 	qualifyTablesInFlightByBoxId, runModesByBoxId,
-} from './state';
+} from '../core/state';
 
 // --- Toggle button functions ---
 

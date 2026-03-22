@@ -1,10 +1,10 @@
 // ECharts rendering engine — extracted from modules/extraBoxes-chart.ts.
 // Handles chart rendering, disposal, theme observation, resizing.
 // No window bridge assignments — pure ES module exports.
-import { schedulePersist } from '../modules/persistence';
+import { schedulePersist } from '../core/persistence';
 import { isDarkTheme } from '../monaco/theme';
-import { escapeHtml } from '../modules/utils';
-import { getResultsState } from '../modules/resultsState';
+import { escapeHtml } from '../core/utils';
+import { getResultsState } from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
 	getRawCellValue,

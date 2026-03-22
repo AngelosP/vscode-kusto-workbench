@@ -3,7 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 // NOTE: Sub-modules initialize their own state on window (chartStateByBoxId, etc.)
@@ -21,8 +21,8 @@ import {
 	normalizeResultsColumnName as _normalizeResultsColumnName,
 	pickFirstNonEmpty as _pickFirstNonEmpty,
 } from '../shared/data-utils.js';
-import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
-import { getResultsState, getRawCellValue as _getRawCellValueFromState } from './resultsState';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
+import { getResultsState, getRawCellValue as _getRawCellValueFromState } from '../core/results-state';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
 import { __kustoUpdateChartBuilderUI } from './extraBoxes-chart';
@@ -33,7 +33,7 @@ import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber } from '../shared/transform-expr';
 import { tryParseDate } from '../shared/transform-expr';
 import { __kustoMonacoInitRetryCountByBoxId } from '../monaco/monaco';
-import { setActiveMonacoEditor } from './state';
+import { setActiveMonacoEditor } from '../core/state';
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur

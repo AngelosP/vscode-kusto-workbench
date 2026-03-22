@@ -4,8 +4,8 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
-import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './resultsState';
-import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
+import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
+import { __kustoRenderErrorUx, __kustoDisplayBoxError } from '../modules/errorUtils';
 import {
 	addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
 	__kustoGetConnectionId, __kustoGetDatabase,
@@ -14,24 +14,24 @@ import {
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
 	schemaRequestTokenByBoxId,
-} from './queryBoxes';
-import { addMarkdownBox, __kustoMaximizeMarkdownBox } from './extraBoxes-markdown';
-import { addChartBox } from './extraBoxes-chart';
-import { addTransformationBox } from './extraBoxes-transformation';
+} from '../modules/queryBoxes';
+import { addMarkdownBox, __kustoMaximizeMarkdownBox } from '../modules/extraBoxes-markdown';
+import { addChartBox } from '../modules/extraBoxes-chart';
+import { addTransformationBox } from '../modules/extraBoxes-transformation';
 import {
 	addPythonBox, addUrlBox, onPythonResult, onPythonError,
 	__kustoGetChartValidationStatus,
-} from './extraBoxes';
+} from '../modules/extraBoxes';
 import {
 	updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons, setRunMode,
-} from './queryBoxes-toolbar';
+} from '../modules/queryBoxes-toolbar';
 import {
 	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
 	optimizeQueryWithCopilot, __kustoSetOptimizeInProgress,
 	__kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions,
-} from './queryBoxes-execution';
+} from '../modules/queryBoxes-execution';
 import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,

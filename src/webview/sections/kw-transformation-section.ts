@@ -2,9 +2,9 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-transformation-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
-import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
-import { setResultsState } from '../modules/resultsState.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { setResultsState } from '../core/results-state.js';
+import { schedulePersist } from '../core/persistence.js';
 import { __kustoGetChartDatasetsInDomOrder } from '../modules/extraBoxes.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
 import {

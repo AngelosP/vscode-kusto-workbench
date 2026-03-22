@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-vi.mock('../../src/webview/modules/utils.js', () => ({
+vi.mock('../../src/webview/core/utils.js', () => ({
 	getScrollY: () => 0,
 	maybeAutoScrollWhileDragging: vi.fn(),
 }));
@@ -11,7 +11,7 @@ vi.mock('../../src/webview/modules/dropdown.js', () => ({
 	closeAllMenus: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/persistence.js', () => ({
+vi.mock('../../src/webview/core/persistence.js', () => ({
 	schedulePersist: vi.fn(),
 }));
 

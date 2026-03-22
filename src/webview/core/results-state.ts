@@ -3,8 +3,8 @@
 
 import { pState } from '../shared/persistence-state';
 import { __kustoTryStoreQueryResult } from './persistence';
-import { __kustoSetResultsVisible, setQueryExecuting } from './queryBoxes-execution';
-import { __kustoNotifyResultsUpdated } from './extraBoxes';
+import { __kustoSetResultsVisible, setQueryExecuting } from '../modules/queryBoxes-execution';
+import { __kustoNotifyResultsUpdated } from '../modules/extraBoxes';
 
 // ── Results state map ────────────────────────────────────────────────────────
 

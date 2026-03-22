@@ -72,7 +72,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 	}
 }));
 
-vi.mock('../../src/webview/modules/resultsState.js', () => ({
+vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayResult: vi.fn(),
 }));
 
@@ -93,7 +93,7 @@ vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
 	__kustoClampResultsWrapperHeight: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/state.js', () => ({
+vi.mock('../../src/webview/core/state.js', () => ({
 	connections: [],
 	queryBoxes: testState.queryBoxes,
 	queryEditors: testState.queryEditors,
@@ -158,7 +158,7 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 }));
 
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { getKqlxState, handleDocumentDataMessage } from '../../src/webview/modules/persistence.js';
+import { getKqlxState, handleDocumentDataMessage } from '../../src/webview/core/persistence.js';
 
 describe('persistence round-trip', () => {
 	beforeEach(() => {

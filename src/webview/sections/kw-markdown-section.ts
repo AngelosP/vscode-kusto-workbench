@@ -3,9 +3,9 @@ import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
-import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { schedulePersist } from '../core/persistence.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────

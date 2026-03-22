@@ -3,7 +3,7 @@
 // Pipe operator suggestions, dot-command completions, column inference.
 // Window bridge exports at bottom for remaining callers.
 import { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco';
-import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId, connections, schemaByConnDb } from '../modules/state';
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId, connections, schemaByConnDb } from '../core/state';
 export {};
 
 const _win = window;

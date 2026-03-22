@@ -3,7 +3,7 @@ import { styles } from './kw-diff-view.styles.js';
 import { customElement, state } from 'lit/decorators.js';
 import type { DataTableColumn, CellValue } from '../../components/kw-data-table.js';
 import '../../components/kw-data-table.js';
-import { getResultsState } from '../../modules/resultsState.js';
+import { getResultsState } from '../../core/results-state.js';
 
 // ── Pure diff-model helpers (ported from legacy diffView.ts) ──
 

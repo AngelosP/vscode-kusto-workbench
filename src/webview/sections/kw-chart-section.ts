@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-chart-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { schedulePersist } from '../core/persistence.js';
 import { maximizeChartBox, disposeChartEcharts, renderChart } from '../shared/chart-renderer.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoGetChartValidationStatus } from '../modules/extraBoxes.js';
 import {

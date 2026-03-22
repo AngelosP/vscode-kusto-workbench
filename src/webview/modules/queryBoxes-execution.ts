@@ -20,9 +20,9 @@ import {
 	formatElapsed,
 	isValidConnectionIdForRun as __kustoIsValidConnectionIdForRun_pure,
 } from '../shared/comparisonUtils';
-import { escapeHtml } from './utils';
+import { escapeHtml } from '../core/utils';
 import { pState } from '../shared/persistence-state';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 import {
 __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
 __kustoSetSectionName, __kustoGetSectionName, __kustoPickNextAvailableSectionLetterName,
@@ -32,11 +32,11 @@ __kustoLog
 } from './queryBoxes';
 import { getRunModeLabelText } from '../shared/comparisonUtils';
 import { getRunMode, setRunMode, closeRunMenu } from './queryBoxes-toolbar';
-import { getResultsState, ensureResultsStateMap } from './resultsState';
+import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, schemaByBoxId, queryBoxes,
-} from './state';
+} from '../core/state';
 export {};
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};

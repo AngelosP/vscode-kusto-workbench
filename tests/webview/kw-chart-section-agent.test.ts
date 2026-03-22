@@ -24,7 +24,7 @@ vi.mock('../../src/webview/shared/chart-renderer.js', () => ({
 	renderChart: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/persistence.js', () => ({
+vi.mock('../../src/webview/core/persistence.js', () => ({
 	schedulePersist: vi.fn(),
 }));
 

@@ -2,10 +2,10 @@
 // Self-invoking: installs DnD handlers on #queries-container on import.
 import { schedulePersist } from './persistence';
 import { pState } from '../shared/persistence-state';
-import { __kustoRefreshAllDataSourceDropdowns } from './extraBoxes';
+import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes';
 import { queryEditors, setQueryBoxes } from './state';
-import { markdownBoxes, markdownEditors } from './extraBoxes-markdown';
-import { pythonBoxes, urlBoxes } from './extraBoxes';
+import { markdownBoxes, markdownEditors } from '../modules/extraBoxes-markdown';
+import { pythonBoxes, urlBoxes } from '../modules/extraBoxes';
 import { safeRun } from '../shared/safe-run';
 
 // Drag-and-drop reorder for sections in .kqlx.

@@ -5,63 +5,65 @@ $allPaths = (Get-ChildItem src/webview -Recurse -Include *.ts,*.js,*.html | Wher
 
 # Bridges to check: name -> defining module
 $bridges = @{
-    # queryBoxes.ts
-    '__kustoGetSectionName' = 'queryBoxes.ts'
-    '__kustoGetCurrentClusterUrlForBox' = 'queryBoxes.ts'
-    '__kustoGetCurrentDatabaseForBox' = 'queryBoxes.ts'
-    '__kustoFindFavorite' = 'queryBoxes.ts'
-    '__kustoLog' = 'queryBoxes.ts'
-    'fullyQualifyTablesInEditor' = 'queryBoxes.ts'
-    # queryBoxes-execution.ts
-    'setQueryExecuting' = 'queryBoxes-execution.ts'
-    '__kustoIsRunSelectionReady' = 'queryBoxes-execution.ts'
-    'acceptOptimizations' = 'queryBoxes-execution.ts'
-    'toggleQueryResultsVisibility' = 'queryBoxes-execution.ts'
-    'displayComparisonSummary' = 'queryBoxes-execution.ts'
-    'optimizeQueryWithCopilot' = 'queryBoxes-execution.ts'
-    'formatElapsed' = 'queryBoxes-execution.ts'
-    # queryBoxes-toolbar.ts
-    'updateCopilotInlineCompletionsToggleButtons' = 'queryBoxes-toolbar.ts'
-    'closeToolsDropdown' = 'queryBoxes-toolbar.ts'
-    'toggleOverflowSubmenu' = 'queryBoxes-toolbar.ts'
-    'closeToolbarOverflow' = 'queryBoxes-toolbar.ts'
-    'getRunModeLabelText' = 'queryBoxes-toolbar.ts'
-    'closeRunMenu' = 'queryBoxes-toolbar.ts'
-    # extraBoxes.ts
-    '__kustoGetRawCellValueForChart' = 'extraBoxes.ts'
-    '__kustoCellToChartString' = 'extraBoxes.ts'
-    '__kustoCellToChartNumber' = 'extraBoxes.ts'
-    '__kustoCellToChartTimeMs' = 'extraBoxes.ts'
-    '__kustoInferTimeXAxisFromRows' = 'extraBoxes.ts'
-    '__kustoNormalizeResultsColumnName' = 'extraBoxes.ts'
-    '__kustoSetSelectOptions' = 'extraBoxes.ts'
-    '__kustoPickFirstNonEmpty' = 'extraBoxes.ts'
-    '__kustoCleanupSectionModeResizeObserver' = 'extraBoxes.ts'
-    '__kustoRefreshDependentExtraBoxes' = 'extraBoxes.ts'
-    'onPythonResult' = 'extraBoxes.ts'
-    'onPythonError' = 'extraBoxes.ts'
-    # extraBoxes-chart.ts
-    '__kustoGetChartState' = 'extraBoxes-chart.ts'
-    '__kustoUpdateChartBuilderUI' = 'extraBoxes-chart.ts'
-    # resultsState.ts
-    'displayResultForBox' = 'resultsState.ts'
-    'displayResult' = 'resultsState.ts'
-    'displayCancelled' = 'resultsState.ts'
-    # persistence.ts
-    'handleDocumentDataMessage' = 'persistence.ts'
-    '__kustoOnQueryResult' = 'persistence.ts'
-    '__kustoSetCompatibilityMode' = 'persistence.ts'
-    '__kustoApplyDocumentCapabilities' = 'persistence.ts'
-    '__kustoGetWrapperHeightPx' = 'persistence.ts'
+    # modules/queryBoxes.ts
+    '__kustoGetSectionName' = 'modules/queryBoxes.ts'
+    '__kustoGetCurrentClusterUrlForBox' = 'modules/queryBoxes.ts'
+    '__kustoGetCurrentDatabaseForBox' = 'modules/queryBoxes.ts'
+    '__kustoFindFavorite' = 'modules/queryBoxes.ts'
+    '__kustoLog' = 'modules/queryBoxes.ts'
+    'fullyQualifyTablesInEditor' = 'modules/queryBoxes.ts'
+    # modules/queryBoxes-execution.ts
+    'setQueryExecuting' = 'modules/queryBoxes-execution.ts'
+    '__kustoIsRunSelectionReady' = 'modules/queryBoxes-execution.ts'
+    'acceptOptimizations' = 'modules/queryBoxes-execution.ts'
+    'toggleQueryResultsVisibility' = 'modules/queryBoxes-execution.ts'
+    'displayComparisonSummary' = 'modules/queryBoxes-execution.ts'
+    'optimizeQueryWithCopilot' = 'modules/queryBoxes-execution.ts'
+    'formatElapsed' = 'modules/queryBoxes-execution.ts'
+    # modules/queryBoxes-toolbar.ts
+    'updateCopilotInlineCompletionsToggleButtons' = 'modules/queryBoxes-toolbar.ts'
+    'closeToolsDropdown' = 'modules/queryBoxes-toolbar.ts'
+    'toggleOverflowSubmenu' = 'modules/queryBoxes-toolbar.ts'
+    'closeToolbarOverflow' = 'modules/queryBoxes-toolbar.ts'
+    'getRunModeLabelText' = 'modules/queryBoxes-toolbar.ts'
+    'closeRunMenu' = 'modules/queryBoxes-toolbar.ts'
+    # modules/extraBoxes.ts
+    '__kustoGetRawCellValueForChart' = 'modules/extraBoxes.ts'
+    '__kustoCellToChartString' = 'modules/extraBoxes.ts'
+    '__kustoCellToChartNumber' = 'modules/extraBoxes.ts'
+    '__kustoCellToChartTimeMs' = 'modules/extraBoxes.ts'
+    '__kustoInferTimeXAxisFromRows' = 'modules/extraBoxes.ts'
+    '__kustoNormalizeResultsColumnName' = 'modules/extraBoxes.ts'
+    '__kustoSetSelectOptions' = 'modules/extraBoxes.ts'
+    '__kustoPickFirstNonEmpty' = 'modules/extraBoxes.ts'
+    '__kustoCleanupSectionModeResizeObserver' = 'modules/extraBoxes.ts'
+    '__kustoRefreshDependentExtraBoxes' = 'modules/extraBoxes.ts'
+    'onPythonResult' = 'modules/extraBoxes.ts'
+    'onPythonError' = 'modules/extraBoxes.ts'
+    # modules/extraBoxes-chart.ts
+    '__kustoGetChartState' = 'modules/extraBoxes-chart.ts'
+    '__kustoUpdateChartBuilderUI' = 'modules/extraBoxes-chart.ts'
+    # core/results-state.ts
+    'displayResultForBox' = 'core/results-state.ts'
+    'displayResult' = 'core/results-state.ts'
+    'displayCancelled' = 'core/results-state.ts'
+    # core/persistence.ts
+    'handleDocumentDataMessage' = 'core/persistence.ts'
+    '__kustoOnQueryResult' = 'core/persistence.ts'
+    '__kustoSetCompatibilityMode' = 'core/persistence.ts'
+    '__kustoApplyDocumentCapabilities' = 'core/persistence.ts'
+    '__kustoGetWrapperHeightPx' = 'core/persistence.ts'
 }
+
+$webviewRoot = (Resolve-Path 'src/webview').Path
 
 foreach ($name in $bridges.Keys | Sort-Object) {
     $defFile = $bridges[$name]
     $extConsumers = @()
     foreach ($fp in $allPaths) {
-        $fname = Split-Path $fp -Leaf
-        if ($fname -eq $defFile) { continue }
-        if ((Get-Content $fp -Raw).Contains($name)) { $extConsumers += $fname }
+        $relPath = $fp.Substring($webviewRoot.Length + 1).Replace('\\', '/')
+        if ($relPath -eq $defFile) { continue }
+        if ((Get-Content $fp -Raw).Contains($name)) { $extConsumers += $relPath }
     }
     if ($extConsumers.Count -eq 0) {
         $results += "DEAD: $name ($defFile)"

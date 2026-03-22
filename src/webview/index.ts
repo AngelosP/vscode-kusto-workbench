@@ -1,21 +1,21 @@
 // Webview Lit components entry point.
 // Each component self-registers its custom element on import.
 // Legacy modules absorbed from global-scope JS — register window bridges on import.
-import './modules/state.js'; // Must be first — initializes all state globals on window
+import './core/state.js'; // Must be first — initializes all state globals on window
 import './generated/controlCommands.generated.js';
 import './generated/functions.generated.js';
-import './modules/utils.js';
+import './core/utils.js';
 import './modules/dropdown.js';
 import './viewers/diff-view/kw-diff-view.js';
-import './modules/persistence.js';
-import './modules/resultsState.js';
+import './core/persistence.js';
+import './core/results-state.js';
 import './modules/errorUtils.js';
 import './modules/queryBoxes.js';
 import './modules/extraBoxes.js';
 import './monaco/diagnostics.js'; // Before monaco — sets utility window bridges
 import './monaco/completions.js'; // Before monaco — sets completion provider bridges
 import './monaco/monaco.js';
-import './modules/main.js'; // Must be last — message dispatcher
+import './core/main.js'; // Must be last — message dispatcher
 import './components/kw-search-bar.js';
 import './components/kw-object-viewer.js';
 import './components/kw-cell-viewer.js';

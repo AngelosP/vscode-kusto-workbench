@@ -3,7 +3,7 @@
 // This module retains: factory (addTransformationBox), removal, state init,
 // configure-from-tool, and guard stubs for callers that still reference the
 // legacy __kustoUpdateTransformationBuilderUI / __kustoRenderTransformation.
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 import { __kustoCleanupSectionModeResizeObserver } from './extraBoxes';
 
 // Access shared transformation state from window (set by extraBoxes.ts).

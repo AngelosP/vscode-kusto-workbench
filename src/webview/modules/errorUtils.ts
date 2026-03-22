@@ -1,10 +1,10 @@
 // Error parsing utilities and navigation helpers for query error UX.
 // Extracted from resultsTable-render.ts during legacy results table removal.
-import { escapeHtml } from './utils';
-import { ensureResultsShownForTool } from './resultsState';
+import { escapeHtml } from '../core/utils';
+import { ensureResultsShownForTool } from '../core/results-state';
 import { __kustoApplyResultsVisibility } from './queryBoxes-execution';
 import { lastRunCacheEnabledByBoxId } from './queryBoxes-execution';
-import { queryEditors } from './state';
+import { queryEditors } from '../core/state';
 import { __kustoAutoFindInQueryEditor } from '../monaco/monaco';
 
 let _errorLocationClickHandlerInstalled = false;

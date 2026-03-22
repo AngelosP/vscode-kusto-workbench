@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { escapeHtml, escapeRegex } from '../../src/webview/modules/utils.js';
+import { escapeHtml, escapeRegex } from '../../src/webview/core/utils.js';
 
 // ── escapeHtml ────────────────────────────────────────────────────────────────
 

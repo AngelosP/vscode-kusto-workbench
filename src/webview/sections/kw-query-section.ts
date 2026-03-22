@@ -9,9 +9,9 @@ import { pushDismissable, removeDismissable } from '../components/dismiss-stack.
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
-import { displayResultForBox } from '../modules/resultsState.js';
+import { displayResultForBox } from '../core/results-state.js';
 import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../modules/dropdown.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { schedulePersist } from '../core/persistence.js';
 import {
 	addQueryBox,
 	removeQueryBox,

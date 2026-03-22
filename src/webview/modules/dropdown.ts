@@ -1,7 +1,7 @@
 // Dropdown module — legacy HTML dropdown rendering and menu management.
 // ES module exports at bottom for TypeScript callers.
 // window.__kustoDropdown bridge retained for inline HTML onclick handlers.
-import { escapeHtml as _escHtml } from './utils';
+import { escapeHtml as _escHtml } from '../core/utils';
 
 const _win = window;
 

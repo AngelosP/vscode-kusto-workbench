@@ -1,8 +1,8 @@
 // Chart box factory — creates Lit elements and light-DOM chart containers.
 // ECharts rendering engine lives in shared/chart-renderer.ts.
 // Window bridge exports at bottom for remaining legacy callers.
-import { schedulePersist } from './persistence';
-import { getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { schedulePersist } from '../core/persistence';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { __kustoCleanupSectionModeResizeObserver } from './extraBoxes';
 import { getDefaultXAxisSettings, getDefaultYAxisSettings } from '../shared/chart-utils.js';
 import {

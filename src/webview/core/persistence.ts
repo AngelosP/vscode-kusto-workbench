@@ -5,24 +5,24 @@ export {};
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
-import { displayResult } from './resultsState';
+import { displayResult } from './results-state';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
 	__kustoSetAutoEnterFavoritesForBox, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoClampResultsWrapperHeight
-} from './queryBoxes';
+} from '../modules/queryBoxes';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled
 } from './state';
-import { addChartBox, removeChartBox, chartBoxes } from './extraBoxes-chart';
-import { addTransformationBox } from './extraBoxes-transformation';
-import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from './extraBoxes-markdown';
-import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from './extraBoxes';
-import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from './queryBoxes-toolbar';
-import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from './queryBoxes-execution';
+import { addChartBox, removeChartBox, chartBoxes } from '../modules/extraBoxes-chart';
+import { addTransformationBox } from '../modules/extraBoxes-transformation';
+import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../modules/extraBoxes-markdown';
+import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from '../modules/extraBoxes';
+import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../modules/queryBoxes-toolbar';
+import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../modules/queryBoxes-execution';
 import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';
 
 const _win = window;

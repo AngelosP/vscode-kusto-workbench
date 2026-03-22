@@ -1,7 +1,7 @@
 // Monaco suggest widget management — extracted from monaco.ts (Phase 6 decomposition).
 // Handles suggest widget visibility, cursor-word detection, preselect, and smart sizing.
 
-import { queryEditors } from '../modules/state';
+import { queryEditors } from '../core/state';
 
 let _suggestWidgetScrollDismissInstalled = false;
 let _suggestWidgetViewportListenersInstalled = false;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { escapeHtml } from '../../src/webview/modules/utils.js';
+import { escapeHtml } from '../../src/webview/core/utils.js';
 
 import {
 	parseMaybeJson as __kustoParseMaybeJson,

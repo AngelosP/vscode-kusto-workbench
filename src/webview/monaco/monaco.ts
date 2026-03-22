@@ -2,7 +2,7 @@
 // Monaco Editor configuration, completions, column inference, caret docs overlay.
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
-import { schedulePersist } from '../modules/persistence';
+import { schedulePersist } from '../core/persistence';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -51,7 +51,7 @@ import {
 	KUSTO_CONTROL_COMMAND_DOCS_BASE_URL, KUSTO_CONTROL_COMMAND_DOCS_VIEW, __kustoControlCommands,
 } from './caret-docs';
 import { __kustoAttachAutoResizeToContent } from './resize';
-import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../modules/queryBoxes';
 import { executeQuery } from '../modules/queryBoxes-execution';
 import { initToolbarOverflow } from '../modules/queryBoxes-toolbar';
@@ -76,7 +76,7 @@ import {
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
 	caretDocOverlaysByBoxId,
-} from '../modules/state';
+} from '../core/state';
 
 // ── Schema state singleton (the ONLY source of truth for schema tracking) ───
 export const __kustoSchemaTracker = new SchemaTracker();

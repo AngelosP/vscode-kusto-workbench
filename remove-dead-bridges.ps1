@@ -2,18 +2,18 @@
 $ErrorActionPreference = 'Continue'
 
 $removals = @{
-    'queryBoxes.ts' = @('__kustoGetSectionName','__kustoGetCurrentClusterUrlForBox','__kustoGetCurrentDatabaseForBox','__kustoFindFavorite','__kustoLog','fullyQualifyTablesInEditor')
-    'queryBoxes-execution.ts' = @('setQueryExecuting','__kustoIsRunSelectionReady','acceptOptimizations','toggleQueryResultsVisibility','displayComparisonSummary','optimizeQueryWithCopilot','formatElapsed')
-    'queryBoxes-toolbar.ts' = @('updateCopilotInlineCompletionsToggleButtons','closeToolsDropdown','toggleOverflowSubmenu','closeToolbarOverflow','getRunModeLabelText','closeRunMenu')
-    'extraBoxes.ts' = @('__kustoGetRawCellValueForChart','__kustoCellToChartString','__kustoCellToChartNumber','__kustoCellToChartTimeMs','__kustoInferTimeXAxisFromRows','__kustoNormalizeResultsColumnName','__kustoSetSelectOptions','__kustoPickFirstNonEmpty','__kustoCleanupSectionModeResizeObserver','__kustoRefreshDependentExtraBoxes','onPythonResult','onPythonError')
-    'extraBoxes-chart.ts' = @('__kustoGetChartState','__kustoUpdateChartBuilderUI')
-    'resultsState.ts' = @('displayResultForBox','displayResult','displayCancelled')
-    'persistence.ts' = @('handleDocumentDataMessage','__kustoOnQueryResult','__kustoSetCompatibilityMode','__kustoApplyDocumentCapabilities','__kustoGetWrapperHeightPx')
+    'modules/queryBoxes.ts' = @('__kustoGetSectionName','__kustoGetCurrentClusterUrlForBox','__kustoGetCurrentDatabaseForBox','__kustoFindFavorite','__kustoLog','fullyQualifyTablesInEditor')
+    'modules/queryBoxes-execution.ts' = @('setQueryExecuting','__kustoIsRunSelectionReady','acceptOptimizations','toggleQueryResultsVisibility','displayComparisonSummary','optimizeQueryWithCopilot','formatElapsed')
+    'modules/queryBoxes-toolbar.ts' = @('updateCopilotInlineCompletionsToggleButtons','closeToolsDropdown','toggleOverflowSubmenu','closeToolbarOverflow','getRunModeLabelText','closeRunMenu')
+    'modules/extraBoxes.ts' = @('__kustoGetRawCellValueForChart','__kustoCellToChartString','__kustoCellToChartNumber','__kustoCellToChartTimeMs','__kustoInferTimeXAxisFromRows','__kustoNormalizeResultsColumnName','__kustoSetSelectOptions','__kustoPickFirstNonEmpty','__kustoCleanupSectionModeResizeObserver','__kustoRefreshDependentExtraBoxes','onPythonResult','onPythonError')
+    'modules/extraBoxes-chart.ts' = @('__kustoGetChartState','__kustoUpdateChartBuilderUI')
+    'core/results-state.ts' = @('displayResultForBox','displayResult','displayCancelled')
+    'core/persistence.ts' = @('handleDocumentDataMessage','__kustoOnQueryResult','__kustoSetCompatibilityMode','__kustoApplyDocumentCapabilities','__kustoGetWrapperHeightPx')
 }
 
 $totalRemoved = 0
 foreach ($file in $removals.Keys) {
-    $path = "src/webview/modules/$file"
+    $path = "src/webview/$file"
     $content = [System.IO.File]::ReadAllText((Resolve-Path $path).Path)
     $originalLen = $content.Length
     

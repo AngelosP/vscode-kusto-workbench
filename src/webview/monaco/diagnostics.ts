@@ -3,7 +3,7 @@
 // Also contains text-processing utility functions used by completions and other modules.
 // Window bridge exports at bottom for remaining callers.
 
-import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId } from '../modules/state';
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId } from '../core/state';
 
 const _win = window;
 

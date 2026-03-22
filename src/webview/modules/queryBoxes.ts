@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 import {
 	cachedDatabases,
 	connections,
@@ -32,14 +32,14 @@ import {
 	copilotInlineCompletionsEnabled,
 	lastConnectionId,
 	lastDatabase,
-} from './state';
+} from '../core/state';
 import './queryBoxes-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from './queryBoxes-execution';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
-import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { syncSelectBackedDropdown } from './dropdown';
-import { currentResult, resetCurrentResult } from './resultsState';
+import { currentResult, resetCurrentResult } from '../core/results-state';
 import {
 	formatClusterDisplayName,
 	normalizeClusterUrlKey,

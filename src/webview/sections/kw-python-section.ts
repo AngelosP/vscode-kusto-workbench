@@ -3,8 +3,8 @@ import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
-import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { schedulePersist } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 

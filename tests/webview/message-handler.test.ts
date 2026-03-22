@@ -53,7 +53,7 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 	safeRun: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('../../src/webview/modules/resultsState.js', () => ({
+vi.mock('../../src/webview/core/results-state.js', () => ({
 	getResultsState: vi.fn(() => null),
 	displayResultForBox: vi.fn(),
 	displayResult: vi.fn(),
@@ -122,7 +122,7 @@ vi.mock('../../src/webview/modules/queryBoxes-execution.js', () => ({
 	__kustoApplyOptimizeQueryOptions: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/persistence.js', () => ({
+vi.mock('../../src/webview/core/persistence.js', () => ({
 	schedulePersist: vi.fn(),
 	handleDocumentDataMessage: mocks.handleDocumentDataMessage,
 	getKqlxState: vi.fn(() => ({ sections: [] })),
@@ -138,7 +138,7 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoCrossClusterSchemas: {},
 }));
 
-vi.mock('../../src/webview/modules/state.js', () => ({
+vi.mock('../../src/webview/core/state.js', () => ({
 	activeQueryEditorBoxId: '',
 	connections: [],
 	setConnections: mocks.setConnections,
@@ -171,7 +171,7 @@ describe('message-handler dispatch', () => {
 			getState: vi.fn(() => ({})),
 			setState: vi.fn(),
 		};
-		await import('../../src/webview/modules/message-handler.js');
+		await import('../../src/webview/core/message-handler.js');
 	});
 
 	beforeEach(() => {

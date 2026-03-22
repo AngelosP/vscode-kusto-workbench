@@ -5,9 +5,9 @@ import {
 	activeMonacoEditor, activeQueryEditorBoxId, setActiveQueryEditorBoxId,
 	queryEditors, caretDocOverlaysByBoxId,
 } from './state';
-import { __kustoGetQuerySectionElement } from './queryBoxes';
+import { __kustoGetQuerySectionElement } from '../modules/queryBoxes';
 import { __kustoEnsureAllEditorsWritableSoon } from '../monaco/writable';
-import { executeQuery } from './queryBoxes-execution';
+import { executeQuery } from '../modules/queryBoxes-execution';
 import { safeRun } from '../shared/safe-run';
 
 document.addEventListener('keydown', async (event: any) => {

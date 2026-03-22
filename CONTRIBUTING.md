@@ -41,9 +41,12 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 src/
   host/               Extension host (Node.js, TypeScript)
   webview/            Webview UI (browser, TypeScript + Lit)
+    core/               Cross-cutting runtime infrastructure (state, persistence, dispatch)
+    monaco/             Monaco-specific runtime modules (editor setup, diagnostics, completions)
+    generated/          Generated runtime command/function bridges
     sections/           Lit web components for each section type
     components/         Reusable Lit components (data table, dropdown, etc.)
-    modules/            Legacy bridge modules (absorbed from global-scope JS)
+    modules/            Bridge modules still being absorbed into Lit components
     shared/             Pure utility modules (importable by components and modules)
     styles/             CSS files
 tests/
@@ -192,15 +195,15 @@ Two tsconfig files exist:
 
 ## Webview Import Order — Matters
 
-`src/webview/index.ts` defines the module import order for the IIFE bundle. Because modules register window globals at import time, **order is load-bearing**:
+`src/webview/index.ts` defines the module import order for the IIFE bundle. Because runtime modules register window globals at import time, **order is load-bearing**:
 
 | Order | Module | Why |
 | ----- | ------ | --- |
-| **1st** | `modules/state.js` | Initializes all `window.*` state globals — every other module depends on this |
-| Before monaco | `modules/monaco-diagnostics.js` | Registers bridges that `monaco.js` reads at import time |
-| Before monaco | `modules/monaco-completions.js` | Registers completion bridges that `monaco.js` reads at import time |
-| After both | `modules/monaco.js` | Consumes diagnostics and completion bridges |
-| **Last** (among modules) | `modules/main.js` | Message dispatcher — wires everything together, must see all bridges |
+| **1st** | `core/state.js` | Initializes all `window.*` state globals — every other module depends on this |
+| Before monaco | `monaco/diagnostics.js` | Registers bridges that `monaco.js` reads at import time |
+| Before monaco | `monaco/completions.js` | Registers completion bridges that `monaco.js` reads at import time |
+| After both | `monaco/monaco.js` | Consumes diagnostics and completion bridges |
+| **Last** (among runtime modules) | `core/main.js` | Message dispatcher — wires everything together, must see all bridges |
 | Any order | Components and sections | Self-register custom elements, no import-order dependencies |
 
 ### What must not change
@@ -313,10 +316,10 @@ The query section header toolbar uses **CSS Container Queries** for responsive l
 
 1. **Define the section type** in [`kqlxFormat.ts`](src/host/kqlxFormat.ts) — add a new variant to the `KqlxSectionV1` union type.
 2. **Create a Lit component** in `src/webview/sections/` (e.g., `kw-my-section.ts` + `kw-my-section.styles.ts`). Register with `@customElement('kw-my-section')`. Implement `serialize()`.
-3. **Add the prefix to `sectionPrefixes`** in [`persistence.ts`](src/webview/modules/persistence.ts) — REQUIRED or the section won't be saved.
+3. **Add the prefix to `sectionPrefixes`** in [`persistence.ts`](src/webview/core/persistence.ts) — REQUIRED or the section won't be saved.
 4. **Add a creation function** in `src/webview/modules/` that creates the DOM element and wires event listeners.
-5. **Add restoration logic** in [`persistence.ts`](src/webview/modules/persistence.ts) — handle the new `type` in the restore loop.
-6. **Add a message handler** in [`main.ts`](src/webview/modules/main.ts) if the section needs messages from the extension host.
+5. **Add restoration logic** in [`persistence.ts`](src/webview/core/persistence.ts) — handle the new `type` in the restore loop.
+6. **Add a message handler** in [`main.ts`](src/webview/core/main.ts) if the section needs messages from the extension host.
 7. **Import the component** in [`index.ts`](src/webview/index.ts) (in the components/sections block — order doesn't matter).
 8. **Verify Leave No Trace** — if the section can display query results or derived data, implement the stripping logic.
 

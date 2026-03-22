@@ -2,8 +2,8 @@
 // Keyboard shortcuts, message handling, and drag-reorder are in their own modules.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
-import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from './queryBoxes-toolbar';
+import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown';
+import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from '../modules/queryBoxes-toolbar';
 import { __kustoRequestAddSection } from './persistence';
 
 // Side-effect imports — register event handlers on import.
@@ -150,6 +150,12 @@ try {
 	if (addControlsEl) {
 		addControlsEl.addEventListener('click', (event: any) => {
 			try {
+				const dropdownBtn = event.target?.closest?.('.add-controls-dropdown-btn');
+				if (dropdownBtn) {
+					__kustoToggleAddSectionDropdown(event);
+					return;
+				}
+
 				const btn = event.target?.closest?.('[data-add-kind]');
 				if (!btn) return;
 				const kind = btn.getAttribute('data-add-kind');
@@ -157,8 +163,6 @@ try {
 				// Dropdown items go through the dropdown handler.
 				if (btn.classList.contains('add-controls-dropdown-item')) {
 					__kustoAddSectionFromDropdown(kind);
-				} else if (btn.classList.contains('add-controls-dropdown-btn')) {
-					__kustoToggleAddSectionDropdown(event);
 				} else {
 					__kustoRequestAddSection(kind);
 				}

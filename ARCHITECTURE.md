@@ -55,35 +55,46 @@ The notebook UI runs as a VS Code webview, built with Lit web components and leg
 | `index.ts` | esbuild entry — imports all modules in load order |
 | `queryEditor.js` | Pre-load stub (queues clicks before bundle loads) |
 | `vscodeApi.js` | `acquireVsCodeApi()` bridge (separate `<script>` tag for browser-ext shim replacement) |
+| `core/` | Cross-cutting runtime infrastructure (state, persistence, message dispatcher, keyboard, reorder) |
+| `monaco/` | Monaco-specific runtime modules (editor wiring, diagnostics, completions, suggestions) |
+| `generated/` | Generated control command and function bridge modules |
 | `sections/` | Lit web components for each section type |
 | `components/` | Reusable Lit components (`kw-data-table`, `kw-dropdown`, etc.) |
-| `modules/` | Legacy bridge modules absorbed from global-scope JS |
+| `modules/` | Remaining bridge modules being absorbed into Lit components |
 | `shared/` | Pure utility modules importable by both components and modules |
 | `styles/` | CSS files |
 | `viewers/` | Viewer components (cell viewer, object viewer, etc.) |
 
-### Key Modules (`src/webview/modules/`)
+### Key Runtime Modules (`src/webview/`)
+
+The webview runtime is split into `core/`, `monaco/`, and `modules/`:
+
+- `core/`: cross-cutting infrastructure and global orchestration
+- `monaco/`: editor-specific integrations
+- `modules/`: section-specific bridge code still pending full Lit absorption
 
 | Module | Purpose |
 | ------ | ------- |
-| `main.ts` | Event handlers, keyboard shortcuts, modal dialogs, message dispatcher |
-| `queryBoxes.ts` | Query box creation, Monaco editor setup, toolbar wiring |
-| `queryBoxes-execution.ts` | Query execution, results display, optimization |
-| `queryBoxes-toolbar.ts` | Toolbar controls (caret docs, autocomplete, run mode, share) |
-| `monaco.ts` | Monaco Editor configuration, KQL completions, column inference |
-| `monaco-completions.ts` | Completion providers (columns, functions, tables) |
-| `monaco-diagnostics.ts` | Real-time KQL diagnostics overlay |
-| `state.ts` | Global state: connections, editors, schemas, caches |
-| `resultsTable.ts` | Query results rendering with virtual scrolling |
-| `resultsState.ts` | Results display state management |
-| `persistence.ts` | State serialization for `.kqlx` files |
-| `extraBoxes.ts` | Python, URL section creation + shared chart/data-source utilities |
-| `extraBoxes-chart.ts` | Chart section creation and ECharts rendering |
-| `extraBoxes-transformation.ts` | Transformation section creation |
-| `extraBoxes-markdown.ts` | Markdown section creation |
-| `schema.ts` | Schema display and navigation |
-| `dropdown.ts` | Custom dropdown/menu component |
-| `utils.ts` | Shared utility functions |
+| `core/main.ts` | Event handlers and webview-level message orchestration |
+| `core/message-handler.ts` | Host `postMessage` dispatcher and routing |
+| `core/state.ts` | Global state: connections, editors, schemas, caches |
+| `core/persistence.ts` | State serialization/restore for `.kqlx` files |
+| `core/results-state.ts` | Results display state management |
+| `core/keyboard-shortcuts.ts` | Keyboard handlers and clipboard integration |
+| `core/drag-reorder.ts` | Section drag-and-drop reorder wiring |
+| `core/utils.ts` | Shared runtime utility functions |
+| `monaco/monaco.ts` | Monaco editor configuration, KQL integration, column inference |
+| `monaco/completions.ts` | Completion providers (columns, functions, tables) |
+| `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
+| `modules/queryBoxes.ts` | Query section creation, Monaco setup, toolbar wiring |
+| `modules/queryBoxes-execution.ts` | Query execution, results display, optimization |
+| `modules/queryBoxes-toolbar.ts` | Toolbar controls (caret docs, autocomplete, run mode, share) |
+| `modules/extraBoxes.ts` | Python/URL section creation + shared chart/data-source utilities |
+| `modules/extraBoxes-chart.ts` | Chart section creation and ECharts rendering |
+| `modules/extraBoxes-transformation.ts` | Transformation section creation |
+| `modules/extraBoxes-markdown.ts` | Markdown section creation |
+| `modules/dropdown.ts` | Custom dropdown/menu component |
+| `modules/errorUtils.ts` | User-facing error rendering helpers |
 
 ### Lit Section Components (`src/webview/sections/`)
 
@@ -131,7 +142,7 @@ Extension host and webview communicate via `postMessage`:
 * **Host → Webview:** `this.postMessage({ type: '...', ... })` in `QueryEditorProvider`
 * **Webview → Host:** `vscode.postMessage({ type: '...', ... })` via `postMessageToHost()` in `webview-messages.ts`
 
-On the host side, incoming messages match the `IncomingWebviewMessage` union type exported from `queryEditorTypes.ts`. On the webview side, the message dispatcher lives in `main.ts` (a large `switch` statement).
+On the host side, incoming messages match the `IncomingWebviewMessage` union type exported from `queryEditorTypes.ts`. On the webview side, the message dispatcher lives in `core/message-handler.ts` (a large `switch` statement) and is wired by `core/main.ts`.
 
 ## Window Bridges (Legacy)
 
@@ -249,7 +260,7 @@ The `.is-minimal` and `.is-ultra-compact` classes are still supported in CSS for
 * **Connection Manager UI**: Clusters section shows a "Mark as Leave no trace" action on hover. A dedicated "Leave No Trace" accordion section displays marked clusters.
 * **Persistence Logic**: Before saving, check if a query section's `clusterUrl` matches a leave-no-trace cluster. If matched, strip `resultJson` from that section. Also strip data from chart/transformation sections that reference such query sections.
 
-Key files: `connectionManagerViewer.ts`, `connectionManager.ts`, `persistence.ts`, `queryEditorProvider.ts`.
+Key files: `connectionManagerViewer.ts`, `connectionManager.ts`, `core/persistence.ts`, `queryEditorProvider.ts`.
 
 ## Copilot Chat Feature
 

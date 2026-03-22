@@ -3,8 +3,8 @@ import { styles } from './kw-url-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-section-shell.js';
-import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
-import { schedulePersist } from '../modules/persistence.js';
+import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { schedulePersist } from '../core/persistence.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────

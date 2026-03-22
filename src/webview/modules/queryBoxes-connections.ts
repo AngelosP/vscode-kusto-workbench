@@ -1,7 +1,7 @@
 // Connection, favorites & schema management — extracted from queryBoxes.ts
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../core/persistence';
 import {
 	cachedDatabases,
 	connections,
@@ -21,7 +21,7 @@ import {
 	kustoFavorites,
 	lastConnectionId,
 	lastDatabase,
-} from './state';
+} from '../core/state';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { syncSelectBackedDropdown } from './dropdown';
 import {
@@ -38,7 +38,7 @@ import {
 	parseKustoConnectionString,
 	findConnectionIdForClusterUrl as _findConnIdPure,
 } from '../shared/clusterUtils';
-import { escapeHtml } from './utils';
+import { escapeHtml } from '../core/utils';
 import { __kustoGetQuerySectionElement, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetClusterUrl, schemaRequestTokenByBoxId } from './queryBoxes';
 
 const _win = window;
