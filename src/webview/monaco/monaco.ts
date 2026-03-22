@@ -52,7 +52,7 @@ import {
 } from './caret-docs';
 import { __kustoAttachAutoResizeToContent } from './resize';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
-import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../modules/queryBoxes';
+import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../core/section-factory';
 import { executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';

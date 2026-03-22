@@ -5,7 +5,7 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { setResultsState } from '../core/results-state.js';
 import { schedulePersist } from '../core/persistence.js';
-import { __kustoGetChartDatasetsInDomOrder } from '../modules/extraBoxes.js';
+import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver } from '../core/section-factory.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
 import {
 	tokenizeExpr,
@@ -16,7 +16,7 @@ import {
 } from '../shared/transform-expr.js';
 import { normalizeResultsColumnName } from '../shared/data-utils.js';
 import '../components/kw-section-shell.js';
-import { __kustoCleanupSectionModeResizeObserver } from '../modules/extraBoxes.js';
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

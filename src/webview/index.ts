@@ -10,8 +10,7 @@ import './viewers/diff-view/kw-diff-view.js';
 import './core/persistence.js';
 import './core/results-state.js';
 import './core/error-renderer.js';
-import './modules/queryBoxes.js';
-import './modules/extraBoxes.js';
+import './core/section-factory.js';
 import './monaco/diagnostics.js'; // Before monaco — sets utility window bridges
 import './monaco/completions.js'; // Before monaco — sets completion provider bridges
 import './monaco/monaco.js';

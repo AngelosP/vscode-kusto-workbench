@@ -65,7 +65,7 @@ vi.mock('../../src/webview/core/error-renderer.js', () => ({
 	__kustoDisplayBoxError: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
+vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addQueryBox: vi.fn(() => 'query_1'),
 	__kustoGetQuerySectionElement: vi.fn(() => null),
 	__kustoSetSectionName: vi.fn(),
@@ -80,6 +80,13 @@ vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
 	__kustoMaybeDefaultFirstBoxToFavoritesMode: vi.fn(),
 	__kustoOnConnectionsUpdated: vi.fn(),
 	schemaRequestTokenByBoxId: {},
+	addPythonBox: vi.fn(() => 'python_1'),
+	addUrlBox: vi.fn(() => 'url_1'),
+	removePythonBox: vi.fn(),
+	removeUrlBox: vi.fn(),
+	onPythonResult: mocks.onPythonResult,
+	onPythonError: mocks.onPythonError,
+	__kustoGetChartValidationStatus: vi.fn(() => null),
 }));
 
 vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
@@ -98,15 +105,6 @@ vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
 	removeTransformationBox: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
-	addPythonBox: vi.fn(() => 'python_1'),
-	addUrlBox: vi.fn(() => 'url_1'),
-	removePythonBox: vi.fn(),
-	removeUrlBox: vi.fn(),
-	onPythonResult: mocks.onPythonResult,
-	onPythonError: mocks.onPythonError,
-	__kustoGetChartValidationStatus: vi.fn(() => null),
-}));
 
 vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	updateCaretDocsToggleButtons: mocks.updateCaretDocsToggleButtons,

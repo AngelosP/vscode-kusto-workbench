@@ -13,9 +13,10 @@ const fakeDatasets = [
 ];
 
 // Mock modules that kw-chart-section imports directly
-vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
+vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoGetChartDatasetsInDomOrder: () => fakeDatasets,
 	__kustoGetChartValidationStatus: () => null,
+	__kustoCleanupSectionModeResizeObserver: vi.fn(),
 }));
 
 vi.mock('../../src/webview/shared/chart-renderer.js', () => ({

@@ -2,14 +2,17 @@ import { LitElement, html, nothing, type TemplateResult, type PropertyValues } f
 import { styles } from './kw-data-table.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { createTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, type Table, type ColumnDef, type SortingState, type ColumnFiltersState, type Row, type CellContext, type RowSelectionState, type Column } from '@tanstack/table-core';
-import { Virtualizer, elementScroll, observeElementRect, observeElementOffset } from '@tanstack/virtual-core';
 import type { KwObjectViewer } from './kw-object-viewer.js';
 import { rowMatchesFilterSpec, isColumnFiltered, getFilterSpecForColumn, type ColumnFilterSpec } from './kw-filter-dialog.js';
 import './kw-filter-dialog.js';
 import './kw-sort-dialog.js';
-import { buildSearchRegex, createDebouncedSearch, navigateMatch, createRegexCache, highlightMatches, type SearchMode } from './search-utils.js';
+import { highlightMatches } from './search-utils.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import './kw-search-bar.js';
+import { TableVirtualScrollController } from './table-virtual-scroll.controller.js';
+import { TableRowJumpController } from './table-row-jump.controller.js';
+import { TableSearchController } from './table-search.controller.js';
+import { TableSelectionController } from './table-selection.controller.js';
 
 export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
@@ -28,7 +31,6 @@ export interface DataTableOptions {
 }
 export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
 export interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
-interface VItem { index: number; start: number; size: number; }
 
 export function getCellDisplayValue(cell: CellValue): string {
 	if (cell === null || cell === undefined) return '';
@@ -210,20 +212,6 @@ function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/<
 function inRange(range: CellRange | null, row: number, col: number): boolean {
 	return !!range && row >= range.rowMin && row <= range.rowMax && col >= range.colMin && col <= range.colMax;
 }
-/** Resolve row/col from a MouseEvent target inside the table body */
-function cellFromEvent(e: MouseEvent): { row: number; col: number } | null {
-	const td = (e.target as HTMLElement).closest('td');
-	if (!td) return null;
-	const tr = td.closest('tr');
-	if (!tr) return null;
-	const rowIdx = tr.dataset.idx;
-	if (rowIdx === undefined) return null;
-	// Column index: skip the row-number <td class="rn">
-	const tds = Array.from(tr.querySelectorAll('td'));
-	const ci = tds.indexOf(td) - 1; // -1 for row-num td
-	if (ci < 0) return null;
-	return { row: parseInt(rowIdx, 10), col: ci };
-}
 
 const ROW_HEIGHT = 24, OVERSCAN = 10;
 const ROW_NUMBER_WIDTH = 40;
@@ -255,18 +243,6 @@ export class KwDataTable extends LitElement {
 
 	@state() private _sorting: SortingState = [];
 	@state() private _columnFilters: ColumnFiltersState = [];
-	@state() private _rowSelection: RowSelectionState = {};
-	@state() private _selectedCell: { row: number; col: number } | null = null;
-	@state() private _selectionRange: CellRange | null = null;
-	private _selectionAnchor: { row: number; col: number } | null = null;
-	@state() private _searchVisible = false;
-	@state() private _searchQuery = '';
-	@state() private _searchMode: SearchMode = 'wildcard';
-	private _debouncedSearch = createDebouncedSearch(() => this._execSearch());
-	private _regexCache = createRegexCache();
-	@state() private _searchMatches: Array<{ row: number; col: number }> = [];
-	@state() private _currentMatchIndex = 0;
-	private get _searchRegex(): RegExp | null { return this._regexCache.get(this._searchQuery, this._searchMode).regex; }
 	@state() private _columnMenuOpen: number | null = null;
 	private _columnMenuPos: { x: number; y: number } = { x: 0, y: 0 };
 	@state() private _sortDialogOpen = false;
@@ -281,29 +257,15 @@ export class KwDataTable extends LitElement {
 	private _initialBodyVisibleApplied = false;
 	@state() private _colJumpOpen = false;
 	@state() private _colJumpQuery = '';
-	@state() private _rowJumpVisible = false;
-	@state() private _rowJumpQuery = '';
-	@state() private _rowJumpTargets: number[] = [];
-	@state() private _currentRowJumpIndex = 0;
-	@state() private _rowJumpError = '';
 
-	// TanStack Virtual state
-	@state() private _vItems: VItem[] = [];
-	@state() private _vTotalSize = 0;
-	@state() private _viewportW = 0;
+	// ── Controllers ──
+	private _vScrollCtrl = new TableVirtualScrollController(this);
+	private _rowJumpCtrl = new TableRowJumpController(this);
+	private _searchCtrl = new TableSearchController(this);
+	private _selectionCtrl = new TableSelectionController(this);
 
 	private _table: Table<CellValue[]> | null = null;
-	private _virtualizer: Virtualizer<HTMLDivElement, Element> | null = null;
-	private _resizeObs: ResizeObserver | null = null;
-	private _viewportResizeObs: ResizeObserver | null = null;
-	private _isDragging = false;
 	private _scrollAtPopupOpen = 0;
-	private _virtualizerCleanup: (() => void) | null = null;
-	private _syncRaf = 0;
-	private _lastVStart = -1;
-	private _lastVEnd = -1;
-	private _lastVTopOffset = 0;
-	private _lastViewportW = 0;
 	private _columnWidths: number[] = [];
 	private _measureCanvas: HTMLCanvasElement | null = null;
 	private _lastVisibleRowCount = -1;
@@ -337,59 +299,63 @@ export class KwDataTable extends LitElement {
 		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + 25);
 	}
 
+	// ── Controller host interface methods ──
+
+	getTableRowCount(): number { return this._table?.getRowModel().rows.length ?? 0; }
+	getEstimatedRowHeight(): number { return this._estimatedRowHeight(); }
+	getTableRows(): Array<{ original: CellValue[] }> { return this._table?.getRowModel().rows ?? []; }
+	getColumnCount(): number { return this.columns.length; }
+	getSelectedCol(): number { return this._selectionCtrl.selectedCell?.col ?? 0; }
+	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' | 'start' | 'end' }): void { this._vScrollCtrl.scrollToIndex(index, opts); }
+	setSelectedCell(cell: { row: number; col: number } | null): void { this._selectionCtrl.setSelectedCell(cell); }
+	clearSelectionRange(): void { this._selectionCtrl.clearSelectionRange(); }
+
 	// ── Lifecycle ──
 
 	protected willUpdate(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) {
 			this._initTable();
-			this._searchMatches = [];
-			this._currentMatchIndex = 0;
-			this._rowJumpTargets = [];
-			this._currentRowJumpIndex = 0;
-			this._rowJumpError = '';
+			this._searchCtrl.reset();
+			this._rowJumpCtrl.reset();
 		}
 	}
 	protected firstUpdated(): void {
-		this._initVirtualizer();
-		this._installViewportResizeWatcher();
-		document.addEventListener('copy', this._onDocumentCopy, true);
-		document.addEventListener('keydown', this._onDocumentKeydown, true);
+		this._vScrollCtrl.initVirtualizer();
+		this._vScrollCtrl.installViewportResizeWatcher();
+		// Row jump scroll callback wired to virtual-scroll controller
+		this._rowJumpCtrl.scrollToRow = (row: number) => {
+			const col = this._selectionCtrl.selectedCell?.col ?? 0;
+			this._selectionCtrl.setSelectedCell({ row, col });
+			this._selectionCtrl.clearSelectionRange();
+			this._vScrollCtrl.scrollToIndex(row, { align: 'center' });
+		};
 		document.addEventListener('scroll', this._onDocumentScrollDismiss, { capture: true, passive: true });
 	}
 	// Stable dismiss callbacks for the dismiss stack
-	private _dismissSearch = (): void => { this._toggleSearch(); };
-	private _dismissRowJump = (): void => { this._toggleRowJump(this._table?.getRowModel().rows.length ?? 0); };
+	private _dismissSearch = (): void => { this._searchCtrl.toggle(); };
+	private _dismissRowJump = (): void => { this._rowJumpCtrl.toggle(this._table?.getRowModel().rows.length ?? 0); };
 	private _dismissColJump = (): void => { this._colJumpOpen = false; this._colJumpQuery = ''; };
 	private _dismissColumnMenu = (): void => { this._closeColumnMenu(); };
 	private _dismissSortDialog = (): void => { this._sortDialogOpen = false; };
 	private _dismissFilterDialog = (): void => { this._closeFilterDialog(); };
 
 	protected updated(changed: PropertyValues): void {
-		if (changed.has('columns') || changed.has('rows')) this._initVirtualizer();
-		// When body becomes visible again after being hidden, the scroll container
-		// was removed and re-created — the virtualizer needs re-initialization.
-		if (changed.has('_bodyVisible') && this._bodyVisible) this._initVirtualizer();
-		this._installViewportResizeWatcher();
-		this._syncHeaderScroll();
+		if (changed.has('columns') || changed.has('rows')) this._vScrollCtrl.initVirtualizer();
+		if (changed.has('_bodyVisible') && this._bodyVisible) this._vScrollCtrl.initVirtualizer();
+		this._vScrollCtrl.installViewportResizeWatcher();
+		this._vScrollCtrl.syncHeaderScroll();
 		// Capture scroll position when a popup opens (for threshold-based dismiss)
 		if ((changed.has('_columnMenuOpen') && this._columnMenuOpen !== null) ||
 			(changed.has('_sortDialogOpen') && this._sortDialogOpen) ||
 			(changed.has('_filterDialogOpen') && this._filterDialogOpen)) {
 			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 		}
-		// Manage dismiss stack: push when opening, remove when closing
-		if (changed.has('_searchVisible')) {
-			if (this._searchVisible) pushDismissable(this._dismissSearch);
-			else removeDismissable(this._dismissSearch);
-		}
-		if (changed.has('_rowJumpVisible')) {
-			if (this._rowJumpVisible) pushDismissable(this._dismissRowJump);
-			else removeDismissable(this._dismissRowJump);
-		}
-		if (changed.has('_colJumpOpen')) {
-			if (this._colJumpOpen) pushDismissable(this._dismissColJump);
-			else removeDismissable(this._dismissColJump);
-		}
+		// Manage dismiss stack for search (controller state)
+		const prevSearchVisible = (changed.get('_searchCtrl') as any)?.visible;
+		// For controller-driven state, we manually track open/close in the dismiss stack
+		// by detecting changes after requestUpdate.
+		if (this._colJumpOpen && changed.has('_colJumpOpen')) pushDismissable(this._dismissColJump);
+		else if (!this._colJumpOpen && changed.has('_colJumpOpen')) removeDismissable(this._dismissColJump);
 		if (changed.has('_columnMenuOpen')) {
 			if (this._columnMenuOpen !== null) pushDismissable(this._dismissColumnMenu);
 			else removeDismissable(this._dismissColumnMenu);
@@ -403,19 +369,12 @@ export class KwDataTable extends LitElement {
 			else removeDismissable(this._dismissFilterDialog);
 		}
 		// Notify parent when tabular chrome (search, row-jump, col-jump) toggles
-		// so it can adapt its container height.
-		if (changed.has('_searchVisible') || changed.has('_rowJumpVisible') || changed.has('_colJumpOpen')) {
+		if (changed.has('_colJumpOpen')) {
 			this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
 		}
 	}
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
-		this._debouncedSearch.cancel();
-		this._resizeObs?.disconnect();
-		this._viewportResizeObs?.disconnect();
-		this._virtualizerCleanup?.();
-		this._virtualizerCleanup = null;
-		this._virtualizer = null;
 		// Clean up dismiss stack
 		removeDismissable(this._dismissSearch);
 		removeDismissable(this._dismissRowJump);
@@ -423,13 +382,8 @@ export class KwDataTable extends LitElement {
 		removeDismissable(this._dismissColumnMenu);
 		removeDismissable(this._dismissSortDialog);
 		removeDismissable(this._dismissFilterDialog);
-		document.removeEventListener('mouseup', this._onMouseUp);
-		document.removeEventListener('mousemove', this._onMouseMove);
 		document.removeEventListener('mousedown', this._onDocMouseDown);
-		document.removeEventListener('copy', this._onDocumentCopy, true);
-		document.removeEventListener('keydown', this._onDocumentKeydown, true);
 		document.removeEventListener('scroll', this._onDocumentScrollDismiss, true);
-		window.removeEventListener('resize', this._onViewportResize);
 	}
 
 	// ── TanStack Table ──
@@ -478,11 +432,11 @@ export class KwDataTable extends LitElement {
 			},
 		}));
 		this._table = createTable({ columns: defs, data: this.rows,
-			state: { sorting: this._sorting, columnFilters: this._columnFilters, rowSelection: this._rowSelection, columnPinning: { left: [], right: [] }, columnVisibility: {}, columnOrder: [] },
+			state: { sorting: this._sorting, columnFilters: this._columnFilters, rowSelection: this._selectionCtrl.rowSelection, columnPinning: { left: [], right: [] }, columnVisibility: {}, columnOrder: [] },
 			onStateChange: () => {}, renderFallbackValue: null,
-			onSortingChange: (u) => { this._sorting = typeof u === 'function' ? u(this._sorting) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._updateVCount(); },
-			onColumnFiltersChange: (u) => { this._columnFilters = typeof u === 'function' ? u(this._columnFilters) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } })); this._columnWidths = this._computeColumnWidths(); this._updateVCount(); this.requestUpdate(); },
-			onRowSelectionChange: (u) => { this._rowSelection = typeof u === 'function' ? u(this._rowSelection) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, rowSelection: this._rowSelection } })); },
+			onSortingChange: (u) => { this._sorting = typeof u === 'function' ? u(this._sorting) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } })); this._vScrollCtrl.updateCount(); },
+			onColumnFiltersChange: (u) => { this._columnFilters = typeof u === 'function' ? u(this._columnFilters) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } })); this._columnWidths = this._computeColumnWidths(); this._vScrollCtrl.updateCount(); this.requestUpdate(); },
+			onRowSelectionChange: (u) => { this._selectionCtrl.rowSelection = typeof u === 'function' ? u(this._selectionCtrl.rowSelection) : u; this._table?.setOptions(p => ({ ...p, state: { ...p.state, rowSelection: this._selectionCtrl.rowSelection } })); },
 			getCoreRowModel: getCoreRowModel(), getSortedRowModel: getSortedRowModel(), getFilteredRowModel: getFilteredRowModel(), enableMultiSort: true,
 		});
 		this._table.setOptions(prev => ({ ...prev }));
@@ -499,129 +453,10 @@ export class KwDataTable extends LitElement {
 			composed: true,
 		}));
 	}
-	// ── TanStack Virtual ──
+	// ── TanStack Virtual (delegated to controller) ──
 
-	private _initVirtualizer(): void {
-		this._virtualizer = null;
-		// Need to wait for the scroll container to exist and have dimensions
-		requestAnimationFrame(() => {
-			const el = this.shadowRoot?.querySelector('.vscroll') as HTMLDivElement | null;
-			if (!el) return;
-			if (el.clientHeight > 0) { this._createVirtualizer(el); return; }
-			// Container not laid out yet — watch for it
-			this._resizeObs?.disconnect();
-			this._resizeObs = new ResizeObserver((entries) => {
-				for (const e of entries) {
-					if (e.contentRect.height > 0) {
-						this._resizeObs?.disconnect(); this._resizeObs = null;
-						this._createVirtualizer(el);
-						break;
-					}
-				}
-			});
-			this._resizeObs.observe(el);
-		});
-	}
-
-	private _createVirtualizer(el: HTMLDivElement): void {
-		const count = this._table?.getRowModel().rows.length ?? 0;
-		const estimate = this._estimatedRowHeight();
-		this._virtualizerCleanup?.();
-		this._virtualizer = new Virtualizer({
-			count, getScrollElement: () => el, estimateSize: () => estimate, overscan: OVERSCAN,
-			scrollToFn: elementScroll, observeElementRect, observeElementOffset,
-			onChange: this._onVirtualizerChange,
-		});
-		// _didMount() returns a cleanup function and starts internal bookkeeping.
-		this._virtualizerCleanup = this._virtualizer._didMount();
-		// _willUpdate() connects the scroll element observations (ResizeObserver, scroll events).
-		this._virtualizer._willUpdate();
-		this._sync();
-	}
-
-	private _sync(): void {
-		if (!this._virtualizer) return;
-		const items = this._virtualizer.getVirtualItems();
-		const totalSize = this._virtualizer.getTotalSize();
-		const vw = (this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.clientWidth ?? 0;
-		// Only trigger a Lit re-render if something actually changed.
-		const start = items.length > 0 ? items[0].index : -1;
-		const end = items.length > 0 ? items[items.length - 1].index : -1;
-		const topOff = items.length > 0 ? items[0].start : 0;
-		if (start === this._lastVStart && end === this._lastVEnd
-			&& totalSize === this._vTotalSize && topOff === this._lastVTopOffset
-			&& vw === this._lastViewportW) return;
-		this._lastVStart = start;
-		this._lastVEnd = end;
-		this._lastVTopOffset = topOff;
-		this._lastViewportW = vw;
-		this._vItems = items.map(i => ({ index: i.index, start: i.start, size: i.size }));
-		this._vTotalSize = totalSize;
-		this._viewportW = vw;
-	}
-
-	private _scheduleSync = (): void => {
-		if (this._syncRaf) return;
-		this._syncRaf = requestAnimationFrame(() => {
-			this._syncRaf = 0;
-			this._sync();
-		});
-	};
-
-	private _installViewportResizeWatcher(): void {
-		if (!this.shadowRoot) return;
-		const vscroll = this.shadowRoot.querySelector('.vscroll') as HTMLElement | null;
-		if (!vscroll) return;
-		if (!this._viewportResizeObs) {
-			this._viewportResizeObs = new ResizeObserver(() => this._onViewportResize());
-			window.addEventListener('resize', this._onViewportResize, { passive: true });
-		}
-		this._viewportResizeObs.disconnect();
-		this._viewportResizeObs.observe(vscroll);
-	}
-
-	private _onViewportResize = (): void => {
-		const vw = (this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.clientWidth ?? 0;
-		if (vw <= 0 || vw === this._viewportW) return;
-		this._viewportW = vw;
-		this._lastViewportW = -1;
-		this.requestUpdate();
-		this._syncHeaderScroll();
-		if (this._virtualizer) {
-			this._virtualizer.measure();
-			this._sync();
-		}
-	};
-
-	private _onVirtualizerChange = (_instance: Virtualizer<HTMLDivElement, Element>, sync: boolean): void => {
-		if (sync) this._sync();
-		else this._scheduleSync();
-	};
-
-	private _updateVCount(): void {
-		if (!this._virtualizer) { this._initVirtualizer(); this._emitVisibleRowCountChange(); return; }
-		const count = this._table?.getRowModel().rows.length ?? 0;
-		const estimate = this._estimatedRowHeight();
-		this._virtualizer.setOptions({
-			count,
-			getScrollElement: () => this.shadowRoot?.querySelector('.vscroll') as HTMLDivElement,
-			estimateSize: () => estimate,
-			overscan: OVERSCAN,
-			scrollToFn: elementScroll,
-			observeElementRect,
-			observeElementOffset,
-			onChange: this._onVirtualizerChange,
-		});
-		// Scroll to top so the view resets for the new sort/filter order.
-		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
-		if (el) el.scrollTop = 0;
-		this._lastVStart = -1;
-		this._lastVEnd = -1;
-		this._lastVTopOffset = 0;
-		this._virtualizer.measure();
-		this._sync();
-		this._syncHeaderScroll();
-		this._emitVisibleRowCountChange();
+	private _estimatedRowHeight(): number {
+		return (this.options.compact ?? false) ? 21 : 27;
 	}
 
 	// ── Stable table layout ──
@@ -664,7 +499,7 @@ export class KwDataTable extends LitElement {
 	}
 
 	private _viewportWidth(): number {
-		if (this._viewportW > 0) return this._viewportW;
+		if (this._vScrollCtrl.viewportW > 0) return this._vScrollCtrl.viewportW;
 		const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
 		if (vscroll && vscroll.clientWidth > 0) return vscroll.clientWidth;
 		const dt = this.shadowRoot?.querySelector('.dt') as HTMLElement | null;
@@ -702,166 +537,35 @@ export class KwDataTable extends LitElement {
 		return { widths, tableWidth };
 	}
 
-	private _estimatedRowHeight(): number {
-		return (this.options.compact ?? false) ? 21 : 27;
+	// ── Filter (delegated to <kw-filter-dialog>) ──
+
+	private _openFilterDialog(colIndex: number): void {
+		this._closeColumnMenu();
+		this._filterDialogColIndex = colIndex;
+		this._filterDialogOpen = true;
 	}
 
-	private _syncHeaderScroll(): void {
-		const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
-		const headWrap = this.shadowRoot?.querySelector('.dtable-head-wrap') as HTMLElement | null;
-		if (!vscroll || !headWrap) return;
-		headWrap.scrollLeft = vscroll.scrollLeft;
+	private _closeFilterDialog(): void {
+		this._filterDialogOpen = false;
+		this._filterDialogColIndex = null;
 	}
 
-	// ── Search ──
-
-	private _execSearch(): void {
-		const { regex: rx } = this._regexCache.get(this._searchQuery, this._searchMode);
-		if (!rx || !this._table) { this._searchMatches = []; this._currentMatchIndex = 0; return; }
-		const matches: Array<{ row: number; col: number }> = [];
-		const rows = this._table.getRowModel().rows;
-		for (let r = 0; r < rows.length; r++) {for (let c = 0; c < rows[r].original.length; c++) {
-			const cell = rows[r].original[c];
-			// For object/complex cells, search the full JSON content, not just the display text
-			let searchText: string;
-			if (typeof cell === 'object' && cell !== null && 'full' in cell) {
-				const f = cell.full;
-				searchText = typeof f === 'string' ? f : (f !== null && f !== undefined ? JSON.stringify(f) : '');
-			} else {
-				searchText = getCellDisplayValue(cell);
-			}
-			rx.lastIndex = 0;
-			if (rx.test(searchText)) matches.push({ row: r, col: c });
-		}}
-		this._searchMatches = matches; this._currentMatchIndex = 0;
-		if (matches.length > 0) this._goToMatch(0);
-	}
-	private _goToMatch(i: number): void {
-		const m = this._searchMatches[i]; if (!m) return;
-		this._selectedCell = m; this._selectionRange = null;
-		this._virtualizer?.scrollToIndex(m.row, { align: 'center' });
-		// Scroll the matched cell's column into view after render
-		this.updateComplete.then(() => {
-			const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
-			if (!vscroll) return;
-			// Find the <td> with .mc (current match) class
-			const cell = vscroll.querySelector('td.mc') as HTMLElement | null;
-			if (cell) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-		});
-	}
-	private _nextMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._searchMatches.length, 'next'); this._goToMatch(this._currentMatchIndex); }
-	private _prevMatch(): void { if (!this._searchMatches.length) return; this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._searchMatches.length, 'prev'); this._goToMatch(this._currentMatchIndex); }
-	private _isMatch(r: number, c: number): boolean { return this._searchMatches.some(m => m.row === r && m.col === c); }
-	private _isCurMatch(r: number, c: number): boolean { const m = this._searchMatches[this._currentMatchIndex]; return !!m && m.row === r && m.col === c; }
-
-
-// ── Filter (delegated to <kw-filter-dialog>) ──
-
-private _openFilterDialog(colIndex: number): void {
-this._closeColumnMenu();
-this._filterDialogColIndex = colIndex;
-this._filterDialogOpen = true;
-}
-
-private _closeFilterDialog(): void {
-this._filterDialogOpen = false;
-this._filterDialogColIndex = null;
-}
-
-private _onFilterApply = (e: CustomEvent<{ colIndex: number; filterSpec: ColumnFilterSpec | null }>): void => {
-const { colIndex, filterSpec } = e.detail;
-const id = String(colIndex);
-const next = this._columnFilters.filter(f => f.id !== id);
-if (filterSpec) next.push({ id, value: filterSpec });
-this._setColumnFilters(next);
-this._closeFilterDialog();
-};
-
-private _setColumnFilters(next: ColumnFiltersState): void {
-this._columnFilters = next;
-this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } }));
-this._columnWidths = this._computeColumnWidths();
-this._updateVCount();
-this.requestUpdate();
-}
-
-	// ── Scroll To Row ──
-
-	private _parseRowJumpTargets(query: string, maxRows: number): { targets: number[]; error: string } {
-		const txt = query.trim();
-		if (!txt) return { targets: [], error: '' };
-		if (maxRows <= 0) return { targets: [], error: 'No rows available' };
-
-		const tokens = txt.split(',').map(t => t.trim()).filter(Boolean);
-		if (!tokens.length) return { targets: [], error: '' };
-
-		const out: number[] = [];
-		const seen = new Set<number>();
-		for (const token of tokens) {
-			const rangeMatch = token.match(/^(\d+)\s*-\s*(\d+)$/);
-			if (rangeMatch) {
-				const start = parseInt(rangeMatch[1], 10);
-				const end = parseInt(rangeMatch[2], 10);
-				if (!Number.isFinite(start) || !Number.isFinite(end) || start < 1 || end < 1) {
-					return { targets: [], error: `Invalid row range: ${token}` };
-				}
-				const lo = Math.min(start, end);
-				const hi = Math.max(start, end);
-				for (let oneBased = lo; oneBased <= hi; oneBased++) {
-					if (oneBased > maxRows) continue;
-					const zeroBased = oneBased - 1;
-					if (!seen.has(zeroBased)) {
-						seen.add(zeroBased);
-						out.push(zeroBased);
-					}
-				}
-				continue;
-			}
-
-			if (!/^\d+$/.test(token)) return { targets: [], error: `Invalid row number: ${token}` };
-			const oneBased = parseInt(token, 10);
-			if (!Number.isFinite(oneBased) || oneBased < 1) return { targets: [], error: `Invalid row number: ${token}` };
-			if (oneBased > maxRows) continue;
-			const zeroBased = oneBased - 1;
-			if (!seen.has(zeroBased)) {
-				seen.add(zeroBased);
-				out.push(zeroBased);
-			}
-		}
-
-		if (!out.length) return { targets: [], error: `No rows in range (1-${maxRows})` };
-		return { targets: out, error: '' };
-	}
-
-	private _execRowJump(totalRows: number): void {
-		const parsed = this._parseRowJumpTargets(this._rowJumpQuery, totalRows);
-		this._rowJumpTargets = parsed.targets;
-		this._rowJumpError = parsed.error;
-		this._currentRowJumpIndex = 0;
-		if (!parsed.error && parsed.targets.length > 0) this._goToRowTarget(0);
-	}
-
-	private _goToRowTarget(index: number): void {
-		const row = this._rowJumpTargets[index];
-		if (row === undefined) return;
-		const col = this._selectedCell?.col ?? 0;
-		this._selectedCell = { row, col };
-		this._selectionRange = null;
-		this._selectionAnchor = { row, col };
-		this._virtualizer?.scrollToIndex(row, { align: 'center' });
-	}
-
-	private _nextRowTarget = (): void => {
-		if (!this._rowJumpTargets.length) return;
-		this._currentRowJumpIndex = (this._currentRowJumpIndex + 1) % this._rowJumpTargets.length;
-		this._goToRowTarget(this._currentRowJumpIndex);
+	private _onFilterApply = (e: CustomEvent<{ colIndex: number; filterSpec: ColumnFilterSpec | null }>): void => {
+		const { colIndex, filterSpec } = e.detail;
+		const id = String(colIndex);
+		const next = this._columnFilters.filter(f => f.id !== id);
+		if (filterSpec) next.push({ id, value: filterSpec });
+		this._setColumnFilters(next);
+		this._closeFilterDialog();
 	};
 
-	private _prevRowTarget = (): void => {
-		if (!this._rowJumpTargets.length) return;
-		this._currentRowJumpIndex = (this._currentRowJumpIndex - 1 + this._rowJumpTargets.length) % this._rowJumpTargets.length;
-		this._goToRowTarget(this._currentRowJumpIndex);
-	};
+	private _setColumnFilters(next: ColumnFiltersState): void {
+		this._columnFilters = next;
+		this._table?.setOptions(p => ({ ...p, state: { ...p.state, columnFilters: this._columnFilters } }));
+		this._columnWidths = this._computeColumnWidths();
+		this._vScrollCtrl.updateCount();
+		this.requestUpdate();
+	}
 
 	// ── Render ──
 
@@ -875,7 +579,7 @@ this.requestUpdate();
 		const tableWidth = layout.tableWidth;
 
 		// Virtual scroll: compute visible rows and their offset
-		const items = this._vItems;
+		const items = this._vScrollCtrl.vItems;
 		const useVirtual = items.length > 0;
 		let topSpacer = 0;
 		let visibleRows: Array<{ index: number; row: Row<CellValue[]> }>;
@@ -883,23 +587,22 @@ this.requestUpdate();
 			topSpacer = items[0].start;
 			visibleRows = items.map(vi => ({ index: vi.index, row: allRows[vi.index] })).filter(vr => vr.row);
 		} else {
-			// Virtualizer not initialized yet — show empty body so .vscroll exists
-			// for the virtualizer to attach to. Once _willUpdate() fires the
-			// observations, onChange triggers _sync() which populates _vItems and
-			// Lit re-renders with the virtualized rows.
 			visibleRows = [];
 		}
+
+		const sel = this._selectionCtrl;
+		const search = this._searchCtrl;
 
 		return html`
 		<div class="dt ${compact ? 'compact' : ''} ${hideTopBorder ? 'no-top-border' : ''}">
 			${this._renderHeader(totalRows, showToolbar)}
-			${this._searchVisible ? this._renderSearch() : nothing}
-			${this._rowJumpVisible ? this._renderRowJump(totalRows) : nothing}
+			${search.visible ? this._renderSearch() : nothing}
+			${this._rowJumpCtrl.visible ? this._renderRowJump(totalRows) : nothing}
 			${this._colJumpOpen ? this._renderColJump() : nothing}
 			${this._bodyVisible ? html`
 			<div class="vscroll" @keydown=${this._onKeydown} tabindex="0"
 				@scroll=${this._onBodyScroll}
-				@mousedown=${this._onTableMouseDown}>
+				@mousedown=${(e: MouseEvent) => sel.onTableMouseDown(e)}>
 			<div class="dtable-head-wrap">
 				<table class="dtable" id="dt-head" style="width:${tableWidth}px;min-width:${tableWidth}px;">
 					<colgroup>
@@ -912,7 +615,7 @@ this.requestUpdate();
 					</tr></thead>
 				</table>
 			</div>
-				<div style="height:${this._vTotalSize}px;position:relative;">
+				<div style="height:${this._vScrollCtrl.vTotalSize}px;position:relative;">
 				<table class="dtable" id="dt-body" style="position:absolute;top:${topSpacer}px;left:0;width:${tableWidth}px;min-width:${tableWidth}px;">
 					<colgroup>
 						<col style="width:${ROW_NUMBER_WIDTH}px;min-width:${ROW_NUMBER_WIDTH}px;max-width:${ROW_NUMBER_WIDTH}px;" />
@@ -920,22 +623,22 @@ this.requestUpdate();
 					</colgroup>
 					<tbody>
 						${visibleRows.map(({ index, row }) => {
-							const isSel = this._selectedCell?.row === index;
+							const isSel = sel.selectedCell?.row === index;
 							return html`<tr class="${isSel ? 'sel-row' : ''}" data-idx="${index}">
-								<td class="rn" @click=${(e: MouseEvent) => this._selRow(e, index)}>${index + 1}</td>
+								<td class="rn" @click=${(e: MouseEvent) => sel.selectRow(e, index)}>${index + 1}</td>
 								${row.getVisibleCells().map((cell, ci) => {
 							const raw = cell.getValue() as CellValue, display = fmtCell(raw);
 								const isObj = typeof raw === 'object' && raw !== null && 'isObject' in raw && raw.isObject;
-								const isFocus = this._selectedCell?.row === index && this._selectedCell?.col === ci;
-								const isInRng = inRange(this._selectionRange, index, ci);
-								const isM = this._searchMatches.length > 0 && this._isMatch(index, ci);
-								const isCM = isM && this._isCurMatch(index, ci);
+								const isFocus = sel.selectedCell?.row === index && sel.selectedCell?.col === ci;
+								const isInRng = inRange(sel.selectionRange, index, ci);
+								const isM = search.matches.length > 0 && search.isMatch(index, ci);
+								const isCM = isM && search.isCurMatch(index, ci);
 								let cls = isFocus ? 'cf' : isInRng ? 'cr' : '';
 								if (isCM) cls += ' mc'; else if (isM) cls += ' mh';
 								if (isObj) {
 									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><a class="obj-link" href="#" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</a></td>`;
 								}
-								const cellContent = isM && this._searchRegex ? highlightMatches(display, this._searchRegex, isCM ? 'hl-cur' : 'hl') : display;
+								const cellContent = isM && search.searchRegex ? highlightMatches(display, search.searchRegex, isCM ? 'hl-cur' : 'hl') : display;
 								return html`<td class="${cls}" title="${escHtml(getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${cellContent}</td>`;
 								})}
 							</tr>`;
@@ -975,13 +678,13 @@ this.requestUpdate();
 		return html`<div class="hbar">
 			<span class="hinfo${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
-				<button class="tbtn ${this._searchVisible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
-				<button class="tbtn ${this._rowJumpVisible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
+				<button class="tbtn ${this._searchCtrl.visible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
+				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
 				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${() => this._sortDialogOpen = !this._sortDialogOpen}>${ICON.sort}</button>
 				<span class="sep"></span>
 				<button class="tbtn" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>
-				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._copy()}>${ICON.copy}</button>
+				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._selectionCtrl.copy()}>${ICON.copy}</button>
 				${this._sorting.length > 0 ? html`<button class="tbtn tbtn-text" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
 			</div>` : nothing}
 			${this._metaTooltipVisible && hasTooltip ? this._renderMetaTooltip() : nothing}
@@ -1103,20 +806,21 @@ this.requestUpdate();
 	}
 
 	private _renderRowJump(totalRows: number): TemplateResult {
-		const rc = this._rowJumpTargets.length;
-		const statusText = this._rowJumpError
-			? this._rowJumpError
-			: (this._rowJumpQuery.trim()
-				? (rc > 0 ? `(${this._currentRowJumpIndex + 1}/${rc})` : `Enter rows 1-${totalRows}`)
+		const rj = this._rowJumpCtrl;
+		const rc = rj.targets.length;
+		const statusText = rj.error
+			? rj.error
+			: (rj.query.trim()
+				? (rc > 0 ? `(${rj.currentIndex + 1}/${rc})` : `Enter rows 1-${totalRows}`)
 				: `Max row: ${totalRows}`);
-		const statusClass = this._rowJumpError ? 'sc-status err' : 'sc-status';
+		const statusClass = rj.error ? 'sc-status err' : 'sc-status';
 		return html`<div class="sbar">
 			<div class="sc">
 				<svg class="sc-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10"/><path d="M3 7.5h10"/><path d="M3 10.5h6"/><path d="M11.5 9.5v4"/><path d="M10.2 12.2l1.3 1.3 1.3-1.3"/></svg>
-				<input type="text" class="sinp row-jump-inp" placeholder="Scroll to row (e.g. 1, 120, 500)..." autocomplete="off" spellcheck="false" .value=${this._rowJumpQuery}
-					@input=${(e: Event) => { this._rowJumpQuery = (e.target as HTMLInputElement).value; this._execRowJump(totalRows); }}
+				<input type="text" class="sinp row-jump-inp" placeholder="Scroll to row (e.g. 1, 120, 500)..." autocomplete="off" spellcheck="false" .value=${rj.query}
+					@input=${(e: Event) => { rj.setQuery((e.target as HTMLInputElement).value, totalRows); }}
 					@keydown=${(e: KeyboardEvent) => {
-						if (e.key === 'Enter') { e.shiftKey ? this._prevRowTarget() : this._nextRowTarget(); e.preventDefault(); }
+						if (e.key === 'Enter') { e.shiftKey ? rj.prevTarget() : rj.nextTarget(); e.preventDefault(); }
 					}} />
 				<span class="${statusClass}">${statusText}</span>
 			</div>
@@ -1125,18 +829,19 @@ this.requestUpdate();
 	}
 
 	private _renderSearch(): TemplateResult {
+		const s = this._searchCtrl;
 		return html`<div class="sbar">
 			<kw-search-bar
-				.query=${this._searchQuery}
-				.mode=${this._searchMode}
-				.matchCount=${this._searchMatches.length}
-				.currentMatch=${this._currentMatchIndex}
+				.query=${s.query}
+				.mode=${s.mode}
+				.matchCount=${s.matches.length}
+				.currentMatch=${s.currentMatchIndex}
 				.showClose=${true}
 				.showStatus=${true}
-				@search-input=${(e: CustomEvent) => { this._searchQuery = e.detail.query; this._debouncedSearch.trigger(); }}
-				@search-mode-change=${(e: CustomEvent) => { this._searchMode = e.detail.mode; this._execSearch(); }}
-				@search-next=${() => this._nextMatch()}
-				@search-prev=${() => this._prevMatch()}
+				@search-input=${(e: CustomEvent) => { s.setQuery(e.detail.query); }}
+				@search-mode-change=${(e: CustomEvent) => { s.setMode(e.detail.mode); }}
+				@search-next=${() => s.nextMatch()}
+				@search-prev=${() => s.prevMatch()}
 				@search-close=${() => this._toggleSearch()}
 			></kw-search-bar>
 		</div>`;
@@ -1218,161 +923,61 @@ this.requestUpdate();
 	}
 
 
-	// ── Mouse drag selection ──
+	// ── Events (delegated to controllers) ──
 
-	private _clearSelection(): void {
-		this._selectedCell = null;
-		this._selectionRange = null;
-		this._selectionAnchor = null;
-	}
-
-	private _onTableMouseDown = (e: MouseEvent) => {
-		// Only handle left-click on data cells (not row-number, not header)
-		if (e.button !== 0) return;
-		(this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.focus();
-		const pos = cellFromEvent(e);
-		if (!pos) return;
-		// Clicking the already-selected single cell toggles it off.
-		if (this._selectedCell?.row === pos.row && this._selectedCell?.col === pos.col && this._selectionRange === null) {
-			this._clearSelection();
-			e.preventDefault();
-			return;
-		}
-		// Start drag
-		this._isDragging = true;
-		this._selectionAnchor = pos;
-		this._selectedCell = pos;
-		this._selectionRange = null;
-		document.addEventListener('mousemove', this._onMouseMove);
-		document.addEventListener('mouseup', this._onMouseUp);
-		e.preventDefault(); // prevent text selection
-	};
-
-	private _onMouseMove = (e: MouseEvent) => {
-		if (!this._isDragging || !this._selectionAnchor) return;
-		// Find cell under mouse — the event target may be outside shadow DOM during drag
-		const el = this.shadowRoot?.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-		if (!el) return;
-		const td = el.closest?.('td');
-		if (!td) return;
-		const tr = td.closest('tr');
-		if (!tr || tr.dataset.idx === undefined) return;
-		const tds = Array.from(tr.querySelectorAll('td'));
-		const ci = tds.indexOf(td) - 1;
-		if (ci < 0) return;
-		const row = parseInt(tr.dataset.idx, 10);
-		this._selectedCell = { row, col: ci };
-		this._selectionRange = {
-			rowMin: Math.min(this._selectionAnchor.row, row),
-			rowMax: Math.max(this._selectionAnchor.row, row),
-			colMin: Math.min(this._selectionAnchor.col, ci),
-			colMax: Math.max(this._selectionAnchor.col, ci),
-		};
-	};
-
-	private _onMouseUp = () => {
-		this._isDragging = false;
-		document.removeEventListener('mousemove', this._onMouseMove);
-		document.removeEventListener('mouseup', this._onMouseUp);
-	};
-
-	// ── Events ──
-
-	private _selRow(e: MouseEvent, row: number): void {
-		const mc = this.columns.length - 1;
-		if (e.shiftKey && this._selectionAnchor) {
-			// Extend selection from anchor row to clicked row (full rows)
-			this._selectionRange = { rowMin: Math.min(this._selectionAnchor.row, row), rowMax: Math.max(this._selectionAnchor.row, row), colMin: 0, colMax: mc };
-			this._selectedCell = { row, col: 0 };
-		} else {
-			// Clicking the already-selected single row toggles it off.
-			const isSameSingleRow =
-				this._selectedCell?.row === row &&
-				this._selectedCell?.col === 0 &&
-				this._selectionRange?.rowMin === row &&
-				this._selectionRange?.rowMax === row &&
-				this._selectionRange?.colMin === 0 &&
-				this._selectionRange?.colMax === mc;
-			if (isSameSingleRow) {
-				this._clearSelection();
-				return;
-			}
-			this._selectedCell = { row, col: 0 };
-			this._selectionRange = { rowMin: row, rowMax: row, colMin: 0, colMax: mc };
-			this._selectionAnchor = { row, col: 0 };
-		}
-	}
 	private _onKeydown = (e: KeyboardEvent) => {
 		if ((e.ctrlKey || e.metaKey) && e.key === 'f') { this._toggleSearch(); e.preventDefault(); return; }
 		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') { this._toggleRowJump(this._table?.getRowModel().rows.length ?? 0); e.preventDefault(); return; }
-		if ((e.ctrlKey || e.metaKey) && e.key === 'a') { this._selAll(); e.preventDefault(); return; }
-		if (!this._selectedCell) return;
-		const { row, col } = this._selectedCell, mR = (this._table?.getRowModel().rows.length ?? 1) - 1, mC = this.columns.length - 1;
-		let nr = row, nc = col;
-		switch (e.key) {
-			case 'ArrowUp': nr = Math.max(0, row - 1); break; case 'ArrowDown': nr = Math.min(mR, row + 1); break;
-			case 'ArrowLeft': nc = Math.max(0, col - 1); break; case 'ArrowRight': nc = Math.min(mC, col + 1); break;
-			case 'Home': nc = 0; if (e.ctrlKey) nr = 0; break; case 'End': nc = mC; if (e.ctrlKey) nr = mR; break;
-			case 'PageUp': nr = Math.max(0, row - 20); break; case 'PageDown': nr = Math.min(mR, row + 20); break;
-			case 'c': if (e.ctrlKey || e.metaKey) { this._copy(); e.preventDefault(); } return;
-			default: return;
-		}
-		e.preventDefault();
-		if (e.shiftKey) { if (!this._selectionAnchor) this._selectionAnchor = { row, col }; this._selectionRange = { rowMin: Math.min(this._selectionAnchor.row, nr), rowMax: Math.max(this._selectionAnchor.row, nr), colMin: Math.min(this._selectionAnchor.col, nc), colMax: Math.max(this._selectionAnchor.col, nc) }; }
-		else { this._selectionRange = null; this._selectionAnchor = { row: nr, col: nc }; }
-		this._selectedCell = { row: nr, col: nc }; this._virtualizer?.scrollToIndex(nr, { align: 'auto' });
+		this._selectionCtrl.handleKeydown(e);
 	};
 
 	// ── Actions ──
 
 	private _toggleSearch(): void {
-		this._searchVisible = !this._searchVisible;
-		if (this._searchVisible) {
+		this._searchCtrl.toggle();
+		if (this._searchCtrl.visible) {
+			pushDismissable(this._dismissSearch);
 			this.updateComplete.then(() => {
 				this.shadowRoot?.querySelector('kw-search-bar')?.focus();
 			});
 		} else {
-			this._debouncedSearch.cancel();
-			this._searchMatches = [];
-			this._searchQuery = '';
+			removeDismissable(this._dismissSearch);
 		}
+		this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
 	}
 	private _toggleRowJump(totalRows: number): void {
-		this._rowJumpVisible = !this._rowJumpVisible;
-		if (this._rowJumpVisible) {
+		this._rowJumpCtrl.toggle(totalRows);
+		if (this._rowJumpCtrl.visible) {
+			pushDismissable(this._dismissRowJump);
 			requestAnimationFrame(() => {
 				const i = this.shadowRoot?.querySelector('.row-jump-inp') as HTMLInputElement;
 				i?.focus();
 				i?.select();
 			});
-			this._execRowJump(totalRows);
 		} else {
-			this._rowJumpTargets = [];
-			this._rowJumpQuery = '';
-			this._currentRowJumpIndex = 0;
-			this._rowJumpError = '';
+			removeDismissable(this._dismissRowJump);
 		}
+		this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
 	}
 	private _toggleBody(): void { this._bodyVisible = !this._bodyVisible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
 	private _onSortChange = (e: CustomEvent<{ sorting: SortingState }>): void => {
 		this._sorting = e.detail.sorting;
 		this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));
-		this._updateVCount();
+		this._vScrollCtrl.updateCount();
 		this._sortDialogOpen = false;
 	};
-	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._updateVCount(); }
-	private _selAll(): void { const mr = (this._table?.getRowModel().rows.length ?? 1) - 1, mc = this.columns.length - 1; this._selectedCell = { row: 0, col: 0 }; this._selectionAnchor = { row: 0, col: 0 }; this._selectionRange = { rowMin: 0, rowMax: mr, colMin: 0, colMax: mc }; }
+	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._vScrollCtrl.updateCount(); }
 	private _scrollToCol(ci: number): void {
 		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
 		if (!el) return;
 		const colWidths = this._layoutColumns().widths;
 		const left = colWidths.slice(0, ci).reduce((sum, width) => sum + width, ROW_NUMBER_WIDTH);
 		el.scrollLeft = Math.max(0, left - ROW_NUMBER_WIDTH);
-		this._syncHeaderScroll();
+		this._vScrollCtrl.syncHeaderScroll();
 	}
 
 	private _onBodyScroll = (): void => {
-		this._syncHeaderScroll();
+		this._vScrollCtrl.syncHeaderScroll();
 	};
 	private _isCellObject(rowIdx: number, colIdx: number): boolean {
 		if (!this._table) return false;
@@ -1395,43 +1000,9 @@ this.requestUpdate();
 		}
 		const viewer = this.shadowRoot?.querySelector('kw-object-viewer') as KwObjectViewer | null;
 		if (!viewer) return;
-		// Pass the current search query if this cell is a search match
-		const isMatch = this._searchMatches.some(m => m.row === rowIdx && m.col === colIdx);
-		viewer.show(`Object viewer for ${colName}`, jsonText, isMatch ? { searchQuery: this._searchQuery, searchMode: this._searchMode } : undefined);
-	}
-	private _copy(): void {
-		const text = this._buildClipboardText();
-		if (!text) return;
-		this._writeTextToClipboard(text);
-	}
-
-	private _buildClipboardText(): string {
-		if (!this._table) return '';
-		const rows = this._table.getRowModel().rows.map(r => r.original);
-		return buildClipboardText(this.columns, rows, this._selectionRange, this._selectedCell);
-	}
-
-	private _writeTextToClipboard(text: string): void {
-		// eslint-disable-next-line eqeqeq
-		const value = text == null ? '' : String(text);
-		try {
-			if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-				navigator.clipboard.writeText(value).catch(() => { /* ignore — document may not be focused */ });
-				return;
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		try {
-			const ta = document.createElement('textarea');
-			ta.value = value;
-			ta.setAttribute('readonly', '');
-			ta.style.position = 'fixed';
-			ta.style.left = '-1000px';
-			ta.style.top = '-1000px';
-			document.body.appendChild(ta);
-			ta.select();
-			document.execCommand('copy');
-			document.body.removeChild(ta);
-		} catch (e) { console.error('[kusto]', e); }
+		const search = this._searchCtrl;
+		const isMatch = search.matches.some(m => m.row === rowIdx && m.col === colIdx);
+		viewer.show(`Object viewer for ${colName}`, jsonText, isMatch ? { searchQuery: search.query, searchMode: search.mode } : undefined);
 	}
 
 	private _onDocumentScrollDismiss = (): void => {
@@ -1443,36 +1014,6 @@ this.requestUpdate();
 		this._filterDialogOpen = false;
 	};
 
-	private _onDocumentCopy = (e: ClipboardEvent): void => {
-		if (!this._isSelectionInThisTable()) return;
-		const text = this._buildClipboardText();
-		if (!text) return;
-		try {
-			e.preventDefault();
-			e.stopPropagation();
-			if (e.clipboardData) {
-				e.clipboardData.setData('text/plain', text);
-				return;
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		this._writeTextToClipboard(text);
-	};
-
-	private _onDocumentKeydown = (e: KeyboardEvent): void => {
-		if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'c') return;
-		if (!this._isSelectionInThisTable()) return;
-		e.preventDefault();
-		e.stopPropagation();
-		this._copy();
-	};
-
-	private _isSelectionInThisTable(): boolean {
-		if (!this._selectedCell && !this._selectionRange) return false;
-		const active = document.activeElement as HTMLElement | null;
-		if (active && this.contains(active)) return true;
-		// Fallback: if the component is visible and has an active selection, allow copy.
-		return this.isConnected;
-	}
 	private _copyCol(ci: number): void { if (!this._table) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); } }
 	private _save(): void {
 		if (!this._table) return;

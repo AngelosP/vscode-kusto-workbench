@@ -60,18 +60,16 @@ The notebook UI runs as a VS Code webview, built with Lit web components and leg
 | `generated/` | Generated control command and function bridge modules |
 | `sections/` | Lit web components for each section type |
 | `components/` | Reusable Lit components (`kw-data-table`, `kw-dropdown`, etc.) |
-| `modules/` | Remaining bridge modules being absorbed into Lit components |
 | `shared/` | Pure utility modules importable by both components and modules |
 | `styles/` | CSS files |
 | `viewers/` | Viewer components (cell viewer, object viewer, etc.) |
 
 ### Key Runtime Modules (`src/webview/`)
 
-The webview runtime is split into `core/`, `monaco/`, and `modules/`:
+The webview runtime is split into `core/` and `monaco/`:
 
-- `core/`: cross-cutting infrastructure and global orchestration
+- `core/`: cross-cutting infrastructure, global orchestration, and section factory
 - `monaco/`: editor-specific integrations
-- `modules/`: section-specific bridge code still pending full Lit absorption
 
 | Module | Purpose |
 | ------ | ------- |
@@ -88,8 +86,7 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | `monaco/monaco.ts` | Monaco editor configuration, KQL integration, column inference |
 | `monaco/completions.ts` | Completion providers (columns, functions, tables) |
 | `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
-| `modules/queryBoxes.ts` | Query section creation, Monaco setup, toolbar wiring |
-| `modules/extraBoxes.ts` | Python/URL section creation + shared chart/data-source utilities |
+| `core/section-factory.ts` | Section creation for all types (query, chart, python, URL, etc.), data-source utilities |
 
 ### Lit Section Components (`src/webview/sections/`)
 
@@ -98,11 +95,17 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | `kw-query-section` | `kw-query-section.ts` | KQL query editor with connection picker, execution, results |
 | `kw-query-toolbar` | `kw-query-toolbar.ts` | Query toolbar actions (toggles, share, run modes, tools) |
 | `toolbar-overflow.controller` | `toolbar-overflow.controller.ts` | ReactiveController for toolbar overflow detection and resize handling |
+| `query-connection.controller` | `query-connection.controller.ts` | ReactiveController for connection, database, favorites, and schema management |
+| `query-execution.controller` | `query-execution.controller.ts` | ReactiveController for query execution, results visibility, optimization |
 | `kw-chart-section` | `kw-chart-section.ts` | Chart builder (line, area, bar, scatter, pie, funnel via ECharts) |
 | `kw-transformation-section` | `kw-transformation-section.ts` | Data transformation expressions |
 | `kw-markdown-section` | `kw-markdown-section.ts` | Rich text / documentation (Toast UI editor) |
 | `kw-python-section` | `kw-python-section.ts` | Python code cells |
 | `kw-url-section` | `kw-url-section.ts` | Embedded web content / images |
+
+### ReactiveController Pattern
+
+When a Lit component has distinct behavioral concerns (connection management, query execution, toolbar overflow), each concern is extracted into a **ReactiveController** co-located in `src/webview/sections/`. Controllers own state and lifecycle hooks but do not contain render templates — rendering stays in the host component. This keeps components focused and controllers independently testable.
 
 ### Reusable Lit Components (`src/webview/components/`)
 

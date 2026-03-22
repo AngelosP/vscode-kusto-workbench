@@ -14,14 +14,13 @@ import {
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
 	schemaRequestTokenByBoxId,
-} from '../modules/queryBoxes';
+	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
+	__kustoGetChartValidationStatus,
+} from './section-factory';
 import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
 import { addChartBox, removeChartBox } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox } from '../sections/kw-transformation-section';
-import {
-	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
-	__kustoGetChartValidationStatus,
-} from '../modules/extraBoxes';
+
 import {
 	updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons, setRunMode,

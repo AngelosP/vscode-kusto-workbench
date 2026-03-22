@@ -5,7 +5,7 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
-import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
+import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

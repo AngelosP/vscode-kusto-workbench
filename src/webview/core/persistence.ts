@@ -10,8 +10,9 @@ import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
 	__kustoSetAutoEnterFavoritesForBox, __kustoTryAutoEnterFavoritesModeForAllBoxes,
-	__kustoClampResultsWrapperHeight
-} from '../modules/queryBoxes';
+	__kustoClampResultsWrapperHeight,
+	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes,
+} from './section-factory';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
@@ -20,7 +21,6 @@ import {
 import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
-import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from '../modules/extraBoxes';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
 import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';

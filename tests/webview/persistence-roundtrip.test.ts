@@ -78,7 +78,7 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayResult: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
+vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addQueryBox: testState.addQueryBox,
 	removeQueryBox: vi.fn((id: string) => {
 		const idx = testState.queryBoxes.indexOf(id);
@@ -93,6 +93,20 @@ vi.mock('../../src/webview/modules/queryBoxes.js', () => ({
 	__kustoSetAutoEnterFavoritesForBox: vi.fn(),
 	__kustoTryAutoEnterFavoritesModeForAllBoxes: vi.fn(),
 	__kustoClampResultsWrapperHeight: vi.fn(),
+	addPythonBox: vi.fn(() => {
+		const id = `python_restored_${testState.pythonBoxes.length + 1}`;
+		testState.pythonBoxes.push(id);
+		return id;
+	}),
+	addUrlBox: vi.fn(() => {
+		const id = `url_restored_${testState.urlBoxes.length + 1}`;
+		testState.urlBoxes.push(id);
+		return id;
+	}),
+	removePythonBox: vi.fn(),
+	removeUrlBox: vi.fn(),
+	pythonBoxes: testState.pythonBoxes,
+	urlBoxes: testState.urlBoxes,
 }));
 
 vi.mock('../../src/webview/core/state.js', () => ({
@@ -132,22 +146,7 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	markdownEditors: testState.markdownEditors,
 }));
 
-vi.mock('../../src/webview/modules/extraBoxes.js', () => ({
-	addPythonBox: vi.fn(() => {
-		const id = `python_restored_${testState.pythonBoxes.length + 1}`;
-		testState.pythonBoxes.push(id);
-		return id;
-	}),
-	addUrlBox: vi.fn(() => {
-		const id = `url_restored_${testState.urlBoxes.length + 1}`;
-		testState.urlBoxes.push(id);
-		return id;
-	}),
-	removePythonBox: vi.fn(),
-	removeUrlBox: vi.fn(),
-	pythonBoxes: testState.pythonBoxes,
-	urlBoxes: testState.urlBoxes,
-}));
+
 
 vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	setRunMode: vi.fn(),

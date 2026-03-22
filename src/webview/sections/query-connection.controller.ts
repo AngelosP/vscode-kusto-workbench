@@ -50,7 +50,7 @@ import {
 	__kustoGetDatabase,
 	__kustoGetClusterUrl,
 	schemaRequestTokenByBoxId,
-} from '../modules/queryBoxes';
+} from '../core/section-factory';
 
 const _win = window;
 

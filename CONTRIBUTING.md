@@ -46,7 +46,6 @@ src/
     generated/          Generated runtime command/function bridges
     sections/           Lit web components for each section type
     components/         Reusable Lit components (data table, dropdown, etc.)
-    modules/            Bridge modules still being absorbed into Lit components
     shared/             Pure utility modules (importable by components and modules)
     styles/             CSS files
 tests/
@@ -105,6 +104,16 @@ export const styles = css`
 
 - Use inline `css` in the component file only for very small, local styles where extracting would hurt readability.
 - Preserve the existing VS Code theme variable usage (`--vscode-*`) and do not hardcode app-level colors.
+
+## ReactiveControllers
+
+When a Lit component grows beyond ~1,500 lines or has distinct behavioral concerns, extract each concern into a **ReactiveController** co-located with its host component.
+
+- **Naming**: `{concern}.controller.ts`, next to the host component in `src/webview/sections/`.
+- A controller **owns state**, has lifecycle hooks (`hostConnected`, `hostDisconnected`, `hostUpdate`, `hostUpdated`), and is **independently testable**.
+- The host instantiates controllers and reads their state in `render()`.
+- Controllers do **NOT** contain render templates — rendering stays in the host.
+- Existing controllers: `query-connection.controller.ts`, `query-execution.controller.ts`, `toolbar-overflow.controller.ts`.
 
 ---
 
@@ -317,7 +326,7 @@ The query section header toolbar uses **CSS Container Queries** for responsive l
 1. **Define the section type** in [`kqlxFormat.ts`](src/host/kqlxFormat.ts) — add a new variant to the `KqlxSectionV1` union type.
 2. **Create a Lit component** in `src/webview/sections/` (e.g., `kw-my-section.ts` + `kw-my-section.styles.ts`). Register with `@customElement('kw-my-section')`. Implement `serialize()`.
 3. **Add the prefix to `sectionPrefixes`** in [`persistence.ts`](src/webview/core/persistence.ts) — REQUIRED or the section won't be saved.
-4. **Add a creation function** in `src/webview/modules/` that creates the DOM element and wires event listeners.
+4. **Add a creation function** in [`section-factory.ts`](src/webview/core/section-factory.ts) that creates the DOM element and wires event listeners.
 5. **Add restoration logic** in [`persistence.ts`](src/webview/core/persistence.ts) — handle the new `type` in the restore loop.
 6. **Add a message handler** in [`main.ts`](src/webview/core/main.ts) if the section needs messages from the extension host.
 7. **Import the component** in [`index.ts`](src/webview/index.ts) (in the components/sections block — order doesn't matter).

@@ -20,12 +20,13 @@ import {
 	promptAddConnectionFromDropdown,
 	importConnectionsFromXmlFile,
 	__kustoSetSectionName,
-} from '../modules/queryBoxes.js';
+	__kustoRefreshAllDataSourceDropdowns,
+} from '../core/section-factory.js';
 import { __kustoOpenShareModal, getRunMode } from './kw-query-toolbar.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
-import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
+
 import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 

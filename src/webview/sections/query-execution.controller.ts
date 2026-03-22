@@ -32,7 +32,7 @@ import {
 	addQueryBox, toggleCacheControls, removeQueryBox,
 	__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
 	__kustoLog,
-} from '../modules/queryBoxes';
+} from '../core/section-factory';
 import { getRunMode, setRunMode, closeRunMenu } from './kw-query-toolbar';
 import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {

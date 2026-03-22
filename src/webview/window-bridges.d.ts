@@ -1,6 +1,6 @@
 /**
  * Type declarations for all window bridge functions and state variables
- * exposed by webview modules (src/webview/modules/*.ts).
+ * exposed by webview modules (src/webview/core/*.ts, src/webview/sections/*.ts).
  *
  * The webview is bundled as a single IIFE by esbuild, so ES module imports
  * aren't available at runtime. Modules expose functions and state on `window`

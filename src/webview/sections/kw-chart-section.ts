@@ -15,7 +15,7 @@ import {
 	__kustoGetChartDatasetsInDomOrder,
 	__kustoGetChartValidationStatus,
 	__kustoCleanupSectionModeResizeObserver,
-} from '../modules/extraBoxes.js';
+} from '../core/section-factory.js';
 import {
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,

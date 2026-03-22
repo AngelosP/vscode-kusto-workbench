@@ -4,7 +4,7 @@
 import { pState } from '../shared/persistence-state';
 import { __kustoTryStoreQueryResult } from './persistence';
 import { __kustoSetResultsVisible, setQueryExecuting } from '../sections/query-execution.controller';
-import { __kustoNotifyResultsUpdated } from '../modules/extraBoxes';
+import { __kustoNotifyResultsUpdated } from './section-factory';
 
 // ── Results state map ────────────────────────────────────────────────────────
 
