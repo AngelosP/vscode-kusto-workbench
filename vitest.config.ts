@@ -1,7 +1,16 @@
 import { defineConfig } from 'vitest/config';
 import { transformWithEsbuild } from 'vite';
+import path from 'path';
 
 export default defineConfig({
+	resolve: {
+		alias: {
+			// Host source files import `vscode` which is only available in the
+			// VS Code extension host.  A minimal mock lets Vitest resolve the
+			// import without crashing (the tested functions never call vscode APIs).
+			vscode: path.resolve(__dirname, 'tests/mocks/vscode.ts'),
+		},
+	},
 	test: {
 		environment: 'happy-dom',
 		include: ['tests/webview/**/*.test.ts'],
@@ -9,7 +18,15 @@ export default defineConfig({
 		coverage: {
 			provider: 'v8',
 			reporter: ['text', 'text-summary'],
-			include: ['src/webview/**/*.ts'],
+			include: [
+				'src/webview/**/*.ts',
+				'src/host/copilotConversationUtils.ts',
+				'src/host/queryEditorConnection.ts',
+				'src/host/kqlSchemaInference.ts',
+				'src/host/kqlxFormat.ts',
+				'src/host/schemaIndexUtils.ts',
+				'src/host/kqlLanguageService/service.ts',
+			],
 			exclude: ['src/webview/vendor/**', 'src/webview/**/*.d.ts'],
 		},
 	},
