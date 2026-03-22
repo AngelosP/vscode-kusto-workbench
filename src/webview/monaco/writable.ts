@@ -1,7 +1,7 @@
 // Monaco editor writability guards — extracted from monaco.ts (Phase 6 decomposition).
 // Forces Monaco textareas to remain writable despite VS Code webview timing glitches.
 
-import { queryEditors } from './state';
+import { queryEditors } from '../modules/state';
 
 const _win = window;
 

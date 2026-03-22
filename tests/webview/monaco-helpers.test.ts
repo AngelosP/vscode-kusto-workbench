@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { __kustoGetColumnsByTable } from '../../src/webview/modules/monaco.js';
+import { __kustoGetColumnsByTable } from '../../src/webview/monaco/monaco.js';
 
 // ── __kustoGetColumnsByTable ──────────────────────────────────────────────────
 

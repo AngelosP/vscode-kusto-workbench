@@ -5,8 +5,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils.js';
 import { schedulePersist } from '../modules/persistence.js';
-import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../modules/monaco-writable.js';
-import { __kustoAttachAutoResizeToContent } from '../modules/monaco-resize.js';
+import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
+import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

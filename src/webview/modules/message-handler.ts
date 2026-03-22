@@ -40,7 +40,7 @@ import {
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
 	__kustoCrossClusterSchemas,
-} from './monaco';
+} from '../monaco/monaco';
 import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,

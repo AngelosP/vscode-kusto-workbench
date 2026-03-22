@@ -25,7 +25,7 @@ import { __kustoOpenShareModal, getRunMode } from '../modules/queryBoxes-toolbar
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from '../modules/queryBoxes-execution.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
 import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
-import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../modules/monaco-prettify.js';
+import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

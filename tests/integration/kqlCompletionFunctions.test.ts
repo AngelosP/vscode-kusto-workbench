@@ -357,7 +357,7 @@ class FakeModel {
 suite('KQL completions - functions list', () => {
 	const createCompletionProvider = () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-caret-docs.ts');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'monaco', 'caret-docs.ts');
 		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
 		// Strip TypeScript annotations so the source can run in a JS VM sandbox
 		monacoSource = monacoSource
@@ -368,7 +368,7 @@ suite('KQL completions - functions list', () => {
 			.replace(/as HTMLElement\)/g, ')')
 			.replace(/ as string\b/g, '')
 			.replace(/ as any\b/g, '');
-		const monacoCompletionsPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-completions.ts');
+		const monacoCompletionsPath = path.join(repoRoot, 'src', 'webview', 'monaco', 'completions.ts');
 		let completionsSource = fs.readFileSync(monacoCompletionsPath, 'utf8');
 		completionsSource = completionsSource
 			.replace(/:\s*Record<[^>]+>/g, '')
@@ -483,7 +483,7 @@ suite('KQL completions - functions list', () => {
 
 	test('Smart Docs hover resolves generated built-in function docs (row_number) without autocomplete', async () => {
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
-		const monacoPath = path.join(repoRoot, 'src', 'webview', 'modules', 'monaco-caret-docs.ts');
+		const monacoPath = path.join(repoRoot, 'src', 'webview', 'monaco', 'caret-docs.ts');
 		let monacoSource = fs.readFileSync(monacoPath, 'utf8');
 		// Strip TypeScript annotations so the source can run in a JS VM sandbox
 		monacoSource = monacoSource

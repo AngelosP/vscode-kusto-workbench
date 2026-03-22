@@ -153,7 +153,7 @@ vi.mock('../../src/webview/modules/queryBoxes-execution.js', () => ({
 	__kustoApplyResultsVisibility: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/monaco.js', () => ({
+vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoUpdateSchemaForFocusedBox: vi.fn(),
 }));
 

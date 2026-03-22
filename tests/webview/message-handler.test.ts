@@ -132,7 +132,7 @@ vi.mock('../../src/webview/modules/persistence.js', () => ({
 	__kustoOnQueryResult: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/monaco.js', () => ({
+vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoControlCommandDocCache: {},
 	__kustoControlCommandDocPending: {},
 	__kustoCrossClusterSchemas: {},

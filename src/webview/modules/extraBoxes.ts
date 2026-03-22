@@ -28,11 +28,11 @@ import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 import { __kustoUpdateChartBuilderUI } from './extraBoxes-chart';
 import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
 import { __kustoUpdateTransformationBuilderUI, __kustoRenderTransformation } from './extraBoxes-transformation';
-import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from './monaco-writable';
-import { __kustoAttachAutoResizeToContent } from './monaco-resize';
+import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
+import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber } from '../shared/transform-expr';
 import { tryParseDate } from '../shared/transform-expr';
-import { __kustoMonacoInitRetryCountByBoxId } from './monaco';
+import { __kustoMonacoInitRetryCountByBoxId } from '../monaco/monaco';
 import { setActiveMonacoEditor } from './state';
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:

@@ -2,7 +2,7 @@
 // Monaco Editor configuration, completions, column inference, caret docs overlay.
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
-import { schedulePersist } from './persistence';
+import { schedulePersist } from '../modules/persistence';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -14,47 +14,47 @@ import {
 	__kustoPrettifyKusto,
 	__kustoSplitKustoStatementsBySemicolon,
 	__kustoPrettifyKustoTextWithSemicolonStatements,
-} from './monaco-prettify';
+} from './prettify';
 import {
 	isDarkTheme,
 	getVSCodeEditorBackground,
 	defineCustomThemes,
 	applyMonacoTheme,
 	startMonacoThemeObserver,
-} from './monaco-theme';
+} from './theme';
 import {
 	__kustoNormalizeTextareasWritable,
 	__kustoForceEditorWritable,
 	__kustoInstallWritableGuard,
 	__kustoEnsureEditorWritableSoon,
 	__kustoEnsureAllEditorsWritableSoon,
-} from './monaco-writable';
+} from './writable';
 import {
 	__kustoIsElementVisibleForSuggest,
 	__kustoGetWordNearCursor,
 	__kustoFindSuggestWidgetForEditor,
 	__kustoRegisterGlobalSuggestMutationHandler,
 	__kustoInstallSmartSuggestWidgetSizing,
-} from './monaco-suggest';
+} from './suggest';
 import {
 	__kustoGetStatementStartAtOffset,
 	__kustoScanIdentifiers,
 	__kustoSplitTopLevelStatements,
 	__kustoSplitPipelineStagesDeep,
 	__kustoScheduleKustoDiagnostics,
-} from './monaco-diagnostics';
-import { __kustoInitCompletionDeps } from './monaco-completions';
+} from './diagnostics';
+import { __kustoInitCompletionDeps } from './completions';
 import {
 	initCaretDocsDeps,
 	getHoverInfoAt, KUSTO_FUNCTION_DOCS, KUSTO_KEYWORD_DOCS,
 	findEnclosingFunctionCall, getTokenAtPosition,
 	KUSTO_CONTROL_COMMAND_DOCS_BASE_URL, KUSTO_CONTROL_COMMAND_DOCS_VIEW, __kustoControlCommands,
-} from './monaco-caret-docs';
-import { __kustoAttachAutoResizeToContent } from './monaco-resize';
-import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
-import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from './queryBoxes';
-import { executeQuery } from './queryBoxes-execution';
-import { initToolbarOverflow } from './queryBoxes-toolbar';
+} from './caret-docs';
+import { __kustoAttachAutoResizeToContent } from './resize';
+import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../modules/utils';
+import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../modules/queryBoxes';
+import { executeQuery } from '../modules/queryBoxes-execution';
+import { initToolbarOverflow } from '../modules/queryBoxes-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
 import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
@@ -76,7 +76,7 @@ import {
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
 	caretDocOverlaysByBoxId,
-} from './state';
+} from '../modules/state';
 
 // ── Schema state singleton (the ONLY source of truth for schema tracking) ───
 export const __kustoSchemaTracker = new SchemaTracker();
@@ -127,8 +127,8 @@ let __kustoCaretDocsViewportListenersInstalled = false;
 let __kustoLastMonacoInteractionAt = 0;
 // Group B: Cross-module state (exported for consumers in other modules)
 // Control command doc cache + generated functions merged: authoritative source in monaco-caret-docs.ts
-export { __kustoControlCommandDocCache, __kustoControlCommandDocPending } from './monaco-caret-docs';
-export { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco-caret-docs';
+export { __kustoControlCommandDocCache, __kustoControlCommandDocPending } from './caret-docs';
+export { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './caret-docs';
 export let __kustoCrossClusterSchemas: Record<string, any> = {};
 export let __kustoMonacoInitRetryCountByBoxId: Record<string, number> = {};
 

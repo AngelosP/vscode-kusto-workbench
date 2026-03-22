@@ -6,7 +6,7 @@ import {
 	queryEditors, caretDocOverlaysByBoxId,
 } from './state';
 import { __kustoGetQuerySectionElement } from './queryBoxes';
-import { __kustoEnsureAllEditorsWritableSoon } from './monaco-writable';
+import { __kustoEnsureAllEditorsWritableSoon } from '../monaco/writable';
 import { executeQuery } from './queryBoxes-execution';
 import { safeRun } from '../shared/safe-run';
 

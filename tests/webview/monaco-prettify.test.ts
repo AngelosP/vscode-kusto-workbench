@@ -8,7 +8,7 @@ import {
 	__kustoPrettifyKusto,
 	__kustoSplitKustoStatementsBySemicolon,
 	__kustoPrettifyKustoTextWithSemicolonStatements,
-} from '../../src/webview/modules/monaco-prettify.js';
+} from '../../src/webview/monaco/prettify.js';
 
 // ── __kustoToSingleLineKusto ──────────────────────────────────────────────────
 

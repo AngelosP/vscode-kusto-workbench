@@ -23,7 +23,7 @@ import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } fro
 import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from './extraBoxes';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from './queryBoxes-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from './queryBoxes-execution';
-import { __kustoUpdateSchemaForFocusedBox } from './monaco';
+import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';
 
 const _win = window;
 // Persistence + .kqlx document round-tripping.

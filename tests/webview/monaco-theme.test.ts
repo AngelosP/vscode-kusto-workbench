@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCssColorToRgb } from '../../src/webview/modules/monaco-theme.js';
+import { parseCssColorToRgb } from '../../src/webview/monaco/theme.js';
 
 // ── parseCssColorToRgb ────────────────────────────────────────────────────────
 

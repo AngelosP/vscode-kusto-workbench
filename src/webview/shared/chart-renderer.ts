@@ -2,7 +2,7 @@
 // Handles chart rendering, disposal, theme observation, resizing.
 // No window bridge assignments — pure ES module exports.
 import { schedulePersist } from '../modules/persistence';
-import { isDarkTheme } from '../modules/monaco-theme';
+import { isDarkTheme } from '../monaco/theme';
 import { escapeHtml } from '../modules/utils';
 import { getResultsState } from '../modules/resultsState';
 import { ensureEchartsLoaded } from './lazy-vendor.js';

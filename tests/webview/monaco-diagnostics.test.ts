@@ -21,7 +21,7 @@ import {
 	__kustoSplitTopLevelCommaList,
 	__kustoGetDotChainRoot,
 	__kustoExtractJoinTable,
-} from '../../src/webview/modules/monaco-diagnostics.js';
+} from '../../src/webview/monaco/diagnostics.js';
 
 // ── __kustoMaskCommentsPreserveLayout ─────────────────────────────────────────
 

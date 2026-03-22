@@ -5,7 +5,7 @@ import { ensureResultsShownForTool } from './resultsState';
 import { __kustoApplyResultsVisibility } from './queryBoxes-execution';
 import { lastRunCacheEnabledByBoxId } from './queryBoxes-execution';
 import { queryEditors } from './state';
-import { __kustoAutoFindInQueryEditor } from './monaco';
+import { __kustoAutoFindInQueryEditor } from '../monaco/monaco';
 
 let _errorLocationClickHandlerInstalled = false;
 
