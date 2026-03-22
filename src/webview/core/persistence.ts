@@ -22,7 +22,7 @@ import { addTransformationBox, removeTransformationBox, transformationBoxes } fr
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes } from '../modules/extraBoxes';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../modules/queryBoxes-toolbar';
-import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../modules/queryBoxes-execution';
+import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
 import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';
 
 const _win = window;

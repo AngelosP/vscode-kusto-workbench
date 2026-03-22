@@ -31,7 +31,7 @@ import {
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
 	optimizeQueryWithCopilot, __kustoSetOptimizeInProgress,
 	__kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions,
-} from '../modules/queryBoxes-execution';
+} from '../sections/query-execution.controller';
 import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,

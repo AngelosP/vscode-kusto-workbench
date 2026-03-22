@@ -115,7 +115,7 @@ vi.mock('../../src/webview/modules/queryBoxes-toolbar.js', () => ({
 	setRunMode: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes-execution.js', () => ({
+vi.mock('../../src/webview/sections/query-execution.controller.js', () => ({
 	executeQuery: vi.fn(),
 	setQueryExecuting: mocks.setQueryExecuting,
 	__kustoSetResultsVisible: mocks.setResultsVisible,

@@ -22,7 +22,9 @@ import {
 	__kustoSetSectionName,
 } from '../modules/queryBoxes.js';
 import { __kustoOpenShareModal, getRunMode } from '../modules/queryBoxes-toolbar.js';
-import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from '../modules/queryBoxes-execution.js';
+import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId, optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
+import { QueryConnectionController } from './query-connection.controller.js';
+import { QueryExecutionController } from './query-execution.controller.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../modules/extraBoxes.js';
 import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
@@ -194,6 +196,10 @@ export class KwQuerySection extends LitElement {
 
 	// Schema popover open state (dropdowns now managed by <kw-dropdown>)
 	@state() private _schemaPopoverOpen = false;
+
+	// ── ReactiveControllers ──────────────────────────────────────────────────
+	public connectionCtrl = new QueryConnectionController(this as any);
+	public executionCtrl = new QueryExecutionController(this as any);
 
 	// Bound handler for close-on-outside-click (schema popover)
 	private _closeSchemaPopoverBound = this._closeSchemaPopoverOnOutsideClick.bind(this);

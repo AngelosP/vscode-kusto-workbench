@@ -2,8 +2,8 @@
 // Extracted from resultsTable-render.ts during legacy results table removal.
 import { escapeHtml } from '../core/utils';
 import { ensureResultsShownForTool } from '../core/results-state';
-import { __kustoApplyResultsVisibility } from './queryBoxes-execution';
-import { lastRunCacheEnabledByBoxId } from './queryBoxes-execution';
+import { __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
+import { lastRunCacheEnabledByBoxId } from '../sections/query-execution.controller';
 import { queryEditors } from '../core/state';
 import { __kustoAutoFindInQueryEditor } from '../monaco/monaco';
 

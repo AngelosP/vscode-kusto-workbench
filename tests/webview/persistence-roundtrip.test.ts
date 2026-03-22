@@ -155,7 +155,7 @@ vi.mock('../../src/webview/modules/queryBoxes-toolbar.js', () => ({
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/queryBoxes-execution.js', () => ({
+vi.mock('../../src/webview/sections/query-execution.controller.js', () => ({
 	__kustoUpdateQueryResultsToggleButton: vi.fn(),
 	__kustoApplyResultsVisibility: vi.fn(),
 }));

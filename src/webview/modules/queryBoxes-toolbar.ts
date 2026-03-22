@@ -9,7 +9,7 @@ import {
 	closeAllFavoritesDropdowns,
 	fullyQualifyTablesInEditor
 } from './queryBoxes';
-import { executeQuery, __kustoIsRunSelectionReady } from './queryBoxes-execution';
+import { executeQuery, __kustoIsRunSelectionReady } from '../sections/query-execution.controller';
 import { toolbarScrollAtOpen, closeAllMenus } from './dropdown';
 import { schedulePersist } from '../core/persistence';
 import {

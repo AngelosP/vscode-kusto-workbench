@@ -53,7 +53,7 @@ import {
 import { __kustoAttachAutoResizeToContent } from './resize';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../modules/queryBoxes';
-import { executeQuery } from '../modules/queryBoxes-execution';
+import { executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../modules/queryBoxes-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
 import { decideSchemaOperation } from '../shared/schema-decision';

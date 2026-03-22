@@ -7,7 +7,7 @@ import {
 } from './state';
 import { __kustoGetQuerySectionElement } from '../modules/queryBoxes';
 import { __kustoEnsureAllEditorsWritableSoon } from '../monaco/writable';
-import { executeQuery } from '../modules/queryBoxes-execution';
+import { executeQuery } from '../sections/query-execution.controller';
 import { safeRun } from '../shared/safe-run';
 
 document.addEventListener('keydown', async (event: any) => {

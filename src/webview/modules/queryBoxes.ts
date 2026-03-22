@@ -34,7 +34,7 @@ import {
 	lastDatabase,
 } from '../core/state';
 import './queryBoxes-toolbar';
-import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from './queryBoxes-execution';
+import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
@@ -1449,7 +1449,7 @@ export function toggleCacheControls( boxId: any) {
 // ── Connection/database picker, cluster URL helpers, favorites, missing clusters,
 // XML import — absorbed from queryBoxes-connection.ts ──
 
-// ── Connection, favorites & schema management extracted to queryBoxes-connections.ts ──
+// ── Connection, favorites & schema management — sections/query-connection.controller.ts ──
 import {
 	computeMissingClusterUrls, updateMissingClustersForBox,
 	__kustoOnConnectionsUpdated,
@@ -1466,7 +1466,7 @@ import {
 	toggleFavoriteForBox, removeFavorite, closeAllFavoritesDropdowns,
 	__kustoUpdateFavoritesUiForBox, __kustoMarkNewBoxForFavoritesAutoEnter,
 	__kustoTryAutoEnterFavoritesModeForNewBox,
-} from './queryBoxes-connections';
+} from '../sections/query-connection.controller';
 // Re-export for other modules that import from './queryBoxes'
 export {
 	computeMissingClusterUrls, updateMissingClustersForBox,
