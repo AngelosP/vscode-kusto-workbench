@@ -142,7 +142,7 @@ declare global {
 		closeColumnAnalysis: (event: Event | null) => void;
 
 		// =====================================================================
-		// dropdown.ts
+		// core/dropdown.ts (legacy)
 		// =====================================================================
 		__kustoDropdown: {
 			getChevronDownSvg: () => string;

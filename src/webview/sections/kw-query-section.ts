@@ -10,7 +10,7 @@ import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
 import { displayResultForBox } from '../core/results-state.js';
-import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../modules/dropdown.js';
+import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import {
 	addQueryBox,
@@ -1242,7 +1242,7 @@ export class KwQuerySection extends LitElement {
 
 	/**
 	 * Display an error in the results area.
-	 * Called from `__kustoRenderErrorUx()` in errorUtils.ts when the section
+	 * Called from `__kustoRenderErrorUx()` in core/error-renderer.ts when the section
 	 * element has this method, or directly from main.ts message handlers.
 	 *
 	 * @param errorOrModel - Either a pre-built ErrorUxModel (from __kustoBuildErrorUxModel)

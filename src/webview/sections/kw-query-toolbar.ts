@@ -22,7 +22,7 @@ import {
 	fullyQualifyTablesInEditor,
 } from '../modules/queryBoxes.js';
 import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.controller.js';
-import { toolbarScrollAtOpen, closeAllMenus } from '../modules/dropdown.js';
+import { toolbarScrollAtOpen, closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import {
 	activeQueryEditorBoxId,

@@ -83,13 +83,13 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | `core/keyboard-shortcuts.ts` | Keyboard handlers and clipboard integration |
 | `core/drag-reorder.ts` | Section drag-and-drop reorder wiring |
 | `core/utils.ts` | Shared runtime utility functions |
+| `core/dropdown.ts` | Legacy HTML dropdown/menu rendering and management |
+| `core/error-renderer.ts` | Error rendering, navigate-to-line, fallback HTML injection |
 | `monaco/monaco.ts` | Monaco editor configuration, KQL integration, column inference |
 | `monaco/completions.ts` | Completion providers (columns, functions, tables) |
 | `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
 | `modules/queryBoxes.ts` | Query section creation, Monaco setup, toolbar wiring |
 | `modules/extraBoxes.ts` | Python/URL section creation + shared chart/data-source utilities |
-| `modules/dropdown.ts` | Custom dropdown/menu component |
-| `modules/errorUtils.ts` | User-facing error rendering helpers |
 
 ### Lit Section Components (`src/webview/sections/`)
 
@@ -131,6 +131,7 @@ The webview runtime is split into `core/`, `monaco/`, and `modules/`:
 | `webview-messages.ts` | Typed `postMessage` wrapper |
 | `lazy-vendor.ts` | Lazy loading for vendor libraries |
 | `chart-renderer.ts` | ECharts rendering delegation |
+| `error-parser.ts` | Pure error parsing: JSON extraction, line positions, error model builder |
 
 ## Host ↔ Webview Communication
 

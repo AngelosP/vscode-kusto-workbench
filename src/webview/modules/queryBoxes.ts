@@ -37,7 +37,7 @@ import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryTo
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
-import { syncSelectBackedDropdown } from './dropdown';
+
 import { currentResult, resetCurrentResult } from '../core/results-state';
 import {
 	formatClusterDisplayName,

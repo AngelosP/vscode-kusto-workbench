@@ -7,7 +7,7 @@ vi.mock('../../src/webview/core/utils.js', () => ({
 	maybeAutoScrollWhileDragging: vi.fn(),
 }));
 
-vi.mock('../../src/webview/modules/dropdown.js', () => ({
+vi.mock('../../src/webview/core/dropdown.js', () => ({
 	closeAllMenus: vi.fn(),
 }));
 

@@ -60,7 +60,7 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayCancelled: mocks.displayCancelled,
 }));
 
-vi.mock('../../src/webview/modules/errorUtils.js', () => ({
+vi.mock('../../src/webview/core/error-renderer.js', () => ({
 	__kustoRenderErrorUx: vi.fn(),
 	__kustoDisplayBoxError: vi.fn(),
 }));

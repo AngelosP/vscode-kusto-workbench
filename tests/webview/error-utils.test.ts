@@ -7,7 +7,7 @@ import {
 	__kustoTryExtractAutoFindTermFromMessage,
 	__kustoBuildErrorUxModel,
 	type ErrorUxModel,
-} from '../../src/webview/modules/errorUtils.js';
+} from '../../src/webview/shared/error-parser.js';
 
 // ── __kustoTryExtractJsonFromErrorText ────────────────────────────────────────
 

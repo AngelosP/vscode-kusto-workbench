@@ -2,7 +2,7 @@
 // Keyboard shortcuts, message handling, and drag-reorder are in their own modules.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { closeAllMenus as _closeAllDropdownMenus } from '../modules/dropdown';
+import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar';
 import { __kustoRequestAddSection } from './persistence';
 

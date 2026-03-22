@@ -5,11 +5,11 @@ import './core/state.js'; // Must be first — initializes all state globals on 
 import './generated/controlCommands.generated.js';
 import './generated/functions.generated.js';
 import './core/utils.js';
-import './modules/dropdown.js';
+import './core/dropdown.js';
 import './viewers/diff-view/kw-diff-view.js';
 import './core/persistence.js';
 import './core/results-state.js';
-import './modules/errorUtils.js';
+import './core/error-renderer.js';
 import './modules/queryBoxes.js';
 import './modules/extraBoxes.js';
 import './monaco/diagnostics.js'; // Before monaco — sets utility window bridges

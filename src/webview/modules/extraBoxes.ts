@@ -16,7 +16,7 @@ import {
 } from '../shared/data-utils.js';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { getResultsState, getRawCellValue as _getRawCellValueFromState } from '../core/results-state';
-import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
+import { closeAllMenus as _closeAllDropdownMenus } from '../core/dropdown';
 
 import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';

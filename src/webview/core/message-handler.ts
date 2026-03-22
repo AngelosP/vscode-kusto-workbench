@@ -5,7 +5,7 @@ import { postMessageToHost } from '../shared/webview-messages';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
-import { __kustoRenderErrorUx, __kustoDisplayBoxError } from '../modules/errorUtils';
+import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
 import {
 	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
 	__kustoGetConnectionId, __kustoGetDatabase,

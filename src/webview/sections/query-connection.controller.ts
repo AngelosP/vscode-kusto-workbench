@@ -28,7 +28,7 @@ import {
 	optimizationMetadataByBoxId,
 } from '../core/state';
 import { buildSchemaInfo } from '../shared/schema-utils';
-import { syncSelectBackedDropdown } from '../modules/dropdown';
+import { syncSelectBackedDropdown } from '../core/dropdown';
 import {
 	formatClusterDisplayName,
 	normalizeClusterUrlKey,
