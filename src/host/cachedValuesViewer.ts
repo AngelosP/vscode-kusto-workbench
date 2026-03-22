@@ -101,6 +101,11 @@ export class CachedValuesViewerV2 {
 		);
 
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+		this.panel.onDidChangeViewState((e) => {
+			if (e.webviewPanel.visible) {
+				void this.sendSnapshotToWebview();
+			}
+		}, null, this.disposables);
 		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => void this.onMessage(msg), null, this.disposables);
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
 	}
@@ -204,13 +209,22 @@ export class CachedValuesViewerV2 {
 		return { timestamp: Date.now(), auth: { sessions: sessionRows, knownAccounts, clusterAccountMap }, connections, cachedDatabases };
 	}
 
+	private async sendSnapshotToWebview(): Promise<void> {
+		try {
+			const snapshot = await this.buildSnapshot();
+			await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+		} catch (error) {
+			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
+			console.warn('[kusto] cached values snapshot refresh failed', error);
+		}
+	}
+
 	// ─── Message handling ──────────────────────────────────────────────────
 
 	private async onMessage(msg: IncomingMessage): Promise<void> {
 		switch (msg.type) {
 			case 'requestSnapshot': {
-				const snapshot = await this.buildSnapshot();
-				this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+				await this.sendSnapshotToWebview();
 				return;
 			}
 			case 'copyToClipboard': {
