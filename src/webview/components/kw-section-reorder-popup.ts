@@ -527,7 +527,7 @@ export class KwSectionReorderPopup extends LitElement {
 				const ids = Array.from(container.children)
 					.map((el: any) => el?.id ? String(el.id) : '')
 					.filter(Boolean);
-				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.setQueryBoxes === 'function') _win.setQueryBoxes(ids.filter((id: any) => id.startsWith('query_'))); else if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
 				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch (e) { console.error('[kusto]', e); }
 				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch (e) { console.error('[kusto]', e); }
 				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch (e) { console.error('[kusto]', e); }

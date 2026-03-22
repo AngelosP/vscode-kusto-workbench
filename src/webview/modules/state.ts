@@ -105,3 +105,8 @@ _win.caretDocOverlaysByBoxId = caretDocOverlaysByBoxId;
 _win.autoTriggerAutocompleteEnabled = autoTriggerAutocompleteEnabled;
 _win.copilotInlineCompletionsEnabled = copilotInlineCompletionsEnabled;
 _win.copilotInlineCompletionRequests = copilotInlineCompletionRequests;
+
+// Expose setter functions on window so Lit components (same IIFE) can call them
+// without creating import dependencies. Only setters that are actually needed
+// by Lit components are exposed.
+(_win as any).setQueryBoxes = setQueryBoxes;
