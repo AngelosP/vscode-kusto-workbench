@@ -3,6 +3,7 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { styles } from './kw-copilot-chat.styles.js';
 import { codiconSheet } from '../shared/codicon-styles.js';
+import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -118,6 +119,12 @@ export class KwCopilotChat extends LitElement {
 	private _tooltips: HTMLElement[] = [];
 	/** Bound handler for closing tools panel on outside click. */
 	private _closeToolsPanelBound = this._onOutsideClickToolsPanel.bind(this);
+	/** Stable dismiss callback for dismiss-stack (Escape key). */
+	private _dismissToolsPanel = (): void => { this._closeToolsPanel(); };
+	/** Bound scroll handler for dismiss-on-scroll. */
+	private _closeToolsPanelOnScrollBound = this._closeToolsPanelOnScroll.bind(this);
+	/** Scroll position captured when the tools panel opened. */
+	private _toolsPanelScrollAtOpen = 0;
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
 	@query('textarea') private _textarea!: HTMLTextAreaElement;
@@ -139,7 +146,7 @@ export class KwCopilotChat extends LitElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		this._cleanupTooltips();
-		document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
+		this._closeToolsPanel();
 	}
 
 	override updated(changed: PropertyValues): void {
@@ -852,43 +859,59 @@ export class KwCopilotChat extends LitElement {
 
 	private _onToggleToolsPanel(e: Event): void {
 		e.stopPropagation();
-		const next = !this._toolsPanelOpen;
-		this._toolsPanelOpen = next;
-
-		if (next) {
-			// Position after render.
-			this.updateComplete.then(() => {
-				const btn = (e.currentTarget || e.target) as HTMLElement;
-				const panel = this.shadowRoot?.querySelector('.tools-panel') as HTMLElement;
-				if (!btn || !panel) return;
-				const btnRect = btn.getBoundingClientRect();
-				panel.style.left = '0px';
-				panel.style.top = '0px';
-				panel.style.bottom = 'auto';
-				const panelRect = panel.getBoundingClientRect();
-				const ph = panelRect.height;
-				const pw = panelRect.width;
-				const gap = 4;
-				let top = btnRect.top - ph - gap;
-				let left = btnRect.left;
-				if (top < 0) top = btnRect.bottom + gap;
-				const vpW = document.documentElement.clientWidth || window.innerWidth;
-				if (left + pw > vpW) left = Math.max(0, vpW - pw - 4);
-				panel.style.top = top + 'px';
-				panel.style.left = left + 'px';
-			});
-			setTimeout(() => document.addEventListener('mousedown', this._closeToolsPanelBound, true), 0);
-		} else {
-			document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
+		if (this._toolsPanelOpen) {
+			this._closeToolsPanel();
+			return;
 		}
+		this._toolsPanelOpen = true;
+
+		// Position after render.
+		this.updateComplete.then(() => {
+			const btn = (e.currentTarget || e.target) as HTMLElement;
+			const panel = this.shadowRoot?.querySelector('.tools-panel') as HTMLElement;
+			if (!btn || !panel) return;
+			const btnRect = btn.getBoundingClientRect();
+			panel.style.left = '0px';
+			panel.style.top = '0px';
+			panel.style.bottom = 'auto';
+			const panelRect = panel.getBoundingClientRect();
+			const ph = panelRect.height;
+			const pw = panelRect.width;
+			const gap = 4;
+			let top = btnRect.top - ph - gap;
+			let left = btnRect.left;
+			if (top < 0) top = btnRect.bottom + gap;
+			const vpW = document.documentElement.clientWidth || window.innerWidth;
+			if (left + pw > vpW) left = Math.max(0, vpW - pw - 4);
+			panel.style.top = top + 'px';
+			panel.style.left = left + 'px';
+		});
+		setTimeout(() => document.addEventListener('mousedown', this._closeToolsPanelBound, true), 0);
+		pushDismissable(this._dismissToolsPanel);
+		this._toolsPanelScrollAtOpen = document.documentElement.scrollTop;
+		document.addEventListener('scroll', this._closeToolsPanelOnScrollBound, { capture: true, passive: true });
+	}
+
+	/** Close the tools panel and remove all listeners. */
+	private _closeToolsPanel(): void {
+		if (!this._toolsPanelOpen) return;
+		this._toolsPanelOpen = false;
+		document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
+		document.removeEventListener('scroll', this._closeToolsPanelOnScrollBound, true);
+		removeDismissable(this._dismissToolsPanel);
 	}
 
 	private _onOutsideClickToolsPanel(e: Event): void {
 		const panel = this.shadowRoot?.querySelector('.tools-panel');
 		const btn = this.shadowRoot?.querySelector('.tools-btn');
 		if (panel?.contains(e.target as Node) || btn?.contains(e.target as Node)) return;
-		this._toolsPanelOpen = false;
-		document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
+		this._closeToolsPanel();
+	}
+
+	private _closeToolsPanelOnScroll(): void {
+		if (Math.abs(document.documentElement.scrollTop - this._toolsPanelScrollAtOpen) > 20) {
+			this._closeToolsPanel();
+		}
 	}
 
 	private _onToolToggle(name: string, checked: boolean): void {

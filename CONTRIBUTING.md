@@ -109,11 +109,24 @@ export const styles = css`
 
 When a Lit component grows beyond ~1,500 lines or has distinct behavioral concerns, extract each concern into a **ReactiveController** co-located with its host component.
 
-- **Naming**: `{concern}.controller.ts`, next to the host component in `src/webview/sections/`.
+- **Naming**: `{concern}.controller.ts`, next to the host component (in `sections/` or `components/`).
 - A controller **owns state**, has lifecycle hooks (`hostConnected`, `hostDisconnected`, `hostUpdate`, `hostUpdated`), and is **independently testable**.
 - The host instantiates controllers and reads their state in `render()`.
 - Controllers do **NOT** contain render templates — rendering stays in the host.
-- Existing controllers: `query-connection.controller.ts`, `query-execution.controller.ts`, `toolbar-overflow.controller.ts`.
+
+### Controller inventory
+
+| Controller | Host | File |
+| ---------- | ---- | ---- |
+| `QueryConnectionController` | `kw-query-section` | `sections/query-connection.controller.ts` |
+| `QueryExecutionController` | `kw-query-section` | `sections/query-execution.controller.ts` |
+| `CopilotChatManagerController` | `kw-query-section` | `sections/copilot-chat-manager.controller.ts` |
+| `ToolbarOverflowController` | `kw-query-toolbar` | `sections/toolbar-overflow.controller.ts` |
+| `ChartDataSourceController` | `kw-chart-section` | `sections/chart-data-source.controller.ts` |
+| `TableSearchController` | `kw-data-table` | `components/table-search.controller.ts` |
+| `TableSelectionController` | `kw-data-table` | `components/table-selection.controller.ts` |
+| `TableVirtualScrollController` | `kw-data-table` | `components/table-virtual-scroll.controller.ts` |
+| `TableRowJumpController` | `kw-data-table` | `components/table-row-jump.controller.ts` |
 
 ---
 

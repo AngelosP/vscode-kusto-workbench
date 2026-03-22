@@ -94,10 +94,12 @@ The webview runtime is split into `core/` and `monaco/`:
 | --------- | ---- | ------- |
 | `kw-query-section` | `kw-query-section.ts` | KQL query editor with connection picker, execution, results |
 | `kw-query-toolbar` | `kw-query-toolbar.ts` | Query toolbar actions (toggles, share, run modes, tools) |
-| `toolbar-overflow.controller` | `toolbar-overflow.controller.ts` | ReactiveController for toolbar overflow detection and resize handling |
 | `query-connection.controller` | `query-connection.controller.ts` | ReactiveController for connection, database, favorites, and schema management |
 | `query-execution.controller` | `query-execution.controller.ts` | ReactiveController for query execution, results visibility, optimization |
+| `copilot-chat-manager.controller` | `copilot-chat-manager.controller.ts` | ReactiveController for Copilot chat panel installation, visibility, resize, event wiring, and message delegation |
+| `toolbar-overflow.controller` | `toolbar-overflow.controller.ts` | ReactiveController for toolbar overflow detection and resize handling |
 | `kw-chart-section` | `kw-chart-section.ts` | Chart builder (line, area, bar, scatter, pie, funnel via ECharts) |
+| `chart-data-source.controller` | `chart-data-source.controller.ts` | ReactiveController for data source switching, dataset refresh, and per-source column memory |
 | `kw-transformation-section` | `kw-transformation-section.ts` | Data transformation expressions |
 | `kw-markdown-section` | `kw-markdown-section.ts` | Rich text / documentation (Toast UI editor) |
 | `kw-python-section` | `kw-python-section.ts` | Python code cells |
@@ -105,7 +107,19 @@ The webview runtime is split into `core/` and `monaco/`:
 
 ### ReactiveController Pattern
 
-When a Lit component has distinct behavioral concerns (connection management, query execution, toolbar overflow), each concern is extracted into a **ReactiveController** co-located in `src/webview/sections/`. Controllers own state and lifecycle hooks but do not contain render templates — rendering stays in the host component. This keeps components focused and controllers independently testable.
+When a Lit component has distinct behavioral concerns, each concern is extracted into a **ReactiveController** co-located with its host component (in `sections/` or `components/`). Controllers own state and lifecycle hooks but do not contain render templates — rendering stays in the host component. This keeps components focused and controllers independently testable.
+
+| Controller | Host | Location |
+| ---------- | ---- | -------- |
+| `QueryConnectionController` | `kw-query-section` | `sections/query-connection.controller.ts` |
+| `QueryExecutionController` | `kw-query-section` | `sections/query-execution.controller.ts` |
+| `CopilotChatManagerController` | `kw-query-section` | `sections/copilot-chat-manager.controller.ts` |
+| `ToolbarOverflowController` | `kw-query-toolbar` | `sections/toolbar-overflow.controller.ts` |
+| `ChartDataSourceController` | `kw-chart-section` | `sections/chart-data-source.controller.ts` |
+| `TableSearchController` | `kw-data-table` | `components/table-search.controller.ts` |
+| `TableSelectionController` | `kw-data-table` | `components/table-selection.controller.ts` |
+| `TableVirtualScrollController` | `kw-data-table` | `components/table-virtual-scroll.controller.ts` |
+| `TableRowJumpController` | `kw-data-table` | `components/table-row-jump.controller.ts` |
 
 ### Reusable Lit Components (`src/webview/components/`)
 

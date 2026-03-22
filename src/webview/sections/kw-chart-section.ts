@@ -12,7 +12,6 @@ import {
 	getChartMinResizeHeight,
 } from '../shared/chart-renderer.js';
 import {
-	__kustoGetChartDatasetsInDomOrder,
 	__kustoGetChartValidationStatus,
 	__kustoCleanupSectionModeResizeObserver,
 } from '../core/section-factory.js';
@@ -30,6 +29,7 @@ import {
 import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
 import type { PopoverAnchorRect } from '../components/kw-popover.js';
+import { ChartDataSourceController, type DatasetEntry } from './chart-data-source.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,14 +66,6 @@ export interface ChartSectionData {
 	yAxisSettings?: Partial<YAxisSettings>;
 	editorHeightPx?: number;
 	validation?: unknown;
-}
-
-/** Data source entry from queries-container. */
-interface DatasetEntry {
-	id: string;
-	label: string;
-	columns: string[];
-	rows: unknown[][];
 }
 
 // ─── Default axis settings (re-exported from shared) ─────────────────────────
@@ -355,15 +347,32 @@ export class KwChartSection extends LitElement {
 	private _themeObserver: MutationObserver | null = null;
 	private _lastThemeDark: boolean | null = null;
 
-	// Per-data-source column memory: remembers column selections so switching
-	// away and back restores the previous configuration.
-	private _columnMemory = new Map<string, {
-		xColumn: string; yColumns: string[]; legendColumn: string;
-		labelColumn: string; valueColumn: string;
-		tooltipColumns: string[]; sortColumn: string;
-		wrapperHeight: string;
-		xAxisSettings: XAxisSettings; yAxisSettings: YAxisSettings;
-	}>();
+	// ── ReactiveController ────────────────────────────────────────────────────
+	public dataSourceCtrl = new ChartDataSourceController(this as any);
+
+	// ── ChartSectionHost interface for dataSourceCtrl ──────────────────────────
+	getDataSourceId(): string { return this._dataSourceId; }
+	setDataSourceId(id: string): void { this._dataSourceId = id; }
+	getDatasets(): DatasetEntry[] { return this._datasets; }
+	setDatasets(ds: DatasetEntry[]): void { this._datasets = ds; }
+	getXColumn(): string { return this._xColumn; }
+	setXColumn(v: string): void { this._xColumn = v; }
+	getYColumns(): string[] { return this._yColumns; }
+	setYColumns(v: string[]): void { this._yColumns = v; }
+	getLegendColumn(): string { return this._legendColumn; }
+	setLegendColumn(v: string): void { this._legendColumn = v; }
+	getLabelColumn(): string { return this._labelColumn; }
+	setLabelColumn(v: string): void { this._labelColumn = v; }
+	getValueColumn(): string { return this._valueColumn; }
+	setValueColumn(v: string): void { this._valueColumn = v; }
+	getTooltipColumns(): string[] { return this._tooltipColumns; }
+	setTooltipColumns(v: string[]): void { this._tooltipColumns = v; }
+	getSortColumn(): string { return this._sortColumn; }
+	setSortColumn(v: string): void { this._sortColumn = v; }
+	getXAxisSettings(): XAxisSettings { return this._xAxisSettings; }
+	setXAxisSettings(v: XAxisSettings): void { this._xAxisSettings = v; }
+	getYAxisSettings(): YAxisSettings { return this._yAxisSettings; }
+	setYAxisSettings(v: YAxisSettings): void { this._yAxisSettings = v; }
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -500,8 +509,8 @@ export class KwChartSection extends LitElement {
 										<!-- Data source row -->
 										<div class="chart-row">
 											<label>Data</label>
-											<select class="chart-select" @change=${this._onDataSourceChanged}
-												@focus=${this._refreshDatasets}>
+											<select class="chart-select" @change=${(e: Event) => this.dataSourceCtrl.onDataSourceChanged(e)}
+												@focus=${() => this.dataSourceCtrl.refreshDatasets()}>
 												<option value="">(select)</option>
 												${this._datasets.map(ds => html`
 													<option value=${ds.id} ?selected=${this._dataSourceId === ds.id}>${ds.label}</option>
@@ -974,56 +983,6 @@ export class KwChartSection extends LitElement {
 		this._schedulePersist();
 	}
 
-	private _onDataSourceChanged(e: Event): void {
-		const oldId = this._dataSourceId;
-		const newId = (e.target as HTMLSelectElement).value;
-		// Save current column config + wrapper height for the old data source before switching.
-		if (oldId) {
-			const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
-			const h = wrapper?.style.height?.trim() || '';
-			this._columnMemory.set(oldId, {
-				xColumn: this._xColumn,
-				yColumns: [...this._yColumns],
-				legendColumn: this._legendColumn,
-				labelColumn: this._labelColumn,
-				valueColumn: this._valueColumn,
-				tooltipColumns: [...this._tooltipColumns],
-				sortColumn: this._sortColumn,
-				wrapperHeight: h,
-				xAxisSettings: { ...this._xAxisSettings },
-				yAxisSettings: { ...this._yAxisSettings },
-			});
-		}
-		this._dataSourceId = newId;
-		this._refreshDatasets();
-		// Try to restore saved column config for the new data source.
-		const saved = this._columnMemory.get(newId);
-		if (saved) {
-			const cols = new Set(this._getColumnNames());
-			if (saved.xColumn && cols.has(saved.xColumn)) this._xColumn = saved.xColumn;
-			const restoredY = saved.yColumns.filter(c => cols.has(c));
-			if (restoredY.length) this._yColumns = restoredY;
-			if (saved.legendColumn && cols.has(saved.legendColumn)) this._legendColumn = saved.legendColumn;
-			if (saved.labelColumn && cols.has(saved.labelColumn)) this._labelColumn = saved.labelColumn;
-			if (saved.valueColumn && cols.has(saved.valueColumn)) this._valueColumn = saved.valueColumn;
-			const restoredTooltip = saved.tooltipColumns.filter(c => cols.has(c));
-			if (restoredTooltip.length) this._tooltipColumns = restoredTooltip;
-			if (saved.sortColumn && cols.has(saved.sortColumn)) this._sortColumn = saved.sortColumn;
-			// Restore axis settings.
-			if (saved.xAxisSettings) this._xAxisSettings = { ...saved.xAxisSettings };
-			if (saved.yAxisSettings) this._yAxisSettings = { ...saved.yAxisSettings };
-			// Restore wrapper height.
-			if (saved.wrapperHeight) {
-				const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
-				if (wrapper) {
-					wrapper.style.height = saved.wrapperHeight;
-					wrapper.dataset.kustoUserResized = 'true';
-				}
-			}
-		}
-		this._schedulePersist();
-	}
-
 	private _onXColumnChanged(e: Event): void {
 		this._xColumn = (e.target as HTMLSelectElement).value;
 		this._schedulePersist();
@@ -1282,7 +1241,7 @@ export class KwChartSection extends LitElement {
 	 * __kustoRefreshDependentExtraBoxes to update datasets and re-render.
 	 */
 	public refresh(): void {
-		this._refreshDatasets();
+		this.dataSourceCtrl.refreshDatasets();
 		this._renderChart();
 	}
 
@@ -1291,60 +1250,17 @@ export class KwChartSection extends LitElement {
 	 * Public so __kustoUpdateChartBuilderUI can call it for Lit elements.
 	 */
 	public refreshDatasets(): void {
-		try {
-			const fresh = __kustoGetChartDatasetsInDomOrder() || [];
-			// Only update if datasets actually changed — avoids constant Lit re-renders
-			// that thrash layout and starve Monaco's syntax highlighting worker.
-			if (!this._datasetsEqual(this._datasets, fresh)) {
-				this._datasets = fresh;
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		// Prune stale column references that no longer exist in the current dataset.
-		this._pruneStaleColumns();
-	}
-
-	/** Shallow compare dataset lists by id, label, and column count to avoid unnecessary re-renders. */
-	private _datasetsEqual(a: DatasetEntry[], b: DatasetEntry[]): boolean {
-		if (a.length !== b.length) return false;
-		for (let i = 0; i < a.length; i++) {
-			if (a[i].id !== b[i].id || a[i].label !== b[i].label ||
-				(a[i].columns?.length ?? 0) !== (b[i].columns?.length ?? 0) ||
-				(a[i].rows?.length ?? 0) !== (b[i].rows?.length ?? 0)) return false;
-		}
-		return true;
-	}
-
-	/** Remove column selections that don't exist in the current dataset columns. */
-	private _pruneStaleColumns(): void {
-		const cols = new Set(this._getColumnNames());
-		if (!cols.size) return; // no dataset selected or empty — don't clear
-		const prunedY = this._yColumns.filter(c => cols.has(c));
-		if (prunedY.length !== this._yColumns.length) this._yColumns = prunedY;
-		const prunedTooltip = this._tooltipColumns.filter(c => cols.has(c));
-		if (prunedTooltip.length !== this._tooltipColumns.length) this._tooltipColumns = prunedTooltip;
-		if (this._xColumn && !cols.has(this._xColumn)) this._xColumn = '';
-		if (this._legendColumn && !cols.has(this._legendColumn)) this._legendColumn = '';
-		if (this._labelColumn && !cols.has(this._labelColumn)) this._labelColumn = '';
-		if (this._valueColumn && !cols.has(this._valueColumn)) this._valueColumn = '';
-		if (this._sortColumn && !cols.has(this._sortColumn)) this._sortColumn = '';
-	}
-
-	/** Shorthand used internally. */
-	private _refreshDatasets(): void {
-		this.refreshDatasets();
+		this.dataSourceCtrl.refreshDatasets();
 	}
 
 	/** Get column names from the currently selected dataset. */
 	private _getColumnNames(): string[] {
-		const ds = this._datasets.find(d => d.id === this._dataSourceId);
-		if (!ds || !Array.isArray(ds.columns)) return [];
-		return ds.columns.map(c => {
-			if (typeof c === 'string') return c;
-			if (c && typeof c === 'object') {
-				return (c as any).name || (c as any).columnName || '';
-			}
-			return '';
-		}).filter(Boolean);
+		return this.dataSourceCtrl.getColumnNames();
+	}
+
+	/** Shorthand used internally. */
+	private _refreshDatasets(): void {
+		this.dataSourceCtrl.refreshDatasets();
 	}
 
 	// ── Chart rendering (delegates to existing global) ────────────────────────
@@ -1370,10 +1286,15 @@ export class KwChartSection extends LitElement {
 
 	// ── Persistence ───────────────────────────────────────────────────────────
 
-	private _schedulePersist(): void {
+	/** Public for ChartSectionHost interface. */
+	schedulePersist(): void {
 		try {
 			schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _schedulePersist(): void {
+		this.schedulePersist();
 	}
 
 	/**
