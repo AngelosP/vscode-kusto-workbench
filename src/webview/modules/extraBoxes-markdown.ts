@@ -1,6 +1,7 @@
 // Markdown box creation — thin bridge module.
 // Phase B1: Core logic moved to kw-markdown-section.ts (Lit component).
 import { pState } from '../shared/persistence-state';
+import { postMessageToHost } from '../shared/webview-messages';
 // This file retains: addMarkdownBox, removeMarkdownBox, reveal bridges,
 // and window bridge assignments for external callers (main.ts, persistence.ts).
 
@@ -10,9 +11,9 @@ const _win = window;
 
 // Access shared state from window.
 window.__kustoMarkdownBoxes = window.__kustoMarkdownBoxes || [];
-let markdownBoxes: any[] = window.__kustoMarkdownBoxes;
+export let markdownBoxes: any[] = window.__kustoMarkdownBoxes;
 window.__kustoMarkdownEditors = window.__kustoMarkdownEditors || {};
-const markdownEditors = window.__kustoMarkdownEditors;
+export const markdownEditors = window.__kustoMarkdownEditors;
 
 // Pending reveal payloads — queued before the editor is ready.
 pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
@@ -47,21 +48,21 @@ const payload = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchT
 const litEl = document.getElementById(boxId) as KwMarkdownSection | null;
 if (litEl && typeof litEl.revealRange === 'function') {
 try {
-_win.vscode?.postMessage?.({
+postMessageToHost({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(apply)',
 detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
-});
+} as any);
 } catch (e) { console.error('[kusto]', e); }
 litEl.revealRange(payload);
 } else {
 // Editor not ready — queue for later.
 try {
-_win.vscode?.postMessage?.({
+postMessageToHost({
 type: 'debugMdSearchReveal',
 phase: 'markdownReveal(queued)',
 detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
-});
+} as any);
 } catch (e) { console.error('[kusto]', e); }
 pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
 pState.pendingMarkdownRevealByBoxId![boxId] = payload;

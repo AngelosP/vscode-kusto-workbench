@@ -1,7 +1,11 @@
 // Monaco suggest widget management — extracted from monaco.ts (Phase 6 decomposition).
 // Handles suggest widget visibility, cursor-word detection, preselect, and smart sizing.
 
-const _win = window;
+import { queryEditors } from './state';
+
+let _suggestWidgetScrollDismissInstalled = false;
+let _suggestWidgetViewportListenersInstalled = false;
+let _clampAllSuggestWidgets: (() => void) | null = null;
 export function __kustoIsElementVisibleForSuggest(el: any) {
 	try {
 		if (!el) return false;
@@ -454,8 +458,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 
 			// Dismiss suggest widgets on outer (notebook/body) scroll — ephemeral per dismiss-on-scroll policy.
 			try {
-				if (!_win.__kustoSuggestWidgetScrollDismissInstalled) {
-					_win.__kustoSuggestWidgetScrollDismissInstalled = true;
+				if (!_suggestWidgetScrollDismissInstalled) {
+					_suggestWidgetScrollDismissInstalled = true;
 					window.addEventListener('scroll', (ev: any) => {
 						try {
 							const target = ev && ev.target;
@@ -468,9 +472,9 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								} catch (e) { console.error('[kusto]', e); }
 							}
 							// Outer scroll — dismiss all suggest widgets.
-							if (typeof _win.queryEditors === 'undefined' || !_win.queryEditors) return;
-							for (const id of Object.keys(_win.queryEditors)) {
-								const ed = _win.queryEditors[id];
+							if (!queryEditors) return;
+							for (const id of Object.keys(queryEditors)) {
+								const ed = queryEditors[id];
 								if (!ed) continue;
 								try {
 									const r = ed.trigger('keyboard', 'hideSuggestWidget', {});
@@ -662,7 +666,7 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 		let lastCursorClampAt = 0;
 		const debugSuggest = (eventName: any, data: any) => {
 			try {
-				const enabled = !!(window && (_win.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
+				const enabled = !!(window && (window.__kustoSuggestDebug || (window.localStorage && window.localStorage.getItem('kustoSuggestDebug') === '1')));
 				if (!enabled) return;
 				console.debug('[kusto][suggest]', String(eventName || ''), data || {}, { boxId: editor && editor.__kustoBoxId });
 			} catch (e) { console.error('[kusto]', e); }
@@ -1033,13 +1037,13 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 
 		// Install one global viewport listener to update all visible suggest widgets across editors.
 		try {
-			if (!_win.__kustoSuggestWidgetViewportListenersInstalled) {
-				_win.__kustoSuggestWidgetViewportListenersInstalled = true;
-				_win.__kustoClampAllSuggestWidgets = () => {
+			if (!_suggestWidgetViewportListenersInstalled) {
+				_suggestWidgetViewportListenersInstalled = true;
+				_clampAllSuggestWidgets = () => {
 					try {
-						if (typeof _win.queryEditors === 'undefined' || !_win.queryEditors) return;
-						for (const id of Object.keys(_win.queryEditors)) {
-							const ed = _win.queryEditors[id];
+						if (!queryEditors) return;
+						for (const id of Object.keys(queryEditors)) {
+							const ed = queryEditors[id];
 							if (ed && typeof ed.__kustoScheduleSuggestClamp === 'function') {
 								ed.__kustoScheduleSuggestClamp();
 							}
@@ -1047,10 +1051,10 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 					} catch (e) { console.error('[kusto]', e); }
 				};
 				window.addEventListener('resize', () => {
-					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
+					try { _clampAllSuggestWidgets && _clampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
 				});
 				window.addEventListener('scroll', () => {
-					try { _win.__kustoClampAllSuggestWidgets && _win.__kustoClampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
+					try { _clampAllSuggestWidgets && _clampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
 				}, true);
 			}
 		} catch (e) { console.error('[kusto]', e); }

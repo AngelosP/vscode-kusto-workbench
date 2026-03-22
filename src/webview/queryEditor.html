@@ -15,26 +15,26 @@
 	<div class="add-controls" role="group" aria-label="Add sections">
 		<span class="add-controls-label">Add</span>
 		<span class="add-controls-options">
-			<button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Query</button>
-			<button class="add-control-btn" data-add-kind="chart" onclick="__kustoRequestAddSection('chart')">Chart</button>
-			<button class="add-control-btn" data-add-kind="transformation" onclick="__kustoRequestAddSection('transformation')">Transformation</button>
-			<button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Markdown</button>
-			<button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Python</button>
-			<button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">URL</button>
+			<button class="add-control-btn" data-add-kind="query">Query</button>
+			<button class="add-control-btn" data-add-kind="chart">Chart</button>
+			<button class="add-control-btn" data-add-kind="transformation">Transformation</button>
+			<button class="add-control-btn" data-add-kind="markdown">Markdown</button>
+			<button class="add-control-btn" data-add-kind="python">Python</button>
+			<button class="add-control-btn" data-add-kind="url">URL</button>
 		</span>
 		<!-- Mobile dropdown for narrow widths -->
 		<div class="add-controls-dropdown">
-			<button type="button" class="add-control-btn add-controls-dropdown-btn" id="addSectionDropdownBtn" onclick="__kustoToggleAddSectionDropdown(event)" aria-haspopup="listbox" aria-expanded="false">
+			<button type="button" class="add-control-btn add-controls-dropdown-btn" id="addSectionDropdownBtn" aria-haspopup="listbox" aria-expanded="false">
 				Section
 				<svg class="add-controls-dropdown-caret" width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>
 			</button>
 			<div class="add-controls-dropdown-menu" id="addSectionDropdownMenu" role="listbox" style="display:none;">
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="query" onclick="__kustoAddSectionFromDropdown('query')">Query</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="chart" onclick="__kustoAddSectionFromDropdown('chart')">Chart</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="transformation" onclick="__kustoAddSectionFromDropdown('transformation')">Transformation</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="markdown" onclick="__kustoAddSectionFromDropdown('markdown')">Markdown</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="python" onclick="__kustoAddSectionFromDropdown('python')">Python</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="url" onclick="__kustoAddSectionFromDropdown('url')">URL</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="query">Query</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="chart">Chart</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="transformation">Transformation</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="markdown">Markdown</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="python">Python</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="url">URL</div>
 			</div>
 		</div>
 	</div>
@@ -111,11 +111,11 @@
 	<kw-diff-view></kw-diff-view>
 
 	<!-- Share Modal -->
-	<div id="shareModal" class="share-modal" onclick="__kustoCloseShareModal(event)">
-		<div class="share-modal-content" onclick="event.stopPropagation()">
+	<div id="shareModal" class="share-modal">
+		<div class="share-modal-content" id="shareModalContent">
 			<div class="share-modal-header">
 				<h3 id="shareModal_title">Share</h3>
-				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn share-modal-close" type="button" onclick="__kustoCloseShareModal()" title="Close" aria-label="Close">
+				<button class="unified-btn-secondary unified-btn-icon-only refresh-btn close-btn share-modal-close" type="button" id="shareModalCloseBtn" title="Close" aria-label="Close">
 					<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
 						<path d="M4 4l8 8" />
 						<path d="M12 4L4 12" />
@@ -151,7 +151,7 @@
 				</label>
 			</div>
 			<div class="share-modal-footer">
-				<button class="unified-btn-primary share-modal-copy-btn" type="button" onclick="__kustoShareCopyToClipboard()">Copy to clipboard</button>
+				<button class="unified-btn-primary share-modal-copy-btn" type="button" id="shareModalCopyBtn">Copy to clipboard</button>
 			</div>
 		</div>
 	</div>

@@ -1,80 +1,73 @@
-// State module — converted from legacy/state.js
-// All global state variables exposed on window for remaining legacy callers.
-export {};
+// State module — central webview state.
+// All state variables are exported for direct ES module import within the
+// esbuild-bundled IIFE.  Window assignments are kept alongside exports so
+// that Monaco AMD code, the browser-ext, and queryEditor.js bootstrap can
+// still read/write via window.*.
 
 const _win = window;
 
-const connections: any[] = [];
-try { _win.connections = connections; } catch (e) { console.error('[kusto]', e); }
-const queryBoxes: any[] = [];
-let lastConnectionId: string | null = null;
-let lastDatabase: string | null = null;
-const cachedDatabases: Record<string, any> = {};
-let kustoFavorites: any[] = [];
-let leaveNoTraceClusters: string[] = [];
-const favoritesModeByBoxId: Record<string, any> = {};
-try { _win.favoritesModeByBoxId = favoritesModeByBoxId; } catch (e) { console.error('[kusto]', e); }
-const pendingFavoriteSelectionByBoxId: Record<string, any> = {};
-const queryEditors: Record<string, any> = {};
-// Expose queryEditors on window so the Lit component (runs in module scope) can access it.
-try { _win.queryEditors = queryEditors; } catch (e) { console.error('[kusto]', e); }
-const queryEditorResizeObservers: Record<string, any> = {};
-const queryEditorVisibilityObservers: Record<string, any> = {};
-const queryEditorVisibilityMutationObservers: Record<string, any> = {};
-const queryEditorBoxByModelUri: Record<string, any> = {};
-const suggestDebounceTimers: Record<string, any> = {};
-let activeQueryEditorBoxId: string | null = null;
-const schemaByBoxId: Record<string, any> = {};
-const schemaFetchInFlightByBoxId: Record<string, any> = {};
-const lastSchemaRequestAtByBoxId: Record<string, any> = {};
-let monacoReadyPromise: Promise<void> | null = null;
+// ---------------------------------------------------------------------------
+// Reference-type state (mutated in-place — safe to export directly)
+// ---------------------------------------------------------------------------
+export const cachedDatabases: Record<string, any> = {};
+export const favoritesModeByBoxId: Record<string, any> = {};
+export const pendingFavoriteSelectionByBoxId: Record<string, any> = {};
+export const queryEditors: Record<string, any> = {};
+export const queryEditorResizeObservers: Record<string, any> = {};
+export const queryEditorVisibilityObservers: Record<string, any> = {};
+export const queryEditorVisibilityMutationObservers: Record<string, any> = {};
+export const queryEditorBoxByModelUri: Record<string, any> = {};
+export const schemaByBoxId: Record<string, any> = {};
+export const schemaFetchInFlightByBoxId: Record<string, any> = {};
+export const lastSchemaRequestAtByBoxId: Record<string, any> = {};
+export const qualifyTablesInFlightByBoxId: Record<string, any> = {};
+export const schemaByConnDb: Record<string, any> = {};
+export const schemaRequestResolversByBoxId: Record<string, any> = {};
+export const databasesRequestResolversByBoxId: Record<string, any> = {};
+export const missingClusterDetectTimersByBoxId: Record<string, any> = {};
+export const lastQueryTextByBoxId: Record<string, any> = {};
+export const missingClusterUrlsByBoxId: Record<string, any> = {};
+export const optimizationMetadataByBoxId: Record<string, any> = {};
+export const suggestedDatabaseByClusterKeyByBoxId: Record<string, any> = {};
+export const queryExecutionTimers: Record<string, any> = {};
+export const runModesByBoxId: Record<string, any> = {};
+export const caretDocOverlaysByBoxId: Record<string, any> = {};
+export const copilotInlineCompletionRequests: Record<string, any> = {};
 
-// In-flight state for long-running toolbar actions.
-const qualifyTablesInFlightByBoxId: Record<string, any> = {};
+// ---------------------------------------------------------------------------
+// Primitive / reassigned state (need setter functions for cross-module writes)
+// ---------------------------------------------------------------------------
+export let connections: any[] = [];
+export let queryBoxes: any[] = [];
+export let lastConnectionId: string | null = null;
+export let lastDatabase: string | null = null;
+export let kustoFavorites: any[] = [];
+export let leaveNoTraceClusters: string[] = [];
+export let activeQueryEditorBoxId: string | null = null;
+export let monacoReadyPromise: Promise<void> | null = null;
+export let activeMonacoEditor: any = null;
+export let caretDocsEnabled = true;
+export let autoTriggerAutocompleteEnabled = true;
+export let copilotInlineCompletionsEnabled = true;
 
-// Cross-box schema cache (for tools like "fully qualify tables").
-// Key: `${connectionId}|${database}`
-const schemaByConnDb: Record<string, any> = {};
-// Pending schema requests keyed by request boxId.
-const schemaRequestResolversByBoxId: Record<string, any> = {};
-
-// Pending database list requests keyed by request boxId.
-const databasesRequestResolversByBoxId: Record<string, any> = {};
-
-// Missing cluster connections banner state
-const missingClusterDetectTimersByBoxId: Record<string, any> = {};
-const lastQueryTextByBoxId: Record<string, any> = {};
-const missingClusterUrlsByBoxId: Record<string, any> = {};
-
-// Performance optimization comparison metadata
-const optimizationMetadataByBoxId: Record<string, any> = {};
-const suggestedDatabaseByClusterKeyByBoxId: Record<string, any> = {};
-
-// The Monaco editor instance that most recently received focus (query/markdown/python).
-let activeMonacoEditor: any = null;
-
-const queryExecutionTimers: Record<string, any> = {};
-const runModesByBoxId: Record<string, any> = {};
-try { _win.runModesByBoxId = runModesByBoxId; } catch (e) { console.error('[kusto]', e); }
-
-// Caret docs (custom tooltip) toggle
-let caretDocsEnabled = true;
-const caretDocOverlaysByBoxId: Record<string, any> = {};
-
-// Autocomplete behavior toggle
-let autoTriggerAutocompleteEnabled = true;
-
-// Automatically trigger Copilot inline completions toggle
-let copilotInlineCompletionsEnabled = true;
-
-// Pending Copilot inline completion requests
-const copilotInlineCompletionRequests: Record<string, any> = {};
-
-// Track the currently loaded monaco-kusto schema key to avoid redundant updates
-let currentMonacoKustoSchemaKey: string | null = null;
+// Setter functions — update the module-local variable AND window.
+export function setConnections(val: any[]) { connections = val; try { _win.connections = val; } catch (e) { console.error('[kusto]', e); } }
+export function setQueryBoxes(val: any[]) { queryBoxes = val; try { _win.queryBoxes = val; } catch (e) { console.error('[kusto]', e); } }
+export function setLastConnectionId(val: string | null) { lastConnectionId = val; try { _win.lastConnectionId = val; } catch (e) { console.error('[kusto]', e); } }
+export function setLastDatabase(val: string | null) { lastDatabase = val; try { _win.lastDatabase = val; } catch (e) { console.error('[kusto]', e); } }
+export function setKustoFavorites(val: any[]) { kustoFavorites = val; try { _win.kustoFavorites = val; } catch (e) { console.error('[kusto]', e); } }
+export function setLeaveNoTraceClusters(val: string[]) { leaveNoTraceClusters = val; try { _win.leaveNoTraceClusters = val; } catch (e) { console.error('[kusto]', e); } }
+export function setActiveQueryEditorBoxId(val: string | null) { activeQueryEditorBoxId = val; try { _win.activeQueryEditorBoxId = val; } catch (e) { console.error('[kusto]', e); } }
+export function setMonacoReadyPromise(val: Promise<void> | null) { monacoReadyPromise = val; try { _win.monacoReadyPromise = val; } catch (e) { console.error('[kusto]', e); } }
+export function setActiveMonacoEditor(val: any) { activeMonacoEditor = val; try { _win.activeMonacoEditor = val; } catch (e) { console.error('[kusto]', e); } }
+export function setCaretDocsEnabled(val: boolean) { caretDocsEnabled = val; try { _win.caretDocsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
+export function setAutoTriggerAutocompleteEnabled(val: boolean) { autoTriggerAutocompleteEnabled = val; try { _win.autoTriggerAutocompleteEnabled = val; } catch (e) { console.error('[kusto]', e); } }
+export function setCopilotInlineCompletionsEnabled(val: boolean) { copilotInlineCompletionsEnabled = val; try { _win.copilotInlineCompletionsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 
 // ======================================================================
 // Window bridge: expose all state globals for remaining legacy callers
+// (Monaco AMD, browser-ext, queryEditor.js bootstrap, Lit components
+//  that still read via window.*)
 // ======================================================================
 _win.connections = connections;
 _win.queryBoxes = queryBoxes;

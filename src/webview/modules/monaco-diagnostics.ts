@@ -3,6 +3,8 @@
 // Also contains text-processing utility functions used by completions and other modules.
 // Window bridge exports at bottom for remaining callers.
 
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId } from './state';
+
 const _win = window;
 
 // AMD globals loaded by require() - available globally after Monaco loads.
@@ -860,12 +862,12 @@ export const __kustoBestMatches = (needle: any, candidates: any, maxCount: any) 
 const __kustoGetSchemaForModel = (model: any) => {
 	let boxId = null;
 	try {
-		boxId = model && model.uri ? (_win.queryEditorBoxByModelUri[model.uri.toString()] || null) : null;
+		boxId = model && model.uri ? (queryEditorBoxByModelUri[model.uri.toString()] || null) : null;
 	} catch { boxId = null; }
 	if (!boxId) {
-		boxId = _win.activeQueryEditorBoxId;
+		boxId = activeQueryEditorBoxId;
 	}
-	return { boxId, schema: boxId ? (_win.schemaByBoxId[boxId] || null) : null };
+	return { boxId, schema: boxId ? (schemaByBoxId[boxId] || null) : null };
 };
 
 const __kustoComputeDiagnostics = (text: any, schema: any) => {

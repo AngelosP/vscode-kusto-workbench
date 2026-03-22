@@ -1,6 +1,8 @@
 // Monaco editor writability guards — extracted from monaco.ts (Phase 6 decomposition).
 // Forces Monaco textareas to remain writable despite VS Code webview timing glitches.
 
+import { queryEditors } from './state';
+
 const _win = window;
 
 const __kustoWritableGuardsByEditor = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
@@ -111,7 +113,7 @@ export function __kustoEnsureAllEditorsWritableSoon() {
 	try {
 		const maps = [];
 		try {
-			if (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) maps.push(_win.queryEditors);
+			if (queryEditors) maps.push(queryEditors);
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoMarkdownEditors !== 'undefined' && _win.__kustoMarkdownEditors) maps.push(_win.__kustoMarkdownEditors);

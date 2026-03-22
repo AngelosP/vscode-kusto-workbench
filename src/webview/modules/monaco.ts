@@ -46,10 +46,31 @@ import {
 import { __kustoInitCompletionDeps } from './monaco-completions';
 import { __kustoAttachAutoResizeToContent } from './monaco-resize';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
-import { __kustoAutoSizeEditor, ensureSchemaForBox } from './queryBoxes';
+import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from './queryBoxes';
 import { executeQuery } from './queryBoxes-execution';
+import { initToolbarOverflow } from './queryBoxes-toolbar';
+import { postMessageToHost } from '../shared/webview-messages';
 import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
+import {
+	connections,
+	monacoReadyPromise,
+	setMonacoReadyPromise,
+	activeQueryEditorBoxId,
+	setActiveQueryEditorBoxId,
+	setActiveMonacoEditor,
+	autoTriggerAutocompleteEnabled,
+	copilotInlineCompletionsEnabled,
+	caretDocsEnabled,
+	queryEditors,
+	queryEditorBoxByModelUri,
+	schemaByBoxId,
+	copilotInlineCompletionRequests,
+	queryEditorResizeObservers,
+	queryEditorVisibilityObservers,
+	queryEditorVisibilityMutationObservers,
+	caretDocOverlaysByBoxId,
+} from './state';
 
 // ── Schema state singleton (the ONLY source of truth for schema tracking) ───
 export const __kustoSchemaTracker = new SchemaTracker();
@@ -64,7 +85,7 @@ let __kustoGetHoverInfoAt: ((model: any, position: any) => any) | null = null;
 let __kustoSchemaOperationQueue: Promise<any> = Promise.resolve();
 let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
 let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null = null;
-let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
+export let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
 let __kustoEnableMarkersForBox: ((boxId: any) => void) | null = null;
 let __kustoTriggerRevalidation: ((boxId: any) => void) | null = null;
 let __kustoExtractCrossClusterRefs: ((queryText: any) => any[]) | null = null;
@@ -140,8 +161,8 @@ export function __kustoGetColumnsByTable(schema: any) {
 }
 
 function ensureMonaco() {
-	if (_win.monacoReadyPromise) {
-		return _win.monacoReadyPromise;
+	if (monacoReadyPromise) {
+		return monacoReadyPromise;
 	}
 
 	const waitForAmdLoader = () => {
@@ -166,7 +187,7 @@ function ensureMonaco() {
 		});
 	};
 
-	_win.monacoReadyPromise = new Promise((resolve, reject) => {
+	setMonacoReadyPromise(new Promise((resolve, reject) => {
 		try {
 			waitForAmdLoader().then((req) => {
 				// Monaco worker bootstrap.
@@ -930,14 +951,12 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 							const requestId = `ccs_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 							__kustoControlCommandDocPending[key] = requestId;
 							try {
-								if (typeof _win.vscode !== 'undefined' && _win.vscode && typeof _win.vscode.postMessage === 'function') {
-									_win.vscode.postMessage({
-										type: 'fetchControlCommandSyntax',
-										requestId,
-										commandLower: key,
-										href: String(cmd.href)
-									});
-								}
+								postMessageToHost({
+									type: 'fetchControlCommandSyntax',
+									requestId,
+									commandLower: key,
+									href: String(cmd.href)
+								});
 							} catch (e) { console.error('[kusto]', e); }
 						} catch (e) { console.error('[kusto]', e); }
 					};
@@ -1861,7 +1880,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												const allQueryBoxes = document.querySelectorAll('kw-query-section.query-box[box-id]');
 												allQueryBoxes.forEach(box => {
 													const otherBoxId = box.getAttribute('box-id');
-													const boxEditor = _win.queryEditors?.[otherBoxId as string];
+													const boxEditor = queryEditors?.[otherBoxId as string];
 													if (boxEditor) {
 														const boxCluster = typeof (box as any).getClusterUrl === 'function' ? (box as any).getClusterUrl() : '';
 														const boxClusterNorm = boxCluster ? normalizeClusterUrl(boxCluster) : null;
@@ -2065,8 +2084,8 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 								}
 							} catch (e) { console.error('[kusto]', e); }
 							
-							const connectionId = _win.__kustoGetConnectionId ? _win.__kustoGetConnectionId(ownerId) : '';
-							const database = _win.__kustoGetDatabase ? _win.__kustoGetDatabase(ownerId) : '';
+const connectionId = __kustoGetConnectionId(ownerId);
+									const database = __kustoGetDatabase(ownerId);
 							
 							// Only enable markers (red squiggles) if both cluster and database are selected.
 							// Without a full connection context, diagnostics would show false positives.
@@ -2080,7 +2099,7 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							}
 							
 							// Get the cluster URL for this connection
-							const conn = Array.isArray(_win.connections) ? _win.connections.find(c => c && String(c.id || '') === connectionId) : null;
+							const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
 							const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 							
 							if (!clusterUrl) {
@@ -2090,12 +2109,12 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							let focusedModelUri: string | null = null;
 							// Register model→cluster mapping for marker suppression
 							try {
-								const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
+								const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
 								if (editor && typeof editor.getModel === 'function') {
 									const model = editor.getModel();
 									if (model && model.uri) {
 										focusedModelUri = model.uri.toString();
-										__kustoModelClusterMap[focusedModelUri] = clusterUrl;
+										__kustoModelClusterMap[focusedModelUri!] = clusterUrl;
 									}
 								}
 							} catch (e) { console.error('[kusto]', e); }
@@ -2105,7 +2124,7 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 							}
 							
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
-							const schema = typeof _win.schemaByBoxId !== 'undefined' ? _win.schemaByBoxId[boxId] : null;
+							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
 							
 							if (rawSchemaJson) {
@@ -2147,7 +2166,7 @@ __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = t
 					// Helper to enable markers for a specific box's editor
 __kustoEnableMarkersForBox = function(boxId: any) {
 						try {
-							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
+							const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model && model.uri) {
@@ -2163,7 +2182,7 @@ __kustoEnableMarkersForBox = function(boxId: any) {
 					// This is needed after context switch since monaco-kusto doesn't auto-revalidate
 __kustoTriggerRevalidation = function(boxId: any) {
 						try {
-							const editor = typeof _win.queryEditors !== 'undefined' ? _win.queryEditors[boxId] : null;
+							const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model) {
@@ -2278,15 +2297,13 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 
 						const requestToken = 'crosscluster_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 						
-						if (typeof _win.vscode !== 'undefined' && _win.vscode.postMessage) {
-							_win.vscode.postMessage({
-								type: 'requestCrossClusterSchema',
-								clusterName: resolvedClusterName,
-								database,
-								boxId: boxId || '',
-								requestToken
-							});
-						}
+						postMessageToHost({
+							type: 'requestCrossClusterSchema',
+							clusterName: resolvedClusterName,
+							database,
+							boxId: boxId || '',
+							requestToken
+						});
 					};
 
 					// Apply a cross-cluster schema to monaco-kusto
@@ -2399,12 +2416,10 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 											
 											// Show notification to user that cross-cluster schema was loaded
 											try {
-												if (typeof _win.vscode !== 'undefined' && _win.vscode.postMessage) {
-													_win.vscode.postMessage({
-														type: 'showInfo',
-														message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
-													});
-												}
+												postMessageToHost({
+													type: 'showInfo',
+													message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
+												});
 											} catch (e) { console.error('[kusto]', e); }
 													} else {
 														__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
@@ -2511,9 +2526,9 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 					// The result handler is still needed for main.ts message dispatch.
 					// It resolves the pending promise.
 					_win.__kustoHandleInlineCompletionResult = (requestId: string, completions: any[]) => {
-						const pending = _win.copilotInlineCompletionRequests[requestId];
+						const pending = copilotInlineCompletionRequests[requestId];
 						if (!pending || typeof pending.resolve !== 'function') return;
-						delete _win.copilotInlineCompletionRequests[requestId];
+						delete copilotInlineCompletionRequests[requestId];
 						pending.resolve(completions || []);
 					};
 
@@ -2523,7 +2538,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								const isManualTrigger = context && context.triggerKind === 1;
 
 								// Check if automatic inline completions are enabled
-								if (!isManualTrigger && typeof _win.copilotInlineCompletionsEnabled !== 'undefined' && !_win.copilotInlineCompletionsEnabled) {
+								if (!isManualTrigger && typeof copilotInlineCompletionsEnabled !== 'undefined' && !copilotInlineCompletionsEnabled) {
 									return { items: [] };
 								}
 
@@ -2552,11 +2567,11 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								let editorForModel: any = null;
 								try {
 									const modelUri = model.uri ? model.uri.toString() : '';
-									if (typeof _win.queryEditorBoxByModelUri !== 'undefined' && modelUri) {
-										boxId = _win.queryEditorBoxByModelUri[modelUri] || '';
+									if (typeof queryEditorBoxByModelUri !== 'undefined' && modelUri) {
+										boxId = queryEditorBoxByModelUri[modelUri] || '';
 									}
-									if (boxId && _win.queryEditors) {
-										editorForModel = _win.queryEditors[boxId] || null;
+									if (boxId && queryEditors) {
+										editorForModel = queryEditors[boxId] || null;
 									}
 								} catch (e) { console.error('[kusto]', e); }
 
@@ -2571,11 +2586,11 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								// delete the pending request before the LLM can respond.
 								const completionPromise = new Promise<any[]>((resolve) => {
 									const timeoutId = setTimeout(() => {
-										delete _win.copilotInlineCompletionRequests[requestId];
+										delete copilotInlineCompletionRequests[requestId];
 										resolve([]);
 									}, 10000);
 
-									_win.copilotInlineCompletionRequests[requestId] = {
+									copilotInlineCompletionRequests[requestId] = {
 										resolve: (completions: any) => {
 											clearTimeout(timeoutId);
 											resolve(completions);
@@ -2585,7 +2600,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 
 								// Send request to extension host
 								try {
-									_win.vscode!.postMessage({
+									postMessageToHost({
 										type: 'requestCopilotInlineCompletion',
 										requestId,
 										boxId,
@@ -2593,7 +2608,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 										textAfter
 									});
 								} catch (err) {
-									delete _win.copilotInlineCompletionRequests[requestId];
+									delete copilotInlineCompletionRequests[requestId];
 									if (editorForModel && boxId) __kustoHideInlineSpinner(editorForModel, boxId);
 									return { items: [] };
 								}
@@ -2651,15 +2666,15 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 		} catch (e) {
 			reject(e);
 		}
-	});
+	}));
 
 	// If Monaco init fails, allow retries within the same webview session.
-	_win.monacoReadyPromise = _win.monacoReadyPromise.catch((e: any) => {
-		try { _win.monacoReadyPromise = null; } catch (e) { console.error('[kusto]', e); }
+	setMonacoReadyPromise(monacoReadyPromise!.catch((e: any) => {
+		setMonacoReadyPromise(null);
 		throw e;
-	});
+	}));
 
-	return _win.monacoReadyPromise;
+	return monacoReadyPromise;
 }
 
 // Lazy loading state tracking
@@ -2735,7 +2750,7 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 function initQueryEditor(boxId: any) {
-	return ensureMonaco().then((monaco: any) => {
+	return ensureMonaco()!.then((monaco: any) => {
 		const container = document.getElementById(boxId + '_query_editor');
 		const wrapper = container && container.closest ? container.closest('.query-editor-wrapper') : null;
 		const placeholder = document.getElementById(boxId + '_query_placeholder');
@@ -2776,7 +2791,7 @@ function initQueryEditor(boxId: any) {
 		// If an editor instance already exists, ensure it's still attached to this container.
 		// If it's stale (detached due to DOM teardown), dispose and recreate.
 		try {
-			const existing = _win.queryEditors && _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
+			const existing = queryEditors && queryEditors[boxId] ? queryEditors[boxId] : null;
 			if (existing) {
 				const dom = (typeof existing.getDomNode === 'function') ? existing.getDomNode() : null;
 				const attached = !!(dom && dom.isConnected && container.contains(dom));
@@ -2784,7 +2799,7 @@ function initQueryEditor(boxId: any) {
 					return;
 				}
 				try { existing.dispose(); } catch (e) { console.error('[kusto]', e); }
-				try { delete _win.queryEditors[boxId]; } catch (e) { console.error('[kusto]', e); }
+				try { delete queryEditors[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -3503,7 +3518,7 @@ function initQueryEditor(boxId: any) {
 					const bid = String(boxId || '').trim();
 					const t = String(term || '');
 					if (!bid || !t) return false;
-					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
+					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
 					if (!ed) return false;
 					try {
 						const state = __kustoAutoFindStateByBoxId[bid];
@@ -3603,7 +3618,7 @@ function initQueryEditor(boxId: any) {
 					try { had = !!(__kustoAutoFindStateByBoxId[bid]); } catch { had = false; }
 					if (!had) return;
 					try { delete __kustoAutoFindStateByBoxId[bid]; } catch (e) { console.error('[kusto]', e); }
-					const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[bid] : null;
+					const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[bid] : null;
 					if (!ed) return;
 					try {
 						// Close find widget if it was opened by us.
@@ -3661,7 +3676,7 @@ function initQueryEditor(boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
-		_win.queryEditors[boxId] = editor;
+		queryEditors[boxId] = editor;
 		// Allow other scripts to reliably map editor -> boxId (used for global key handlers).
 		try { editor.__kustoBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.
@@ -4004,10 +4019,10 @@ function initQueryEditor(boxId: any) {
 		const __kustoMaybeAutoTriggerAutocomplete = (ed: any, boxId: any, changeEvent: any) => {
 			try {
 				if (!ed) return;
-				if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean' || !_win.autoTriggerAutocompleteEnabled) return;
+				if (typeof autoTriggerAutocompleteEnabled !== 'boolean' || !autoTriggerAutocompleteEnabled) return;
 				// Only auto-trigger for the currently focused query editor.
 				try {
-					if (typeof _win.activeQueryEditorBoxId === 'string' && _win.activeQueryEditorBoxId !== boxId) {
+					if (typeof activeQueryEditorBoxId === 'string' && activeQueryEditorBoxId !== boxId) {
 						return;
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -4143,7 +4158,7 @@ function initQueryEditor(boxId: any) {
 			if (typeof _win.__kustoTriggerAutocompleteForBoxId !== 'function') {
 				_win.__kustoTriggerAutocompleteForBoxId = (id: any) => {
 					try {
-						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (ed) {
 							__kustoTriggerAutocomplete(ed);
 						}
@@ -4175,7 +4190,7 @@ function initQueryEditor(boxId: any) {
 			if (typeof _win.__kustoSingleLineQueryForBoxId !== 'function') {
 				_win.__kustoSingleLineQueryForBoxId = (id: any) => {
 					try {
-						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
 						const v = ed.getValue ? ed.getValue() : '';
 						const next = __kustoToSingleLineKusto(v);
@@ -4186,7 +4201,7 @@ function initQueryEditor(boxId: any) {
 			if (typeof _win.__kustoPrettifyQueryForBoxId !== 'function') {
 				_win.__kustoPrettifyQueryForBoxId = (id: any) => {
 					try {
-						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
 						const v = ed.getValue ? ed.getValue() : '';
 						const next = __kustoPrettifyKustoTextWithSemicolonStatements(v);
@@ -4206,7 +4221,7 @@ function initQueryEditor(boxId: any) {
 			if (typeof _win.__kustoCopySingleLineQueryForBoxId !== 'function') {
 				_win.__kustoCopySingleLineQueryForBoxId = async (id: any) => {
 					try {
-						const ed = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[id] : null;
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
 						if (!ed) return;
 						let v = ed.getValue ? ed.getValue() : '';
 						// When the editor has multiple statements, operate on the statement under the cursor.
@@ -4221,7 +4236,7 @@ function initQueryEditor(boxId: any) {
 								if (stmt) {
 									v = stmt;
 								} else {
-									try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to copy that statement as a single line.' }); } catch (e) { console.error('[kusto]', e); }
+									try { postMessageToHost({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to copy that statement as a single line.' }); } catch (e) { console.error('[kusto]', e); }
 									return;
 								}
 							}
@@ -4232,7 +4247,7 @@ function initQueryEditor(boxId: any) {
 						try {
 							if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
 								await navigator.clipboard.writeText(single);
-								try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+								try { postMessageToHost({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
 								return;
 							}
 						} catch (e) { console.error('[kusto]', e); }
@@ -4252,9 +4267,9 @@ function initQueryEditor(boxId: any) {
 						if (!ok) {
 							throw new Error('copy failed');
 						}
-						try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+						try { postMessageToHost({ type: 'showInfo', message: 'Single-line query copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
 					} catch {
-						try { _win.vscode && _win.vscode.postMessage && _win.vscode.postMessage({ type: 'showInfo', message: 'Failed to copy single-line query to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+						try { postMessageToHost({ type: 'showInfo', message: 'Failed to copy single-line query to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
 					}
 				};
 			}
@@ -4367,7 +4382,7 @@ function initQueryEditor(boxId: any) {
 					lastHtml = cached;
 					// If caret-docs are enabled, paint the cached docs immediately so we don't flash watermark.
 					try {
-						if (typeof _win.caretDocsEnabled === 'undefined' || _win.caretDocsEnabled !== false) {
+						if (typeof caretDocsEnabled === 'undefined' || caretDocsEnabled !== false) {
 							if (banner) banner.style.display = 'flex';
 							if (text) {
 								if (text.classList) text.classList.remove('is-watermark');
@@ -4472,7 +4487,7 @@ function initQueryEditor(boxId: any) {
 				try {
 					// Default to enabled if the global toggle hasn't been initialized yet.
 					try {
-						if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
+						if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
 							hide();
 							return;
 						}
@@ -4543,8 +4558,8 @@ function initQueryEditor(boxId: any) {
 					// Prefer the explicit "active editor" tracking. In some Monaco builds,
 					// hasTextFocus/hasWidgetFocus can be unreliable while the suggest widget is open.
 					try {
-						const activeId = (typeof _win.activeQueryEditorBoxId !== 'undefined' && _win.activeQueryEditorBoxId)
-							? String(_win.activeQueryEditorBoxId)
+						const activeId = (typeof activeQueryEditorBoxId !== 'undefined' && activeQueryEditorBoxId)
+							? String(activeQueryEditorBoxId)
 							: null;
 						if (activeId && activeId !== String(boxId)) {
 								// When another editor is active, keep the last content (if any) instead
@@ -4664,8 +4679,8 @@ function initQueryEditor(boxId: any) {
 
 					const docOverlay = createDocOverlay();
 					try {
-						if (typeof _win.caretDocOverlaysByBoxId !== 'undefined' && _win.caretDocOverlaysByBoxId) {
-							_win.caretDocOverlaysByBoxId[boxId] = docOverlay;
+						if (typeof caretDocOverlaysByBoxId !== 'undefined' && caretDocOverlaysByBoxId) {
+							caretDocOverlaysByBoxId[boxId] = docOverlay;
 						}
 					} catch (e) { console.error('[kusto]', e); }
 
@@ -4676,16 +4691,16 @@ function initQueryEditor(boxId: any) {
 							__kustoCaretDocsViewportListenersInstalled = true;
 							const refreshActive = () => {
 								try {
-									if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
+									if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
 										return;
 									}
-									const overlays = typeof _win.caretDocOverlaysByBoxId !== 'undefined' ? _win.caretDocOverlaysByBoxId : null;
+									const overlays = typeof caretDocOverlaysByBoxId !== 'undefined' ? caretDocOverlaysByBoxId : null;
 									if (!overlays) {
 										return;
 									}
 									let activeId = null;
 									try {
-										activeId = typeof _win.activeQueryEditorBoxId !== 'undefined' ? _win.activeQueryEditorBoxId : null;
+										activeId = typeof activeQueryEditorBoxId !== 'undefined' ? activeQueryEditorBoxId : null;
 									} catch {
 										activeId = null;
 									}
@@ -4711,7 +4726,7 @@ function initQueryEditor(boxId: any) {
 					// monaco.KeyCode.Escape === 9
 					if (e.keyCode === monaco.KeyCode.Escape) {
 						try {
-							if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
+							if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
 								docOverlay.hide();
 							} else if (docOverlay && typeof docOverlay.showWatermark === 'function') {
 								docOverlay.showWatermark();
@@ -4738,7 +4753,7 @@ function initQueryEditor(boxId: any) {
 		try {
 			const model = editor.getModel();
 			if (model && model.uri) {
-				_win.queryEditorBoxByModelUri[model.uri.toString()] = boxId;
+				queryEditorBoxByModelUri[model.uri.toString()] = boxId;
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -4748,7 +4763,7 @@ function initQueryEditor(boxId: any) {
 			}
 			updatePlaceholderPosition();
 			// Hide placeholder while the editor is focused, even if empty.
-			const isFocused = _win.activeQueryEditorBoxId === boxId;
+			const isFocused = activeQueryEditorBoxId === boxId;
 			placeholder.style.display = (!editor.getValue().trim() && !isFocused) ? 'block' : 'none';
 		};
 		syncPlaceholder();
@@ -4780,10 +4795,8 @@ function initQueryEditor(boxId: any) {
 			try { __kustoMaybeAutoTriggerAutocomplete(editor, boxId, e); } catch (e) { console.error('[kusto]', e); }
 		});
 		editor.onDidFocusEditorText(() => {
-			_win.activeQueryEditorBoxId = boxId;
-			try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
-			try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-			try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
+			setActiveQueryEditorBoxId(boxId);
+			setActiveMonacoEditor(editor);
 			try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			syncPlaceholder();
@@ -4812,10 +4825,8 @@ function initQueryEditor(boxId: any) {
 		// still has focus. Track focus at the editor-widget level so our docs widget stays visible.
 		try {
 			editor.onDidFocusEditorWidget(() => {
-				_win.activeQueryEditorBoxId = boxId;
-				try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
-				try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
-				try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
+				setActiveQueryEditorBoxId(boxId);
+				setActiveMonacoEditor(editor);
 				try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
 				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				syncPlaceholder();
@@ -4829,13 +4840,12 @@ function initQueryEditor(boxId: any) {
 						const stillFocused = isEditorFocused();
 						if (!stillFocused) {
 							try {
-								if (typeof _win.caretDocsEnabled !== 'undefined' && _win.caretDocsEnabled === false) {
+								if (typeof caretDocsEnabled !== 'undefined' && caretDocsEnabled === false) {
 									docOverlay.hide();
 								}
 							} catch (e) { console.error('[kusto]', e); }
-							if (_win.activeQueryEditorBoxId === boxId) {
-								_win.activeQueryEditorBoxId = null;
-								try { _win.activeQueryEditorBoxId = null; } catch (e) { console.error('[kusto]', e); }
+							if (activeQueryEditorBoxId === boxId) {
+								setActiveQueryEditorBoxId(null);
 							}
 							syncPlaceholder();
 							// Keep existing docs banner content visible while unfocused.
@@ -4859,8 +4869,8 @@ function initQueryEditor(boxId: any) {
 		// Defer focus slightly so Monaco can handle click-to-place-caret on the first click.
 		const focusSoon = () => {
 			setTimeout(() => {
-				try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
-				try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
+				setActiveQueryEditorBoxId(boxId);
+				setActiveMonacoEditor(editor);
 				try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
 				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch (e) { console.error('[kusto]', e); }
 				try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
@@ -4937,29 +4947,29 @@ function initQueryEditor(boxId: any) {
 
 		// Keep Monaco laid out when the user resizes the wrapper.
 		if (wrapper && typeof ResizeObserver !== 'undefined') {
-			if (_win.queryEditorResizeObservers[boxId]) {
-				try { _win.queryEditorResizeObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
+			if (queryEditorResizeObservers[boxId]) {
+				try { queryEditorResizeObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
 			}
 			const ro = new ResizeObserver(() => {
 				try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
 				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch (e) { console.error('[kusto]', e); }
 			});
 			ro.observe(wrapper);
-			_win.queryEditorResizeObservers[boxId] = ro;
+			queryEditorResizeObservers[boxId] = ro;
 		}
 
 		// In multi-editor layouts (e.g. Copilot split panes), editors can be created while hidden.
 		// Ensure we relayout when the wrapper becomes visible again so Monaco widgets position correctly.
 		try {
-			if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers && _win.queryEditorVisibilityObservers[boxId]) {
-				try { _win.queryEditorVisibilityObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
-				try { delete _win.queryEditorVisibilityObservers[boxId]; } catch (e) { console.error('[kusto]', e); }
+			if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers && queryEditorVisibilityObservers[boxId]) {
+				try { queryEditorVisibilityObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
+				try { delete queryEditorVisibilityObservers[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
-			if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers && _win.queryEditorVisibilityMutationObservers[boxId]) {
-				try { _win.queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
-				try { delete _win.queryEditorVisibilityMutationObservers[boxId]; } catch (e) { console.error('[kusto]', e); }
+			if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers && queryEditorVisibilityMutationObservers[boxId]) {
+				try { queryEditorVisibilityMutationObservers[boxId].disconnect(); } catch (e) { console.error('[kusto]', e); }
+				try { delete queryEditorVisibilityMutationObservers[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -4992,7 +5002,7 @@ function initQueryEditor(boxId: any) {
 					} catch (e) { console.error('[kusto]', e); }
 				});
 				io.observe(observedEl);
-				try { if (typeof _win.queryEditorVisibilityObservers === 'object' && _win.queryEditorVisibilityObservers) _win.queryEditorVisibilityObservers[boxId] = io; } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof queryEditorVisibilityObservers === 'object' && queryEditorVisibilityObservers) queryEditorVisibilityObservers[boxId] = io; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -5008,15 +5018,13 @@ function initQueryEditor(boxId: any) {
 					} catch (e) { console.error('[kusto]', e); }
 				});
 				mo.observe(wrapper, { attributes: true, attributeFilter: ['class', 'style', 'aria-hidden'] });
-				try { if (typeof _win.queryEditorVisibilityMutationObservers === 'object' && _win.queryEditorVisibilityMutationObservers) _win.queryEditorVisibilityMutationObservers[boxId] = mo; } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof queryEditorVisibilityMutationObservers === 'object' && queryEditorVisibilityMutationObservers) queryEditorVisibilityMutationObservers[boxId] = mo; } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Initialize toolbar overflow handling (shows "..." button when buttons overflow)
 		try {
-			if (typeof _win.initToolbarOverflow === 'function') {
-				_win.initToolbarOverflow(boxId);
-			}
+			initToolbarOverflow(boxId);
 		} catch (e) { console.error('[kusto]', e); }
 
 		// Drag handle resize (more reliable than CSS resize in VS Code webviews).
@@ -5122,7 +5130,7 @@ function initQueryEditor(boxId: any) {
 		// If Monaco fails to initialize transiently, retry a few times so the editor
 		// doesn't get stuck in a non-interactive placeholder state until reopen.
 		try {
-			if (_win.queryEditors && _win.queryEditors[boxId]) {
+			if (queryEditors && queryEditors[boxId]) {
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -5310,7 +5318,7 @@ function __kustoShowEditorContextMenu(editor: any, event: MouseEvent) {
 
 // ── Window bridges for remaining legacy callers ──
 window.__kustoGetColumnsByTable = __kustoGetColumnsByTable;
-window.ensureMonaco = ensureMonaco;
+window.ensureMonaco = ensureMonaco as any;
 window.initQueryEditor = initQueryEditor;
 
 // ── Deferred window bridges ──────────────────────────────────────────────────

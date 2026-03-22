@@ -33,6 +33,10 @@ __kustoLog
 import { getRunModeLabelText } from '../shared/comparisonUtils';
 import { getRunMode, setRunMode, closeRunMenu } from './queryBoxes-toolbar';
 import { getResultsState, ensureResultsStateMap } from './resultsState';
+import {
+	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
+	queryExecutionTimers, schemaByBoxId, queryBoxes,
+} from './state';
 export {};
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
@@ -92,24 +96,24 @@ function __kustoUpdateAcceptOptimizationsButton( comparisonBoxId: any, enabled: 
 
 export function acceptOptimizations( comparisonBoxId: any) {
 	try {
-		const meta = (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) ? _win.optimizationMetadataByBoxId[comparisonBoxId] : null;
+		const meta = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) ? optimizationMetadataByBoxId[comparisonBoxId] : null;
 		const sourceBoxId = meta && meta.sourceBoxId ? meta.sourceBoxId : '';
 		const optimizedQuery = meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '';
 		if (!sourceBoxId || !optimizedQuery) {
 			return;
 		}
-		if (_win.queryEditors[sourceBoxId] && typeof _win.queryEditors[sourceBoxId].setValue === 'function') {
-			_win.queryEditors[sourceBoxId].setValue(optimizedQuery);
+		if (queryEditors[sourceBoxId] && typeof queryEditors[sourceBoxId].setValue === 'function') {
+			queryEditors[sourceBoxId].setValue(optimizedQuery);
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
 		// Remove comparison box and clear metadata links.
 		try { removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 		try {
-			if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-				delete _win.optimizationMetadataByBoxId[comparisonBoxId];
-				if (_win.optimizationMetadataByBoxId[sourceBoxId]) {
-					delete _win.optimizationMetadataByBoxId[sourceBoxId];
+			if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+				delete optimizationMetadataByBoxId[comparisonBoxId];
+				if (optimizationMetadataByBoxId[sourceBoxId]) {
+					delete optimizationMetadataByBoxId[sourceBoxId];
 				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -286,7 +290,7 @@ export function __kustoApplyComparisonSummaryVisibility( boxId: any) {
 		return;
 	}
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].isComparison) {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
 			banner.style.display = '';
 			return;
 		}
@@ -318,7 +322,7 @@ function toggleQueryResultsVisibility( boxId: any) {
 
 function toggleComparisonSummaryVisibility( boxId: any) {
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].isComparison) {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].isComparison) {
 			// Optimized sections always show summary.
 			return;
 		}
@@ -1032,8 +1036,8 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 	// - The optimized section will then use "<source name> (optimized)"
 	try {
 		let sourceName = __kustoGetSectionName(boxId);
-		if (!sourceName && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-			sourceName = window.__kustoPickNextAvailableSectionLetterName(boxId);
+		if (!sourceName) {
+			sourceName = __kustoPickNextAvailableSectionLetterName(boxId);
 			__kustoSetSectionName(boxId, sourceName);
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1095,7 +1099,7 @@ function __kustoRunOptimizeQueryWithOverrides( boxId: any) {
 }
 
 export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverride: any, options: any) {
-	const editor = _win.queryEditors[boxId];
+	const editor = queryEditors[boxId];
 	if (!editor) {
 		return '';
 	}
@@ -1146,8 +1150,8 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 		try {
 			const nameInput = null;
 			sourceNameForOptimize = __kustoGetSectionName(boxId);
-			if (!sourceNameForOptimize && typeof window.__kustoPickNextAvailableSectionLetterName === 'function') {
-				sourceNameForOptimize = window.__kustoPickNextAvailableSectionLetterName(boxId);
+			if (!sourceNameForOptimize) {
+				sourceNameForOptimize = __kustoPickNextAvailableSectionLetterName(boxId);
 				__kustoSetSectionName(boxId, sourceNameForOptimize);
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			}
@@ -1170,12 +1174,12 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	// If a comparison already exists for this source, reuse it.
 	try {
-		const existingComparisonBoxId = (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId && _win.optimizationMetadataByBoxId[boxId])
-			? _win.optimizationMetadataByBoxId[boxId].comparisonBoxId
+		const existingComparisonBoxId = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId && optimizationMetadataByBoxId[boxId])
+			? optimizationMetadataByBoxId[boxId].comparisonBoxId
 			: '';
 		if (existingComparisonBoxId) {
 			const comparisonBoxEl = document.getElementById(existingComparisonBoxId) as any;
-			const comparisonEditor = _win.queryEditors && _win.queryEditors[existingComparisonBoxId];
+			const comparisonEditor = queryEditors && queryEditors[existingComparisonBoxId];
 			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try {
@@ -1185,14 +1189,14 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 				} catch (e) { console.error('[kusto]', e); }
 				try { comparisonEditor.setValue(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
 				try {
-					if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-						_win.optimizationMetadataByBoxId[existingComparisonBoxId] = _win.optimizationMetadataByBoxId[existingComparisonBoxId] || {};
-						_win.optimizationMetadataByBoxId[existingComparisonBoxId].sourceBoxId = boxId;
-						_win.optimizationMetadataByBoxId[existingComparisonBoxId].isComparison = true;
-						_win.optimizationMetadataByBoxId[existingComparisonBoxId].originalQuery = _win.queryEditors[boxId] ? _win.queryEditors[boxId].getValue() : query;
-						_win.optimizationMetadataByBoxId[existingComparisonBoxId].optimizedQuery = nextComparisonQuery;
-						_win.optimizationMetadataByBoxId[boxId] = _win.optimizationMetadataByBoxId[boxId] || {};
-						_win.optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
+					if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+						optimizationMetadataByBoxId[existingComparisonBoxId] = optimizationMetadataByBoxId[existingComparisonBoxId] || {};
+						optimizationMetadataByBoxId[existingComparisonBoxId].sourceBoxId = boxId;
+						optimizationMetadataByBoxId[existingComparisonBoxId].isComparison = true;
+						optimizationMetadataByBoxId[existingComparisonBoxId].originalQuery = queryEditors[boxId] ? queryEditors[boxId].getValue() : query;
+						optimizationMetadataByBoxId[existingComparisonBoxId].optimizedQuery = nextComparisonQuery;
+						optimizationMetadataByBoxId[boxId] = optimizationMetadataByBoxId[boxId] || {};
+						optimizationMetadataByBoxId[boxId].comparisonBoxId = existingComparisonBoxId;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
@@ -1238,9 +1242,9 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 			}
 			// Stale mapping: comparison was removed; clear and fall back to creating a new one.
 			try {
-				if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-					delete _win.optimizationMetadataByBoxId[boxId];
-					delete _win.optimizationMetadataByBoxId[existingComparisonBoxId];
+				if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+					delete optimizationMetadataByBoxId[boxId];
+					delete optimizationMetadataByBoxId[existingComparisonBoxId];
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -1290,14 +1294,14 @@ export async function optimizeQueryWithCopilot( boxId: any, comparisonQueryOverr
 
 	// Store comparison metadata (reuses the existing optimization comparison flow).
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-			_win.optimizationMetadataByBoxId[comparisonBoxId] = {
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			optimizationMetadataByBoxId[comparisonBoxId] = {
 				sourceBoxId: boxId,
 				isComparison: true,
-				originalQuery: _win.queryEditors[boxId] ? _win.queryEditors[boxId].getValue() : query,
+				originalQuery: queryEditors[boxId] ? queryEditors[boxId].getValue() : query,
 				optimizedQuery: comparisonQuery
 			};
-			_win.optimizationMetadataByBoxId[boxId] = {
+			optimizationMetadataByBoxId[boxId] = {
 				comparisonBoxId: comparisonBoxId
 			};
 		}
@@ -1378,8 +1382,8 @@ export function __kustoIsRunSelectionReady( boxId: any) {
 
 	// If a favorites selection is still staging/applying, don't allow Run.
 	try {
-		const pending1 = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[id]);
-		const pending2 = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[ownerId]);
+		const pending1 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[id]);
+		const pending2 = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[ownerId]);
 		if (pending1 || pending2) {
 			return false;
 		}
@@ -1441,8 +1445,8 @@ function __kustoClearSchemaSummaryIfNoSelection( boxId: any) {
 
 	if (shouldClear) {
 		try {
-			if (_win.schemaByBoxId) {
-				delete _win.schemaByBoxId[id];
+			if (schemaByBoxId) {
+				delete schemaByBoxId[id];
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
@@ -1463,7 +1467,7 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 
 	// If a query is currently executing for this box, keep disabled.
 	try {
-		if (_win.queryExecutionTimers && _win.queryExecutionTimers[id]) {
+		if (queryExecutionTimers && queryExecutionTimers[id]) {
 			if (runBtn) runBtn.disabled = true;
 			if (runToggle) runToggle.disabled = true;
 			return;
@@ -1490,7 +1494,7 @@ window.__kustoUpdateRunEnabledForBox = function (boxId: any) {
 
 window.__kustoUpdateRunEnabledForAllBoxes = function () {
 	try {
-		for (const id of (_win.queryBoxes || [])) {
+		for (const id of (queryBoxes || [])) {
 			try { window.__kustoUpdateRunEnabledForBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1505,9 +1509,9 @@ export function setQueryExecuting( boxId: any, executing: any) {
 	const elapsed = document.getElementById(boxId + '_exec_elapsed') as any;
 	const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 
-	if (_win.queryExecutionTimers[boxId]) {
-		clearInterval(_win.queryExecutionTimers[boxId]);
-		delete _win.queryExecutionTimers[boxId];
+	if (queryExecutionTimers[boxId]) {
+		clearInterval(queryExecutionTimers[boxId]);
+		delete queryExecutionTimers[boxId];
 	}
 
 	if (executing) {
@@ -1539,7 +1543,7 @@ export function setQueryExecuting( boxId: any, executing: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		const start = performance.now();
-		_win.queryExecutionTimers[boxId] = setInterval(() => {
+		queryExecutionTimers[boxId] = setInterval(() => {
 			if (elapsed) {
 				elapsed.textContent = formatElapsed(performance.now() - start);
 			}
@@ -1693,7 +1697,7 @@ export function executeQuery( boxId: any, mode?: any) {
 		}
 	};
 
-	const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
+	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
 	// If the user has text selected in the editor, run only the selected text.
 	let usedSelection = false;
@@ -1753,8 +1757,8 @@ export function executeQuery( boxId: any, mode?: any) {
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-			const meta = _win.optimizationMetadataByBoxId[boxId];
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
@@ -1770,7 +1774,7 @@ export function executeQuery( boxId: any, mode?: any) {
 			}
 			// While linked optimization exists, always disable caching for benchmark runs.
 			const hasLinkedOptimization = !!(meta && meta.isComparison)
-				|| !!(_win.optimizationMetadataByBoxId[boxId] && _win.optimizationMetadataByBoxId[boxId].comparisonBoxId);
+				|| !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
 			if (hasLinkedOptimization) {
 				cacheEnabled = false;
 			}
@@ -1805,7 +1809,7 @@ export function executeQuery( boxId: any, mode?: any) {
 
 	// Safety: if a favorites switch is still pending/applying, do not run.
 	try {
-		const pending = !!(_win.pendingFavoriteSelectionByBoxId && _win.pendingFavoriteSelectionByBoxId[boxId]);
+		const pending = !!(pendingFavoriteSelectionByBoxId && pendingFavoriteSelectionByBoxId[boxId]);
 		const dbEl = document.getElementById(boxId + '_database') as any;
 		const desiredPending = !!(dbEl && dbEl.dataset && dbEl.dataset.desired);
 		const dbDisabled = !!(dbEl && dbEl.disabled);

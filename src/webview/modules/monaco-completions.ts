@@ -3,6 +3,7 @@
 // Pipe operator suggestions, dot-command completions, column inference.
 // Window bridge exports at bottom for remaining callers.
 import { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco';
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId, connections, schemaByConnDb } from './state';
 export {};
 
 const _win = window;
@@ -297,13 +298,13 @@ const __kustoCompletionProvider = {
 		let boxId = null;
 		try {
 			if (model && model.uri) {
-				boxId = _win.queryEditorBoxByModelUri[model.uri.toString()] || null;
+				boxId = queryEditorBoxByModelUri[model.uri.toString()] || null;
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		if (!boxId) {
-			boxId = _win.activeQueryEditorBoxId;
+			boxId = activeQueryEditorBoxId;
 		}
-		const schema = boxId ? _win.schemaByBoxId[boxId] : null;
+		const schema = boxId ? schemaByBoxId[boxId] : null;
 		if (!schema || !schema.tables) {
 			// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
 			if (typeof ensureSchemaForBox === 'function') {
@@ -421,7 +422,7 @@ const __kustoCompletionProvider = {
 			try {
 				const target = __kustoNormalizeClusterForKusto(clusterName).toLowerCase();
 				if (!target) return null;
-				for (const c of (_win.connections || [])) {
+				for (const c of (connections || [])) {
 					if (!c || !c.id) continue;
 					const url = String(c.clusterUrl || '').trim();
 					if (!url) continue;
@@ -441,15 +442,15 @@ const __kustoCompletionProvider = {
 				if (!cid || !db) return null;
 				const key = cid + '|' + db;
 				try {
-					if (_win.schemaByConnDb && _win.schemaByConnDb[key]) {
-						return _win.schemaByConnDb[key];
+					if (schemaByConnDb && schemaByConnDb[key]) {
+						return schemaByConnDb[key];
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				if (typeof _win.__kustoRequestSchema === 'function') {
 					const sch = await _win.__kustoRequestSchema(cid, db, false);
 					try {
-						if (sch && _win.schemaByConnDb) {
-							_win.schemaByConnDb[key] = sch;
+						if (sch && schemaByConnDb) {
+							schemaByConnDb[key] = sch;
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					return sch;

@@ -8,15 +8,26 @@ import { getResultsState, displayResultForBox, displayResult, displayCancelled, 
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './errorUtils';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 import { addQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase, updateConnectionSelects, updateDatabaseSelect, onDatabasesError, parseKustoExplorerConnectionsXml, __kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes, __kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated, schemaRequestTokenByBoxId } from './queryBoxes';
-import { addMarkdownBox, __kustoMaximizeMarkdownBox } from './extraBoxes-markdown';
+import { addMarkdownBox, __kustoMaximizeMarkdownBox, markdownBoxes, markdownEditors } from './extraBoxes-markdown';
 import { addChartBox } from './extraBoxes-chart';
 import { addTransformationBox } from './extraBoxes-transformation';
-import { addPythonBox, addUrlBox, onPythonResult, onPythonError, __kustoRefreshAllDataSourceDropdowns, __kustoGetChartValidationStatus } from './extraBoxes';
+import { addPythonBox, addUrlBox, onPythonResult, onPythonError, __kustoRefreshAllDataSourceDropdowns, __kustoGetChartValidationStatus, pythonBoxes, urlBoxes } from './extraBoxes';
 import { __kustoEnsureAllEditorsWritableSoon } from './monaco-writable';
-import { updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons, updateCopilotInlineCompletionsToggleButtons, setRunMode } from './queryBoxes-toolbar';
+import { updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons, updateCopilotInlineCompletionsToggleButtons, setRunMode, __kustoCloseShareModal, __kustoShareCopyToClipboard } from './queryBoxes-toolbar';
 import { executeQuery, setQueryExecuting, __kustoSetResultsVisible, __kustoSetLinkedOptimizationMode, displayComparisonSummary, optimizeQueryWithCopilot, __kustoSetOptimizeInProgress, __kustoUpdateOptimizeStatus, __kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions } from './queryBoxes-execution';
 import { schedulePersist, handleDocumentDataMessage, getKqlxState, __kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoOnQueryResult } from './persistence';
 import { __kustoControlCommandDocCache, __kustoControlCommandDocPending, __kustoCrossClusterSchemas } from './monaco';
+import {
+	activeMonacoEditor, activeQueryEditorBoxId, setActiveQueryEditorBoxId,
+	connections, setConnections, setLastConnectionId, setLastDatabase,
+	kustoFavorites, setKustoFavorites, setLeaveNoTraceClusters,
+	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled, setCopilotInlineCompletionsEnabled,
+	setQueryBoxes,
+	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
+	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
+	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
+	caretDocOverlaysByBoxId
+} from './state';
 export {};
 
 const _win = window;
@@ -40,17 +51,17 @@ document.addEventListener('keydown', async (event: any) => {
 	// Widget focus (like find widget) should handle its own paste.
 	let editor: any = null;
 	try {
-		if (_win.activeMonacoEditor && typeof _win.activeMonacoEditor.hasTextFocus === 'function') {
-			const hasTextFocus = _win.activeMonacoEditor.hasTextFocus();
+		if (activeMonacoEditor && typeof activeMonacoEditor.hasTextFocus === 'function') {
+			const hasTextFocus = activeMonacoEditor.hasTextFocus();
 			if (hasTextFocus) {
-				editor = _win.activeMonacoEditor;
+				editor = activeMonacoEditor;
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback for older behavior: if a query editor is focused, use it.
-	if (!editor && _win.activeQueryEditorBoxId) {
-		const qe = _win.queryEditors[_win.activeQueryEditorBoxId];
+	if (!editor && activeQueryEditorBoxId) {
+		const qe = queryEditors[activeQueryEditorBoxId];
 		try {
 			if (qe && typeof qe.hasTextFocus === 'function') {
 				const hasTextFocus = qe.hasTextFocus();
@@ -332,7 +343,7 @@ try {
 	window.__kustoResolveResourceUri = async function (args: any) {
 		const p = (args && typeof args.path === 'string') ? String(args.path) : '';
 		const baseUri = (args && typeof args.baseUri === 'string') ? String(args.baseUri) : '';
-		if (!p || !_win.vscode?.postMessage) {
+		if (!p || !window.vscode) {
 			return null;
 		}
 		const requestId = 'resuri_' + Date.now() + '_' + Math.random().toString(16).slice(2);
@@ -374,7 +385,7 @@ try {
 		const connectionId = (args && typeof args.connectionId === 'string') ? args.connectionId : '';
 		const database = (args && typeof args.database === 'string') ? args.database : '';
 		const boxId = (args && typeof args.boxId === 'string') ? args.boxId : '';
-		if (!_win.vscode?.postMessage) {
+		if (!window.vscode) {
 			return null;
 		}
 		const requestId = 'kqlreq_' + Date.now() + '_' + Math.random().toString(16).slice(2);
@@ -414,18 +425,18 @@ function __kustoGetFocusedMonacoEditor() {
 	// Prefer whichever Monaco editor actually has focus.
 	let editor: any = null;
 	try {
-		if (_win.activeMonacoEditor && typeof _win.activeMonacoEditor.hasTextFocus === 'function') {
-			const hasFocus = _win.activeMonacoEditor.hasTextFocus() ||
-				(typeof _win.activeMonacoEditor.hasWidgetFocus === 'function' && _win.activeMonacoEditor.hasWidgetFocus());
+		if (activeMonacoEditor && typeof activeMonacoEditor.hasTextFocus === 'function') {
+			const hasFocus = activeMonacoEditor.hasTextFocus() ||
+				(typeof activeMonacoEditor.hasWidgetFocus === 'function' && activeMonacoEditor.hasWidgetFocus());
 			if (hasFocus) {
-				editor = _win.activeMonacoEditor;
+				editor = activeMonacoEditor;
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Fallback for older behavior: if a query editor is focused, use it.
-	if (!editor && _win.activeQueryEditorBoxId) {
-		const qe = _win.queryEditors[_win.activeQueryEditorBoxId];
+	if (!editor && activeQueryEditorBoxId) {
+		const qe = queryEditors[activeQueryEditorBoxId];
 		try {
 			if (qe && typeof qe.hasTextFocus === 'function') {
 				const hasFocus = qe.hasTextFocus() || (typeof qe.hasWidgetFocus === 'function' && qe.hasWidgetFocus());
@@ -449,9 +460,9 @@ function __kustoGetFocusedMonacoEditor() {
 			const t = target && target.closest ? target : null;
 			const box = t ? t.closest('.query-box') : null;
 			const boxId = box && typeof box.id === 'string' ? box.id : '';
-			if (boxId && typeof _win.queryEditors === 'object' && _win.queryEditors && _win.queryEditors[boxId] && typeof _win.queryEditors[boxId].focus === 'function') {
-				try { _win.activeQueryEditorBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
-				_win.queryEditors[boxId].focus();
+			if (boxId && queryEditors && queryEditors[boxId] && typeof queryEditors[boxId].focus === 'function') {
+				try { setActiveQueryEditorBoxId(boxId); } catch (e) { console.error('[kusto]', e); }
+				queryEditors[boxId].focus();
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -657,7 +668,7 @@ document.addEventListener('keydown', (event: any) => {
 	if (!(event.ctrlKey || event.metaKey) || !isEnter) {
 		return;
 	}
-	if (!_win.activeQueryEditorBoxId) {
+	if (!activeQueryEditorBoxId) {
 		return;
 	}
 
@@ -679,14 +690,14 @@ document.addEventListener('keydown', (event: any) => {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	if (activeEl && activeEl.id === _win.activeQueryEditorBoxId + '_copilot_input') {
+	if (activeEl && activeEl.id === activeQueryEditorBoxId + '_copilot_input') {
 		event.preventDefault();
 		event.stopPropagation();
 		if (typeof event.stopImmediatePropagation === 'function') {
 			event.stopImmediatePropagation();
 		}
 		try {
-			const kwEl = _win.activeQueryEditorBoxId ? __kustoGetQuerySectionElement(_win.activeQueryEditorBoxId) : null;
+			const kwEl = activeQueryEditorBoxId ? __kustoGetQuerySectionElement(activeQueryEditorBoxId) : null;
 			if (kwEl && typeof kwEl.copilotWriteQuerySend === 'function') {
 				kwEl.copilotWriteQuerySend();
 			}
@@ -702,7 +713,7 @@ document.addEventListener('keydown', (event: any) => {
 		event.stopImmediatePropagation();
 	}
 	try {
-		executeQuery(_win.activeQueryEditorBoxId);
+		executeQuery(activeQueryEditorBoxId);
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
@@ -711,10 +722,10 @@ document.addEventListener('keydown', (event: any) => {
 	if (event.key !== 'F1') {
 		return;
 	}
-	if (!_win.activeQueryEditorBoxId) {
+	if (!activeQueryEditorBoxId) {
 		return;
 	}
-	const editor = _win.queryEditors[_win.activeQueryEditorBoxId];
+	const editor = queryEditors[activeQueryEditorBoxId];
 	if (!editor) {
 		return;
 	}
@@ -736,8 +747,8 @@ document.addEventListener('keydown', (event: any) => {
 		return;
 	}
 	try {
-		if (_win.activeQueryEditorBoxId && _win.caretDocOverlaysByBoxId && _win.caretDocOverlaysByBoxId[_win.activeQueryEditorBoxId]) {
-			const overlay = _win.caretDocOverlaysByBoxId[_win.activeQueryEditorBoxId];
+		if (activeQueryEditorBoxId && caretDocOverlaysByBoxId && caretDocOverlaysByBoxId[activeQueryEditorBoxId]) {
+			const overlay = caretDocOverlaysByBoxId[activeQueryEditorBoxId];
 			if (overlay && typeof overlay.hide === 'function') {
 				overlay.hide();
 			}
@@ -748,8 +759,8 @@ document.addEventListener('keydown', (event: any) => {
 // If the webview loses focus, hide any visible caret tooltip.
 window.addEventListener('blur', () => {
 	try {
-		for (const key of Object.keys(_win.caretDocOverlaysByBoxId || {})) {
-			const overlay = _win.caretDocOverlaysByBoxId[key];
+		for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
+			const overlay = caretDocOverlaysByBoxId[key];
 			if (overlay && typeof overlay.hide === 'function') {
 				overlay.hide();
 			}
@@ -920,18 +931,19 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
-			_win.connections = message.connections;
-			try { window.connections = _win.connections; } catch (e) { console.error('[kusto]', e); }
-			_win.lastConnectionId = message.lastConnectionId;
-			_win.lastDatabase = message.lastDatabase;
-			_win.cachedDatabases = message.cachedDatabases || {};
-			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
-			_win.leaveNoTraceClusters = Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : [];
+			setConnections(message.connections);
+			try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
+			setLastConnectionId(message.lastConnectionId);
+			setLastDatabase(message.lastDatabase);
+			for (const k of Object.keys(cachedDatabases)) delete cachedDatabases[k];
+			Object.assign(cachedDatabases, message.cachedDatabases || {});
+			setKustoFavorites(Array.isArray(message.favorites) ? message.favorites : []);
+			setLeaveNoTraceClusters(Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : []);
 			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
 			try { pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
-			_win.caretDocsEnabled = (typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true;
-			_win.autoTriggerAutocompleteEnabled = (typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true;
-			_win.copilotInlineCompletionsEnabled = (typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true;
+			setCaretDocsEnabled((typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true);
+			setAutoTriggerAutocompleteEnabled((typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true);
+			setCopilotInlineCompletionsEnabled((typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true);
 			try {
 				// Indicates whether the user has explicitly chosen a value (on/off) before.
 				// When true, document-level restore should not override this global preference.
@@ -1005,7 +1017,7 @@ window.addEventListener('message', async (event: any) => {
 			break;
 		}
 		case 'favoritesData':
-			_win.kustoFavorites = Array.isArray(message.favorites) ? message.favorites : [];
+			setKustoFavorites(Array.isArray(message.favorites) ? message.favorites : []);
 			try {
 				__kustoUpdateFavoritesUiForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
@@ -1019,7 +1031,7 @@ window.addEventListener('message', async (event: any) => {
 			// switch that box into Favorites mode.
 			try {
 				const boxId = message && typeof message.boxId === 'string' ? message.boxId : '';
-				if (boxId && Array.isArray(_win.kustoFavorites) && _win.kustoFavorites.length > 0) {
+				if (boxId && Array.isArray(kustoFavorites) && kustoFavorites.length > 0) {
 					if (typeof window.__kustoEnterFavoritesModeForBox === 'function') {
 						window.__kustoEnterFavoritesModeForBox(boxId);
 					}
@@ -1094,7 +1106,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'databasesData':
 			// Resolve pending database list request if this was a synthetic request id.
 			try {
-				const r = _win.databasesRequestResolversByBoxId && _win.databasesRequestResolversByBoxId[message.boxId];
+				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.resolve === 'function') {
 					let cid = '';
 					try {
@@ -1114,7 +1126,7 @@ window.addEventListener('message', async (event: any) => {
 						if (cid) {
 							let clusterKey = '';
 							try {
-								const conn = Array.isArray(_win.connections) ? _win.connections.find((c: any) => c && String(c.id || '').trim() === String(cid || '').trim()) : null;
+								const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === String(cid || '').trim()) : null;
 								const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 								if (clusterUrl) {
 									let u = clusterUrl;
@@ -1129,12 +1141,12 @@ window.addEventListener('message', async (event: any) => {
 								}
 							} catch (e) { console.error('[kusto]', e); }
 							if (clusterKey) {
-								_win.cachedDatabases[clusterKey] = list;
+								cachedDatabases[clusterKey] = list;
 							}
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try { r.resolve(list); } catch (e) { console.error('[kusto]', e); }
-					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1144,10 +1156,10 @@ window.addEventListener('message', async (event: any) => {
 		case 'databasesError':
 			// Reject pending database list request if this was a synthetic request id.
 			try {
-				const r = _win.databasesRequestResolversByBoxId && _win.databasesRequestResolversByBoxId[message.boxId];
+				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.reject === 'function') {
 					try { r.reject(new Error(message && message.error ? String(message.error) : 'Failed to load databases.')); } catch (e) { console.error('[kusto]', e); }
-					try { delete _win.databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1198,8 +1210,8 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			// Check if this is a comparison box result
 			try {
-				if (message.boxId && _win.optimizationMetadataByBoxId[message.boxId]) {
-					const metadata = _win.optimizationMetadataByBoxId[message.boxId];
+				if (message.boxId && optimizationMetadataByBoxId[message.boxId]) {
+					const metadata = optimizationMetadataByBoxId[message.boxId];
 					if (metadata.isComparison && metadata.sourceBoxId) {
 						// Check if source box has results too
 						const sourceState = getResultsState(metadata.sourceBoxId);
@@ -1214,8 +1226,8 @@ window.addEventListener('message', async (event: any) => {
 			}
 			// Also handle the inverse: source box result arrives after comparison
 			try {
-				if (message.boxId && _win.optimizationMetadataByBoxId[message.boxId] && _win.optimizationMetadataByBoxId[message.boxId].comparisonBoxId) {
-					const comparisonBoxId = _win.optimizationMetadataByBoxId[message.boxId].comparisonBoxId;
+				if (message.boxId && optimizationMetadataByBoxId[message.boxId] && optimizationMetadataByBoxId[message.boxId].comparisonBoxId) {
+					const comparisonBoxId = optimizationMetadataByBoxId[message.boxId].comparisonBoxId;
 					const sourceState = getResultsState(message.boxId);
 					const comparisonState = getResultsState(comparisonBoxId);
 					if (sourceState && comparisonState) {
@@ -1298,24 +1310,24 @@ window.addEventListener('message', async (event: any) => {
 				const cid = String(message.connectionId || '').trim();
 				const db = String(message.database || '').trim();
 				if (cid && db) {
-					_win.schemaByConnDb[cid + '|' + db] = message.schema;
+					schemaByConnDb[cid + '|' + db] = message.schema;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Resolve pending schema request if this was a synthetic request id.
 			try {
-				const r = _win.schemaRequestResolversByBoxId && _win.schemaRequestResolversByBoxId[message.boxId];
+				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.resolve === 'function') {
 					try { r.resolve(message.schema); } catch (e) { console.error('[kusto]', e); }
-					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
-			_win.schemaByBoxId[message.boxId] = message.schema;
-			_win.schemaFetchInFlightByBoxId[message.boxId] = false;
+			schemaByBoxId[message.boxId] = message.schema;
+			schemaFetchInFlightByBoxId[message.boxId] = false;
 			
 			// Update monaco-kusto with the raw schema JSON if available
 			// With aggregate schema approach, we always push schemas to monaco-kusto
@@ -1324,7 +1336,7 @@ window.addEventListener('message', async (event: any) => {
 				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : null;
 				
 				// Check if this box is the active/focused box - if so, we should set it as the context
-				const isActiveBox = message.boxId === _win.activeQueryEditorBoxId;
+				const isActiveBox = message.boxId === activeQueryEditorBoxId;
 				
 				// Always push schema to monaco-kusto if we have rawSchemaJson
 				// The __kustoSetMonacoKustoSchema function will:
@@ -1343,7 +1355,7 @@ window.addEventListener('message', async (event: any) => {
 							// immediately put the wrong database in context for the active editor.
 							let modelUri: any = null;
 							try {
-								const editor = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[message.boxId] : null;
+								const editor = queryEditors ? queryEditors[message.boxId] : null;
 								const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
 								if (model && model.uri) {
 									modelUri = model.uri.toString();
@@ -1455,17 +1467,17 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			// Resolve pending schema request if this was a synthetic request id.
 			try {
-				const r = _win.schemaRequestResolversByBoxId && _win.schemaRequestResolversByBoxId[message.boxId];
+				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
 				if (r && typeof r.reject === 'function') {
 					try { r.reject(new Error(message.error || 'Schema fetch failed')); } catch (e) { console.error('[kusto]', e); }
-					try { delete _win.schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
 					break;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
-			_win.schemaFetchInFlightByBoxId[message.boxId] = false;
+			schemaFetchInFlightByBoxId[message.boxId] = false;
 			try {
-				const hasSchema = !!(_win.schemaByBoxId && _win.schemaByBoxId[message.boxId]);
+				const hasSchema = !!(schemaByBoxId && schemaByBoxId[message.boxId]);
 				if (!hasSchema) {
 					const kwEl = __kustoGetQuerySectionElement(message.boxId);
 					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
@@ -1513,14 +1525,14 @@ window.addEventListener('message', async (event: any) => {
 			case 'connectionAdded':
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {
-					_win.connections = message.connections;
-					try { window.connections = _win.connections; } catch (e) { console.error('[kusto]', e); }
+					setConnections(message.connections);
+					try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
 				}
 				if (message.lastConnectionId) {
-					_win.lastConnectionId = message.lastConnectionId;
+					setLastConnectionId(message.lastConnectionId);
 				}
 				if (typeof message.lastDatabase === 'string') {
-					_win.lastDatabase = message.lastDatabase;
+					setLastDatabase(message.lastDatabase);
 				}
 				updateConnectionSelects();
 				try {
@@ -1690,9 +1702,9 @@ window.addEventListener('message', async (event: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 				
 				// If a comparison box already exists for this source, reuse it.
-				if (_win.optimizationMetadataByBoxId[sourceBoxId] && _win.optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
-					const comparisonBoxId = _win.optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId;
-					const comparisonEditor = _win.queryEditors && _win.queryEditors[comparisonBoxId];
+				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
+					const comparisonBoxId = optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId;
+					const comparisonEditor = queryEditors && queryEditors[comparisonBoxId];
 					if (comparisonBoxId && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 						try {
 							comparisonEditor.setValue(prettifiedOptimizedQuery);
@@ -1709,11 +1721,11 @@ window.addEventListener('message', async (event: any) => {
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						try {
-							_win.optimizationMetadataByBoxId[comparisonBoxId] = _win.optimizationMetadataByBoxId[comparisonBoxId] || {};
-							_win.optimizationMetadataByBoxId[comparisonBoxId].sourceBoxId = sourceBoxId;
-							_win.optimizationMetadataByBoxId[comparisonBoxId].isComparison = true;
-							_win.optimizationMetadataByBoxId[comparisonBoxId].originalQuery = _win.queryEditors[sourceBoxId] ? _win.queryEditors[sourceBoxId].getValue() : '';
-							_win.optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
+							optimizationMetadataByBoxId[comparisonBoxId] = optimizationMetadataByBoxId[comparisonBoxId] || {};
+							optimizationMetadataByBoxId[comparisonBoxId].sourceBoxId = sourceBoxId;
+							optimizationMetadataByBoxId[comparisonBoxId].isComparison = true;
+							optimizationMetadataByBoxId[comparisonBoxId].originalQuery = queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '';
+							optimizationMetadataByBoxId[comparisonBoxId].optimizedQuery = prettifiedOptimizedQuery;
 						} catch (e) { console.error('[kusto]', e); }
 						try {
 							{
@@ -1766,13 +1778,13 @@ window.addEventListener('message', async (event: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 				
 				// Store optimization metadata
-				_win.optimizationMetadataByBoxId[comparisonBoxId] = {
+				optimizationMetadataByBoxId[comparisonBoxId] = {
 					sourceBoxId: sourceBoxId,
 					isComparison: true,
-					originalQuery: _win.queryEditors[sourceBoxId] ? _win.queryEditors[sourceBoxId].getValue() : '',
+					originalQuery: queryEditors[sourceBoxId] ? queryEditors[sourceBoxId].getValue() : '',
 					optimizedQuery: prettifiedOptimizedQuery
 				};
-				_win.optimizationMetadataByBoxId[sourceBoxId] = {
+				optimizationMetadataByBoxId[sourceBoxId] = {
 					comparisonBoxId: comparisonBoxId
 				};
 				
@@ -2061,7 +2073,7 @@ window.addEventListener('message', async (event: any) => {
 						}
 						if (sectionId && input.clusterUrl) {
 							// Find connection by cluster URL
-							const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+							const conn = (connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 							if (conn) {
 								const kwEl = __kustoGetQuerySectionElement(sectionId);
 								if (kwEl && typeof kwEl.setConnectionId === 'function') {
@@ -2148,11 +2160,11 @@ window.addEventListener('message', async (event: any) => {
 						sectionEl.remove();
 						success = true;
 						// Clean up any associated state
-						if (_win.queryEditors && _win.queryEditors[sectionId]) {
-							delete _win.queryEditors[sectionId];
+						if (queryEditors && queryEditors[sectionId]) {
+							delete queryEditors[sectionId];
 						}
-						if (_win.schemaByBoxId && _win.schemaByBoxId[sectionId]) {
-							delete _win.schemaByBoxId[sectionId];
+						if (schemaByBoxId && schemaByBoxId[sectionId]) {
+							delete schemaByBoxId[sectionId];
 						}
 					}
 				} catch (err: any) {
@@ -2255,7 +2267,7 @@ window.addEventListener('message', async (event: any) => {
 				let resultPreview = '';
 				
 				try {
-					const editor = _win.queryEditors && _win.queryEditors[sectionId];
+					const editor = queryEditors && queryEditors[sectionId];
 					
 					// Update section name if provided
 					if (input.name !== undefined) {
@@ -2275,7 +2287,7 @@ window.addEventListener('message', async (event: any) => {
 					
 					// Update cluster
 					if (input.clusterUrl) {
-						const conn = (_win.connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+						const conn = (connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
 						if (conn) {
 							const kwEl = __kustoGetQuerySectionElement(sectionId);
 							if (kwEl && typeof kwEl.setConnectionId === 'function') {
@@ -2288,7 +2300,7 @@ window.addEventListener('message', async (event: any) => {
 							}
 						} else {
 							// Connection not found - return error with available connections
-							const availableConnections = (_win.connections || []).map((c: any) => c && c.clusterUrl ? String(c.clusterUrl) : '').filter(Boolean);
+							const availableConnections = (connections || []).map((c: any) => c && c.clusterUrl ? String(c.clusterUrl) : '').filter(Boolean);
 							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
@@ -2320,7 +2332,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// Execute if requested
-					if (input.execute && typeof _win.executeQuery === 'function') {
+					if (input.execute) {
 						executeQuery(sectionId);
 					}
 				} catch (err: any) {
@@ -2382,12 +2394,7 @@ window.addEventListener('message', async (event: any) => {
 					window.removeEventListener('message', resultHandler);
 				}, 120000); // 2 minute timeout
 				
-				if (typeof _win.executeQuery === 'function') {
-					executeQuery(sectionId);
-				} else {
-					window.removeEventListener('message', resultHandler);
-					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false }, error: 'executeQuery not available' });
-				}
+				executeQuery(sectionId);
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2584,8 +2591,8 @@ window.addEventListener('message', async (event: any) => {
 					// Get cluster URL for context
 					let currentClusterUrl = '';
 					try {
-						if (currentConnectionId && Array.isArray(_win.connections)) {
-							const conn = _win.connections.find((c: any) => c && String(c.id || '') === currentConnectionId);
+						if (currentConnectionId && Array.isArray(connections)) {
+							const conn = connections.find((c: any) => c && String(c.id || '') === currentConnectionId);
 							currentClusterUrl = conn ? String(conn.clusterUrl || '') : '';
 						}
 					} catch (e) { console.error('[kusto]', e); }
@@ -2622,9 +2629,7 @@ window.addEventListener('message', async (event: any) => {
 				// Ensure the section is in 'Run Query' mode (plain) — not 'take 100' or 'sample 100'.
 				// This prevents the Copilot-generated queries from having unwanted limits appended.
 				try {
-					if (typeof _win.setRunMode === 'function') {
-						setRunMode(sectionId, 'plain');
-					}
+					setRunMode(sectionId, 'plain');
 				} catch (e) { console.error('[kusto]', e); }
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
@@ -2661,7 +2666,7 @@ window.addEventListener('message', async (event: any) => {
 					
 					// Get current query from editor
 					try {
-						const editor = _win.queryEditors && _win.queryEditors[sectionId];
+						const editor = queryEditors && queryEditors[sectionId];
 						if (editor && typeof editor.getValue === 'function') {
 							generatedQuery = editor.getValue() || generatedQuery;
 						}
@@ -2722,7 +2727,7 @@ window.addEventListener('message', async (event: any) => {
 						if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId) {
 							queryGenerated = true;
 							try {
-								const editor = _win.queryEditors && _win.queryEditors[sectionId];
+								const editor = queryEditors && queryEditors[sectionId];
 								generatedQuery = editor && typeof editor.getValue === 'function' ? editor.getValue() : '';
 							} catch (e) { console.error('[kusto]', e); }
 							
@@ -2879,7 +2884,7 @@ window.addEventListener('message', async (event: any) => {
 
 // Request connections on load (only in the query editor webview, not side-panel webviews
 // like cached-values or connection-manager that also load the bundle).
-if (_win.vscode?.postMessage) {
+if (window.vscode) {
 	postMessageToHost({ type: 'getConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
 	try { postMessageToHost({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }
@@ -2958,18 +2963,18 @@ if (_win.vscode?.postMessage) {
 				const ids = Array.from(container.children || [])
 					.map((el: any) => (el && el.id ? String(el.id) : ''))
 					.filter(Boolean);
-				try { if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch (e) { console.error('[kusto]', e); }
+				try { setQueryBoxes(ids.filter((id: any) => id.startsWith('query_'))); } catch (e) { console.error('[kusto]', e); }
+				try { const mdIds = ids.filter((id: any) => id.startsWith('markdown_')); markdownBoxes.length = 0; markdownBoxes.push(...mdIds); } catch (e) { console.error('[kusto]', e); }
+				try { const pyIds = ids.filter((id: any) => id.startsWith('python_')); pythonBoxes.length = 0; pythonBoxes.push(...pyIds); } catch (e) { console.error('[kusto]', e); }
+				try { const urlIds = ids.filter((id: any) => id.startsWith('url_')); urlBoxes.length = 0; urlBoxes.push(...urlIds); } catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 		};
 
 		const bestEffortRelayoutMovedEditors = (boxId: any) => {
 			try {
-				const q = (typeof _win.queryEditors !== 'undefined' && _win.queryEditors) ? _win.queryEditors[boxId] : null;
-				const md = (typeof _win.markdownEditors !== 'undefined' && _win.markdownEditors) ? _win.markdownEditors[boxId] : null;
-				const py = (typeof _win.pythonEditors !== 'undefined' && _win.pythonEditors) ? _win.pythonEditors[boxId] : null;
+				const q = queryEditors ? queryEditors[boxId] : null;
+				const md = markdownEditors ? markdownEditors[boxId] : null;
+				const py = (typeof window.__kustoPythonEditors !== 'undefined' && window.__kustoPythonEditors) ? window.__kustoPythonEditors[boxId] : null;
 				const editors = [q, md, py].filter(Boolean);
 				if (!editors.length) return;
 				setTimeout(() => {
@@ -3393,6 +3398,53 @@ document.addEventListener('keydown', (event: any) => {
 		if (btn) btn.setAttribute('aria-expanded', 'false');
 	} catch (e) { console.error('[kusto]', e); }
 });
+
+// ==========================================================================
+// EVENT LISTENERS for static HTML elements (replace inline onclick handlers)
+// ==========================================================================
+
+// Add section buttons — delegated from .add-controls container using data-add-kind attribute.
+try {
+	const addControlsEl = document.querySelector('.add-controls');
+	if (addControlsEl) {
+		addControlsEl.addEventListener('click', (event: any) => {
+			try {
+				const btn = event.target?.closest?.('[data-add-kind]');
+				if (!btn) return;
+				const kind = btn.getAttribute('data-add-kind');
+				if (!kind) return;
+				// Dropdown items go through the dropdown handler.
+				if (btn.classList.contains('add-controls-dropdown-item')) {
+					__kustoAddSectionFromDropdown(kind);
+				} else if (btn.classList.contains('add-controls-dropdown-btn')) {
+					__kustoToggleAddSectionDropdown(event);
+				} else {
+					__kustoRequestAddSection(kind);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		});
+	}
+} catch (e) { console.error('[kusto]', e); }
+
+// Share modal — event listeners replacing inline onclick handlers.
+try {
+	const shareModal = document.getElementById('shareModal');
+	if (shareModal) {
+		// Backdrop click closes the modal.
+		shareModal.addEventListener('click', (event: any) => {
+			try { __kustoCloseShareModal(event); } catch (e) { console.error('[kusto]', e); }
+		});
+		// Stop propagation on content area.
+		const content = document.getElementById('shareModalContent');
+		if (content) content.addEventListener('click', (event: any) => event.stopPropagation());
+		// Close button.
+		const closeBtn = document.getElementById('shareModalCloseBtn');
+		if (closeBtn) closeBtn.addEventListener('click', () => { try { __kustoCloseShareModal(); } catch (e) { console.error('[kusto]', e); } });
+		// Copy button.
+		const copyBtn = document.getElementById('shareModalCopyBtn');
+		if (copyBtn) copyBtn.addEventListener('click', () => { try { __kustoShareCopyToClipboard(); } catch (e) { console.error('[kusto]', e); } });
+	}
+} catch (e) { console.error('[kusto]', e); }
 
 // ── Window bridges for remaining legacy callers ──
 window.__kustoGetFocusedMonacoEditor = __kustoGetFocusedMonacoEditor;

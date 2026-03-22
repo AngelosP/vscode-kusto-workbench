@@ -42,7 +42,7 @@ return;
 window.chartStateByBoxId = window.chartStateByBoxId || {};
 const chartStateByBoxId = window.chartStateByBoxId;
 window.__kustoChartBoxes = window.__kustoChartBoxes || [];
-let chartBoxes: any[] = window.__kustoChartBoxes;
+export let chartBoxes: any[] = window.__kustoChartBoxes;
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 

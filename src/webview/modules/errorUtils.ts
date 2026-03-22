@@ -4,9 +4,9 @@ import { escapeHtml } from './utils';
 import { ensureResultsShownForTool } from './resultsState';
 import { __kustoApplyResultsVisibility } from './queryBoxes-execution';
 import { lastRunCacheEnabledByBoxId } from './queryBoxes-execution';
+import { queryEditors } from './state';
 import { __kustoAutoFindInQueryEditor } from './monaco';
 
-const _win = window;
 let _errorLocationClickHandlerInstalled = false;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -217,7 +217,7 @@ function __kustoNavigateToQueryLocation(event: any, boxId: any, line: any, col: 
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		const editor = _win.queryEditors ? _win.queryEditors[bid] : null;
+		const editor = queryEditors ? queryEditors[bid] : null;
 		if (!editor) return;
 		const pos = { lineNumber: ln, column: cn };
 		try { editor.focus(); } catch (e) { console.error('[kusto]', e); }

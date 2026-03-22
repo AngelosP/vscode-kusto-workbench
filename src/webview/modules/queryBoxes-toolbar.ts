@@ -11,17 +11,25 @@ import {
 } from './queryBoxes';
 import { executeQuery, __kustoIsRunSelectionReady } from './queryBoxes-execution';
 import { toolbarScrollAtOpen, closeAllMenus } from './dropdown';
-
-const _win = window;
+import { schedulePersist } from './persistence';
+import {
+	queryBoxes, queryEditors, connections,
+	caretDocsEnabled, setCaretDocsEnabled,
+	autoTriggerAutocompleteEnabled, setAutoTriggerAutocompleteEnabled,
+	copilotInlineCompletionsEnabled, setCopilotInlineCompletionsEnabled,
+	activeQueryEditorBoxId, setActiveQueryEditorBoxId,
+	caretDocOverlaysByBoxId, optimizationMetadataByBoxId,
+	qualifyTablesInFlightByBoxId, runModesByBoxId,
+} from './state';
 
 // --- Toggle button functions ---
 
 export function updateCaretDocsToggleButtons() {
-	for (const boxId of _win.queryBoxes) {
+	for (const boxId of queryBoxes) {
 		try {
 			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
 			if (toolbar && typeof toolbar.setCaretDocsActive === 'function') {
-				toolbar.setCaretDocsActive(!!_win.caretDocsEnabled);
+				toolbar.setCaretDocsActive(!!caretDocsEnabled);
 				continue;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -29,11 +37,11 @@ export function updateCaretDocsToggleButtons() {
 }
 
 export function updateAutoTriggerAutocompleteToggleButtons() {
-	for (const boxId of _win.queryBoxes) {
+	for (const boxId of queryBoxes) {
 		try {
 			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
 			if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
-				toolbar.setAutoCompleteActive(!!_win.autoTriggerAutocompleteEnabled);
+				toolbar.setAutoCompleteActive(!!autoTriggerAutocompleteEnabled);
 				continue;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -41,18 +49,18 @@ export function updateAutoTriggerAutocompleteToggleButtons() {
 }
 
 export function toggleAutoTriggerAutocompleteEnabled() {
-	_win.autoTriggerAutocompleteEnabled = !_win.autoTriggerAutocompleteEnabled;
+	setAutoTriggerAutocompleteEnabled(!autoTriggerAutocompleteEnabled);
 	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateAutoTriggerAutocompleteToggleButtons();
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
-		postMessageToHost({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!_win.autoTriggerAutocompleteEnabled });
+		postMessageToHost({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!autoTriggerAutocompleteEnabled });
 	} catch (e) { console.error('[kusto]', e); }
 
 	// When enabling, kick once for the currently focused editor (matches ADX feel).
-	if (_win.autoTriggerAutocompleteEnabled) {
+	if (autoTriggerAutocompleteEnabled) {
 		try {
-			const boxId = (typeof _win.activeQueryEditorBoxId === 'string') ? _win.activeQueryEditorBoxId : null;
+			const boxId = (typeof activeQueryEditorBoxId === 'string') ? activeQueryEditorBoxId : null;
 			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
 				window.__kustoTriggerAutocompleteForBoxId(boxId);
 			}
@@ -61,11 +69,11 @@ export function toggleAutoTriggerAutocompleteEnabled() {
 }
 
 export function updateCopilotInlineCompletionsToggleButtons() {
-	for (const boxId of _win.queryBoxes) {
+	for (const boxId of queryBoxes) {
 		try {
 			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
 			if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
-				toolbar.setCopilotInlineActive(!!_win.copilotInlineCompletionsEnabled);
+				toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
 				continue;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -73,23 +81,23 @@ export function updateCopilotInlineCompletionsToggleButtons() {
 }
 
 export function toggleCopilotInlineCompletionsEnabled() {
-	_win.copilotInlineCompletionsEnabled = !_win.copilotInlineCompletionsEnabled;
+	setCopilotInlineCompletionsEnabled(!copilotInlineCompletionsEnabled);
 	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateCopilotInlineCompletionsToggleButtons();
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try {
-		postMessageToHost({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!_win.copilotInlineCompletionsEnabled });
+		postMessageToHost({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!copilotInlineCompletionsEnabled });
 	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function toggleCaretDocsEnabled() {
-	_win.caretDocsEnabled = !_win.caretDocsEnabled;
+	setCaretDocsEnabled(!caretDocsEnabled);
 	updateCaretDocsToggleButtons();
 	// Hide existing overlays immediately when turning off.
-	if (!_win.caretDocsEnabled) {
+	if (!caretDocsEnabled) {
 		try {
-			for (const key of Object.keys(_win.caretDocOverlaysByBoxId || {})) {
-				const overlay = _win.caretDocOverlaysByBoxId[key];
+			for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
+				const overlay = caretDocOverlaysByBoxId[key];
 				if (overlay && typeof overlay.hide === 'function') {
 					overlay.hide();
 				}
@@ -100,7 +108,7 @@ export function toggleCaretDocsEnabled() {
 		try {
 			const watermarkTitle = 'Smart documentation';
 			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
-			for (const boxId of _win.queryBoxes) {
+			for (const boxId of queryBoxes) {
 				try {
 					const banner = document.getElementById(boxId + '_caret_docs') as any;
 					const text = document.getElementById(boxId + '_caret_docs_text') || banner;
@@ -125,7 +133,7 @@ export function toggleCaretDocsEnabled() {
 
 		// Then refresh any Monaco-driven overlays so real docs content replaces the watermark.
 		try {
-			const overlays = (typeof _win.caretDocOverlaysByBoxId !== 'undefined') ? _win.caretDocOverlaysByBoxId : null;
+			const overlays = (typeof caretDocOverlaysByBoxId !== 'undefined') ? caretDocOverlaysByBoxId : null;
 			if (overlays && typeof overlays === 'object') {
 				for (const key of Object.keys(overlays)) {
 					try {
@@ -139,9 +147,9 @@ export function toggleCaretDocsEnabled() {
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	try {
-		postMessageToHost({ type: 'setCaretDocsEnabled', enabled: !!_win.caretDocsEnabled });
+		postMessageToHost({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled });
 	} catch (e) { console.error('[kusto]', e); }
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // --- Toolbar action dispatcher ---
@@ -149,15 +157,15 @@ export function toggleCaretDocsEnabled() {
 export function onQueryEditorToolbarAction( boxId: any, action: any) {
 	// Focus the editor so Monaco widgets (find/replace) attach correctly.
 	try {
-		_win.activeQueryEditorBoxId = boxId;
-		if (_win.queryEditors[boxId]) {
-			_win.queryEditors[boxId].focus();
+		setActiveQueryEditorBoxId(boxId);
+		if (queryEditors[boxId]) {
+			queryEditors[boxId].focus();
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
 	if (action === 'undo') {
 		try {
-			const editor = _win.queryEditors[boxId];
+			const editor = queryEditors[boxId];
 			if (editor) {
 				editor.trigger('toolbar', 'undo', null);
 			}
@@ -166,7 +174,7 @@ export function onQueryEditorToolbarAction( boxId: any, action: any) {
 	}
 	if (action === 'redo') {
 		try {
-			const editor = _win.queryEditors[boxId];
+			const editor = queryEditors[boxId];
 			if (editor) {
 				editor.trigger('toolbar', 'redo', null);
 			}
@@ -221,17 +229,17 @@ export function onQueryEditorToolbarAction( boxId: any, action: any) {
 	}
 	if (action === 'qualifyTables') {
 		try {
-			if (_win.qualifyTablesInFlightByBoxId && _win.qualifyTablesInFlightByBoxId[boxId]) {
+			if (qualifyTablesInFlightByBoxId && qualifyTablesInFlightByBoxId[boxId]) {
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try { _win.qualifyTablesInFlightByBoxId[boxId] = true; } catch (e) { console.error('[kusto]', e); }
+		try { qualifyTablesInFlightByBoxId[boxId] = true; } catch (e) { console.error('[kusto]', e); }
 		try { setToolbarActionBusy(boxId, 'qualifyTables', true); } catch (e) { console.error('[kusto]', e); }
 		(async () => {
 			try {
 				await fullyQualifyTablesInEditor(boxId);
 			} finally {
-				try { _win.qualifyTablesInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
+				try { qualifyTablesInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 				try { setToolbarActionBusy(boxId, 'qualifyTables', false); } catch (e) { console.error('[kusto]', e); }
 			}
 		})();
@@ -333,7 +341,7 @@ function copyQueryAsAdeLink( boxId: any) {
 		}
 	};
 
-	const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
+	const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 	let query = editor ? editor.getValue() : '';
 	// If the editor has multiple statements (blank-line separated), use only the statement at cursor.
 	try {
@@ -365,8 +373,8 @@ function copyQueryAsAdeLink( boxId: any) {
 
 	// In optimized/comparison sections, inherit connection/database from the source box.
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-			const meta = _win.optimizationMetadataByBoxId[boxId];
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const sourceBoxId = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(sourceBoxId);
@@ -464,8 +472,8 @@ export function __kustoOpenShareModal( boxId: any) {
 
 	// Inherit from source box if this is a comparison section.
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-			const meta = _win.optimizationMetadataByBoxId[boxId];
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(src);
@@ -496,7 +504,7 @@ export function __kustoOpenShareModal( boxId: any) {
 	// Reset the query checkbox.
 	const queryCheck = document.getElementById('shareModal_chk_query') as any;
 	if (queryCheck) {
-		const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 		const hasQuery = !!(editor && String(editor.getValue() || '').trim());
 		queryCheck.checked = hasQuery;
 		queryCheck.disabled = !hasQuery;
@@ -506,13 +514,13 @@ export function __kustoOpenShareModal( boxId: any) {
 	modal.classList.add('visible');
 }
 
-function __kustoCloseShareModal( event?: any) {
+export function __kustoCloseShareModal( event?: any) {
 	if (event && event.target && event.target.id !== 'shareModal') return;
 	const modal = document.getElementById('shareModal') as any;
 	if (modal) modal.classList.remove('visible');
 }
 
-function __kustoShareCopyToClipboard() {
+export function __kustoShareCopyToClipboard() {
 	const modal = document.getElementById('shareModal') as any;
 	if (!modal) return;
 	const boxId = modal.dataset.boxId;
@@ -530,7 +538,7 @@ function __kustoShareCopyToClipboard() {
 	// Gather query text.
 	let queryText = '';
 	try {
-		const editor = _win.queryEditors[boxId] ? _win.queryEditors[boxId] : null;
+		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
 		queryText = editor ? (editor.getValue() || '') : '';
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -542,8 +550,8 @@ function __kustoShareCopyToClipboard() {
 		database = __kustoGetDatabase(boxId);
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		if (typeof _win.optimizationMetadataByBoxId === 'object' && _win.optimizationMetadataByBoxId) {
-			const meta = _win.optimizationMetadataByBoxId[boxId];
+		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
+			const meta = optimizationMetadataByBoxId[boxId];
 			if (meta && meta.isComparison && meta.sourceBoxId) {
 				const src = String(meta.sourceBoxId || '');
 				const srcConnId = __kustoGetConnectionId(src);
@@ -730,7 +738,7 @@ function updateRunButtonResponsive( boxId: any) {
 // --- Monaco / editor helpers ---
 
 function runMonacoAction( boxId: any, actionId: any) {
-	const editor = _win.queryEditors[boxId];
+	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -744,7 +752,7 @@ function runMonacoAction( boxId: any, actionId: any) {
 }
 
 function replaceAllInEditor( boxId: any, from: any, to: any) {
-	const editor = _win.queryEditors[boxId];
+	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -769,7 +777,7 @@ function replaceAllInEditor( boxId: any, from: any, to: any) {
 // --- Power BI export ---
 
 async function exportQueryToPowerBI( boxId: any) {
-	const editor = _win.queryEditors[boxId];
+	const editor = queryEditors[boxId];
 	if (!editor) {
 		return;
 	}
@@ -811,7 +819,7 @@ async function exportQueryToPowerBI( boxId: any) {
 		try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
-	const conn = (_win.connections || []).find((c: any) => c && c.id === connectionId);
+	const conn = (connections || []).find((c: any) => c && c.id === connectionId);
 	const clusterUrl = conn ? (conn.clusterUrl || '') : '';
 	if (!clusterUrl) {
 		try { postMessageToHost({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
@@ -882,17 +890,17 @@ function __kustoApplyRunModeFromMenu( boxId: any, mode: any) {
 }
 
 export function getRunMode( boxId: any) {
-	return _win.runModesByBoxId[boxId] || 'take100';
+	return runModesByBoxId[boxId] || 'take100';
 }
 
 // getRunModeLabelText imported from ../shared/comparisonUtils.ts
 
 export function setRunMode( boxId: any, mode: any) {
-	_win.runModesByBoxId[boxId] = (mode || 'take100');
+	runModesByBoxId[boxId] = (mode || 'take100');
 	const runBtn = document.getElementById(boxId + '_run_btn') as any;
 	if (runBtn) {
 		const labelSpan = runBtn.querySelector('.run-btn-label');
-		const labelText = getRunModeLabelText(_win.runModesByBoxId[boxId]);
+		const labelText = getRunModeLabelText(runModesByBoxId[boxId]);
 		if (labelSpan) {
 			labelSpan.textContent = ' ' + labelText;
 		}
@@ -900,7 +908,7 @@ export function setRunMode( boxId: any, mode: any) {
 		const isEnabled = !runBtn.disabled;
 		runBtn.title = labelText + (isEnabled ? '' : '\nSelect a cluster and database first (or select a favorite)');
 	}
-	try { _win.schedulePersist && _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function closeRunMenu( boxId: any) {
@@ -911,8 +919,8 @@ export function closeRunMenu( boxId: any) {
 }
 
 export function closeAllRunMenus() {
-	if (!_win.queryBoxes) return;
-	_win.queryBoxes.forEach((id: any) => closeRunMenu(id));
+	if (!queryBoxes) return;
+	queryBoxes.forEach((id: any) => closeRunMenu(id));
 }
 
 function toggleRunMenu( boxId: any) {

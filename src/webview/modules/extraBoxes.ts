@@ -33,6 +33,7 @@ import { __kustoAttachAutoResizeToContent } from './monaco-resize';
 import { tryParseFiniteNumber } from '../shared/transform-expr';
 import { tryParseDate } from '../shared/transform-expr';
 import { __kustoMonacoInitRetryCountByBoxId } from './monaco';
+import { setActiveMonacoEditor } from './state';
 const _win = window;
 // Additional section types for the Kusto Query Editor webview:
 // - Markdown: Monaco editor while focused; rendered markdown viewer on blur
@@ -48,8 +49,8 @@ let chartBoxes: any[] = window.__kustoChartBoxes || [];
 let transformationBoxes: any[] = window.__kustoTransformationBoxes || [];
 
 // Python and URL boxes are managed in this file (not sub-modules).
-let pythonBoxes: any[] = [];
-let urlBoxes: any[] = [];
+export let pythonBoxes: any[] = [];
+export let urlBoxes: any[] = [];
 window.__kustoPythonBoxes = pythonBoxes;
 window.__kustoUrlBoxes = urlBoxes;
 
@@ -661,7 +662,7 @@ export function addPythonBox( options: any) {
 	return id;
 }
 
-function removePythonBox( boxId: any) {
+export function removePythonBox( boxId: any) {
 	// Legacy editor cleanup (for any old-style boxes still in DOM).
 	if (pythonEditors[boxId]) {
 		try { pythonEditors[boxId].dispose(); } catch (e) { console.error('[kusto]', e); }
@@ -774,13 +775,13 @@ function initPythonEditor( boxId: any) {
 		try {
 			if (typeof editor.onDidFocusEditorText === 'function') {
 				editor.onDidFocusEditorText(() => {
-					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
+					try { setActiveMonacoEditor(editor); } catch (e) { console.error('[kusto]', e); }
 					try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
 			if (typeof editor.onDidFocusEditorWidget === 'function') {
 				editor.onDidFocusEditorWidget(() => {
-					try { _win.activeMonacoEditor = editor; } catch (e) { console.error('[kusto]', e); }
+					try { setActiveMonacoEditor(editor); } catch (e) { console.error('[kusto]', e); }
 					try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				});
 			}
@@ -1010,7 +1011,7 @@ export function addUrlBox( options: any) {
 	return id;
 }
 
-function removeUrlBox( boxId: any) {
+export function removeUrlBox( boxId: any) {
 	urlBoxes = urlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {
