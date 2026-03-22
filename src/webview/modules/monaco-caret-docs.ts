@@ -380,7 +380,7 @@ const KUSTO_FUNCTION_DOCS: Record<string, any> = {
 const isIdentChar = (ch: any) => /[A-Za-z0-9_\-]/.test(ch);
 const isIdentStart = (ch: any) => /[A-Za-z_]/.test(ch);
 
-// Merge generated function docs (from `queryEditor/functions.generated.js`) into our in-memory
+// Merge generated function docs (from `src/webview/generated/functions.generated.js`) into our in-memory
 // `KUSTO_FUNCTION_DOCS` table. Smart Docs (hover/caret-docs panel) and autocomplete both rely on
 // `KUSTO_FUNCTION_DOCS`, so this must run even if the user never triggers completion.
 const __kustoEnsureGeneratedFunctionsMerged = () => {
@@ -428,7 +428,7 @@ const __kustoEnsureGeneratedFunctionsMerged = () => {
 };
 
 // --- Kusto control/management commands (dot-prefixed) ---
-// Data is provided by `media/queryEditor/controlCommands.generated.js`.
+// Data is provided by `src/webview/generated/controlCommands.generated.js`.
 const KUSTO_CONTROL_COMMAND_DOCS_BASE_URL = 'https://learn.microsoft.com/en-us/kusto/';
 const KUSTO_CONTROL_COMMAND_DOCS_VIEW = 'azure-data-explorer';
 const KUSTO_CONTROL_COMMAND_DOCS_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h

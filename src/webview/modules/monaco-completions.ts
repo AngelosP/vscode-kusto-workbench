@@ -106,7 +106,7 @@ let __kustoProvideCompletionItemsForDiagnostics = null;
 const __kustoCompletionProvider = {
 	triggerCharacters: [' ', '|', '.'],
 	provideCompletionItems: async function (model: any, position: any) {
-		// Generated Kusto function names (from Microsoft Learn TOC) are loaded by `queryEditor/functions.generated.js`.
+		// Generated Kusto function names (from Microsoft Learn TOC) are loaded by `src/webview/generated/functions.generated.js`.
 		// Merge those into our hand-authored docs so completions are comprehensive even when we don't
 		// have detailed arg/return docs for every function.
 		try {

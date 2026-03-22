@@ -118,7 +118,7 @@ const inlineBody = lines.slice(inlineStart - 1, inlineEnd)
 	.map(l => l.replace(/^\t{0,5}/, '').replace(/^    {0,5}/, ''))
 	.join('\n');
 
-const inlineContent = `// Inline completions (Copilot ghost text) — extracted from monaco.ts
+const inlineContent = `// Inline completions (Copilot ghost text) remain in monaco.ts.
 // Uses init-deps pattern: call initInlineCompletionsDeps(monaco) from the require callback.
 import { postMessageToHost } from '../shared/webview-messages';
 import {
@@ -148,12 +148,11 @@ export { __kustoShowInlineSpinner, __kustoHideInlineSpinner };
 // ───────────────────────────────────────────────────────────────────────
 console.log('\\nThis script would extract:');
 console.log('  monaco-caret-docs.ts: ' + caretDocsContent.split('\\n').length + ' lines');
-console.log('  monaco-inline-completions.ts: ' + inlineContent.split('\\n').length + ' lines');
+console.log('  monaco inline completions are intentionally left in monaco.ts');
 console.log('\\nNOTE: The extracted code uses AMD-closure-scoped variables.');
 console.log('Manual fixup needed after extraction:');
 console.log('  1. In monaco-caret-docs.ts: replace "monaco.Range" with "_monaco.Range"');
-console.log('  2. In monaco-inline-completions.ts: same');
-console.log('  3. In monaco.ts: replace extracted blocks with import + init calls');
+console.log('  2. In monaco.ts: replace extracted block with import + init calls (if extraction is resumed)');
 console.log('\\nThe AMD closure complexity makes automated extraction risky.');
 console.log('Recommend manual extraction using these line ranges as guidance.');
 
@@ -161,7 +160,10 @@ console.log('Recommend manual extraction using these line ranges as guidance.');
 // The deeply nested AMD callback code with 5-level indentation, closure captures, and
 // back-references makes it better suited for manual extraction with IDE verification.
 console.log('\\nSkipping write — manual extraction recommended.');
-`;
 
-writeFileSync(join(root, 'scripts', 'split-monaco.mjs'), caretDocsContent);
-console.log('Analysis complete.');
+if (process.argv.includes('--write')) {
+	writeFileSync(join(root, 'scripts', 'split-monaco.mjs'), caretDocsContent);
+	console.log('Wrote scripts/split-monaco.mjs (--write enabled).');
+} else {
+	console.log('Analysis complete (no files written). Use --write to emit output.');
+}

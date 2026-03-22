@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const TOC_URL = 'https://learn.microsoft.com/en-us/kusto/toc.json?view=azure-data-explorer';
-const OUT_FILE = path.resolve('src/webview/modules/controlCommands.generated.js');
+const OUT_FILE = path.resolve('src/webview/generated/controlCommands.generated.js');
 
 const isObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
 

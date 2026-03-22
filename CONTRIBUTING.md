@@ -75,6 +75,34 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for file-by-file inventories of each subs
 - Never surface raw backend error messages to users. Instead provide actionable, user-friendly guidance. We may build entire features around helping users recover from errors.
 - User-facing errors must be formatted via `formatQueryExecutionErrorForUser()` in `queryEditorProvider.ts`.
 
+## CSS & Styling Convention
+
+- Keep component CSS in a sibling `*.styles.ts` file whenever styles are substantial (roughly 100+ lines) or reused across related controls.
+- Import styles into the component and assign them with `static override styles = styles;`.
+- Prefer this structure for Lit components:
+
+```typescript
+import { LitElement, html, type TemplateResult } from 'lit';
+import { styles } from './my-component.styles.js';
+
+export class MyComponent extends LitElement {
+  static override styles = styles;
+}
+```
+
+- Keep the style module focused on CSS only:
+
+```typescript
+import { css } from 'lit';
+
+export const styles = css`
+  :host { display: block; }
+`;
+```
+
+- Use inline `css` in the component file only for very small, local styles where extracting would hurt readability.
+- Preserve the existing VS Code theme variable usage (`--vscode-*`) and do not hardcode app-level colors.
+
 ---
 
 # Regression Guards
