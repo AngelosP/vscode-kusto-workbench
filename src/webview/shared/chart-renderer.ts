@@ -437,7 +437,13 @@ export function renderChart(boxId: any) {
 	}
 
 	// Ensure we have an instance bound to the active element.
+	// Guard: defer init if the canvas hasn't been laid out yet (zero dimensions)
+	// to avoid the ECharts "Can't get DOM width or height" warning.
 	try { canvas.style.minHeight = '140px'; } catch (e) { console.error('[kusto]', e); }
+	if (!canvas.clientWidth || !canvas.clientHeight) {
+		requestAnimationFrame(() => { try { renderChart(id); } catch (e) { console.error('[kusto]', e); } });
+		return;
+	}
 	try {
 		const isDark = getIsDarkThemeForEcharts();
 		const themeName = isDark ? 'dark' : undefined;
