@@ -14,6 +14,13 @@ import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
 import { ConnectionService, ConnectionServiceHost, getClusterShortName } from './queryEditorConnection';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
 import {
+	getErrorMessage as getErrorMessageFn,
+	formatQueryExecutionErrorForUser as formatQueryExecutionErrorForUserFn,
+	isControlCommand as isControlCommandFn,
+	appendQueryMode as appendQueryModeFn,
+	buildCacheDirective as buildCacheDirectiveFn
+} from './queryEditorUtils';
+import {
 	OUTPUT_CHANNEL_NAME,
 	STORAGE_KEYS,
 	CachedSchemaEntry,
@@ -59,86 +66,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly copilot: CopilotService;
 
 	getErrorMessage(error: unknown): string {
-		if (error instanceof Error) {
-			return error.message;
-		}
-		return String(error);
+		return getErrorMessageFn(error);
 	}
 
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string {
 		const raw = this.getErrorMessage(error);
-		const cleaned = raw.replace(/^Query execution failed:\s*/i, '').trim();
-		const lower = cleaned.toLowerCase();
-		const cluster = String(connection.clusterUrl || '').trim();
-		const dbSuffix = database ? ` (db: ${database})` : '';
-
-		if (lower.includes('failed to get cloud info')) {
-			return (
-				`Can't connect to cluster ${cluster}${dbSuffix}.\n` +
-				`This often happens when VPN is off, Wiâ€‘Fi is down, or your network blocks outbound HTTPS.\n` +
-				`Next steps:\n` +
-				`- Turn on your VPN (if required)\n` +
-				`- Confirm you have internet access\n` +
-				`- Verify the cluster URL is correct\n` +
-				`- Try again\n` +
-				`\n` +
-				`Technical details: ${cleaned}`
-			);
-		}
-		if (lower.includes('etimedout') || lower.includes('timeout')) {
-			return (
-				`Connection timed out reaching ${cluster}${dbSuffix}.\n` +
-				`Next steps:\n` +
-				`- Turn on your VPN (if required)\n` +
-				`- Check Wiâ€‘Fi / network connectivity\n` +
-				`- Try again\n` +
-				`\n` +
-				`Technical details: ${cleaned}`
-			);
-		}
-		if (lower.includes('enotfound') || lower.includes('eai_again') || lower.includes('getaddrinfo')) {
-			return (
-				`Couldn't resolve the cluster host for ${cluster}${dbSuffix}.\n` +
-				`Next steps:\n` +
-				`- Verify the cluster URL is correct\n` +
-				`- Turn on your VPN (if required)\n` +
-				`- Check DNS / network connectivity\n` +
-				`\n` +
-				`Technical details: ${cleaned}`
-			);
-		}
-		if (lower.includes('econnrefused') || lower.includes('connection refused')) {
-			return (
-				`Connection was refused by ${cluster}${dbSuffix}.\n` +
-				`Next steps:\n` +
-				`- Verify the cluster URL is correct\n` +
-				`- Check VPN / proxy / firewall rules\n` +
-				`- Try again\n` +
-				`\n` +
-				`Technical details: ${cleaned}`
-			);
-		}
-		if (lower.includes('aads') || lower.includes('aadsts') || lower.includes('unauthorized') || lower.includes('authentication')) {
-			return (
-				`Authentication failed connecting to ${cluster}${dbSuffix}.\n` +
-				`Next steps:\n` +
-				`- Re-authenticate (sign in again)\n` +
-				`- Confirm you have access to the database\n` +
-				`- Try again\n` +
-				`\n` +
-				`Technical details: ${cleaned}`
-			);
-		}
-
-		// For typical Kusto semantic/syntax errors, showing the first line is usually helpful.
-		const firstLine = cleaned.split(/\r?\n/)[0]?.trim() ?? '';
-		const isJsonLike = firstLine.startsWith('{') || firstLine.startsWith('[');
-		const isKustoQueryError = /\b(semantic|syntax)\s+error\b/i.test(firstLine);
-		const includeSnippet = !!firstLine && !isJsonLike && (isKustoQueryError || firstLine.length <= 160);
-
-		return includeSnippet
-			? `Query failed${dbSuffix}: ${firstLine}`
-			: `Query failed${dbSuffix}: ${cleaned || 'Unknown error'}`;
+		return formatQueryExecutionErrorForUserFn(raw, connection.clusterUrl, database);
 	}
 
 	logQueryExecutionError(error: unknown, connection: KustoConnection, database: string | undefined, boxId: string, query: string): void {
@@ -1605,85 +1538,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		cacheValue?: number,
 		cacheUnit?: CacheUnit | string
 	): string | undefined {
-		if (!cacheEnabled || !cacheValue || !cacheUnit) {
-			return undefined;
-		}
-
-		const unit = String(cacheUnit).toLowerCase();
-		let timespan: string | undefined;
-		switch (unit) {
-			case 'minutes':
-				timespan = `time(${cacheValue}m)`;
-				break;
-			case 'hours':
-				timespan = `time(${cacheValue}h)`;
-				break;
-			case 'days':
-				timespan = `time(${cacheValue}d)`;
-				break;
-			default:
-				return undefined;
-		}
-
-		return `set query_results_cache_max_age = ${timespan};`;
+		return buildCacheDirectiveFn(cacheEnabled, cacheValue, cacheUnit);
 	}
 
-	/**
-	 * Checks if a query is a Kusto control command (starts with '.').
-	 * Control commands like `.show function`, `.show databases`, etc. cannot
-	 * have operators like `| take 100` appended to them.
-	 */
 	isControlCommand(query: string): boolean {
-		const trimmed = (query ?? '').replace(/^\s+/, '');
-		// Skip leading comments
-		let i = 0;
-		while (i < trimmed.length) {
-			// Skip whitespace
-			while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
-			if (i >= trimmed.length) return false;
-			// Skip line comments
-			if (trimmed[i] === '/' && trimmed[i + 1] === '/') {
-				const nl = trimmed.indexOf('\n', i + 2);
-				if (nl < 0) return false;
-				i = nl + 1;
-				continue;
-			}
-			// Skip block comments
-			if (trimmed[i] === '/' && trimmed[i + 1] === '*') {
-				const end = trimmed.indexOf('*/', i + 2);
-				if (end < 0) return false;
-				i = end + 2;
-				continue;
-			}
-			// Check if first non-comment character is a dot
-			return trimmed[i] === '.';
-		}
-		return false;
+		return isControlCommandFn(query);
 	}
 
 	appendQueryMode(query: string, queryMode?: string): string {
-		// Control commands (starting with '.') cannot have operators appended
-		if (this.isControlCommand(query)) {
-			return query;
-		}
-
-		const mode = (queryMode ?? '').toLowerCase();
-		let fragment = '';
-		switch (mode) {
-			case 'take100':
-				fragment = '| take 100';
-				break;
-			case 'sample100':
-				fragment = '| sample 100';
-				break;
-			case 'plain':
-			case '':
-			default:
-				return query;
-		}
-
-		const base = query.replace(/\s+$/g, '').replace(/;+\s*$/g, '');
-		return `${base}\n${fragment}`;
+		return appendQueryModeFn(query, queryMode);
 	}
 
 	// HTML rendering moved to src/queryEditorHtml.ts

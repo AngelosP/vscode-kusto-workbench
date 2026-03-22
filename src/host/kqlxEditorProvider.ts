@@ -67,7 +67,7 @@ const getClusterShortNameKey = (clusterUrl: string): string => {
  * This handles type coercion and default values so that semantically equivalent
  * states compare as equal regardless of how they were serialized.
  */
-const normalizeValue = (value: unknown, key?: string): unknown => {
+export const normalizeValue = (value: unknown, key?: string): unknown => {
 	// Handle null/undefined
 	if (value === null || value === undefined) {
 		return undefined;
@@ -122,7 +122,7 @@ const normalizeValue = (value: unknown, key?: string): unknown => {
  * without needing to enumerate every property - any new properties added to sections
  * will automatically be included in comparisons.
  */
-const normalizeSection = (section: unknown): Record<string, unknown> | undefined => {
+export const normalizeSection = (section: unknown): Record<string, unknown> | undefined => {
 	if (!section || typeof section !== 'object') {
 		return undefined;
 	}
@@ -163,7 +163,7 @@ const normalizeSection = (section: unknown): Record<string, unknown> | undefined
  * specific properties. When you add new properties to any section type, they
  * will automatically be included in comparisons without any code changes here.
  */
-const normalizeStateForComparison = (s: KqlxStateV1): Record<string, unknown> => {
+export const normalizeStateForComparison = (s: KqlxStateV1): Record<string, unknown> => {
 	const sections: Array<Record<string, unknown>> = [];
 	
 	for (const section of Array.isArray(s.sections) ? s.sections : []) {
@@ -179,7 +179,7 @@ const normalizeStateForComparison = (s: KqlxStateV1): Record<string, unknown> =>
 	};
 };
 
-const normalizeHeight = (v: unknown): number | undefined => {
+export const normalizeHeight = (v: unknown): number | undefined => {
 	const n = typeof v === 'number' ? v : undefined;
 	if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
 		return undefined;
@@ -187,7 +187,7 @@ const normalizeHeight = (v: unknown): number | undefined => {
 	return Math.round(n);
 };
 
-const deepEqual = (a: unknown, b: unknown): boolean => {
+export const deepEqual = (a: unknown, b: unknown): boolean => {
 	if (a === b) {
 		return true;
 	}
@@ -240,6 +240,21 @@ type IncomingWebviewMessage =
 	| { type: 'persistDocument'; state: KqlxStateV1; flush?: boolean }
 	| { type: string; [key: string]: unknown };
 
+export function sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
+	if (kind !== 'mdx') {
+		return state;
+	}
+	const sections = Array.isArray(state.sections) ? state.sections : [];
+	const filtered = sections.filter((s) => {
+		const t = (s as any)?.type;
+		return t === 'markdown' || t === 'url' || t === 'transformation' || t === 'devnotes';
+	});
+	return {
+		caretDocsEnabled: state.caretDocsEnabled,
+		sections: filtered
+	};
+}
+
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlxEditor';
 
@@ -263,21 +278,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		return kind === 'mdx'
 			? ['markdown', 'url', 'transformation']
 			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
-	}
-
-	private static sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
-		if (kind !== 'mdx') {
-			return state;
-		}
-		const sections = Array.isArray(state.sections) ? state.sections : [];
-		const filtered = sections.filter((s) => {
-			const t = (s as any)?.type;
-			return t === 'markdown' || t === 'url' || t === 'transformation' || t === 'devnotes';
-		});
-		return {
-			caretDocsEnabled: state.caretDocsEnabled,
-			sections: filtered
-		};
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
@@ -707,7 +707,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 
-			const sanitizedState = KqlxEditorProvider.sanitizeStateForKind(documentKind, parsed.file.state);
+			const sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
 			const hydratedState = await injectLinkedQueryText(sanitizedState);
 
 			let connectionsChanged = false;
@@ -888,7 +888,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
-					const state = KqlxEditorProvider.sanitizeStateForKind(documentKind, incomingState);
+					const state = sanitizeStateForKind(documentKind, incomingState);
 
 					// If this notebook links its first query to an external file, keep the link stable
 					// and persist query edits into that linked file (so Save can save both).

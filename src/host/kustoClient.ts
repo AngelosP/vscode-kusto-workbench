@@ -1,6 +1,14 @@
 import { KustoConnection } from './connectionManager';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
+import {
+	formatCellValue,
+	isLikelyCancellationError as isLikelyCancellationErrorFn,
+	isAuthError as isAuthErrorFn,
+	extractSchemaFromJson as extractSchemaFromJsonFn,
+	finalizeSchema as finalizeSchemeFn,
+	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
+} from './kustoClientUtils';
 
 /**
  * Server-side resource usage statistics extracted from the Kusto response.
@@ -580,50 +588,7 @@ export class KustoQueryClient {
 	}
 
 	private isAuthError(error: unknown): boolean {
-		const anyErr = error as Record<string, unknown>;
-		// User cancelled sign-in: do not treat as an auth error (otherwise we may retry and prompt again).
-		if (anyErr?.isCancelled === true || this.isLikelyCancellationError(error)) {
-			return false;
-		}
-		const msg = typeof anyErr?.message === 'string' ? anyErr.message : String(error || '');
-		const lower = msg.toLowerCase();
-		if (lower.includes('aadsts') || lower.includes('aads')) {
-			return true;
-		}
-		if (lower.includes('unauthorized') || lower.includes('authentication') || lower.includes('authorization')) {
-			return true;
-		}
-		// azure-kusto-data often wraps HTTP errors; check status codes when present.
-		const extractStatus = (e: any): number | undefined => {
-			try {
-				const direct = e?.statusCode ?? e?.status ?? e?.response?.status ?? e?.response?.statusCode;
-				if (typeof direct === 'number' && Number.isFinite(direct)) {
-					return direct;
-				}
-			} catch {
-				// ignore
-			}
-			try {
-				const m = String(e?.message ?? '').match(/\bstatus\s*code\s*(401|403)\b/i)
-					|| String(e?.message ?? '').match(/\bstatus\s*[:=]\s*(401|403)\b/i)
-					|| String(e?.message ?? '').match(/\b(401|403)\b\s*\(?unauthorized\)?/i)
-					|| String(e?.message ?? '').match(/\b(401|403)\b\s*\(?forbidden\)?/i);
-				if (m?.[1]) {
-					const n = Number(m[1]);
-					return Number.isFinite(n) ? n : undefined;
-				}
-			} catch {
-				// ignore
-			}
-			return undefined;
-		};
-
-		const status = extractStatus(anyErr)
-			?? extractStatus(anyErr?.cause)
-			?? extractStatus(anyErr?.innerError)
-			?? extractStatus(anyErr?.error)
-			?? extractStatus(anyErr?.originalError);
-		return status === 401 || status === 403;
+		return isAuthErrorFn(error);
 	}
 
 	private async getSessionForCluster(
@@ -911,22 +876,7 @@ export class KustoQueryClient {
 	}
 
 	private isLikelyCancellationError(error: unknown): boolean {
-		const anyErr = error as Record<string, unknown>;
-		if (anyErr?.isCancelled === true) {
-			return true;
-		}
-		// Axios cancel token errors commonly set __CANCEL or use messages like "canceled".
-		if (anyErr?.__CANCEL === true) {
-			return true;
-		}
-		// Avoid treating generic network aborts/disconnects as user cancellations.
-		// Only treat explicit cancellation signals as cancellations.
-		if (typeof anyErr?.name === 'string' && anyErr.name === 'AbortError') {
-			return true;
-		}
-		const msg = typeof anyErr?.message === 'string' ? anyErr.message : '';
-		// VS Code auth cancellation often appears as "User did not consent" rather than "cancelled".
-		return /\b(cancel(l)?ed|canceled|did\s+not\s+consent|user\s+did\s+not\s+consent|consent\s+denied|user\s+cancel(l)?ed)\b/i.test(msg);
+		return isLikelyCancellationErrorFn(error);
 	}
 
 	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: { allowInteractive?: boolean }): Promise<string[]> {
@@ -1000,67 +950,6 @@ export class KustoQueryClient {
 				return type ? { name, type } : name;
 			});
 			
-			// Helper function to format cell values
-			const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
-				if (cell === null || cell === undefined) {
-					return { display: 'null', full: 'null' };
-				}
-				
-				// Check if it's a Date object
-				if (cell instanceof Date) {
-					const full = cell.toString();
-					// Format as YYYY-MM-DD HH:MM:SS
-					const display = cell.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-					return { display, full };
-				}
-				
-				// Check if it's an object or array (complex structure)
-				if (typeof cell === 'object') {
-					try {
-						// Check if object/array is empty
-						const isEmpty = Array.isArray(cell) 
-							? cell.length === 0 
-							: Object.keys(cell).length === 0;
-						
-						if (isEmpty) {
-							const display = Array.isArray(cell) ? '[]' : '{}';
-							return { display, full: display };
-						}
-						
-						const jsonStr = JSON.stringify(cell, null, 2);
-						return { 
-							display: '[object]', 
-							full: jsonStr,
-							isObject: true,
-							rawObject: cell
-						};
-					} catch (e) {
-						// If JSON.stringify fails, fall back to string representation
-						const str = String(cell);
-						return { display: str, full: str };
-					}
-				}
-				
-				// Check if it's a string that looks like an ISO date
-				const str = String(cell);
-				const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
-				if (isoDateRegex.test(str)) {
-					try {
-						const date = new Date(str);
-						if (!isNaN(date.getTime())) {
-							const full = date.toString();
-							// Format as YYYY-MM-DD HH:MM:SS
-							const display = date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-							return { display, full };
-						}
-					} catch (e) {
-						// Not a valid date, fall through
-					}
-				}
-				
-				return { display: str, full: str };
-			};
-			
 			// Extract rows
 			const rows: any[][] = [];
 			for (const row of primaryResults.rows()) {
@@ -1092,8 +981,6 @@ export class KustoQueryClient {
 			};
 		} catch (error) {
 			console.error('Error executing query:', error);
-			
-			// Extract more detailed error information
 			let errorMessage = 'Unknown error';
 			if (error instanceof Error) {
 				errorMessage = error.message;
@@ -1183,47 +1070,6 @@ export class KustoQueryClient {
 					const type = typeof col.type === 'string' ? col.type : '';
 					return type ? { name, type } : name;
 				});
-
-				const formatCellValue = (cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } => {
-					if (cell === null || cell === undefined) {
-						return { display: 'null', full: 'null' };
-					}
-					if (cell instanceof Date) {
-						const full = cell.toString();
-						const display = cell.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-						return { display, full };
-					}
-					if (typeof cell === 'object') {
-						try {
-							const isEmpty = Array.isArray(cell) ? cell.length === 0 : Object.keys(cell).length === 0;
-							if (isEmpty) {
-								const display = Array.isArray(cell) ? '[]' : '{}';
-								return { display, full: display };
-							}
-							const jsonStr = JSON.stringify(cell, null, 2);
-							return { display: '[object]', full: jsonStr, isObject: true, rawObject: cell };
-						} catch {
-							const str = String(cell);
-							return { display: str, full: str };
-						}
-					}
-
-					const str = String(cell);
-					const isoDateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
-					if (isoDateRegex.test(str)) {
-						try {
-							const date = new Date(str);
-							if (!isNaN(date.getTime())) {
-								const full = date.toString();
-								const display = date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-								return { display, full };
-							}
-						} catch {
-							// ignore
-						}
-					}
-					return { display: str, full: str };
-				};
 
 				const rows: any[][] = [];
 				for (const row of primaryResults.rows()) {
@@ -1338,207 +1184,11 @@ export class KustoQueryClient {
 	 * The raw JSON is used by monaco-kusto's setSchemaFromShowSchema API for full language support.
 	 */
 	private parseDatabaseSchemaResultWithRaw(result: any, commandUsed: string): { schema: DatabaseSchemaIndex; rawSchemaJson?: unknown } {
-		const columnTypesByTable: Record<string, Record<string, string>> = {};
-		const tableDocStrings: Record<string, string> = {};
-		const columnDocStrings: Record<string, string> = {};
-		const tableFolders: Record<string, string> = {};
-		const functions: KustoFunctionInfo[] = [];
-		const primary = result?.primaryResults?.[0];
-		if (!primary) {
-			return { schema: { tables: [], columnTypesByTable: {} } };
-		}
-
-		let rawSchemaJson: unknown = undefined;
-
-		// Attempt JSON-based schema first (only from `.show database schema as json` command).
-		const isJsonCommand = commandUsed.includes('as json');
-		try {
-			// Some drivers expose rows() as iterable, not iterator.
-			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
-			if (rowCandidate && typeof rowCandidate === 'object') {
-				// Extract the raw schema JSON for monaco-kusto
-				if (isJsonCommand) {
-					// The schema can be in different shapes depending on the driver
-					for (const key of Object.keys(rowCandidate)) {
-						const val = (rowCandidate as Record<string, any>)[key];
-						if (val && typeof val === 'object' && val.Databases) {
-							// This is already the parsed JSON object
-							rawSchemaJson = val;
-							break;
-						}
-						if (typeof val === 'string') {
-							const trimmed = val.trim();
-							if (trimmed.startsWith('{')) {
-								try {
-									const parsed = JSON.parse(trimmed);
-									if (parsed && parsed.Databases) {
-										rawSchemaJson = parsed;
-										break;
-									}
-								} catch { /* ignore */ }
-							}
-						}
-					}
-					// If still not found, try the row itself
-					if (!rawSchemaJson && (rowCandidate as Record<string, any>).Databases) {
-						rawSchemaJson = rowCandidate;
-					}
-				}
-
-				// If the row itself is already an object/array with schema shape, try it.
-				this.extractSchemaFromJson(rowCandidate, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				const direct = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				if (direct.tables.length > 0) {
-					return { schema: direct, rawSchemaJson };
-				}
-
-				for (const key of Object.keys(rowCandidate)) {
-					const val = (rowCandidate as Record<string, any>)[key];
-					if (val && typeof val === 'object') {
-						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-						if (finalized.tables.length > 0) {
-							return { schema: finalized, rawSchemaJson };
-						}
-						continue;
-					}
-
-					if (typeof val === 'string') {
-						const trimmed = val.trim();
-						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-							const parsed = JSON.parse(val);
-							this.extractSchemaFromJson(parsed, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-							const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-							if (finalized.tables.length > 0) {
-								return { schema: finalized, rawSchemaJson };
-							}
-						}
-					}
-				}
-			}
-		} catch {
-			// ignore and fall back to tabular parsing
-		}
-
-		// Tabular fallback: try to infer TableName/ColumnName columns.
-		const colNames: string[] = (primary.columns ?? []).map((c: any) => String(c.name ?? c.type ?? '')).filter(Boolean);
-		const findCol = (candidates: string[]) => {
-			const lowered = colNames.map(c => c.toLowerCase());
-			for (const cand of candidates) {
-				const idx = lowered.indexOf(cand.toLowerCase());
-				if (idx >= 0) {
-					return colNames[idx];
-				}
-			}
-			return null;
-		};
-		const tableCol = findCol(['TableName', 'Table', 'Name']);
-		const columnCol = findCol(['ColumnName', 'Column', 'Column1', 'Name1']);
-		const typeCol = findCol(['ColumnType', 'Type', 'CslType', 'DataType', 'ColumnTypeName']);
-
-		if (primary.rows) {
-			for (const row of primary.rows()) {
-				const rowObj = row as Record<string, unknown>;
-				const tableName = tableCol ? rowObj[tableCol] : rowObj['TableName'];
-				const columnName = columnCol ? rowObj[columnCol] : rowObj['ColumnName'];
-				const columnType = typeCol ? rowObj[typeCol] : rowObj['ColumnType'];
-				if (!tableName || !columnName) {
-					continue;
-				}
-				const t = String(tableName);
-				const c = String(columnName);
-				columnTypesByTable[t] ??= {};
-				columnTypesByTable[t][c] = columnType !== undefined && columnType !== null ? String(columnType) : '';
-			}
-		}
-
-		return { schema: this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions), rawSchemaJson };
+		return parseDatabaseSchemaResultWithRawFn(result, commandUsed);
 	}
 
 	private parseDatabaseSchemaResult(result: any): DatabaseSchemaIndex {
-		const columnTypesByTable: Record<string, Record<string, string>> = {};
-		const tableDocStrings: Record<string, string> = {};
-		const columnDocStrings: Record<string, string> = {};
-		const tableFolders: Record<string, string> = {};
-		const functions: KustoFunctionInfo[] = [];
-		const primary = result?.primaryResults?.[0];
-		if (!primary) {
-			return { tables: [], columnTypesByTable: {} };
-		}
-
-		// Attempt JSON-based schema first.
-		try {
-			// Some drivers expose rows() as iterable, not iterator.
-			const rowCandidate = primary.rows ? Array.from(primary.rows())[0] : null;
-			if (rowCandidate && typeof rowCandidate === 'object') {
-				// If the row itself is already an object/array with schema shape, try it.
-				this.extractSchemaFromJson(rowCandidate, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				const direct = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				if (direct.tables.length > 0) {
-					return direct;
-				}
-
-				for (const key of Object.keys(rowCandidate)) {
-					const val = (rowCandidate as Record<string, any>)[key];
-					if (val && typeof val === 'object') {
-						this.extractSchemaFromJson(val, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-						const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-						if (finalized.tables.length > 0) {
-							return finalized;
-						}
-						continue;
-					}
-
-					if (typeof val === 'string') {
-						const trimmed = val.trim();
-						if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-							const parsed = JSON.parse(val);
-							this.extractSchemaFromJson(parsed, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-							const finalized = this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-							if (finalized.tables.length > 0) {
-								return finalized;
-							}
-						}
-					}
-				}
-			}
-		} catch {
-			// ignore and fall back to tabular parsing
-		}
-
-		// Tabular fallback: try to infer TableName/ColumnName columns.
-		const colNames: string[] = (primary.columns ?? []).map((c: any) => String(c.name ?? c.type ?? '')).filter(Boolean);
-		const findCol = (candidates: string[]) => {
-			const lowered = colNames.map(c => c.toLowerCase());
-			for (const cand of candidates) {
-				const idx = lowered.indexOf(cand.toLowerCase());
-				if (idx >= 0) {
-					return colNames[idx];
-				}
-			}
-			return null;
-		};
-		const tableCol = findCol(['TableName', 'Table', 'Name']);
-		const columnCol = findCol(['ColumnName', 'Column', 'Column1', 'Name1']);
-		const typeCol = findCol(['ColumnType', 'Type', 'CslType', 'DataType', 'ColumnTypeName']);
-
-		if (primary.rows) {
-			for (const row of primary.rows()) {
-				const rowObj = row as Record<string, unknown>;
-				const tableName = tableCol ? rowObj[tableCol] : rowObj['TableName'];
-				const columnName = columnCol ? rowObj[columnCol] : rowObj['ColumnName'];
-				const columnType = typeCol ? rowObj[typeCol] : rowObj['ColumnType'];
-				if (!tableName || !columnName) {
-					continue;
-				}
-				const t = String(tableName);
-				const c = String(columnName);
-				columnTypesByTable[t] ??= {};
-				columnTypesByTable[t][c] = columnType !== undefined && columnType !== null ? String(columnType) : '';
-			}
-		}
-
-		return this.finalizeSchema(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+		return parseDatabaseSchemaResultWithRawFn(result, '').schema;
 	}
 
 	private buildSchemaDebug(result: any, commandUsed: string): DatabaseSchemaResult['debug'] {
@@ -1571,289 +1221,7 @@ export class KustoQueryClient {
 		tableFolders?: Record<string, string>,
 		functions?: KustoFunctionInfo[]
 	) {
-		if (!parsed) {
-			return;
-		}
-
-		const addColumn = (tableName: string, colName: string, colType: any, colDocString?: string) => {
-			const t = String(tableName);
-			const c = String(colName);
-			columnTypesByTable[t] ??= {};
-			columnTypesByTable[t][c] = colType !== undefined && colType !== null ? String(colType) : '';
-			if (colDocString && columnDocStrings) {
-				columnDocStrings[`${t}.${c}`] = colDocString;
-			}
-		};
-
-		const addTableDocString = (tableName: string, docString?: string) => {
-			if (docString && tableDocStrings) {
-				tableDocStrings[String(tableName)] = docString;
-			}
-		};
-
-		const addTableFolder = (tableName: string, folder?: string) => {
-			if (folder && tableFolders) {
-				tableFolders[String(tableName)] = folder;
-			}
-		};
-
-		// Helper to extract function info from JSON schema function object
-		const addFunction = (fnObj: any) => {
-			if (!functions || !fnObj) {
-				return;
-			}
-			const name = fnObj?.Name ?? fnObj?.name;
-			if (!name) {
-				return;
-			}
-			const docString = fnObj?.DocString ?? fnObj?.docString ?? fnObj?.Description ?? fnObj?.description;
-			const folder = fnObj?.Folder ?? fnObj?.folder;
-			const body = fnObj?.Body ?? fnObj?.body;
-			// Extract parameters from InputParameters array
-			const inputParams = fnObj?.InputParameters ?? fnObj?.inputParameters ?? [];
-			const parameters: KustoFunctionParameter[] = [];
-			let parametersText = '';
-			if (Array.isArray(inputParams)) {
-				const paramParts: string[] = [];
-				for (const p of inputParams) {
-					const pName = p?.Name ?? p?.name;
-					if (!pName) {
-						continue;
-					}
-					// Check if this is a tabular parameter (has Columns array)
-					const cols = p?.Columns ?? p?.columns;
-					if (Array.isArray(cols) && cols.length > 0) {
-						// Tabular parameter: T:(*) or T:(col1:type, col2:type)
-						const colDefs = cols.map((c: any) => {
-							const cName = c?.Name ?? c?.name;
-							const cType = c?.CslType ?? c?.cslType ?? c?.Type ?? c?.type ?? '';
-							return cType ? `${cName}:${cType}` : cName;
-						}).join(', ');
-						parameters.push({ name: String(pName), type: `(${colDefs})` });
-						paramParts.push(`${pName}:(${colDefs})`);
-					} else {
-						// Scalar parameter
-						const pType = p?.CslType ?? p?.cslType ?? p?.Type ?? p?.type ?? '';
-						const pDefault = p?.CslDefaultValue ?? p?.cslDefaultValue ?? p?.DefaultValue ?? p?.defaultValue ?? '';
-						parameters.push({
-							name: String(pName),
-							type: pType ? String(pType) : undefined,
-							defaultValue: pDefault ? String(pDefault) : undefined
-						});
-						let paramStr = pType ? `${pName}:${pType}` : String(pName);
-						if (pDefault) {
-							paramStr += `=${pDefault}`;
-						}
-						paramParts.push(paramStr);
-					}
-				}
-				parametersText = `(${paramParts.join(', ')})`;
-			}
-			functions.push({
-				name: String(name),
-				parametersText: parametersText || undefined,
-				parameters: parameters.length > 0 ? parameters : undefined,
-				docString: docString ? String(docString).trim() : undefined,
-				folder: folder ? String(folder).trim() : undefined,
-				body: body ? String(body).trim() : undefined
-			});
-		};
-
-		// Shape observed from `.show database schema as json`:
-		// {
-		//   Databases: {
-		//     <DbName>: {
-		//       Name: <DbName>,
-		//       Tables: {
-		//         <TableName>: { Name: <TableName>, Folder: "...", DocString: "...", OrderedColumns: [ { Name: ..., DocString: "..." } ] }
-		//       }
-		//     }
-		//   }
-		// }
-		const databases = parsed.Databases ?? parsed.databases;
-		if (databases && typeof databases === 'object' && !Array.isArray(databases)) {
-			for (const [dbKey, dbValue] of Object.entries(databases)) {
-				const dbObj: any = dbValue;
-				const tablesObj = dbObj?.Tables ?? dbObj?.tables;
-				if (tablesObj && typeof tablesObj === 'object' && !Array.isArray(tablesObj)) {
-					for (const [tableKey, tableValue] of Object.entries(tablesObj)) {
-						const table: any = tableValue;
-						const tableName = table?.Name ?? table?.name ?? tableKey;
-						if (!tableName) {
-							continue;
-						}
-						const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
-						if (tableDocString) {
-							addTableDocString(String(tableName), String(tableDocString));
-						}
-						const tableFolder = table?.Folder ?? table?.folder;
-						if (tableFolder) {
-							addTableFolder(String(tableName), String(tableFolder));
-						}
-						const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
-						if (Array.isArray(cols)) {
-							for (const col of cols) {
-								const colName = (col as any)?.Name ?? (col as any)?.name;
-								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
-								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
-								if (colName) {
-									addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
-								}
-							}
-						}
-					}
-				}
-
-				// Extract functions from the database object
-				const functionsObj = dbObj?.Functions ?? dbObj?.functions;
-				if (functionsObj && typeof functionsObj === 'object' && !Array.isArray(functionsObj)) {
-					for (const fnValue of Object.values(functionsObj)) {
-						addFunction(fnValue);
-					}
-				}
-
-				// Extract MaterializedViews (same structure as tables)
-				const materializedViewsObj = dbObj?.MaterializedViews ?? dbObj?.materializedViews;
-				if (materializedViewsObj && typeof materializedViewsObj === 'object' && !Array.isArray(materializedViewsObj)) {
-					for (const [viewKey, viewValue] of Object.entries(materializedViewsObj)) {
-						const view: any = viewValue;
-						const viewName = view?.Name ?? view?.name ?? viewKey;
-						if (!viewName) {
-							continue;
-						}
-						const viewDocString = view?.DocString ?? view?.docString ?? view?.Description ?? view?.description;
-						if (viewDocString) {
-							addTableDocString(String(viewName), String(viewDocString));
-						}
-						const viewFolder = view?.Folder ?? view?.folder;
-						if (viewFolder) {
-							addTableFolder(String(viewName), String(viewFolder));
-						}
-						const cols = view?.Columns ?? view?.columns ?? view?.OrderedColumns ?? view?.orderedColumns;
-						if (Array.isArray(cols)) {
-							for (const col of cols) {
-								const colName = (col as any)?.Name ?? (col as any)?.name;
-								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
-								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
-								if (colName) {
-									addColumn(String(viewName), String(colName), colType, colDocString ? String(colDocString) : undefined);
-								}
-							}
-						}
-					}
-				}
-
-				// Extract ExternalTables (same structure as tables)
-				const externalTablesObj = dbObj?.ExternalTables ?? dbObj?.externalTables;
-				if (externalTablesObj && typeof externalTablesObj === 'object' && !Array.isArray(externalTablesObj)) {
-					for (const [extKey, extValue] of Object.entries(externalTablesObj)) {
-						const extTable: any = extValue;
-						const extName = extTable?.Name ?? extTable?.name ?? extKey;
-						if (!extName) {
-							continue;
-						}
-						const extDocString = extTable?.DocString ?? extTable?.docString ?? extTable?.Description ?? extTable?.description;
-						if (extDocString) {
-							addTableDocString(String(extName), String(extDocString));
-						}
-						const extFolder = extTable?.Folder ?? extTable?.folder;
-						if (extFolder) {
-							addTableFolder(String(extName), String(extFolder));
-						}
-						const cols = extTable?.Columns ?? extTable?.columns ?? extTable?.OrderedColumns ?? extTable?.orderedColumns;
-						if (Array.isArray(cols)) {
-							for (const col of cols) {
-								const colName = (col as any)?.Name ?? (col as any)?.name;
-								const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
-								const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
-								if (colName) {
-									addColumn(String(extName), String(colName), colType, colDocString ? String(colDocString) : undefined);
-								}
-							}
-						}
-					}
-				}
-
-				// Also recurse into each database object for any alternative shapes.
-				if (dbObj && typeof dbObj === 'object') {
-					this.extractSchemaFromJson(dbObj, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				}
-			}
-			return;
-		}
-
-		// Common shapes:
-		// { Tables: [ { Name, Columns: [ { Name } ] } ] }
-		// { tables: [ ... ] }
-		const tables = parsed.Tables ?? parsed.tables ?? parsed.databaseSchema?.Tables ?? parsed.databaseSchema?.tables;
-		if (Array.isArray(tables)) {
-			for (const table of tables) {
-				const tableName = table?.Name ?? table?.name;
-				if (!tableName) {
-					continue;
-				}
-				const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
-				if (tableDocString) {
-					addTableDocString(String(tableName), String(tableDocString));
-				}
-				const tableFolder = table?.Folder ?? table?.folder;
-				if (tableFolder) {
-					addTableFolder(String(tableName), String(tableFolder));
-				}
-				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
-				if (Array.isArray(cols)) {
-					for (const col of cols) {
-						const colName = col?.Name ?? col?.name;
-						const colType = col?.Type ?? col?.type ?? col?.CslType ?? col?.cslType ?? col?.DataType ?? col?.dataType;
-						const colDocString = col?.DocString ?? col?.docString ?? col?.Description ?? col?.description;
-						if (colName) {
-							addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
-						}
-					}
-				}
-			}
-			return;
-		}
-
-		// Another common shape: Tables is a dictionary/object map, not an array.
-		if (tables && typeof tables === 'object' && !Array.isArray(tables)) {
-			for (const [tableKey, tableValue] of Object.entries(tables)) {
-				const table: any = tableValue;
-				const tableName = table?.Name ?? table?.name ?? tableKey;
-				if (!tableName) {
-					continue;
-				}
-				const tableDocString = table?.DocString ?? table?.docString ?? table?.Description ?? table?.description;
-				if (tableDocString) {
-					addTableDocString(String(tableName), String(tableDocString));
-				}
-				const tableFolder = table?.Folder ?? table?.folder;
-				if (tableFolder) {
-					addTableFolder(String(tableName), String(tableFolder));
-				}
-				const cols = table?.Columns ?? table?.columns ?? table?.OrderedColumns ?? table?.orderedColumns;
-				if (Array.isArray(cols)) {
-					for (const col of cols) {
-						const colName = (col as any)?.Name ?? (col as any)?.name;
-						const colType = (col as any)?.Type ?? (col as any)?.type ?? (col as any)?.CslType ?? (col as any)?.cslType ?? (col as any)?.DataType ?? (col as any)?.dataType;
-						const colDocString = (col as any)?.DocString ?? (col as any)?.docString ?? (col as any)?.Description ?? (col as any)?.description;
-						if (colName) {
-							addColumn(String(tableName), String(colName), colType, colDocString ? String(colDocString) : undefined);
-						}
-					}
-				}
-			}
-			return;
-		}
-
-		// If unknown shape, attempt recursive walk looking for {Name, Columns:[{Name}]} patterns.
-		if (typeof parsed === 'object') {
-			for (const value of Object.values(parsed)) {
-				if (Array.isArray(value) || (value && typeof value === 'object')) {
-					this.extractSchemaFromJson(value, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
-				}
-			}
-		}
+		extractSchemaFromJsonFn(parsed, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 	}
 
 	private finalizeSchema(
@@ -1863,33 +1231,7 @@ export class KustoQueryClient {
 		tableFolders?: Record<string, string>,
 		functions?: KustoFunctionInfo[]
 	): DatabaseSchemaIndex {
-		const tables = Object.keys(columnTypesByTable).sort((a, b) => a.localeCompare(b));
-		const result: DatabaseSchemaIndex = { tables, columnTypesByTable };
-		if (tableDocStrings && Object.keys(tableDocStrings).length > 0) {
-			result.tableDocStrings = tableDocStrings;
-		}
-		if (columnDocStrings && Object.keys(columnDocStrings).length > 0) {
-			result.columnDocStrings = columnDocStrings;
-		}
-		if (tableFolders && Object.keys(tableFolders).length > 0) {
-			result.tableFolders = tableFolders;
-		}
-		// Include functions extracted from JSON schema (deduped and sorted)
-		if (functions && functions.length > 0) {
-			const seen = new Set<string>();
-			const deduped: KustoFunctionInfo[] = [];
-			for (const f of functions) {
-				const key = f.name.toLowerCase();
-				if (seen.has(key)) {
-					continue;
-				}
-				seen.add(key);
-				deduped.push(f);
-			}
-			deduped.sort((a, b) => a.name.localeCompare(b.name));
-			result.functions = deduped;
-		}
-		return result;
+		return finalizeSchemeFn(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 	}
 
 	dispose() {
