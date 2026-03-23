@@ -321,6 +321,55 @@ async function main() {
 		await ctx.rebuild();
 		await ctx.dispose();
 	}
+
+	// ── Bundle size gate (production builds only) ─────────────────────────────
+	// Automatically checks that no bundle has grown beyond its baseline + buffer.
+	// Runs inline — no extra step to remember.
+	if (production) {
+		const BASELINES = {
+			'extension.js':                                         927,
+			'webview/webview.bundle.js':                           1223,
+			'queryEditor/vendor/echarts/echarts.webview.js':        586,
+			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
+			'monaco/':                                            19938,
+		};
+		const BUFFER_KB = 50;
+		const distDir = path.join(__dirname, 'dist');
+
+		function dirSizeBytes(dir) {
+			let total = 0;
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const p = path.join(dir, entry.name);
+				total += entry.isDirectory() ? dirSizeBytes(p) : fs.statSync(p).size;
+			}
+			return total;
+		}
+
+		console.log('\n📦 Bundle size gate:');
+		let failed = false;
+		for (const [rel, baselineKB] of Object.entries(BASELINES)) {
+			const limitKB = baselineKB + BUFFER_KB;
+			let actualKB;
+			try {
+				const full = path.join(distDir, rel);
+				actualKB = (rel.endsWith('/') ? dirSizeBytes(full) : fs.statSync(full).size) / 1024;
+			} catch {
+				console.log(`   ❌ ${rel} — MISSING`);
+				failed = true;
+				continue;
+			}
+			const ok = actualKB <= limitKB;
+			const marker = ok ? '✅' : '❌';
+			console.log(`   ${marker} ${rel}  ${actualKB.toFixed(0)} KB  (limit ${limitKB.toFixed(0)} KB)`);
+			if (!ok) failed = true;
+		}
+		if (failed) {
+			console.error('\n⚠️  Bundle size gate FAILED — update BASELINES in esbuild.js if growth is intentional.\n');
+			process.exit(1);
+		} else {
+			console.log('   All bundles within limits.\n');
+		}
+	}
 }
 
 main().catch(e => {
