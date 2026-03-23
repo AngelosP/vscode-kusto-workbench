@@ -103,7 +103,7 @@ export const styles = css`
 
 		.chart-wrapper {
 			border: none;
-			overflow: hidden;
+			overflow: visible;
 			height: auto;
 			min-height: 0;
 		}
