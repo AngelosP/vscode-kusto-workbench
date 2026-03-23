@@ -276,6 +276,20 @@ export class KwDataTable extends LitElement {
 	}
 
 	/**
+	 * Rebuild virtual-scroll measurements after parent layout moves (for example, section reorder).
+	 * Safe to call repeatedly.
+	 */
+	public refreshLayout(): void {
+		requestAnimationFrame(() => {
+			if (!this.isConnected) return;
+			if (!this._bodyVisible) return;
+			this._vScrollCtrl.initVirtualizer();
+			this._vScrollCtrl.measure();
+			this._vScrollCtrl.syncHeaderScroll();
+		});
+	}
+
+	/**
 	 * Compute the height needed to display all visible rows without scrolling.
 	 * Includes the header bar, column thead, all rows, and internal chrome.
 	 */

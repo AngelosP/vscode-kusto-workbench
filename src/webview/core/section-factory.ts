@@ -1704,7 +1704,9 @@ export function __kustoGetChartDatasetsInDomOrder() {
 				if (!cols.length) continue;
 				let name = '';
 				try {
-					name = String(((document.getElementById(id + '_name') as any || {}).value || '')).trim();
+					name = typeof (child as any).getName === 'function'
+						? String((child as any).getName() || '').trim()
+						: String(((document.getElementById(id + '_name') as any || {}).value || '')).trim();
 				} catch (e) { console.error('[kusto]', e); }
 				// Format: "<Name> [section #N]" if named, "Unnamed [section #N]" if not
 				const label = name

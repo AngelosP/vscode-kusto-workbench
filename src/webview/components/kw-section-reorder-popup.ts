@@ -389,7 +389,7 @@ export class KwSectionReorderPopup extends LitElement {
 		const isDragging = s.id === this._draggingId;
 		const isOrigin = s.id === this._originId;
 		const showIndicator = this._dropIndex === arrIndex && this._draggingId && !isDragging;
-		const displayName = s.name || sectionTypeLabels[s.type];
+		const displayName = s.name || '[Unnamed]';
 		return html`
 			<div class="drop-indicator ${showIndicator ? 'is-visible' : ''}" data-drop-index="${arrIndex}"></div>
 			<div class="section-card ${isDragging ? 'is-dragging' : ''} ${isOrigin ? 'is-origin' : ''}"

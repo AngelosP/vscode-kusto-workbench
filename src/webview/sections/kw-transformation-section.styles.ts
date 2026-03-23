@@ -589,7 +589,7 @@ export const styles = css`
 		.tf-wrapper-host {
 			display: flex;
 			flex-direction: column;
-			min-height: 80px;
+			min-height: 120px;
 			overflow: visible;
 		}
 		.tf-wrapper-host.is-hidden {
@@ -628,6 +628,7 @@ export const styles = css`
 			position: relative;
 			touch-action: none;
 			z-index: 1;
+			margin: 0 -12px -1px -12px;
 		}
 		.resizer::after {
 			content: '';

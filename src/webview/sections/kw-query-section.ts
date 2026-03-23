@@ -221,6 +221,10 @@ export class KwQuerySection extends LitElement {
 		if (!this._lightDomCreated && this.boxId) {
 			this._lightDomCreated = true;
 			this._createLightDomContent();
+		} else if (this._lightDomCreated) {
+			// Reorder moves disconnect/reconnect the section node. Re-sync data-table
+			// virtual scroll after reattach so body scroll metrics are current.
+			this._refreshResultsTableLayoutSoon();
 		}
 	}
 
@@ -1527,6 +1531,19 @@ export class KwQuerySection extends LitElement {
 		if (!u) return '';
 		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
 		return u.replace(/\/+$/g, '').toLowerCase();
+	}
+
+	private _refreshResultsTableLayoutSoon(): void {
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				try {
+					const table = document.getElementById(this.boxId + '_results')?.querySelector('kw-data-table') as any;
+					if (table && typeof table.refreshLayout === 'function') {
+						table.refreshLayout();
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			});
+		});
 	}
 }
 

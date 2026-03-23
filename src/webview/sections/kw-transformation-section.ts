@@ -145,7 +145,10 @@ export function __kustoUpdateTransformationBuilderUI(boxId: unknown): void {
 	if (!id) return;
 	try {
 		const el = document.getElementById(id) as any;
-		if (el && typeof el.refresh === 'function') {
+		if (el && typeof el.refreshDataSources === 'function') {
+			el.refreshDataSources();
+		} else if (el && typeof el.refresh === 'function') {
+			// Backward-compat fallback for older component instances.
 			el.refresh();
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -392,18 +395,12 @@ export class KwTransformationSection extends LitElement {
 							});
 						}
 					}}
-					@chrome-height-change=${() => {
-						requestAnimationFrame(() => {
-							this._wrapperHeight = this._computeFitHeight();
-						});
-					}}
 				></kw-data-table>
 			</div>
 		`;
 	}
 
 	private _renderControls(): TemplateResult {
-		this._refreshDatasets();
 		const colNames = this._getColumnNames();
 
 		return html`
@@ -826,7 +823,7 @@ export class KwTransformationSection extends LitElement {
 			}
 		}
 
-		return Math.max(80, Math.min(900, Math.ceil(nonTableH)));
+		return Math.max(120, Math.min(900, Math.ceil(nonTableH)));
 	}
 
 	private _onResizerMouseDown(e: MouseEvent): void {
@@ -844,7 +841,7 @@ export class KwTransformationSection extends LitElement {
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = this._wrapperHeight;
 
-		const minH = 80;
+		const minH = 120;
 		const maxH = this._computeFitHeight();
 
 		const onMove = (moveEvent: MouseEvent) => {
@@ -1356,8 +1353,23 @@ export class KwTransformationSection extends LitElement {
 		try {
 			// Filter out this transformation's own ID to prevent circular dependency.
 			const all = __kustoGetChartDatasetsInDomOrder() || [];
-			this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
+			const next = all.filter((d: DatasetEntry) => d.id !== this.id);
+			if (this._datasetsEqual(this._datasets, next)) return;
+			this._datasets = next;
 		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _datasetsEqual(a: DatasetEntry[], b: DatasetEntry[]): boolean {
+		if (a === b) return true;
+		if (!Array.isArray(a) || !Array.isArray(b)) return false;
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			const ai = a[i];
+			const bi = b[i];
+			if (!ai || !bi) return false;
+			if (ai.id !== bi.id || ai.label !== bi.label) return false;
+		}
+		return true;
 	}
 
 	private _getColumnNames(): string[] {
@@ -1806,6 +1818,11 @@ export class KwTransformationSection extends LitElement {
 	public refresh(): void {
 		this._refreshDatasets();
 		this._computeTransformation();
+	}
+
+	/** Public lightweight refresh — updates only data-source picker options/labels. */
+	public refreshDataSources(): void {
+		this._refreshDatasets();
 	}
 
 	/** Configure from agent tool. */
