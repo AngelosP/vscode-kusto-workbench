@@ -113,7 +113,7 @@ export const styles = css`
 			min-height: 120px;
 			height: 120px;
 			margin: 8px 0 0;
-			overflow: hidden;
+			overflow: visible;
 			display: flex;
 			flex-direction: column;
 			background: transparent;
@@ -144,6 +144,7 @@ export const styles = css`
 			position: relative;
 			touch-action: none;
 			z-index: 1;
+			margin: 0 -12px -1px -12px;
 		}
 		.resizer::after {
 			content: '';

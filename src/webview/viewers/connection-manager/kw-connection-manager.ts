@@ -256,7 +256,7 @@ export class KwConnectionManager extends LitElement {
 				<!-- Filter tabs -->
 				${hasFavs || hasLnt ? html`
 				<div class="filter-bar">
-					<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.cluster} <span class="filter-label">All</span> <span class="filter-count">${connections.length}</span></button>
+					<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.cluster} <span class="filter-label">All</span></button>
 					${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
 					${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
 				</div>
