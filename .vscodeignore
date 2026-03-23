@@ -22,3 +22,21 @@ browser-ext/**
 **/vitest.config.ts
 **/*.map
 **/.vscode-test.*
+esbuild-errors.txt
+coverage/**
+copilot-instructions/**
+ARCHITECTURE.md
+CONTRIBUTING.md
+CHANGELOG.md
+
+# Build artifacts that shouldn't ship
+dist/webview/_temp_*
+dist/webview/monaco-esm-poc.*
+dist/webview/webview.test.bundle.*
+# Individual CSS sources — only the bundle is loaded at runtime
+dist/webview/styles/index.css
+dist/webview/styles/queryEditor-*.css
+dist/webview/styles/queryEditor.css
+# Orphaned marketplace images (not referenced in README.md)
+media/marketplace/github-integration.png
+media/marketplace/kusto-kqlx-files.png
