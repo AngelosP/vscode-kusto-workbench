@@ -257,46 +257,61 @@ Show a compact table from the `commits` array (newest first):
 | ...
 ```
 
-### 11c — Trend Graphs
+### 11c — Trend Charts (Horizontal Bar Charts)
 
-Render two ASCII sparkline-style graphs using the **`commits`** array (long-term trends). Use the oldest entry as the left edge, newest as the right edge (chronological order, left-to-right).
+Render two **horizontal bar chart tables** using the **`commits`** array (oldest at top, newest at bottom — chronological reading order).
 
-#### Total dist/ (KB)
+#### Computation Rules
 
-```
-### Total dist/ — Commit Trend
+For each chart, the bar length is computed as a **proportion of a fixed max width of 20 characters** using the `█` (full block) character:
 
-  31,900 ┤
-  31,800 ┤          ╭─●
-  31,700 ┤     ╭────╯
-  31,600 ┤ ●───╯
-  31,500 ┤
-         └─────────────────
-          c1  c2  c3  c4  (commit short hashes)
-```
+1. Y-axis starts at **0**. The scale max = `max(dataValues) * 1.1` (10% headroom).
+2. For each data point: `barLength = round(value / scaleMax * 20)`. Minimum 1 char if value > 0.
+3. Display the exact numeric value after the bar.
 
-#### Line Coverage (%)
+#### Total dist/ (KB) — Commit Trend
+
+Render a table like this (values from `commits` array, field `distTotalKB`):
 
 ```
-### Line Coverage — Commit Trend
+### Total dist/ — Commit Trend (0 → <scaleMax> KB)
 
-  30.0% ┤          ●
-  29.8% ┤     ╭────╯
-  29.6% ┤ ●───╯
-  29.4% ┤
-         └─────────────────
-          c1  c2  c3  c4  (commit short hashes)
+| Commit  | Bar                  | KB       |
+|---------|----------------------|----------|
+| 0c93651 | ██████████████████   | 31,791   |
+| eca5eba | ██████████████████   | 31,792   |
+| f3a40f8 | ██████████████████   | 31,792   |
 ```
 
-**Graph rules:**
-- Use the `commits` array, reversed to chronological order (oldest left → newest right).
-- Y-axis: auto-scale to the data range with ~5 tick marks. Add a small padding (±2% of range) so points don't sit on the edge.
-- X-axis: label with short commit hashes.
-- Use box-drawing characters: `│ ─ ┤ ┐ └ ╭ ╯ ╮ ╰ ●` for a clean look.
-- Each data point is marked with `●`.
-- Connect points with `─`, `╭`, `╯`, `╮`, `╰` for smooth lines.
-- Width: ~60 chars. Height: ~8 rows.
-- If there are fewer than 2 data points, show "Not enough history for a graph yet" instead.
+#### Line Coverage (%) — Commit Trend
+
+Render a table like this (values from `commits` array, field `lineCov`):
+
+```
+### Line Coverage — Commit Trend (0 → <scaleMax>%)
+
+| Commit  | Bar                  | %      |
+|---------|----------------------|--------|
+| 0c93651 | █████████            | 29.68  |
+| eca5eba | █████████            | 29.72  |
+| f3a40f8 | █████████            | 29.69  |
+```
+
+#### Sparkline Summary
+
+After the bar charts, render a one-line **sparkline** for each metric using the 8 Unicode block characters `▁▂▃▄▅▆▇█`, mapped to the data range:
+
+```
+Total dist/ sparkline: ▇▇▇  (0c93651 → f3a40f8)
+Line coverage sparkline: ▇█▇  (0c93651 → f3a40f8)
+```
+
+**Sparkline rules:**
+- Map each value to one of the 8 block chars: `charIndex = round((value - min) / (max - min) * 7)`. If all values are equal, use `▅` for all.
+- List commit hashes below as axis labels.
+
+#### Edge Cases
+- If there are fewer than 2 data points in `commits`, show "Not enough history for trend charts yet — run the health check after your next commit." instead of charts.
 
 ---
 

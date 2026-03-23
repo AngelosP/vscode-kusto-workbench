@@ -112,9 +112,9 @@ export function rowKeyForComparison(row: any): string {
 export function normalizeColumnNameForComparison(name: any): string {
 	try {
 		if (name && typeof name === 'object' && 'name' in name) {
-			return String(name.name == null ? '' : name.name).trim().toLowerCase();
+			return String(name.name === null || name.name === undefined ? '' : name.name).trim().toLowerCase();
 		}
-		return String(name == null ? '' : name).trim().toLowerCase();
+		return String(name === null || name === undefined ? '' : name).trim().toLowerCase();
 	} catch { return ''; }
 }
 

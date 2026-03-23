@@ -4,8 +4,8 @@ export const styles = css`
 	*,*::before,*::after{box-sizing:border-box}
 	:host{display:contents}
 
-	/* Modal backdrop */
-	.sd-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center}
+	/* Modal backdrop — uses CSS vars for viewport-aware positioning in iframes */
+	.sd-bg{position:fixed;top:var(--kw-modal-top, 0);left:0;right:0;height:var(--kw-modal-height, 100vh);background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center}
 
 	/* Dialog box */
 	.sd{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:4px;width:520px;max-width:calc(100% - 24px);max-height:80%;display:flex;flex-direction:column;box-shadow:0 4px 20px rgba(0,0,0,.3)}

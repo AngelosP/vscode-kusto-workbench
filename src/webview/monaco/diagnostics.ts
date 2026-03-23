@@ -1253,12 +1253,14 @@ export const __kustoComputeDiagnostics = (text: any, schema: any, deps?: { getCo
 					lastPipeHeader = __kustoParsePipeHeaderFromLine(trimmed);
 					allowIndentedContinuation = __kustoPipeHeaderAllowsIndentedContinuation(lastPipeHeader);
 					expectPipeAfterBareId = false;
-					if (_diagLog) _diagLog('pipe line', {
-						stmtStartOffset: baseOffset,
-						lineRaw: line,
-						pipeHeader: lastPipeHeader,
-						allowContinuation: allowIndentedContinuation
-					});
+					if (_diagLog) {
+						_diagLog('pipe line', {
+							stmtStartOffset: baseOffset,
+							lineRaw: line,
+							pipeHeader: lastPipeHeader,
+							allowContinuation: allowIndentedContinuation
+						});
+					}
 					runningOffset += line.length + 1;
 					continue;
 				}

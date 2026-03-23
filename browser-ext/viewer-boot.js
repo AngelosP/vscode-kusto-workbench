@@ -7,6 +7,28 @@
 (function() {
 	'use strict';
 
+	// ---- Suppress known harmless Kusto worker errors ----
+	// The @kusto/monaco-kusto worker throws "Unexpected object: [object Object]"
+	// during schema processing. It's caught and recovered from internally, but
+	// our generic catch handlers log it via console.error. Edge surfaces any
+	// console.error from sandboxed extension pages as a blocking extension error.
+	// Downgrade these to console.warn so Edge doesn't flag the extension as broken.
+	try {
+		var _origError = console.error;
+		console.error = function() {
+			try {
+				if (arguments.length >= 2 && arguments[0] === '[kusto]') {
+					var msg = String(arguments[1] || '');
+					if (msg.indexOf('Unexpected object') !== -1) {
+						console.warn.apply(console, arguments);
+						return;
+					}
+				}
+			} catch (_) { /* fall through to original */ }
+			return _origError.apply(console, arguments);
+		};
+	} catch (_) { /* ignore */ }
+
 	// ---- .kqlx parser (mirrors src/kqlxFormat.ts parseKqlxText) ----
 
 	function parseKqlxText(text, options) {
@@ -360,6 +382,22 @@
 
 	function handleIncomingMessage(event) {
 		if (!event.data || typeof event.data !== 'object') return;
+
+		// Viewport info from the content script — set CSS vars so fixed-position
+		// dialogs (filter, sort) center within the visible region, not the full iframe.
+		if (event.data.type === 'kusto-workbench-viewport') {
+			try {
+				var scrollTop = event.data.scrollTop;
+				var vpHeight = event.data.viewportHeight;
+				if (typeof scrollTop === 'number' && typeof vpHeight === 'number') {
+					var root = document.documentElement;
+					root.style.setProperty('--kw-modal-top', Math.round(scrollTop) + 'px');
+					root.style.setProperty('--kw-modal-height', Math.round(vpHeight) + 'px');
+				}
+			} catch { /* ignore */ }
+			return;
+		}
+
 		if (event.data.type !== 'kusto-workbench-load-file') return;
 		// Only handle the first load-file message (retries from the opener keep arriving)
 		if (__kustoLoadFileHandled) return;

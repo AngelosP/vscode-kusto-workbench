@@ -924,7 +924,7 @@ __kustoEnableMarkersForBox = function(boxId: any) {
 							if (editor && typeof editor.getModel === 'function') {
 								const model = editor.getModel();
 								if (model && model.uri) {
-									if (__kustoEnableMarkersForModel != null) {
+									if (__kustoEnableMarkersForModel !== null) {
 										__kustoEnableMarkersForModel!(model.uri);
 									}
 								}
@@ -3535,7 +3535,7 @@ function initQueryEditor(boxId: any) {
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			// Check for cross-cluster references and request their schemas
 			try {
-				if (__kustoCheckCrossClusterRefs != null) {
+				if (__kustoCheckCrossClusterRefs !== null) {
 					// Debounce the check to avoid excessive requests while typing
 					if (!__kustoCrossClusterCheckTimeout) {
 						__kustoCrossClusterCheckTimeout = {};
@@ -3558,7 +3558,7 @@ function initQueryEditor(boxId: any) {
 			scheduleDocUpdate();
 			// Update monaco-kusto schema if switching to a different cluster/database
 			try {
-				if (__kustoUpdateSchemaForFocusedBox != null) {
+				if (__kustoUpdateSchemaForFocusedBox !== null) {
 					__kustoUpdateSchemaForFocusedBox!(boxId);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -3567,7 +3567,7 @@ function initQueryEditor(boxId: any) {
 			} catch (e) { console.error('[kusto]', e); }
 			// Check for cross-cluster references on focus (in addition to content change)
 			try {
-				if (__kustoCheckCrossClusterRefs != null) {
+				if (__kustoCheckCrossClusterRefs !== null) {
 					// Small delay to let the schema load first
 					setTimeout(() => {
 						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
@@ -3608,7 +3608,7 @@ function initQueryEditor(boxId: any) {
 							// Disable markers (red squiggles) for this editor now that it's unfocused
 							try {
 								const model = editor.getModel();
-								if (model && model.uri && __kustoDisableMarkersForModel != null) {
+								if (model && model.uri && __kustoDisableMarkersForModel !== null) {
 									__kustoDisableMarkersForModel!(model.uri);
 								}
 							} catch (e) { console.error('[kusto]', e); }

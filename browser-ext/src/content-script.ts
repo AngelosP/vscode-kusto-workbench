@@ -613,10 +613,6 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 	viewerIframe.src = viewerUrl;
 	viewerIframe.style.width = '100%';
 	viewerIframe.style.border = 'none';
-	// Use viewport height so position:fixed dialogs inside the iframe
-	// (filter, sort, column-jump) center relative to what the user sees.
-	// The iframe scrolls internally; the host page scroll is not used.
-	viewerIframe.style.height = 'calc(100vh - 60px)';
 	viewerIframe.style.minHeight = '600px';
 
 	viewerIframe.onload = () => {
@@ -628,6 +624,21 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 				hostBackgroundColor = bodyBg;
 			}
 		} catch { /* ignore */ }
+
+		// Forward scroll/viewport info so fixed-position dialogs inside the
+		// iframe can center within the visible region instead of the full document.
+		const sendViewportInfo = () => {
+			if (!viewerIframe) return;
+			const rect = viewerIframe.getBoundingClientRect();
+			viewerIframe.contentWindow?.postMessage({
+				type: 'kusto-workbench-viewport',
+				scrollTop: Math.max(0, -rect.top),
+				viewportHeight: window.innerHeight,
+			}, '*');
+		};
+		window.addEventListener('scroll', sendViewportInfo, { passive: true });
+		window.addEventListener('resize', sendViewportInfo, { passive: true });
+		sendViewportInfo();
 
 		viewerIframe?.contentWindow?.postMessage({
 			type: 'kusto-workbench-load-file',
@@ -673,8 +684,9 @@ function handleViewerMessage(event: MessageEvent) {
 		}
 
 		case 'kusto-workbench-resize': {
-			// Ignored — the iframe uses viewport height with internal scrolling
-			// so that position:fixed dialogs center correctly.
+			if (viewerIframe && typeof event.data.height === 'number') {
+				viewerIframe.style.height = event.data.height + 'px';
+			}
 			break;
 		}
 	}
