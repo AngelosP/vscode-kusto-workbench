@@ -29,7 +29,6 @@ export const styles = css`
 
 		.section-root {
 			padding: 12px;
-			padding-bottom: 0;
 		}
 
 		/* ── Run button (slotted into kw-section-shell header-buttons) ──── */
