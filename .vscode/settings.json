@@ -26,6 +26,10 @@
         "mkdir": true,
         "vscode-ext-test": true,
         "npx vitest": true,
-        "Rename-Item": true
+        "Rename-Item": true,
+        "/^node esbuild\\.js --production 2>&1 \\| Select-Object -Last 5$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

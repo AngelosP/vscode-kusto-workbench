@@ -291,3 +291,88 @@ describe('ConnectionService — removeFavorite', () => {
 		await svc.removeFavorite('https://test', ''); // should not throw
 	});
 });
+
+// ── migrateCachedDatabasesToClusterKeys ───────────────────────────────────────
+// Critical for preventing database cache loss during migration from connection-id
+// based keys to cluster-url based keys.
+
+describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
+	it('converts connection-id keys to cluster URL keys', () => {
+		const connections = [
+			{ id: 'conn-1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' },
+		];
+		const host = makeMockHost({ connections });
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'conn-1': ['db1', 'db2'],
+		});
+		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+	});
+
+	it('preserves entries already keyed by cluster URL', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'test.kusto.windows.net': ['db1'],
+		});
+		expect(result['test.kusto.windows.net']).toEqual(['db1']);
+	});
+
+	it('merges databases when id key and cluster key map to same cluster', () => {
+		const connections = [
+			{ id: 'conn-1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' },
+		];
+		const host = makeMockHost({ connections });
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'conn-1': ['db1'],
+			'test.kusto.windows.net': ['db2'],
+		});
+		// Should merge and deduplicate
+		expect(result['test.kusto.windows.net']).toContain('db1');
+		expect(result['test.kusto.windows.net']).toContain('db2');
+	});
+
+	it('deduplicates database names (case-insensitive)', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'test.kusto.windows.net': ['MyDB', 'mydb', 'MYDB'],
+		});
+		expect(result['test.kusto.windows.net']).toHaveLength(1);
+	});
+
+	it('skips empty keys', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'': ['db1'],
+			'test.kusto.windows.net': ['db2'],
+		});
+		expect(result['']).toBeUndefined();
+		expect(result['test.kusto.windows.net']).toEqual(['db2']);
+	});
+
+	it('handles empty input', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({});
+		expect(Object.keys(result)).toHaveLength(0);
+	});
+
+	it('handles null input', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys(null as any);
+		expect(Object.keys(result)).toHaveLength(0);
+	});
+
+	it('filters out empty database names', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'test.kusto.windows.net': ['db1', '', '  ', 'db2'],
+		});
+		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+	});
+});

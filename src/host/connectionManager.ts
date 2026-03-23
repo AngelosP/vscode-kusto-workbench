@@ -189,12 +189,7 @@ export class ConnectionManager {
 	 * Normalize a cluster URL for consistent comparison.
 	 */
 	normalizeClusterUrl(clusterUrl: string): string {
-		let u = String(clusterUrl || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) {
-			u = 'https://' + u;
-		}
-		return u.replace(/\/+$/g, '').toLowerCase();
+		return normalizeClusterUrl(clusterUrl);
 	}
 
 	getConnections(): KustoConnection[] {
@@ -301,4 +296,19 @@ export class ConnectionManager {
 			}
 		}
 	}
+}
+
+// ── Standalone pure function export ──────────────────────────────────────────
+
+/**
+ * Normalize a cluster URL for consistent comparison.
+ * Ensures `https://` prefix and lowercases the result. Strips trailing slashes.
+ */
+export function normalizeClusterUrl(clusterUrl: string): string {
+	let u = String(clusterUrl || '').trim();
+	if (!u) return '';
+	if (!/^https?:\/\//i.test(u)) {
+		u = 'https://' + u;
+	}
+	return u.replace(/\/+$/g, '').toLowerCase();
 }

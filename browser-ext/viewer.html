@@ -138,50 +138,36 @@
 		window.__kustoQueryEditorConfig = {
 			monacoVsUri: "dist/monaco/vs",
 			monacoLoaderUri: "dist/monaco/vs/loader.js",
-			monacoWorkers: {},
 			cacheBuster: "",
 			copilotLogoUri: ""
 		};
 
 		// In a sandboxed extension page the origin is 'null', so
 		// new Worker('chrome-extension://…') fails with an origin mismatch.
-		// Work-around: pre-fetch each worker script, inline it into a Blob,
-		// and hand Monaco the blob: URL (which shares the page's own origin).
+		// Work-around: pre-fetch workerMain.js, inline it into a Blob with
+		// baseUrl set, and hand Monaco the blob: URL.
+		// All workers (editor, kusto, etc.) use the same AMD entry point.
+		// workerMain.js internally AMD-loads the appropriate module (e.g.
+		// vs/language/kusto/kustoWorker) via importScripts.
 		(function () {
 			var baseUrl = location.href.substring(0, location.href.lastIndexOf('/') + 1) + 'dist/monaco/';
-			var blobUrls = {};
+			var editorWorkerBlobUrl = null;
 
-			function prefetch(label, path) {
-				return fetch(path)
-					.then(function (r) { return r.text(); })
-					.then(function (text) {
-						// Prepend MonacoEnvironment.baseUrl so the AMD loader inside
-						// workerMain.js can resolve relative module paths.
-						var prefix = 'self.MonacoEnvironment = { baseUrl: "' + baseUrl + '" };\n';
-						blobUrls[label] = URL.createObjectURL(
-							new Blob([prefix + text], { type: 'text/javascript' })
-						);
-					})
-					.catch(function (err) {
-						console.warn('[Kusto Workbench] Worker prefetch failed for', label, err);
-					});
-			}
-
-			// Start prefetching immediately — these are local extension resources
-			// and will complete well before Monaco initialises.
-			Promise.all([
-				prefetch('editor', 'dist/monaco/vs/base/worker/workerMain.js'),
-				prefetch('kusto', 'dist/monaco/kusto.worker.bundle.js')
-			]);
+			fetch('dist/monaco/vs/base/worker/workerMain.js')
+				.then(function (r) { return r.text(); })
+				.then(function (text) {
+					var prefix = 'self.MonacoEnvironment = { baseUrl: "' + baseUrl + '" };\n';
+					editorWorkerBlobUrl = URL.createObjectURL(
+						new Blob([prefix + text], { type: 'text/javascript' })
+					);
+				})
+				.catch(function (err) {
+					console.warn('[Kusto Workbench] Worker prefetch failed', err);
+				});
 
 			window.MonacoEnvironment = {
-				getWorkerUrl: function (moduleId, label) {
-					var key = (label === 'kusto') ? 'kusto' : 'editor';
-					if (blobUrls[key]) return blobUrls[key];
-					// Fallback: try the direct URL.
-					// Will fail in sandbox, but Monaco falls back to main-thread.
-					if (label === 'kusto') return 'dist/monaco/kusto.worker.bundle.js';
-					return 'dist/monaco/vs/base/worker/workerMain.js';
+				getWorkerUrl: function () {
+					return editorWorkerBlobUrl || 'dist/monaco/vs/base/worker/workerMain.js';
 				}
 			};
 		})();

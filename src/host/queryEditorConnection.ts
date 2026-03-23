@@ -281,7 +281,7 @@ export class ConnectionService {
 		return this.migrateCachedDatabasesToClusterKeys(raw);
 	}
 
-	private migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
+	migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
 		const src = raw && typeof raw === 'object' ? raw : {};
 		const connections = this.host.connectionManager.getConnections();
 		const connById = new Map<string, KustoConnection>(connections.map((c) => [c.id, c]));

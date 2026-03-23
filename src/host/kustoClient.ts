@@ -1238,3 +1238,18 @@ export class KustoQueryClient {
 		this.clients.clear();
 	}
 }
+
+// ── Testable pure function exports ───────────────────────────────────────────
+// These wrap private static/instance methods so they can be imported by tests.
+
+/** Parses a Kusto timespan string like "00:00:01.1406250" into milliseconds. */
+export function parseKustoTimespan(ts: string | undefined): number | undefined {
+	return (KustoQueryClient as any).parseKustoTimespan(ts);
+}
+
+/** Normalizes a cluster URL to a canonical endpoint (adds scheme, expands short names). */
+export function normalizeClusterEndpoint(clusterUrl: string): string {
+	// Static-compatible: the method doesn't use `this` state.
+	const proto = KustoQueryClient.prototype as any;
+	return proto.normalizeClusterEndpoint.call(null, clusterUrl);
+}
