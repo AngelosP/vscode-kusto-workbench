@@ -1,12 +1,13 @@
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { LitElement, html, nothing, type TemplateResult, render as litRender } from 'lit';
+import { LitElement, html, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-query-section.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
-import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
+import type { KwSchemaInfo } from '../components/kw-schema-info.js';
+import '../components/kw-schema-info.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
@@ -65,16 +66,9 @@ export interface KustoFavorite {
 	label?: string;
 }
 
-/** Schema info display state. */
-export interface SchemaInfoState {
-	status: 'not-loaded' | 'loading' | 'loaded' | 'cached' | 'error';
-	statusText?: string;
-	tables?: number;
-	cols?: number;
-	funcs?: number;
-	cached?: boolean;
-	errorMessage?: string;
-}
+// Re-export SchemaInfoState from the extracted component
+export type { SchemaInfoState } from '../components/kw-schema-info.js';
+import type { SchemaInfoState } from '../components/kw-schema-info.js';
 
 // ─── SVG Icons (matching legacy exactly) ──────────────────────────────────────
 
@@ -87,8 +81,6 @@ const refreshIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill
 const favoriteStarIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3.8 4.6L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" /></svg>`;
 
 const favoritesListIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1.4l2.1 4.2 4.6.7-3.4 3.3L8 12l-4.1 2.2.8-4.6L1.3 6.3l4.6-.7L8 1.4z" /><line x1="10" y1="10.5" x2="14.5" y2="10.5" stroke-width="1.4" stroke-linecap="round" /><line x1="10" y1="12.5" x2="14.5" y2="12.5" stroke-width="1.4" stroke-linecap="round" /><line x1="10" y1="14.5" x2="14.5" y2="14.5" stroke-width="1.4" stroke-linecap="round" /></svg>`;
-
-const schemaInfoIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 12.5c-3.04 0-5.5-2.46-5.5-5.5S4.96 2.5 8 2.5s5.5 2.46 5.5 5.5-2.46 5.5-5.5 5.5zM7.25 5h1.5v1.5h-1.5V5zm0 2.5h1.5v4h-1.5v-4z"/></svg>`;
 
 const spinnerSvg = html`<span class="query-spinner" aria-hidden="true"></span>`;
 
@@ -184,28 +176,15 @@ export class KwQuerySection extends LitElement {
 	@state() private _refreshLoading = false;
 	@state() private _favoritesMode = false;
 	@state() private _favorites: KustoFavorite[] = [];
-	@state() private _schemaInfo: SchemaInfoState = { status: 'not-loaded' };
-
 	// ── Header row reactive state ─────────────────────────────────────────────
 
 	@state() private _name = '';
 	@state() private _expanded = true;
 
-	// Schema popover open state (dropdowns now managed by <kw-dropdown>)
-	@state() private _schemaPopoverOpen = false;
-
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
 	public executionCtrl = new QueryExecutionController(this as any);
 	public copilotChatCtrl = new CopilotChatManagerController(this as any);
-
-	// Bound handler for close-on-outside-click (schema popover)
-	private _closeSchemaPopoverBound = this._closeSchemaPopoverOnOutsideClick.bind(this);
-
-	// Dismiss stack callback for schema popover
-	private _dismissSchemaPopover = (): void => { this._schemaPopoverOpen = false; };
-	// Bound handler for close-on-scroll (schema popover)
-	private _closeSchemaPopoverOnScrollBound = this._closeSchemaPopoverOnScroll.bind(this);
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
@@ -215,8 +194,6 @@ export class KwQuerySection extends LitElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
-		document.addEventListener('mousedown', this._closeSchemaPopoverBound);
-		document.addEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
 		// Create the light DOM body once. See _lightDomCreated guard comment above.
 		if (!this._lightDomCreated && this.boxId) {
 			this._lightDomCreated = true;
@@ -230,8 +207,6 @@ export class KwQuerySection extends LitElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		document.removeEventListener('mousedown', this._closeSchemaPopoverBound);
-		document.removeEventListener('scroll', this._closeSchemaPopoverOnScrollBound, true);
 	}
 
 	// ── Light DOM content (created once — never re-rendered) ──────────────────
@@ -386,7 +361,10 @@ export class KwQuerySection extends LitElement {
 				<div class="connection-row">
 					${this._renderFavoritesDropdown()}
 					${this._renderFavoriteModeBtn()}
-					${this._renderSchemaInfoWrapper()}
+					<kw-schema-info
+						@schema-refresh=${this._onSchemaRefresh}
+						@see-cached-values=${this._onSeeCachedValues}>
+					</kw-schema-info>
 				</div>
 			`;
 		}
@@ -411,7 +389,10 @@ export class KwQuerySection extends LitElement {
 					</button>
 				</span>
 				${this._renderFavoriteModeBtn()}
-				${this._renderSchemaInfoWrapper()}
+				<kw-schema-info
+					@schema-refresh=${this._onSchemaRefresh}
+					@see-cached-values=${this._onSeeCachedValues}>
+				</kw-schema-info>
 			</div>
 		`;
 	}
@@ -507,117 +488,6 @@ export class KwQuerySection extends LitElement {
 		`;
 	}
 
-	private _renderSchemaInfoWrapper(): TemplateResult {
-		const si = this._schemaInfo;
-		const btnClass = [
-			'schema-info-btn',
-			si.status === 'loading' ? 'is-loading' : '',
-			si.status === 'loaded' || si.status === 'cached' ? 'has-schema' : '',
-			si.status === 'cached' ? 'is-cached' : '',
-			si.status === 'error' ? 'is-error' : '',
-			this._schemaPopoverOpen ? 'is-open' : '',
-		].filter(Boolean).join(' ');
-
-		return html`
-			<div class="schema-info-wrapper">
-				<button type="button" class="${btnClass}"
-					title="Schema info" aria-label="Schema info"
-					aria-haspopup="true" aria-expanded="${this._schemaPopoverOpen ? 'true' : 'false'}"
-					@click=${this._toggleSchemaPopover}
-					@mousedown=${(e: Event) => e.stopPropagation()}>
-					${schemaInfoIconSvg}
-				</button>
-				${this._schemaPopoverOpen ? this._renderSchemaInfoPopover() : nothing}
-			</div>
-		`;
-	}
-
-	private _renderSchemaInfoPopover(): TemplateResult {
-		const si = this._schemaInfo;
-		const statusText = si.statusText || (si.status === 'not-loaded' ? 'Not loaded' : si.status === 'loading' ? 'Loading...' : si.status === 'loaded' ? 'Loaded' : si.status === 'cached' ? 'Cached' : si.status === 'error' ? (si.errorMessage || 'Error') : 'Unknown');
-		const statusClass = si.status === 'error' ? 'schema-info-status is-error' : 'schema-info-status';
-		return html`
-			<div class="schema-info-popover" role="tooltip"
-				@mousedown=${(e: Event) => e.stopPropagation()}>
-				<div class="schema-info-popover-content">
-					<div class="schema-info-row">
-						<span class="schema-info-label">Status:</span>
-						<span class="${statusClass}">${statusText}</span>
-					</div>
-					${(si.status === 'loaded' || si.status === 'cached') && si.tables !== undefined ? html`
-						<div class="schema-info-row">
-							<span class="schema-info-label">Tables:</span>
-							<span class="schema-info-value">${si.tables}</span>
-						</div>
-					` : nothing}
-					${(si.status === 'loaded' || si.status === 'cached') && si.cols !== undefined ? html`
-						<div class="schema-info-row">
-							<span class="schema-info-label">Columns:</span>
-							<span class="schema-info-value">${si.cols}</span>
-						</div>
-					` : nothing}
-					${(si.status === 'loaded' || si.status === 'cached') && si.funcs !== undefined ? html`
-						<div class="schema-info-row">
-							<span class="schema-info-label">Functions:</span>
-							<span class="schema-info-value">${si.funcs}</span>
-						</div>
-					` : nothing}
-					${si.cached ? html`
-						<div class="schema-info-row">
-							<span class="schema-info-label">Source:</span>
-							<a href="#" class="schema-info-cached-link"
-								@click=${(e: Event) => { e.preventDefault(); e.stopPropagation(); this._onSeeCachedValues(); }}>Cached</a>
-						</div>
-					` : nothing}
-					<div class="schema-info-actions">
-						<button type="button" class="schema-info-refresh-btn"
-							@click=${(e: Event) => { e.stopPropagation(); this._onSchemaRefresh(); }}>
-							${refreshIconSvg}
-							<span>Refresh Schema</span>
-						</button>
-					</div>
-				</div>
-			</div>
-		`;
-	}
-
-	// ── Schema popover positioning ───────────────────────────────────────────
-
-	override updated(changedProps: Map<string, unknown>): void {
-		super.updated(changedProps);
-		if (this._schemaPopoverOpen) {
-			this._positionSchemaPopover();
-		}
-		// Manage dismiss stack for schema popover
-		if (changedProps.has('_schemaPopoverOpen')) {
-			if (this._schemaPopoverOpen) pushDismissable(this._dismissSchemaPopover);
-			else removeDismissable(this._dismissSchemaPopover);
-		}
-	}
-
-	private _positionSchemaPopover(): void {
-		const root = this.shadowRoot;
-		if (!root) return;
-		const popover = root.querySelector('.schema-info-popover') as HTMLElement | null;
-		const btn = root.querySelector('.schema-info-btn') as HTMLElement | null;
-		if (!popover || !btn) return;
-		const rect = btn.getBoundingClientRect();
-		// Right-align the popover to the button's right edge.
-		popover.style.top = (rect.bottom + 4) + 'px';
-		popover.style.left = 'auto';
-		// Position after render so we can measure popover width.
-		requestAnimationFrame(() => {
-			const pr = popover.getBoundingClientRect();
-			const left = rect.right - pr.width;
-			popover.style.left = Math.max(4, left) + 'px';
-			const vw = window.innerWidth || 0;
-			const vh = window.innerHeight || 0;
-			if (vh > 0 && pr.bottom > vh) {
-				popover.style.top = Math.max(0, rect.top - pr.height - 4) + 'px';
-			}
-		});
-	}
-
 	// ── Event handlers ────────────────────────────────────────────────────────
 
 	// ── Header row events ─────────────────────────────────────────────────────
@@ -651,12 +521,9 @@ export class KwQuerySection extends LitElement {
 
 	// ── Dropdown events ───────────────────────────────────────────────────────
 
-	// Scroll position when schema popover was last opened (for threshold dismiss)
-	private _scrollAtSchemaOpen = 0;
-
 	/** Close all <kw-dropdown> instances in this section + schema popover. */
 	private _closeAllPopups(): void {
-		this._schemaPopoverOpen = false;
+		this._getSchemaInfoEl()?.close();
 		const dropdowns = this.shadowRoot?.querySelectorAll('kw-dropdown');
 		dropdowns?.forEach(dd => (dd as any).close());
 	}
@@ -664,45 +531,13 @@ export class KwQuerySection extends LitElement {
 	/** When any <kw-dropdown> opens, close others + schema popover. */
 	private _onDropdownOpened(e: Event): void {
 		// Close schema popover
-		this._schemaPopoverOpen = false;
+		this._getSchemaInfoEl()?.close();
 		// Close all OTHER dropdowns (the one that just opened handles itself)
 		const source = e.target;
 		const dropdowns = this.shadowRoot?.querySelectorAll('kw-dropdown');
 		dropdowns?.forEach(dd => {
 			if (dd !== source) (dd as any).close();
 		});
-	}
-
-	private _closeSchemaPopoverOnOutsideClick(e: MouseEvent): void {
-		if (!this._schemaPopoverOpen) return;
-		const path = e.composedPath();
-		if (path.includes(this)) return;
-		this._schemaPopoverOpen = false;
-	}
-
-	private _closeSchemaPopoverOnScroll(e: Event): void {
-		if (!this._schemaPopoverOpen) return;
-		// Don't dismiss if scrolling inside the popover itself
-		const target = e.target as Element | null;
-		if (target && this.shadowRoot) {
-			const popover = this.shadowRoot.querySelector('.schema-info-popover');
-			if (popover && popover.contains(target)) return;
-		}
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtSchemaOpen) > 20) {
-			this._schemaPopoverOpen = false;
-		}
-	}
-
-	private _toggleSchemaPopover(e: Event): void {
-		e.stopPropagation();
-		const wasOpen = this._schemaPopoverOpen;
-		// Close all popups (including dropdowns)
-		this._closeAllPopups();
-		if (!wasOpen) {
-			this._schemaPopoverOpen = true;
-			this._scrollAtSchemaOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		}
 	}
 
 	private _onClusterAction(e: CustomEvent): void {
@@ -983,9 +818,14 @@ export class KwQuerySection extends LitElement {
 		this._refreshLoading = loading;
 	}
 
-	/** Update schema info display. */
+	/** Update schema info display (delegates to <kw-schema-info> child). */
 	public setSchemaInfo(info: Partial<SchemaInfoState>): void {
-		this._schemaInfo = { ...this._schemaInfo, ...info };
+		this._getSchemaInfoEl()?.setInfo(info);
+	}
+
+	/** Get the <kw-schema-info> child element. */
+	private _getSchemaInfoEl(): KwSchemaInfo | null {
+		return this.shadowRoot?.querySelector('kw-schema-info') ?? null;
 	}
 
 	/** Set favorites mode. */
