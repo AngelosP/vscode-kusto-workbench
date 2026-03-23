@@ -16,6 +16,9 @@ export const styles = css`
 		:host(.is-collapsed) {
 			margin-bottom: 26px;
 		}
+		:host(.is-collapsed) .section-root {
+			padding-bottom: 4px;
+		}
 		:host(.is-collapsed) .chart-wrapper {
 			display: none !important;
 		}

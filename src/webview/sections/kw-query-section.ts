@@ -343,8 +343,8 @@ export class KwQuerySection extends LitElement {
 			</div>
 			<div class="results-wrapper" id="${id}_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">
 				<div class="results" id="${id}_results"></div>
-				<div class="query-editor-resizer" id="${id}_results_resizer" title=${'Drag to resize results\nDouble-click to fit to contents'}></div>
 			</div>
+			<div class="query-editor-resizer" id="${id}_results_resizer" title=${'Drag to resize results\nDouble-click to fit to contents'} style="display: none;"></div>
 		`, this);
 	}
 
@@ -1169,7 +1169,7 @@ export class KwQuerySection extends LitElement {
 				if (typeof dt.getContentHeight !== 'function') return;
 				const contentH = dt.getContentHeight();
 				if (contentH <= 0) return;
-				const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+				const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
 				const desiredH = contentH + resizerH + 1;
 				// Grow or shrink the wrapper to fit, capped to 900px.
 				resultsWrapper.style.height = Math.max(120, Math.min(900, desiredH)) + 'px';
@@ -1224,7 +1224,7 @@ export class KwQuerySection extends LitElement {
 				const contentH = dt.getContentHeight();
 				if (contentH > 0) {
 					// Add wrapper chrome: resizer + border-top + padding.
-					const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+					const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
 					const wrapperBorder = 1; // border-top on .results-wrapper
 					const desiredH = contentH + resizerH + wrapperBorder;
 					resultsWrapper.style.height = Math.max(120, Math.min(REFINE_MAX_H, desiredH)) + 'px';

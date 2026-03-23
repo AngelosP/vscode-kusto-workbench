@@ -533,7 +533,7 @@ export function addQueryBox( options: any) {
 								if (contentH > 0) {
 									// Add wrapper chrome: resizer + border-top.
 									const resizerEl = document.getElementById(id + '_results_resizer') as any;
-									const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
+									const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 1;
 									maxHeight = Math.max(minHeight, Math.min(900, contentH + resizerH + 1));
 								}
 							}
@@ -751,7 +751,7 @@ function __kustoAutoSizeResults( boxId: any) {
 		if (contentH > 0) {
 			// Wrapper chrome: resizer + border-top.
 			const resizerEl = document.getElementById(id + '_results_resizer') as any;
-			const risizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 12;
+			const risizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 1;
 			const wrapperBorder = 1;
 			const desiredPx = contentH + risizerH + wrapperBorder;
 			// Cap: show at most 10 visible rows.

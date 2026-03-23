@@ -13,6 +13,9 @@ export const styles = css`
 		:host(.is-collapsed) .header-share-btn {
 			display: none;
 		}
+		:host(.is-collapsed) .header-group {
+			margin-bottom: 0;
+		}
 		*, *::before, *::after { box-sizing: border-box; }
 
 		/* ── Header group (shell + connection row) ──────────────── */

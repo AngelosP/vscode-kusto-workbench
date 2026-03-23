@@ -354,40 +354,38 @@ export const styles = css`
 	/* ── Input area ─────────────────────────────────────────────── */
 
 	.input-resizer {
-		flex: 0 0 8px;
-		height: 8px;
+		flex: 0 0 1px;
+		height: 1px;
 		cursor: ns-resize;
-		background: transparent;
+		background: var(--vscode-panel-border, rgba(128,128,128,0.35));
 		position: relative;
 		touch-action: none;
 		margin: 0 8px;
+		z-index: 1;
 	}
 	.input-resizer::after {
 		content: '';
 		position: absolute;
-		left: 50%;
+		left: 0;
+		right: 0;
+		top: -3px;
+		bottom: -3px;
+	}
+	.input-resizer::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		right: 0;
 		top: 50%;
-		width: 34px;
-		height: 4px;
-		transform: translate(-50%, -50%);
-		border-radius: 2px;
-		opacity: 0.55;
-		background-image: repeating-linear-gradient(
-			0deg,
-			var(--vscode-input-placeholderForeground),
-			var(--vscode-input-placeholderForeground) 1px,
-			transparent 1px,
-			transparent 3px
-		);
+		height: 0;
+		transform: translateY(-50%);
+		background: var(--vscode-sash-hoverBorder, #007fd4);
+		transition: height 0.1s ease;
+		pointer-events: none;
+		z-index: 1;
 	}
-	.input-resizer:hover {
-		background: var(--vscode-list-hoverBackground);
-	}
-	.input-resizer:hover::after { opacity: 0.85; }
-	.input-resizer.is-dragging {
-		background: var(--vscode-list-hoverBackground);
-	}
-	.input-resizer.is-dragging::after { opacity: 0.95; }
+	.input-resizer:hover::before { height: 6px; }
+	.input-resizer.is-dragging::before { height: 6px; }
 
 	.input-area {
 		display: flex;

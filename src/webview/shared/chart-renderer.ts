@@ -252,6 +252,7 @@ export function disposeChartEcharts(boxId: any) {
 			try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__echarts; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__axisTitleClickHandler; } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -462,6 +463,32 @@ export function renderChart(boxId: any) {
 
 	const inst = st.__echarts && st.__echarts.instance ? st.__echarts.instance : null;
 	if (!inst) return;
+
+	// Forward X/Y axis click interactions from the rendered chart back to the
+	// owning chart section so it can open the corresponding axis settings popup.
+	try {
+		if (st.__axisTitleClickHandler) {
+			try { inst.off('click', st.__axisTitleClickHandler); } catch (e) { console.error('[kusto]', e); }
+		}
+		st.__axisTitleClickHandler = (params: any) => {
+			try {
+				const componentType = params && params.componentType ? String(params.componentType) : '';
+				const axis = componentType === 'xAxis' ? 'x' : (componentType === 'yAxis' ? 'y' : '');
+				if (!axis) return;
+
+				const nativeEvent = params && params.event && params.event.event ? params.event.event : null;
+				const clientX = nativeEvent && typeof nativeEvent.clientX === 'number' ? nativeEvent.clientX : 0;
+				const clientY = nativeEvent && typeof nativeEvent.clientY === 'number' ? nativeEvent.clientY : 0;
+
+				const host = document.getElementById(id);
+				if (!host) return;
+				host.dispatchEvent(new CustomEvent('kusto-axis-title-click', {
+					detail: { axis, clientX, clientY },
+				}));
+			} catch (e) { console.error('[kusto]', e); }
+		};
+		inst.on('click', st.__axisTitleClickHandler);
+	} catch (e) { console.error('[kusto]', e); }
 
 	let canvasWidthPx = 0;
 	try {
@@ -1020,6 +1047,7 @@ export function renderChart(boxId: any) {
 						type: 'time',
 						name: xColName,
 						nameLocation: 'middle',
+						triggerEvent: true,
 						nameGap: xAxisTitleGap,
 						axisLabel: {
 							rotate,
@@ -1032,6 +1060,7 @@ export function renderChart(boxId: any) {
 						type: 'value',
 						name: xColName,
 						nameLocation: 'middle',
+						triggerEvent: true,
 						nameGap: xAxisTitleGap,
 						axisLabel: {
 							fontSize: axisFontSize,
@@ -1043,6 +1072,7 @@ export function renderChart(boxId: any) {
 						type: 'value',
 						name: yAxisName,
 						nameLocation: 'middle',
+						triggerEvent: true,
 						nameGap: yAxisTitleGap,
 						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
 						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
@@ -1498,6 +1528,7 @@ export function renderChart(boxId: any) {
 						type: 'value',
 						name: yAxisShowLabel ? (yAxisCustomLabel || (yCols.length === 1 ? yCols[0] : '')) : '',
 						nameLocation: 'middle',
+						triggerEvent: true,
 						nameGap: yAxisTitleGap,
 						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
 						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,

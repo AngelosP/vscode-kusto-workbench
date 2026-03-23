@@ -167,7 +167,7 @@ export class KwUrlSection extends LitElement {
 					</div>
 					` : nothing}
 					<input slot="header-extra" type="text" class="url-input"
-						placeholder="https://example.com"
+						placeholder="Enter a URL to an image or .csv file that is publicly accessible."
 						.value=${this._url}
 						@input=${this._onUrlInput} />
 					${this._fetchState.loading ? html`
@@ -308,7 +308,7 @@ export class KwUrlSection extends LitElement {
 
 				setTimeout(() => {
 					const resizer = this.shadowRoot?.querySelector('.resizer');
-					const resizerH = resizer ? resizer.getBoundingClientRect().height : 12;
+					const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
 					const imgH = img.getBoundingClientRect().height;
 					if (!imgH || !isFinite(imgH)) return;
 					const maxH = 3000;
@@ -379,11 +379,11 @@ export class KwUrlSection extends LitElement {
 		this._csvColumns = columns.map((name: string): DataTableColumn => ({ name }));
 		this._csvRows = dataRows;
 		this._lastCsvVisibleRows = dataRows.length;
-		// Compute height from wrapper (default 120px minus 12px resizer).
+		// Compute height from wrapper (default 120px minus 1px resizer).
 		const wrapper = this.shadowRoot?.getElementById('output-wrapper');
 		if (wrapper) {
 			const wH = wrapper.clientHeight || wrapper.getBoundingClientRect().height || 120;
-			this._csvTableHeight = Math.max(60, Math.floor(wH - 12));
+			this._csvTableHeight = Math.max(60, Math.floor(wH - 1));
 		}
 		this._csvActive = true;
 		// Watch wrapper resizes to keep the table height in sync.
@@ -406,7 +406,7 @@ export class KwUrlSection extends LitElement {
 		if (!wrapper) return;
 		this._csvResizeObs = new ResizeObserver(() => {
 			const wH = wrapper.clientHeight || wrapper.getBoundingClientRect().height;
-			const h = Math.max(60, Math.floor(wH - 12));
+			const h = Math.max(60, Math.floor(wH - 1));
 			if (h !== this._csvTableHeight) {
 				this._csvTableHeight = h;
 			}
@@ -766,7 +766,7 @@ export class KwUrlSection extends LitElement {
 	 * Used as the max-drag limit so users can manually expand to see every row.
 	 */
 	private _computeFullCsvHeight(): number {
-		const RESIZER_HEIGHT = 12;
+		const RESIZER_HEIGHT = 1;
 		if (!this._csvActive || this._csvRows.length === 0) return 0;
 		const tableEl = this.shadowRoot?.querySelector('kw-data-table') as { getVisibleRowCount?: () => number } | null;
 		const visibleRows = (tableEl && typeof tableEl.getVisibleRowCount === 'function')
@@ -786,7 +786,7 @@ export class KwUrlSection extends LitElement {
 	 *  For CSV: auto-fit caps at ~10 visible rows. For images/text/html: natural height (cap at 3000px).
 	 */
 	private _computeFitToContentsHeight(): number {
-		const RESIZER_HEIGHT = 12;
+		const RESIZER_HEIGHT = 1;
 
 		// For CSV tables: compute from row count, capped to show at most 10 visible rows.
 		if (this._csvActive && this._csvRows.length > 0) {
@@ -839,7 +839,7 @@ export class KwUrlSection extends LitElement {
 		if (this._imageSizeMode === 'natural' && this._isImageContent()) {
 			const imgEl = this.shadowRoot?.querySelector('#url-content img') as HTMLImageElement | null;
 			if (imgEl && imgEl.naturalHeight > 0) {
-				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 12;
+				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 1;
 				const maxH = Math.ceil(imgEl.naturalHeight + resizerH);
 				wrapper.style.height = Math.max(120, maxH) + 'px';
 				this._userResized = true;
@@ -890,7 +890,7 @@ export class KwUrlSection extends LitElement {
 		if (this._imageSizeMode === 'natural' && this._isImageContent()) {
 			const imgEl = this.shadowRoot?.querySelector('#url-content img') as HTMLImageElement | null;
 			if (imgEl && imgEl.naturalHeight > 0) {
-				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 12;
+				const resizerH = this.shadowRoot?.querySelector('.resizer')?.getBoundingClientRect().height ?? 1;
 				maxH = Math.max(minH, Math.ceil(imgEl.naturalHeight + resizerH));
 			}
 		}

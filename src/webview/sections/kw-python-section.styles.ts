@@ -21,12 +21,15 @@ export const styles = css`
 			display: none !important;
 		}
 		:host(.is-collapsed) {
-			padding-bottom: 2px;
+			margin-bottom: 16px;
+		}
+		:host(.is-collapsed) .section-root {
+			padding-bottom: 4px;
 		}
 
 		.section-root {
 			padding: 12px;
-			padding-bottom: 5px;
+			padding-bottom: 0;
 		}
 
 		/* ── Run button (slotted into kw-section-shell header-buttons) ──── */
@@ -136,6 +139,7 @@ export const styles = css`
 			height: 325px;
 			margin: 0 0 0 0;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
+			border-bottom: none;
 			border-radius: 2px;
 			background: var(--vscode-editor-background);
 			overflow: visible;
@@ -156,35 +160,37 @@ export const styles = css`
 		}
 
 		.resizer {
-			flex: 0 0 12px;
-			height: 12px;
+			flex: 0 0 1px;
+			height: 1px;
 			cursor: ns-resize;
-			border-top: none;
-			background: var(--vscode-editor-background);
+			background: var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.35))));
 			position: relative;
 			touch-action: none;
+			z-index: 1;
 		}
 		.resizer::after {
 			content: '';
 			position: absolute;
-			left: 50%;
-			top: 50%;
-			width: 34px;
-			height: 4px;
-			transform: translate(-50%, -50%);
-			border-radius: 2px;
-			opacity: 0.55;
-			background-image: repeating-linear-gradient(
-				0deg,
-				var(--vscode-input-placeholderForeground),
-				var(--vscode-input-placeholderForeground) 1px,
-				transparent 1px,
-				transparent 3px
-			);
+			left: 0;
+			right: 0;
+			top: -3px;
+			bottom: -3px;
 		}
-		.resizer:hover { background: var(--vscode-list-hoverBackground); }
-		.resizer:hover::after { opacity: 0.85; }
-		.resizer.is-dragging { background: var(--vscode-list-hoverBackground); }
+		.resizer::before {
+			content: '';
+			position: absolute;
+			left: 0;
+			right: 0;
+			top: 50%;
+			height: 0;
+			transform: translateY(-50%);
+			background: var(--vscode-sash-hoverBorder, #007fd4);
+			transition: height 0.1s ease;
+			pointer-events: none;
+			z-index: 1;
+		}
+		.resizer:hover::before { height: 6px; }
+		.resizer.is-dragging::before { height: 6px; }
 
 		.python-output {
 			border: 1px solid var(--vscode-input-border);

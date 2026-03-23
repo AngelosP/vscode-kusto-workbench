@@ -15,6 +15,8 @@ export class ToolbarOverflowController implements ReactiveController {
 	host: ToolbarOverflowHost;
 	private _resizeObserver: ResizeObserver | null = null;
 	private _cachedItemWidths: number[] | null = null;
+	/** Timestamp of the last overflow state change — used to prevent oscillation. */
+	private _lastStateChangeTime = 0;
 
 	constructor(host: ToolbarOverflowHost) {
 		this.host = host;
@@ -94,6 +96,11 @@ export class ToolbarOverflowController implements ReactiveController {
 		} else {
 			// Overflow is active. Check whether clearing it would let all
 			// items fit (using cached natural widths).
+			// Guard: skip the "clear" check for a short settling period after
+			// the last state change to prevent oscillation at the boundary.
+			const now = performance.now();
+			if (now - this._lastStateChangeTime < 150) return;
+
 			if (this._cachedItemWidths) {
 				const toolbarStyle = getComputedStyle(toolbar);
 				const pL = parseFloat(toolbarStyle.paddingLeft) || 0;
@@ -104,7 +111,16 @@ export class ToolbarOverflowController implements ReactiveController {
 				for (let i = 0; i < this._cachedItemWidths.length; i++) {
 					total += this._cachedItemWidths[i] + (i > 0 ? gap : 0);
 				}
-				if (total <= fullWidth - SUBPIXEL_BUFFER) {
+				// Use a generous margin to avoid oscillation: only clear
+				// overflow if items fit with room for the overflow button
+				// itself (i.e., the budget that Phase 2 would compute).
+				// This ensures the "clear" threshold never disagrees with the
+				// "set" threshold at the boundary.
+				const tGap = parseFloat(toolbarStyle.gap) || 0;
+				const overflowWrapper = toolbar.querySelector('.qe-toolbar-overflow-wrapper') as HTMLElement | null;
+				const overflowBtnW = overflowWrapper ? overflowWrapper.getBoundingClientRect().width : FALLBACK_OVERFLOW_BTN_WIDTH;
+				if (total <= fullWidth - overflowBtnW - tGap - SUBPIXEL_BUFFER) {
+					this._lastStateChangeTime = now;
 					this.host.setOverflowStartIndex(-1);
 					return;
 				}
@@ -145,6 +161,7 @@ export class ToolbarOverflowController implements ReactiveController {
 		}
 
 		if (newOverflowStart !== currentOverflow) {
+			this._lastStateChangeTime = performance.now();
 			this.host.setOverflowStartIndex(newOverflowStart);
 		}
 	}

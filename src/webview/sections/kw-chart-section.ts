@@ -339,6 +339,7 @@ export class KwChartSection extends LitElement {
 	private _userResized = false;
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
+	private _onChartAxisTitleClickBound = this._onChartAxisTitleClick.bind(this) as EventListener;
 	private _scrollAtPopupOpen = 0;
 
 	// Stable dismiss callbacks for dismiss stack
@@ -380,6 +381,7 @@ export class KwChartSection extends LitElement {
 		super.connectedCallback();
 		this._syncGlobalChartState();
 		this._setupThemeObserver();
+		this.addEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		// Close fixed-position popups/dropdowns when the page scrolls so they
 		// don't float detached from their anchor buttons.
 		window.addEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true, passive: true });
@@ -389,6 +391,7 @@ export class KwChartSection extends LitElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+		this.removeEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
 		removeDismissable(this._dismissDropdown);
@@ -580,7 +583,7 @@ export class KwChartSection extends LitElement {
 				<div class="chart-mapping-grid">
 					<!-- X column -->
 					<span class="chart-field-group">
-						<label class="axis-label-clickable ${this._hasCustomXSettings() ? 'has-settings' : ''}"
+						<label class="axis-label-clickable ${this._hasCustomXSettings() ? 'has-settings' : ''}" data-axis="x"
 							@click=${(e: Event) => this._toggleAxisPopup('x', e)}
 							title="Click to configure X-axis settings">X</label>
 						<select class="chart-select" @change=${this._onXColumnChanged}>
@@ -592,7 +595,7 @@ export class KwChartSection extends LitElement {
 
 					<!-- Y columns -->
 					<span class="chart-field-group">
-						<label class="axis-label-clickable ${this._hasCustomYSettings() ? 'has-settings' : ''}"
+						<label class="axis-label-clickable ${this._hasCustomYSettings() ? 'has-settings' : ''}" data-axis="y"
 							@click=${(e: Event) => this._toggleAxisPopup('y', e)}
 							title="Click to configure Y-axis settings">Y</label>
 						${this._renderCheckboxDropdown('y', colNames.filter(c => c !== this._xColumn), this._yColumns, 'Select...')}
@@ -1031,11 +1034,14 @@ export class KwChartSection extends LitElement {
 			this._openAxisPopup = '';
 			return;
 		}
+		this._setAxisPopupAnchorFromElement(e.target as HTMLElement);
+		this._openAxisPopup = axis;
+	}
 
-		const el = e.target as HTMLElement;
+	private _setAxisPopupAnchorFromElement(el: HTMLElement): void {
 		const rect = el.getBoundingClientRect();
 
-		// Measure actual text width to center the arrow on the text, not the padded element
+		// Measure actual text width to center the arrow on the text, not the padded element.
 		const labelText = el.textContent || '';
 		const computedStyle = window.getComputedStyle(el);
 		const canvas = document.createElement('canvas');
@@ -1053,6 +1059,35 @@ export class KwChartSection extends LitElement {
 			bottom: rect.bottom,
 			width: rect.width,
 			textCenter,
+		};
+	}
+
+	private _getAxisSettingsAnchorLabel(axis: 'x' | 'y'): HTMLElement | null {
+		const root = this.shadowRoot;
+		if (!root) return null;
+		return root.querySelector(`.axis-label-clickable[data-axis="${axis}"]`) as HTMLElement | null;
+	}
+
+	private _onChartAxisTitleClick(e: Event): void {
+		const detail = (e as CustomEvent<{ axis?: string; clientX?: number; clientY?: number }>).detail;
+		const axis = detail?.axis;
+		if (axis !== 'x' && axis !== 'y') return;
+
+		const anchorLabel = this._getAxisSettingsAnchorLabel(axis);
+		if (anchorLabel) {
+			this._setAxisPopupAnchorFromElement(anchorLabel);
+			this._openAxisPopup = axis;
+			return;
+		}
+
+		const clientX = typeof detail.clientX === 'number' ? detail.clientX : 0;
+		const clientY = typeof detail.clientY === 'number' ? detail.clientY : 0;
+		this._popoverAnchorRect = {
+			top: clientY,
+			left: clientX,
+			bottom: clientY + 1,
+			width: 1,
+			textCenter: clientX,
 		};
 		this._openAxisPopup = axis;
 	}

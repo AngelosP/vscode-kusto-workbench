@@ -641,6 +641,7 @@
 		.query-box.is-collapsed .query-actions,
 		.query-box.is-collapsed .optimize-config,
 		.query-box.is-collapsed .results-wrapper,
+		.query-box.is-collapsed .results-wrapper + .query-editor-resizer,
 		.query-box.is-collapsed .comparison-summary-banner {
 			display: none !important;
 		}
@@ -652,14 +653,19 @@
 			display: none !important;
 		}
 
-		/* Collapsed sections need a bit more breathing room at the bottom. */
+		/* Collapsed sections: remove bottom padding but keep top padding stable so
+		   the header row does not shift vertically when toggling show/hide. */
 		.query-box.is-collapsed {
-			padding-bottom: 2px;
+			padding-bottom: 4px;
+		}
+		.query-box.is-collapsed .query-header {
+			margin-bottom: -12px;
 		}
 
-		/* Collapsed chart sections need a bit more breathing room at the bottom. */
+		/* Collapsed chart sections: same tight padding as other sections. */
 		.chart-box.is-collapsed {
-			padding-bottom: 3px;
+			padding-top: 12px;
+			padding-bottom: 2px;
 		}
 
 		.markdown-viewer {
@@ -992,11 +998,6 @@
 		kw-transformation-section,
 		kw-query-section {
 			margin-bottom: 16px;
-		}
-
-		/* Small gap between the results resize bar and the section bottom border. */
-		.query-box {
-			padding-bottom: 5px;
 		}
 
 		.query-box.is-optimized-comparison {
@@ -1967,48 +1968,46 @@
 		}
 
 		.query-editor-resizer {
-			flex: 0 0 12px;
-			height: 12px;
+			flex: 0 0 1px;
+			height: 1px;
 			cursor: ns-resize;
-			border-top: none;
-			background: var(--vscode-editor-background);
+			background: var(--vscode-panel-border, rgba(128,128,128,0.35));
 			position: relative;
 			touch-action: none;
+			z-index: 1;
 		}
 
+		/* Extended hit area for comfortable resizing */
 		.query-editor-resizer::after {
 			content: '';
 			position: absolute;
-			left: 50%;
+			left: 0;
+			right: 0;
+			top: -3px;
+			bottom: -3px;
+		}
+
+		/* Sash highlight on hover / drag */
+		.query-editor-resizer::before {
+			content: '';
+			position: absolute;
+			left: 0;
+			right: 0;
 			top: 50%;
-			width: 34px;
-			height: 4px;
-			transform: translate(-50%, -50%);
-			border-radius: 2px;
-			opacity: 0.55;
-			background-image: repeating-linear-gradient(
-				0deg,
-				var(--vscode-input-placeholderForeground),
-				var(--vscode-input-placeholderForeground) 1px,
-				transparent 1px,
-				transparent 3px
-			);
+			height: 0;
+			transform: translateY(-50%);
+			background: var(--vscode-sash-hoverBorder, #007fd4);
+			transition: height 0.1s ease;
+			pointer-events: none;
+			z-index: 1;
 		}
 
-		.query-editor-resizer:hover {
-			background: var(--vscode-list-hoverBackground);
+		.query-editor-resizer:hover::before {
+			height: 6px;
 		}
 
-		.query-editor-resizer:hover::after {
-			opacity: 0.85;
-		}
-
-		.query-editor-resizer.is-dragging {
-			background: var(--vscode-list-hoverBackground);
-		}
-
-		.query-editor-resizer.is-dragging::after {
-			opacity: 0.95;
+		.query-editor-resizer.is-dragging::before {
+			height: 6px;
 		}
 
 		.query-editor-placeholder {

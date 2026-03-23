@@ -176,7 +176,7 @@ describe('kw-url-section — rendering', () => {
 		await el.updateComplete;
 		const input = el.shadowRoot!.querySelector('.url-input') as HTMLInputElement;
 		expect(input).toBeTruthy();
-		expect(input.placeholder).toContain('https://');
+		expect(input.placeholder).toContain('URL');
 	});
 });
 

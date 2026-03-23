@@ -166,4 +166,21 @@ describe('kw-chart-section agent configuration', () => {
 		expect((el as any)._xColumn).toBe('');
 		expect((el as any)._yColumns).toEqual([]);
 	});
+
+	it('opens X/Y axis popup from chart axis-title click event', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		el.dispatchEvent(new CustomEvent('kusto-axis-title-click', {
+			detail: { axis: 'x', clientX: 120, clientY: 240 },
+		}));
+		await el.updateComplete;
+		expect((el as any)._openAxisPopup).toBe('x');
+
+		el.dispatchEvent(new CustomEvent('kusto-axis-title-click', {
+			detail: { axis: 'y', clientX: 140, clientY: 260 },
+		}));
+		await el.updateComplete;
+		expect((el as any)._openAxisPopup).toBe('y');
+	});
 });

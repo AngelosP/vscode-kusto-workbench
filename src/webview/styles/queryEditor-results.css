@@ -3,8 +3,8 @@
 		.results-wrapper {
 			position: relative;
 			width: 100%;
-			min-height: 0;
 			margin: 0;
+			min-height: 0;
 			overflow: hidden;
 			display: flex;
 			flex-direction: column;
@@ -41,15 +41,12 @@
 			margin-bottom: 0;
 		}
 
-		/* Add a bit of breathing room above the grabber. */
-		.results-wrapper .query-editor-resizer {
-			margin-top: 0;
-		}
-
-		/* Put the grip at the very bottom for results resizing */
-		.results-wrapper .query-editor-resizer::after {
-			top: 100%;
-			transform: translate(-50%, -100%);
+		/* Results resizer sits outside results-wrapper as a sibling so it can
+		   bleed edge-to-edge without being clipped by overflow:hidden. */
+		.results-wrapper + .query-editor-resizer {
+			margin: 0 -13px -13px;
+			width: calc(100% + 26px);
+			z-index: 2;
 		}
 
 		.results {

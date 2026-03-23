@@ -1084,7 +1084,7 @@ export class KwMarkdownSection extends LitElement {
 
 				if (!contentH) return;
 
-				const resizerH = 12;
+				const resizerH = 1;
 				const padding = this._mode === 'wysiwyg' ? -1 : 13;
 				const FIT_SLACK_PX = 5;
 				const desired = Math.max(120, Math.ceil(toolbarH + contentH + resizerH + padding + FIT_SLACK_PX));
