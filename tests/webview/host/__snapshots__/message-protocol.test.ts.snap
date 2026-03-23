@@ -1,0 +1,173 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Message Payload Factories > connectionsData payload shape 1`] = `
+{
+  "autoTriggerAutocompleteEnabled": true,
+  "autoTriggerAutocompleteEnabledUserSet": false,
+  "cachedDatabases": {
+    "cluster1.kusto.windows.net": [
+      "Logs",
+      "Metrics",
+    ],
+  },
+  "caretDocsEnabled": true,
+  "caretDocsEnabledUserSet": false,
+  "connections": [
+    {
+      "clusterUrl": "https://cluster1.kusto.windows.net",
+      "id": "conn_1",
+      "name": "Production",
+    },
+    {
+      "clusterUrl": "https://cluster2.kusto.windows.net",
+      "id": "conn_2",
+      "name": "Staging",
+    },
+  ],
+  "copilotChatFirstTimeDismissed": true,
+  "copilotInlineCompletionsEnabled": true,
+  "copilotInlineCompletionsEnabledUserSet": false,
+  "devNotesEnabled": false,
+  "favorites": [
+    {
+      "clusterUrl": "https://cluster1.kusto.windows.net",
+      "database": "Logs",
+      "name": "Prod Logs",
+    },
+  ],
+  "lastConnectionId": "conn_1",
+  "lastDatabase": "Logs",
+  "leaveNoTraceClusters": [],
+  "type": "connectionsData",
+}
+`;
+
+exports[`Message Payload Factories > favoritesData payload shape 1`] = `
+{
+  "boxId": "query_1",
+  "favorites": [
+    {
+      "clusterUrl": "https://cluster1.kusto.windows.net",
+      "database": "Logs",
+      "name": "Prod Logs",
+    },
+    {
+      "clusterUrl": "https://cluster2.kusto.windows.net",
+      "database": "Metrics",
+      "name": "Dev Metrics",
+    },
+  ],
+  "type": "favoritesData",
+}
+`;
+
+exports[`Message Payload Factories > queryResult payload shape 1`] = `
+{
+  "boxId": "query_1",
+  "result": {
+    "columns": [
+      {
+        "name": "Timestamp",
+        "type": "datetime",
+      },
+      {
+        "name": "Value",
+        "type": "real",
+      },
+    ],
+    "metadata": {
+      "cluster": "https://cluster1.kusto.windows.net",
+      "database": "Logs",
+      "executionTime": "00:00:01.234",
+    },
+    "rows": [
+      [
+        "2025-01-01T00:00:00Z",
+        42.5,
+      ],
+      [
+        "2025-01-02T00:00:00Z",
+        99.1,
+      ],
+    ],
+  },
+  "type": "queryResult",
+}
+`;
+
+exports[`Message Payload Factories > schemaData payload shape 1`] = `
+{
+  "boxId": "query_1",
+  "clusterUrl": "https://cluster1.kusto.windows.net",
+  "connectionId": "conn_1",
+  "database": "Logs",
+  "requestToken": "tok_abc123",
+  "schema": {
+    "columnTypesByTable": {
+      "PopulationData": {
+        "Population": "long",
+        "State": "string",
+      },
+      "StormEvents": {
+        "DamageProperty": "long",
+        "EventType": "string",
+        "StartTime": "datetime",
+        "State": "string",
+      },
+    },
+    "functions": [
+      {
+        "body": "StormEvents | top n by DamageProperty",
+        "name": "GetTopStorms",
+        "parameters": "(n:int)",
+      },
+    ],
+    "rawSchemaJson": {},
+    "tables": [
+      "StormEvents",
+      "PopulationData",
+    ],
+  },
+  "schemaMeta": {
+    "columnsCount": 6,
+    "forceRefresh": false,
+    "fromCache": false,
+    "functionsCount": 1,
+    "isFailoverToCache": false,
+    "tablesCount": 2,
+  },
+  "type": "schemaData",
+}
+`;
+
+exports[`Message Payload Factories > toolAddSection payload shape 1`] = `
+{
+  "input": {
+    "clusterUrl": "https://cluster1.kusto.windows.net",
+    "database": "Logs",
+    "name": "Top Events",
+    "query": "StormEvents | take 10",
+    "type": "query",
+  },
+  "requestId": "req_001",
+  "type": "toolAddSection",
+}
+`;
+
+exports[`Message Payload Factories > toolConfigureChart payload shape 1`] = `
+{
+  "input": {
+    "chartType": "line",
+    "dataSourceId": "query_1",
+    "legendColumn": "EventType",
+    "name": "Events Over Time",
+    "sectionId": "chart_1",
+    "xColumn": "Timestamp",
+    "yColumns": [
+      "Count",
+    ],
+  },
+  "requestId": "req_002",
+  "type": "toolConfigureChart",
+}
+`;
