@@ -304,7 +304,13 @@ export class KwTransformationSection extends LitElement {
 		this._refreshDatasets();
 		this._updateHostClasses();
 		this._writeToGlobalState();
-		this._computeTransformation();
+		// Always compute + sync on initial render even when collapsed, so this
+		// section's results are registered globally and appear in other sections'
+		// Data dropdowns.  The normal _computeTransformation() skips collapsed
+		// sections as a perf optimisation, but on first load we must seed the
+		// global results map.
+		this._computeTransformationImpl();
+		this._syncResultsToGlobal();
 	}
 
 	override updated(changed: PropertyValues): void {

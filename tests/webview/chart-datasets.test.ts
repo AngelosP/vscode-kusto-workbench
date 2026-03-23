@@ -104,6 +104,38 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(0);
 	});
 
+	// Regression: collapsed transformation sections must still appear as data
+	// sources.  The bug was that KwTransformationSection._computeTransformation()
+	// bailed on collapsed sections, so their results never reached the global map
+	// and __kustoGetChartDatasetsInDomOrder skipped them (cols.length === 0).
+	it('includes collapsed transformation sections that have results', () => {
+		setupDom([
+			{ id: 'query_1', name: 'Q1' },
+			{ id: 'query_2', name: 'Q2' },
+			{ id: 'markdown_1' },
+			{ id: 'transformation_1', name: 'T1' },
+			{ id: 'transformation_2', name: 'T2' },
+		]);
+		// All data-producing sections have results (queries ran, transformations computed)
+		setFakeResults('query_1');
+		setFakeResults('query_2');
+		setFakeResults('transformation_1');
+		setFakeResults('transformation_2');
+
+		const datasets = __kustoGetChartDatasetsInDomOrder();
+
+		// All four data-producing sections must appear, regardless of visibility.
+		expect(datasets).toHaveLength(4);
+		expect(datasets.map(d => d.id)).toEqual([
+			'query_1', 'query_2', 'transformation_1', 'transformation_2',
+		]);
+		// Section numbering counts all section types (including markdown)
+		expect(datasets[0].label).toBe('Q1 [section #1]');
+		expect(datasets[1].label).toBe('Q2 [section #2]');
+		expect(datasets[2].label).toBe('T1 [section #4]');
+		expect(datasets[3].label).toBe('T2 [section #5]');
+	});
+
 	it('numbers sections correctly when non-data sections are interspersed', () => {
 		setupDom([
 			{ id: 'query_1', name: 'First' },
