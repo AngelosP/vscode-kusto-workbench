@@ -12,10 +12,9 @@
 name: publish-edge-extension
 
 on:
-  # TODO: Uncomment once the extension is approved on the Edge Add-ons marketplace
-  # push:
-  #   tags:
-  #     - v*
+  push:
+    tags:
+      - v*
   workflow_dispatch:
     inputs:
       publish:
