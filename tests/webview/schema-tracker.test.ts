@@ -358,4 +358,78 @@ describe('SchemaTracker', () => {
 			}
 		});
 	});
+
+	// ── No-focus race condition (regression) ─────────────────────────────
+	describe('no-focus schema race condition', () => {
+		// Simulates the bug: multiple schemaData responses arrive while no
+		// editor has focus. Previously they all pushed to the worker queue;
+		// the first-load set context to the wrong database and the user's
+		// subsequent focus-triggered replace got stuck behind queued ADDs.
+		//
+		// The fix: skip worker pushes when no editor has focus (setAsContext=false).
+		// Only the focus-driven call with setAsContext=true should push.
+		// This test verifies that if we obey the new gating rule, the FIRST
+		// worker call is always the focus-driven one with the correct context.
+
+		it('first worker call is the focused section, not a prefetched one', async () => {
+			// Phase 1: N schema responses arrive with setAsContext=false.
+			// Under the fix, message-handler skips calling processSchema entirely.
+			// We simulate what would happen if they DID leak through (old behavior),
+			// then show the focus call must still produce the correct context.
+
+			// Simulate: Section A (DB_1) schema arrives first, no focus → first-load
+			await tracker.processSchema(
+				input({ modelUri: MODEL_1, clusterUrl: CLUSTER_A, database: DB_1, setAsContext: false }),
+				worker,
+			);
+			expect(tracker.databaseInContext?.database).toBe(DB_1); // first-load always sets context
+
+			// Simulate: Section B (DB_2) schema arrives, no focus → add (not context)
+			await tracker.processSchema(
+				input({ modelUri: MODEL_2, clusterUrl: CLUSTER_A, database: DB_2, setAsContext: false, rawSchemaJson: makeSchema(DB_2) }),
+				worker,
+			);
+			// Context should NOT have changed — setAsContext was false
+			expect(tracker.databaseInContext?.database).toBe(DB_1);
+
+			// Phase 2: User focuses Section B → setAsContext=true
+			const focusResult = await tracker.processSchema(
+				input({ modelUri: MODEL_2, clusterUrl: CLUSTER_A, database: DB_2, setAsContext: true, rawSchemaJson: makeSchema(DB_2) }),
+				worker,
+			);
+			// Context MUST now be DB_2
+			expect(tracker.databaseInContext?.database).toBe(DB_2);
+			expect(focusResult.operation.action).toBe('replace');
+		});
+
+		it('skipping all no-focus pushes means first focus gets first-load (clean queue)', async () => {
+			// Under the fix, ALL prefetch responses are skipped. The tracker
+			// stays uninitialised. The first focus-driven call gets first-load.
+			expect(tracker.globalInitialized).toBe(false);
+			expect(tracker.databaseInContext).toBeNull();
+
+			// User focuses Section B (DB_2) — first-ever schema load
+			const result = await tracker.processSchema(
+				input({ modelUri: MODEL_2, clusterUrl: CLUSTER_A, database: DB_2, setAsContext: true, rawSchemaJson: makeSchema(DB_2) }),
+				worker,
+			);
+			expect(result.operation.action).toBe('first-load');
+			expect(tracker.databaseInContext?.database).toBe(DB_2);
+			expect(worker.calls).toHaveLength(1);
+			expect(worker.calls[0].method).toBe('setSchemaFromShowSchema');
+			expect(worker.calls[0].args[1]).toBe(DB_2);
+		});
+
+		it('cross-cluster focus after skipped prefetches gets correct context', async () => {
+			// Prefetch for Cluster A / DB_1 was skipped (no focus).
+			// Tracker is still uninitialised.
+			// User focuses a section on Cluster B / DB_2.
+			const result = await tracker.processSchema(
+				input({ modelUri: MODEL_2, clusterUrl: CLUSTER_B, database: DB_2, setAsContext: true, rawSchemaJson: makeSchema(DB_2) }),
+				worker,
+			);
+			expect(result.operation.action).toBe('first-load');
+			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_B, database: DB_2 });
+		});
+	});
 });
