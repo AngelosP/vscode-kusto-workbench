@@ -56,6 +56,7 @@ src/
 tests/
   integration/        VS Code extension-host tests (Mocha, run via npm test)
   webview/            Vitest unit tests for webview code
+    host/             Pure host-side logic tests (run via Vitest, no VS Code required)
 browser-ext/          Chrome/Edge browser extension (separate build, own package.json)
 copilot-instructions/ Prompt files for Copilot and agent integrations (runtime resources)
 ```
@@ -80,7 +81,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for file-by-file inventories of each subs
 
 - The application treats error flows as first-class — error UX must be as polished as the happy path.
 - Never surface raw backend error messages to users. Instead provide actionable, user-friendly guidance. We may build entire features around helping users recover from errors.
-- User-facing errors must be formatted via `formatQueryExecutionErrorForUser()` in `queryEditorProvider.ts`.
+- User-facing errors must be formatted via `formatQueryExecutionErrorForUser()` in `queryEditorUtils.ts`.
 
 ## CSS & Styling Convention
 

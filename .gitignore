@@ -11,3 +11,4 @@ browser-ext/node_modules/
 *.zip
 tests/vscode-extension-tester/runs/
 coverage/
+esbuild-errors.txt

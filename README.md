@@ -286,7 +286,6 @@ This extension is built on top of some fantastic open-source projects. Huge than
 | **Monaco Editor** | MIT | Microsoft | [github.com/microsoft/monaco-editor](https://github.com/microsoft/monaco-editor) |
 | **Monaco Kusto** | MIT | Microsoft / Azure | [github.com/Azure/monaco-kusto](https://github.com/Azure/monaco-kusto) |
 | **Azure Kusto Data SDK** | MIT | Microsoft / Azure | [github.com/Azure/azure-kusto-node](https://github.com/Azure/azure-kusto-node) |
-| **Azure Kusto Ingest SDK** | MIT | Microsoft / Azure | [github.com/Azure/azure-kusto-node](https://github.com/Azure/azure-kusto-node) |
 | **Azure Identity** | MIT | Microsoft / Azure | [github.com/Azure/azure-sdk-for-js](https://github.com/Azure/azure-sdk-for-js) |
 | **TOAST UI Editor** | MIT | NHN Cloud FE Development Lab | [github.com/nhn/tui.editor](https://github.com/nhn/tui.editor) |
 | **TOAST UI Editor Color Syntax Plugin** | MIT | NHN Cloud FE Development Lab | [github.com/nhn/tui.editor](https://github.com/nhn/tui.editor) |

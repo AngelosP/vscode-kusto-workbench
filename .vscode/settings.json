@@ -24,6 +24,7 @@
             "matchCommandLine": true
         },
         "mkdir": true,
-        "vscode-ext-test": true
+        "vscode-ext-test": true,
+        "npx vitest": true
     }
 }

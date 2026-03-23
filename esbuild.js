@@ -61,16 +61,19 @@ async function main() {
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
 	}
 
-	// Skip unused language workers (css, html, json, ts) — only editor.worker is needed for KQL.
-	// Also skip entire unused language directories (css, html, json, typescript).
-	// These provide full IntelliSense for those languages but we only create 'kusto'
-	// and 'python' models. Kusto comes from @kusto/monaco-kusto (copied separately),
-	// and python only needs basic-languages/ for syntax highlighting.
-	// If a new language model is added, remove its directory from this set.
+	// Skip unused Monaco assets to reduce bundle size:
+	// - Language workers: only editor.worker is needed (KQL uses its own bundled worker).
+	// - Language directories (css, html, json, typescript): we only create 'kusto' and
+	//   'python' models. Kusto comes from @kusto/monaco-kusto (copied separately).
+	// - basic-languages: keep only 'python' for syntax highlighting in python sections.
+	//   All other 80+ language grammars are unused dead weight.
+	// - NLS locale files: Monaco localization is not configured; these are never loaded.
+
 	const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs');
 	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
 	const unusedWorkerPattern = /^(css|html|json|ts)\.worker\.[0-9a-f]+\.js$/i;
 	const unusedLanguageDirs = new Set(['css', 'html', 'json', 'typescript']);
+	const keepBasicLanguages = new Set(['python']);
 	try {
 		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
 		// Node 16+ supports fs.promises.cp with a filter
@@ -79,10 +82,15 @@ async function main() {
 				recursive: true,
 				force: true,
 				filter: (src) => {
-					if (unusedWorkerPattern.test(path.basename(src))) return false;
+					const basename = path.basename(src);
+					if (unusedWorkerPattern.test(basename)) return false;
+					// Skip NLS locale files (nls.messages.*.js) — localization not used
+					if (/^nls\.messages\..+\.js$/.test(basename)) return false;
 					const rel = path.relative(monacoSrc, src);
 					const parts = rel.split(path.sep);
 					if (parts[0] === 'language' && parts.length > 1 && unusedLanguageDirs.has(parts[1])) return false;
+					// Keep only the basic-languages we actually use
+					if (parts[0] === 'basic-languages' && parts.length > 1 && !keepBasicLanguages.has(parts[1])) return false;
 					return true;
 				}
 			});
@@ -93,11 +101,28 @@ async function main() {
 		console.warn('[watch] failed to copy Monaco assets:', e && e.message ? e.message : e);
 	}
 
-	// Clean up stale language dirs from previous builds that are now excluded.
+	// Clean up stale dirs from previous builds that are now excluded.
 	for (const lang of unusedLanguageDirs) {
 		const staleDir = path.join(monacoDest, 'language', lang);
 		try { await fs.promises.rm(staleDir, { recursive: true, force: true }); } catch { /* ignore */ }
 	}
+	// Clean up stale basic-languages and NLS files from previous builds.
+	try {
+		const blDir = path.join(monacoDest, 'basic-languages');
+		for (const entry of await fs.promises.readdir(blDir, { withFileTypes: true })) {
+			if (entry.isDirectory() && !keepBasicLanguages.has(entry.name)) {
+				await fs.promises.rm(path.join(blDir, entry.name), { recursive: true, force: true });
+			}
+		}
+	} catch { /* ignore */ }
+	try {
+		for (const entry of await fs.promises.readdir(monacoDest)) {
+			if (/^nls\.messages\..+\.js$/.test(entry)) {
+				await fs.promises.rm(path.join(monacoDest, entry), { force: true });
+			}
+		}
+	} catch { /* ignore */ }
+
 
 	// Monaco-Kusto assets provide the official Kusto language service (completions, diagnostics, etc.).
 	// Copy them into dist/monaco/vs/language/kusto so they can be loaded as AMD modules.

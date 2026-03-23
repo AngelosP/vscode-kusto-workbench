@@ -34,6 +34,9 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `cachedValuesViewer.ts` | Cached values viewer panel |
 | `kustoWorkbenchTools.ts` | VS Code agent tool registrations |
 | `copilotConversationUtils.ts` | Copilot conversation message building utilities |
+| `copilotPromptUtils.ts` | Pure prompt template builders for Copilot optimization and tool definitions |
+| `kustoClientUtils.ts` | Pure schema parsing (`extractSchemaFromJson`, `finalizeSchema`), cell formatting, error classification |
+| `queryEditorUtils.ts` | Pure query helpers: error formatting, control command detection, query mode, cache directives |
 | `remoteFileOpener.ts` | Remote file opening support |
 
 ## KQL Language Service (`src/host/kqlLanguageService/`)
@@ -149,6 +152,7 @@ When a Lit component has distinct behavioral concerns, each concern is extracted
 | `lazy-vendor.ts` | Lazy loading for vendor libraries |
 | `chart-renderer.ts` | ECharts rendering delegation |
 | `error-parser.ts` | Pure error parsing: JSON extraction, line positions, error model builder |
+| `viewer-utils.ts` | Pure viewer utilities: JSON formatting, syntax highlighting, value classification |
 
 ## Host ↔ Webview Communication
 
@@ -219,7 +223,7 @@ Custom diagnostics use codes like:
 
 ## Error Message Formatting
 
-User-facing errors are formatted via `formatQueryExecutionErrorForUser()` in `queryEditorProvider.ts`. This converts raw Kusto errors into actionable, user-friendly guidance.
+User-facing errors are formatted via `formatQueryExecutionErrorForUser()` in `queryEditorUtils.ts`. This converts raw Kusto errors into actionable, user-friendly guidance. The function is pure (takes an error message string, cluster URL, and optional database name) and is independently testable.
 
 ## Popup & Dropdown Dismiss-on-Scroll Policy
 
@@ -329,20 +333,42 @@ Registered with `vscode.lm.registerTool()`:
 
 Tests are organized under `tests/`:
 
-* **Integration tests** (`tests/integration/`): Run inside VS Code's extension host with full API access.
-* **Webview unit tests** (`tests/webview/`): Run via Vitest without VS Code.
-* **E2E tests** (`tests/e2e/`): UI automation tests using `vscode-extension-tester` (Selenium).
+* **Vitest unit tests** (`tests/webview/`): Fast tests that run without VS Code. Covers webview components, shared utilities, and pure host-side logic.
+  - `tests/webview/` — webview component and utility tests
+  - `tests/webview/host/` — pure host-side logic (no VS Code dependency) tested via Vitest
+* **Integration tests** (`tests/integration/`): Run inside VS Code's extension host. Reserved for tests that genuinely need VS Code APIs (webview panel faking, filesystem via `vscode.workspace.fs`, compiled-output extraction).
+
+### Host-side pure utility tests (`tests/webview/host/`)
 
 | Test File | Coverage |
 | --------- | -------- |
-| `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation |
+| `kustoClientUtils.test.ts` | Cell formatting, error classification, schema JSON parsing |
+| `queryEditorUtils.test.ts` | Error message formatting, control command detection, query mode, cache directives |
+| `kqlxEditorUtils.test.ts` | State normalization, deep equality, section sanitization |
+| `copilotPromptUtils.test.ts` | Prompt template building, tool definition enumeration |
+| `copilotConversationUtils.test.ts` | Conversation history sanitization, tool call result insertion |
+| `queryEditorConnection.test.ts` | URL normalization, connection naming, cluster key generation |
+| `kqlSchemaInference.test.ts` | Table/function extraction from KQL queries |
+| `kqlxFormat.test.ts` | `.kqlx` file parsing, serialization, creation |
+| `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
+| `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
+| `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts |
+
+### Integration tests (`tests/integration/`)
+
+| Test File | Coverage |
+| --------- | -------- |
+| `kqlCompatInference.test.ts` | Schema inference for `.kql` compatibility mode |
+| `kqlSidecar.test.ts` | Sidecar `.kql.json` file strategy |
+| `schemaCache.test.ts` | Disk-based schema cache read/write |
+| `kqlPrettify.test.ts` | KQL prettification (via compiled output extraction) |
 | `kqlCompletionColumns.test.ts` | Column completion inference |
 | `kqlCompletionColumnsInFunctionArgs.test.ts` | Column inference inside function calls |
 | `kqlCompletionFunctions.test.ts` | Function completion |
-| `kqlSchemaInference.test.ts` | Table/function extraction from queries |
-| `kqlCompatInference.test.ts` | Schema inference for compatibility mode |
-| `kqlPrettify.test.ts` | KQL prettification/formatting |
-| `kqlSidecar.test.ts` | Sidecar .kql.json file strategy |
+
+### Coverage gate
+
+`npm run test:coverage-gate` fails the build if Vitest statement coverage drops below the recorded baseline. The baseline is stored in `scripts/coverage-gate.mjs`.
 
 ## Build System
 
