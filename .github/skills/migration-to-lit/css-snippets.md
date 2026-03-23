@@ -131,7 +131,7 @@
 ## Resizer
 
 ```css
-/* Resizer IS the border — 1px line that grows to 4px sash on hover */
+/* Resizer IS the border — 1px line that grows to 6px sash on hover */
 .resizer {
     flex: 0 0 1px;
     height: 1px;
@@ -160,8 +160,8 @@
     pointer-events: none;
     z-index: 1;
 }
-.resizer:hover::before { height: 4px; }
-.resizer.is-dragging::before { height: 4px; }
+.resizer:hover::before { height: 6px; }
+.resizer.is-dragging::before { height: 6px; }
 ```
 
 ## Controls Panel Full-Bleed

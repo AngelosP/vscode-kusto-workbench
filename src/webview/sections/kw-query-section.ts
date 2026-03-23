@@ -274,8 +274,8 @@ export class KwQuerySection extends LitElement {
 					</div>
 					<div class="query-editor" id="${id}_query_editor"></div>
 					<div class="query-editor-placeholder" id="${id}_query_placeholder">Enter your KQL query here...</div>
-					<div class="query-editor-resizer" id="${id}_query_resizer" title=${'Drag to resize editor\nDouble-click to fit to contents'}></div>
 				</div>
+				<div class="query-editor-resizer" id="${id}_query_resizer" title=${'Drag to resize editor\nDouble-click to fit to contents'}></div>
 			</div>
 			<div class="query-actions">
 				<div class="query-run">
