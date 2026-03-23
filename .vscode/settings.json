@@ -25,6 +25,7 @@
         },
         "mkdir": true,
         "vscode-ext-test": true,
-        "npx vitest": true
+        "npx vitest": true,
+        "Rename-Item": true
     }
 }

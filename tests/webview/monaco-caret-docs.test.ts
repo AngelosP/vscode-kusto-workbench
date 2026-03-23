@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import {
 	initCaretDocsDeps,
 	buildFunctionSignatureMarkdown,
@@ -6,14 +6,23 @@ import {
 	computeArgIndex,
 	getTokenAtPosition,
 	getMultiWordOperatorAt,
+	getWordRangeAt,
 	KUSTO_FUNCTION_DOCS,
 	KUSTO_KEYWORD_DOCS,
 	__kustoNormalizeControlCommand,
 	__kustoExtractWithOptionArgsFromSyntax,
 	__kustoParseControlCommandSyntaxFromLearnHtml,
 	__kustoFindWithOptionsParenRange,
+	__kustoFindEnclosingWithOptionsParen,
 	getHoverInfoAt,
+	__kustoBuildControlCommandIndex,
+	__kustoEnsureGeneratedFunctionsMerged,
+	__kustoGeneratedFunctionsMerged,
+	setGeneratedFunctionsMerged,
+	__kustoGetControlCommandHoverAt,
+	__kustoControlCommands,
 } from '../../src/webview/monaco/caret-docs';
+import { __kustoGetStatementStartAtOffset } from '../../src/webview/monaco/diagnostics.js';
 
 // ── Minimal model + monaco mocks ──────────────────────────────────────────────
 
@@ -543,5 +552,414 @@ describe('getHoverInfoAt', () => {
 		const result = getHoverInfoAt(model, { lineNumber: 2, column: 9 }); // after "where "
 		expect(result).toBeTruthy();
 		expect(result!.markdown).toContain('where');
+	});
+
+	it('clamps active arg index to args.length - 1', () => {
+		// f(a, b, c, d) — dcount only has 2 args, so index should clamp
+		const model = makeModel('dcount(x, y, extra)');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 14 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('dcount');
+		// Second arg (accuracy?) should be highlighted since index is clamped
+		expect(result!.markdown).toContain('**accuracy?**');
+	});
+
+	it('finds function call with offset+1 probe', () => {
+		// Cursor exactly on open paren — first attempt misses, probe offset+1 hits
+		const model = makeModel('avg(col)');
+		// Column 4 = on '('
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 4 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('avg');
+	});
+
+	it('provides hover for functions when cursor is just before parens', () => {
+		const model = makeModel('count()');
+		// Column 6 = on '('
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 6 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('count');
+	});
+
+	it('returns pipe operator docs for project-away', () => {
+		const model = makeModel('T\n| project-away Col1');
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 4 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('project-away');
+	});
+
+	it('returns pipe operator docs for mv-expand', () => {
+		const model = makeModel('T\n| mv-expand Col');
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 4 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('mv-expand');
+	});
+
+	it('recognizes "filter" as alias for "where"', () => {
+		const model = makeModel('T\n| filter x > 5');
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 4 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('where');
+	});
+});
+
+// ── getWordRangeAt ────────────────────────────────────────────────────────────
+
+describe('getWordRangeAt', () => {
+	it('returns a range for a word at the cursor', () => {
+		const model = makeModel('hello world');
+		const result = getWordRangeAt(model, { lineNumber: 1, column: 2 });
+		expect(result).toBeInstanceOf(MockRange);
+		expect(result!.startColumn).toBe(1);
+		expect(result!.endColumn).toBe(6);
+	});
+
+	it('returns null when getWordAtPosition returns null', () => {
+		const model = makeModel('   ');
+		model.getWordAtPosition = () => null;
+		expect(getWordRangeAt(model, { lineNumber: 1, column: 2 })).toBeNull();
+	});
+
+	it('returns range for the second word', () => {
+		const model = makeModel('hello world');
+		const result = getWordRangeAt(model, { lineNumber: 1, column: 8 });
+		expect(result).toBeInstanceOf(MockRange);
+		expect(result!.startColumn).toBe(7);
+		expect(result!.endColumn).toBe(12);
+	});
+});
+
+// ── __kustoBuildControlCommandIndex ───────────────────────────────────────────
+
+describe('__kustoBuildControlCommandIndex', () => {
+	it('returns empty array when no entries on window', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = undefined;
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result).toEqual([]);
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('builds index from tuple entries', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show tables', 'management/show-tables'],
+			['.show databases', 'management/show-databases'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result.length).toBe(2);
+			expect(result[0].commandLower).toBe('.show databases'); // longer first
+			expect(result[1].commandLower).toBe('.show tables');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('builds index from object entries', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			{ title: '.show tables', href: 'management/show-tables' },
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result.length).toBe(1);
+			expect(result[0].command).toBe('.show tables');
+			expect(result[0].href).toBe('management/show-tables');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('handles comma-separated aliases', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show tables, .show table', 'management/show-tables'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result.length).toBe(2);
+			const keys = result.map((r: any) => r.commandLower);
+			expect(keys).toContain('.show tables');
+			expect(keys).toContain('.show table');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('handles pipe-separated aliases', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show tables|.list tables', 'management/show-tables'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			const keys = result.map((r: any) => r.commandLower);
+			expect(keys).toContain('.show tables');
+			expect(keys).toContain('.list tables');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('skips entries without dot prefix', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['show tables', 'management/show-tables'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result).toEqual([]);
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('skips entries without title or href', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			[null, 'management/show-tables'],
+			['.show tables', null],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result).toEqual([]);
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('deduplicates by lower-cased command', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show tables', 'url1'],
+			['.Show Tables', 'url2'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result.length).toBe(1);
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('sorts longest-first', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show', 'url1'],
+			['.show tables details', 'url3'],
+			['.show tables', 'url2'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result[0].commandLower).toBe('.show tables details');
+			expect(result[1].commandLower).toBe('.show tables');
+			expect(result[2].commandLower).toBe('.show');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+
+	it('strips trailing "command" word from 3+ part titles', () => {
+		const old = (window as any).__kustoControlCommandEntries;
+		(window as any).__kustoControlCommandEntries = [
+			['.show tables command', 'management/show-tables'],
+		];
+		try {
+			const result = __kustoBuildControlCommandIndex();
+			expect(result.length).toBe(1);
+			expect(result[0].command).toBe('.show tables');
+		} finally {
+			(window as any).__kustoControlCommandEntries = old;
+		}
+	});
+});
+
+// ── __kustoEnsureGeneratedFunctionsMerged ─────────────────────────────────────
+
+describe('__kustoEnsureGeneratedFunctionsMerged', () => {
+	beforeEach(() => {
+		// Reset the merge flag before each test
+		setGeneratedFunctionsMerged(false);
+	});
+
+	it('merges function entries from window.__kustoFunctionEntries', () => {
+		const uniqueName = '_test_func_' + Date.now();
+		(window as any).__kustoFunctionEntries = [{ name: uniqueName }];
+		(window as any).__kustoFunctionDocs = {};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			const key = uniqueName.toLowerCase();
+			expect(KUSTO_FUNCTION_DOCS[key]).toBeTruthy();
+			expect(KUSTO_FUNCTION_DOCS[key].description).toBe('Kusto function.');
+			expect(KUSTO_FUNCTION_DOCS[key].returnType).toBe('scalar');
+		} finally {
+			delete KUSTO_FUNCTION_DOCS[uniqueName.toLowerCase()];
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('merges function entries from tuple format', () => {
+		const uniqueName = '_test_tuple_' + Date.now();
+		(window as any).__kustoFunctionEntries = [[uniqueName]];
+		(window as any).__kustoFunctionDocs = {};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			const key = uniqueName.toLowerCase();
+			expect(KUSTO_FUNCTION_DOCS[key]).toBeTruthy();
+		} finally {
+			delete KUSTO_FUNCTION_DOCS[uniqueName.toLowerCase()];
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('picks up detailed docs from window.__kustoFunctionDocs', () => {
+		const uniqueName = '_test_docs_' + Date.now();
+		(window as any).__kustoFunctionEntries = [{ name: uniqueName }];
+		(window as any).__kustoFunctionDocs = {
+			[uniqueName]: {
+				args: ['x', 'y'],
+				description: 'Test function description.',
+				signature: 'test_func(x, y)',
+				docUrl: 'https://example.com/test',
+			},
+		};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			const key = uniqueName.toLowerCase();
+			expect(KUSTO_FUNCTION_DOCS[key]).toBeTruthy();
+			expect(KUSTO_FUNCTION_DOCS[key].args).toEqual(['x', 'y']);
+			expect(KUSTO_FUNCTION_DOCS[key].description).toBe('Test function description.');
+			expect(KUSTO_FUNCTION_DOCS[key].signature).toBe('test_func(x, y)');
+			expect(KUSTO_FUNCTION_DOCS[key].docUrl).toBe('https://example.com/test');
+		} finally {
+			delete KUSTO_FUNCTION_DOCS[uniqueName.toLowerCase()];
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('does not overwrite existing built-in function docs', () => {
+		const originalDcount = { ...KUSTO_FUNCTION_DOCS['dcount'] };
+		(window as any).__kustoFunctionEntries = [{ name: 'dcount' }];
+		(window as any).__kustoFunctionDocs = {
+			dcount: { args: ['overridden'], description: 'Should not overwrite.' },
+		};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			expect(KUSTO_FUNCTION_DOCS['dcount'].description).toBe(originalDcount.description);
+		} finally {
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('skips invalid function names (non-identifier)', () => {
+		(window as any).__kustoFunctionEntries = [{ name: '123invalid' }, { name: 'has space' }];
+		(window as any).__kustoFunctionDocs = {};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			expect(KUSTO_FUNCTION_DOCS['123invalid']).toBeUndefined();
+			expect(KUSTO_FUNCTION_DOCS['has space']).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('skips entries with empty or null names', () => {
+		(window as any).__kustoFunctionEntries = [{ name: '' }, { name: null }, [null]];
+		(window as any).__kustoFunctionDocs = {};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			// No crash, no entries added
+			expect(KUSTO_FUNCTION_DOCS['']).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('is idempotent — does not re-merge after first call', () => {
+		const uniqueName = '_test_idempotent_' + Date.now();
+		(window as any).__kustoFunctionEntries = [{ name: uniqueName }];
+		(window as any).__kustoFunctionDocs = {};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			const key = uniqueName.toLowerCase();
+			expect(KUSTO_FUNCTION_DOCS[key]).toBeTruthy();
+
+			// Clear entries and call again — since flag is set, should not re-merge
+			(window as any).__kustoFunctionEntries = [{ name: uniqueName + '2' }];
+			__kustoEnsureGeneratedFunctionsMerged();
+			expect(KUSTO_FUNCTION_DOCS[(uniqueName + '2').toLowerCase()]).toBeUndefined();
+		} finally {
+			delete KUSTO_FUNCTION_DOCS[uniqueName.toLowerCase()];
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+
+	it('handles missing window.__kustoFunctionEntries gracefully', () => {
+		delete (window as any).__kustoFunctionEntries;
+		delete (window as any).__kustoFunctionDocs;
+		// Should not throw
+		__kustoEnsureGeneratedFunctionsMerged();
+	});
+
+	it('case-insensitive doc lookup — matches lowercase key', () => {
+		const uniqueName = '_Test_CaseDoc_' + Date.now();
+		(window as any).__kustoFunctionEntries = [{ name: uniqueName }];
+		(window as any).__kustoFunctionDocs = {
+			[uniqueName.toLowerCase()]: {
+				args: ['a'],
+				description: 'Lower key match.',
+			},
+		};
+		try {
+			__kustoEnsureGeneratedFunctionsMerged();
+			const key = uniqueName.toLowerCase();
+			expect(KUSTO_FUNCTION_DOCS[key]).toBeTruthy();
+			expect(KUSTO_FUNCTION_DOCS[key].description).toBe('Lower key match.');
+		} finally {
+			delete KUSTO_FUNCTION_DOCS[uniqueName.toLowerCase()];
+			delete (window as any).__kustoFunctionEntries;
+			delete (window as any).__kustoFunctionDocs;
+		}
+	});
+});
+
+// ── __kustoGetControlCommandHoverAt ───────────────────────────────────────────
+
+describe('__kustoGetControlCommandHoverAt', () => {
+	// Set up the bare global that caret-docs uses without importing
+	beforeAll(() => {
+		(globalThis as any).__kustoGetStatementStartAtOffset = __kustoGetStatementStartAtOffset;
+	});
+
+	it('returns null when __kustoControlCommands is empty', () => {
+		// By default, window.__kustoControlCommandEntries was not set before module load,
+		// so __kustoControlCommands is empty. Verify the function handles this.
+		const model = makeModel('.show tables');
+		const result = __kustoGetControlCommandHoverAt(model, new MockPosition(1, 3));
+		// With empty command index, should return null
+		expect(result).toBeNull();
+	});
+
+	it('returns null for non-dot-prefixed text', () => {
+		const model = makeModel('Events | where x > 5');
+		const result = __kustoGetControlCommandHoverAt(model, new MockPosition(1, 3));
+		expect(result).toBeNull();
+	});
+
+	it('returns null for empty model', () => {
+		const model = makeModel('');
+		const result = __kustoGetControlCommandHoverAt(model, new MockPosition(1, 1));
+		expect(result).toBeNull();
 	});
 });

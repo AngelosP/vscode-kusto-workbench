@@ -106,39 +106,6 @@ export async function getQueryEditorHtml(
 	// Monaco 0.52 ships CSS under vs/editor/editor.main.css.
 	const monacoCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'editor', 'editor.main.css')).toString();
 
-	// Monaco workers are version-hashed files in vs/assets. Discover them at runtime and pass
-	// their webview URIs into the page so the worker bootstrap is always correct.
-	const monacoWorkers: Record<string, string> = {};
-	try {
-		const assetsUri = vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'assets');
-		const entries = await vscode.workspace.fs.readDirectory(assetsUri);
-		for (const [name, type] of entries) {
-			if (type !== vscode.FileType.File) {
-				continue;
-			}
-			if (!name.endsWith('.js')) {
-				continue;
-			}
-			const m = name.match(/^(editor)\.worker\.[0-9a-f]+\.js$/i);
-			if (!m) {
-				continue;
-			}
-			const key = m[1].toLowerCase();
-			const uri = webview.asWebviewUri(vscode.Uri.joinPath(assetsUri, name)).toString();
-			monacoWorkers[key] = withCacheBuster(uri);
-		}
-	} catch {
-		// If discovery fails, Monaco may still run without workers, but language features may degrade.
-	}
-
-	// Monaco-kusto worker - use the pre-bundled version that includes all dependencies
-	try {
-		const kustoWorkerUri = vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'kusto.worker.bundle.js');
-		monacoWorkers['kusto'] = withCacheBuster(webview.asWebviewUri(kustoWorkerUri).toString());
-	} catch {
-		// If kusto worker discovery fails, monaco-kusto features will degrade.
-	}
-
 	return template
 		.replaceAll('{{appCssBundleUri}}', appCssBundleUri)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
@@ -146,7 +113,6 @@ export async function getQueryEditorHtml(
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
 		.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
 		.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))
-		.replaceAll('{{monacoWorkersJson}}', JSON.stringify(monacoWorkers))
 		.replaceAll('{{echartsUrl}}', echartsUrl)
 		.replaceAll('{{toastUiEditorUrl}}', toastUiEditorUrl)
 		.replaceAll('{{toastUiCssUrlsJson}}', JSON.stringify([

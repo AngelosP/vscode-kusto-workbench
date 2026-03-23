@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { parseCssColorToRgb, isDarkTheme, defineCustomThemes } from '../../src/webview/monaco/theme.js';
+import { parseCssColorToRgb, isDarkTheme, defineCustomThemes, applyMonacoTheme } from '../../src/webview/monaco/theme.js';
 
 // ── parseCssColorToRgb ────────────────────────────────────────────────────────
 
@@ -164,5 +164,78 @@ describe('defineCustomThemes', () => {
 		};
 		// Should not throw
 		expect(() => defineCustomThemes(monaco)).not.toThrow();
+	});
+});
+
+// ── applyMonacoTheme ──────────────────────────────────────────────────────────
+
+describe('applyMonacoTheme', () => {
+	let applyMonacoTheme: any;
+
+	beforeEach(async () => {
+		vi.restoreAllMocks();
+		// Re-import to reset module state (customThemesDefined etc.)
+		const mod = await import('../../src/webview/monaco/theme.js');
+		applyMonacoTheme = mod.applyMonacoTheme;
+	});
+
+	it('calls setTheme with dark custom theme when body has dark class', () => {
+		// Mock isDarkTheme to return true via body classList
+		document.body.className = 'vscode-dark';
+		const monaco = {
+			editor: {
+				defineTheme: vi.fn(),
+				setTheme: vi.fn(),
+			},
+		};
+		applyMonacoTheme(monaco);
+		expect(monaco.editor.setTheme).toHaveBeenCalledWith('kusto-workbench-dark');
+	});
+
+	it('calls setTheme with light custom theme when body has light class', () => {
+		document.body.className = 'vscode-light';
+		const monaco = {
+			editor: {
+				defineTheme: vi.fn(),
+				setTheme: vi.fn(),
+			},
+		};
+		applyMonacoTheme(monaco);
+		expect(monaco.editor.setTheme).toHaveBeenCalledWith('kusto-workbench-light');
+	});
+
+	it('does nothing when monaco is null', () => {
+		expect(() => applyMonacoTheme(null)).not.toThrow();
+	});
+
+	it('does nothing when setTheme is not a function', () => {
+		expect(() => applyMonacoTheme({ editor: {} })).not.toThrow();
+	});
+
+	it('falls back to kusto-dark when defineTheme fails', () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		document.body.className = 'vscode-dark';
+		const monaco = {
+			editor: {
+				defineTheme: vi.fn(() => { throw new Error('fail'); }),
+				setTheme: vi.fn(),
+			},
+		};
+		applyMonacoTheme(monaco);
+		expect(monaco.editor.setTheme).toHaveBeenCalledWith('kusto-dark');
+	});
+
+	it('re-defines themes on each call', () => {
+		document.body.className = 'vscode-dark';
+		const monaco = {
+			editor: {
+				defineTheme: vi.fn(),
+				setTheme: vi.fn(),
+			},
+		};
+		applyMonacoTheme(monaco);
+		applyMonacoTheme(monaco);
+		// defineTheme called 2 times per call (dark+light), so 4 total
+		expect(monaco.editor.defineTheme).toHaveBeenCalledTimes(4);
 	});
 });

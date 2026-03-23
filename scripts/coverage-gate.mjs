@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-const BASELINE_STATEMENTS = 26.12; // recorded 2026-03-22
+const BASELINE_STATEMENTS = 28.05; // recorded 2026-03-22 — Phase 8: diagnostics engine + caret-docs
 const BUFFER = 0.5; // allow this much drop before failing
 const THRESHOLD = BASELINE_STATEMENTS - BUFFER;
 

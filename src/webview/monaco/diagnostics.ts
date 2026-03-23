@@ -870,7 +870,10 @@ const __kustoGetSchemaForModel = (model: any) => {
 	return { boxId, schema: boxId ? (schemaByBoxId[boxId] || null) : null };
 };
 
-const __kustoComputeDiagnostics = (text: any, schema: any) => {
+export const __kustoComputeDiagnostics = (text: any, schema: any, deps?: { getColumnsByTable?: (schema: any) => any; MarkerSeverity?: any; diagLog?: (...args: any[]) => void }) => {
+	const _getColumnsByTable = deps?.getColumnsByTable ?? __kustoGetColumnsByTable;
+	const _MarkerSeverity = deps?.MarkerSeverity ?? (typeof monaco !== 'undefined' ? monaco.MarkerSeverity : { Error: 8, Warning: 4, Info: 2, Hint: 1 });
+	const _diagLog = deps?.diagLog ?? (typeof _win !== 'undefined' ? (_win as any).__kustoDiagLog : undefined);
 	const markers: any[] = [];
 	const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	if (!raw.trim()) {
@@ -960,7 +963,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 	};
 
 	const tables = (schema && Array.isArray(schema.tables)) ? schema.tables : [];
-	const columnsByTable = __kustoGetColumnsByTable(schema);
+	const columnsByTable = _getColumnsByTable(schema);
 	const columnTypesByTable = (schema && schema.columnTypesByTable && typeof schema.columnTypesByTable === 'object') ? schema.columnTypesByTable : null;
 
 	// Any declared `let` identifier is considered a valid tabular reference for diagnostics purposes,
@@ -1048,7 +1051,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 								const best = __kustoBestMatches(name, filtered, 5);
 		const didYouMean = best.length ? (' Did you mean: ' + best.map(s => '`' + s + '`').join(', ') + '?') : '';
 		markers.push({
-			severity: monaco.MarkerSeverity.Error,
+			severity: _MarkerSeverity.Error,
 			startLineNumber: start.lineNumber,
 			startColumn: start.column,
 			endLineNumber: end.lineNumber,
@@ -1250,7 +1253,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					lastPipeHeader = __kustoParsePipeHeaderFromLine(trimmed);
 					allowIndentedContinuation = __kustoPipeHeaderAllowsIndentedContinuation(lastPipeHeader);
 					expectPipeAfterBareId = false;
-					_win.__kustoDiagLog('pipe line', {
+					if (_diagLog) _diagLog('pipe line', {
 						stmtStartOffset: baseOffset,
 						lineRaw: line,
 						pipeHeader: lastPipeHeader,
@@ -1269,7 +1272,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 						const start = __kustoOffsetToPosition(lineStarts, startOffset);
 						const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, startOffset + tokLen));
 						markers.push({
-							severity: monaco.MarkerSeverity.Error,
+							severity: _MarkerSeverity.Error,
 							startLineNumber: start.lineNumber,
 							startColumn: start.column,
 							endLineNumber: end.lineNumber,
@@ -1303,7 +1306,7 @@ const __kustoComputeDiagnostics = (text: any, schema: any) => {
 					const start = __kustoOffsetToPosition(lineStarts, startOffset);
 					const end = __kustoOffsetToPosition(lineStarts, Math.max(startOffset + 1, startOffset + tokLen));
 					markers.push({
-						severity: monaco.MarkerSeverity.Error,
+						severity: _MarkerSeverity.Error,
 						startLineNumber: start.lineNumber,
 						startColumn: start.column,
 						endLineNumber: end.lineNumber,

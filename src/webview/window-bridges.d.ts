@@ -121,10 +121,8 @@ declare global {
 		__kustoQueryEditorConfig?: {
 			monacoVsUri?: string;
 			monacoLoaderUri?: string;
-			monacoWorkers?: Record<string, string>;
 			cacheBuster?: string;
 			copilotLogoUri?: string;
-			monacoEditorWorkerUri?: string;
 			echartsUrl?: string;
 			toastUiEditorUrl?: string;
 			toastUiCssUrls?: string[];
@@ -501,7 +499,6 @@ declare global {
 		__kustoControlCommandEntries: any;
 		__kustoFunctionEntries: any;
 		__kustoEditors: Record<string, any>;
-		monacoEditorWorkerUri: string;
 
 		// =====================================================================
 		// monaco-suggest.ts

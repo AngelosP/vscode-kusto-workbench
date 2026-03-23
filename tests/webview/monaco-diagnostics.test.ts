@@ -21,6 +21,7 @@ import {
 	__kustoSplitTopLevelCommaList,
 	__kustoGetDotChainRoot,
 	__kustoExtractJoinTable,
+	__kustoComputeDiagnostics,
 } from '../../src/webview/monaco/diagnostics.js';
 
 // ── __kustoMaskCommentsPreserveLayout ─────────────────────────────────────────
@@ -1650,5 +1651,742 @@ describe('__kustoSplitTopLevelCommaList — escape edge cases', () => {
 	it('handles multiple levels of nesting', () => {
 		const result = __kustoSplitTopLevelCommaList('f(g([{a, b}]), c), d');
 		expect(result).toEqual(['f(g([{a, b}]), c)', 'd']);
+	});
+});
+
+// ── Additional edge-case tests for branch coverage ────────────────────────────
+
+describe('__kustoScanIdentifiers — additional edge cases', () => {
+	it('handles block comments', () => {
+		const tokens = __kustoScanIdentifiers('a /* b */ c');
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['a', 'c']);
+	});
+
+	it('handles line comments', () => {
+		const tokens = __kustoScanIdentifiers('a // b\nc');
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['a', 'c']);
+	});
+
+	it('skips double-quoted strings', () => {
+		const tokens = __kustoScanIdentifiers('x "hello world" y');
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['x', 'y']);
+	});
+
+	it('skips single-quoted strings with escaped quotes', () => {
+		const tokens = __kustoScanIdentifiers("x 'it''s' y");
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['x', 'y']);
+	});
+
+	it('handles double-quoted strings with backslash escapes', () => {
+		const tokens = __kustoScanIdentifiers('x "a\\\\b" y');
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['x', 'y']);
+	});
+
+	it('tracks bracket depth for identifiers', () => {
+		const tokens = __kustoScanIdentifiers('a (b)');
+		const aToken = tokens.find((t: any) => t.value === 'a');
+		const bToken = tokens.find((t: any) => t.value === 'b');
+		expect(aToken.depth).toBe(0);
+		expect(bToken.depth).toBe(1);
+	});
+
+	it('recognizes pipe tokens', () => {
+		const tokens = __kustoScanIdentifiers('a | b');
+		const pipes = tokens.filter((t: any) => t.type === 'pipe');
+		expect(pipes).toHaveLength(1);
+		expect(pipes[0].offset).toBe(2);
+	});
+
+	it('handles empty text', () => {
+		expect(__kustoScanIdentifiers('')).toEqual([]);
+	});
+
+	it('skips non-identifier characters like operators', () => {
+		const tokens = __kustoScanIdentifiers('a + b > c');
+		const ids = tokens.filter((t: any) => t.type === 'ident').map((t: any) => t.value);
+		expect(ids).toEqual(['a', 'b', 'c']);
+	});
+});
+
+describe('__kustoLevenshtein — additional edge cases', () => {
+	it('returns 0 for identical strings', () => {
+		expect(__kustoLevenshtein('abc', 'abc')).toBe(0);
+	});
+
+	it('returns length of b when a is empty', () => {
+		expect(__kustoLevenshtein('', 'abc')).toBe(3);
+	});
+
+	it('returns length of a when b is empty', () => {
+		expect(__kustoLevenshtein('abc', '')).toBe(3);
+	});
+
+	it('returns 0 for two empty strings', () => {
+		expect(__kustoLevenshtein('', '')).toBe(0);
+	});
+
+	it('handles null/undefined inputs', () => {
+		expect(__kustoLevenshtein(null, null)).toBe(0);
+		expect(__kustoLevenshtein(null, 'abc')).toBe(3);
+		expect(__kustoLevenshtein('abc', undefined)).toBe(3);
+	});
+
+	it('correctly computes single-character edits', () => {
+		expect(__kustoLevenshtein('cat', 'bat')).toBe(1); // substitution
+		expect(__kustoLevenshtein('cat', 'cats')).toBe(1); // insertion
+		expect(__kustoLevenshtein('cats', 'cat')).toBe(1); // deletion
+	});
+
+	it('computes distance for longer strings', () => {
+		expect(__kustoLevenshtein('kitten', 'sitting')).toBe(3);
+	});
+
+	it('is case-sensitive', () => {
+		expect(__kustoLevenshtein('ABC', 'abc')).toBe(3);
+	});
+});
+
+describe('__kustoBestMatches — additional edge cases', () => {
+	it('deduplicates case-insensitive matches', () => {
+		const result = __kustoBestMatches('test', ['Test', 'test', 'TEST'], 5);
+		expect(result).toHaveLength(1);
+		expect(result[0].toLowerCase()).toBe('test');
+	});
+
+	it('prefix boost ranks exact prefix first', () => {
+		const result = __kustoBestMatches('tab', ['table', 'bat', 'tablets'], 5);
+		// 'table' and 'tablets' start with 'tab' so should be first
+		expect(result[0]).toBe('table');
+	});
+
+	it('respects maxCount', () => {
+		const result = __kustoBestMatches('a', ['ab', 'ac', 'ad', 'ae', 'af'], 2);
+		expect(result).toHaveLength(2);
+	});
+
+	it('handles empty needle', () => {
+		const result = __kustoBestMatches('', ['a', 'bb', 'ccc'], 3);
+		expect(result).toHaveLength(3);
+		// Sorted by length (distance == candidate length)
+		expect(result[0]).toBe('a');
+	});
+
+	it('handles empty candidates', () => {
+		expect(__kustoBestMatches('test', [], 5)).toEqual([]);
+	});
+
+	it('handles null candidates', () => {
+		expect(__kustoBestMatches('test', null, 5)).toEqual([]);
+	});
+
+	it('defaults maxCount to 5 when falsy', () => {
+		const result = __kustoBestMatches('x', ['a', 'b', 'c', 'd', 'e', 'f'], 0);
+		expect(result).toHaveLength(5);
+	});
+
+	it('skips empty candidate strings', () => {
+		const result = __kustoBestMatches('a', ['', 'b', '', 'c'], 5);
+		expect(result).toEqual(['b', 'c']);
+	});
+});
+
+describe('__kustoSplitTopLevelStatements — additional edge cases', () => {
+	it('does not split at semicolons inside let function bodies', () => {
+		const text = 'let f = (t: string) { t | count }; f("x")';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		// The semicolon after '}' is at depth 0, so it DOES split into 2 statements
+		expect(stmts).toHaveLength(2);
+		expect(stmts[0].text).toContain('let f');
+		expect(stmts[1].text.trim()).toBe('f("x")');
+	});
+
+	it('splits at semicolons at top level', () => {
+		const text = 'T | count; U | take 5';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(2);
+		expect(stmts[0].text.trim()).toBe('T | count');
+		expect(stmts[1].text.trim()).toBe('U | take 5');
+	});
+
+	it('splits at blank lines', () => {
+		const text = 'T | count\n\nU | take 5';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(2);
+	});
+
+	it('preserves strings with semicolons', () => {
+		const text = "print 'a;b'";
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(1);
+	});
+
+	it('preserves strings with blank lines', () => {
+		const text = 'print "a\n\nb"';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(1);
+	});
+
+	it('skips semicolons inside block comments', () => {
+		const text = 'T /* ; */ | count';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(1);
+	});
+
+	it('skips semicolons inside line comments', () => {
+		const text = 'T // ;\n| count';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(1);
+	});
+
+	it('handles triple-backtick multiline strings', () => {
+		const text = 'print ```a;b```';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(1);
+	});
+
+	it('handles empty input', () => {
+		expect(__kustoSplitTopLevelStatements('')).toEqual([]);
+	});
+
+	it('consumes multiple consecutive blank lines', () => {
+		const text = 'T | count\n\n\n\nU | take 5';
+		const stmts = __kustoSplitTopLevelStatements(text);
+		expect(stmts).toHaveLength(2);
+	});
+});
+
+describe('__kustoSplitPipelineStagesDeep — additional edge cases', () => {
+	it('splits at shallowest depth when pipes exist at multiple depths', () => {
+		const text = 'T | where f(a | b)';
+		const parts = __kustoSplitPipelineStagesDeep(text);
+		expect(parts).toHaveLength(2);
+		expect(parts[0].trim()).toBe('T');
+	});
+
+	it('handles text with no pipes', () => {
+		const parts = __kustoSplitPipelineStagesDeep('Table');
+		expect(parts).toEqual(['Table']);
+	});
+
+	it('preserves pipes inside single-quoted strings', () => {
+		const parts = __kustoSplitPipelineStagesDeep("print 'a|b'");
+		expect(parts).toHaveLength(1);
+	});
+
+	it('preserves pipes inside double-quoted strings', () => {
+		const parts = __kustoSplitPipelineStagesDeep('print "a|b"');
+		expect(parts).toHaveLength(1);
+	});
+
+	it('preserves pipes inside comments', () => {
+		const parts = __kustoSplitPipelineStagesDeep('T // | where x\n| count');
+		expect(parts).toHaveLength(2);
+		expect(parts[1].trim()).toBe('count');
+	});
+
+	it('handles empty input', () => {
+		expect(__kustoSplitPipelineStagesDeep('')).toEqual(['']);
+	});
+
+	it('splits pipes inside let function body at correct depth', () => {
+		const text = 'let f = { T | where x | count }';
+		const parts = __kustoSplitPipelineStagesDeep(text);
+		expect(parts.length).toBeGreaterThanOrEqual(2);
+	});
+});
+
+describe('__kustoSplitTopLevelCommaList — additional edge cases', () => {
+	it('handles nested parens containing commas', () => {
+		const result = __kustoSplitTopLevelCommaList('f(a, b), c');
+		expect(result).toEqual(['f(a, b)', 'c']);
+	});
+
+	it('handles nested brackets', () => {
+		const result = __kustoSplitTopLevelCommaList('[a, b], c');
+		expect(result).toEqual(['[a, b]', 'c']);
+	});
+
+	it('handles nested braces', () => {
+		const result = __kustoSplitTopLevelCommaList('{a, b}, c');
+		expect(result).toEqual(['{a, b}', 'c']);
+	});
+
+	it('handles double-quoted strings with commas', () => {
+		const result = __kustoSplitTopLevelCommaList('"a, b", c');
+		expect(result).toEqual(['"a, b"', 'c']);
+	});
+
+	it('handles empty input', () => {
+		expect(__kustoSplitTopLevelCommaList('')).toEqual([]);
+	});
+
+	it('handles single item', () => {
+		expect(__kustoSplitTopLevelCommaList('abc')).toEqual(['abc']);
+	});
+
+	it('handles null input', () => {
+		expect(__kustoSplitTopLevelCommaList(null)).toEqual([]);
+	});
+});
+
+// ── __kustoComputeDiagnostics ─────────────────────────────────────────────────
+
+// Minimal deps that replace the runtime globals (monaco.MarkerSeverity etc.)
+const MarkerSeverity = { Error: 8, Warning: 4, Info: 2, Hint: 1 };
+
+function makeDeps(schema?: any) {
+	return {
+		MarkerSeverity,
+		getColumnsByTable: (s: any) => {
+			if (!s || typeof s !== 'object') return null;
+			if (s.columnsByTable && typeof s.columnsByTable === 'object') return s.columnsByTable;
+			const types = s.columnTypesByTable;
+			if (!types || typeof types !== 'object') return null;
+			const out: any = {};
+			for (const t of Object.keys(types)) {
+				const m = types[t];
+				if (!m || typeof m !== 'object') continue;
+				out[t] = Object.keys(m).sort();
+			}
+			return out;
+		},
+		diagLog: () => {},
+	};
+}
+
+function makeSchema(tables: string[], columnsByTable?: Record<string, string[]>, columnTypesByTable?: Record<string, Record<string, string>>) {
+	return { tables, columnsByTable, columnTypesByTable };
+}
+
+describe('__kustoComputeDiagnostics', () => {
+	// ── Basic / empty input ─────────────────────────────────────────────
+	it('returns empty markers for empty text', () => {
+		const markers = __kustoComputeDiagnostics('', null, makeDeps());
+		expect(markers).toEqual([]);
+	});
+
+	it('returns empty markers for whitespace-only text', () => {
+		const markers = __kustoComputeDiagnostics('   \n  ', null, makeDeps());
+		expect(markers).toEqual([]);
+	});
+
+	it('returns empty markers when no schema is provided', () => {
+		const markers = __kustoComputeDiagnostics('UnknownTable | where x > 5', null, makeDeps());
+		// No schema = no tables to validate against
+		expect(markers).toEqual([]);
+	});
+
+	it('returns empty markers when schema has empty tables', () => {
+		const schema = makeSchema([]);
+		const markers = __kustoComputeDiagnostics('MyTable | where x > 5', schema, makeDeps());
+		expect(markers).toEqual([]);
+	});
+
+	// ── Unknown table detection ─────────────────────────────────────────
+	it('detects unknown table at statement start', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const markers = __kustoComputeDiagnostics('Eventss\n| where x > 5', schema, makeDeps());
+		expect(markers.length).toBeGreaterThanOrEqual(1);
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(m).toBeTruthy();
+		expect(m.message).toContain('Unknown table');
+		expect(m.message).toContain('Eventss');
+		expect(m.severity).toBe(MarkerSeverity.Error);
+	});
+
+	it('does not flag known table at statement start', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const markers = __kustoComputeDiagnostics('Events\n| where x > 5', schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	it('case-insensitive table matching', () => {
+		const schema = makeSchema(['Events']);
+		const markers = __kustoComputeDiagnostics('events\n| take 10', schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	it('suggests similar table names via Did you mean', () => {
+		const schema = makeSchema(['Events', 'Users', 'Traces']);
+		const markers = __kustoComputeDiagnostics('Event\n| take 10', schema, makeDeps());
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(m).toBeTruthy();
+		expect(m.message).toContain('Did you mean');
+		expect(m.message).toContain('Events');
+	});
+
+	// ── Let-to-table resolution ─────────────────────────────────────────
+	it('does not flag let-declared names as unknown tables', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let filtered = Events;\nfiltered\n| take 10';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	it('resolves let chain to schema table', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let a = Events;\nlet b = a;\nb\n| take 10';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	it('detects unknown table in let RHS', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let a = BadTable;\na\n| take 10';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('BadTable'));
+		expect(m).toBeTruthy();
+	});
+
+	// ── Skip ignored keywords ───────────────────────────────────────────
+	it('does not flag "let" as unknown table', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let x = Events | take 10;\nx\n| take 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const letMarker = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('`let`'));
+		expect(letMarker).toBeFalsy();
+	});
+
+	it('does not flag "print" as unknown table', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'print "hello"';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const printMarker = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('`print`'));
+		expect(printMarker).toBeFalsy();
+	});
+
+	it('does not flag "range" as unknown table', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'range x from 1 to 10 step 1';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const rangeMarker = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('`range`'));
+		expect(rangeMarker).toBeFalsy();
+	});
+
+	// ── Control commands (dot-prefixed) are skipped ─────────────────────
+	it('skips dot-prefixed control commands', () => {
+		const schema = makeSchema(['Events']);
+		const text = '.show tables';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		expect(markers).toHaveLength(0);
+	});
+
+	// ── join/lookup/from table validation ────────────────────────────────
+	it('detects unknown table in join', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const text = 'Events\n| join (BadTable) on UserId';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('BadTable'));
+		expect(m).toBeTruthy();
+	});
+
+	it('does not flag known table in join', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const text = 'Events\n| join (Users) on UserId';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const joinMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('Users'));
+		expect(joinMarkers).toHaveLength(0);
+	});
+
+	it('detects unknown table in lookup', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const text = 'Events\n| lookup (BadLookup) on UserId';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('BadLookup'));
+		expect(m).toBeTruthy();
+	});
+
+	it('does not flag let-declared name in join', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let mapping = Events;\nEvents\n| join (mapping) on Id';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const joinMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('mapping'));
+		expect(joinMarkers).toHaveLength(0);
+	});
+
+	// ── KW_EXPECTED_PIPE detection ──────────────────────────────────────
+	it('detects missing pipe after piped statement', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'Events\n| take 10\nproject y';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const pipeMarkers = markers.filter((m: any) => m.code === 'KW_EXPECTED_PIPE');
+		expect(pipeMarkers.length).toBeGreaterThanOrEqual(1);
+		expect(pipeMarkers[0].message).toContain('Did you forget to prefix this line with `|`');
+	});
+
+	it('does not flag correctly piped lines', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'Events\n| where x > 5\n| project y';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const pipeMarkers = markers.filter((m: any) => m.code === 'KW_EXPECTED_PIPE');
+		expect(pipeMarkers).toHaveLength(0);
+	});
+
+	it('does not flag indented continuation of multiline operator', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'Events\n| summarize count()\n  by Category';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const pipeMarkers = markers.filter((m: any) => m.code === 'KW_EXPECTED_PIPE');
+		expect(pipeMarkers).toHaveLength(0);
+	});
+
+	it('does not flag closing brace after piped query in let body', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let Base = () { Events\n| where x > 5\n};';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const pipeMarkers = markers.filter((m: any) => m.code === 'KW_EXPECTED_PIPE');
+		expect(pipeMarkers).toHaveLength(0);
+	});
+
+	it('detects bare identifier followed by non-pipe line', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'Events\nSomething';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const pipeMarkers = markers.filter((m: any) => m.code === 'KW_EXPECTED_PIPE');
+		expect(pipeMarkers.length).toBeGreaterThanOrEqual(1);
+	});
+
+	// ── Column validation ───────────────────────────────────────────────
+	it('detects unknown column in where clause', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId', 'Level'] },
+		);
+		const text = 'Events\n| where BadColumn > 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN');
+		expect(colMarkers.length).toBeGreaterThanOrEqual(1);
+		expect(colMarkers[0].message).toContain('BadColumn');
+	});
+
+	it('does not flag known columns', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId', 'Level'] },
+		);
+		const text = 'Events\n| where UserId > 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN');
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('does not flag known function names as columns', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp'] },
+		);
+		const text = 'Events\n| where isnotempty(Timestamp)';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('isnotempty'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('does not flag keywords as unknown columns', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Level'] },
+		);
+		const text = 'Events\n| where Level > 5 and true';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const kwMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && (m.message.includes('`and`') || m.message.includes('`true`')));
+		expect(kwMarkers).toHaveLength(0);
+	});
+
+	it('tracks column set through extend', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId'] },
+		);
+		const text = 'Events\n| extend NewCol = 1\n| where NewCol > 0';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('NewCol'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('tracks column set through project', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId', 'Level'] },
+		);
+		const text = 'Events\n| project Timestamp, UserId\n| where Level > 0';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('Level'));
+		// After "| project Timestamp, UserId", Level is no longer in the column set
+		expect(colMarkers.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('tracks column set through summarize', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId', 'Level'] },
+		);
+		const text = 'Events\n| summarize EventCount = count() by Level\n| where EventCount > 10';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('EventCount'));
+		// EventCount is a valid alias from the summarize
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('detects column no longer available after summarize', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'UserId', 'Level'] },
+		);
+		const text = 'Events\n| summarize EventCount = count() by Level\n| where Timestamp > 0';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('Timestamp'));
+		expect(colMarkers.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('does not flag assignment LHS as column in extend', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp'] },
+		);
+		const text = 'Events\n| extend NewCol = Timestamp';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('NewCol'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('does not flag function calls as columns', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp'] },
+		);
+		const text = 'Events\n| extend x = strlen(Timestamp)';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('strlen'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('allows dynamic column dot-chain access', () => {
+		const schema = makeSchema(
+			['Events'],
+			undefined,
+			{ Events: { Timestamp: 'datetime', Properties: 'dynamic' } },
+		);
+		const text = 'Events\n| extend x = Properties.SomeField';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('SomeField'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('does not flag let-declared names as unknown columns', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp'] },
+		);
+		const text = 'let threshold = 5;\nEvents\n| where Timestamp > threshold';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('threshold'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	it('does not validate columns for non-validating operators (join)', () => {
+		const schema = makeSchema(
+			['Events', 'Users'],
+			{ Events: ['UserId'], Users: ['UserId', 'Name'] },
+		);
+		const text = 'Events\n| join kind=inner (Users) on UserId';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		// join is not a column-validating operator, no column errors expected
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN');
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	// ── Tabular parameters in UDF bodies ────────────────────────────────
+	it('does not flag tabular parameter name inside function body', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'let f = (T:(col:string)) {\nT\n| take 10\n};';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('`T`'));
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	// ── Fully-qualified table expressions ───────────────────────────────
+	it('does not flag fully-qualified table expression', () => {
+		const schema = makeSchema(['Events']);
+		const text = "cluster('mycluster').database('mydb').Events\n| take 10";
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	// ── Multiple statements ─────────────────────────────────────────────
+	it('validates multiple semicolon-separated statements', () => {
+		const schema = makeSchema(['Events', 'Users']);
+		const text = 'Events\n| take 10;\nBadTable\n| take 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(tableMarkers.length).toBeGreaterThanOrEqual(1);
+		expect(tableMarkers[0].message).toContain('BadTable');
+	});
+
+	// ── Marker position correctness ─────────────────────────────────────
+	it('positions marker at the correct line and column', () => {
+		const schema = makeSchema(['Events']);
+		const text = 'Events\n| take 10;\nBadTable\n| take 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const m = markers.find((m: any) => m.code === 'KW_UNKNOWN_TABLE');
+		expect(m).toBeTruthy();
+		expect(m.startLineNumber).toBe(3);
+		expect(m.startColumn).toBe(1);
+		expect(m.endColumn).toBe(1 + 'BadTable'.length);
+	});
+
+	// ── Column validation with columnTypesByTable ───────────────────────
+	it('derives columns from columnTypesByTable when columnsByTable absent', () => {
+		const schema = makeSchema(
+			['Events'],
+			undefined,
+			{ Events: { Timestamp: 'datetime', UserId: 'string', Level: 'int' } },
+		);
+		const text = 'Events\n| where BadCol > 5';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN');
+		expect(colMarkers.length).toBeGreaterThanOrEqual(1);
+		expect(colMarkers[0].message).toContain('BadCol');
+	});
+
+	it('does not flag string literals as identifiers', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'Level'] },
+		);
+		const text = "Events\n| where Level == 'notAColumn'";
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('notAColumn'));
+		expect(colMarkers).toHaveLength(0);
+	});
+
+	// ── Comments do not trigger false positives ─────────────────────────
+	it('does not flag identifiers inside comments', () => {
+		const schema = makeSchema(['Events']);
+		const text = '// NotATable\nEvents\n| take 10';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const tableMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_TABLE' && m.message.includes('NotATable'));
+		expect(tableMarkers).toHaveLength(0);
+	});
+
+	// ── Summarize by bin ────────────────────────────────────────────────
+	it('recognizes bin() group-by key in summarize output', () => {
+		const schema = makeSchema(
+			['Events'],
+			{ Events: ['Timestamp', 'Level'] },
+		);
+		const text = 'Events\n| summarize count() by bin(Timestamp, 1h)\n| where Timestamp > 0';
+		const markers = __kustoComputeDiagnostics(text, schema, makeDeps());
+		const colMarkers = markers.filter((m: any) => m.code === 'KW_UNKNOWN_COLUMN' && m.message.includes('Timestamp'));
+		expect(colMarkers).toHaveLength(0);
 	});
 });
