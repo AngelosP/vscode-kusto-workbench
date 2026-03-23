@@ -85,7 +85,7 @@ export const countColumns = (schema: DatabaseSchemaIndex | undefined | null): nu
  * Maps common Kusto types to short codes to reduce token usage.
  * Includes both KQL type names (string, datetime) and .NET type names (System.String, System.DateTime).
  */
-const TYPE_ABBREVIATIONS: Record<string, string> = {
+export const TYPE_ABBREVIATIONS: Record<string, string> = {
 	// KQL type names
 	string: 's',
 	long: 'l',
@@ -117,7 +117,7 @@ const TYPE_ABBREVIATIONS: Record<string, string> = {
 /**
  * Abbreviates a Kusto type to a short code.
  */
-const abbreviateType = (type: string): string => {
+export const abbreviateType = (type: string): string => {
 	const normalized = (type || '').toLowerCase().trim();
 	return TYPE_ABBREVIATIONS[normalized] || type;
 };
@@ -556,7 +556,7 @@ export const formatSchemaWithTokenBudget = async (
 /**
  * Appends a brief notice to the schema text describing what was removed.
  */
-function addPruneNotice(text: string, phase: SchemaPrunePhase): string {
+export function addPruneNotice(text: string, phase: SchemaPrunePhase): string {
 	if (phase === 0) return text;
 	return text + '\n\n' + `[Note: Schema was reduced to fit context window – ${PRUNE_PHASE_DESCRIPTIONS[phase]}. Ask the user to provide specific table or column names if needed.]`;
 }

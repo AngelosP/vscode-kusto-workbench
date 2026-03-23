@@ -116,15 +116,20 @@ function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
 	return used;
 }
 
+export function pickNextAvailableAlphaName(used: Set<string>): string {
+	for (let i = 0; i < 5000; i++) {
+		const candidate = __kustoIndexToAlphaName(i).toUpperCase();
+		if (!used.has(candidate)) {
+			return candidate;
+		}
+	}
+	return 'A';
+}
+
 export function __kustoPickNextAvailableSectionLetterName( excludeBoxId: any) {
 	try {
 		const used = __kustoGetUsedSectionNamesUpper(excludeBoxId);
-		for (let i = 0; i < 5000; i++) {
-			const candidate = __kustoIndexToAlphaName(i).toUpperCase();
-			if (!used.has(candidate)) {
-				return candidate;
-			}
-		}
+		return pickNextAvailableAlphaName(used);
 	} catch (e) { console.error('[kusto]', e); }
 	return 'A';
 }

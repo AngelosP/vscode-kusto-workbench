@@ -19,13 +19,37 @@ export interface FileConnectionEntry {
  * Internal storage format for file connection cache entries.
  * Includes a timestamp so entries can expire after a period of inactivity.
  */
-interface FileConnectionCacheEntry extends FileConnectionEntry {
+export interface FileConnectionCacheEntry extends FileConnectionEntry {
 	/** Epoch ms of the last read or write. Entries older than MAX_AGE are pruned. */
 	lastAccessedAt: number;
 }
 
 /** File connection cache entries expire after 30 days of inactivity. */
-const FILE_CONNECTION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const FILE_CONNECTION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Remove expired entries from a file connection cache object in-place.
+ * Pure function (mutates cache).
+ */
+export function pruneExpiredFileConnectionsSync(cache: Record<string, FileConnectionCacheEntry>, now: number, maxAgeMs: number = FILE_CONNECTION_MAX_AGE_MS): void {
+	for (const k of Object.keys(cache)) {
+		const e = cache[k];
+		if (!e || typeof e.lastAccessedAt !== 'number' || (now - e.lastAccessedAt) > maxAgeMs) {
+			delete cache[k];
+		}
+	}
+}
+
+/**
+ * Normalize a file path for cache key usage.
+ * Lowercases on Windows for case-insensitive matching.
+ */
+export function normalizeFilePath(filePath: string, isWindows: boolean = process.platform === 'win32'): string {
+	const p = String(filePath || '').trim();
+	if (!p) return '';
+	if (isWindows) return p.toLowerCase();
+	return p;
+}
 
 export class ConnectionManager {
 	private connections: KustoConnection[] = [];
@@ -163,12 +187,7 @@ export class ConnectionManager {
 	 * Remove expired entries from the cache object in-place.
 	 */
 	private pruneExpiredFileConnectionsSync(cache: Record<string, FileConnectionCacheEntry>, now: number): void {
-		for (const k of Object.keys(cache)) {
-			const e = cache[k];
-			if (!e || typeof e.lastAccessedAt !== 'number' || (now - e.lastAccessedAt) > FILE_CONNECTION_MAX_AGE_MS) {
-				delete cache[k];
-			}
-		}
+		pruneExpiredFileConnectionsSync(cache, now);
 	}
 
 	/**
@@ -176,13 +195,7 @@ export class ConnectionManager {
 	 * Uses lowercase on Windows for case-insensitive matching.
 	 */
 	private normalizeFilePath(filePath: string): string {
-		const p = String(filePath || '').trim();
-		if (!p) return '';
-		// On Windows, file paths are case-insensitive
-		if (process.platform === 'win32') {
-			return p.toLowerCase();
-		}
-		return p;
+		return normalizeFilePath(filePath);
 	}
 
 	/**

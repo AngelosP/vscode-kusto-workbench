@@ -188,4 +188,47 @@ describe('trySerializeQueryResult', () => {
 		// No rows to trim, so it should give up
 		expect(json).toBeNull();
 	});
+
+	it('maxRowsHardCap of zero does not affect results that fit under maxBytes', () => {
+		const rows = Array.from({ length: 10 }, (_, i) => [i]);
+		const result = { columns: ['n'], rows, metadata: {} };
+		// maxRowsHardCap only constrains the truncation path; if the full result fits, it's returned as-is
+		const { json, truncated } = trySerializeQueryResult(result, 1024 * 1024, 0);
+		expect(json).not.toBeNull();
+		expect(truncated).toBe(false);
+	});
+
+	it('result with zero maxBytes always truncates to null', () => {
+		const result = { columns: ['a'], rows: [[1]], metadata: {} };
+		const { json } = trySerializeQueryResult(result, 0);
+		expect(json).toBeNull();
+	});
+
+	it('result with exactly one row and tight budget serializes that row', () => {
+		const result = { columns: ['n'], rows: [[42]], metadata: {} };
+		// Use a generous budget for 1 row
+		const { json, truncated } = trySerializeQueryResult(result, 10000, 1);
+		expect(json).not.toBeNull();
+		const parsed = JSON.parse(json!);
+		expect(parsed.rows).toEqual([[42]]);
+		// 1 row with hardcap 1 — the original fits, so truncated should be false
+		expect(truncated).toBe(false);
+	});
+
+	it('handles result with boolean values', () => {
+		const result = { columns: ['flag'], rows: [[true], [false]], metadata: {} };
+		const { json, truncated } = trySerializeQueryResult(result);
+		expect(truncated).toBe(false);
+		const parsed = JSON.parse(json!);
+		expect(parsed.rows).toEqual([[true], [false]]);
+	});
+
+	it('handles result with nested objects in cells', () => {
+		const result = { columns: ['data'], rows: [[{ nested: { deep: 'value' } }]], metadata: {} };
+		const { json, truncated } = trySerializeQueryResult(result);
+		expect(truncated).toBe(false);
+		expect(json).not.toBeNull();
+		const parsed = JSON.parse(json!);
+		expect(parsed.rows[0][0].nested.deep).toBe('value');
+	});
 });

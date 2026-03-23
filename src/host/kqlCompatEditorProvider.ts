@@ -7,6 +7,90 @@ import { QueryEditorProvider } from './queryEditorProvider';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
 
+/**
+ * Compute the sidecar .kqlx URI for a .kql/.csl compat file.
+ * Returns undefined if the URI does not end with .kql or .csl.
+ */
+export function getSidecarKqlxUriForCompat(uri: vscode.Uri): vscode.Uri | undefined {
+	try {
+		const ext = String(uri.path || '').toLowerCase();
+		if (!ext.endsWith('.kql') && !ext.endsWith('.csl')) {
+			return undefined;
+		}
+		return uri.with({ path: uri.path + '.json' });
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Resolve a linked query path relative to a .kqlx URI.
+ * Supports file URIs, Windows absolute paths, and relative paths.
+ */
+export function resolveLinkedQueryUri(kqlxUri: vscode.Uri, linkedQueryPath: string): vscode.Uri {
+	try {
+		const raw = String(linkedQueryPath || '').trim();
+		if (!raw) {
+			return kqlxUri;
+		}
+		try {
+			if (/^file:\/\//i.test(raw)) {
+				return vscode.Uri.parse(raw);
+			}
+		} catch {
+			// ignore
+		}
+		if (/^[a-zA-Z]:\\/.test(raw) || raw.startsWith('\\\\')) {
+			return vscode.Uri.file(raw);
+		}
+		const kqlxDir = path.posix.dirname(kqlxUri.path);
+		const joined = path.posix.normalize(path.posix.join(kqlxDir, raw));
+		return kqlxUri.with({ path: joined });
+	} catch {
+		return kqlxUri;
+	}
+}
+
+/**
+ * Check whether a sidecar file is linked to a specific compat document.
+ */
+export function isLinkedSidecarForCompatFile(sidecarUri: vscode.Uri, sidecarFile: KqlxFileV1, compatDocumentUri: vscode.Uri): boolean {
+	try {
+		const sections = Array.isArray(sidecarFile?.state?.sections) ? sidecarFile.state.sections : [];
+		const first = sections.length > 0 ? sections[0] : undefined;
+		const t = (first as any)?.type;
+		if (t !== 'query' && t !== 'copilotQuery') {
+			return false;
+		}
+		const linked = String((first as any)?.linkedQueryPath ?? '').trim();
+		if (!linked) {
+			return false;
+		}
+		const resolved = resolveLinkedQueryUri(sidecarUri, linked);
+		if (resolved.scheme === 'file' && compatDocumentUri.scheme === 'file') {
+			return resolved.fsPath.toLowerCase() === compatDocumentUri.fsPath.toLowerCase();
+		}
+		return resolved.toString() === compatDocumentUri.toString();
+	} catch {
+		return false;
+	}
+}
+
+
+/**
+ * Generate a stable cache key for pending add-kind operations.
+ */
+export function pendingAddKindKeyForUri(uri: vscode.Uri): string {
+	try {
+		if (uri.scheme === 'file') {
+			return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
+		}
+	} catch {
+		// ignore
+	}
+	return `kusto.pendingAddKind:${uri.toString()}`;
+}
+
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -21,67 +105,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
 
 	private static getSidecarKqlxUriForCompat(uri: vscode.Uri): vscode.Uri | undefined {
-		try {
-			const ext = String(uri.path || '').toLowerCase();
-			if (!ext.endsWith('.kql') && !ext.endsWith('.csl')) {
-				return undefined;
-			}
-			// Sidecar naming: <filename>.kql.json or <filename>.csl.json
-			return uri.with({ path: uri.path + '.json' });
-		} catch {
-			return undefined;
-		}
+		return getSidecarKqlxUriForCompat(uri);
 	}
 
 	private static resolveLinkedQueryUri(kqlxUri: vscode.Uri, linkedQueryPath: string): vscode.Uri {
-		try {
-			const raw = String(linkedQueryPath || '').trim();
-			if (!raw) {
-				return kqlxUri;
-			}
-			// Support file URIs.
-			try {
-				if (/^file:\/\//i.test(raw)) {
-					return vscode.Uri.parse(raw);
-				}
-			} catch {
-				// ignore
-			}
-
-			// Support Windows absolute paths.
-			if (/^[a-zA-Z]:\\/.test(raw) || raw.startsWith('\\\\')) {
-				return vscode.Uri.file(raw);
-			}
-
-			// Treat as path relative to the .kqlx file.
-			const kqlxDir = path.posix.dirname(kqlxUri.path);
-			const joined = path.posix.normalize(path.posix.join(kqlxDir, raw));
-			return kqlxUri.with({ path: joined });
-		} catch {
-			return kqlxUri;
-		}
+		return resolveLinkedQueryUri(kqlxUri, linkedQueryPath);
 	}
 
 	private static isLinkedSidecarForCompatFile(sidecarUri: vscode.Uri, sidecarFile: KqlxFileV1, compatDocumentUri: vscode.Uri): boolean {
-		try {
-			const sections = Array.isArray(sidecarFile?.state?.sections) ? sidecarFile.state.sections : [];
-			const first = sections.length > 0 ? sections[0] : undefined;
-			const t = (first as any)?.type;
-			if (t !== 'query' && t !== 'copilotQuery') {
-				return false;
-			}
-			const linked = String((first as any)?.linkedQueryPath ?? '').trim();
-			if (!linked) {
-				return false;
-			}
-			const resolved = KqlCompatEditorProvider.resolveLinkedQueryUri(sidecarUri, linked);
-			if (resolved.scheme === 'file' && compatDocumentUri.scheme === 'file') {
-				return resolved.fsPath.toLowerCase() === compatDocumentUri.fsPath.toLowerCase();
-			}
-			return resolved.toString() === compatDocumentUri.toString();
-		} catch {
-			return false;
-		}
+		return isLinkedSidecarForCompatFile(sidecarUri, sidecarFile, compatDocumentUri);
 	}
 
 	public static register(
@@ -172,16 +204,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
-		// On Windows, URI strings can differ in casing/encoding between APIs.
-		// Use fsPath for file URIs to keep the key stable across the upgrade/openWith flow.
-		try {
-			if (uri.scheme === 'file') {
-				return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
-			}
-		} catch {
-			// ignore
-		}
-		return `kusto.pendingAddKind:${uri.toString()}`;
+		return pendingAddKindKeyForUri(uri);
 	}
 
 	public async resolveCustomTextEditor(

@@ -10,6 +10,51 @@ import { countColumns } from './schemaIndexUtils';
  * the webview renders via the <kw-cached-values> Lit component.
  */
 
+/**
+ * Extract hostname from a cluster URL for use as a cache key.
+ * Pure function — no side-effects.
+ */
+export function getClusterCacheKey(clusterUrlRaw: string): string {
+	try {
+		let u = String(clusterUrlRaw || '').trim();
+		if (!u) return '';
+		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+		const parsed = new URL(u);
+		const host = String(parsed.hostname || '').trim().toLowerCase();
+		return host || String(clusterUrlRaw || '').trim().toLowerCase();
+	} catch {
+		return String(clusterUrlRaw || '').trim().toLowerCase();
+	}
+}
+
+/**
+ * Merge/dedup cached database entries, resolving connection IDs to cluster hostnames.
+ * Pure function — no side-effects.
+ */
+export function mergeCachedDatabaseKeys(
+	raw: Record<string, string[]>,
+	connById: Map<string, { clusterUrl: string }>,
+): { next: Record<string, string[]>; changed: boolean } {
+	const src = raw && typeof raw === 'object' ? raw : {};
+	let changed = false;
+	const next: Record<string, string[]> = {};
+	for (const [k, v] of Object.entries(src)) {
+		const keyRaw = String(k || '').trim();
+		if (!keyRaw) { changed = true; continue; }
+		const list = (Array.isArray(v) ? v : []).map((d) => String(d || '').trim()).filter(Boolean);
+		const conn = connById.get(keyRaw);
+		const clusterKey = conn ? getClusterCacheKey(conn.clusterUrl) : getClusterCacheKey(keyRaw);
+		if (clusterKey !== keyRaw) changed = true;
+		const existing = next[clusterKey] || [];
+		const merged = [...existing, ...list].map((d) => String(d || '').trim()).filter(Boolean);
+		const deduped: string[] = [];
+		const seen = new Set<string>();
+		for (const d of merged) { const lower = d.toLowerCase(); if (!seen.has(lower)) { seen.add(lower); deduped.push(d); } }
+		next[clusterKey] = deduped;
+	}
+	return { next, changed };
+}
+
 const VIEW_TITLE = 'Kusto Workbench: Cached Values';
 
 const STORAGE_KEYS = {
@@ -149,38 +194,13 @@ export class CachedValuesViewerV2 {
 	}
 
 	private getClusterCacheKey(clusterUrlRaw: string): string {
-		try {
-			let u = String(clusterUrlRaw || '').trim();
-			if (!u) return '';
-			if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-			const parsed = new URL(u);
-			const host = String(parsed.hostname || '').trim().toLowerCase();
-			return host || String(clusterUrlRaw || '').trim().toLowerCase();
-		} catch {
-			return String(clusterUrlRaw || '').trim().toLowerCase();
-		}
+		return getClusterCacheKey(clusterUrlRaw);
 	}
 
 	private migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
-		const src = raw && typeof raw === 'object' ? raw : {};
 		const connections = this.connectionManager.getConnections();
 		const connById = new Map<string, KustoConnection>(connections.map((c) => [c.id, c]));
-		let changed = false;
-		const next: Record<string, string[]> = {};
-		for (const [k, v] of Object.entries(src)) {
-			const keyRaw = String(k || '').trim();
-			if (!keyRaw) { changed = true; continue; }
-			const list = (Array.isArray(v) ? v : []).map((d) => String(d || '').trim()).filter(Boolean);
-			const conn = connById.get(keyRaw);
-			const clusterKey = conn ? this.getClusterCacheKey(conn.clusterUrl) : this.getClusterCacheKey(keyRaw);
-			if (clusterKey !== keyRaw) changed = true;
-			const existing = next[clusterKey] || [];
-			const merged = [...existing, ...list].map((d) => String(d || '').trim()).filter(Boolean);
-			const deduped: string[] = [];
-			const seen = new Set<string>();
-			for (const d of merged) { const lower = d.toLowerCase(); if (!seen.has(lower)) { seen.add(lower); deduped.push(d); } }
-			next[clusterKey] = deduped;
-		}
+		const { next, changed } = mergeCachedDatabaseKeys(raw, connById);
 		if (changed) void this.context.globalState.update(STORAGE_KEYS.cachedDatabases, next);
 		return next;
 	}

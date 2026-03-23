@@ -5,7 +5,7 @@ description: "Run all quality metrics and produce a unified health summary of th
 
 # Health Summary
 
-This skill collects every quality metric for the extension and presents a single consolidated report. Use it as a recurring checkpoint to spot regressions early.
+This skill collects every quality metric for the extension, presents a consolidated report, persists results to a rolling history file, and renders trend graphs. Use it as a recurring checkpoint to spot regressions early.
 
 ## When to Use
 
@@ -14,6 +14,51 @@ This skill collects every quality metric for the extension and presents a single
 - "Give me the current stats"
 - "Bundle size?" / "Coverage?" / "Test count?"
 - Any request for a quality overview
+
+---
+
+## History File
+
+All execution history is stored in `.github/skills/health-summary/history.json`. The file has this schema:
+
+```jsonc
+{
+  // Rolling last 10 executions (any commit, even repeated)
+  "recent": [ /* HealthEntry[] — newest first, max 10 */ ],
+  // Rolling last 10 unique commits — the LAST execution per commit before moving on
+  "commits": [ /* HealthEntry[] — newest first, max 10 */ ]
+}
+```
+
+Each `HealthEntry`:
+
+```jsonc
+{
+  "ts":              "2026-03-22T18:30:00Z",  // ISO timestamp
+  "commit":          "0c93651",               // short hash from git log -1
+  "commitMsg":       "Cleaned up orphaned script", // subject line
+  "tests":           2150,                    // total test count
+  "testFiles":       61,                      // test file count
+  "stmtCov":         28.07,                   // statement coverage %
+  "lineCov":         29.68,                   // line coverage %
+  "branchCov":       24.79,                   // branch coverage %
+  "fnCov":           29.01,                   // function coverage %
+  "distTotalKB":     31790.7,                 // total dist/ size in KB
+  "extensionKB":     926.4,                   // extension.js
+  "webviewKB":       1220.7,                  // webview.bundle.js
+  "echartsKB":       585.2,                   // echarts.webview.js
+  "toastuiKB":       602.5,                   // toastui-editor.webview.js
+  "monacoKB":        10944.4,                 // monaco/
+  "hostLines":       16846,                   // src/host TS lines
+  "webviewLines":    45527,                   // src/webview TS lines
+  "testLines":       20241,                   // tests/ TS lines
+  "tscOk":           true,                    // TypeScript clean?
+  "lintErrors":      0,
+  "lintWarnings":    8
+}
+```
+
+---
 
 ## Workflow
 
@@ -28,13 +73,15 @@ git log -1 --format="Commit: %h  %s  (%ai)"
 git status --porcelain | Measure-Object | ForEach-Object { Write-Host "Uncommitted files: $($_.Count)" }
 ```
 
+Capture both the **short hash** and the **subject line** from git log — you'll need them for the history entry.
+
 ### Step 2: TypeScript Compilation
 
 ```powershell
 npx tsc --noEmit 2>&1 | Select-Object -Last 3
 ```
 
-Report pass/fail and error count if any.
+Report pass/fail and error count if any. Record `tscOk` = true/false.
 
 ### Step 3: Lint
 
@@ -42,7 +89,7 @@ Report pass/fail and error count if any.
 npm run lint 2>&1 | Select-Object -Last 5
 ```
 
-Report pass/fail and warning/error count if any.
+Report pass/fail. Parse the "N problems (E errors, W warnings)" line to fill `lintErrors` and `lintWarnings`.
 
 ### Step 4: Unit Tests
 
@@ -50,7 +97,7 @@ Report pass/fail and warning/error count if any.
 npx vitest run 2>&1 | Select-String "Test Files|Tests "
 ```
 
-Extract test file count, test count, pass/fail.
+Extract test file count and test count. Record `tests` and `testFiles`.
 
 ### Step 5: Coverage
 
@@ -58,32 +105,35 @@ Extract test file count, test count, pass/fail.
 npx vitest run --coverage 2>&1 | Select-String "Statements|Lines|Functions|Branches|All files"
 ```
 
-Extract the overall statement/line/function/branch percentages.
+If the text output doesn't capture all four metrics, fall back to reading the JSON:
 
-Also report the **coverage gate baseline** from `scripts/coverage-gate.mjs`:
+```powershell
+$json = Get-Content coverage/coverage-summary.json | ConvertFrom-Json
+$t = $json.total
+Write-Host "Statements: $($t.statements.pct)%"
+Write-Host "Branches: $($t.branches.pct)%"
+Write-Host "Functions: $($t.functions.pct)%"
+Write-Host "Lines: $($t.lines.pct)%"
+```
+
+Also report the **coverage gate baseline**:
 
 ```powershell
 Select-String -Path scripts/coverage-gate.mjs -Pattern "BASELINE_STATEMENTS" | Select-Object -First 1
 ```
 
-### Step 6: Bundle Sizes (requires production build)
+Record `stmtCov`, `lineCov`, `branchCov`, `fnCov`.
 
-Build production and then run the bundle size report:
+### Step 6: Bundle Sizes (requires production build)
 
 ```powershell
 node esbuild.js --production 2>&1 | Select-Object -Last 5
 npm run bundle-size 2>&1
 ```
 
-Also report the **bundle size gate baselines** by scanning the gate script:
-
-```powershell
-Select-String -Path scripts/bundle-size-gate.mjs -Pattern "^\s+'" | ForEach-Object { $_.Line.Trim() }
-```
+Parse each bundle size from the output. Record `extensionKB`, `webviewKB`, `echartsKB`, `toastuiKB`, `monacoKB`, and `distTotalKB`.
 
 ### Step 7: Source Size
-
-Count lines in key source directories:
 
 ```powershell
 $hostLines = (Get-ChildItem src/host -Recurse -Filter *.ts | Get-Content | Measure-Object -Line).Lines
@@ -95,6 +145,8 @@ Write-Host "Tests: $testLines lines"
 Write-Host "Total: $($hostLines + $webviewLines + $testLines) lines"
 ```
 
+Record `hostLines`, `webviewLines`, `testLines`.
+
 ### Step 8: VSIX Size (optional — skip if user wants a quick check)
 
 ```powershell
@@ -102,9 +154,42 @@ npm run vsix 2>&1 | Select-Object -Last 3
 Get-ChildItem *.vsix | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 2)) MB" }
 ```
 
-## Report Format
+---
 
-Present results in a single table, followed by notes on any failures:
+## Step 9: Persist History
+
+After all metrics are collected, update `.github/skills/health-summary/history.json`.
+
+### 9a — Read existing history
+
+Read the file. If it doesn't exist or is empty, start with `{ "recent": [], "commits": [] }`.
+
+### 9b — Build the new entry
+
+Construct a `HealthEntry` JSON object from all the values collected in Steps 1-8.
+
+### 9c — Update `recent` (rolling last 10 executions)
+
+1. Prepend the new entry to `recent`.
+2. Trim to 10 entries (drop the oldest).
+
+### 9d — Update `commits` (rolling last 10 unique commits)
+
+1. If `commits[0].commit` equals the new entry's `commit` → **replace** `commits[0]` with the new entry (same commit, fresher run).
+2. Otherwise → **prepend** the new entry to `commits`.
+3. Trim to 10 entries (drop the oldest).
+
+### 9e — Write the file
+
+Write the updated JSON back to `.github/skills/health-summary/history.json` using the `create_file` tool (if new) or `replace_string_in_file` / terminal `Set-Content` for updates. Use **2-space indented JSON** for readability.
+
+---
+
+## Step 10: Report
+
+Present results in a single table, followed by the trend section.
+
+### Current Run Table
 
 ```
 ## Extension Health Summary — <date>
@@ -130,9 +215,6 @@ Present results in a single table, followed by notes on any failures:
 | Webview source            | N lines            |        |
 | Test source               | N lines            |        |
 | VSIX size (if built)      | x.xx MB            |        |
-
-**Notes:**
-- <any failures, warnings, or notable changes>
 ```
 
 ### Status Legend
@@ -141,9 +223,88 @@ Present results in a single table, followed by notes on any failures:
 - ❌ = failed gate or regression
 - ⚠️ = not blocking but worth noting (e.g. uncommitted files)
 
+---
+
+## Step 11: Trend Tables & Graphs
+
+After the main report, render two trend sections using data from history.json.
+
+### 11a — Recent Runs (last 10 executions)
+
+Show a compact table from the `recent` array (newest first):
+
+```
+### Recent Runs (last 10 executions)
+
+| # | Time       | Commit  | Tests | Stmt Cov | Line Cov | Dist KB    | TSC | Lint     |
+|---|------------|---------|-------|----------|----------|------------|-----|----------|
+| 1 | 18:30 today| 0c93651 | 2150  | 28.07%   | 29.68%   | 31,790 KB  | ✅  | 0E 8W    |
+| 2 | 17:15 today| 0c93651 | 2148  | 28.05%   | 29.65%   | 31,788 KB  | ✅  | 0E 8W    |
+| ...
+```
+
+### 11b — Commit History (last 10 unique commits)
+
+Show a compact table from the `commits` array (newest first):
+
+```
+### Commit History (last 10 unique commits)
+
+| # | Date       | Commit  | Message (truncated)       | Tests | Stmt Cov | Line Cov | Dist KB   |
+|---|------------|---------|---------------------------|-------|----------|----------|-----------|
+| 1 | 2026-03-22 | 0c93651 | Cleaned up orphaned sc... | 2150  | 28.07%   | 29.68%   | 31,790 KB |
+| 2 | 2026-03-21 | a1b2c3d | Extract queryBoxes-con... | 2097  | 28.05%   | 29.60%   | 31,750 KB |
+| ...
+```
+
+### 11c — Trend Graphs
+
+Render two ASCII sparkline-style graphs using the **`commits`** array (long-term trends). Use the oldest entry as the left edge, newest as the right edge (chronological order, left-to-right).
+
+#### Total dist/ (KB)
+
+```
+### Total dist/ — Commit Trend
+
+  31,900 ┤
+  31,800 ┤          ╭─●
+  31,700 ┤     ╭────╯
+  31,600 ┤ ●───╯
+  31,500 ┤
+         └─────────────────
+          c1  c2  c3  c4  (commit short hashes)
+```
+
+#### Line Coverage (%)
+
+```
+### Line Coverage — Commit Trend
+
+  30.0% ┤          ●
+  29.8% ┤     ╭────╯
+  29.6% ┤ ●───╯
+  29.4% ┤
+         └─────────────────
+          c1  c2  c3  c4  (commit short hashes)
+```
+
+**Graph rules:**
+- Use the `commits` array, reversed to chronological order (oldest left → newest right).
+- Y-axis: auto-scale to the data range with ~5 tick marks. Add a small padding (±2% of range) so points don't sit on the edge.
+- X-axis: label with short commit hashes.
+- Use box-drawing characters: `│ ─ ┤ ┐ └ ╭ ╯ ╮ ╰ ●` for a clean look.
+- Each data point is marked with `●`.
+- Connect points with `─`, `╭`, `╯`, `╮`, `╰` for smooth lines.
+- Width: ~60 chars. Height: ~8 rows.
+- If there are fewer than 2 data points, show "Not enough history for a graph yet" instead.
+
+---
+
 ## Tips
 
-- For a **quick check** (no production build), skip Steps 6 and 8 and note that bundle sizes were not measured.
-- Compare successive runs by checking this report against `coverage/coverage-summary.json` and the baselines in `scripts/bundle-size-gate.mjs` / `scripts/coverage-gate.mjs`.
+- For a **quick check** (no production build), skip Steps 6 and 8, record `null` for bundle fields, and note that bundle sizes were not measured. The history entry will still be saved with the available data.
+- Compare successive runs by checking the Recent Runs table — same-commit changes show the impact of your edits in real time.
+- The Commit History table shows the "steady state" after you were happy with each commit — the trend you want to see going up-and-to-the-right.
 - If bundle sizes grew, update the baselines in `scripts/bundle-size-gate.mjs` only after confirming the growth is intentional.
 - If coverage dropped, check which files lost coverage with `npx vitest run --coverage` and review the text output.
+- The history file is gitignored-safe to commit — it's useful project metadata. But feel free to add it to `.gitignore` if you prefer not to track it.

@@ -30,6 +30,9 @@ let navigationCleanup: (() => void) | null = null;
 let isRendered = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Monotonically increasing generation counter — prevents stale async loads from creating iframes. */
+let loadGeneration = 0;
+
 // Tab-mode state
 let kustoTab: HTMLElement | null = null;
 let tabBarInfo: ViewModeTabBarInfo | null = null;
@@ -516,6 +519,9 @@ function findContentToHideForTabMode(): { anchor: HTMLElement; siblings: HTMLEle
 async function loadAndShowViewer() {
 	if (!currentProvider || !currentFile) return;
 
+	// Bump generation so any in-flight load from a previous call will abort.
+	const gen = ++loadGeneration;
+
 	const btn = renderButton?.querySelector('.kusto-workbench-render-btn');
 	if (btn) {
 		btn.textContent = 'Loading...';
@@ -531,6 +537,9 @@ async function loadAndShowViewer() {
 				sidecarContent = await fetchContent(currentFile.sidecarUrl);
 			} catch { /* optional */ }
 		}
+
+		// Abort if a newer load was started while we were fetching.
+		if (gen !== loadGeneration) return;
 
 		// Hide original content — strategy depends on mode
 		if (tabBarInfo) {
@@ -604,6 +613,10 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 	viewerIframe.src = viewerUrl;
 	viewerIframe.style.width = '100%';
 	viewerIframe.style.border = 'none';
+	// Use viewport height so position:fixed dialogs inside the iframe
+	// (filter, sort, column-jump) center relative to what the user sees.
+	// The iframe scrolls internally; the host page scroll is not used.
+	viewerIframe.style.height = 'calc(100vh - 60px)';
 	viewerIframe.style.minHeight = '600px';
 
 	viewerIframe.onload = () => {
@@ -660,9 +673,8 @@ function handleViewerMessage(event: MessageEvent) {
 		}
 
 		case 'kusto-workbench-resize': {
-			if (viewerIframe && typeof event.data.height === 'number') {
-				viewerIframe.style.height = event.data.height + 'px';
-			}
+			// Ignored — the iframe uses viewport height with internal scrolling
+			// so that position:fixed dialogs center correctly.
 			break;
 		}
 	}

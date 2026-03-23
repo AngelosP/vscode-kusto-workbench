@@ -333,5 +333,88 @@ describe('ChartDataSourceController', () => {
 			ctrl.onDataSourceChanged(fakeEvent('ds1'));
 			// Should not restore anything from '' source
 		});
+
+		it('saves and restores axis settings between data sources', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [ds1, ds2];
+			const customXAxis = { ...defaultXAxis(), sortDirection: 'desc', scaleType: 'log' };
+			const customYAxis = { ...defaultYAxis(), min: '0', max: '100' };
+			host._state.xAxisSettings = customXAxis;
+			host._state.yAxisSettings = customYAxis;
+
+			ctrl.onDataSourceChanged(fakeEvent('ds2'));
+
+			// Set different axis settings on ds2
+			host._state.xAxisSettings = defaultXAxis();
+			host._state.yAxisSettings = defaultYAxis();
+
+			// Switch back
+			ctrl.onDataSourceChanged(fakeEvent('ds1'));
+
+			expect(host._state.xAxisSettings.sortDirection).toBe('desc');
+			expect(host._state.xAxisSettings.scaleType).toBe('log');
+			expect(host._state.yAxisSettings.min).toBe('0');
+			expect(host._state.yAxisSettings.max).toBe('100');
+		});
+
+		it('handles rapid back-and-forth switching preserving separate memories', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [ds1, ds2];
+			host._state.xColumn = 'A';
+			host._state.yColumns = ['B'];
+
+			ctrl.onDataSourceChanged(fakeEvent('ds2'));
+			host._state.xColumn = 'X';
+			host._state.yColumns = ['Y'];
+
+			ctrl.onDataSourceChanged(fakeEvent('ds1'));
+			expect(host._state.xColumn).toBe('A');
+			expect(host._state.yColumns).toEqual(['B']);
+
+			ctrl.onDataSourceChanged(fakeEvent('ds2'));
+			expect(host._state.xColumn).toBe('X');
+			expect(host._state.yColumns).toEqual(['Y']);
+		});
+	});
+
+	// ── getColumnNames — additional edge cases ─────────────────────────────
+
+	describe('getColumnNames — extra edge cases', () => {
+		it('handles mixed column name formats', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [{
+				id: 'ds1', label: 'DS', rows: [],
+				columns: ['A', { name: 'B' }, { columnName: 'C' }, { name: '' }, 42] as any,
+			}];
+			expect(ctrl.getColumnNames()).toEqual(['A', 'B', 'C']);
+		});
+
+		it('returns empty when dataSourceId has not been set', () => {
+			host._state.dataSourceId = '';
+			host._state.datasets = [{ id: 'ds1', label: 'DS', columns: ['A'] as any, rows: [] }];
+			expect(ctrl.getColumnNames()).toEqual([]);
+		});
+	});
+
+	// ── pruneStaleColumns — additional edge cases ──────────────────────────
+
+	describe('pruneStaleColumns — extra edge cases', () => {
+		it('prunes all yColumns when none match', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [{ id: 'ds1', label: 'DS', columns: ['A'] as any, rows: [] }];
+			host._state.yColumns = ['X', 'Y', 'Z'];
+			ctrl.pruneStaleColumns();
+			expect(host._state.yColumns).toEqual([]);
+		});
+
+		it('prunes tooltipColumns and sortColumn together', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [{ id: 'ds1', label: 'DS', columns: ['A', 'B'] as any, rows: [] }];
+			host._state.tooltipColumns = ['A', 'Gone'];
+			host._state.sortColumn = 'Gone';
+			ctrl.pruneStaleColumns();
+			expect(host._state.tooltipColumns).toEqual(['A']);
+			expect(host._state.sortColumn).toBe('');
+		});
 	});
 });

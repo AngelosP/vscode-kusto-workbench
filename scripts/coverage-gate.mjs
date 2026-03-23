@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-const BASELINE_STATEMENTS = 28.07; // recorded 2026-03-22 — critical path regression tests
+const BASELINE_STATEMENTS = 28.09; // recorded 2026-03-22 — critical UX regression tests
 const BUFFER = 0.5; // allow this much drop before failing
 const THRESHOLD = BASELINE_STATEMENTS - BUFFER;
 

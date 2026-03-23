@@ -28,7 +28,13 @@ export class Position {
 
 export class Uri {
 	static parse(value: string) { return new Uri(value); }
-	static file(path: string) { return new Uri(path); }
+	static file(path: string) {
+		const u = new Uri('file://' + path);
+		u.scheme = 'file';
+		u.fsPath = path;
+		u.path = path;
+		return u;
+	}
 	static joinPath(..._args: any[]) { return new Uri(''); }
 	scheme = 'file';
 	fsPath = '';
@@ -36,6 +42,14 @@ export class Uri {
 	constructor(private _value: string = '') {
 		this.fsPath = _value;
 		this.path = _value;
+	}
+	with(change: { scheme?: string; path?: string }): Uri {
+		const u = new Uri(this._value);
+		u.scheme = change.scheme ?? this.scheme;
+		u.path = change.path ?? this.path;
+		u.fsPath = change.path ?? this.fsPath;
+		u._value = change.path ?? this._value;
+		return u;
 	}
 	toString() { return this._value; }
 }

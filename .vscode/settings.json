@@ -30,6 +30,16 @@
         "/^node esbuild\\.js --production 2>&1 \\| Select-Object -Last 5$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "Out-Null": true,
+        "/^node esbuild\\.js --production 2>&1 \\| Select-Object -Last 8$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^node esbuild\\.js --production 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "ConvertTo-Json": true
     }
 }

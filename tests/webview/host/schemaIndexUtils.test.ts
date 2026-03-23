@@ -5,6 +5,10 @@ import {
 	countColumns,
 	formatSchemaWithOptions,
 	formatSchemaWithTokenBudget,
+	abbreviateType,
+	addPruneNotice,
+	formatSchemaAsCompactText,
+	TYPE_ABBREVIATIONS,
 } from '../../../src/host/schemaIndexUtils';
 
 function makeSchema(overrides?: Partial<DatabaseSchemaIndex>): DatabaseSchemaIndex {
@@ -398,5 +402,164 @@ describe('getColumnsByTable – additional coverage', () => {
 		const result = getColumnsByTable(schema);
 		expect(result['Good']).toEqual(['Id']);
 		expect(result['Bad']).toBeUndefined();
+	});
+});
+
+// ── abbreviateType ───────────────────────────────────────────────────────────
+
+describe('abbreviateType', () => {
+	it('abbreviates standard KQL types', () => {
+		expect(abbreviateType('string')).toBe('s');
+		expect(abbreviateType('long')).toBe('l');
+		expect(abbreviateType('int')).toBe('i');
+		expect(abbreviateType('datetime')).toBe('dt');
+		expect(abbreviateType('timespan')).toBe('ts');
+		expect(abbreviateType('real')).toBe('r');
+		expect(abbreviateType('double')).toBe('r');
+		expect(abbreviateType('bool')).toBe('b');
+		expect(abbreviateType('boolean')).toBe('b');
+		expect(abbreviateType('dynamic')).toBe('d');
+		expect(abbreviateType('guid')).toBe('g');
+		expect(abbreviateType('decimal')).toBe('dec');
+	});
+
+	it('abbreviates .NET type names (case-insensitive)', () => {
+		expect(abbreviateType('System.String')).toBe('s');
+		expect(abbreviateType('System.Int64')).toBe('l');
+		expect(abbreviateType('System.Int32')).toBe('i');
+		expect(abbreviateType('System.DateTime')).toBe('dt');
+		expect(abbreviateType('System.TimeSpan')).toBe('ts');
+		expect(abbreviateType('System.Double')).toBe('r');
+		expect(abbreviateType('System.Single')).toBe('r');
+		expect(abbreviateType('System.SByte')).toBe('b');
+		expect(abbreviateType('System.Boolean')).toBe('b');
+		expect(abbreviateType('System.Object')).toBe('d');
+		expect(abbreviateType('System.Guid')).toBe('g');
+		expect(abbreviateType('System.Decimal')).toBe('dec');
+	});
+
+	it('returns original type for unknown types', () => {
+		expect(abbreviateType('customtype')).toBe('customtype');
+		expect(abbreviateType('SomeOtherType')).toBe('SomeOtherType');
+	});
+
+	it('handles empty/null input', () => {
+		expect(abbreviateType('')).toBe('');
+		// null/undefined fall through to the || type fallback, returning the original value
+		expect(abbreviateType(null as any)).toBe(null);
+		expect(abbreviateType(undefined as any)).toBe(undefined);
+	});
+
+	it('is case-insensitive', () => {
+		expect(abbreviateType('STRING')).toBe('s');
+		expect(abbreviateType('DateTime')).toBe('dt');
+		expect(abbreviateType('BOOL')).toBe('b');
+	});
+
+	it('trims whitespace', () => {
+		expect(abbreviateType('  string  ')).toBe('s');
+		expect(abbreviateType(' long ')).toBe('l');
+	});
+
+	it('maps every entry in TYPE_ABBREVIATIONS correctly', () => {
+		for (const [input, expected] of Object.entries(TYPE_ABBREVIATIONS)) {
+			expect(abbreviateType(input)).toBe(expected);
+		}
+	});
+});
+
+// ── addPruneNotice ───────────────────────────────────────────────────────────
+
+describe('addPruneNotice', () => {
+	it('returns text unchanged for phase 0', () => {
+		expect(addPruneNotice('hello', 0)).toBe('hello');
+	});
+
+	it('appends notice for phase 1', () => {
+		const result = addPruneNotice('schema text', 1);
+		expect(result).toContain('schema text');
+		expect(result).toContain('[Note: Schema was reduced');
+		expect(result).toContain('data types removed');
+	});
+
+	it('appends notice for phase 2', () => {
+		const result = addPruneNotice('schema text', 2);
+		expect(result).toContain('data types and docstrings removed');
+	});
+
+	it('appends notice for phase 3', () => {
+		const result = addPruneNotice('schema text', 3);
+		expect(result).toContain('column details removed');
+	});
+
+	it('appends notice for phase 4', () => {
+		const result = addPruneNotice('schema text', 4);
+		expect(result).toContain('column and function parameter details removed');
+	});
+
+	it('appends notice for phase 5', () => {
+		const result = addPruneNotice('schema text', 5);
+		expect(result).toContain('schema truncated due to context window limits');
+	});
+
+	it('preserves original text content', () => {
+		const original = 'Database: TestDb\nTables: Orders, Users';
+		const result = addPruneNotice(original, 3);
+		expect(result.startsWith(original)).toBe(true);
+	});
+});
+
+// ── formatSchemaAsCompactText ────────────────────────────────────────────────
+
+describe('formatSchemaAsCompactText', () => {
+	it('includes database name', () => {
+		const schema = makeSchema({ tables: ['T'], columnTypesByTable: { T: { Id: 'long' } } });
+		const text = formatSchemaAsCompactText('MyDb', schema);
+		expect(text).toContain('Database: MyDb');
+	});
+
+	it('includes type legend', () => {
+		const schema = makeSchema({ tables: ['T'], columnTypesByTable: { T: { Id: 'long' } } });
+		const text = formatSchemaAsCompactText('MyDb', schema);
+		expect(text).toContain('Types: s=string');
+	});
+
+	it('includes meta info when provided', () => {
+		const schema = makeSchema({ tables: ['T'], columnTypesByTable: { T: { Id: 'long' } } });
+		const text = formatSchemaAsCompactText('MyDb', schema, { tablesCount: 5, columnsCount: 20, functionsCount: 3 });
+		expect(text).toContain('5 tables');
+		expect(text).toContain('20 columns');
+		expect(text).toContain('3 functions');
+	});
+
+	it('shows (none) for empty tables', () => {
+		const text = formatSchemaAsCompactText('EmptyDb', makeSchema());
+		expect(text).toContain('(none)');
+	});
+
+	it('shows (unknown) for null database name', () => {
+		const text = formatSchemaAsCompactText('', makeSchema());
+		expect(text).toContain('Database: (unknown)');
+	});
+
+	it('uses abbreviated types in column listing', () => {
+		const schema = makeSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { Name: 'string', Created: 'datetime', Count: 'long' } },
+		});
+		const text = formatSchemaAsCompactText('Db', schema);
+		expect(text).toContain('Name(s)');
+		expect(text).toContain('Created(dt)');
+		expect(text).toContain('Count(l)');
+	});
+
+	it('includes functions with abbreviated parameter types', () => {
+		const schema = makeSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { Id: 'long' } },
+			functions: [{ name: 'MyFunc', parameters: [{ name: 'start', type: 'datetime' }], docString: '' }],
+		});
+		const text = formatSchemaAsCompactText('Db', schema);
+		expect(text).toContain('MyFunc(start:dt)');
 	});
 });
