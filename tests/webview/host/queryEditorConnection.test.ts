@@ -5,8 +5,10 @@ import {
 	getClusterShortName,
 	getClusterShortNameKey,
 	getClusterCacheKey,
-	normalizeFavoriteClusterUrl
+	normalizeFavoriteClusterUrl,
+	ConnectionService
 } from '../../../src/host/queryEditorConnection';
+import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
 
 describe('ensureHttpsUrl', () => {
 	it('empty string → empty string', () => {
@@ -133,5 +135,159 @@ describe('normalizeFavoriteClusterUrl', () => {
 
 	it('multiple trailing slashes are removed', () => {
 		expect(normalizeFavoriteClusterUrl('https://mycluster///')).toBe('https://mycluster');
+	});
+});
+
+// ── ConnectionService ─────────────────────────────────────────────────────────
+
+function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
+	const globalState = new Map<string, any>();
+	return {
+		connectionManager: {
+			getConnections: () => overrides.connections ?? [],
+			getLeaveNoTraceClusters: () => [],
+		},
+		context: {
+			globalState: {
+				get: <T>(key: string, fallback?: T) => globalState.has(key) ? globalState.get(key) : fallback,
+				update: async (key: string, value: any) => { globalState.set(key, value); },
+			},
+		},
+		kustoClient: {
+			getDatabases: async () => [],
+			isAuthenticationError: () => false,
+		},
+		output: { appendLine: () => {} },
+		postMessage: overrides.postMessage ?? (() => {}),
+		formatQueryExecutionErrorForUser: () => 'error',
+		normalizeClusterUrlKey: (url: string) => url.toLowerCase(),
+		getCachedSchemaFromDisk: async () => undefined,
+		_globalState: globalState,
+	};
+}
+
+describe('ConnectionService — saveLastSelection & getters', () => {
+	it('saves and retrieves lastConnectionId', async () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		await svc.saveLastSelection('conn-123', 'mydb');
+		expect(svc.getLastConnectionId()).toBe('conn-123');
+		expect(svc.getLastDatabase()).toBe('mydb');
+	});
+
+	it('getLastConnectionId returns undefined before any selection', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		expect(svc.getLastConnectionId()).toBeUndefined();
+	});
+
+	it('getLastDatabase returns undefined before any selection', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		expect(svc.getLastDatabase()).toBeUndefined();
+	});
+
+	it('persists to globalState', async () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		await svc.saveLastSelection('conn-456', 'db2');
+		expect(host._globalState.get(STORAGE_KEYS.lastConnectionId)).toBe('conn-456');
+		expect(host._globalState.get(STORAGE_KEYS.lastDatabase)).toBe('db2');
+	});
+});
+
+describe('ConnectionService — findConnection', () => {
+	it('finds connection by id', () => {
+		const conn = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const host = makeMockHost({ connections: [conn] });
+		const svc = new ConnectionService(host as any);
+		expect(svc.findConnection('c1')).toBe(conn);
+	});
+
+	it('returns undefined for unknown id', () => {
+		const host = makeMockHost({ connections: [] });
+		const svc = new ConnectionService(host as any);
+		expect(svc.findConnection('nonexistent')).toBeUndefined();
+	});
+});
+
+describe('ConnectionService — getFavorites', () => {
+	it('returns empty array when no favorites stored', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		expect(svc.getFavorites()).toEqual([]);
+	});
+
+	it('returns valid favorites from storage', async () => {
+		const host = makeMockHost();
+		const favs = [{ name: 'My Fav', clusterUrl: 'https://test', database: 'db1' }];
+		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
+		const svc = new ConnectionService(host as any);
+		const result = svc.getFavorites();
+		expect(result).toHaveLength(1);
+		expect(result[0].name).toBe('My Fav');
+	});
+
+	it('skips invalid favorites (missing fields)', async () => {
+		const host = makeMockHost();
+		const favs = [
+			{ name: 'Good', clusterUrl: 'https://test', database: 'db1' },
+			{ name: '', clusterUrl: 'https://test', database: 'db1' }, // empty name
+			{ clusterUrl: 'https://test', database: 'db1' }, // missing name
+			null,
+			42,
+		];
+		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
+		const svc = new ConnectionService(host as any);
+		const result = svc.getFavorites();
+		expect(result).toHaveLength(1);
+		expect(result[0].name).toBe('Good');
+	});
+});
+
+describe('ConnectionService — getCachedDatabases', () => {
+	it('returns empty object when nothing cached', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		expect(svc.getCachedDatabases()).toEqual({});
+	});
+
+	it('returns cached databases', async () => {
+		const host = makeMockHost();
+		await host.context.globalState.update(STORAGE_KEYS.cachedDatabases, {
+			'test.kusto.windows.net': ['db1', 'db2'],
+		});
+		const svc = new ConnectionService(host as any);
+		const result = svc.getCachedDatabases();
+		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+	});
+});
+
+describe('ConnectionService — removeFavorite', () => {
+	it('removes matching favorite', async () => {
+		const postMessage = () => {};
+		const host = makeMockHost({ postMessage });
+		const favs = [
+			{ name: 'Keep', clusterUrl: 'https://keep', database: 'db' },
+			{ name: 'Remove', clusterUrl: 'https://remove', database: 'db' },
+		];
+		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
+		const svc = new ConnectionService(host as any);
+		await svc.removeFavorite('https://remove', 'db');
+		const result = svc.getFavorites();
+		expect(result).toHaveLength(1);
+		expect(result[0].name).toBe('Keep');
+	});
+
+	it('does nothing when clusterUrl is empty', async () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		await svc.removeFavorite('', 'db'); // should not throw
+	});
+
+	it('does nothing when database is empty', async () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		await svc.removeFavorite('https://test', ''); // should not throw
 	});
 });

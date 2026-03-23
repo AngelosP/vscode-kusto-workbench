@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseCssColorToRgb } from '../../src/webview/monaco/theme.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { parseCssColorToRgb, isDarkTheme, defineCustomThemes } from '../../src/webview/monaco/theme.js';
 
 // ── parseCssColorToRgb ────────────────────────────────────────────────────────
 
@@ -54,5 +54,115 @@ describe('parseCssColorToRgb', () => {
 	it('parses light background colors accurately', () => {
 		// VS Code light theme default background
 		expect(parseCssColorToRgb('#ffffff')).toEqual({ r: 255, g: 255, b: 255 });
+	});
+});
+
+// ── isDarkTheme ───────────────────────────────────────────────────────────────
+
+describe('isDarkTheme', () => {
+	afterEach(() => {
+		// Clean up body classes
+		document.body.classList.remove('vscode-dark', 'vscode-light', 'vscode-high-contrast', 'vscode-high-contrast-light');
+	});
+
+	it('returns false when body has vscode-light class', () => {
+		document.body.classList.add('vscode-light');
+		expect(isDarkTheme()).toBe(false);
+	});
+
+	it('returns false when body has vscode-high-contrast-light class', () => {
+		document.body.classList.add('vscode-high-contrast-light');
+		expect(isDarkTheme()).toBe(false);
+	});
+
+	it('returns true when body has vscode-dark class', () => {
+		document.body.classList.add('vscode-dark');
+		expect(isDarkTheme()).toBe(true);
+	});
+
+	it('returns true when body has vscode-high-contrast class', () => {
+		document.body.classList.add('vscode-high-contrast');
+		expect(isDarkTheme()).toBe(true);
+	});
+
+	it('falls back to luminance check when no theme class is set', () => {
+		// No vscode-* classes set — getComputedStyle returns empty, so falls back to dark
+		expect(isDarkTheme()).toBe(true);
+	});
+});
+
+// ── defineCustomThemes ────────────────────────────────────────────────────────
+
+describe('defineCustomThemes', () => {
+	let definedThemes: Record<string, any>;
+
+	beforeEach(() => {
+		definedThemes = {};
+	});
+
+	function makeMockMonaco() {
+		return {
+			editor: {
+				defineTheme: vi.fn((name: string, theme: any) => {
+					definedThemes[name] = theme;
+				}),
+			},
+		};
+	}
+
+	it('defines dark and light themes', () => {
+		const monaco = makeMockMonaco();
+		defineCustomThemes(monaco);
+		expect(monaco.editor.defineTheme).toHaveBeenCalledTimes(2);
+		expect(definedThemes['kusto-workbench-dark']).toBeTruthy();
+		expect(definedThemes['kusto-workbench-light']).toBeTruthy();
+	});
+
+	it('dark theme inherits from vs-dark', () => {
+		defineCustomThemes(makeMockMonaco());
+		expect(definedThemes['kusto-workbench-dark'].base).toBe('vs-dark');
+		expect(definedThemes['kusto-workbench-dark'].inherit).toBe(true);
+	});
+
+	it('light theme inherits from vs', () => {
+		defineCustomThemes(makeMockMonaco());
+		expect(definedThemes['kusto-workbench-light'].base).toBe('vs');
+		expect(definedThemes['kusto-workbench-light'].inherit).toBe(true);
+	});
+
+	it('includes token rules for KQL syntax', () => {
+		defineCustomThemes(makeMockMonaco());
+		const darkRules = definedThemes['kusto-workbench-dark'].rules;
+		expect(Array.isArray(darkRules)).toBe(true);
+		expect(darkRules.length).toBeGreaterThan(10);
+		const tokenNames = darkRules.map((r: any) => r.token);
+		expect(tokenNames).toContain('comment');
+		expect(tokenNames).toContain('keyword');
+		expect(tokenNames).toContain('queryOperator');
+		expect(tokenNames).toContain('column');
+		expect(tokenNames).toContain('table');
+	});
+
+	it('does nothing when monaco is null', () => {
+		expect(() => defineCustomThemes(null)).not.toThrow();
+	});
+
+	it('does nothing when monaco.editor is missing', () => {
+		expect(() => defineCustomThemes({})).not.toThrow();
+	});
+
+	it('does nothing when defineTheme is not a function', () => {
+		expect(() => defineCustomThemes({ editor: {} })).not.toThrow();
+	});
+
+	it('handles defineTheme throwing an error', () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const monaco = {
+			editor: {
+				defineTheme: vi.fn(() => { throw new Error('mock'); }),
+			},
+		};
+		// Should not throw
+		expect(() => defineCustomThemes(monaco)).not.toThrow();
 	});
 });
