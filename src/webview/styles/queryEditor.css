@@ -148,10 +148,14 @@
 			margin-top: 0;
 		}
 
-		/* Markdown section wrapper (non-.md file): add top margin to WYSIWYG/Markdown content. */
+		/* Markdown section wrapper (non-.md file): Toast UI internal containment. */
 		kw-markdown-section:not([plain-md]) .kusto-markdown-editor .toastui-editor-ww-container,
 		kw-markdown-section:not([plain-md]) .kusto-markdown-editor .toastui-editor-md-container {
-			margin-top: 10px;
+			margin-top: 0;
+		}
+
+		kw-markdown-section:not([plain-md]) .kusto-markdown-editor .toastui-editor-main {
+			overflow: hidden;
 		}
 
 		/* Generic section header row used by non-KQL boxes */

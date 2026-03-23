@@ -14,7 +14,8 @@ export const styles = css`
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
 		}
 
-		:host(.is-collapsed) .editor-wrapper {
+		:host(.is-collapsed) .editor-wrapper,
+		:host(.is-collapsed) .resizer {
 			display: none !important;
 		}
 		:host(.is-collapsed) .md-mode-btn,
@@ -44,6 +45,7 @@ export const styles = css`
 		}
 		:host(.is-md-preview-fixed) .editor-wrapper {
 			overflow: hidden;
+			min-height: 60px;
 		}
 
 		.section-root {
@@ -219,9 +221,8 @@ export const styles = css`
 			width: 100%;
 			min-height: 120px;
 			height: 325px;
-			margin: 0 0 0 0;
+			margin: 0 0 12px 0;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			border-bottom: none;
 			border-radius: 2px;
 			background: var(--vscode-editor-background);
 			overflow: visible;
@@ -236,8 +237,7 @@ export const styles = css`
 			min-height: 0;
 			min-width: 0;
 			position: relative;
-			/* Keep Toast UI toolbar chrome from being cropped by wrapper overflow. */
-			overflow: visible;
+			overflow: hidden;
 		}
 
 		::slotted(.markdown-viewer) {
@@ -270,6 +270,7 @@ export const styles = css`
 			position: relative;
 			touch-action: none;
 			z-index: 1;
+			margin: 0 -12px -1px -12px;
 		}
 		.resizer::after {
 			content: '';

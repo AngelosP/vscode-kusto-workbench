@@ -305,11 +305,11 @@ export class KwMarkdownSection extends LitElement {
 					<div class="editor-wrapper" id="editor-wrapper">
 						<slot name="editor"></slot>
 						<slot name="viewer"></slot>
-						<div class="resizer"
-							title="Drag to resize\nDouble-click to fit to contents"
-							@mousedown=${this._onResizerMouseDown}
-							@dblclick=${this.fitToContents}></div>
 					</div>
+					<div class="resizer"
+						title="Drag to resize\nDouble-click to fit to contents"
+						@mousedown=${this._onResizerMouseDown}
+						@dblclick=${this.fitToContents}></div>
 				</kw-section-shell>
 			</div>
 		`;
@@ -548,10 +548,7 @@ export class KwMarkdownSection extends LitElement {
 					if (!toastEditor || typeof toastEditor.setHeight !== 'function') return;
 					const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
 					if (!wrapper) return;
-					const resizerEl = wrapper.querySelector('.resizer');
-					let h = wrapper.getBoundingClientRect().height;
-					if (resizerEl) h -= resizerEl.getBoundingClientRect().height;
-					h = Math.max(120, h);
+					const h = Math.max(120, wrapper.clientHeight);
 					toastEditor.setHeight(Math.round(h) + 'px');
 				} catch (e) { console.error('[kusto]', e); }
 			},
@@ -1084,10 +1081,9 @@ export class KwMarkdownSection extends LitElement {
 
 				if (!contentH) return;
 
-				const resizerH = 1;
 				const padding = this._mode === 'wysiwyg' ? -1 : 13;
 				const FIT_SLACK_PX = 5;
-				const desired = Math.max(120, Math.ceil(toolbarH + contentH + resizerH + padding + FIT_SLACK_PX));
+				const desired = Math.max(120, Math.ceil(toolbarH + contentH + padding + FIT_SLACK_PX));
 				wrapper.style.height = desired + 'px';
 			} catch (e) { console.error('[kusto]', e); }
 			try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
@@ -1190,7 +1186,8 @@ export class KwMarkdownSection extends LitElement {
 			} catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
-			const nextHeight = Math.max(120, startHeight + delta);
+			const minH = this._mode === 'preview' ? 60 : 120;
+			const nextHeight = Math.max(minH, startHeight + delta);
 			wrapper.style.height = nextHeight + 'px';
 			try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
 		};
