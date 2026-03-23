@@ -233,10 +233,11 @@ export class KwChartSection extends LitElement {
 
 		const resizerEl = document.createElement('div');
 		resizerEl.id = id + '_chart_resizer';
-		resizerEl.className = 'query-editor-resizer';
+		resizerEl.className = 'query-editor-resizer chart-bottom-resizer';
 		resizerEl.title = 'Drag to resize\nDouble-click to fit to contents';
-		chartWrapper.appendChild(resizerEl);
+		resizerEl.setAttribute('slot', 'chart-resizer');
 		litEl.appendChild(chartWrapper);
+		litEl.appendChild(resizerEl);
 
 		litEl.applyOptions(st);
 		litEl.addEventListener('section-remove', (e: any) => {
@@ -535,6 +536,7 @@ export class KwChartSection extends LitElement {
 					<!-- Light-DOM wrapper/canvases/resizer via slot -->
 					<slot name="chart-content"></slot>
 				</div>
+				<slot name="chart-resizer"></slot>
 				</kw-section-shell>
 			</div>
 		`;

@@ -29,7 +29,6 @@ export const styles = css`
 
 		.section-root {
 			padding: 12px;
-			padding-bottom: 0;
 		}
 
 		/* ── Mode buttons (slotted into shell header-buttons) ── */
@@ -104,7 +103,7 @@ export const styles = css`
 
 		.chart-wrapper {
 			border: none;
-			overflow: visible;
+			overflow: hidden;
 			height: auto;
 			min-height: 0;
 		}
@@ -594,8 +593,18 @@ export const styles = css`
 
 		::slotted(.query-editor-wrapper) {
 			border: none;
-			overflow: visible;
+			overflow: hidden;
 			height: auto;
 			min-height: 0;
+		}
+
+		/* Chart resizer: bleed edge-to-edge to overlap section bottom border */
+		::slotted(.chart-bottom-resizer) {
+			margin: 0 -13px -13px !important;
+			width: calc(100% + 26px) !important;
+			z-index: 2;
+		}
+		:host(.is-collapsed) ::slotted(.chart-bottom-resizer) {
+			display: none !important;
 		}
 `;
