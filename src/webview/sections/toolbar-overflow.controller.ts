@@ -6,6 +6,11 @@ export interface ToolbarOverflowHost extends ReactiveControllerHost, HTMLElement
 	setOverflowStartIndex(index: number): void;
 }
 
+/** Default overflow-button width used when the button is not yet in the DOM. */
+const FALLBACK_OVERFLOW_BTN_WIDTH = 36;
+/** Small safety margin to absorb sub-pixel rendering differences. */
+const SUBPIXEL_BUFFER = 2;
+
 export class ToolbarOverflowController implements ReactiveController {
 	host: ToolbarOverflowHost;
 	private _resizeObserver: ResizeObserver | null = null;
@@ -14,6 +19,13 @@ export class ToolbarOverflowController implements ReactiveController {
 	constructor(host: ToolbarOverflowHost) {
 		this.host = host;
 		host.addController(this);
+	}
+
+	hostConnected(): void {
+		// Defer start until after the host's first render completes, so the
+		// toolbar DOM element exists.  This also handles reconnects after DOM
+		// reparenting (e.g. copilot chat split restructures the wrapper).
+		this.host.updateComplete.then(() => this.start());
 	}
 
 	hostDisconnected(): void {
@@ -29,10 +41,16 @@ export class ToolbarOverflowController implements ReactiveController {
 		this._resizeObserver = new ResizeObserver(() => {
 			this.recompute();
 		});
+		// Observe the toolbar div itself.
 		this._resizeObserver.observe(toolbar);
-		const wrapper = toolbar.closest('.query-editor-wrapper');
-		if (wrapper) {
-			this._resizeObserver.observe(wrapper);
+		// Observe the host custom element — its width changes when a copilot
+		// chat split or other layout shift narrows the editor pane.
+		this._resizeObserver.observe(this.host);
+		// Observe the items container — its client width is the actual
+		// available space for buttons.
+		const itemsContainer = toolbar.querySelector('.qe-toolbar-items');
+		if (itemsContainer) {
+			this._resizeObserver.observe(itemsContainer);
 		}
 		requestAnimationFrame(() => {
 			this._cacheItemWidths();
@@ -62,39 +80,71 @@ export class ToolbarOverflowController implements ReactiveController {
 			this._cacheItemWidths();
 		}
 
+		const currentOverflow = this.host.getOverflowStartIndex();
+
+		// Phase 1 — determine whether overflow is needed.
+		if (currentOverflow === -1) {
+			// No overflow active. Use scrollWidth as ground-truth: if the
+			// items container's content overflows its visible area, we need
+			// the overflow menu.
+			if (itemsContainer.scrollWidth <= itemsContainer.clientWidth + SUBPIXEL_BUFFER) {
+				return; // everything fits — nothing to do
+			}
+			// Items overflow their container → fall through to Phase 2.
+		} else {
+			// Overflow is active. Check whether clearing it would let all
+			// items fit (using cached natural widths).
+			if (this._cachedItemWidths) {
+				const toolbarStyle = getComputedStyle(toolbar);
+				const pL = parseFloat(toolbarStyle.paddingLeft) || 0;
+				const pR = parseFloat(toolbarStyle.paddingRight) || 0;
+				const gap = parseFloat(getComputedStyle(itemsContainer).gap) || 0;
+				const fullWidth = toolbar.getBoundingClientRect().width - pL - pR;
+				let total = 0;
+				for (let i = 0; i < this._cachedItemWidths.length; i++) {
+					total += this._cachedItemWidths[i] + (i > 0 ? gap : 0);
+				}
+				if (total <= fullWidth - SUBPIXEL_BUFFER) {
+					this.host.setOverflowStartIndex(-1);
+					return;
+				}
+			}
+			// Still need overflow → fall through to Phase 2 to adjust cutoff.
+		}
+
+		// Phase 2 — compute the overflow cutoff point.
 		const toolbarStyle = getComputedStyle(toolbar);
 		const paddingLeft = parseFloat(toolbarStyle.paddingLeft) || 0;
 		const paddingRight = parseFloat(toolbarStyle.paddingRight) || 0;
-		const gap = parseFloat(getComputedStyle(itemsContainer).gap) || 4;
-		const overflowBtnWidth = 36;
-		const availableWidth = toolbar.clientWidth - paddingLeft - paddingRight - overflowBtnWidth - gap;
+		const itemGap = parseFloat(getComputedStyle(itemsContainer).gap) || 0;
+		const toolbarGap = parseFloat(toolbarStyle.gap) || 0;
+		const fullAvailableWidth = toolbar.getBoundingClientRect().width - paddingLeft - paddingRight;
 
-		let totalWidth = 0;
+		const overflowWrapper = toolbar.querySelector('.qe-toolbar-overflow-wrapper') as HTMLElement | null;
+		const overflowBtnWidth = overflowWrapper
+			? overflowWrapper.getBoundingClientRect().width
+			: FALLBACK_OVERFLOW_BTN_WIDTH;
+		const availableWidth = fullAvailableWidth - overflowBtnWidth - toolbarGap - SUBPIXEL_BUFFER;
+
+		let runningWidth = 0;
 		let newOverflowStart = -1;
 		let btnIdx = 0;
 
 		for (let i = 0; i < items.length; i++) {
 			const item = items[i];
 			const isSep = item.classList.contains('query-editor-toolbar-sep');
-			const rawWidth = this._cachedItemWidths ? this._cachedItemWidths[i] : item.offsetWidth;
-			const itemWidth = rawWidth + (i > 0 ? gap : 0);
-			totalWidth += itemWidth;
+			const rawWidth = this._cachedItemWidths ? this._cachedItemWidths[i] : item.getBoundingClientRect().width;
+			runningWidth += rawWidth + (i > 0 ? itemGap : 0);
 
-			if (totalWidth > availableWidth && newOverflowStart === -1) {
+			if (runningWidth > availableWidth && newOverflowStart === -1) {
 				newOverflowStart = btnIdx;
-				for (let j = i - 1; j >= 0; j--) {
-					if (items[j].classList.contains('query-editor-toolbar-sep')) {
-						newOverflowStart = this._countButtonsBefore(items, j);
-						break;
-					}
-				}
 				break;
 			}
 
 			if (!isSep) btnIdx++;
 		}
 
-		if (newOverflowStart !== this.host.getOverflowStartIndex()) {
+		if (newOverflowStart !== currentOverflow) {
 			this.host.setOverflowStartIndex(newOverflowStart);
 		}
 	}
@@ -106,13 +156,13 @@ export class ToolbarOverflowController implements ReactiveController {
 		if (!itemsContainer) return;
 		const items = Array.from(itemsContainer.children) as HTMLElement[];
 		if (!items.length) return;
-		const widths = items.map(item => item.offsetWidth);
+		const widths = items.map(item => item.getBoundingClientRect().width);
 		if (widths.some(w => w === 0)) return;
 		this._cachedItemWidths = widths;
 	}
 
 	private _refreshCacheIfAllVisible(items: HTMLElement[]): void {
-		const liveWidths = items.map(item => item.offsetWidth);
+		const liveWidths = items.map(item => item.getBoundingClientRect().width);
 		if (liveWidths.some(w => w === 0)) return;
 		if (!this._cachedItemWidths || this._cachedItemWidths.length !== liveWidths.length) {
 			this._cachedItemWidths = liveWidths;
@@ -124,14 +174,6 @@ export class ToolbarOverflowController implements ReactiveController {
 				return;
 			}
 		}
-	}
-
-	private _countButtonsBefore(items: HTMLElement[], upTo: number): number {
-		let count = 0;
-		for (let i = 0; i < upTo; i++) {
-			if (!items[i].classList.contains('query-editor-toolbar-sep')) count++;
-		}
-		return count;
 	}
 
 	private _getToolbarElement(): HTMLElement | null {

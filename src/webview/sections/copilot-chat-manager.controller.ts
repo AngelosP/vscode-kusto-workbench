@@ -317,7 +317,7 @@ export class CopilotChatManagerController implements ReactiveController {
 
 	private _wireCopilotChatEvents(chatEl: KwCopilotChat, boxId: string, chatPane: HTMLElement, split: HTMLElement, splitter: HTMLElement): void {
 		chatEl.addEventListener('copilot-send', ((e: CustomEvent) => {
-			const { text, enabledTools } = e.detail;
+			const { text, enabledTools, requireToolUse } = e.detail;
 			const connectionId = this.host.getConnectionId();
 			const database = this.host.getDatabase();
 			if (!connectionId) { chatEl.appendMessage('notification', 'Select a cluster connection first.'); return; }
@@ -333,7 +333,8 @@ export class CopilotChatManagerController implements ReactiveController {
 					connectionId: String(connectionId || ''), database: String(database || ''),
 					currentQuery: String(currentQuery || ''), request: String(text || ''),
 					modelId: String(modelId || ''), enabledTools,
-					queryMode: getRunMode(boxId) || 'take100'
+					queryMode: getRunMode(boxId) || 'take100',
+					requireToolUse: requireToolUse || undefined
 				});
 			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
 		}) as EventListener);

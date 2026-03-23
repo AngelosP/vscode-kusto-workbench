@@ -1502,7 +1502,7 @@
 			align-items: center;
 			flex-wrap: nowrap;
 			gap: 1px;
-			flex: 0 1 auto;
+			flex: 1 1 0%;
 			min-width: 0;
 			overflow: hidden;
 		}
@@ -1767,6 +1767,7 @@
 			opacity: 0.9;
 			color: var(--vscode-descriptionForeground);
 			user-select: none;
+			flex-shrink: 0;
 		}
 
 		.query-editor-toolbar-sep::before {
@@ -1789,6 +1790,7 @@
 			padding: 4px 4px;
 			height: 28px;
 			min-width: 28px;
+			flex-shrink: 0;
 		}
 
 		.query-editor-toolbar-btn:hover {
@@ -1830,6 +1832,7 @@
 			position: relative;
 			display: inline-flex;
 			align-items: center;
+			flex-shrink: 0;
 		}
 
 		.query-editor-toolbar-btn.qe-toolbar-dropdown-btn {

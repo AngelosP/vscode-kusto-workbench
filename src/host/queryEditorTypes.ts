@@ -50,6 +50,7 @@ export type StartCopilotWriteQueryMessage = {
 	modelId?: string;
 	enabledTools?: string[];
 	queryMode?: string;
+	requireToolUse?: boolean;
 };
 
 export type OptimizeQueryMessage = {

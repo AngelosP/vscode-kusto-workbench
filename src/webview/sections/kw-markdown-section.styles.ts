@@ -232,7 +232,8 @@ export const styles = css`
 			min-height: 0;
 			min-width: 0;
 			position: relative;
-			overflow: hidden;
+			/* Keep Toast UI toolbar chrome from being cropped by wrapper overflow. */
+			overflow: visible;
 		}
 
 		::slotted(.markdown-viewer) {
@@ -342,7 +343,7 @@ export const styles = css`
 			flex: 1 1 auto;
 			min-height: 0;
 			height: auto;
-			overflow: hidden;
+			overflow: visible;
 			margin: 0;
 			border: none;
 		}

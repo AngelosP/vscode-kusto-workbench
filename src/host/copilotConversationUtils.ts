@@ -184,3 +184,41 @@ export function insertMissingToolCallResults(
 
 	history.splice(insertAt, 0, ...newEntries);
 }
+
+// ---------------------------------------------------------------------------
+// decideNonToolResponse
+// ---------------------------------------------------------------------------
+
+export interface NonToolResponseDecision {
+	/** If true the text-only response is accepted as-is; if false the caller should retry. */
+	accept: boolean;
+	/** When true the caller should NOT post the response text as a narrative — the done message will carry it. Prevents duplicate rendering. */
+	suppressNarrative: boolean;
+	/** Error string to push into priorAttempts when rejecting. */
+	priorAttemptError?: string;
+	/** Status string to show the user when rejecting. */
+	statusMessage?: string;
+}
+
+/**
+ * Decides whether a text-only (no tool calls) LLM response should be accepted
+ * or rejected and retried.
+ *
+ * When the request is agent-driven (`requireToolUse === true`) the model MUST
+ * use one of the provided tools — a plain-text response is an error.
+ *
+ * When the user manually types in Copilot Chat (`requireToolUse` is falsy)
+ * a text-only answer is perfectly valid — the user might be asking a general
+ * question that doesn't need a KQL query.
+ */
+export function decideNonToolResponse(requireToolUse: boolean): NonToolResponseDecision {
+	if (requireToolUse) {
+		return {
+			accept: false,
+			suppressNarrative: false,
+			priorAttemptError: 'Copilot did not call any tools. The model should use the available tools to respond.',
+			statusMessage: 'Copilot returned a non-tool response. Retrying\u2026'
+		};
+	}
+	return { accept: true, suppressNarrative: true };
+}

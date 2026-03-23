@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
 	type ConversationHistoryEntry,
 	sanitizeConversationHistory,
-	insertMissingToolCallResults
+	insertMissingToolCallResults,
+	decideNonToolResponse
 } from '../../../src/host/copilotConversationUtils';
 
 // ---------------------------------------------------------------------------
@@ -311,5 +312,69 @@ describe('sanitizeConversationHistory – complex interleaving', () => {
 		const originalIds = history.map(e => e.id);
 		sanitizeConversationHistory(history);
 		expect(history.map(e => e.id)).toEqual(originalIds);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// decideNonToolResponse
+// ---------------------------------------------------------------------------
+
+describe('decideNonToolResponse', () => {
+	it('rejects non-tool response when requireToolUse is true', () => {
+		const decision = decideNonToolResponse(true);
+		expect(decision.accept).toBe(false);
+		expect(decision.priorAttemptError).toBeTruthy();
+		expect(decision.statusMessage).toBeTruthy();
+	});
+
+	it('returns a meaningful error message when rejecting', () => {
+		const decision = decideNonToolResponse(true);
+		expect(decision.priorAttemptError).toContain('tools');
+		expect(decision.statusMessage).toContain('non-tool response');
+	});
+
+	it('accepts non-tool response when requireToolUse is false', () => {
+		const decision = decideNonToolResponse(false);
+		expect(decision.accept).toBe(true);
+		expect(decision.priorAttemptError).toBeUndefined();
+		expect(decision.statusMessage).toBeUndefined();
+	});
+
+	it('does not include rejection fields when accepting', () => {
+		const decision = decideNonToolResponse(false);
+		expect(decision.priorAttemptError).toBeUndefined();
+		expect(decision.statusMessage).toBeUndefined();
+	});
+
+	// ── suppressNarrative — prevents duplicate message rendering ──────────
+
+	it('suppresses narrative when accepting (prevents duplicate text)', () => {
+		const decision = decideNonToolResponse(false);
+		expect(decision.suppressNarrative).toBe(true);
+	});
+
+	it('does NOT suppress narrative when rejecting (user should see what model said)', () => {
+		const decision = decideNonToolResponse(true);
+		expect(decision.suppressNarrative).toBe(false);
+	});
+
+	it('accepted response: suppressNarrative=true ensures text is sent only once via done message', () => {
+		// When accept=true and suppressNarrative=true, the caller should:
+		// 1. NOT call postNarrative (because suppressNarrative is true)
+		// 2. Call postNarrative AFTER the check (one explicit call in the accept path)
+		// 3. Send copilotWriteQueryDone with empty message
+		// This ensures the text appears exactly once (via postNarrative in the accept branch).
+		const decision = decideNonToolResponse(false);
+		expect(decision.accept).toBe(true);
+		expect(decision.suppressNarrative).toBe(true);
+		// If both accept and suppressNarrative are set, the caller knows to post
+		// narrative once in the accept path and NOT repeat in the done message.
+	});
+
+	it('rejected response: allows narrative so user sees model output before retry', () => {
+		const decision = decideNonToolResponse(true);
+		expect(decision.accept).toBe(false);
+		expect(decision.suppressNarrative).toBe(false);
+		// The caller posts narrative (model text visible), then retries.
 	});
 });

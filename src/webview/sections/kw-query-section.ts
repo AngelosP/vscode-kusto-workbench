@@ -1192,9 +1192,12 @@ export class KwQuerySection extends LitElement {
 				// border/padding, and extra headroom for scrollbar/sub-pixel rounding.
 				const ROW_H = 27;
 				const CHROME = 120;
+				// Extra height for the "No matching rows" placeholder shown when
+				// there are columns (schema) but 0 data rows.
+				const EMPTY_MSG_H = (rows.length === 0 && columns.length > 0) ? 50 : 0;
 				const MAX_AUTO_ROWS = 10;
 				const MAX_AUTO_H = CHROME + (MAX_AUTO_ROWS * ROW_H);
-				const estimatedH = CHROME + (rows.length * ROW_H);
+				const estimatedH = CHROME + (rows.length * ROW_H) + EMPTY_MSG_H;
 				resultsWrapper.style.height = Math.max(120, Math.min(MAX_AUTO_H, estimatedH)) + 'px';
 			}
 		}

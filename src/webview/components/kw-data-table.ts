@@ -296,7 +296,11 @@ export class KwDataTable extends LitElement {
 		for (const bar of sr.querySelectorAll('.sbar')) {
 			toolbarsH += (bar as HTMLElement).getBoundingClientRect().height;
 		}
-		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + 25);
+		// When there are columns but 0 rows, the ".empty-body" placeholder is shown.
+		// Measure it so the wrapper height accounts for <thead> + "No matching rows".
+		const emptyEl = totalRows === 0 ? sr.querySelector('.empty-body') as HTMLElement | null : null;
+		const emptyH = emptyEl ? emptyEl.getBoundingClientRect().height : 0;
+		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + emptyH + 25);
 	}
 
 	// ── Controller host interface methods ──

@@ -2001,14 +2001,14 @@ window.addEventListener('message', async (event: any) => {
 				// Give the UI a moment to render
 				await new Promise((r: any) => setTimeout(r, 100));
 				
-				// Step 2: Paste the question into the chat input
-				const chatInput = document.getElementById(sectionId + '_copilot_input') as any;
-				if (!chatInput) {
+				// Step 2: Paste the question into the chat input via kw-copilot-chat public API
+				const chatPane = document.getElementById(sectionId + '_copilot_chat_pane');
+				const chatEl = chatPane?.querySelector('kw-copilot-chat') as any;
+				if (!chatEl || typeof chatEl.setInputText !== 'function') {
 					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Copilot chat input not found. Is Copilot available?' } });
 					return;
 				}
-				chatInput.value = question;
-				chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+				chatEl.setInputText(question);
 				
 				// Set up listener for results BEFORE clicking send
 				let responded = false;
@@ -2178,21 +2178,21 @@ window.addEventListener('message', async (event: any) => {
 					}
 				}, 180000);
 				
-				// Step 3: Click the send button (simulating user clicking Send)
-				const sendButton = document.getElementById(sectionId + '_copilot_send') as any;
-				if (sendButton && !sendButton.disabled) {
-					sendButton.click();
-				} else {
-					// Fallback: call the send function via kw-query-section
-					const kwEl2 = __kustoGetQuerySectionElement(sectionId);
-					if (kwEl2 && typeof kwEl2.copilotWriteQuerySend === 'function') {
-						kwEl2.copilotWriteQuerySend();
-					} else {
-						// Clean up and report error
-						clearTimeout(timeoutId);
-						window.removeEventListener('message', resultHandler);
-						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
+				// Step 3: Mark this send as agent-driven (require tool use) and send
+				try {
+					if (chatEl && typeof chatEl.setRequireToolUseOnNextSend === 'function') {
+						chatEl.setRequireToolUseOnNextSend(true);
 					}
+				} catch (e) { console.error('[kusto]', e); }
+
+				const kwEl2 = __kustoGetQuerySectionElement(sectionId);
+				if (kwEl2 && typeof kwEl2.copilotWriteQuerySend === 'function') {
+					kwEl2.copilotWriteQuerySend();
+				} else {
+					// Clean up and report error
+					clearTimeout(timeoutId);
+					window.removeEventListener('message', resultHandler);
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
 				}
 				
 				} catch (err: any) {

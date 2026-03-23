@@ -875,7 +875,8 @@ export class KwQueryToolbar extends LitElement {
 	}
 
 	override firstUpdated(): void {
-		this._overflowController.start();
+		// Overflow controller is started via hostConnected() (which also
+		// handles reconnects after DOM reparenting by copilot chat split).
 		// Run button responsive behavior is handled by initToolbarOverflow() in
 		// this module (called from monaco.ts after editor initialization).
 	}

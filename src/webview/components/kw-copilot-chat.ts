@@ -111,6 +111,9 @@ export class KwCopilotChat extends LitElement {
 
 	// ── Private non-reactive fields ───────────────────────────────────────────
 
+	/** When true the next send will include `requireToolUse: true` in the event (agent-driven). */
+	private _requireToolUseOnNextSend = false;
+
 	/** Auto-scroll pinned state — true means we follow new messages. */
 	private _autoScrollPinned = true;
 	/** Counter for generating per-tooltip unique IDs within this instance. */
@@ -335,6 +338,19 @@ export class KwCopilotChat extends LitElement {
 	getEnabledTools(): string[] {
 		const known = new Set(this._tools.map(t => t.name));
 		return this._enabledTools.filter(n => known.has(n));
+	}
+
+	/** Mark the next send as agent-driven so the host requires tool use. */
+	setRequireToolUseOnNextSend(value: boolean): void {
+		this._requireToolUseOnNextSend = value;
+	}
+
+	/** Programmatically set the textarea value (used by agent tool delegation). */
+	setInputText(text: string): void {
+		const ta = this._textarea;
+		if (ta) {
+			ta.value = text;
+		}
 	}
 
 	/** Get all current messages (for testing/inspection). */
@@ -782,10 +798,12 @@ export class KwCopilotChat extends LitElement {
 		this.appendMessage('user', text);
 		textarea.value = '';
 		this._inputHeight = 32;
+		const requireToolUse = this._requireToolUseOnNextSend;
+		this._requireToolUseOnNextSend = false;
 		this.dispatchEvent(new CustomEvent('copilot-send', {
 			bubbles: true,
 			composed: true,
-			detail: { text, enabledTools: this.getEnabledTools() },
+			detail: { text, enabledTools: this.getEnabledTools(), requireToolUse },
 		}));
 	}
 

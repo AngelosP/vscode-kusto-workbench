@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults } from './copilotConversationUtils';
+import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse } from './copilotConversationUtils';
 import { SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import {
@@ -908,6 +908,7 @@ Completion:`;
 		const copilotQueryMode = String(message.queryMode || 'take100').trim();
 		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
 		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
+		const requireToolUse = message.requireToolUse === true;
 		if (!boxId) {
 			return;
 		}
@@ -1116,14 +1117,50 @@ Completion:`;
 					}
 				}
 
-				if (responseText.trim()) {
-					postNarrative(responseText.trim());
+				if (nativeToolCalls.length === 0) {
+					const decision = decideNonToolResponse(requireToolUse);
+
+					// Post narrative only if the decision allows it (rejected attempts
+					// show what the model said; accepted text-only responses use the
+					// narrative as the final display so postNarrative is also allowed).
+					if (responseText.trim() && !decision.suppressNarrative) {
+						postNarrative(responseText.trim());
+					}
+
+					if (!decision.accept) {
+						priorAttempts.push({ attempt, error: decision.priorAttemptError! });
+						postStatus(decision.statusMessage!, responseText);
+						continue;
+					}
+
+					// Accept the text-only response (manual user chat).
+					// Post the narrative as the final rendered message, and send a
+					// done signal with empty message to avoid duplicate rendering.
+					if (responseText.trim()) {
+						postNarrative(responseText.trim());
+					}
+
+					const textEntryId = this.nextHistoryEntryId(boxId);
+					history.push({
+						type: 'assistant-message',
+						id: textEntryId,
+						text: responseText,
+						toolCalls: [],
+						timestamp: Date.now()
+					});
+
+					this.host.postMessage({
+						type: 'copilotWriteQueryDone',
+						boxId,
+						ok: true,
+						message: ''
+					});
+					return;
 				}
 
-				if (nativeToolCalls.length === 0) {
-					priorAttempts.push({ attempt, error: 'Copilot did not call any tools. The model should use the available tools to respond.' });
-					postStatus('Copilot returned a non-tool response. Retrying…', responseText);
-					continue;
+				// Has tool calls — post any accompanying narrative text.
+				if (responseText.trim()) {
+					postNarrative(responseText.trim());
 				}
 
 				const assistantEntryId = this.nextHistoryEntryId(boxId);
