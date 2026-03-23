@@ -27,6 +27,7 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 | `npm run test:webview` | Webview unit tests via Vitest (fast, no VS Code required) |
 | `npm run test:webview:coverage` | Same as above with V8 coverage report |
 | `npm run test:webview:watch` | Vitest in watch mode for rapid iteration |
+| `npm run test:coverage-gate` | Runs Vitest coverage and fails if statement coverage drops below the recorded baseline |
 
 ## Testing Guidelines
 
@@ -34,6 +35,10 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 - Integration tests (`tests/integration/`) run inside VS Code's extension host with full API access.
 - Webview unit tests (`tests/webview/`) run via Vitest without VS Code.
 - E2E tests (`tests/e2e/`) use `vscode-extension-tester` (Selenium). Run with `npm run test:e2e`.
+
+### Coverage Gate
+
+`npm run test:coverage-gate` prevents coverage regressions. It runs the Vitest suite with coverage, reads the `json-summary` output, and fails if statement coverage drops below the recorded baseline minus a 0.5% buffer. The baseline is stored in `scripts/coverage-gate.mjs` — update it when coverage meaningfully increases.
 
 ## Project Structure
 

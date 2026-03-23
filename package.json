@@ -1146,6 +1146,7 @@
     "test:webview": "vitest run",
     "test:webview:coverage": "vitest run --coverage",
     "test:webview:watch": "vitest",
+    "test:coverage-gate": "node scripts/coverage-gate.mjs",
     "bundle-size": "node scripts/bundle-size.mjs"
   },
   "devDependencies": {

@@ -897,3 +897,61 @@ describe('__kustoPrettifyKusto — indentation edge cases', () => {
 		expect(result.endsWith('x > 5')).toBe(true);
 	});
 });
+
+// ── Migrated from tests/integration/kqlPrettify.test.ts ──────────────────────
+
+describe('__kustoPrettifyKusto — summarize comma preservation', () => {
+	it('preserves commas between aggregation fields in multiline summarize clause', () => {
+		const input = [
+			'| summarize',
+			'    TotalCount = count(),',
+			'    AvgValue = avg(Value)',
+			'    by',
+			'    Group1,',
+			'    Group2'
+		].join('\n');
+
+		const result = __kustoPrettifyKusto(input);
+		const lines = result.split('\n');
+
+		const summarizeIdx = lines.findIndex(l => l.trim() === '| summarize');
+		expect(summarizeIdx).toBeGreaterThanOrEqual(0);
+
+		const byIdx = lines.findIndex((l, i) => i > summarizeIdx && l.trim() === 'by');
+		expect(byIdx).toBeGreaterThan(summarizeIdx);
+
+		const aggLines = lines.slice(summarizeIdx + 1, byIdx);
+		expect(aggLines.length).toBeGreaterThanOrEqual(2);
+
+		// All but the last aggregation line should end with a comma
+		for (let i = 0; i < aggLines.length - 1; i++) {
+			const line = aggLines[i].trimEnd();
+			expect(line.endsWith(',')).toBe(true);
+		}
+		// Last aggregation line should NOT end with comma
+		const lastAgg = aggLines[aggLines.length - 1].trimEnd();
+		expect(lastAgg.endsWith(',')).toBe(false);
+	});
+
+	it('preserves commas between by fields in summarize clause', () => {
+		const input = 'SampleEvents | summarize count() by Group1, Group2';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toContain('Group1,');
+	});
+
+	it('formats simple summarize without commas on single aggregation', () => {
+		const input = 'SampleEvents | summarize count() by Group1';
+		const result = __kustoPrettifyKusto(input);
+		const lines = result.split('\n');
+		const countLine = lines.find(l => l.includes('count()'));
+		expect(countLine).toBeTruthy();
+		expect(countLine!.trimEnd().endsWith(',')).toBe(false);
+	});
+
+	it('formats multiple aggregations with commas', () => {
+		const input = 'SampleEvents | summarize cnt = count(), avg_val = avg(Value), total = sum(Amount) by Category';
+		const result = __kustoPrettifyKusto(input);
+		expect(result).toMatch(/count\(\)\s*,/);
+		expect(result).toMatch(/avg\(Value\)\s*,/);
+	});
+});
