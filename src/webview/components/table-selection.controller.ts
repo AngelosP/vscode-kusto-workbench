@@ -224,10 +224,36 @@ export class TableSelectionController implements ReactiveController {
 	};
 
 	private _onDocumentKeydown = (e: KeyboardEvent): void => {
-		if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'c') return;
+		if (!(e.ctrlKey || e.metaKey)) return;
+		const key = String(e.key).toLowerCase();
+		const active = document.activeElement as HTMLElement | null;
+		const target = (e.target as HTMLElement | null);
+		const activeInHost = !!(active && this.host.contains(active));
+		const targetInHost = !!(target && this.host.contains(target));
+
+		if (key === 'a') {
+			if (!activeInHost && !targetInHost) return;
+			// Don't hijack Ctrl+A while user is editing text inside table chrome.
+			const editable = (active ?? target);
+			if (editable && (
+				editable instanceof HTMLInputElement ||
+				editable instanceof HTMLTextAreaElement ||
+				editable.isContentEditable
+			)) {
+				return;
+			}
+			e.preventDefault();
+			e.stopPropagation();
+			if (typeof (e as any).stopImmediatePropagation === 'function') (e as any).stopImmediatePropagation();
+			this.selectAll();
+			return;
+		}
+
+		if (key !== 'c') return;
 		if (!this.isSelectionInThisTable()) return;
 		e.preventDefault();
 		e.stopPropagation();
+		if (typeof (e as any).stopImmediatePropagation === 'function') (e as any).stopImmediatePropagation();
 		this.copy();
 	};
 

@@ -509,6 +509,17 @@ document.addEventListener('keydown', (event: any) => {
 	if (!(event.ctrlKey || event.metaKey)) {
 		return;
 	}
+	// Only handle when the key event originates from inside a Monaco editor.
+	// Without this check, Ctrl+C/X from other focusable areas (e.g. kw-data-table)
+	// would be stolen by Monaco even when the table has its own selection.
+	try {
+		const t = event.target;
+		if (!t || !t.closest || !t.closest('.monaco-editor')) {
+			return;
+		}
+	} catch {
+		return;
+	}
 	const editor = __kustoGetFocusedMonacoEditor();
 	if (!editor) {
 		return;
@@ -541,9 +552,21 @@ document.addEventListener('keydown', (event: any) => {
 // NOTE: These are intentionally NOT prevented above, because the keydown handler
 // only prevents events when a Monaco editor has focus.
 document.addEventListener('cut', (event: any) => {
+	try {
+		const target = event?.target;
+		if (target && typeof target.closest === 'function' && target.closest('kw-data-table')) {
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
 	void __kustoCopyOrCutFocusedMonaco(event, true);
 }, true);
 document.addEventListener('copy', (event: any) => {
+	try {
+		const target = event?.target;
+		if (target && typeof target.closest === 'function' && target.closest('kw-data-table')) {
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
 	void __kustoCopyOrCutFocusedMonaco(event, false);
 }, true);
 
