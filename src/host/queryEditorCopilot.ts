@@ -18,6 +18,7 @@ import {
 	getCopilotLocalTools as getCopilotLocalToolsFn,
 	buildOptimizeQueryPrompt as buildOptimizeQueryPromptFn
 } from './copilotPromptUtils';
+import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 
 /**
  * Interface that the CopilotService uses to call back into the host (QueryEditorProvider).
@@ -885,9 +886,7 @@ Completion:`;
 		);
 
 		if (choice === openAgent) {
-			try {
-				await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
-			} catch { /* ignore */ }
+			await openKustoWorkbenchAgentChat();
 			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'openedAgent' });
 		} else if (choice === useChat) {
 			this.host.postMessage({ type: 'copilotChatFirstTimeResult', boxId, action: 'proceed' });

@@ -844,7 +844,7 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-					if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
+					if (!pState.restoreInProgress && typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
 						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
 					}
 				} catch (e) { console.error('[kusto]', e); }

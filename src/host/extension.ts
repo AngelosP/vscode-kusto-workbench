@@ -12,6 +12,7 @@ import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
 import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './kustoWorkbenchTools';
 import { registerRemoteFileOpener } from './remoteFileOpener';
+import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -747,9 +748,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openCustomAgent', async () => {
-			try {
-				await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
-			} catch { /* ignore */ }
+			await openKustoWorkbenchAgentChat();
 		})
 	);
 }

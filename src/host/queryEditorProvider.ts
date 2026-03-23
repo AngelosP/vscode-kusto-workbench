@@ -11,6 +11,7 @@ import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
+import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { ConnectionService, ConnectionServiceHost, getClusterShortName } from './queryEditorConnection';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
 import {
@@ -370,9 +371,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this.copilot.clearCopilotConversation(message.boxId);
 				return;
 			case 'openCopilotAgent':
-				try {
-					await vscode.commands.executeCommand('workbench.action.chat.open', { mode: 'Kusto Workbench' });
-				} catch { /* ignore */ }
+				await openKustoWorkbenchAgentChat();
 				return;
 			case 'copilotChatFirstTimeCheck':
 				await this.copilot.handleCopilotChatFirstTimeCheck(message.boxId);

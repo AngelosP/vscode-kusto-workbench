@@ -23,7 +23,7 @@ import { addTransformationBox, removeTransformationBox, transformationBoxes } fr
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
-import { __kustoUpdateSchemaForFocusedBox } from '../monaco/monaco';
+
 
 const _win = window;
 // Persistence + .kqlx document round-tripping.
@@ -1275,29 +1275,10 @@ export function handleDocumentDataMessage(message: any) {
 		console.log('%c[schema-diag] FILE OPENED — sections:', 'color:#0af;font-weight:bold', sectionSummary);
 	} catch (e) { console.error('[schema-diag]', e); }
 
-	// Update monaco-kusto schema for the FIRST visible/expanded Kusto section only
-	// Monaco-kusto can only have ONE schema in context at a time, so we only load for the first box.
-	// When user clicks on another box, that box's schema will be loaded via __kustoUpdateSchemaForFocusedBox.
-	try {
-		setTimeout(() => {
-			try {
-				if (typeof queryBoxes !== 'undefined' && Array.isArray(queryBoxes)) {
-					for (const boxId of queryBoxes) {
-						// Check if this box is expanded (visible)
-						let expanded = true;
-						try {
-							expanded = !(_win.__kustoQueryExpandedByBoxId && _win.__kustoQueryExpandedByBoxId[boxId] === false);
-						} catch (e) { console.error('[kusto]', e); }
-						if (expanded && typeof __kustoUpdateSchemaForFocusedBox === 'function') {
-							// Only request schema for the first expanded box, then break
-							__kustoUpdateSchemaForFocusedBox(boxId);
-							break;
-						}
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-		}, 100); // Small delay to ensure editors are mounted
-	} catch (e) { console.error('[kusto]', e); }
+	// Schema loading is purely focus-driven: onDidFocusEditorText in monaco.ts
+	// calls __kustoUpdateSchemaForFocusedBox when the user clicks into a section.
+	// No proactive/timer-based loading here — avoids a race where the timer could
+	// overwrite the schema of the section the user already focused.
 
 	// Persistence remains enabled; edits will persist via event hooks.
 }

@@ -671,15 +671,16 @@ window.addEventListener('message', async (event: any) => {
 				
 				// Check if this box is the active/focused box - if so, we should set it as the context
 				const isActiveBox = message.boxId === activeQueryEditorBoxId;
-				
-				// Always push schema to monaco-kusto if we have rawSchemaJson
-				// The __kustoSetMonacoKustoSchema function will:
-				// - Skip if already loaded (unless setAsContext is true)
-				// - Use setSchemaFromShowSchema for first schema
-				// - Use addDatabaseToSchema for subsequent schemas (aggregate approach)
-				// - If setAsContext is true, also switch the database in context
-				const shouldUpdate = schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database;
 				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
+
+				// When no editor has focus, skip pushing to the monaco-kusto worker.
+				// Schema data is already cached in schemaByBoxId above. When the user
+				// focuses a section, __kustoUpdateSchemaForFocusedBox will read from
+				// cache and push to the worker queue as the first operation — ensuring
+				// the correct database is in context immediately without queueing behind
+				// a flood of ADD operations from other sections' responses.
+				const shouldUpdate = schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database
+					&& (isActiveBox || isForceRefresh);
 				
 				if (shouldUpdate) {
 					const applySchema = async () => {

@@ -572,8 +572,13 @@ export class QueryConnectionController implements ReactiveController {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		this.ensureSchema(false);
+		// Only set the database-in-context when the user actually interacts.
+		// During restore every section fires onDatabaseChanged sequentially;
+		// calling __kustoUpdateSchemaForFocusedBox for each one races against
+		// async schema responses and the last to arrive wins — which may not
+		// be the section the user later clicks into.
 		try {
-			if (typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
+			if (!pState.restoreInProgress && typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
 				_win.__kustoUpdateSchemaForFocusedBox(boxId);
 			}
 		} catch (e) { console.error('[kusto]', e); }
