@@ -22,7 +22,8 @@ When the user asks to tag and/or push a release:
 
 1. Parse the version from the user's request (e.g. `v1.2.3`).
 2. Confirm the version looks valid (semver format: `vMAJOR.MINOR.PATCH`).
-3. Check that the working tree is clean (`git status --porcelain` should be empty). If there are uncommitted changes, **stop and tell the user** — do not proceed.
+3. Read `version.json` and verify its `"version"` field matches the requested version (strip leading `v`). If it doesn't match, **stop and tell the user** — the version must be updated in `version.json` before tagging.
+4. Check that the working tree is clean (`git status --porcelain` should be empty). If there are uncommitted changes, **stop and tell the user** — do not proceed.
 
 ### Phase 2: Run Quality Gates
 
@@ -76,27 +77,24 @@ If any gate failed, **stop here**. Show what failed and why. Do NOT create the t
 
 Only if ALL gates passed:
 
-1. Update `package.json` version to match the tag (strip leading `v`):
-   ```
-   npm version X.Y.Z --no-git-tag-version
-   ```
-2. Commit the version bump:
-   ```
-   git add package.json package-lock.json
-   git commit -m "release: vX.Y.Z"
-   ```
-3. Create the annotated tag:
+1. Create the annotated tag:
    ```
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    ```
-4. **Ask the user for confirmation** before pushing. Show them:
+2. **Ask the user for confirmation** before pushing. Show them:
    - The tag name
    - The commit hash
    - The remote and branch it will push to
-5. Only after explicit confirmation:
+3. Only after explicit confirmation:
    ```
    git push origin main --follow-tags
    ```
+
+## Version Management
+
+- The canonical version lives in `version.json`, **not** `package.json`.
+- `package.json` uses a placeholder version (`0.0.0-placeholder`) — the CI/CD pipeline stamps the real version at build time.
+- **Never run `npm version`** or modify `package.json` version during the release workflow.
 
 ## Important Rules
 
