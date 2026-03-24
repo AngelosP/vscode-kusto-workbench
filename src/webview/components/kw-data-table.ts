@@ -4,6 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { createTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, type Table, type ColumnDef, type SortingState, type ColumnFiltersState, type Row, type CellContext, type RowSelectionState, type Column } from '@tanstack/table-core';
 import type { KwObjectViewer } from './kw-object-viewer.js';
 import { rowMatchesFilterSpec, isColumnFiltered, getFilterSpecForColumn, type ColumnFilterSpec } from './kw-filter-dialog.js';
+import type { UniqueValuesMode } from './kw-unique-values-dialog.js';
 import './kw-filter-dialog.js';
 import './kw-sort-dialog.js';
 import { highlightMatches } from './search-utils.js';
@@ -250,6 +251,7 @@ export class KwDataTable extends LitElement {
 	@state() private _filterDialogColIndex: number | null = null;
 	@state() private _uniqueValuesOpen = false;
 	@state() private _uniqueValuesColIndex: number | null = null;
+	private _uniqueValuesMode: UniqueValuesMode = 'unique-values';
 	@state() private _bodyVisible = true;
 	@state() private _metaTooltipVisible = false;
 	private _metaTooltipPos = { top: 0, left: 0 };
@@ -626,9 +628,10 @@ export class KwDataTable extends LitElement {
 
 	// ── Unique values (delegated to <kw-unique-values-dialog>) ──
 
-	private _openUniqueValues(colIndex: number): void {
+	private _openUniqueValues(colIndex: number, mode: UniqueValuesMode): void {
 		this._closeColumnMenu();
 		this._uniqueValuesColIndex = colIndex;
+		this._uniqueValuesMode = mode;
 		this._uniqueValuesOpen = true;
 		this.updateComplete.then(() => {
 			const dlg = this.shadowRoot?.querySelector('kw-unique-values-dialog') as any;
@@ -758,6 +761,7 @@ export class KwDataTable extends LitElement {
 				.columns=${this.columns}
 				.rows=${this.rows}
 				.colIndex=${this._uniqueValuesColIndex ?? 0}
+				.mode=${this._uniqueValuesMode}
 				@unique-values-close=${() => this._closeUniqueValues()}
 			></kw-unique-values-dialog>` : nothing}
 			<kw-object-viewer></kw-object-viewer>
@@ -1017,7 +1021,8 @@ export class KwDataTable extends LitElement {
 			<div class="cms"></div>
 			<div class="cmi" @click=${() => { this._copyCol(ci); this._closeColumnMenu(); }}>Copy column values</div>
 			<div class="cms"></div>
-			<div class="cmi" @click=${() => this._openUniqueValues(ci)}>Show unique values</div>
+			<div class="cmi" @click=${() => this._openUniqueValues(ci, 'unique-values')}>Show unique values</div>
+			${this.columns.length >= 2 ? html`<div class="cmi" @click=${() => this._openUniqueValues(ci, 'unique-count')}>Unique count by column</div>` : nothing}
 		</div>`;
 	}
 

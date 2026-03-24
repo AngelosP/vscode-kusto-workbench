@@ -6,6 +6,8 @@ import { ensureEchartsLoaded } from '../shared/lazy-vendor.js';
 import { isDarkTheme } from '../monaco/theme.js';
 import { getCellDisplayValue, type DataTableColumn, type CellValue } from './kw-data-table.js';
 
+export type UniqueValuesMode = 'unique-values' | 'unique-count';
+
 const EMPTY_LABEL = '(empty)';
 const MAX_PIE_SLICES = 50;
 
@@ -16,9 +18,11 @@ export class KwUniqueValuesDialog extends LitElement {
 	@property({ type: Array }) columns: DataTableColumn[] = [];
 	@property({ type: Array }) rows: CellValue[][] = [];
 	@property({ type: Number }) colIndex = 0;
+	@property({ type: String }) mode: UniqueValuesMode = 'unique-values';
 
 	@state() private _open = false;
 	@state() private _labelDensity = 3;
+	@state() private _groupByColIndex = -1;
 
 	private _chartInstance: any = null;
 	private _dismissCb = (): void => { this.hide(); };
@@ -32,6 +36,10 @@ export class KwUniqueValuesDialog extends LitElement {
 		this._cachedAgg = null;
 		this._chartInitRetries = 0;
 		this._labelDensity = 3;
+		if (this.mode === 'unique-count') {
+			const first = this.columns.findIndex((_, i) => i !== this.colIndex);
+			this._groupByColIndex = first >= 0 ? first : 0;
+		}
 		pushDismissable(this._dismissCb);
 		this.updateComplete.then(() => this._initChart());
 	}
@@ -54,6 +62,15 @@ export class KwUniqueValuesDialog extends LitElement {
 
 	private _aggregate(): Array<[string, number]> {
 		if (this._cachedAgg) return this._cachedAgg;
+		if (this.mode === 'unique-count') {
+			this._cachedAgg = this._aggregateUniqueCount();
+		} else {
+			this._cachedAgg = this._aggregateUniqueValues();
+		}
+		return this._cachedAgg;
+	}
+
+	private _aggregateUniqueValues(): Array<[string, number]> {
 		const ci = this.colIndex;
 		const counts = new Map<string, number>();
 		for (const row of this.rows) {
@@ -61,8 +78,23 @@ export class KwUniqueValuesDialog extends LitElement {
 			const key = getCellDisplayValue(raw) || EMPTY_LABEL;
 			counts.set(key, (counts.get(key) ?? 0) + 1);
 		}
-		this._cachedAgg = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-		return this._cachedAgg;
+		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+	}
+
+	private _aggregateUniqueCount(): Array<[string, number]> {
+		const gi = this._groupByColIndex;
+		const ci = this.colIndex;
+		const groups = new Map<string, Set<string>>();
+		for (const row of this.rows) {
+			const groupKey = getCellDisplayValue(row[gi]) || EMPTY_LABEL;
+			const valKey = getCellDisplayValue(row[ci]) || EMPTY_LABEL;
+			let set = groups.get(groupKey);
+			if (!set) { set = new Set(); groups.set(groupKey, set); }
+			set.add(valKey);
+		}
+		return [...groups.entries()]
+			.map(([key, vals]) => [key, vals.size] as [string, number])
+			.sort((a, b) => b[1] - a[1]);
 	}
 
 	// ── ECharts ───────────────────────────────────────────────────────────
@@ -125,6 +157,12 @@ export class KwUniqueValuesDialog extends LitElement {
 		});
 	}
 
+	private _onGroupByChange(e: Event): void {
+		this._groupByColIndex = Number((e.target as HTMLSelectElement).value);
+		this._cachedAgg = null;
+		this.updateComplete.then(() => this._initChart());
+	}
+
 	// ── Render ─────────────────────────────────────────────────────────────
 
 	protected override render() {
@@ -132,7 +170,17 @@ export class KwUniqueValuesDialog extends LitElement {
 
 		const colName = this.columns[this.colIndex]?.name ?? `Column ${this.colIndex}`;
 		const agg = this._aggregate();
-		const tableColumns: DataTableColumn[] = [{ name: colName }, { name: 'Count', type: 'long' }];
+
+		let title: string;
+		let tableColumns: DataTableColumn[];
+		if (this.mode === 'unique-count') {
+			const groupByName = this.columns[this._groupByColIndex]?.name ?? `Column ${this._groupByColIndex}`;
+			title = `Unique count of ${colName}`;
+			tableColumns = [{ name: groupByName }, { name: `Distinct count of ${colName}`, type: 'long' }];
+		} else {
+			title = `Unique values for column ${colName}`;
+			tableColumns = [{ name: colName }, { name: 'Count', type: 'long' }];
+		}
 		const tableRows: CellValue[][] = agg.map(([key, count]) => [key, count]);
 
 		const ROW_H = 22; // compact row height (21px cell + 1px border)
@@ -144,10 +192,22 @@ export class KwUniqueValuesDialog extends LitElement {
 		<div class="modal-backdrop" @click=${this.hide}>
 			<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
 				<div class="modal-header">
-					<h3>Unique values for column ${colName}</h3>
+					<h3>${title}</h3>
 					<button class="close-btn" title="Close" @click=${this.hide}>✕</button>
 				</div>
 				<div class="modal-body">
+					${this.mode === 'unique-count' ? html`
+						<div class="uv-column-picker">
+							<label>Group by:</label>
+							<select @change=${this._onGroupByChange}>
+								${this.columns.map((col, i) =>
+									i !== this.colIndex
+										? html`<option value=${i} ?selected=${i === this._groupByColIndex}>${col.name}</option>`
+										: nothing
+								)}
+							</select>
+						</div>
+					` : nothing}
 					<div class="table-panel" style="height:${panelH}px">
 						<kw-data-table
 							.columns=${tableColumns}
@@ -156,7 +216,9 @@ export class KwUniqueValuesDialog extends LitElement {
 							@chrome-height-change=${(e: Event) => e.stopPropagation()}
 							@visible-row-count-change=${(e: Event) => e.stopPropagation()}
 							@visibility-toggle=${(e: Event) => e.stopPropagation()}
-							@save=${(e: Event) => e.stopPropagation()}						@unique-values-close=${(e: Event) => e.stopPropagation()}						></kw-data-table>
+							@save=${(e: Event) => e.stopPropagation()}
+							@unique-values-close=${(e: Event) => e.stopPropagation()}
+						></kw-data-table>
 					</div>
 					<div class="chart-panel">
 						<div class="chart-controls">

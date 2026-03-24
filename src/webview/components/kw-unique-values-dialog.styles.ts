@@ -44,4 +44,17 @@ export const styles = css`
 		width: 28px; height: 28px; border-radius: 4px; padding: 0;
 	}
 	.close-btn:hover { background: var(--vscode-list-hoverBackground); }
+
+	.uv-column-picker {
+		display: flex; align-items: center; gap: 8px;
+		padding: 0 4px 4px; font-size: 12px; color: var(--vscode-foreground);
+	}
+	.uv-column-picker label { white-space: nowrap; color: var(--vscode-descriptionForeground); }
+	.uv-column-picker select {
+		background: var(--vscode-dropdown-background);
+		color: var(--vscode-dropdown-foreground);
+		border: 1px solid var(--vscode-dropdown-border);
+		border-radius: 0; padding: 4px 6px;
+		font-size: 12px; font-family: inherit;
+	}
 `;
