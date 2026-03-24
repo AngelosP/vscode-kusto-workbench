@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [3.0.1] - 2026-03-23
+
+* Bug: Custom agent disappeared
+
 ## [3.0.0] - 2026-03-23
 
 * Added end-to-end tests that drive the UI interactively.

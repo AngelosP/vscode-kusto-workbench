@@ -24,7 +24,6 @@ browser-ext/**
 **/.vscode-test.*
 esbuild-errors.txt
 coverage/**
-copilot-instructions/**
 ARCHITECTURE.md
 CONTRIBUTING.md
 CHANGELOG.md
