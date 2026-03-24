@@ -248,6 +248,8 @@ export class KwDataTable extends LitElement {
 	@state() private _sortDialogOpen = false;
 	@state() private _filterDialogOpen = false;
 	@state() private _filterDialogColIndex: number | null = null;
+	@state() private _uniqueValuesOpen = false;
+	@state() private _uniqueValuesColIndex: number | null = null;
 	@state() private _bodyVisible = true;
 	@state() private _metaTooltipVisible = false;
 	private _metaTooltipPos = { top: 0, left: 0 };
@@ -269,6 +271,11 @@ export class KwDataTable extends LitElement {
 	private _columnWidths: number[] = [];
 	private _measureCanvas: HTMLCanvasElement | null = null;
 	private _lastVisibleRowCount = -1;
+	private _prevChromeHeight = 0;
+	private _prevSearchVis = false;
+	private _prevRowJumpVis = false;
+	private _prevColJumpVis = false;
+	private _chromeRafPending = false;
 
 	/** Visible row count after current sort/filter state is applied. */
 	public getVisibleRowCount(): number {
@@ -315,6 +322,17 @@ export class KwDataTable extends LitElement {
 		const emptyEl = totalRows === 0 ? sr.querySelector('.empty-body') as HTMLElement | null : null;
 		const emptyH = emptyEl ? emptyEl.getBoundingClientRect().height : 0;
 		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + emptyH + 25);
+	}
+
+	/** Sum of visible toolbar/sbar chrome element heights. */
+	private _measureChromeHeight(): number {
+		const sr = this.shadowRoot;
+		if (!sr) return 0;
+		let h = 0;
+		for (const bar of sr.querySelectorAll('.sbar')) {
+			h += (bar as HTMLElement).getBoundingClientRect().height;
+		}
+		return h;
 	}
 
 	// ── Controller host interface methods ──
@@ -386,9 +404,30 @@ export class KwDataTable extends LitElement {
 			if (this._filterDialogOpen) pushDismissable(this._dismissFilterDialog);
 			else removeDismissable(this._dismissFilterDialog);
 		}
-		// Notify parent when tabular chrome (search, row-jump, col-jump) toggles
-		if (changed.has('_colJumpOpen')) {
-			this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
+		// Notify parent when tabular chrome (search, row-jump, col-jump) toggles.
+		// Track visibility states explicitly and defer measurement to rAF so
+		// child components (kw-search-bar, etc.) have fully rendered.
+		const sVis = this._searchCtrl.visible;
+		const rVis = this._rowJumpCtrl.visible;
+		const cVis = this._colJumpOpen;
+		const chromeChanged = sVis !== this._prevSearchVis || rVis !== this._prevRowJumpVis || cVis !== this._prevColJumpVis;
+		this._prevSearchVis = sVis;
+		this._prevRowJumpVis = rVis;
+		this._prevColJumpVis = cVis;
+		if (chromeChanged && !this._chromeRafPending) {
+			this._chromeRafPending = true;
+			requestAnimationFrame(() => {
+				this._chromeRafPending = false;
+				const newH = this._measureChromeHeight();
+				const delta = newH - this._prevChromeHeight;
+				this._prevChromeHeight = newH;
+				if (delta !== 0) {
+					this.dispatchEvent(new CustomEvent('chrome-height-change', {
+						detail: { delta },
+						bubbles: true, composed: true,
+					}));
+				}
+			});
 		}
 	}
 	disconnectedCallback(): void {
@@ -568,6 +607,23 @@ export class KwDataTable extends LitElement {
 		this._filterDialogColIndex = null;
 	}
 
+	// ── Unique values (delegated to <kw-unique-values-dialog>) ──
+
+	private _openUniqueValues(colIndex: number): void {
+		this._closeColumnMenu();
+		this._uniqueValuesColIndex = colIndex;
+		this._uniqueValuesOpen = true;
+		this.updateComplete.then(() => {
+			const dlg = this.shadowRoot?.querySelector('kw-unique-values-dialog') as any;
+			dlg?.show();
+		});
+	}
+
+	private _closeUniqueValues(): void {
+		this._uniqueValuesOpen = false;
+		this._uniqueValuesColIndex = null;
+	}
+
 	private _onFilterApply = (e: CustomEvent<{ colIndex: number; filterSpec: ColumnFilterSpec | null }>): void => {
 		const { colIndex, filterSpec } = e.detail;
 		const id = String(colIndex);
@@ -681,6 +737,12 @@ export class KwDataTable extends LitElement {
 				@filter-close=${() => this._closeFilterDialog()}
 			></kw-filter-dialog>` : nothing}
 			${this._columnMenuOpen !== null ? this._renderColumnMenu() : nothing}
+			${this._uniqueValuesOpen ? html`<kw-unique-values-dialog
+				.columns=${this.columns}
+				.rows=${this.rows}
+				.colIndex=${this._uniqueValuesColIndex ?? 0}
+				@unique-values-close=${() => this._closeUniqueValues()}
+			></kw-unique-values-dialog>` : nothing}
 			<kw-object-viewer></kw-object-viewer>
 		</div>`;
 	}
@@ -937,6 +999,8 @@ export class KwDataTable extends LitElement {
 			<div class="cmi" @click=${() => this._openFilterDialog(ci)}>Filter...</div>
 			<div class="cms"></div>
 			<div class="cmi" @click=${() => { this._copyCol(ci); this._closeColumnMenu(); }}>Copy column values</div>
+			<div class="cms"></div>
+			<div class="cmi" @click=${() => this._openUniqueValues(ci)}>Show unique values</div>
 		</div>`;
 	}
 
@@ -961,7 +1025,7 @@ export class KwDataTable extends LitElement {
 		} else {
 			removeDismissable(this._dismissSearch);
 		}
-		this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
+		// chrome-height-change is now emitted centrally from updated()
 	}
 	private _toggleRowJump(totalRows: number): void {
 		this._rowJumpCtrl.toggle(totalRows);
@@ -975,7 +1039,7 @@ export class KwDataTable extends LitElement {
 		} else {
 			removeDismissable(this._dismissRowJump);
 		}
-		this.dispatchEvent(new CustomEvent('chrome-height-change', { bubbles: true, composed: true }));
+		// chrome-height-change is now emitted centrally from updated()
 	}
 	private _toggleBody(): void { this._bodyVisible = !this._bodyVisible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
 	private _onSortChange = (e: CustomEvent<{ sorting: SortingState }>): void => {

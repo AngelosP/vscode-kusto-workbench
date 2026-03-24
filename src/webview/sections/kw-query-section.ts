@@ -1004,20 +1004,15 @@ export class KwQuerySection extends LitElement {
 		});
 
 		// Adjust wrapper height when data-table chrome (search bar, row-jump, etc.) toggles.
-		dt.addEventListener('chrome-height-change', () => {
+		// Apply the delta so the visible data area stays the same size.
+		dt.addEventListener('chrome-height-change', (e: Event) => {
 			if (!resultsWrapper) return;
-			// Skip if collapsed or hidden.
 			const curH = parseInt(resultsWrapper.style.height, 10);
+			// Skip if collapsed or hidden.
 			if (!curH || curH <= 40) return;
-			requestAnimationFrame(() => {
-				if (typeof dt.getContentHeight !== 'function') return;
-				const contentH = dt.getContentHeight();
-				if (contentH <= 0) return;
-				const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
-				const desiredH = contentH + resizerH + 1;
-				// Grow or shrink the wrapper to fit, capped to 900px.
-				resultsWrapper.style.height = Math.max(120, Math.min(900, desiredH)) + 'px';
-			});
+			const delta = (e as CustomEvent).detail?.delta ?? 0;
+			if (delta === 0) return;
+			resultsWrapper.style.height = Math.max(120, Math.min(900, curH + delta)) + 'px';
 		});
 
 		resultsDiv.appendChild(dt);
