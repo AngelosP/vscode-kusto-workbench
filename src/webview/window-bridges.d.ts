@@ -549,7 +549,6 @@ declare global {
 		__kustoOnConnectionsUpdated?: () => void;
 		__kustoPendingChartConfig?: Record<string, any>;
 		__kustoPendingTransformationConfig?: Record<string, any>;
-		__kustoSetSectionExpanded?: (boxId: string, expanded: boolean) => void;
 		__kustoDevNotesEnabled?: boolean;
 		__kustoRequestKqlTableReferences?: (args: any) => Promise<any>;
 

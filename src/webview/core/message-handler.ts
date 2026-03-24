@@ -345,7 +345,7 @@ window.addEventListener('message', async (event: any) => {
 			// Respond to extension host if a requestId was provided
 			try {
 				if (message.requestId) {
-					postMessageToHost({ type: 'updateDevNotesResponse', requestId: message.requestId, success: true });
+					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: true } });
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1546,16 +1546,10 @@ window.addEventListener('message', async (event: any) => {
 				let success = false;
 				
 				try {
-					if (typeof window.__kustoSetSectionExpanded === 'function') {
-						window.__kustoSetSectionExpanded(sectionId, !collapsed);
+					const sectionEl = document.getElementById(sectionId) as any;
+					if (sectionEl && typeof sectionEl.setExpanded === 'function') {
+						sectionEl.setExpanded(!collapsed);
 						success = true;
-					} else {
-						// Fallback: toggle visibility directly
-						const contentEl = document.getElementById(sectionId + '_content') as any;
-						if (contentEl) {
-							contentEl.style.display = collapsed ? 'none' : '';
-							success = true;
-						}
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error collapsing section:', err);

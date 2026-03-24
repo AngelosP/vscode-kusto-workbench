@@ -1439,6 +1439,20 @@ export class KwChartSection extends LitElement {
 		return m ? parseInt(m[1], 10) : undefined;
 	}
 
+	/** Set expanded state. */
+	public setExpanded(expanded: boolean): void {
+		this._expanded = expanded;
+		this._updateHostClasses();
+		const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
+		if (wrapper) wrapper.style.display = expanded ? '' : 'none';
+		if (expanded) {
+			this._applyModeToDom();
+			this._renderChart();
+		}
+		this._writeToGlobalChartState();
+		this._schedulePersist();
+	}
+
 	/** Get section name. */
 	public getName(): string {
 		return this._name;

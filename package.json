@@ -1075,7 +1075,7 @@
         ],
         "toolReferenceName": "manageDevelopmentNotes",
         "displayName": "Manage Development Notes",
-        "modelDescription": "Add, remove, or update development notes in the current Kusto Workbench file. Development notes capture important insights (corrections, clarifications, schema hints, gotchas) that persist across sessions. Use 'add' to save a new note, 'remove' to delete an outdated note by ID, or 'add' with 'supersedes' to replace an existing note. Use ONLY for non-obvious insights that would prevent repeating mistakes. Notes are visible via the list-sections tool.",
+        "modelDescription": "View, add, remove, or update development notes in the current Kusto Workbench file. Development notes capture important insights (corrections, clarifications, schema hints, gotchas) that persist across sessions. Use 'view' to read all existing notes, 'add' to save a new note, 'remove' to delete an outdated note by ID, or 'add' with 'supersedes' to replace an existing note. Use ONLY for non-obvious insights that would prevent repeating mistakes.",
         "userDescription": "Manage development notes that help AI assistants work better with this file.",
         "canBeReferencedInPrompt": true,
         "icon": "$(notebook)",
@@ -1086,9 +1086,10 @@
               "type": "string",
               "enum": [
                 "add",
-                "remove"
+                "remove",
+                "view"
               ],
-              "description": "The action to perform: 'add' a new note, or 'remove' an existing one."
+              "description": "The action to perform: 'view' to read all notes, 'add' a new note, or 'remove' an existing one."
             },
             "category": {
               "type": "string",

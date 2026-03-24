@@ -200,7 +200,7 @@ export interface CreateFileInput {
 }
 
 export interface ManageDevelopmentNotesInput {
-	action: 'add' | 'remove';
+	action: 'add' | 'remove' | 'view';
 	/** For 'add': the category of the note */
 	category?: 'correction' | 'clarification' | 'schema-hint' | 'usage-note' | 'gotcha';
 	/** For 'add': concise note content */
@@ -489,7 +489,11 @@ export class KustoWorkbenchToolOrchestrator {
 		return [];
 	}
 
-	async manageDevelopmentNotes(input: ManageDevelopmentNotesInput): Promise<{ success: boolean; noteId?: string; error?: string }> {
+	async manageDevelopmentNotes(input: ManageDevelopmentNotesInput): Promise<{ success: boolean; noteId?: string; notes?: DevNoteEntry[]; error?: string }> {
+		if (input.action === 'view') {
+			const notes = await this.getDevNotes();
+			return { success: true, notes };
+		}
 		if (input.action === 'add') {
 			if (!input.content || !input.category) {
 				return { success: false, error: 'Both "content" and "category" are required when adding a development note.' };
@@ -1175,9 +1179,11 @@ export class ManageDevelopmentNotesTool implements vscode.LanguageModelTool<Mana
 	): Promise<vscode.PreparedToolInvocation> {
 		const input = getToolInput(options);
 		const action = input?.action || 'add';
-		const message = action === 'add'
-			? `Saving development note${input?.category ? ` (${input.category})` : ''}...`
-			: `Removing development note${input?.noteId ? ` ${input.noteId}` : ''}...`;
+		const message = action === 'view'
+			? 'Reading development notes...'
+			: action === 'add'
+				? `Saving development note${input?.category ? ` (${input.category})` : ''}...`
+				: `Removing development note${input?.noteId ? ` ${input.noteId}` : ''}...`;
 		return {
 			invocationMessage: message
 		};

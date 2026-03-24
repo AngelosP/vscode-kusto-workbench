@@ -1815,6 +1815,17 @@ export class KwTransformationSection extends LitElement {
 		}
 	}
 
+	/** Set expanded state. */
+	public setExpanded(expanded: boolean): void {
+		this._expanded = expanded;
+		this._updateHostClasses();
+		this._writeToGlobalState();
+		if (expanded) {
+			this._computeTransformation();
+		}
+		this._schedulePersist();
+	}
+
 	/** Get section name. */
 	public getName(): string {
 		return this._name;

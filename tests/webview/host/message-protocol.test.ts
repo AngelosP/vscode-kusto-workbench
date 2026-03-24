@@ -155,9 +155,6 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
 
-	// Dev notes
-	'updateDevNotesResponse',
-
 	// Debug
 	'debugMdSearchReveal',
 
@@ -178,7 +175,6 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 	'persistDocument',
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
-	'updateDevNotesResponse',
 	'debugMdSearchReveal',
 ]);
 
