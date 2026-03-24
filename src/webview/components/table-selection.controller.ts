@@ -22,6 +22,7 @@ export interface SelectionHost extends ReactiveControllerHost, HTMLElement {
 	getTableRows(): Array<{ original: CellValue[] }>;
 	getColumnCount(): number;
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' }): void;
+	scrollColumnIntoView(col: number): void;
 }
 
 /**
@@ -165,6 +166,7 @@ export class TableSelectionController implements ReactiveController {
 		}
 		this.selectedCell = { row: nr, col: nc };
 		this.host.scrollToRow(nr, { align: 'auto' });
+		this.host.scrollColumnIntoView(nc);
 		this.host.requestUpdate();
 	}
 

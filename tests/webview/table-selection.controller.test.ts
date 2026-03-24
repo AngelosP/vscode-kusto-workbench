@@ -23,6 +23,7 @@ function createMockHost(
 		getTableRows: () => rows.map(r => ({ original: r })),
 		getColumnCount: () => columns.length,
 		scrollToRow: vi.fn(),
+		scrollColumnIntoView: vi.fn(),
 	});
 }
 

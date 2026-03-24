@@ -343,6 +343,23 @@ export class KwDataTable extends LitElement {
 	getColumnCount(): number { return this.columns.length; }
 	getSelectedCol(): number { return this._selectionCtrl.selectedCell?.col ?? 0; }
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' | 'start' | 'end' }): void { this._vScrollCtrl.scrollToIndex(index, opts); }
+	scrollColumnIntoView(col: number): void {
+		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		if (!el) return;
+		const colWidths = this._layoutColumns().widths;
+		const cellLeft = colWidths.slice(0, col).reduce((sum, w) => sum + w, ROW_NUMBER_WIDTH);
+		const cellRight = cellLeft + (colWidths[col] ?? 0);
+		const viewLeft = el.scrollLeft;
+		const viewRight = viewLeft + el.clientWidth;
+		if (cellLeft < viewLeft + ROW_NUMBER_WIDTH) {
+			el.scrollLeft = Math.max(0, cellLeft - ROW_NUMBER_WIDTH);
+		} else if (cellRight > viewRight) {
+			el.scrollLeft = cellRight - el.clientWidth;
+		} else {
+			return;
+		}
+		this._vScrollCtrl.syncHeaderScroll();
+	}
 	setSelectedCell(cell: { row: number; col: number } | null): void { this._selectionCtrl.setSelectedCell(cell); }
 	clearSelectionRange(): void { this._selectionCtrl.clearSelectionRange(); }
 

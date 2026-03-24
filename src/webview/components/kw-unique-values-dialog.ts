@@ -135,8 +135,8 @@ export class KwUniqueValuesDialog extends LitElement {
 		const tableColumns: DataTableColumn[] = [{ name: colName }, { name: 'Count', type: 'long' }];
 		const tableRows: CellValue[][] = agg.map(([key, count]) => [key, count]);
 
-		const ROW_H = 22; // compact row height
-		const OVERHEAD = 20; // toolbar + column header accounted by kw-data-table internals
+		const ROW_H = 22; // compact row height (21px cell + 1px border)
+		const OVERHEAD = 90; // hbar ~40 + column-header ~22 + internal padding ~25 + border
 		const maxVisible = Math.min(agg.length, 10);
 		const panelH = OVERHEAD + maxVisible * ROW_H;
 
