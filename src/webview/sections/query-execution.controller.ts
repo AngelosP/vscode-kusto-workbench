@@ -37,7 +37,7 @@ import { getRunMode, setRunMode, closeRunMenu } from './kw-query-toolbar';
 import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
-	queryExecutionTimers, schemaByBoxId, queryBoxes,
+	queryExecutionTimers, schemaByBoxId, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
@@ -1224,6 +1224,12 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 			if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
 			compKwEl.dispatchEvent(new CustomEvent('connection-changed', { detail: { boxId: comparisonBoxId, connectionId }, bubbles: true, composed: true }));
 			setTimeout(() => { try { if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database); } catch (e) { console.error('[kusto]', e); } }, 100);
+			// Carry over favorites mode from source section.
+			const srcKwEl = __kustoGetQuerySectionElement(boxId);
+			if (srcKwEl && typeof srcKwEl.isFavoritesMode === 'function' && srcKwEl.isFavoritesMode()) {
+				if (typeof compKwEl.setFavoritesMode === 'function') compKwEl.setFavoritesMode(true);
+				if (typeof favoritesModeByBoxId === 'object') favoritesModeByBoxId[comparisonBoxId] = true;
+			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
