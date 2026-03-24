@@ -186,7 +186,7 @@ export interface CreateFileInput {
 	fileType: 'kqlx' | 'mdx' | 'kql' | 'csl' | 'md' | 'kql-sidecar' | 'csl-sidecar';
 	/**
 	 * The full file path (without extension) where the file should be created.
-	 * The LLM must always provide a filename. If not provided, a default will be generated.
+	 * The LLM must always provide a filePath. If not provided, a default will be generated.
 	 * Example: '/path/to/my-queries/analysis' will create 'analysis.kqlx' (or appropriate extension)
 	 */
 	filePath?: string;

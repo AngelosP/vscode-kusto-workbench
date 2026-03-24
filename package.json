@@ -1050,7 +1050,7 @@
             },
             "filePath": {
               "type": "string",
-              "description": "REQUIRED: Full file path (without extension) where to create the file. You MUST generate an appropriate filename based on the context. Use the current workspace folder as the base path. Example: '/Users/name/project/my-analysis' will create 'my-analysis.kqlx'. Always provide a descriptive filename."
+              "description": "REQUIRED: Full file path (without extension) where to create the file. You MUST generate an appropriate file path based on the context. Use the current workspace folder as the base path. Example: '/Users/name/project/my-analysis' will create 'my-analysis.kqlx'. Always provide a descriptive file path."
             },
             "initialContent": {
               "type": "string",
