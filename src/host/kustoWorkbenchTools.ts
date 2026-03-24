@@ -104,7 +104,7 @@ export interface CollapseSectionInput {
 }
 
 export interface ReorderSectionsInput {
-	/** Array of section IDs in the desired order. All section IDs must be included. */
+	/** Array of section IDs in the desired order. All section IDs must be included. Devnotes IDs are accepted but silently ignored (they have no visual position). */
 	sectionIds: string[];
 }
 

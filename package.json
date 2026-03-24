@@ -629,7 +629,7 @@
         ],
         "toolReferenceName": "reorderSections",
         "displayName": "Reorder Sections",
-        "modelDescription": "Reorders all sections in the Kusto Workbench notebook. Provide an array of ALL section IDs in the desired order. Use #listSections first to get the current section IDs. This is the safe way to reorganize content without accidentally losing sections.",
+        "modelDescription": "Reorders all sections in the Kusto Workbench notebook. Provide an array of ALL section IDs in the desired order. Use #listSections first to get the current section IDs. Devnotes section IDs may be included (they are silently ignored since they have no visual position). This is the safe way to reorganize content without accidentally losing sections.",
         "userDescription": "Reorder sections in the workbench notebook.",
         "canBeReferencedInPrompt": true,
         "icon": "$(list-ordered)",
@@ -641,7 +641,7 @@
               "items": {
                 "type": "string"
               },
-              "description": "Array of ALL section IDs in the desired order. Must include every section ID from #listSections."
+              "description": "Array of ALL section IDs in the desired order. Must include every section ID from #listSections. Devnotes section IDs may be included but are silently ignored."
             }
           },
           "required": [

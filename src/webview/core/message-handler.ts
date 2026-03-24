@@ -1566,7 +1566,9 @@ window.addEventListener('message', async (event: any) => {
 			// Reorder all sections in the notebook
 			try {
 				const requestId = String(message.requestId || '');
-				const sectionIds = Array.isArray(message.sectionIds) ? message.sectionIds.map((id: any) => String(id)) : [];
+				const rawSectionIds = Array.isArray(message.sectionIds) ? message.sectionIds.map((id: any) => String(id)) : [];
+				// Strip devnotes IDs — they have no DOM presence and cannot be reordered
+				const sectionIds = rawSectionIds.filter((id: any) => !id.startsWith('devnotes_'));
 				let success = false;
 				let error = '';
 				
