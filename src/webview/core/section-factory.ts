@@ -1848,7 +1848,7 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 					dataSourceExists = true;
 					const cols = Array.isArray(dsState.columns) ? dsState.columns : [];
 					const rows = Array.isArray(dsState.rows) ? dsState.rows : [];
-					availableColumns = cols.map((c: any) => String(c || ''));
+					availableColumns = cols.map((c: any) => typeof c === 'string' ? c : String(c?.name || ''));
 					dataSourceHasData = cols.length > 0 && rows.length > 0;
 					if (!dataSourceHasData) {
 						if (cols.length === 0) {

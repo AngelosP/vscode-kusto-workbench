@@ -1581,9 +1581,10 @@ window.addEventListener('message', async (event: any) => {
 					if (!container) {
 						error = 'Container not found';
 					} else {
-						// Get current section elements
-						const currentBoxes = Array.from(container.querySelectorAll('.query-box'));
-						const currentIds = currentBoxes.map((el: any) => el.id).filter((id: any) => id);
+						// Get current section elements (all direct children with an id)
+						const currentIds = Array.from(container.children)
+							.map((el: any) => el.id)
+							.filter((id: any) => id);
 						
 						// Validate: all current IDs must be in the new order
 						const missingIds = currentIds.filter((id: any) => !sectionIds.includes(id));
