@@ -7,7 +7,7 @@ export const styles = css`
 		.dt.no-top-border{border-top:none}
 
 		/* Header bar */
-		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background);flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
+		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:transparent;flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
 		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:-4px}.et{opacity:.7}
 		.tb{display:flex;gap:2px;align-items:center;flex-shrink:0}
 		.sep{width:1px;height:16px;background:var(--vscode-input-border, rgba(128,128,128,0.3));margin:0 2px}

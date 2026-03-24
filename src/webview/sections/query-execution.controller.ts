@@ -879,9 +879,9 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	let extentsMessage = null;
 	let cacheMessage = null;
 	if (sourceStats && comparisonStats) {
-		cpuMessage = formatDelta(sourceStats.cpuTimeMs, comparisonStats.cpuTimeMs, { emoji: '\uD83D\uDDA5\uFE0F', label: 'Server CPU', formatter: fmtCpuMs, lowerIsBetter: true });
-		memoryMessage = formatDelta(sourceStats.peakMemoryPerNode, comparisonStats.peakMemoryPerNode, { emoji: '\uD83D\uDCBE', label: 'Peak memory', formatter: fmtBytes, lowerIsBetter: true });
-		extentsMessage = formatDelta(sourceStats.extentsScanned, comparisonStats.extentsScanned, { emoji: '\uD83D\uDCCA', label: 'Extents scanned', formatter: fmtNum, lowerIsBetter: true });
+		cpuMessage = formatDelta(sourceStats.cpuTimeMs, comparisonStats.cpuTimeMs, { emoji: '\u2699\uFE0F', label: 'Server CPU', formatter: fmtCpuMs, lowerIsBetter: true });
+		memoryMessage = formatDelta(sourceStats.peakMemoryPerNode, comparisonStats.peakMemoryPerNode, { emoji: '\uD83E\uDDE0', label: 'Peak memory', formatter: fmtBytes, lowerIsBetter: true });
+		extentsMessage = formatDelta(sourceStats.extentsScanned, comparisonStats.extentsScanned, { emoji: '\uD83D\uDD0D', label: 'Extents scanned', formatter: fmtNum, lowerIsBetter: true });
 		const cacheRate = (stats: any) => {
 			const mh = typeof stats.memoryCacheHits === 'number' ? stats.memoryCacheHits : 0;
 			const mm = typeof stats.memoryCacheMisses === 'number' ? stats.memoryCacheMisses : 0;
