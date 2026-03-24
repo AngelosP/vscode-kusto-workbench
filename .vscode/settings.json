@@ -41,6 +41,10 @@
             "matchCommandLine": true
         },
         "ConvertTo-Json": true,
-        "npx eslint": true
+        "npx eslint": true,
+        "/^node esbuild\\.js --production$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }
