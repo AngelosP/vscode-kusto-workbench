@@ -49,6 +49,7 @@ import {
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
 	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
+	favoritesModeByBoxId,
 } from './state';
 
 const _win = window;
@@ -1148,6 +1149,15 @@ window.addEventListener('message', async (event: any) => {
 					setTimeout(() => {
 						if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
 					}, 100);
+					// Carry over favorites mode from source section so the comparison
+					// section uses the same connection UI (favorites vs cluster/db dropdowns).
+					try {
+						const sourceKwEl = __kustoGetQuerySectionElement(sourceBoxId);
+						if (sourceKwEl && typeof sourceKwEl.isFavoritesMode === 'function' && sourceKwEl.isFavoritesMode()) {
+							if (typeof compKwEl.setFavoritesMode === 'function') compKwEl.setFavoritesMode(true);
+							if (typeof favoritesModeByBoxId === 'object') favoritesModeByBoxId[comparisonBoxId] = true;
+						}
+					} catch (e) { console.error('[kusto]', e); }
 				}
 				
 				// Set the query name
