@@ -697,7 +697,7 @@ export class KwDataTable extends LitElement {
 			<div class="vscroll" @keydown=${this._onKeydown} tabindex="0"
 				@scroll=${this._onBodyScroll}
 				@mousedown=${(e: MouseEvent) => sel.onTableMouseDown(e)}>
-			<div class="dtable-head-wrap">
+			<div class="dtable-head-wrap" style="min-width:${tableWidth}px;">
 				<table class="dtable" id="dt-head" style="width:${tableWidth}px;min-width:${tableWidth}px;">
 					<colgroup>
 						<col style="width:${ROW_NUMBER_WIDTH}px;min-width:${ROW_NUMBER_WIDTH}px;max-width:${ROW_NUMBER_WIDTH}px;" />
