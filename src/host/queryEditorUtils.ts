@@ -38,6 +38,32 @@ export function formatQueryExecutionErrorForUser(errorMessage: string, clusterUr
 			`Technical details: ${cleaned}`
 		);
 	}
+	if (/timeout of \d+ms exceeded/i.test(lower)) {
+		const match = cleaned.match(/timeout of (\d+)ms/i);
+		const minutes = match ? Math.round(parseInt(match[1], 10) / 60000) : undefined;
+		const timeStr = minutes ? ` (${minutes} min)` : '';
+		return (
+			`Query exceeded the client-side timeout${timeStr} for ${cluster}${dbSuffix}.\n` +
+			`The query may still be running on the server.\n` +
+			`Next steps:\n` +
+			`- Increase the timeout: Settings \u2192 Kusto Workbench \u2192 Query Timeout\n` +
+			`- Optimize the query to return results faster\n` +
+			`- Check the server-side timeout limits with your cluster admin\n` +
+			`\n` +
+			`Technical details: ${cleaned}`
+		);
+	}
+	if (/exceeded.*timeout|request.*timed\s*out/i.test(lower) && !lower.includes('etimedout')) {
+		return (
+			`Query exceeded the server's time limit on ${cluster}${dbSuffix}.\n` +
+			`Next steps:\n` +
+			`- Optimize the query to run faster\n` +
+			`- Prefix the query with \`set servertimeout=10m;\` to request more time\n` +
+			`- Ask the cluster admin for a higher timeout policy\n` +
+			`\n` +
+			`Technical details: ${cleaned}`
+		);
+	}
 	if (lower.includes('etimedout') || lower.includes('timeout')) {
 		return (
 			`Connection timed out reaching ${cluster}${dbSuffix}.\n` +

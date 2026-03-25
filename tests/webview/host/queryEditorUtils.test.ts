@@ -34,9 +34,33 @@ describe('formatQueryExecutionErrorForUser', () => {
 		expect(result).toContain('VPN');
 	});
 
-	it('formats timeout errors', () => {
+	it('formats network timeout errors (ETIMEDOUT)', () => {
 		const result = formatQueryExecutionErrorForUser('ETIMEDOUT', 'https://cluster.kusto.windows.net');
-		expect(result).toContain('timed out');
+		expect(result).toContain('Connection timed out');
+		expect(result).toContain('VPN');
+	});
+
+	it('formats client HTTP timeout (Axios)', () => {
+		const result = formatQueryExecutionErrorForUser('timeout of 270000ms exceeded', 'https://cluster.kusto.windows.net');
+		expect(result).toContain('client-side timeout');
+		expect(result).toContain('Query Timeout');
+		expect(result).not.toContain('VPN');
+	});
+
+	it('extracts minutes from client HTTP timeout message', () => {
+		const result = formatQueryExecutionErrorForUser('timeout of 1200000ms exceeded', 'https://cluster.kusto.windows.net');
+		expect(result).toContain('20 min');
+	});
+
+	it('formats server-side query timeout', () => {
+		const result = formatQueryExecutionErrorForUser('Request is not allowed as it has exceeded the allowed timeout', 'https://cluster.kusto.windows.net');
+		expect(result).toContain("server's time limit");
+		expect(result).toContain('servertimeout');
+	});
+
+	it('formats server-side request timed out', () => {
+		const result = formatQueryExecutionErrorForUser('Query execution request timed out', 'https://cluster.kusto.windows.net');
+		expect(result).toContain("server's time limit");
 	});
 
 	it('formats DNS errors', () => {
@@ -67,7 +91,7 @@ describe('formatQueryExecutionErrorForUser', () => {
 
 	it('strips "Query execution failed:" prefix', () => {
 		const result = formatQueryExecutionErrorForUser('Query execution failed: timeout', 'https://c.kusto.windows.net');
-		expect(result).toContain('timed out');
+		expect(result).toContain('Connection timed out');
 	});
 
 	it('shows short first line for semantic errors', () => {

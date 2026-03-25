@@ -200,12 +200,17 @@ export class KustoQueryClient {
 	/**
 	 * Creates a {@link ClientRequestProperties} with the `Application` and `ClientActivityId` headers set.
 	 * @param activityPrefix Short label for the operation, e.g. `execute_query` or `get_databases`.
+	 * @param clientTimeoutMs Optional client-side HTTP timeout in milliseconds. When set, the SDK
+	 *   keeps the HTTP connection open for this long without altering the server-side timeout.
 	 */
-	private async createRequestProperties(activityPrefix: string): Promise<any> {
+	private async createRequestProperties(activityPrefix: string, clientTimeoutMs?: number): Promise<any> {
 		const { ClientRequestProperties } = await import('azure-kusto-data');
 		const props = new ClientRequestProperties();
 		props.clientRequestId = `KW.${activityPrefix};${randomUUID()}`;
 		props.application = KustoQueryClient.APPLICATION_NAME;
+		if (clientTimeoutMs && clientTimeoutMs > 0) {
+			props.setClientTimeout(clientTimeoutMs);
+		}
 		return props;
 	}
 
@@ -933,7 +938,9 @@ export class KustoQueryClient {
 		
 		let requestClientActivityId: string | undefined;
 		try {
-			const props = await this.createRequestProperties('execute_query');
+			const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
+			const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
+			const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
 			requestClientActivityId = props.clientRequestId;
 			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
@@ -1053,7 +1060,9 @@ export class KustoQueryClient {
 				if (cancelled) {
 					throw new QueryCancelledError();
 				}
-				const props = await this.createRequestProperties('execute_query');
+				const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
+				const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
+				const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
 				requestClientActivityId = props.clientRequestId;
 				const result = await this.executeWithAuthRetry<any>(
 					connection,

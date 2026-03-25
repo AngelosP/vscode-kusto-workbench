@@ -50,6 +50,13 @@
           "default": false,
           "description": "Use Kusto Workbench to open .md files by default. When disabled, .md files will open with VS Code's default text editor."
         },
+        "kustoWorkbench.queryTimeout": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "maximum": 120,
+          "description": "Maximum time (in minutes) to wait for a query response before timing out. The server's own timeout policy still applies independently. Set to 0 for no client-side limit."
+        },
         "kustoWorkbench.debug.mdSearchReveal": {
           "type": "boolean",
           "default": false,
