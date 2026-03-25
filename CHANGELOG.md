@@ -5,7 +5,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [3.0.2] - 2026-03-25
 
-* Bug: Connection time-out logic de-tangled + 20 minute default connection timeout implemented. 
+* Bugs: 
+    * Connection time-out logic de-tangled + 20 minute default connection timeout implemented.
+    * Table headers became transparent after changes to the VS Code themes
 
 ## [3.0.1] - 2026-03-23
 

@@ -43,14 +43,14 @@ export const styles = css`
 
 		/* Single data table matching original resultsTable.js styles */
 		.dtable{border-collapse:collapse;font-size:12px;user-select:none;table-layout:fixed}
-		.dtable-head-wrap{position:sticky;top:0;z-index:4;overflow:visible;border:none;border-radius:0}
+		.dtable-head-wrap{position:sticky;top:0;z-index:4;overflow:visible;border:none;border-radius:0;background:var(--vscode-editor-background)}
 		th,td{text-align:left;padding:6px 8px;border-right:1px solid var(--vscode-panel-border);border-bottom:1px solid var(--vscode-panel-border);white-space:nowrap;position:relative;max-width:75ch;overflow:hidden;text-overflow:ellipsis}
 		.dtable th:first-child,.dtable td:first-child{border-left:1px solid var(--vscode-panel-border)}
 		.dtable thead th{border-top:1px solid var(--vscode-panel-border)}
 		th,td{height:27px}
 		td{background:var(--vscode-editor-background)}
 		th{font-weight:600;background:var(--vscode-list-hoverBackground);cursor:pointer;user-select:none}
-		th:hover{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground))}th.sorted{font-weight:700}
+		th:hover{background:var(--vscode-list-activeSelectionBackground)}th.sorted{font-weight:700}
 		.thc{display:flex;align-items:center;gap:4px;flex-wrap:nowrap}.thn{display:flex;align-items:center;gap:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;min-width:0;white-space:nowrap}
 		.filtered-link{font-size:11px;color:var(--vscode-textLink-foreground);text-decoration:underline;cursor:pointer;flex-shrink:0;margin-left:5px}
 		.filtered-link:hover{color:var(--vscode-textLink-activeForeground)}

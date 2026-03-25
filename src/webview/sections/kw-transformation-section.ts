@@ -390,7 +390,7 @@ export class KwTransformationSection extends LitElement {
 				<kw-data-table
 					.columns=${this._resultColumns}
 					.rows=${this._resultRows}
-					.options=${{ label: 'Transformations', showExecutionTime: false, compact: true, hideTopBorder: true } as DataTableOptions}
+					.options=${{ label: 'Transformations', showExecutionTime: false, hideTopBorder: true } as DataTableOptions}
 					@save=${(e: CustomEvent) => {
 						const vscode = window.vscode;
 						if (vscode && typeof vscode.postMessage === 'function') {

@@ -184,7 +184,7 @@ export class KwUrlSection extends LitElement {
 							style="height:${this._csvTableHeight}px"
 							.columns=${this._csvColumns}
 							.rows=${this._csvRows}
-							.options=${{ label: 'CSV', showExecutionTime: false, compact: true } as DataTableOptions}
+							.options=${{ label: 'CSV', showExecutionTime: false } as DataTableOptions}
 							@visible-row-count-change=${this._onCsvVisibleRowCountChange}
 							@save=${(e: CustomEvent) => {
 								const vscode = window.vscode;
