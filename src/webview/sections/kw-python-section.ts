@@ -35,6 +35,7 @@ interface MonacoEditor {
 	onDidFocusEditorWidget(cb: () => void): { dispose(): void };
 	onDidChangeModelContent(cb: () => void): { dispose(): void };
 	updateOptions(opts: Record<string, unknown>): void;
+	addCommand(keybinding: number, handler: () => void): void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -305,6 +306,13 @@ export class KwPythonSection extends LitElement {
 				editor.onDidChangeModelContent(() => {
 					this._schedulePersist();
 				});
+			} catch (e) { console.error('[kusto]', e); }
+
+			// Ctrl+Enter / Ctrl+Shift+Enter runs the Python code (not the Kusto query).
+			try {
+				const runPython = () => this._run();
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runPython);
+				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, runPython);
 			} catch (e) { console.error('[kusto]', e); }
 
 			// Restore persisted height.

@@ -235,6 +235,43 @@ describe('ChartDataSourceController', () => {
 
 			expect(host._state.xColumn).toBe('');
 		});
+
+		it('detects column rename (same count, different names) and prunes stale selections', () => {
+			// Start with columns [A, B, C] and select xColumn='C'
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [{ id: 'ds1', label: 'DS1', columns: ['A', 'B', 'C'] as any, rows: [[1, 2, 3]] }];
+			host._state.xColumn = 'C';
+			host._state.yColumns = ['A'];
+
+			// Data source now has column 'D' instead of 'C' (same count)
+			mockDatasets = [{ id: 'ds1', label: 'DS1', columns: ['A', 'B', 'D'] as any, rows: [[1, 2, 4]] }];
+
+			ctrl.refreshDatasets();
+
+			// Datasets should be updated (column names changed)
+			expect(host._state.datasets[0].columns).toEqual(['A', 'B', 'D']);
+			// 'C' no longer exists — xColumn must be cleared
+			expect(host._state.xColumn).toBe('');
+			// 'A' still exists — yColumns preserved
+			expect(host._state.yColumns).toEqual(['A']);
+		});
+
+		it('updates datasets when a column is removed', () => {
+			host._state.dataSourceId = 'ds1';
+			host._state.datasets = [{ id: 'ds1', label: 'DS1', columns: ['A', 'B', 'C'] as any, rows: [] }];
+			host._state.xColumn = 'C';
+			host._state.yColumns = ['B'];
+			host._state.legendColumn = 'C';
+
+			// Column C removed
+			mockDatasets = [{ id: 'ds1', label: 'DS1', columns: ['A', 'B'] as any, rows: [] }];
+
+			ctrl.refreshDatasets();
+
+			expect(host._state.xColumn).toBe('');
+			expect(host._state.yColumns).toEqual(['B']);
+			expect(host._state.legendColumn).toBe('');
+		});
 	});
 
 	// ── onDataSourceChanged — column memory ───────────────────────────────

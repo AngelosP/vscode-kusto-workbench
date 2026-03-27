@@ -5,7 +5,7 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { setResultsState } from '../core/results-state.js';
 import { schedulePersist } from '../core/persistence.js';
-import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver } from '../core/section-factory.js';
+import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver, __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
 import {
 	tokenizeExpr,
@@ -761,6 +761,8 @@ export class KwTransformationSection extends LitElement {
 	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
 		this._name = e.detail.name;
 		this._schedulePersist();
+		// Refresh Data dropdowns in Chart/Transformation sections.
+		try { __kustoRefreshAllDataSourceDropdowns(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	private _setMode(mode: TransformationMode): void {

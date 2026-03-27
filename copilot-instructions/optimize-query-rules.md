@@ -20,9 +20,9 @@ Optimization rules (apply in this order, as applicable):
     * Add `project` / `project-away` to reduce carried columns, but only if it cannot affect semantics.
     * For dynamic/JSON fields, prefer extracting only what is needed (and only when needed).
 4. Replace `contains` with `has` only when it is guaranteed to be equivalent for the given literal and data (no false negatives/positives).
+5. Optimize the joins, try `<span data-teams="true">hint.Strategy=shuffle</span>`<span data-teams="true"> and other join optimization strategies as appropriate</span>
 
 Output format:
 
 * Return **ONLY** the optimized query in a single `kusto` code block.
 * No explanation, no bullets, no extra text.
-    

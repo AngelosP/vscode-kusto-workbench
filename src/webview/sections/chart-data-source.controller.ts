@@ -138,10 +138,24 @@ export class ChartDataSourceController implements ReactiveController {
 		if (a.length !== b.length) return false;
 		for (let i = 0; i < a.length; i++) {
 			if (a[i].id !== b[i].id || a[i].label !== b[i].label ||
-				(a[i].columns?.length ?? 0) !== (b[i].columns?.length ?? 0) ||
 				(a[i].rows?.length ?? 0) !== (b[i].rows?.length ?? 0)) return false;
+			const aCols = a[i].columns;
+			const bCols = b[i].columns;
+			const aLen = aCols?.length ?? 0;
+			const bLen = bCols?.length ?? 0;
+			if (aLen !== bLen) return false;
+			for (let j = 0; j < aLen; j++) {
+				if (this._colName(aCols[j]) !== this._colName(bCols[j])) return false;
+			}
 		}
 		return true;
+	}
+
+	/** Extract a column name from a string or {name}/{columnName} object. */
+	private _colName(c: unknown): string {
+		if (typeof c === 'string') return c;
+		if (c && typeof c === 'object') return (c as any).name || (c as any).columnName || '';
+		return '';
 	}
 
 	/** Remove column selections that don't exist in the current dataset. */

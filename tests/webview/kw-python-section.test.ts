@@ -7,7 +7,7 @@ import type { KwPythonSection } from '../../src/webview/sections/kw-python-secti
 
 /** Minimal fake Monaco editor that tracks create calls & stores value. */
 function createMockMonaco() {
-	const editors: Array<{ value: string; disposed: boolean; domNode: HTMLElement }> = [];
+	const editors: Array<{ value: string; disposed: boolean; domNode: HTMLElement; commands: Map<number, () => void> }> = [];
 
 	const monaco = {
 		editor: {
@@ -18,6 +18,7 @@ function createMockMonaco() {
 					value: String(opts?.value ?? ''),
 					disposed: false,
 					domNode,
+					commands: new Map<number, () => void>(),
 					getValue() { return this.value; },
 					setValue(v: string) { this.value = v; },
 					getModel() { return { getValue: () => ed.value }; },
@@ -30,11 +31,14 @@ function createMockMonaco() {
 					onDidFocusEditorWidget() { return { dispose() {} }; },
 					onDidChangeModelContent() { return { dispose() {} }; },
 					updateOptions() {},
+					addCommand(keybinding: number, handler: () => void) { this.commands.set(keybinding, handler); },
 				};
 				editors.push(ed);
 				return ed;
 			},
 		},
+		KeyMod: { CtrlCmd: 0x0800, Shift: 0x0400 },
+		KeyCode: { Enter: 3 },
 		editors,
 	};
 
@@ -144,5 +148,53 @@ describe('kw-python-section — reorder (disconnect/reconnect)', () => {
 
 		el.setTitle('My Analysis');
 		expect(el.getName()).toBe('My Analysis');
+	});
+});
+
+describe('kw-python-section — Ctrl+Enter runs Python', () => {
+
+	it('registers Ctrl+Enter and Ctrl+Shift+Enter commands on the editor', async () => {
+		const mockMonaco = createMockMonaco();
+		(window as any).ensureMonaco = () => Promise.resolve(mockMonaco);
+		(window as any).schedulePersist = () => {};
+
+		const el = createPythonSection('print(42)');
+		await el.updateComplete;
+		await new Promise(r => setTimeout(r, 0));
+
+		const ed = mockMonaco.editors[0];
+		const ctrlEnter = mockMonaco.KeyMod.CtrlCmd | mockMonaco.KeyCode.Enter;
+		const ctrlShiftEnter = mockMonaco.KeyMod.CtrlCmd | mockMonaco.KeyMod.Shift | mockMonaco.KeyCode.Enter;
+
+		expect(ed.commands.has(ctrlEnter), 'Ctrl+Enter command should be registered').toBe(true);
+		expect(ed.commands.has(ctrlShiftEnter), 'Ctrl+Shift+Enter command should be registered').toBe(true);
+	});
+
+	it('Ctrl+Enter handler sends executePython message', async () => {
+		const mockMonaco = createMockMonaco();
+		(window as any).ensureMonaco = () => Promise.resolve(mockMonaco);
+		(window as any).schedulePersist = () => {};
+
+		const posted: any[] = [];
+		(window as any).vscode = { postMessage(msg: any) { posted.push(msg); } };
+
+		const el = createPythonSection('print(42)');
+		await el.updateComplete;
+		await new Promise(r => setTimeout(r, 0));
+
+		const ed = mockMonaco.editors[0];
+		const ctrlEnter = mockMonaco.KeyMod.CtrlCmd | mockMonaco.KeyCode.Enter;
+		const handler = ed.commands.get(ctrlEnter)!;
+		expect(handler, 'Ctrl+Enter handler must exist').toBeDefined();
+
+		// Invoke the handler — should send executePython message
+		handler();
+
+		expect(posted.length).toBe(1);
+		expect(posted[0].type).toBe('executePython');
+		expect(posted[0].boxId).toBe('py_test_1');
+		expect(posted[0].code).toBe('print(42)');
+
+		delete (window as any).vscode;
 	});
 });
