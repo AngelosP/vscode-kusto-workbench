@@ -367,7 +367,7 @@ export class KwSectionReorderPopup extends LitElement {
 				<div class="panel-header">
 					<span class="panel-title">
 						<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h10v1H3V3zm0 4h10v1H3V7zm0 4h10v1H3v-1z"/></svg>
-						Reorder Sections
+						Section Manager
 					</span>
 					<button class="close-btn" type="button"
 						title="Close" aria-label="Close"
@@ -379,7 +379,7 @@ export class KwSectionReorderPopup extends LitElement {
 					${this._sections.map((s, i) => this._renderCard(s, i))}
 				</div>
 				<div class="panel-footer">
-					<div class="panel-hint">Drag sections to reorder &middot; Press Esc to close</div>
+					<div class="panel-hint">Drag sections to reorder &middot; Double click to scroll to them</div>
 				</div>
 			</div>
 		`;
@@ -397,7 +397,8 @@ export class KwSectionReorderPopup extends LitElement {
 				data-section-id="${s.id}"
 				data-arr-index="${arrIndex}"
 				@dragstart=${(e: DragEvent) => this._onCardDragStart(e, s)}
-				@dragend=${this._onCardDragEnd}>
+				@dragend=${this._onCardDragEnd}
+				@dblclick=${() => this._onCardDoubleClick(s.id)}>
 				<span class="drag-grip" aria-hidden="true">⋮⋮</span>
 				<span class="section-icon">${sectionIcons[s.type]}</span>
 				<div class="section-info">
@@ -587,6 +588,16 @@ export class KwSectionReorderPopup extends LitElement {
 				card.style.transition = '';
 			}, { once: true });
 		}
+	}
+
+	// ── Double-click to scroll ───────────────────────────────────────────────
+
+	private _onCardDoubleClick(sectionId: string): void {
+		const el = document.getElementById(sectionId);
+		if (el) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		}
+		this.close();
 	}
 
 	// ── Dismiss ──────────────────────────────────────────────────────────────
