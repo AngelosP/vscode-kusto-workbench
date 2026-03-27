@@ -75,7 +75,7 @@ export class KwSectionShell extends LitElement {
 							type="button" role="tab"
 							aria-selected=${this.expanded ? 'true' : 'false'}
 							@click=${this._onToggle}
-							title=${this.expanded ? 'Hide' : 'Show'}
+							title=${'Click: ' + (this.expanded ? 'Hide' : 'Show') + '\nShift+Click: all sections\nCtrl+Shift+Click: same type'}
 							aria-label=${this.expanded ? 'Hide' : 'Show'}>
 							<span .innerHTML=${SVG_EYE}></span>
 						</button>
@@ -122,7 +122,26 @@ export class KwSectionShell extends LitElement {
 		}));
 	}
 
-	private _onToggle(): void {
+	private _onToggle(e: MouseEvent): void {
+		const targetExpanded = !this.expanded;
+		if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+			// Ctrl+Shift+Click: toggle all sections of the same type
+			this.dispatchEvent(new CustomEvent('toggle-type-sections', {
+				detail: { targetExpanded },
+				bubbles: true,
+				composed: true,
+			}));
+			return;
+		}
+		if (e.shiftKey) {
+			// Shift+Click: toggle all sections
+			this.dispatchEvent(new CustomEvent('toggle-all-sections', {
+				detail: { targetExpanded },
+				bubbles: true,
+				composed: true,
+			}));
+			return;
+		}
 		this.dispatchEvent(new CustomEvent('toggle-visibility', {
 			bubbles: true,
 			composed: true,

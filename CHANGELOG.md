@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [3.1.0] - 2026-03-27
 
 * Better instructions for performance optimizations. Now expicitely told to try out join optimization techniques as well. (thank you Alexandra Kemper)
+* 'Comment / uncomment' toolbar icon for Kusto sections
+* 'Rename' toolbar icon and context menu entry for Kusto sections
 * Bugs:
     * Chart axis get stuck showing column names that no longer exist if the column name is renamed
     * CTRL+ENTER inside a python section did not execute it

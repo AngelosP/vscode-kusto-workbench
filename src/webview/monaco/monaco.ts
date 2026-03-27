@@ -383,6 +383,35 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 						}
 					});
 
+					// Text-based rename: finds all exact-match occurrences of the word under cursor.
+					monaco.languages.registerRenameProvider('kusto', {
+						provideRenameEdits(model: any, position: any, newName: string) {
+							try {
+								const wordAtPos = model.getWordAtPosition(position);
+								if (!wordAtPos) return { edits: [] };
+								const oldName = wordAtPos.word;
+								if (oldName === newName) return { edits: [] };
+								const matches = model.findMatches(oldName, true, false, true, `\`~!@#$%^&*()-=+[{]}\\|;:'",.<>/?`, true);
+								const edits = matches.map((m: any) => ({
+									resource: model.uri,
+									versionId: model.getVersionId(),
+									textEdit: { range: m.range, text: newName },
+								}));
+								return { edits };
+							} catch {
+								return { edits: [] };
+							}
+						},
+						resolveRenameLocation(model: any, position: any) {
+							const wordAtPos = model.getWordAtPosition(position);
+							if (!wordAtPos) return { text: '', range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column), rejectReason: 'No symbol at this position' };
+							return {
+								text: wordAtPos.word,
+								range: new monaco.Range(position.lineNumber, wordAtPos.startColumn, position.lineNumber, wordAtPos.endColumn),
+							};
+						},
+					});
+
 								// Use custom themes that match VS Code's editor background
 								applyMonacoTheme(monaco);
 					// Autocomplete: pipe operators + (optionally) schema tables/columns.
@@ -3913,7 +3942,7 @@ function initQueryEditor(boxId: any) {
 
 // ── Custom context menu for Monaco editors ──
 // Monaco's built-in context menu is disabled (contextmenu: false) because most of its items
-// (Go to Definition, Rename, Format, etc.) have no providers in this webview.
+// (Go to Definition, Format, etc.) have no providers in this webview.
 // This custom menu provides the clipboard and selection actions that actually work.
 
 let __kustoEditorContextMenuEl: HTMLElement | null = null;
@@ -3989,6 +4018,7 @@ function __kustoShowEditorContextMenu(editor: any, event: MouseEvent) {
 	items.push({ separator: true });
 	if (!isReadOnly) {
 		items.push({ label: 'Toggle Comment', shortcut: `${mod}+/`, action: () => { try { editor.trigger('contextMenu', 'editor.action.commentLine', null); } catch (e) { console.error('[kusto]', e); } } });
+		items.push({ label: 'Rename', shortcut: 'F2', action: () => { try { editor.trigger('contextMenu', 'editor.action.rename', null); } catch (e) { console.error('[kusto]', e); } } });
 	}
 	items.push({ label: 'Select All', shortcut: `${mod}+A`, action: () => { try { editor.trigger('contextMenu', 'editor.action.selectAll', null); } catch (e) { console.error('[kusto]', e); } } });
 

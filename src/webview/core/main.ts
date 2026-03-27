@@ -4,7 +4,8 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar';
-import { __kustoRequestAddSection } from './persistence';
+import { __kustoRequestAddSection, schedulePersist } from './persistence';
+import { queryEditors } from './state';
 
 // Side-effect imports — register event handlers on import.
 import './keyboard-shortcuts';
@@ -190,6 +191,65 @@ try {
 		if (copyBtn) copyBtn.addEventListener('click', () => { try { __kustoShareCopyToClipboard(); } catch (e) { console.error('[kusto]', e); } });
 	}
 } catch (e) { console.error('[kusto]', e); }
+
+// ==========================================================================
+// BATCH SECTION VISIBILITY (Ctrl+Click / Ctrl+Shift+Click on Show/Hide)
+// ==========================================================================
+
+function batchSetSectionExpanded(filterTag: string | null, expanded: boolean): void {
+	const container = document.getElementById('queries-container');
+	if (!container) return;
+	const children = Array.from(container.children);
+	for (const child of children) {
+		if (!(child instanceof HTMLElement)) continue;
+		if (filterTag && child.tagName.toLowerCase() !== filterTag) continue;
+		if (typeof (child as any).setExpanded !== 'function') continue;
+		// Query sections: sync legacy global state
+		if (child.id.startsWith('query_')) {
+			try {
+				if (!window.__kustoQueryExpandedByBoxId || typeof window.__kustoQueryExpandedByBoxId !== 'object') {
+					window.__kustoQueryExpandedByBoxId = {};
+				}
+				window.__kustoQueryExpandedByBoxId[child.id] = expanded;
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		try { (child as any).setExpanded(expanded); } catch (e) { console.error('[kusto]', e); }
+		// Monaco layout pass for query sections when expanding
+		if (expanded && child.id.startsWith('query_')) {
+			try {
+				const boxId = child.id;
+				setTimeout(() => {
+					try {
+						const ed = queryEditors[boxId];
+						if (ed && typeof ed.layout === 'function') ed.layout();
+					} catch (e) { console.error('[kusto]', e); }
+				}, 0);
+			} catch (e) { console.error('[kusto]', e); }
+		}
+	}
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+// Ctrl+Click on Show/Hide: toggle ALL sections.
+document.addEventListener('toggle-all-sections', (e: Event) => {
+	try {
+		const detail = (e as CustomEvent).detail;
+		batchSetSectionExpanded(null, !!detail?.targetExpanded);
+	} catch (e) { console.error('[kusto]', e); }
+});
+
+// Ctrl+Shift+Click on Show/Hide: toggle sections of the same type.
+document.addEventListener('toggle-type-sections', (e: Event) => {
+	try {
+		const detail = (e as CustomEvent).detail;
+		const path = (e as CustomEvent).composedPath?.() || [];
+		const originSection = path.find((el: any) =>
+			el?.tagName?.startsWith?.('KW-') && el?.tagName?.endsWith?.('-SECTION')
+		);
+		if (!originSection) return;
+		batchSetSectionExpanded((originSection as Element).tagName.toLowerCase(), !!detail?.targetExpanded);
+	} catch (e) { console.error('[kusto]', e); }
+});
 
 
 // ── Window bridges for remaining legacy callers ──

@@ -1905,6 +1905,13 @@
 			z-index: 1000 !important;
 		}
 
+		/* Monaco rename widget input — inherit VS Code theme colors */
+		.monaco-editor .rename-box .rename-input {
+			color: var(--vscode-input-foreground, inherit) !important;
+			background: var(--vscode-input-background, transparent) !important;
+			border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder, #007fd4)) !important;
+		}
+
 		/* Disable monaco-kusto's default command background highlighting.
 		   The selectionHighlight class is used by KustoCommandHighlighter to highlight
 		   the entire current command, but we use our own gutter indicator instead. */

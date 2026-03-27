@@ -185,6 +185,7 @@ export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 		} catch (e) { console.error('[kusto]', e); }
 		return runMonacoAction(boxId, 'editor.action.formatDocument');
 	}
+	if (action === 'toggleComment') return runMonacoAction(boxId, 'editor.action.commentLine');
 	if (action === 'singleLine') {
 		try {
 			if (typeof window.__kustoCopySingleLineQueryForBoxId === 'function') {
@@ -203,6 +204,7 @@ export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 		} catch (e) { console.error('[kusto]', e); }
 		return runMonacoAction(boxId, 'editor.action.triggerSuggest');
 	}
+	if (action === 'rename') return runMonacoAction(boxId, 'editor.action.rename');
 	if (action === 'doubleToSingle') return replaceAllInEditor(boxId, '"', "'");
 	if (action === 'singleToDouble') return replaceAllInEditor(boxId, "'", '"');
 	if (action === 'exportPowerBI') return void exportQueryToPowerBI(boxId);
@@ -755,6 +757,8 @@ const redoIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
 
 const prettifyIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 3h12v2H2V3zm0 4h8v2H2V7zm0 4h12v2H2v-2z"/></svg>';
 
+const toggleCommentIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4.5 3L2.5 13"/><path d="M8.5 3L6.5 13"/></svg>';
+
 const searchIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M6.5 2a4.5 4.5 0 1 0 2.67 8.13l3.02 3.02a.75.75 0 0 0 1.06-1.06l-3.02-3.02A4.5 4.5 0 0 0 6.5 2zm0 1.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>';
 
 const replaceIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M2.5 4.5h8V3l3 2.5-3 2.5V6.5h-8v-2zM13.5 11.5h-8V13l-3-2.5 3-2.5v1.5h8v2z"/></svg>';
@@ -776,6 +780,7 @@ const toolsDoubleToSingleIconSvg = '<svg viewBox="0 0 16 16" width="16" height="
 const toolsSingleToDoubleIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>';
 const toolsQualifyTablesIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/></svg>';
 const toolsSingleLineIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M2 8h12"/></svg>';
+const toolsRenameIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M10.5 2.5l3 3-8 8H2.5v-3l8-8z"/><path d="M8.5 4.5l3 3"/></svg>';
 
 // Overflow checkmark
 const checkmarkSvg = '<svg class="qe-overflow-checkmark" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 1 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>';
@@ -842,6 +847,7 @@ export class KwQueryToolbar extends LitElement {
 			{ type: 'button', action: 'redo', title: 'Redo (Ctrl+Y)', label: 'Redo', overflowLabel: 'Redo', iconSvg: redoIconSvg, extraClasses: 'qe-redo-btn' },
 			{ type: 'separator' },
 			{ type: 'button', action: 'prettify', title: 'Prettify query\nApplies Kusto-aware formatting rules (summarize/where/function headers)', label: 'Prettify query', overflowLabel: 'Prettify query', iconSvg: prettifyIconSvg },
+			{ type: 'button', action: 'toggleComment', title: 'Toggle comment\nComment or uncomment the selected lines (Ctrl+/)', label: 'Toggle comment', overflowLabel: 'Toggle comment', iconSvg: toggleCommentIconSvg },
 			{ type: 'tools' },
 			{ type: 'separator' },
 			{ type: 'button', action: 'search', title: 'Search\nFind in the current query', label: 'Search', overflowLabel: 'Search', iconSvg: searchIconSvg },
@@ -1019,6 +1025,7 @@ export class KwQueryToolbar extends LitElement {
 			{ action: 'singleToDouble', label: 'Replace \' with "', iconSvg: toolsSingleToDoubleIconSvg },
 			{ action: 'qualifyTables', label: 'Fully qualify tables', iconSvg: toolsQualifyTablesIconSvg },
 			{ action: 'singleLine', label: 'Copy query as single line', iconSvg: toolsSingleLineIconSvg },
+			{ action: 'rename', label: 'Rename (F2)', iconSvg: toolsRenameIconSvg },
 		];
 		return html`
 			<div class="kusto-dropdown-menu qe-toolbar-dropdown-menu" id="${id}_tools_menu" role="listbox" tabindex="-1"
@@ -1141,6 +1148,7 @@ export class KwQueryToolbar extends LitElement {
 			{ action: 'singleToDouble', label: 'Replace \' with "', iconSvg: toolsSingleToDoubleIconSvg },
 			{ action: 'qualifyTables', label: 'Fully qualify tables', iconSvg: toolsQualifyTablesIconSvg },
 			{ action: 'singleLine', label: 'Copy query as single line', iconSvg: toolsSingleLineIconSvg },
+			{ action: 'rename', label: 'Rename (F2)', iconSvg: toolsRenameIconSvg },
 		];
 		return html`
 			<div class="qe-toolbar-overflow-item qe-overflow-has-submenu" role="menuitem" tabindex="-1"
