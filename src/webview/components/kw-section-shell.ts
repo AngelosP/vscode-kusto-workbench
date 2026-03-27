@@ -75,7 +75,7 @@ export class KwSectionShell extends LitElement {
 							type="button" role="tab"
 							aria-selected=${this.expanded ? 'true' : 'false'}
 							@click=${this._onToggle}
-							title=${'Click: ' + (this.expanded ? 'Hide' : 'Show') + '\nShift+Click: all sections\nCtrl+Shift+Click: same type'}
+							title=${(this.expanded ? 'Hide' : 'Show') + '\n\nClick + Shift: ' + (this.expanded ? 'Hide' : 'Show') + ' all\nClick + Ctrl + Shift: ' + (this.expanded ? 'Hide' : 'Show') + ' same type'}
 							aria-label=${this.expanded ? 'Hide' : 'Show'}>
 							<span .innerHTML=${SVG_EYE}></span>
 						</button>
