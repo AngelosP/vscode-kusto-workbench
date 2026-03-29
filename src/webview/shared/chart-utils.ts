@@ -22,11 +22,13 @@ export interface YAxisSettings {
 }
 
 export type LegendPosition = 'top' | 'right' | 'bottom' | 'left';
+export type StackMode = 'normal' | 'stacked' | 'stacked100';
 export type TimePeriodGranularity = 'day' | 'week' | 'month' | 'quarter' | 'year';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 export const LEGEND_POSITION_CYCLE: LegendPosition[] = ['top', 'right', 'bottom', 'left'];
+export const STACK_MODE_CYCLE: StackMode[] = ['normal', 'stacked', 'stacked100'];
 
 export const DEFAULT_SERIES_COLORS = [
 	'#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
@@ -57,6 +59,11 @@ export function computeAxisFontSize(labelCount: number, axisPixelWidth: number, 
 export function normalizeLegendPosition(pos: unknown): LegendPosition {
 	const p = String(pos || '').toLowerCase();
 	return (p === 'top' || p === 'right' || p === 'bottom' || p === 'left') ? p : 'top';
+}
+
+export function normalizeStackMode(mode: unknown): StackMode {
+	const m = String(mode || '').toLowerCase();
+	return (m === 'normal' || m === 'stacked' || m === 'stacked100') ? m : 'normal';
 }
 
 export function getDefaultXAxisSettings(): XAxisSettings {

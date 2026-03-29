@@ -100,6 +100,7 @@ export type KqlxSectionV1 =
 			tooltipColumns?: string[];
 			legendColumn?: string;
 			legendPosition?: 'left' | 'right' | 'top' | 'bottom';
+			stackMode?: 'normal' | 'stacked' | 'stacked100';
 			labelColumn?: string;
 			valueColumn?: string;
 			showDataLabels?: boolean;

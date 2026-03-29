@@ -3,6 +3,7 @@ import {
 	formatNumber,
 	computeAxisFontSize,
 	normalizeLegendPosition,
+	normalizeStackMode,
 	getDefaultXAxisSettings,
 	hasCustomXAxisSettings,
 	getDefaultYAxisSettings,
@@ -86,6 +87,27 @@ describe('normalizeLegendPosition', () => {
 		expect(normalizeLegendPosition(null)).toBe('top');
 		expect(normalizeLegendPosition(undefined)).toBe('top');
 		expect(normalizeLegendPosition('center')).toBe('top');
+	});
+});
+
+// ── normalizeStackMode ────────────────────────────────────────────────────────
+
+describe('normalizeStackMode', () => {
+	it('passes through valid modes', () => {
+		expect(normalizeStackMode('normal')).toBe('normal');
+		expect(normalizeStackMode('stacked')).toBe('stacked');
+		expect(normalizeStackMode('stacked100')).toBe('stacked100');
+	});
+	it('is case-insensitive', () => {
+		expect(normalizeStackMode('STACKED')).toBe('stacked');
+		expect(normalizeStackMode('Stacked100')).toBe('stacked100');
+		expect(normalizeStackMode('Normal')).toBe('normal');
+	});
+	it('defaults to normal for invalid input', () => {
+		expect(normalizeStackMode('')).toBe('normal');
+		expect(normalizeStackMode(null)).toBe('normal');
+		expect(normalizeStackMode(undefined)).toBe('normal');
+		expect(normalizeStackMode('stacked50')).toBe('normal');
 	});
 });
 

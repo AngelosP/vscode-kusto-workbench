@@ -22,9 +22,11 @@ import {
 	hasCustomYAxisSettings,
 	hasCustomLabelSettings,
 	normalizeLegendPosition,
+	normalizeStackMode,
 	type XAxisSettings,
 	type YAxisSettings,
 	type LegendPosition,
+	type StackMode,
 } from '../shared/chart-utils.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
@@ -35,7 +37,7 @@ import { ChartDataSourceController, type DatasetEntry } from './chart-data-sourc
 
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | '';
 export type ChartMode = 'edit' | 'preview';
-export type { LegendPosition, XAxisSettings, YAxisSettings };
+export type { LegendPosition, StackMode, XAxisSettings, YAxisSettings };
 export type SortDirection = 'asc' | 'desc' | '';
 export type ScaleType = 'category' | 'continuous' | '';
 export type LabelMode = 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
@@ -55,6 +57,7 @@ export interface ChartSectionData {
 	tooltipColumns?: string[];
 	legendColumn?: string;
 	legendPosition?: string;
+	stackMode?: string;
 	labelColumn?: string;
 	valueColumn?: string;
 	showDataLabels?: boolean;
@@ -98,6 +101,20 @@ const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 };
 
 const LEGEND_CYCLE = ['top', 'right', 'bottom', 'left'] as const;
+
+const STACK_MODE_ICONS: Record<StackMode, string> = {
+	normal: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="8" width="4" height="6" rx="0.5"/><rect x="6" y="4" width="4" height="10" rx="0.5"/><rect x="11" y="6" width="4" height="8" rx="0.5"/></svg>',
+	stacked: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="4" height="11" rx="0.5"/><path d="M3 8h4"/><rect x="9" y="5" width="4" height="9" rx="0.5"/><path d="M9 9h4"/></svg>',
+	stacked100: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="4" height="11" rx="0.5"/><path d="M3 7h4"/><rect x="9" y="3" width="4" height="11" rx="0.5"/><path d="M9 9h4"/></svg>',
+};
+
+const STACK_MODE_LABELS: Record<StackMode, string> = {
+	normal: 'Normal',
+	stacked: 'Stacked',
+	stacked100: 'Stacked 100%',
+};
+
+const STACK_MODE_CYCLE: StackMode[] = ['normal', 'stacked', 'stacked100'];
 
 const SVG_CARET = '<svg width="12" height="12" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>';
 
@@ -165,6 +182,7 @@ export class KwChartSection extends LitElement {
 			: (st.yColumns || (st.yColumn ? [st.yColumn] : []));
 		st.legendColumn = typeof options.legendColumn === 'string' ? String(options.legendColumn) : (st.legendColumn || '');
 		st.legendPosition = typeof options.legendPosition === 'string' ? String(options.legendPosition) : (st.legendPosition || 'top');
+		st.stackMode = typeof options.stackMode === 'string' ? String(options.stackMode) : (st.stackMode || 'normal');
 		st.labelColumn = typeof options.labelColumn === 'string' ? String(options.labelColumn) : (st.labelColumn || '');
 		st.valueColumn = typeof options.valueColumn === 'string' ? String(options.valueColumn) : (st.valueColumn || '');
 		st.showDataLabels = typeof options.showDataLabels === 'boolean' ? !!options.showDataLabels : (st.showDataLabels || false);
@@ -317,6 +335,7 @@ export class KwChartSection extends LitElement {
 	@state() private _yColumns: string[] = [];
 	@state() private _legendColumn = '';
 	@state() private _legendPosition: LegendPosition = 'top';
+	@state() private _stackMode: StackMode = 'normal';
 	@state() private _labelColumn = '';
 	@state() private _valueColumn = '';
 	@state() private _showDataLabels = false;
@@ -363,6 +382,8 @@ export class KwChartSection extends LitElement {
 	setYColumns(v: string[]): void { this._yColumns = v; }
 	getLegendColumn(): string { return this._legendColumn; }
 	setLegendColumn(v: string): void { this._legendColumn = v; }
+	getStackMode(): StackMode { return this._stackMode; }
+	setStackMode(v: StackMode): void { this._stackMode = v; }
 	getLabelColumn(): string { return this._labelColumn; }
 	setLabelColumn(v: string): void { this._labelColumn = v; }
 	getValueColumn(): string { return this._valueColumn; }
@@ -441,7 +462,7 @@ export class KwChartSection extends LitElement {
 		// Re-render chart when key properties change
 		const chartTriggers = [
 			'_chartType', '_dataSourceId', '_xColumn', '_yColumns', '_legendColumn',
-			'_legendPosition', '_labelColumn', '_valueColumn', '_showDataLabels',
+			'_legendPosition', '_stackMode', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings',
 		];
@@ -615,6 +636,13 @@ export class KwChartSection extends LitElement {
 										<option value=${c} ?selected=${this._legendColumn === c}>${c}</option>
 									`)}
 								</select>
+								${this._legendColumn || multiYSelected ? html`
+									<button type="button" class="unified-btn-secondary unified-btn-icon-only chart-legend-pos-btn"
+										@click=${this._cycleStackMode}
+										title="Stack mode: ${STACK_MODE_LABELS[this._stackMode]}">
+										<span .innerHTML=${STACK_MODE_ICONS[this._stackMode]}></span>
+									</button>
+								` : nothing}
 								${this._legendColumn && !multiYSelected ? html`
 									<button type="button" class="unified-btn-secondary unified-btn-icon-only chart-legend-pos-btn"
 										@click=${this._cycleLegendPosition}
@@ -1004,6 +1032,12 @@ export class KwChartSection extends LitElement {
 		this._schedulePersist();
 	}
 
+	private _cycleStackMode(): void {
+		const idx = STACK_MODE_CYCLE.indexOf(this._stackMode);
+		this._stackMode = STACK_MODE_CYCLE[(idx + 1) % STACK_MODE_CYCLE.length];
+		this._schedulePersist();
+	}
+
 	private _toggleDataLabels(): void {
 		this._showDataLabels = !this._showDataLabels;
 		this._schedulePersist();
@@ -1222,6 +1256,7 @@ export class KwChartSection extends LitElement {
 		else if (typeof st.yColumn === 'string' && st.yColumn) this._yColumns = [st.yColumn];
 		if (typeof st.legendColumn === 'string') this._legendColumn = st.legendColumn;
 		if (typeof st.legendPosition === 'string') this._legendPosition = normalizeLegendPosition(st.legendPosition);
+		if (typeof st.stackMode === 'string') this._stackMode = normalizeStackMode(st.stackMode);
 		if (typeof st.labelColumn === 'string') this._labelColumn = st.labelColumn;
 		if (typeof st.valueColumn === 'string') this._valueColumn = st.valueColumn;
 		if (typeof st.showDataLabels === 'boolean') this._showDataLabels = st.showDataLabels;
@@ -1257,6 +1292,7 @@ export class KwChartSection extends LitElement {
 		st.yColumns = [...this._yColumns];
 		st.legendColumn = this._legendColumn;
 		st.legendPosition = this._legendPosition;
+		st.stackMode = this._stackMode;
 		st.labelColumn = this._labelColumn;
 		st.valueColumn = this._valueColumn;
 		st.showDataLabels = this._showDataLabels;
@@ -1358,6 +1394,7 @@ export class KwChartSection extends LitElement {
 		if (this._tooltipColumns.length) data.tooltipColumns = [...this._tooltipColumns];
 		if (this._legendColumn) data.legendColumn = this._legendColumn;
 		if (this._legendPosition !== 'top') data.legendPosition = this._legendPosition;
+		if (this._stackMode !== 'normal') data.stackMode = this._stackMode;
 		if (this._labelColumn) data.labelColumn = this._labelColumn;
 		if (this._valueColumn) data.valueColumn = this._valueColumn;
 		if (this._showDataLabels) data.showDataLabels = true;
@@ -1410,6 +1447,7 @@ export class KwChartSection extends LitElement {
 		else if (typeof options.yColumn === 'string' && options.yColumn) this._yColumns = [options.yColumn as string];
 		if (typeof options.legendColumn === 'string') this._legendColumn = options.legendColumn;
 		if (typeof options.legendPosition === 'string') this._legendPosition = normalizeLegendPosition(options.legendPosition);
+		if (typeof options.stackMode === 'string') this._stackMode = normalizeStackMode(options.stackMode);
 		if (typeof options.labelColumn === 'string') this._labelColumn = options.labelColumn;
 		if (typeof options.valueColumn === 'string') this._valueColumn = options.valueColumn;
 		if (typeof options.showDataLabels === 'boolean') this._showDataLabels = options.showDataLabels;

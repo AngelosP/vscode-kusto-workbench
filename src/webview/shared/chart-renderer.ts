@@ -17,6 +17,7 @@ import {
 	formatNumber,
 	computeAxisFontSize,
 	normalizeLegendPosition,
+	normalizeStackMode,
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
 	formatUtcDateTime,
@@ -52,6 +53,11 @@ export function getChartState(boxId: any) {
 		try {
 			if (typeof chartStateByBoxId[id].legendPosition !== 'string' || !chartStateByBoxId[id].legendPosition) {
 				chartStateByBoxId[id].legendPosition = 'top';
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			if (typeof chartStateByBoxId[id].stackMode !== 'string' || !chartStateByBoxId[id].stackMode) {
+				chartStateByBoxId[id].stackMode = 'normal';
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		// Ensure xAxisSettings exists with defaults
@@ -606,11 +612,14 @@ export function renderChart(boxId: any) {
 		};
 
 		const legendPosition = normalizeLegendPosition(st && st.legendPosition);
+		const SIDE_LEGEND_TEXT_WIDTH = 120;
+		const SIDE_LEGEND_TOTAL = SIDE_LEGEND_TEXT_WIDTH + 30;   // text + icon + padding
+		const SIDE_LEGEND_GAP = 15;                              // breathing room before axis title
 		const buildLegendOption = (pos: any) => {
 			const p = normalizeLegendPosition(pos);
 			if (p === 'bottom') return { type: 'scroll', bottom: 0, left: 'center', orient: 'horizontal' };
-			if (p === 'left') return { type: 'scroll', left: 0, top: 20, orient: 'vertical' };
-			if (p === 'right') return { type: 'scroll', right: 0, top: 20, orient: 'vertical' };
+			if (p === 'left') return { type: 'scroll', left: 0, top: 20, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
+			if (p === 'right') return { type: 'scroll', right: 0, top: 20, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
 			return { type: 'scroll', top: 0, left: 'center', orient: 'horizontal' };
 		};
 
@@ -1129,6 +1138,7 @@ export function renderChart(boxId: any) {
 				return;
 			} else {
 				const isArea = chartType === 'area';
+				const stackMode = normalizeStackMode(st.stackMode);
 				const useTime = inferTimeXAxisFromRows(rows, xi);
 
 				const xAxisSortDirection = xAxisSettings.sortDirection || '';
@@ -1414,6 +1424,69 @@ export function renderChart(boxId: any) {
 				}
 
 				const showTime = treatAsTime ? timeShowTime : false;
+
+				// ── Apply stack mode ──────────────────────────────────────
+				if (stackMode === 'stacked' || stackMode === 'stacked100') {
+					for (const s of seriesData) {
+						s.stack = 'total';
+						// Move labels inside segments and hide when the segment
+						// is too thin to display legibly.
+						if (s.label) {
+							s.label.position = 'inside';
+							const origFormatter = s.label.formatter;
+							s.label.formatter = (params: any) => {
+								try {
+									// Compute the segment's share of the stack.
+									// For stacked100 we already have percentages;
+									// for normal stacked, approximate by checking
+									// the raw value against a visibility threshold.
+									if (stackMode === 'stacked100') {
+										const v = params?.data?.value;
+										if (typeof v === 'number' && v < 5) return '';
+									} else {
+										// In normal stacked mode, only show label when
+										// the segment is at least ~8% of the column total.
+										const dataIdx = params?.dataIndex ?? 0;
+										let colTotal = 0;
+										for (const sd of seriesData) {
+											const d = sd.data?.[dataIdx];
+											const dv = d && typeof d === 'object' ? d.value : (typeof d === 'number' ? d : null);
+											if (typeof dv === 'number' && Number.isFinite(dv)) colTotal += Math.abs(dv);
+										}
+										const sv = params?.data?.value ?? params?.value ?? 0;
+										if (colTotal > 0 && Math.abs(sv) / colTotal < 0.08) return '';
+									}
+									return typeof origFormatter === 'function' ? origFormatter(params) : '';
+								} catch {
+									return '';
+								}
+							};
+						}
+					}
+				}
+				if (stackMode === 'stacked100' && seriesData.length > 1) {
+					// Compute per-index totals and normalize to percentages.
+					const dataLen = seriesData[0]?.data?.length || 0;
+					for (let i = 0; i < dataLen; i++) {
+						let total = 0;
+						for (const s of seriesData) {
+							const d = s.data?.[i];
+							const v = d && typeof d === 'object' ? d.value : (typeof d === 'number' ? d : null);
+							if (typeof v === 'number' && Number.isFinite(v)) total += Math.abs(v);
+						}
+						if (total === 0) continue;
+						for (const s of seriesData) {
+							const d = s.data?.[i];
+							if (!d || typeof d !== 'object') continue;
+							const v = d.value;
+							if (typeof v === 'number' && Number.isFinite(v)) {
+								d.__kustoOriginalValue = v;
+								d.value = (v / total) * 100;
+							}
+						}
+					}
+				}
+
 				let rotate;
 				let categoryLabelStats = null;
 				if (treatAsTime) {
@@ -1446,8 +1519,8 @@ export function renderChart(boxId: any) {
 
 				const legendEnabled = seriesData.length > 1;
 				const legendOpt = legendEnabled ? buildLegendOption(legendPosition) : undefined;
-				const gridLeft = (legendEnabled && legendPosition === 'left') ? 140 : (15 + yAxisTitleGap);
-				const gridRight = (legendEnabled && legendPosition === 'right') ? 140 : 20;
+				const gridLeft = (legendEnabled && legendPosition === 'left') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + yAxisTitleGap) : (15 + yAxisTitleGap);
+				const gridRight = (legendEnabled && legendPosition === 'right') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP) : 20;
 				const gridTop = legendEnabled && legendPosition === 'top' ? 50 : 20;
 				const gridBottom = bottomMargin + (legendEnabled && legendPosition === 'bottom' ? 40 : 0);
 
@@ -1485,7 +1558,10 @@ export function renderChart(boxId: any) {
 									const marker = p && p.marker ? p.marker : '';
 									const rawData = p && p.data ? p.data : null;
 									const v = rawData ? (Array.isArray(rawData) ? rawData[1] : (rawData.value !== undefined ? rawData.value : rawData)) : '';
-									const formatted = (typeof v === 'number') ? formatNumber(v) : String(v ?? '');
+									let formatted = (typeof v === 'number') ? formatNumber(v) : String(v ?? '');
+									if (stackMode === 'stacked100' && rawData && typeof rawData.__kustoOriginalValue === 'number') {
+										formatted = formatNumber(rawData.__kustoOriginalValue) + ' (' + (typeof v === 'number' ? v.toFixed(1) : '0') + '%)';
+									}
 									lines.push(`<div>${marker}<strong>${escHtml(seriesName)}</strong>: ${escHtml(formatted)}</div>`);
 								}
 
@@ -1530,12 +1606,14 @@ export function renderChart(boxId: any) {
 						nameLocation: 'middle',
 						triggerEvent: true,
 						nameGap: yAxisTitleGap,
-						min: Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined,
-						max: Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined,
+						min: stackMode === 'stacked100' ? 0 : (Number.isFinite(yAxisMinValue) ? yAxisMinValue : undefined),
+						max: stackMode === 'stacked100' ? 100 : (Number.isFinite(yAxisMaxValue) ? yAxisMaxValue : undefined),
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
-							formatter: (value: any) => formatNumber(value)
+							formatter: stackMode === 'stacked100'
+								? (value: any) => (typeof value === 'number' ? value.toFixed(0) + '%' : '')
+								: (value: any) => formatNumber(value)
 						}
 					},
 					series: seriesData
