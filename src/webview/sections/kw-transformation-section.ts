@@ -20,7 +20,13 @@ import '../components/kw-section-shell.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type TransformationType = 'derive' | 'summarize' | 'distinct' | 'pivot';
+export type TransformationType = 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
+export type JoinKind = 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
+
+export interface JoinKey {
+	left: string;
+	right: string;
+}
 export type TransformationMode = 'edit' | 'preview';
 
 export interface DeriveColumn {
@@ -52,6 +58,10 @@ export interface TransformationSectionData {
 	pivotValueColumn?: string;
 	pivotAggregation?: string;
 	pivotMaxColumns?: number;
+	joinRightDataSourceId?: string;
+	joinKind?: string;
+	joinKeys?: JoinKey[];
+	joinOmitDuplicateColumns?: boolean;
 	editorHeightPx?: number;
 }
 
@@ -74,20 +84,35 @@ const TRANSFORM_TYPE_ICONS: Record<string, string> = {
 	summarize: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h20"/><path d="M6 16h14"/><path d="M6 22h10"/><path d="M24 22v-8"/><path d="M21 17l3-3 3 3"/></svg>',
 	distinct: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 10h12"/><path d="M10 16h12"/><path d="M10 22h12"/><circle cx="8" cy="10" r="1.8"/><circle cx="8" cy="16" r="1.8"/><circle cx="8" cy="22" r="1.8"/></svg>',
 	pivot: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="20" height="20" rx="2"/><path d="M6 14h20"/><path d="M14 6v20"/><path d="M18 10h6"/><path d="M18 18h6"/></svg>',
+	join: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="16" r="7"/><circle cx="20" cy="16" r="7"/></svg>',
 };
 
 const TRANSFORM_TYPE_LABELS: Record<string, string> = {
-	derive: 'Calc. Column',
+	derive: 'Calculate',
 	summarize: 'Summarize',
 	distinct: 'Distinct',
 	pivot: 'Pivot',
+	join: 'Join',
 };
 
-const TRANSFORM_TYPES_ORDERED: TransformationType[] = ['derive', 'summarize', 'distinct', 'pivot'];
+const TRANSFORM_TYPES_ORDERED: TransformationType[] = ['derive', 'summarize', 'distinct', 'pivot', 'join'];
 
 const AGG_FUNCTIONS = ['count', 'sum', 'avg', 'min', 'max', 'distinct'];
 
 const PIVOT_AGG_FUNCTIONS = ['sum', 'avg', 'count', 'first'];
+
+const JOIN_KINDS: JoinKind[] = ['inner', 'leftouter', 'rightouter', 'fullouter', 'leftanti', 'rightanti', 'leftsemi', 'rightsemi'];
+const JOIN_KIND_LABELS: Record<JoinKind, string> = {
+	inner: 'inner',
+	leftouter: 'leftouter',
+	rightouter: 'rightouter',
+	fullouter: 'fullouter',
+	leftanti: 'leftanti',
+	rightanti: 'rightanti',
+	leftsemi: 'leftsemi',
+	rightsemi: 'rightsemi',
+};
+const JOIN_ROW_WARNING_THRESHOLD = 100_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,6 +151,10 @@ export function __kustoGetTransformationState(boxId: unknown): Record<string, un
 				pivotValueColumn: '',
 				pivotAggregation: 'sum',
 				pivotMaxColumns: 100,
+				joinRightDataSourceId: '',
+				joinKind: 'inner',
+				joinKeys: [{ left: '', right: '' }],
+				joinOmitDuplicateColumns: true,
 			};
 		}
 		const st = transformationStateByBoxId[id] as any;
@@ -203,6 +232,14 @@ export class KwTransformationSection extends LitElement {
 		st.pivotMaxColumns = (typeof options.pivotMaxColumns === 'number' && Number.isFinite(options.pivotMaxColumns))
 			? options.pivotMaxColumns
 			: (typeof st.pivotMaxColumns === 'number' ? st.pivotMaxColumns : 100);
+		st.joinRightDataSourceId = typeof options.joinRightDataSourceId === 'string' ? String(options.joinRightDataSourceId) : (st.joinRightDataSourceId || '');
+		st.joinKind = typeof options.joinKind === 'string' ? String(options.joinKind) : (st.joinKind || 'inner');
+		st.joinKeys = Array.isArray(options.joinKeys)
+			? options.joinKeys
+			: (Array.isArray(st.joinKeys) ? st.joinKeys : [{ left: '', right: '' }]);
+		st.joinOmitDuplicateColumns = typeof options.joinOmitDuplicateColumns === 'boolean'
+			? options.joinOmitDuplicateColumns
+			: (typeof st.joinOmitDuplicateColumns === 'boolean' ? st.joinOmitDuplicateColumns : true);
 
 		const container = document.getElementById('queries-container');
 		if (!container) return id;
@@ -261,6 +298,12 @@ export class KwTransformationSection extends LitElement {
 	@state() private _pivotAggregation = 'sum';
 	@state() private _pivotMaxColumns = 100;
 
+	// Join
+	@state() private _joinRightDataSourceId = '';
+	@state() private _joinKind: JoinKind = 'inner';
+	@state() private _joinKeys: JoinKey[] = [{ left: '', right: '' }];
+	@state() private _joinOmitDuplicateColumns = true;
+
 	// Datasets
 	@state() private _datasets: DatasetEntry[] = [];
 
@@ -279,6 +322,7 @@ export class KwTransformationSection extends LitElement {
 	private _deriveDragState: { fromIndex: number; overIndex: number | null; insertAfter: boolean } | null = null;
 	private _aggDragState: { fromIndex: number; overIndex: number | null; insertAfter: boolean } | null = null;
 	private _groupByDragState: { fromIndex: number; overIndex: number | null; insertAfter: boolean } | null = null;
+	private _joinKeyDragState: { fromIndex: number; overIndex: number | null; insertAfter: boolean } | null = null;
 
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
@@ -328,6 +372,7 @@ export class KwTransformationSection extends LitElement {
 			'_distinctColumn', '_groupByColumns', '_aggregations',
 			'_pivotRowKeyColumn', '_pivotColumnKeyColumn', '_pivotValueColumn',
 			'_pivotAggregation',
+			'_joinRightDataSourceId', '_joinKind', '_joinKeys', '_joinOmitDuplicateColumns',
 		];
 		if (triggers.some(k => changed.has(k))) {
 			this._writeToGlobalState();
@@ -419,6 +464,7 @@ export class KwTransformationSection extends LitElement {
 						${this._transformationType === 'summarize' ? this._renderSummarize(colNames) : nothing}
 						${this._transformationType === 'distinct' ? this._renderDistinct(colNames) : nothing}
 						${this._transformationType === 'pivot' ? this._renderPivot(colNames) : nothing}
+						${this._transformationType === 'join' ? this._renderJoin(colNames) : nothing}
 					</div>
 				</div>
 			</div>
@@ -448,10 +494,11 @@ export class KwTransformationSection extends LitElement {
 	private _renderDataSource(): TemplateResult {
 		const selected = this._datasets.find(d => d.id === this._dataSourceId);
 		const label = selected?.label || '(select)';
+		const rowLabel = this._transformationType === 'join' ? 'Left' : 'Data';
 
 		return html`
 			<div class="tf-row">
-				<label>Data</label>
+				<label>${rowLabel}</label>
 				<div class="dropdown-wrapper">
 					<button type="button" class="dropdown-btn"
 						@click=${(e: Event) => this._toggleDropdown('datasource', e)}
@@ -756,6 +803,144 @@ export class KwTransformationSection extends LitElement {
 		`;
 	}
 
+	// ── Join rendering ────────────────────────────────────────────────────────
+
+	private _renderJoin(leftColNames: string[]): TemplateResult {
+		const rightDs = this._datasets.find(d => d.id === this._joinRightDataSourceId);
+		const rightLabel = rightDs?.label || '(select)';
+		const rightColNames = rightDs
+			? (rightDs.columns || []).map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c)
+			: [];
+		const isSemiAnti = this._joinKind === 'leftanti' || this._joinKind === 'rightanti'
+			|| this._joinKind === 'leftsemi' || this._joinKind === 'rightsemi';
+
+		return html`
+			<div class="tf-row">
+				<label>Right</label>
+				<div class="dropdown-wrapper">
+					<button type="button" class="dropdown-btn"
+						@click=${(e: Event) => this._toggleDropdown('joinRight', e)}
+						aria-haspopup="listbox"
+						aria-expanded="${this._openDropdownId === 'joinRight' ? 'true' : 'false'}">
+						${rightLabel}
+					</button>
+					${this._openDropdownId === 'joinRight' ? html`
+						<div class="dropdown-menu"
+							@mousedown=${(e: Event) => e.stopPropagation()}
+							@click=${(e: Event) => e.stopPropagation()}>
+							${this._datasets.map(d => html`
+								<div class="dropdown-item ${d.id === this._joinRightDataSourceId ? 'is-selected' : ''}"
+									@click=${() => this._selectJoinRightDataSource(d.id)}>
+									${d.label}
+								</div>
+							`)}
+							${!this._datasets.length ? html`
+								<div class="dropdown-item" style="opacity:0.7">(no data sources)</div>
+							` : nothing}
+						</div>
+					` : nothing}
+				</div>
+			</div>
+			<div class="tf-row">
+				<label>Kind</label>
+				<div class="dropdown-wrapper">
+					<button type="button" class="dropdown-btn"
+						@click=${(e: Event) => this._toggleDropdown('joinKind', e)}
+						aria-haspopup="listbox"
+						aria-expanded="${this._openDropdownId === 'joinKind' ? 'true' : 'false'}">
+						${JOIN_KIND_LABELS[this._joinKind] || 'inner'}
+					</button>
+					${this._openDropdownId === 'joinKind' ? html`
+						<div class="dropdown-menu"
+							@mousedown=${(e: Event) => e.stopPropagation()}
+							@click=${(e: Event) => e.stopPropagation()}>
+							${JOIN_KINDS.map(k => html`
+								<div class="dropdown-item ${k === this._joinKind ? 'is-selected' : ''}"
+									@click=${() => this._selectJoinKind(k)}>
+									${JOIN_KIND_LABELS[k]}
+								</div>
+							`)}
+						</div>
+					` : nothing}
+				</div>
+			</div>
+			${this._renderJoinKeys(leftColNames, rightColNames)}
+			${!isSemiAnti ? html`
+				<div class="tf-row join-omit-row">
+					<label></label>
+					<label class="join-checkbox-label">
+						<input type="checkbox"
+							.checked=${this._joinOmitDuplicateColumns}
+							@change=${(e: Event) => this._onJoinOmitDuplicateColumnsChanged((e.target as HTMLInputElement).checked)}
+						/>
+						Omit duplicate columns
+					</label>
+				</div>
+			` : nothing}
+		`;
+	}
+
+	private _renderJoinKeys(leftColNames: string[], rightColNames: string[]): TemplateResult {
+		return html`
+			<div class="join-keys-stack">
+				<label>On</label>
+				<div class="join-keys-body">
+					<div class="join-key-rows ${this._joinKeyDragState ? 'is-dragging' : ''}">
+						${this._joinKeys.map((key, i) => this._renderJoinKeyRow(key, i, leftColNames, rightColNames))}
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private _renderJoinKeyRow(key: JoinKey, index: number, leftColNames: string[], rightColNames: string[]): TemplateResult {
+		const ds = this._joinKeyDragState;
+		const isDropTarget = ds && ds.overIndex === index;
+		const isDropBefore = ds && ds.overIndex === index && !ds.insertAfter;
+		const isDropAfter = ds && ds.overIndex === index && ds.insertAfter;
+
+		return html`
+			<div class="join-key-row ${isDropTarget ? 'is-drop-target' : ''} ${isDropBefore ? 'is-drop-before' : ''} ${isDropAfter ? 'is-drop-after' : ''}"
+				@dragover=${(e: DragEvent) => this._onJoinKeyDragOver(index, e)}
+				@drop=${(e: DragEvent) => this._onJoinKeyDrop(index, e)}>
+				<select class="tf-select"
+					@change=${(e: Event) => this._onJoinKeyChanged(index, 'left', (e.target as HTMLSelectElement).value)}>
+					<option value="" ?selected=${!key.left}>(left column)</option>
+					${leftColNames.map(c => html`
+						<option value="${esc(c)}" ?selected=${c === key.left}>${esc(c)}</option>
+					`)}
+				</select>
+				<span class="join-eq" aria-hidden="true">==</span>
+				<select class="tf-select"
+					@change=${(e: Event) => this._onJoinKeyChanged(index, 'right', (e.target as HTMLSelectElement).value)}>
+					<option value="" ?selected=${!key.right}>(right column)</option>
+					${rightColNames.map(c => html`
+						<option value="${esc(c)}" ?selected=${c === key.right}>${esc(c)}</option>
+					`)}
+				</select>
+				<div class="join-key-row-actions">
+					<button type="button" class="unified-btn-secondary unified-btn-icon-only mini-btn"
+						@click=${() => this._addJoinKey(index)}
+						title="Add key pair" aria-label="Add key pair">
+						<span .innerHTML=${SVG_PLUS}></span>
+					</button>
+					<button type="button" class="unified-btn-secondary unified-btn-icon-only mini-btn"
+						@click=${() => this._removeJoinKey(index)}
+						?disabled=${this._joinKeys.length <= 1}
+						title="Remove key pair" aria-label="Remove key pair">
+						<span .innerHTML=${SVG_TRASH}></span>
+					</button>
+					<button type="button" class="drag-handle" draggable="true"
+						title="Drag to reorder" aria-label="Reorder key pair"
+						@dragstart=${(e: DragEvent) => this._onJoinKeyDragStart(index, e)}
+						@dragend=${() => this._onJoinKeyDragEnd()}>
+						<span class="drag-handle-glyph" aria-hidden="true">&#8942;</span>
+					</button>
+				</div>
+			</div>
+		`;
+	}
+
 	// ── Event handlers ────────────────────────────────────────────────────────
 
 	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
@@ -800,6 +985,28 @@ export class KwTransformationSection extends LitElement {
 				});
 			});
 		});
+	}
+
+	/**
+	 * Compute the minimum wrapper height: controls + resizer so the resizer
+	 * is always visible and grabbable regardless of how small the user drags.
+	 */
+	private _computeMinHeight(): number {
+		let controlsH = 0;
+		const wrapper = this.shadowRoot?.getElementById('tf-wrapper');
+		if (wrapper) {
+			for (const child of Array.from(wrapper.children) as HTMLElement[]) {
+				if (child.classList.contains('results-area')) continue;
+				const cs = getComputedStyle(child);
+				if (cs.display === 'none') continue;
+				const rect = child.getBoundingClientRect();
+				controlsH += Math.ceil(rect.height)
+					+ (parseFloat(cs.marginTop) || 0)
+					+ (parseFloat(cs.marginBottom) || 0);
+			}
+		}
+		// Ensure at least enough room for the controls plus a small results buffer
+		return Math.max(120, Math.ceil(controlsH) + 40);
 	}
 
 	private _computeFitHeight(): number {
@@ -849,7 +1056,7 @@ export class KwTransformationSection extends LitElement {
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = this._wrapperHeight;
 
-		const minH = 120;
+		const minH = this._computeMinHeight();
 		const maxH = this._computeFitHeight();
 
 		const onMove = (moveEvent: MouseEvent) => {
@@ -955,6 +1162,7 @@ export class KwTransformationSection extends LitElement {
 		const insertedIndex = afterIndex + 1;
 		cols.splice(insertedIndex, 0, { name: '', expression: '' });
 		this._deriveColumns = cols;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -963,6 +1171,7 @@ export class KwTransformationSection extends LitElement {
 		const cols = [...this._deriveColumns];
 		cols.splice(index, 1);
 		this._deriveColumns = cols;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -1126,6 +1335,7 @@ export class KwTransformationSection extends LitElement {
 		const insertedIndex = afterIndex + 1;
 		aggs.splice(insertedIndex, 0, { name: '', function: 'count', column: '' });
 		this._aggregations = aggs;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -1134,6 +1344,7 @@ export class KwTransformationSection extends LitElement {
 		const aggs = [...this._aggregations];
 		aggs.splice(index, 1);
 		this._aggregations = aggs;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -1203,6 +1414,7 @@ export class KwTransformationSection extends LitElement {
 		const insertedIndex = afterIndex + 1;
 		cols.splice(insertedIndex, 0, '');
 		this._groupByColumns = cols;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -1211,6 +1423,7 @@ export class KwTransformationSection extends LitElement {
 		const cols = [...this._groupByColumns];
 		cols.splice(index, 1);
 		this._groupByColumns = cols;
+		this._autoFitAfterLayout();
 		this._schedulePersist();
 	}
 
@@ -1294,6 +1507,106 @@ export class KwTransformationSection extends LitElement {
 		this._schedulePersist();
 	}
 
+	// ── Join handlers ─────────────────────────────────────────────────────────
+
+	private _selectJoinRightDataSource(id: string): void {
+		this._joinRightDataSourceId = id;
+		this._openDropdownId = '';
+		document.removeEventListener('mousedown', this._closeDropdownBound);
+		this._schedulePersist();
+	}
+
+	private _selectJoinKind(kind: JoinKind): void {
+		this._joinKind = kind;
+		this._openDropdownId = '';
+		document.removeEventListener('mousedown', this._closeDropdownBound);
+		this._schedulePersist();
+	}
+
+	private _onJoinKeyChanged(index: number, side: 'left' | 'right', value: string): void {
+		const keys = [...this._joinKeys];
+		if (!keys[index]) keys[index] = { left: '', right: '' };
+		keys[index] = { ...keys[index], [side]: value };
+		this._joinKeys = keys;
+		this._writeToGlobalState();
+		this._computeTransformation();
+		this._schedulePersist();
+	}
+
+	private _addJoinKey(afterIndex: number): void {
+		const keys = [...this._joinKeys];
+		keys.splice(afterIndex + 1, 0, { left: '', right: '' });
+		this._joinKeys = keys;
+		this._autoFitAfterLayout();
+		this._schedulePersist();
+	}
+
+	private _removeJoinKey(index: number): void {
+		if (this._joinKeys.length <= 1) return;
+		const keys = [...this._joinKeys];
+		keys.splice(index, 1);
+		this._joinKeys = keys;
+		this._autoFitAfterLayout();
+		this._schedulePersist();
+	}
+
+	private _onJoinOmitDuplicateColumnsChanged(checked: boolean): void {
+		this._joinOmitDuplicateColumns = checked;
+		this._writeToGlobalState();
+		this._computeTransformation();
+		this._schedulePersist();
+	}
+
+	// ── Join key drag & drop ──────────────────────────────────────────────────
+
+	private _onJoinKeyDragStart(index: number, e: DragEvent): void {
+		this._joinKeyDragState = { fromIndex: index, overIndex: null, insertAfter: false };
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			try { e.dataTransfer.setData('text/plain', 'kusto-joinkey'); } catch (e) { console.error('[kusto]', e); }
+		}
+		this.requestUpdate();
+	}
+
+	private _onJoinKeyDragOver(index: number, e: DragEvent): void {
+		if (!this._joinKeyDragState) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		const row = (e.currentTarget as HTMLElement);
+		const rect = row.getBoundingClientRect();
+		const insertAfter = e.clientY >= rect.top + rect.height / 2;
+		this._joinKeyDragState = { ...this._joinKeyDragState!, overIndex: index, insertAfter };
+		this.requestUpdate();
+	}
+
+	private _onJoinKeyDrop(toIndex: number, e: DragEvent): void {
+		e.preventDefault();
+		const ds = this._joinKeyDragState;
+		if (!ds) return;
+		const fromIdx = ds.fromIndex;
+		const overIdx = ds.overIndex ?? toIndex;
+		const insertAfter = ds.insertAfter;
+		let insertion = overIdx + (insertAfter ? 1 : 0);
+		insertion = Math.max(0, Math.min(this._joinKeys.length, insertion));
+		if (insertion === fromIdx || insertion === fromIdx + 1) {
+			this._joinKeyDragState = null;
+			this.requestUpdate();
+			return;
+		}
+		const keys = [...this._joinKeys];
+		const moved = keys.splice(fromIdx, 1)[0];
+		const toInsert = fromIdx < insertion ? insertion - 1 : insertion;
+		keys.splice(toInsert, 0, moved);
+		this._joinKeys = keys;
+		this._joinKeyDragState = null;
+		this._schedulePersist();
+	}
+
+	private _onJoinKeyDragEnd(): void {
+		this._joinKeyDragState = null;
+		this.requestUpdate();
+	}
+
 	// ── Global state bridge ───────────────────────────────────────────────────
 
 	/**
@@ -1327,6 +1640,10 @@ export class KwTransformationSection extends LitElement {
 		if (typeof st.pivotValueColumn === 'string') this._pivotValueColumn = st.pivotValueColumn;
 		if (typeof st.pivotAggregation === 'string') this._pivotAggregation = st.pivotAggregation;
 		if (typeof st.pivotMaxColumns === 'number') this._pivotMaxColumns = st.pivotMaxColumns;
+		if (typeof st.joinRightDataSourceId === 'string') this._joinRightDataSourceId = st.joinRightDataSourceId;
+		if (typeof st.joinKind === 'string') this._joinKind = st.joinKind as JoinKind;
+		if (Array.isArray(st.joinKeys)) this._joinKeys = st.joinKeys.map((k: any) => ({ left: String(k?.left || ''), right: String(k?.right || '') }));
+		if (typeof st.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = st.joinOmitDuplicateColumns;
 	}
 
 	private _writeToGlobalState(): void {
@@ -1351,6 +1668,10 @@ export class KwTransformationSection extends LitElement {
 		st.pivotValueColumn = this._pivotValueColumn;
 		st.pivotAggregation = this._pivotAggregation;
 		st.pivotMaxColumns = this._pivotMaxColumns;
+		st.joinRightDataSourceId = this._joinRightDataSourceId;
+		st.joinKind = this._joinKind;
+		st.joinKeys = this._joinKeys.map(k => ({ left: k.left, right: k.right }));
+		st.joinOmitDuplicateColumns = this._joinOmitDuplicateColumns;
 
 		w.transformationStateByBoxId[this.boxId] = st;
 	}
@@ -1367,6 +1688,18 @@ export class KwTransformationSection extends LitElement {
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
+	/**
+	 * Unconditionally replace the cached datasets with fresh data.
+	 * Used by refresh() (the cross-section dependency path) where the upstream
+	 * data has changed but the dataset id/label/shape may be identical.
+	 */
+	private _forceRefreshDatasets(): void {
+		try {
+			const all = __kustoGetChartDatasetsInDomOrder() || [];
+			this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
 	private _datasetsEqual(a: DatasetEntry[], b: DatasetEntry[]): boolean {
 		if (a === b) return true;
 		if (!Array.isArray(a) || !Array.isArray(b)) return false;
@@ -1376,6 +1709,15 @@ export class KwTransformationSection extends LitElement {
 			const bi = b[i];
 			if (!ai || !bi) return false;
 			if (ai.id !== bi.id || ai.label !== bi.label) return false;
+			// Compare column definitions so refreshed query results propagate.
+			const aCols = ai.columns;
+			const bCols = bi.columns;
+			if (aCols.length !== bCols.length) return false;
+			for (let c = 0; c < aCols.length; c++) {
+				if (aCols[c] !== bCols[c]) return false;
+			}
+			// Compare row count so data changes propagate even when columns are identical.
+			if (ai.rows.length !== bi.rows.length) return false;
 		}
 		return true;
 	}
@@ -1459,6 +1801,10 @@ export class KwTransformationSection extends LitElement {
 			}
 			if (type === 'distinct') {
 				this._computeDistinct(colNames, colIndex, rows, getRaw);
+				return;
+			}
+			if (type === 'join') {
+				this._computeJoin(colNames, colIndex, rows, getRaw);
 				return;
 			}
 			this._resultError = 'Unknown transformation type.';
@@ -1713,6 +2059,218 @@ export class KwTransformationSection extends LitElement {
 		this._resultError = '';
 	}
 
+	private _computeJoin(leftColNames: string[], leftColIndex: Record<string, number>, leftRows: unknown[][], getRaw: (v: unknown) => unknown): void {
+		const rightDsId = this._joinRightDataSourceId;
+		if (!rightDsId) {
+			this._resultError = 'Select a right data source.';
+			this._resultColumns = [];
+			this._resultRows = [];
+			return;
+		}
+		const rightDs = this._datasets.find(d => d.id === rightDsId);
+		if (!rightDs) {
+			this._resultError = 'Right data source not found.';
+			this._resultColumns = [];
+			this._resultRows = [];
+			return;
+		}
+		const rightColNames = (rightDs.columns || []).map((c: string) => normalizeResultsColumnName(c)).filter((c: string) => c);
+		const rightColIndex: Record<string, number> = {};
+		for (let i = 0; i < rightColNames.length; i++) {
+			rightColIndex[rightColNames[i]] = i;
+			rightColIndex[String(rightColNames[i]).toLowerCase()] = i;
+		}
+		const rightRows = Array.isArray(rightDs.rows) ? rightDs.rows : [];
+
+		const joinKeys = this._joinKeys.filter(k => k.left && k.right);
+		if (!joinKeys.length) {
+			this._resultError = 'Select at least one key pair.';
+			this._resultColumns = [];
+			this._resultRows = [];
+			return;
+		}
+
+		const kind = this._joinKind;
+		const omitDups = this._joinOmitDuplicateColumns;
+		const isSemiAnti = kind === 'leftanti' || kind === 'rightanti' || kind === 'leftsemi' || kind === 'rightsemi';
+
+		// Build a hash index on the right side for the join keys.
+		const rightKeyIndices = joinKeys.map(k => rightColIndex[k.right] ?? rightColIndex[k.right.toLowerCase()]);
+		const leftKeyIndices = joinKeys.map(k => leftColIndex[k.left] ?? leftColIndex[k.left.toLowerCase()]);
+
+		// Validate key indices exist
+		for (let i = 0; i < joinKeys.length; i++) {
+			if (typeof leftKeyIndices[i] !== 'number' || !Number.isFinite(leftKeyIndices[i])) {
+				this._resultError = `Left key column "${joinKeys[i].left}" not found.`;
+				this._resultColumns = [];
+				this._resultRows = [];
+				return;
+			}
+			if (typeof rightKeyIndices[i] !== 'number' || !Number.isFinite(rightKeyIndices[i])) {
+				this._resultError = `Right key column "${joinKeys[i].right}" not found.`;
+				this._resultColumns = [];
+				this._resultRows = [];
+				return;
+			}
+		}
+
+		const makeKey = (row: unknown[], indices: number[]): string => {
+			const parts: unknown[] = [];
+			for (const idx of indices) {
+				parts.push(getRaw(row[idx]));
+			}
+			return JSON.stringify(parts);
+		};
+
+		// Build hash map: right key -> list of right rows
+		const rightMap = new Map<string, unknown[][]>();
+		const rightMatched = new Set<number>();
+		for (let ri = 0; ri < rightRows.length; ri++) {
+			const row = Array.isArray(rightRows[ri]) ? rightRows[ri] : [];
+			const key = makeKey(row, rightKeyIndices);
+			let list = rightMap.get(key);
+			if (!list) { list = []; rightMap.set(key, list); }
+			list.push(row);
+		}
+
+		// Determine output columns
+		// Columns that appear in both left and right sides
+		const leftSet = new Set(leftColNames);
+		const rightSet = new Set(rightColNames);
+		const duplicated = new Set(leftColNames.filter(c => rightSet.has(c)));
+		let outColNames: string[];
+		if (isSemiAnti) {
+			// Semi/anti emit only left columns (for left*) or right columns (for right*)
+			if (kind === 'leftsemi' || kind === 'leftanti') {
+				outColNames = [...leftColNames];
+			} else {
+				outColNames = [...rightColNames];
+			}
+		} else if (omitDups) {
+			// Omit duplicate columns: keep left copy for duplicated names, skip right copy
+			outColNames = [...leftColNames];
+			for (const rc of rightColNames) {
+				if (duplicated.has(rc)) continue;
+				outColNames.push(rc);
+			}
+		} else {
+			// Include all; prefix Left./Right. only on columns that appear in both sides
+			outColNames = leftColNames.map(c => duplicated.has(c) ? 'Left.' + c : c);
+			for (const rc of rightColNames) {
+				outColNames.push(duplicated.has(rc) ? 'Right.' + rc : rc);
+			}
+		}
+
+		const outRows: unknown[][] = [];
+		const nullRightRow = rightColNames.map(() => null);
+		const nullLeftRow = leftColNames.map(() => null);
+
+		const buildOutputRow = (leftRow: unknown[], rightRow: unknown[]): unknown[] => {
+			const lr = Array.isArray(leftRow) ? leftRow.map(getRaw) : leftColNames.map(() => null);
+			const rr = Array.isArray(rightRow) ? rightRow.map(getRaw) : rightColNames.map(() => null);
+			if (isSemiAnti) {
+				return (kind === 'leftsemi' || kind === 'leftanti') ? lr : rr;
+			}
+			if (omitDups) {
+				const row = [...lr];
+				for (let i = 0; i < rightColNames.length; i++) {
+					if (duplicated.has(rightColNames[i])) continue;
+					row.push(rr[i]);
+				}
+				return row;
+			}
+			return [...lr, ...rr];
+		};
+
+		if (kind === 'leftanti') {
+			for (const leftRow of leftRows) {
+				const row = Array.isArray(leftRow) ? leftRow : [];
+				const key = makeKey(row, leftKeyIndices);
+				if (!rightMap.has(key)) {
+					outRows.push(buildOutputRow(row, nullRightRow));
+				}
+			}
+		} else if (kind === 'rightanti') {
+			// Track which right indices matched
+			for (const leftRow of leftRows) {
+				const row = Array.isArray(leftRow) ? leftRow : [];
+				const key = makeKey(row, leftKeyIndices);
+				if (rightMap.has(key)) {
+					// Mark all matching right rows
+					for (let ri = 0; ri < rightRows.length; ri++) {
+						const rRow = Array.isArray(rightRows[ri]) ? rightRows[ri] : [];
+						const rKey = makeKey(rRow, rightKeyIndices);
+						if (rKey === key) rightMatched.add(ri);
+					}
+				}
+			}
+			for (let ri = 0; ri < rightRows.length; ri++) {
+				if (!rightMatched.has(ri)) {
+					const rRow = Array.isArray(rightRows[ri]) ? rightRows[ri] : [];
+					outRows.push(buildOutputRow(nullLeftRow, rRow));
+				}
+			}
+		} else if (kind === 'leftsemi') {
+			const emittedKeys = new Set<string>();
+			for (const leftRow of leftRows) {
+				const row = Array.isArray(leftRow) ? leftRow : [];
+				const key = makeKey(row, leftKeyIndices);
+				if (rightMap.has(key) && !emittedKeys.has(key)) {
+					emittedKeys.add(key);
+					outRows.push(buildOutputRow(row, nullRightRow));
+				}
+			}
+		} else if (kind === 'rightsemi') {
+			const emittedKeys = new Set<string>();
+			for (const leftRow of leftRows) {
+				const row = Array.isArray(leftRow) ? leftRow : [];
+				const key = makeKey(row, leftKeyIndices);
+				if (rightMap.has(key)) {
+					for (const rRow of rightMap.get(key)!) {
+						const rKey = makeKey(rRow, rightKeyIndices);
+						if (!emittedKeys.has(rKey)) {
+							emittedKeys.add(rKey);
+							outRows.push(buildOutputRow(nullLeftRow, rRow));
+						}
+					}
+				}
+			}
+		} else {
+			// inner, leftouter, rightouter, fullouter
+			const rightUsed = new Set<string>();
+
+			for (const leftRow of leftRows) {
+				const row = Array.isArray(leftRow) ? leftRow : [];
+				const key = makeKey(row, leftKeyIndices);
+				const matches = rightMap.get(key);
+				if (matches && matches.length > 0) {
+					rightUsed.add(key);
+					for (const rRow of matches) {
+						outRows.push(buildOutputRow(row, rRow));
+					}
+				} else if (kind === 'leftouter' || kind === 'fullouter') {
+					outRows.push(buildOutputRow(row, nullRightRow));
+				}
+			}
+
+			if (kind === 'rightouter' || kind === 'fullouter') {
+				for (const rightRow of rightRows) {
+					const rRow = Array.isArray(rightRow) ? rightRow : [];
+					const key = makeKey(rRow, rightKeyIndices);
+					if (!rightUsed.has(key)) {
+						outRows.push(buildOutputRow(nullLeftRow, rRow));
+					}
+				}
+			}
+		}
+
+		this._resultColumns = outColNames.map(c => ({ name: c }));
+		this._resultRows = outRows;
+		this._resultError = outRows.length > JOIN_ROW_WARNING_THRESHOLD
+			? `Warning: join produced ${outRows.length.toLocaleString()} rows. Performance may be affected.`
+			: '';
+	}
+
 	private _updateHostClasses(): void {
 		this.classList.toggle('is-collapsed', !this._expanded);
 	}
@@ -1774,6 +2332,13 @@ export class KwTransformationSection extends LitElement {
 		if (this._pivotAggregation) data.pivotAggregation = this._pivotAggregation;
 		if (typeof this._pivotMaxColumns === 'number') data.pivotMaxColumns = this._pivotMaxColumns;
 
+		// Join
+		if (this._joinRightDataSourceId) data.joinRightDataSourceId = this._joinRightDataSourceId;
+		if (this._joinKind) data.joinKind = this._joinKind;
+		const joinKeys = this._joinKeys.filter(k => k && typeof k === 'object');
+		if (joinKeys.length) data.joinKeys = joinKeys.map(k => ({ left: String(k.left || ''), right: String(k.right || '') }));
+		data.joinOmitDuplicateColumns = this._joinOmitDuplicateColumns;
+
 		// Wrapper height
 		if (this._wrapperHeight > 0) {
 			data.editorHeightPx = this._wrapperHeight;
@@ -1812,6 +2377,15 @@ export class KwTransformationSection extends LitElement {
 		if (typeof options.pivotValueColumn === 'string') this._pivotValueColumn = options.pivotValueColumn;
 		if (typeof options.pivotAggregation === 'string') this._pivotAggregation = options.pivotAggregation;
 		if (typeof options.pivotMaxColumns === 'number') this._pivotMaxColumns = options.pivotMaxColumns;
+		if (typeof options.joinRightDataSourceId === 'string') this._joinRightDataSourceId = options.joinRightDataSourceId;
+		if (typeof options.joinKind === 'string') this._joinKind = options.joinKind as JoinKind;
+		if (Array.isArray(options.joinKeys)) {
+			this._joinKeys = (options.joinKeys as JoinKey[]).map(k => ({
+				left: String(k?.left || ''),
+				right: String(k?.right || ''),
+			}));
+		}
+		if (typeof options.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = options.joinOmitDuplicateColumns;
 		if (typeof options.editorHeightPx === 'number' && options.editorHeightPx > 0) {
 			this._wrapperHeight = Math.round(options.editorHeightPx as number);
 		}
@@ -1835,7 +2409,7 @@ export class KwTransformationSection extends LitElement {
 
 	/** Public refresh — called by cross-section dependency refresh loops. */
 	public refresh(): void {
-		this._refreshDatasets();
+		this._forceRefreshDatasets();
 		this._computeTransformation();
 	}
 
@@ -1872,6 +2446,15 @@ export class KwTransformationSection extends LitElement {
 			if (typeof config.pivotValueColumn === 'string') this._pivotValueColumn = config.pivotValueColumn;
 			if (typeof config.pivotAggregation === 'string') this._pivotAggregation = config.pivotAggregation;
 			if (typeof config.pivotMaxColumns === 'number') this._pivotMaxColumns = config.pivotMaxColumns;
+			if (typeof config.joinRightDataSourceId === 'string') this._joinRightDataSourceId = config.joinRightDataSourceId;
+			if (typeof config.joinKind === 'string') this._joinKind = config.joinKind as JoinKind;
+			if (Array.isArray(config.joinKeys)) {
+				this._joinKeys = (config.joinKeys as JoinKey[]).map(k => ({
+					left: String(k?.left || ''),
+					right: String(k?.right || ''),
+				}));
+			}
+			if (typeof config.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = config.joinOmitDuplicateColumns;
 
 			this._writeToGlobalState();
 			this._computeTransformation();

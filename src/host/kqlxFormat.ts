@@ -133,7 +133,7 @@ export type KqlxSectionV1 =
 			editorHeightPx?: number;
 			// Transformation configuration.
 			dataSourceId?: string;
-			transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot';
+			transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
 			// Distinct transformation: select a single column and return unique values.
 			distinctColumn?: string;
 			// Summarize transformation: group by columns + aggregations
@@ -150,6 +150,11 @@ export type KqlxSectionV1 =
 			pivotValueColumn?: string;
 			pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
 			pivotMaxColumns?: number;
+			// Join transformation: join two data sources on key columns
+			joinRightDataSourceId?: string;
+			joinKind?: 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
+			joinKeys?: Array<{ left: string; right: string }>;
+			joinOmitDuplicateColumns?: boolean;
 		}
 	| {
 			id?: string;

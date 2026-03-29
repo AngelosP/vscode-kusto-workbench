@@ -540,6 +540,89 @@ export const styles = css`
 			min-width: 120px;
 		}
 
+		/* ── Join ────────────────────────────────────────────────── */
+
+		.join-keys-stack {
+			display: flex;
+			gap: 10px;
+			width: 100%;
+		}
+		.join-keys-stack > label {
+			flex: 0 0 var(--kusto-transform-label-width);
+			min-width: var(--kusto-transform-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+			margin-top: 4px;
+		}
+		.join-keys-body {
+			flex: 1 1 auto;
+			min-width: 260px;
+		}
+		.join-key-rows {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+		.join-key-row {
+			display: grid;
+			grid-template-columns: 1fr auto 1fr auto;
+			gap: 8px;
+			align-items: center;
+			position: relative;
+		}
+		.join-eq {
+			opacity: 0.75;
+			font-size: 12px;
+			padding: 0 2px;
+			user-select: none;
+			font-family: var(--vscode-editor-font-family);
+		}
+		.join-key-row-actions {
+			align-self: center;
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
+
+		/* Join key drag styling */
+		.join-key-rows.is-dragging .join-key-row {
+			transition: border-color 0.08s ease, background 0.08s ease;
+		}
+		.join-key-row.is-drop-target {
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-list-hoverBackground) 8%);
+		}
+		.join-key-row.is-drop-before::before,
+		.join-key-row.is-drop-after::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--vscode-focusBorder);
+			box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent);
+		}
+		.join-key-row.is-drop-before::before { top: -1px; }
+		.join-key-row.is-drop-after::after { bottom: -1px; }
+
+		.join-omit-row {
+			align-items: center;
+		}
+		.join-checkbox-label {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			cursor: pointer;
+			user-select: none;
+		}
+		.join-checkbox-label input[type="checkbox"] {
+			width: 14px;
+			height: 14px;
+			margin: 0;
+			cursor: pointer;
+			accent-color: var(--vscode-focusBorder);
+		}
+
 		/* ── Mini buttons (shared by derive/agg/groupby) ──────────── */
 
 		.mini-btn {

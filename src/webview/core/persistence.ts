@@ -1027,7 +1027,15 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					pivotColumnKeyColumn: (typeof section.pivotColumnKeyColumn === 'string') ? section.pivotColumnKeyColumn : undefined,
 					pivotValueColumn: (typeof section.pivotValueColumn === 'string') ? section.pivotValueColumn : undefined,
 					pivotAggregation: (typeof section.pivotAggregation === 'string') ? section.pivotAggregation : undefined,
-					pivotMaxColumns: (typeof section.pivotMaxColumns === 'number') ? section.pivotMaxColumns : undefined
+					pivotMaxColumns: (typeof section.pivotMaxColumns === 'number') ? section.pivotMaxColumns : undefined,
+					joinRightDataSourceId: (typeof section.joinRightDataSourceId === 'string') ? section.joinRightDataSourceId : undefined,
+					joinKind: (typeof section.joinKind === 'string') ? section.joinKind : undefined,
+					joinKeys: Array.isArray(section.joinKeys)
+						? section.joinKeys
+							.filter((k: any) => k && typeof k === 'object')
+							.map((k: any) => ({ left: String(k.left || ''), right: String(k.right || '') }))
+						: undefined,
+					joinOmitDuplicateColumns: (typeof section.joinOmitDuplicateColumns === 'boolean') ? section.joinOmitDuplicateColumns : undefined,
 				});
 				continue;
 			}

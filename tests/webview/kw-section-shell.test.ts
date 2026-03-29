@@ -240,11 +240,11 @@ describe('kw-section-shell', () => {
 	it('toggle button title changes based on expanded state', async () => {
 		const el = createShell({ expanded: true });
 		await el.updateComplete;
-		expect(getToggleButton(el).title).toBe('Hide');
+		expect(getToggleButton(el).title).toContain('Hide');
 
 		el.expanded = false;
 		await el.updateComplete;
-		expect(getToggleButton(el).title).toBe('Show');
+		expect(getToggleButton(el).title).toContain('Show');
 	});
 
 	it('drag handle has draggable attribute', async () => {

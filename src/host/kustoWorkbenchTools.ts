@@ -146,7 +146,7 @@ export interface ConfigureTransformationInput {
 	/** Optional name/title for the section */
 	name?: string;
 	dataSourceId?: string;
-	transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot';
+	transformationType?: 'derive' | 'summarize' | 'distinct' | 'pivot' | 'join';
 	// For distinct
 	distinctColumn?: string;
 	// For summarize
@@ -159,6 +159,11 @@ export interface ConfigureTransformationInput {
 	pivotColumnKeyColumn?: string;
 	pivotValueColumn?: string;
 	pivotAggregation?: 'sum' | 'avg' | 'count' | 'first';
+	// For join
+	joinRightDataSourceId?: string;
+	joinKind?: 'inner' | 'leftouter' | 'rightouter' | 'fullouter' | 'leftanti' | 'rightanti' | 'leftsemi' | 'rightsemi';
+	joinKeys?: Array<{ left: string; right: string }>;
+	joinOmitDuplicateColumns?: boolean;
 }
 
 export interface DelegateToKustoWorkbenchCopilotInput {
