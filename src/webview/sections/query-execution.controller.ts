@@ -1114,12 +1114,13 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	if (isOptimizeScenario) {
 		try {
 			sourceNameForOptimize = __kustoGetSectionName(boxId);
+			const hadExistingName = !!sourceNameForOptimize;
 			if (!sourceNameForOptimize) {
 				sourceNameForOptimize = __kustoPickNextAvailableSectionLetterName(boxId);
 				__kustoSetSectionName(boxId, sourceNameForOptimize);
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			}
-			if (sourceNameForOptimize) desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
+			if (hadExistingName && sourceNameForOptimize) desiredOptimizedName = sourceNameForOptimize + ' (optimized)';
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	const connectionId = __kustoGetConnectionId(boxId);
@@ -1193,7 +1194,6 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	let queryName = sourceNameForOptimize || __kustoGetSectionName(boxId);
-	if (!desiredOptimizedName && isOptimizeScenario && queryName) desiredOptimizedName = queryName + ' (optimized)';
 	let comparisonQuery = overrideText.trim() ? overrideText : query;
 	try { if (typeof _win.__kustoPrettifyKustoText === 'function') comparisonQuery = _win.__kustoPrettifyKustoText(comparisonQuery); } catch (e) { console.error('[kusto]', e); }
 	let comparisonBoxId = '';

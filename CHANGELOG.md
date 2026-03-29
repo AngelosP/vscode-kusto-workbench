@@ -11,6 +11,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Section Manager that allows you to re-order and navigate to sections (used to only let you re-order)
 * Shortcuts for collapsing / expanding all sections or all sections of a particular type
 * Transformation sections now support joining datasets together, instead of just working on single dataset
+* Improvements to the UX of the 'compare two queries' feature
 * Bugs:
     * Chart axis get stuck showing column names that no longer exist if the column name is renamed
     * CTRL+ENTER inside a python section did not execute it

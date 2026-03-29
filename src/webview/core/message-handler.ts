@@ -960,8 +960,8 @@ window.addEventListener('message', async (event: any) => {
 							delete optimizeBtn.dataset.kustoCopilotAvailable;
 						}
 					} catch (e) { console.error('[kusto]', e); }
-					optimizeBtn.title = 'Compare two queries';
-					optimizeBtn.setAttribute('aria-label', 'Compare two queries');
+					optimizeBtn.title = 'Compare two queries (A vs B) to check if they return the same data and which one is faster to return results';
+					optimizeBtn.setAttribute('aria-label', 'Compare two queries (A vs B)');
 					// Do not forcibly enable if some other flow disabled it (e.g. query box is removed).
 					// Only undo any Copilot-based disabling.
 					try {

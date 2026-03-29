@@ -91,8 +91,8 @@ const shareIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="
 
 // ── Light DOM SVG icons (for elements rendered into the host's light DOM) ─────
 
-/** Compare queries icon: two panels with left-right arrows showing comparison */
-const diffIconLightSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="1.5" y="3" width="4.5" height="10" rx="1" /><rect x="10" y="3" width="4.5" height="10" rx="1" /><path d="M7 6l1.5 1.5L7 9" /><path d="M9 6l-1.5 1.5L9 9" /></svg>`;
+/** Compare queries icon: "A vs B" label */
+const diffIconLightSvg = html`<span style="font-weight:600;font-size:11px;letter-spacing:0.5px;white-space:nowrap" aria-hidden="true">A vs B</span>`;
 
 /** Down chevron for run-mode split dropdown */
 const downChevronSvg = html`<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>`;
@@ -281,7 +281,7 @@ export class KwQuerySection extends LitElement {
 						<span class="optimize-inline" id="${id}_optimize_inline">
 							<button class="optimize-query-btn" id="${id}_optimize_btn"
 								@click=${() => optimizeQueryWithCopilot(id, null, { skipExecute: true })}
-								title="Compare two queries" aria-label="Compare two queries">
+								title="Compare two queries (A vs B) to check if they return the same data and which one is faster to return results" aria-label="Compare two queries (A vs B)">
 								${diffIconLightSvg}
 							</button>
 						</span>
