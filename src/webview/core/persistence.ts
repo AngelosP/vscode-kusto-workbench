@@ -960,13 +960,17 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					yColumn: (typeof section.yColumn === 'string') ? section.yColumn : undefined,
 					legendColumn: (typeof section.legendColumn === 'string') ? section.legendColumn : undefined,
 					legendPosition: (typeof section.legendPosition === 'string') ? section.legendPosition : undefined,
+					stackMode: (typeof section.stackMode === 'string') ? section.stackMode : undefined,
 					labelColumn: (typeof section.labelColumn === 'string') ? section.labelColumn : undefined,
 					valueColumn: (typeof section.valueColumn === 'string') ? section.valueColumn : undefined,
 					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false,
+					labelMode: (typeof section.labelMode === 'string') ? section.labelMode : undefined,
+					labelDensity: (typeof section.labelDensity === 'number') ? section.labelDensity : undefined,
 					sortColumn: (typeof section.sortColumn === 'string') ? section.sortColumn : undefined,
 					sortDirection: (typeof section.sortDirection === 'string') ? section.sortDirection : undefined,
 					xAxisSettings: (section.xAxisSettings && typeof section.xAxisSettings === 'object') ? section.xAxisSettings : undefined,
-					yAxisSettings: (section.yAxisSettings && typeof section.yAxisSettings === 'object') ? section.yAxisSettings : undefined
+					yAxisSettings: (section.yAxisSettings && typeof section.yAxisSettings === 'object') ? section.yAxisSettings : undefined,
+					legendSettings: (section.legendSettings && typeof section.legendSettings === 'object') ? section.legendSettings : undefined
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.

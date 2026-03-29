@@ -5,6 +5,8 @@ import {
 	normalizeLegendPosition,
 	normalizeStackMode,
 	getDefaultXAxisSettings,
+	getDefaultLegendSettings,
+	hasCustomLegendSettings,
 	hasCustomXAxisSettings,
 	getDefaultYAxisSettings,
 	hasCustomYAxisSettings,
@@ -108,6 +110,44 @@ describe('normalizeStackMode', () => {
 		expect(normalizeStackMode(null)).toBe('normal');
 		expect(normalizeStackMode(undefined)).toBe('normal');
 		expect(normalizeStackMode('stacked50')).toBe('normal');
+	});
+});
+
+// ── Legend settings ───────────────────────────────────────────────────────────
+
+describe('getDefaultLegendSettings', () => {
+	it('returns expected defaults', () => {
+		const d = getDefaultLegendSettings();
+		expect(d.position).toBe('top');
+		expect(d.stackMode).toBe('normal');
+		expect(d.gap).toBe(0);
+		expect(d.sortMode).toBe('');
+		expect(d.topN).toBe(0);
+	});
+});
+
+describe('hasCustomLegendSettings', () => {
+	it('returns false for defaults', () => {
+		expect(hasCustomLegendSettings(getDefaultLegendSettings())).toBe(false);
+	});
+	it('returns false for null/undefined', () => {
+		expect(hasCustomLegendSettings(null)).toBe(false);
+		expect(hasCustomLegendSettings(undefined)).toBe(false);
+	});
+	it('detects non-default position', () => {
+		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), position: 'left' })).toBe(true);
+	});
+	it('detects non-default stackMode', () => {
+		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), stackMode: 'stacked' })).toBe(true);
+	});
+	it('detects non-default gap', () => {
+		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), gap: 20 })).toBe(true);
+	});
+	it('detects non-default sortMode', () => {
+		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), sortMode: 'alpha-asc' })).toBe(true);
+	});
+	it('detects non-default topN', () => {
+		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), topN: 10 })).toBe(true);
 	});
 });
 

@@ -124,6 +124,16 @@ export type KqlxSectionV1 =
 				seriesColors?: Record<string, string>;
 				titleGap?: number;
 			};
+			// Legend customization settings
+			legendSettings?: {
+				position?: 'left' | 'right' | 'top' | 'bottom';
+				stackMode?: 'normal' | 'stacked' | 'stacked100';
+				gap?: number;
+				sortMode?: '' | 'alpha-asc' | 'alpha-desc' | 'value-asc' | 'value-desc';
+				topN?: number;
+				title?: string;
+				showEndLabels?: boolean;
+			};
 		}
 	| {
 			id?: string;

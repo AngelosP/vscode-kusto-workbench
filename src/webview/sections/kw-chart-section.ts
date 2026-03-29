@@ -18,15 +18,19 @@ import {
 import {
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
+	getDefaultLegendSettings,
 	hasCustomXAxisSettings,
 	hasCustomYAxisSettings,
 	hasCustomLabelSettings,
+	hasCustomLegendSettings,
 	normalizeLegendPosition,
 	normalizeStackMode,
 	type XAxisSettings,
 	type YAxisSettings,
 	type LegendPosition,
 	type StackMode,
+	type LegendSettings,
+	type LegendSortMode,
 } from '../shared/chart-utils.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
@@ -37,7 +41,7 @@ import { ChartDataSourceController, type DatasetEntry } from './chart-data-sourc
 
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | '';
 export type ChartMode = 'edit' | 'preview';
-export type { LegendPosition, StackMode, XAxisSettings, YAxisSettings };
+export type { LegendPosition, StackMode, LegendSettings, LegendSortMode, XAxisSettings, YAxisSettings };
 export type SortDirection = 'asc' | 'desc' | '';
 export type ScaleType = 'category' | 'continuous' | '';
 export type LabelMode = 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
@@ -67,6 +71,7 @@ export interface ChartSectionData {
 	sortDirection?: string;
 	xAxisSettings?: Partial<XAxisSettings>;
 	yAxisSettings?: Partial<YAxisSettings>;
+	legendSettings?: Partial<LegendSettings>;
 	editorHeightPx?: number;
 	validation?: unknown;
 }
@@ -198,6 +203,12 @@ export class KwChartSection extends LitElement {
 		}
 		if (options.yAxisSettings && typeof options.yAxisSettings === 'object') {
 			st.yAxisSettings = { ...getDefaultYAxisSettings(), ...st.yAxisSettings, ...options.yAxisSettings };
+		}
+		if (options.legendSettings && typeof options.legendSettings === 'object') {
+			st.legendSettings = { ...getDefaultLegendSettings(), ...st.legendSettings, ...options.legendSettings };
+			// Back-sync top-level fields so the renderer reads consistent values
+			if (typeof st.legendSettings.position === 'string') st.legendPosition = st.legendSettings.position;
+			if (typeof st.legendSettings.stackMode === 'string') st.stackMode = st.legendSettings.stackMode;
 		}
 
 		const container = document.getElementById('queries-container');
@@ -346,6 +357,7 @@ export class KwChartSection extends LitElement {
 	@state() private _sortDirection: SortDirection = '';
 	@state() private _xAxisSettings: XAxisSettings = defaultXAxisSettings();
 	@state() private _yAxisSettings: YAxisSettings = defaultYAxisSettings();
+	@state() private _legendSettings: LegendSettings = getDefaultLegendSettings();
 
 	// Datasets available for selection
 	@state() private _datasets: DatasetEntry[] = [];
@@ -353,7 +365,7 @@ export class KwChartSection extends LitElement {
 	// UI sub-state
 	@state() private _modeDropdownOpen = false;
 	@state() private _openDropdownId = '';
-	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' = '';
+	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' | 'legend' = '';
 	@state() private _popoverAnchorRect: PopoverAnchorRect | null = null;
 
 	private _userResized = false;
@@ -462,7 +474,7 @@ export class KwChartSection extends LitElement {
 		// Re-render chart when key properties change
 		const chartTriggers = [
 			'_chartType', '_dataSourceId', '_xColumn', '_yColumns', '_legendColumn',
-			'_legendPosition', '_stackMode', '_labelColumn', '_valueColumn', '_showDataLabels',
+			'_legendPosition', '_stackMode', '_legendSettings', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings',
 		];
@@ -627,7 +639,9 @@ export class KwChartSection extends LitElement {
 					<!-- Legend (line/area/bar only) -->
 					${supportsLegend ? html`
 						<span class="chart-field-group">
-							<label>Legend</label>
+							<label class="axis-label-clickable ${this._hasCustomLegendSettings() ? 'has-settings' : ''}"
+								@click=${(e: Event) => this._toggleAxisPopup('legend', e)}
+								title="Click to configure legend settings">Legend</label>
 							<div class="chart-legend-inline">
 								<select class="chart-select" @change=${this._onLegendColumnChanged}
 									?disabled=${multiYSelected}>
@@ -677,6 +691,7 @@ export class KwChartSection extends LitElement {
 
 			${this._renderXAxisPopup()}
 			${this._renderYAxisPopup()}
+			${this._renderLegendPopup()}
 		`;
 	}
 
@@ -890,6 +905,77 @@ export class KwChartSection extends LitElement {
 		`;
 	}
 
+	private _renderLegendPopup(): TemplateResult {
+		const ls = this._legendSettings;
+		const posLabel = (p: string) => p.charAt(0).toUpperCase() + p.slice(1);
+		const isHorizontal = ls.position === 'top' || ls.position === 'bottom';
+		const gapLabel = isHorizontal ? 'Vertical gap' : 'Horizontal gap';
+		const titlePlaceholder = this._legendColumn || 'Column name';
+		return html`
+			<kw-popover
+				.open=${this._openAxisPopup === 'legend'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Legend Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-row">
+					<label>Position</label>
+					<select @change=${(e: Event) => this._onLegendSetting('position', (e.target as HTMLSelectElement).value)}>
+						${(['top', 'right', 'bottom', 'left'] as const).map(p => html`
+							<option value=${p} ?selected=${ls.position === p}>${posLabel(p)}</option>
+						`)}
+					</select>
+				</div>
+				<div class="axis-popup-row">
+					<label>Mode</label>
+					<select @change=${(e: Event) => this._onLegendSetting('stackMode', (e.target as HTMLSelectElement).value)}>
+						<option value="normal" ?selected=${ls.stackMode === 'normal'}>Normal</option>
+						<option value="stacked" ?selected=${ls.stackMode === 'stacked'}>Stacked</option>
+						<option value="stacked100" ?selected=${ls.stackMode === 'stacked100'}>Stacked 100%</option>
+					</select>
+				</div>
+				<div class="axis-popup-row">
+					<label>Title</label>
+					<input type="text" .value=${ls.title || ''} placeholder=${titlePlaceholder}
+						@input=${(e: Event) => this._onLegendSetting('title', (e.target as HTMLInputElement).value)}>
+				</div>
+				<div class="axis-popup-slider-row">
+					<div class="axis-popup-slider-header"><label>${gapLabel}</label><span>${ls.gap}px</span></div>
+					<input type="range" class="axis-popup-slider" min="0" max="80" .value=${String(ls.gap)}
+						@input=${(e: Event) => this._onLegendSetting('gap', parseInt((e.target as HTMLInputElement).value, 10))}>
+				</div>
+				<div class="axis-popup-row">
+					<label>Sort</label>
+					<select @change=${(e: Event) => this._onLegendSetting('sortMode', (e.target as HTMLSelectElement).value)}>
+						<option value="" ?selected=${!ls.sortMode}>Default (data order)</option>
+						<option value="alpha-asc" ?selected=${ls.sortMode === 'alpha-asc'}>Name A → Z</option>
+						<option value="alpha-desc" ?selected=${ls.sortMode === 'alpha-desc'}>Name Z → A</option>
+						<option value="value-asc" ?selected=${ls.sortMode === 'value-asc'}>Value ascending</option>
+						<option value="value-desc" ?selected=${ls.sortMode === 'value-desc'}>Value descending</option>
+					</select>
+				</div>
+				<div class="axis-popup-row">
+					<label>Top N</label>
+					<select @change=${(e: Event) => this._onLegendSetting('topN', parseInt((e.target as HTMLSelectElement).value, 10))}>
+						<option value="0" ?selected=${!ls.topN}>All (no limit)</option>
+						<option value="5" ?selected=${ls.topN === 5}>Top 5 + Other</option>
+						<option value="10" ?selected=${ls.topN === 10}>Top 10 + Other</option>
+						<option value="15" ?selected=${ls.topN === 15}>Top 15 + Other</option>
+						<option value="20" ?selected=${ls.topN === 20}>Top 20 + Other</option>
+					</select>
+				</div>
+				<div class="axis-popup-checkbox">
+					<input type="checkbox" .checked=${!!ls.showEndLabels}
+						@change=${(e: Event) => this._onLegendSetting('showEndLabels', (e.target as HTMLInputElement).checked)}>
+					<label>Show labels at end of series</label>
+				</div>
+				<div slot="footer">
+					<button class="axis-popup-reset" @click=${() => this._resetLegendSettings()}>Reset to defaults</button>
+				</div>
+			</kw-popover>
+		`;
+	}
+
 	// ── Event handlers ─────────────────────────────────────────────────────────
 
 	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
@@ -1029,13 +1115,34 @@ export class KwChartSection extends LitElement {
 	private _cycleLegendPosition(): void {
 		const idx = LEGEND_CYCLE.indexOf(this._legendPosition);
 		this._legendPosition = LEGEND_CYCLE[(idx + 1) % LEGEND_CYCLE.length];
+		this._legendSettings = { ...this._legendSettings, position: this._legendPosition };
 		this._schedulePersist();
 	}
 
 	private _cycleStackMode(): void {
 		const idx = STACK_MODE_CYCLE.indexOf(this._stackMode);
 		this._stackMode = STACK_MODE_CYCLE[(idx + 1) % STACK_MODE_CYCLE.length];
+		this._legendSettings = { ...this._legendSettings, stackMode: this._stackMode };
 		this._schedulePersist();
+	}
+
+	private _onLegendSetting(key: string, value: unknown): void {
+		this._legendSettings = { ...this._legendSettings, [key]: value };
+		// Keep top-level properties in sync with legendSettings
+		if (key === 'position') this._legendPosition = normalizeLegendPosition(value);
+		if (key === 'stackMode') this._stackMode = normalizeStackMode(value);
+		this._schedulePersist();
+	}
+
+	private _resetLegendSettings(): void {
+		this._legendSettings = getDefaultLegendSettings();
+		this._legendPosition = this._legendSettings.position;
+		this._stackMode = this._legendSettings.stackMode;
+		this._schedulePersist();
+	}
+
+	private _hasCustomLegendSettings(): boolean {
+		return hasCustomLegendSettings(this._legendSettings);
 	}
 
 	private _toggleDataLabels(): void {
@@ -1065,7 +1172,7 @@ export class KwChartSection extends LitElement {
 
 	// ── Axis settings handlers ────────────────────────────────────────────────
 
-	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels', e: Event): void {
+	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend', e: Event): void {
 		if (this._openAxisPopup === axis) {
 			this._openAxisPopup = '';
 			return;
@@ -1271,6 +1378,11 @@ export class KwChartSection extends LitElement {
 		if (st.yAxisSettings && typeof st.yAxisSettings === 'object') {
 			this._yAxisSettings = { ...defaultYAxisSettings(), ...st.yAxisSettings };
 		}
+		if (st.legendSettings && typeof st.legendSettings === 'object') {
+			this._legendSettings = { ...getDefaultLegendSettings(), ...st.legendSettings };
+			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
+			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
+		}
 	}
 
 	/**
@@ -1303,6 +1415,7 @@ export class KwChartSection extends LitElement {
 		st.sortDirection = this._sortDirection;
 		st.xAxisSettings = { ...this._xAxisSettings };
 		st.yAxisSettings = { ...this._yAxisSettings };
+		st.legendSettings = { ...this._legendSettings };
 
 		win.chartStateByBoxId[this.boxId] = st;
 	}
@@ -1420,6 +1533,10 @@ export class KwChartSection extends LitElement {
 			data.yAxisSettings = { ...ySet };
 		}
 
+		if (hasCustomLegendSettings(this._legendSettings)) {
+			data.legendSettings = { ...this._legendSettings };
+		}
+
 		// Wrapper height
 		const heightPx = this._getWrapperHeightPx();
 		if (heightPx !== undefined) {
@@ -1461,6 +1578,11 @@ export class KwChartSection extends LitElement {
 		}
 		if (options.yAxisSettings && typeof options.yAxisSettings === 'object') {
 			this._yAxisSettings = { ...defaultYAxisSettings(), ...this._yAxisSettings, ...(options.yAxisSettings as Partial<YAxisSettings>) };
+		}
+		if (options.legendSettings && typeof options.legendSettings === 'object') {
+			this._legendSettings = { ...getDefaultLegendSettings(), ...this._legendSettings, ...(options.legendSettings as Partial<LegendSettings>) };
+			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
+			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
 		}
 	}
 

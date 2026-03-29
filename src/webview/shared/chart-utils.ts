@@ -23,7 +23,18 @@ export interface YAxisSettings {
 
 export type LegendPosition = 'top' | 'right' | 'bottom' | 'left';
 export type StackMode = 'normal' | 'stacked' | 'stacked100';
+export type LegendSortMode = '' | 'alpha-asc' | 'alpha-desc' | 'value-asc' | 'value-desc';
 export type TimePeriodGranularity = 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+export interface LegendSettings {
+	position: LegendPosition;
+	stackMode: StackMode;
+	gap: number;
+	sortMode: LegendSortMode;
+	topN: number;          // 0 = disabled, positive = show top N + 'Other'
+	title: string;         // '' = use column name
+	showEndLabels: boolean; // show legend label at end of each series
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -120,6 +131,32 @@ export function hasCustomLabelSettings(st: { showDataLabels?: boolean; labelMode
 	const mode = st.labelMode || 'auto';
 	const density = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
 	return mode !== 'auto' || density !== 50;
+}
+
+export function getDefaultLegendSettings(): LegendSettings {
+	return {
+		position: 'top',
+		stackMode: 'normal',
+		gap: 0,
+		sortMode: '',
+		topN: 0,
+		title: '',
+		showEndLabels: false,
+	};
+}
+
+export function hasCustomLegendSettings(settings: Partial<LegendSettings> | null | undefined): boolean {
+	if (!settings || typeof settings !== 'object') return false;
+	const d = getDefaultLegendSettings();
+	return !!(
+		(settings.position && settings.position !== d.position) ||
+		(settings.stackMode && settings.stackMode !== d.stackMode) ||
+		(typeof settings.gap === 'number' && settings.gap !== d.gap) ||
+		(settings.sortMode && settings.sortMode !== d.sortMode) ||
+		(typeof settings.topN === 'number' && settings.topN !== d.topN) ||
+		(settings.title && settings.title !== d.title) ||
+		(settings.showEndLabels === true)
+	);
 }
 
 // ── Date/time formatting ──────────────────────────────────────────────────────

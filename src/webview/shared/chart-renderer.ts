@@ -7,6 +7,12 @@ import { escapeHtml } from '../core/utils';
 import { getResultsState } from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
+	handleTooltipFormatter,
+	handleTooltipPosition,
+	scheduleHideTooltip,
+	dismissHoverTooltip,
+} from './chart-pinned-tooltip.js';
+import {
 	getRawCellValue,
 	cellToChartString,
 	inferTimeXAxisFromRows,
@@ -259,7 +265,9 @@ export function disposeChartEcharts(boxId: any) {
 			try { delete st.__echarts; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__resizeObserver; } catch (e) { console.error('[kusto]', e); }
 			try { delete st.__axisTitleClickHandler; } catch (e) { console.error('[kusto]', e); }
+			try { delete st.__hoverTooltipGlobalout; } catch (e) { console.error('[kusto]', e); }
 		}
+		try { dismissHoverTooltip(String(boxId)); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -494,6 +502,20 @@ export function renderChart(boxId: any) {
 			} catch (e) { console.error('[kusto]', e); }
 		};
 		inst.on('click', st.__axisTitleClickHandler);
+	} catch (e) { console.error('[kusto]', e); }
+
+	// Hover tooltip dismiss — hide the custom tooltip when the mouse leaves the chart.
+	try {
+		if (st.__hoverTooltipGlobalout) {
+			try { inst.off('globalout', st.__hoverTooltipGlobalout); } catch (e) { console.error('[kusto]', e); }
+		}
+		const currentChartType = (typeof st.chartType === 'string') ? st.chartType : '';
+		if (currentChartType === 'line' || currentChartType === 'area' || currentChartType === 'bar') {
+			st.__hoverTooltipGlobalout = () => {
+				try { scheduleHideTooltip(id); } catch (e) { console.error('[kusto]', e); }
+			};
+			inst.on('globalout', st.__hoverTooltipGlobalout);
+		}
 	} catch (e) { console.error('[kusto]', e); }
 
 	let canvasWidthPx = 0;
@@ -1139,6 +1161,11 @@ export function renderChart(boxId: any) {
 			} else {
 				const isArea = chartType === 'area';
 				const stackMode = normalizeStackMode(st.stackMode);
+				const legendSortMode = (st.legendSettings?.sortMode || '') as string;
+				const legendTopN = (typeof st.legendSettings?.topN === 'number' && st.legendSettings.topN > 0) ? st.legendSettings.topN : 0;
+				const legendGap = (typeof st.legendSettings?.gap === 'number') ? st.legendSettings.gap : 0;
+				const legendTitle = (typeof st.legendSettings?.title === 'string' && st.legendSettings.title) ? st.legendSettings.title : '';
+				const legendShowEndLabels = !!st.legendSettings?.showEndLabels;
 				const useTime = inferTimeXAxisFromRows(rows, xi);
 
 				const xAxisSortDirection = xAxisSettings.sortDirection || '';
@@ -1223,7 +1250,63 @@ export function renderChart(boxId: any) {
 							xLabelsSet.add(xVal);
 						}
 					}
-					const legendNames = Object.keys(groups).sort();
+					let legendNames = Object.keys(groups).sort();
+
+					// ── Legend sort ───────────────────────────────────────
+					if (legendSortMode === 'alpha-desc') {
+						legendNames.sort((a, b) => b.localeCompare(a));
+					} else if (legendSortMode === 'value-asc' || legendSortMode === 'value-desc') {
+						// Sum the absolute values per legend group
+						const sums: Record<string, number> = {};
+						for (const name of legendNames) {
+							let sum = 0;
+							for (const p of (groups[name] || [])) {
+								if (typeof p.y === 'number' && Number.isFinite(p.y)) sum += Math.abs(p.y);
+							}
+							sums[name] = sum;
+						}
+						legendNames.sort((a, b) => legendSortMode === 'value-asc'
+							? (sums[a] || 0) - (sums[b] || 0)
+							: (sums[b] || 0) - (sums[a] || 0)
+						);
+					}
+					// alpha-asc is the default (.sort() above)
+
+					// ── Top N ────────────────────────────────────────────
+					if (legendTopN > 0 && legendNames.length > legendTopN) {
+						// Sort by value descending for top-N selection, preserve display order after
+						const sumsForTopN: Record<string, number> = {};
+						for (const name of legendNames) {
+							let sum = 0;
+							for (const p of (groups[name] || [])) {
+								if (typeof p.y === 'number' && Number.isFinite(p.y)) sum += Math.abs(p.y);
+							}
+							sumsForTopN[name] = sum;
+						}
+						const ranked = [...legendNames].sort((a, b) => (sumsForTopN[b] || 0) - (sumsForTopN[a] || 0));
+						const topSet = new Set(ranked.slice(0, legendTopN));
+						const otherNames = legendNames.filter(n => !topSet.has(n));
+						// Merge the 'Other' entries into the groups
+						if (otherNames.length) {
+							const otherPts: any[] = [];
+							for (const n of otherNames) {
+								for (const p of (groups[n] || [])) otherPts.push(p);
+								delete groups[n];
+							}
+							// Aggregate other by x-key
+							const otherByX: Record<string, { x: any; y: number; tt: any }> = {};
+							for (const p of otherPts) {
+								const key = String(p.x);
+								if (!otherByX[key]) {
+									otherByX[key] = { x: p.x, y: 0, tt: p.tt };
+								}
+								otherByX[key].y += (typeof p.y === 'number' ? p.y : 0);
+							}
+							groups['Other'] = Object.values(otherByX);
+						}
+						legendNames = legendNames.filter(n => topSet.has(n));
+						if (otherNames.length) legendNames.push('Other');
+					}
 
 					if (treatAsTime) {
 						for (const legendName of legendNames) {
@@ -1518,14 +1601,54 @@ export function renderChart(boxId: any) {
 				const bottomMargin = (rotate > 30 ? 45 : 15) + xAxisTitleGap;
 
 				const legendEnabled = seriesData.length > 1;
-				const legendOpt = legendEnabled ? buildLegendOption(legendPosition) : undefined;
-				const gridLeft = (legendEnabled && legendPosition === 'left') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + yAxisTitleGap) : (15 + yAxisTitleGap);
-				const gridRight = (legendEnabled && legendPosition === 'right') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP) : 20;
-				const gridTop = legendEnabled && legendPosition === 'top' ? 50 : 20;
-				const gridBottom = bottomMargin + (legendEnabled && legendPosition === 'bottom' ? 40 : 0);
+				const useEndLabels = legendShowEndLabels && legendEnabled;
+
+				let legendOpt: any;
+				if (useEndLabels) {
+					legendOpt = { show: false };
+				} else if (legendEnabled) {
+					legendOpt = buildLegendOption(legendPosition);
+				}
+
+				// Add end labels to each series when enabled
+				if (useEndLabels) {
+					for (const s of seriesData) {
+						s.endLabel = {
+							show: true,
+							formatter: '{a}',
+							fontSize: 11,
+							fontFamily: 'var(--vscode-font-family, sans-serif)',
+							distance: 8,
+						};
+					}
+				}
+
+				const endLabelRightMargin = useEndLabels ? 100 : 0;
+				const gridLeft = (legendEnabled && !useEndLabels && legendPosition === 'left') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap + yAxisTitleGap) : (15 + yAxisTitleGap);
+				const gridRight = useEndLabels ? (20 + endLabelRightMargin)
+					: ((legendEnabled && legendPosition === 'right') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap) : 20);
+				const gridTop = (legendEnabled && !useEndLabels && legendPosition === 'top') ? (50 + legendGap) : 20;
+				const gridBottom = bottomMargin + ((legendEnabled && !useEndLabels && legendPosition === 'bottom') ? (40 + legendGap) : 0);
+
+				// Build legend title (ECharts title component positioned near the legend)
+				let legendTitleOpt: any = undefined;
+				const effectiveLegendTitle = legendTitle || (legendEnabled && legendCol ? legendCol : '');
+				if (effectiveLegendTitle && legendEnabled && !useEndLabels) {
+					const titleStyle = { fontSize: 11, fontWeight: 'normal' as const, fontStyle: 'italic' as const, color: 'auto' };
+					if (legendPosition === 'top') {
+						legendTitleOpt = { text: effectiveLegendTitle, top: 0, right: 0, textStyle: titleStyle };
+					} else if (legendPosition === 'bottom') {
+						legendTitleOpt = { text: effectiveLegendTitle, bottom: 0, right: 0, textStyle: titleStyle };
+					} else if (legendPosition === 'left') {
+						legendTitleOpt = { text: effectiveLegendTitle, top: 4, left: 0, textStyle: titleStyle };
+					} else {
+						legendTitleOpt = { text: effectiveLegendTitle, top: 4, right: 0, textStyle: titleStyle };
+					}
+				}
 
 				option = {
 					backgroundColor: 'transparent',
+					...(legendTitleOpt ? { title: legendTitleOpt } : {}),
 					grid: {
 						left: gridLeft,
 						right: gridRight,
@@ -1535,53 +1658,31 @@ export function renderChart(boxId: any) {
 					},
 					legend: legendOpt,
 					tooltip: {
-						...tooltipAxis,
 						trigger: 'axis',
+						confine: true,
+						enterable: false,
+						// Hide the built-in tooltip content — we render our own
+						// interactive tooltip panel instead.  The axis pointer
+						// (shadow/crosshair) still renders independently.
+						extraCssText: 'opacity:0 !important; pointer-events:none !important; width:0 !important; height:0 !important; padding:0 !important; border:none !important; box-shadow:none !important; overflow:hidden !important;',
 						axisPointer: {
 							type: 'shadow',
 							snap: true,
-							// Smooth the pointer so small mouse jitter doesn't
-							// constantly flip between adjacent dense data points.
 							animation: true,
 							animationDurationUpdate: 120
 						},
 						formatter: (params: any) => {
 							try {
 								const arr = Array.isArray(params) ? params : (params ? [params] : []);
-								const first = arr.length ? arr[0] : null;
-								let axisValue = first ? (first.axisValue ?? first.axisValueLabel ?? (first.data && first.data.name)) : null;
-								const title = String(axisValue || '');
-								let lines = [`<div style="font-weight:600; margin-bottom:4px">${escHtml(title)}</div>`];
-
-								for (const p of arr) {
-									const seriesName = p && p.seriesName ? p.seriesName : '';
-									const marker = p && p.marker ? p.marker : '';
-									const rawData = p && p.data ? p.data : null;
-									const v = rawData ? (Array.isArray(rawData) ? rawData[1] : (rawData.value !== undefined ? rawData.value : rawData)) : '';
-									let formatted = (typeof v === 'number') ? formatNumber(v) : String(v ?? '');
-									if (stackMode === 'stacked100' && rawData && typeof rawData.__kustoOriginalValue === 'number') {
-										formatted = formatNumber(rawData.__kustoOriginalValue) + ' (' + (typeof v === 'number' ? v.toFixed(1) : '0') + '%)';
-									}
-									lines.push(`<div>${marker}<strong>${escHtml(seriesName)}</strong>: ${escHtml(formatted)}</div>`);
-								}
-
-								let tooltipPayloadOnce = null;
-								try {
-									for (const p of arr) {
-										const rawData = p && p.data ? p.data : null;
-										const payload = rawData && rawData.__kustoTooltip ? rawData.__kustoTooltip : null;
-										if (payload) {
-											tooltipPayloadOnce = payload;
-											break;
-										}
-									}
-								} catch (e) { console.error('[kusto]', e); }
-								appendTooltipColumnsHtmlLines(lines, tooltipPayloadOnce, 0);
-
-								return lines.join('');
-							} catch {
-								return '';
-							}
+								handleTooltipFormatter(id, arr, stackMode);
+							} catch (e) { console.error('[kusto]', e); }
+							return '<span></span>';
+						},
+						position: (point: any) => {
+							try {
+								handleTooltipPosition(id, point[0], point[1], inst);
+							} catch (e) { console.error('[kusto]', e); }
+							return [-9999, -9999];
 						}
 					},
 						xAxis: {
@@ -1651,6 +1752,7 @@ export function renderChart(boxId: any) {
 		// pending tooltip animation/update that still holds the old reference
 		// would crash with "Cannot set properties of null (setting 'innerHTML')".
 		try { inst.dispatchAction({ type: 'hideTip' }); } catch (e) { console.error('[kusto]', e); }
+		try { dismissHoverTooltip(id); } catch (e) { console.error('[kusto]', e); }
 		inst.setOption(option || {}, { notMerge: true, lazyUpdate: true, silent: true });
 
 		const isNowRendering = true;
