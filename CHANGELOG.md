@@ -6,12 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [3.1.0] - 2026-03-27
 
 * Better instructions for performance optimizations. Now expicitely told to try out join optimization techniques as well. (thank you Alexandra Kemper)
-* 'Comment / uncomment' toolbar icon for Kusto sections
-* 'Rename' toolbar icon and context menu entry for Kusto sections
-* Section Manager that allows you to re-order and navigate to sections (used to only let you re-order)
-* Shortcuts for collapsing / expanding all sections or all sections of a particular type
-* Transformation sections now support joining datasets together, instead of just working on single dataset
-* Improvements to the UX of the 'compare two queries' feature
+* 'Comment / uncomment' toolbar icon for Kusto sections.
+* 'Rename' toolbar icon and context menu entry for Kusto sections.
+* Section Manager that allows you to re-order and navigate to sections (used to only let you re-order).
+* Shortcuts for collapsing / expanding all sections or all sections of a particular type.
+* Transformation sections now support joining datasets together, instead of just working on single dataset.
+* Improvements to the UX of the 'compare two queries' feature.
+* Lots of chart improvements.
 * Bugs:
     * Chart axis get stuck showing column names that no longer exist if the column name is renamed
     * CTRL+ENTER inside a python section did not execute it

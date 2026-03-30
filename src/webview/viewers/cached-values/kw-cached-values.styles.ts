@@ -55,6 +55,7 @@ export const styles = css`
 			width: 100%;
 			cursor: pointer;
 		}
+		.select-wrapper select:hover { border-color: var(--vscode-focusBorder); }
 		.select-wrapper select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 		.mono { font-family: var(--vscode-editor-font-family); }

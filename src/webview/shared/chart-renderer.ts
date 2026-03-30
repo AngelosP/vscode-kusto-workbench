@@ -519,12 +519,17 @@ export function renderChart(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 
 	let canvasWidthPx = 0;
+	let canvasHeightPx = 0;
 	try {
 		const r = canvas.getBoundingClientRect();
 		canvasWidthPx = r && typeof r.width === 'number' ? r.width : 0;
+		canvasHeightPx = r && typeof r.height === 'number' ? r.height : 0;
 	} catch (e) { console.error('[kusto]', e); }
 	if (!canvasWidthPx) {
 		try { canvasWidthPx = canvas && typeof canvas.clientWidth === 'number' ? canvas.clientWidth : 0; } catch (e) { console.error('[kusto]', e); }
+	}
+	if (!canvasHeightPx) {
+		try { canvasHeightPx = canvas && typeof canvas.clientHeight === 'number' ? canvas.clientHeight : 0; } catch (e) { console.error('[kusto]', e); }
 	}
 
 	let option = null;
@@ -685,20 +690,12 @@ export function renderChart(boxId: any) {
 				} else if (labelMode === 'topPercent') {
 					slicesWithPercent.filter((s: any) => s.percent >= 5).forEach((s: any) => labelEligibleIndices.add(s.index));
 				} else {
-					let baseMinPercent = 0;
-					if (sliceCount <= 4) {
-						baseMinPercent = 0;
-					} else if (sliceCount <= 8) {
-						baseMinPercent = 1;
-					} else if (sliceCount <= 15) {
-						baseMinPercent = 2;
-					} else if (sliceCount <= 30) {
-						baseMinPercent = 4;
-					} else {
-						baseMinPercent = 6;
-					}
-					const densityFactor = (100 - labelDensity) / 50;
-					const minPercent = baseMinPercent * densityFactor;
+					// Auto mode: density slider controls which slices get labels.
+					// Steeper curve (0.3) so the slider is responsive from the start.
+					const d = 100 * Math.pow(labelDensity / 100, 0.3);
+					// Higher thresholds so sparse actually hides labels even on small pies
+					const maxThreshold = sliceCount > 30 ? 20 : sliceCount > 15 ? 15 : sliceCount > 8 ? 10 : sliceCount > 4 ? 8 : 5;
+					const minPercent = maxThreshold * (1 - d / 100);
 					slicesWithPercent.filter((s: any) => s.percent >= minPercent).forEach((s: any) => labelEligibleIndices.add(s.index));
 				}
 
@@ -992,6 +989,7 @@ export function renderChart(boxId: any) {
 			const xColName = st.xColumn || 'X';
 			const yColName = st.yColumn || 'Y';
 			const showLabels = !!st.showDataLabels;
+			const dataLabelDensityScatter = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
 
 			const xAxisTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
 
@@ -1126,8 +1124,8 @@ export function renderChart(boxId: any) {
 								try {
 									const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
 									const total = points.length || 1;
-									const interval = Math.max(1, Math.floor(total / 10));
-									if (idx % interval !== 0) return '';
+									const scatterInterval = dataLabelDensityScatter >= 100 ? 1 : dataLabelDensityScatter <= 0 ? Infinity : Math.max(1, Math.round(100 / dataLabelDensityScatter));
+									if (idx % scatterInterval !== 0) return '';
 									const v = params && params.value ? params.value : null;
 									const y = v && v.length > 1 ? v[1] : null;
 									return formatNumber(y);
@@ -1149,6 +1147,49 @@ export function renderChart(boxId: any) {
 			const xi = indexOf(st.xColumn);
 			const xColName = st.xColumn || 'X';
 			const showLabels = !!st.showDataLabels;
+			const dataLabelDensity = typeof st.labelDensity === 'number' ? st.labelDensity : 50;
+
+			// ── Label density helpers for XY charts ──────────────────────
+			// For line/area: horizontal spacing — skip labels that would overlap.
+			// For bar (especially stacked): value-based — skip labels on segments
+			// too small to fit the text.
+			//
+			// density 0  (sparse) = only labels that comfortably fit
+			// density 100 (dense)  = all labels, even if they overlap/overflow
+			const estLabelWidthPx = 50;  // monospace 10px, ~8 chars
+			const estLabelHeightPx = 14; // font-size 10 + padding
+			const chartPlotWidth = Math.max(100, canvasWidthPx - 80);
+			const chartPlotHeight = Math.max(100, canvasHeightPx - 80);
+			const isBarChart = chartType === 'bar';
+
+			/**
+			 * Decides whether to show a label for a given data point.
+			 * @param value   The numeric value of this data point / segment
+			 * @param total   Total number of data points on the axis
+			 * @param idx     Data index of this point
+			 * @param yRange  The full Y-axis range (max - min) across all series
+			 */
+			const shouldShowLabel = (value: number | null | undefined, total: number, idx: number, yRange: number): boolean => {
+					if (dataLabelDensity >= 100) return true;
+					if (dataLabelDensity <= 0) return false;
+
+					// Power curve for smooth backoff from "All"
+					const d = 100 * Math.pow(dataLabelDensity / 100, 0.5);
+
+					// Value-based check: is the segment large enough to fit a label?
+					if (typeof value === 'number' && Number.isFinite(value) && yRange > 0) {
+						const segmentPx = (Math.abs(value) / yRange) * chartPlotHeight;
+						const minPx = estLabelHeightPx * 3 * (1 - d / 100);
+						if (segmentPx < minPx) return false;
+					}
+
+					// Horizontal spacing check: would this label overlap its neighbors?
+					const fitCount = Math.max(1, Math.floor(chartPlotWidth / estLabelWidthPx));
+					if (total <= fitCount) return true;
+				const interval = Math.max(1, Math.ceil(total / showCount));
+				return (idx % interval) === 0;
+			};
+
 			const legendCol = st.legendColumn || '';
 			const li = legendCol ? indexOf(legendCol) : -1;
 
@@ -1232,6 +1273,25 @@ export function renderChart(boxId: any) {
 					if (seriesColors[name]) return seriesColors[name];
 					return undefined;
 				};
+
+				// Compute Y range across all data for value-based label density
+				let yRangeForLabels = 0;
+				try {
+					let yMin = Infinity, yMax = -Infinity;
+					for (const r of (rows || [])) {
+						for (const yc of yCols) {
+							const yci = indexOf(yc);
+							if (yci < 0) continue;
+							const v = (r && r.length > yci) ? cellToNumber(r[yci]) : null;
+							if (typeof v === 'number' && Number.isFinite(v)) {
+								if (v < yMin) yMin = v;
+								if (v > yMax) yMax = v;
+							}
+						}
+					}
+					yRangeForLabels = (Number.isFinite(yMax) && Number.isFinite(yMin)) ? (yMax - yMin) : 0;
+					if (yRangeForLabels <= 0 && Number.isFinite(yMax)) yRangeForLabels = Math.abs(yMax) || 1;
+				} catch (e) { console.error('[kusto]', e); }
 
 				if (li >= 0 && yCols.length === 1) {
 					const yi = indexOf(yCols[0]);
@@ -1341,11 +1401,11 @@ export function renderChart(boxId: any) {
 									formatter: (params: any) => {
 										try {
 											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-												const total = timeKeys.length || 1;
-											const interval = Math.max(1, Math.floor(total / 10));
-											if (idx % interval !== 0) return '';
+											const total = timeKeys.length || 1;
 											const v = params && params.value ? params.value : null;
-												return formatNumber(v);
+											const numV = typeof v === 'number' ? v : null;
+											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
+											return formatNumber(v);
 										} catch {
 											return '';
 										}
@@ -1382,9 +1442,9 @@ export function renderChart(boxId: any) {
 										try {
 											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
 											const total = xLabels.length || 1;
-											const interval = Math.max(1, Math.floor(total / 10));
-											if (idx % interval !== 0) return '';
 											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
+											const numV = typeof v === 'number' ? v : null;
+											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
 											return (typeof v === 'number') ? formatNumber(v) : '';
 										} catch {
 											return '';
@@ -1431,11 +1491,11 @@ export function renderChart(boxId: any) {
 									formatter: (params: any) => {
 										try {
 											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-												const total = timeKeys.length || 1;
-											const interval = Math.max(1, Math.floor(total / 10));
-											if (idx % interval !== 0) return '';
-												const v = params && params.value ? params.value : null;
-												return formatNumber(v);
+											const total = timeKeys.length || 1;
+											const v = params && params.value ? params.value : null;
+											const numV = typeof v === 'number' ? v : null;
+											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
+											return formatNumber(v);
 										} catch {
 											return '';
 										}
@@ -1468,9 +1528,9 @@ export function renderChart(boxId: any) {
 										try {
 											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
 											const total = yData.length || 1;
-											const interval = Math.max(1, Math.floor(total / 10));
-											if (idx % interval !== 0) return '';
 											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
+											const numV = typeof v === 'number' ? v : null;
+											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
 											return (typeof v === 'number') ? formatNumber(v) : '';
 										} catch {
 											return '';
@@ -1537,7 +1597,7 @@ export function renderChart(boxId: any) {
 											if (typeof dv === 'number' && Number.isFinite(dv)) colTotal += Math.abs(dv);
 										}
 										const sv = params?.data?.value ?? params?.value ?? 0;
-										if (colTotal > 0 && Math.abs(sv) / colTotal < 0.08) return '';
+										if (dataLabelDensity < 100 && colTotal > 0 && Math.abs(sv) / colTotal < 0.08) return '';
 									}
 									return typeof origFormatter === 'function' ? origFormatter(params) : '';
 								} catch {
@@ -1717,7 +1777,8 @@ export function renderChart(boxId: any) {
 								: (value: any) => formatNumber(value)
 						}
 					},
-					series: seriesData
+					series: seriesData,
+					...(showLabels && dataLabelDensity >= 100 ? { labelLayout: { hideOverlap: false } } : {})
 				};
 
 				if (treatAsTime && !useContinuousLabels) {

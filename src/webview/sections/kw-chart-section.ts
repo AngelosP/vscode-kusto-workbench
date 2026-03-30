@@ -679,16 +679,15 @@ export class KwChartSection extends LitElement {
 						${this._renderCheckboxDropdown('tooltip', colNames, this._tooltipColumns, '(none)')}
 					</span>
 
-					<!-- Labels toggle -->
-					<div class="chart-labels-toggle ${this._showDataLabels ? 'is-active' : ''}"
-						@click=${this._toggleDataLabels}
-						role="switch" aria-checked=${this._showDataLabels ? 'true' : 'false'}
-						tabindex="0" title="Toggle data labels">
-						<span class="chart-labels-toggle-text">Labels</span>
-						<span class="chart-labels-toggle-track">
-							<span class="chart-labels-toggle-thumb"></span>
-						</span>
-					</div>
+					<!-- Labels density (0 = off, >0 = on) -->
+					<span class="chart-field-group">
+						<label>Labels</label>
+						${this._renderSlider({
+							min: 0, max: this._effectiveMax('labels:labelDensity', 100), value: this._labelDensity,
+							label: this._labelDensity >= 100 ? 'All' : this._labelDensity > 0 ? `${this._labelDensity}%` : 'Off',
+							onInput: (e: Event) => this._onLabelDensitySlider(e),
+						})}
+					</span>
 
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
 				</div>
@@ -743,18 +742,17 @@ export class KwChartSection extends LitElement {
 						</span>
 					` : nothing}
 
-					<!-- Labels toggle (pie/funnel) -->
-					<div class="chart-labels-toggle ${this._showDataLabels ? 'is-active' : ''}"
-						@click=${this._toggleDataLabels}
-						role="switch" aria-checked=${this._showDataLabels ? 'true' : 'false'}
-						tabindex="0" title="Toggle data labels">
-						<span class="chart-labels-toggle-text axis-label-clickable ${this._hasCustomLabelSettings() ? 'has-settings' : ''}"
-							@click=${(e: Event) => { e.stopPropagation(); this._toggleAxisPopup('labels', e); }}
-							title="Click to configure label settings">Labels</span>
-						<span class="chart-labels-toggle-track">
-							<span class="chart-labels-toggle-thumb"></span>
-						</span>
-					</div>
+					<!-- Labels density (pie/funnel — 0 = off, >0 = on) -->
+					<span class="chart-field-group">
+						<label class="axis-label-clickable ${this._hasCustomLabelSettings() ? 'has-settings' : ''}"
+							@click=${(e: Event) => this._toggleAxisPopup('labels', e)}
+							title="Click to configure label settings">Labels</label>
+						${this._renderSlider({
+							min: 0, max: this._effectiveMax('labels:labelDensity', 100), value: this._labelDensity,
+							label: this._labelDensity >= 100 ? 'All' : this._labelDensity > 0 ? `${this._labelDensity}%` : 'Off',
+							onInput: (e: Event) => this._onLabelDensitySlider(e),
+						})}
+					</span>
 
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
 				</div>
@@ -768,7 +766,7 @@ export class KwChartSection extends LitElement {
 
 	private _renderXAxisPopup(): TemplateResult {
 		const s = this._xAxisSettings;
-		const gapMax = this._effectiveMax('x:titleGap', 200);
+		const gapMax = 1000;
 		const densMax = this._effectiveMax('x:labelDensity', 100);
 		return html`
 			<kw-popover
@@ -779,59 +777,62 @@ export class KwChartSection extends LitElement {
 			>
 				<div class="axis-popup-inline">
 					<label>Title</label>
-					<label class="toggle-switch" title="Show axis title">
+					<label class="toggle-switch" title="Show or hide the X-axis title below the chart">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('x', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
 						<span class="toggle-switch-track"></span>
 					</label>
 					${s.showAxisLabel !== false ? html`
 						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._xColumn || 'Axis title'}
+							title="Custom title text for the X axis (leave empty to use column name)"
 							@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
 					` : nothing}
 				</div>
 				${s.showAxisLabel !== false ? html`
-					<div class="compact-slider-row">
+					<div class="compact-slider-row" title="Space in pixels between the axis title and the axis labels">
 						<label>Title Gap</label>
-						<input type="range" class="compact-slider" min="10" .max=${String(gapMax)}
-							style=${this._sliderPct(s.titleGap, 10, gapMax)}
-							.value=${String(s.titleGap)}
-							@input=${(e: Event) => this._onSliderInput('x', 'titleGap', e)}>
-						<input type="number" class="slider-value-input" min="10"
-							.value=${String(s.titleGap)}
-							@change=${(e: Event) => this._onSliderValueInput('x', 'titleGap', (e.target as HTMLInputElement).value, 10, 200)}>
+						${this._renderSlider({
+							min: 10, max: gapMax, value: s.titleGap,
+							label: `${s.titleGap}px`,
+							onInput: (e: Event) => this._onSliderInput('x', 'titleGap', e),
+						})}
 					</div>
 				` : nothing}
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="Sort order for X-axis values">
 					<label>Sort</label>
 					<div class="seg-control">
 						<button type="button" class="seg-btn ${!s.sortDirection ? 'is-active' : ''}"
+							title="Automatic sort order based on data type"
 							@click=${() => this._onAxisSetting('x', 'sortDirection', '')}>Auto</button>
 						<button type="button" class="seg-btn ${s.sortDirection === 'asc' ? 'is-active' : ''}"
+							title="Sort values in ascending order (A→Z, 0→9)"
 							@click=${() => this._onAxisSetting('x', 'sortDirection', 'asc')}>Asc</button>
 						<button type="button" class="seg-btn ${s.sortDirection === 'desc' ? 'is-active' : ''}"
+							title="Sort values in descending order (Z→A, 9→0)"
 							@click=${() => this._onAxisSetting('x', 'sortDirection', 'desc')}>Desc</button>
 					</div>
 				</div>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="How X-axis values are interpreted and spaced">
 					<label>Scale</label>
 					<div class="seg-control">
 						<button type="button" class="seg-btn ${!s.scaleType ? 'is-active' : ''}"
+							title="Automatically detect scale type from data"
 							@click=${() => this._onAxisSetting('x', 'scaleType', '')}>Auto</button>
 						<button type="button" class="seg-btn ${s.scaleType === 'category' ? 'is-active' : ''}"
+							title="Treat values as discrete categories with equal spacing"
 							@click=${() => this._onAxisSetting('x', 'scaleType', 'category')}>Cat</button>
 						<button type="button" class="seg-btn ${s.scaleType === 'continuous' ? 'is-active' : ''}"
+							title="Treat values as continuous numbers with proportional spacing"
 							@click=${() => this._onAxisSetting('x', 'scaleType', 'continuous')}>Cont</button>
 					</div>
 				</div>
-				<div class="compact-slider-row">
+				<div class="compact-slider-row" title="Percentage of axis labels to show — lower values skip labels to reduce overlap">
 					<label>Density</label>
-					<input type="range" class="compact-slider" min="1" .max=${String(densMax)}
-						style=${this._sliderPct(s.labelDensity, 1, densMax)}
-						.value=${String(Math.max(1, s.labelDensity))}
-						@input=${(e: Event) => this._onSliderInput('x', 'labelDensity', e)}>
-					<input type="number" class="slider-value-input" min="1"
-						.value=${String(s.labelDensity)}
-						@change=${(e: Event) => this._onSliderValueInput('x', 'labelDensity', (e.target as HTMLInputElement).value, 1, 100)}>
+					${this._renderSlider({
+						min: 1, max: densMax, value: Math.max(1, s.labelDensity),
+						label: s.labelDensity >= 100 ? 'All' : `${s.labelDensity}%`,
+						onInput: (e: Event) => this._onSliderInput('x', 'labelDensity', e),
+					})}
 				</div>
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('x')} title="Reset to defaults">
 					<span class="codicon codicon-discard" aria-hidden="true"></span>
@@ -843,7 +844,7 @@ export class KwChartSection extends LitElement {
 	private _renderYAxisPopup(): TemplateResult {
 		const s = this._yAxisSettings;
 		const defColors = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b8d0'];
-		const gapMax = this._effectiveMax('y:titleGap', 200);
+		const gapMax = 1000;
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'y'}
@@ -853,40 +854,41 @@ export class KwChartSection extends LitElement {
 			>
 				<div class="axis-popup-inline">
 					<label>Title</label>
-					<label class="toggle-switch" title="Show axis title">
+					<label class="toggle-switch" title="Show or hide the Y-axis title beside the chart">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('y', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
 						<span class="toggle-switch-track"></span>
 					</label>
 					${s.showAxisLabel !== false ? html`
 						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._yColumns.join(', ') || 'Axis title'}
+							title="Custom title text for the Y axis (leave empty to use column name)"
 							@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
 					` : nothing}
 				</div>
 				${s.showAxisLabel !== false ? html`
-					<div class="compact-slider-row">
+					<div class="compact-slider-row" title="Space in pixels between the axis title and the axis labels">
 						<label>Title Gap</label>
-						<input type="range" class="compact-slider" min="10" .max=${String(gapMax)}
-							style=${this._sliderPct(s.titleGap, 10, gapMax)}
-							.value=${String(s.titleGap)}
-							@input=${(e: Event) => this._onSliderInput('y', 'titleGap', e)}>
-						<input type="number" class="slider-value-input" min="10"
-							.value=${String(s.titleGap)}
-							@change=${(e: Event) => this._onSliderValueInput('y', 'titleGap', (e.target as HTMLInputElement).value, 10, 200)}>
+						${this._renderSlider({
+							min: 10, max: gapMax, value: s.titleGap,
+							label: `${s.titleGap}px`,
+							onInput: (e: Event) => this._onSliderInput('y', 'titleGap', e),
+						})}
 					</div>
 				` : nothing}
 				${(() => {
 					const isStacked100 = this._stackMode === 'stacked100' || this._legendSettings.stackMode === 'stacked100';
 					return html`
-					<div class="axis-popup-minmax" title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : ''}>
+					<div class="axis-popup-minmax" title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : 'Set custom minimum and maximum values for the Y axis'}>
 						<label style=${isStacked100 ? 'opacity: 0.4' : ''}>Range</label>
 						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
 							.value=${s.min || ''} placeholder="Min"
+							title="Minimum Y-axis value (leave empty for auto)"
 							?disabled=${isStacked100}
 							@change=${(e: Event) => this._onAxisSetting('y', 'min', (e.target as HTMLInputElement).value)}>
 						<span class="axis-popup-minmax-sep">–</span>
 						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
 							.value=${s.max || ''} placeholder="Max"
+							title="Maximum Y-axis value (leave empty for auto)"
 							?disabled=${isStacked100}
 							@change=${(e: Event) => this._onAxisSetting('y', 'max', (e.target as HTMLInputElement).value)}>
 					</div>`;
@@ -895,7 +897,7 @@ export class KwChartSection extends LitElement {
 					const legendVals = this._legendColumn ? this._getLegendValues() : [];
 					const seriesNames = legendVals.length > 0 ? legendVals : this._yColumns;
 					return seriesNames.length > 0 ? html`
-						<div>
+						<div title="Customize the color for each data series">
 							<div class="axis-popup-colors-header">Series Colors</div>
 							<div class="axis-popup-colors-grid">
 								${seriesNames.map((col, i) => {
@@ -947,13 +949,11 @@ export class KwChartSection extends LitElement {
 				${this._labelMode === 'auto' ? html`
 					<div class="compact-slider-row">
 						<label>Density</label>
-						<input type="range" class="compact-slider" min="0" .max=${String(densMax)}
-							style=${this._sliderPct(this._labelDensity, 0, densMax)}
-							.value=${String(this._labelDensity)}
-							@input=${(e: Event) => this._onSliderInput('labels', 'labelDensity', e)}>
-						<input type="number" class="slider-value-input" min="0"
-							.value=${String(this._labelDensity)}
-							@change=${(e: Event) => this._onSliderValueInput('labels', 'labelDensity', (e.target as HTMLInputElement).value, 0, 100)}>
+						${this._renderSlider({
+							min: 0, max: densMax, value: this._labelDensity,
+							label: `${this._labelDensity}%`,
+							onInput: (e: Event) => this._onSliderInput('labels', 'labelDensity', e),
+						})}
 					</div>
 				` : nothing}
 			</kw-popover>
@@ -971,48 +971,51 @@ export class KwChartSection extends LitElement {
 				.title=${'Legend Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="Where the legend is placed relative to the chart">
 					<label>Position</label>
 					<div class="seg-control seg-control--compact">
 						${(['top', 'right', 'bottom', 'left'] as const).map(p => html`
 							<button type="button" class="seg-btn seg-btn--icon-only ${ls.position === p ? 'is-active' : ''}"
-								title=${p.charAt(0).toUpperCase() + p.slice(1)}
+								title=${'Place legend at the ' + p + ' of the chart'}
 								@click=${() => this._onLegendSetting('position', p)}>
 								<span .innerHTML=${LEGEND_POSITION_ICONS[p]}></span>
 							</button>
 						`)}
 					</div>
 				</div>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="How series data is combined — normal (overlapping), stacked, or stacked as percentages">
 					<label>Mode</label>
 					<div class="seg-control seg-control--compact">
 						${(['normal', 'stacked', 'stacked100'] as const).map(m => html`
 							<button type="button" class="seg-btn seg-btn--icon-only ${ls.stackMode === m ? 'is-active' : ''}"
-								title=${STACK_MODE_LABELS[m]}
+								title=${STACK_MODE_LABELS[m] + (m === 'normal' ? ' — each series drawn independently' : m === 'stacked' ? ' — series stacked on top of each other' : ' — series stacked and normalized to 100%')}
 								@click=${() => this._onLegendSetting('stackMode', m)}>
 								<span .innerHTML=${STACK_MODE_ICONS[m]}></span>
 							</button>
 						`)}
 					</div>
 				</div>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="Custom legend heading (leave empty to use the legend column name)">
 					<label>Title</label>
 					<input type="text" .value=${ls.title || ''} placeholder=${titlePlaceholder}
+						title="Custom legend heading (leave empty to use the legend column name)"
 						@input=${(e: Event) => this._onLegendSetting('title', (e.target as HTMLInputElement).value)}>
 				</div>
-				<div class="compact-slider-row">
+				<div class="compact-slider-row" title="Space in pixels between the legend and the chart area">
 					<label>Gap</label>
-					<input type="range" class="compact-slider" min="0" .max=${String(gapMax)}
-						style=${this._sliderPct(ls.gap, 0, gapMax)}
-						.value=${String(ls.gap)}
-						@input=${(e: Event) => this._onSliderInput('legend', 'gap', e)}>
+					${this._renderSlider({
+						min: 0, max: gapMax, value: ls.gap,
+						label: `${ls.gap}px`,
+						onInput: (e: Event) => this._onSliderInput('legend', 'gap', e),
+					})}
 					<input type="number" class="slider-value-input" min="0"
+						title="Space in pixels between the legend and the chart area"
 						.value=${String(ls.gap)}
 						@change=${(e: Event) => this._onSliderValueInput('legend', 'gap', (e.target as HTMLInputElement).value, 0, 80)}>
 				</div>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="Order in which legend entries appear">
 					<label>Sort</label>
-					<select @change=${(e: Event) => this._onLegendSetting('sortMode', (e.target as HTMLSelectElement).value)}>
+					<select title="Order in which legend entries appear" @change=${(e: Event) => this._onLegendSetting('sortMode', (e.target as HTMLSelectElement).value)}>
 						<option value="" ?selected=${!ls.sortMode}>Default (data order)</option>
 						<option value="alpha-asc" ?selected=${ls.sortMode === 'alpha-asc'}>Name A → Z</option>
 						<option value="alpha-desc" ?selected=${ls.sortMode === 'alpha-desc'}>Name Z → A</option>
@@ -1020,9 +1023,9 @@ export class KwChartSection extends LitElement {
 						<option value="value-desc" ?selected=${ls.sortMode === 'value-desc'}>Value descending</option>
 					</select>
 				</div>
-				<div class="axis-popup-inline">
+				<div class="axis-popup-inline" title="Limit the number of legend entries shown — remaining series are grouped into 'Other'">
 					<label>Top N</label>
-					<select @change=${(e: Event) => this._onLegendSetting('topN', parseInt((e.target as HTMLSelectElement).value, 10))}>
+					<select title="Limit the number of legend entries shown" @change=${(e: Event) => this._onLegendSetting('topN', parseInt((e.target as HTMLSelectElement).value, 10))}>
 						<option value="0" ?selected=${!ls.topN}>All (no limit)</option>
 						<option value="5" ?selected=${ls.topN === 5}>Top 5 + Other</option>
 						<option value="10" ?selected=${ls.topN === 10}>Top 10 + Other</option>
@@ -1031,9 +1034,9 @@ export class KwChartSection extends LitElement {
 					</select>
 				</div>
 				${this._chartType === 'line' || this._chartType === 'area' ? html`
-					<div class="axis-popup-inline">
+					<div class="axis-popup-inline" title="Display the series name at the end of each line">
 						<label>End labels</label>
-						<label class="toggle-switch" title="Show labels at end of series">
+						<label class="toggle-switch" title="Show the series name label at the end of each line">
 							<input type="checkbox" .checked=${!!ls.showEndLabels}
 								@change=${(e: Event) => this._onLegendSetting('showEndLabels', (e.target as HTMLInputElement).checked)}>
 							<span class="toggle-switch-track"></span>
@@ -1180,6 +1183,9 @@ export class KwChartSection extends LitElement {
 
 	private _onLegendColumnChanged(e: Event): void {
 		this._legendColumn = (e.target as HTMLSelectElement).value;
+		if (!this._legendColumn) {
+			this._resetLegendSettings();
+		}
 		this._schedulePersist();
 	}
 
@@ -1219,6 +1225,20 @@ export class KwChartSection extends LitElement {
 
 	private _toggleDataLabels(): void {
 		this._showDataLabels = !this._showDataLabels;
+		if (this._showDataLabels && this._labelDensity <= 0) {
+			this._labelDensity = 50;
+		}
+		if (!this._showDataLabels) {
+			this._labelDensity = 0;
+		}
+		this._schedulePersist();
+	}
+
+	/** Handle the combined labels density slider — 0 = off, >0 = on with density. */
+	private _onLabelDensitySlider(e: Event): void {
+		const value = parseInt((e.target as HTMLInputElement).value, 10);
+		this._labelDensity = value;
+		this._showDataLabels = value > 0;
 		this._schedulePersist();
 	}
 
@@ -1362,6 +1382,26 @@ export class KwChartSection extends LitElement {
 	private _sliderPct(value: number, min: number, max: number): string {
 		const pct = max > min ? ((value - min) / (max - min)) * 100 : 0;
 		return `--slider-pct: ${Math.round(Math.max(0, Math.min(100, pct)))}%`;
+	}
+
+	/** Render a compact slider bar with ghost text overlay. */
+	private _renderSlider(opts: {
+		min: number; max: number; value: number; label: string;
+		onInput: (e: Event) => void;
+		onMousedown?: (e: Event) => void;
+	}): TemplateResult {
+		return html`
+			<div class="slider-wrap">
+				<input type="range" class="compact-slider"
+					min=${opts.min} .max=${String(opts.max)}
+					style=${this._sliderPct(opts.value, opts.min, opts.max)}
+					.value=${String(opts.value)}
+					@mousedown=${opts.onMousedown || nothing}
+					@input=${opts.onInput}
+					title=${opts.label}>
+				<span class="slider-ghost-text">${opts.label}</span>
+			</div>
+		`;
 	}
 
 	/** Effective slider max — uses sticky override if the user typed a custom max, otherwise defaultMax. */

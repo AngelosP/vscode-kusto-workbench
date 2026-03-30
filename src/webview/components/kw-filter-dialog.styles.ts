@@ -21,6 +21,7 @@ export const styles = css`
 
 	/* Shared select/input */
 	.sr-col,.sr-dir{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:0;padding:4px 6px;font-size:12px;font-family:inherit}
+	select.sr-col:hover,select.sr-dir:hover{border-color:var(--vscode-focusBorder)}
 	.sr-rm{padding:0;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:2px;color:var(--vscode-errorForeground);cursor:pointer}.sr-rm:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:var(--vscode-input-border)}
 	.sr-rm.is-hidden{visibility:hidden;pointer-events:none}
 	.sr-rm-delete{color:var(--vscode-errorForeground)}

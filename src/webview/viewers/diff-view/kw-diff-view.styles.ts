@@ -68,6 +68,9 @@ export const styles = css`
 			border: 1px solid var(--vscode-dropdown-border);
 			border-radius: 0; padding: 4px 6px; font-size: 12px;
 		}
+		.join-select:hover {
+			border-color: var(--vscode-focusBorder);
+		}
 		.table-label {
 			font-weight: 600; font-size: 12px; color: var(--vscode-foreground);
 			margin-bottom: 4px;

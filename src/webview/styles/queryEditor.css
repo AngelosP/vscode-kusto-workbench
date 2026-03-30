@@ -1113,11 +1113,10 @@
 			text-align: left;
 		}
 
-		/* Native <select> doesn't visually "hover" in the same way; keep stable styling. */
 		.kusto-dropdown-btn:hover,
 		.kusto-favorites-btn:hover {
 			background: var(--vscode-dropdown-background);
-			border-color: var(--vscode-dropdown-border);
+			border-color: var(--vscode-focusBorder);
 		}
 
 		.kusto-dropdown-btn:focus,
@@ -1321,6 +1320,13 @@
 			border-radius: 2px;
 			width: 100%;
 			cursor: pointer;
+		}
+		.select-wrapper select:hover {
+			border-color: var(--vscode-focusBorder);
+		}
+		.select-wrapper select:focus {
+			border-color: var(--vscode-focusBorder);
+			outline: none;
 		}
 
 		.select-wrapper select:disabled {

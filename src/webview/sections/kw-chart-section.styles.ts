@@ -146,7 +146,7 @@ export const styles = css`
 			display: flex;
 			flex-direction: column;
 			gap: 0;
-			overflow: visible;
+			overflow: hidden;
 			flex-shrink: 0;
 			background: var(--vscode-editor-background);
 			position: relative;
@@ -169,7 +169,7 @@ export const styles = css`
 
 		.chart-controls-scroll {
 			overflow-x: auto;
-			overflow-y: visible;
+			overflow-y: hidden;
 			padding-bottom: 16px;
 			scrollbar-width: thin;
 			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
@@ -262,6 +262,7 @@ export const styles = css`
 			background-position: right 4px center;
 			background-size: 16px 16px;
 		}
+		.chart-select:hover { border-color: var(--vscode-focusBorder); }
 		.chart-select:focus { border-color: var(--vscode-focusBorder); }
 
 		/* ── Dropdown button (for Y, Tooltip multi-selects) ────────────── */
@@ -440,6 +441,13 @@ export const styles = css`
 
 		.chart-grid-spacer { display: block; }
 
+		/* ── Labels density slider (inside toggle control) ────────── */
+		.chart-labels-density-slider {
+			flex: 1 1 auto;
+			min-width: 40px;
+			margin-left: 8px;
+		}
+
 		/* ── Clickable axis labels ─────────────────────────────────── */
 
 		.axis-label-clickable {
@@ -524,6 +532,7 @@ export const styles = css`
 			background-size: 14px 14px;
 			padding-right: 22px;
 		}
+		.axis-popup-inline > select:hover { border-color: var(--vscode-focusBorder); }
 		.axis-popup-inline > select:focus { border-color: var(--vscode-focusBorder); }
 
 		/* Legacy column-based row — kept for backwards compat, now rarely used */
@@ -560,6 +569,7 @@ export const styles = css`
 			outline: none;
 			width: 100%;
 		}
+		.axis-popup-row > select:hover { border-color: var(--vscode-focusBorder); }
 		.axis-popup-row > select:focus { border-color: var(--vscode-focusBorder); }
 
 		/* ── Toggle switch ────────────────────────────────────────────── */
@@ -686,50 +696,83 @@ export const styles = css`
 		.compact-slider {
 			flex: 1 1 auto;
 			min-width: 0;
-			height: 4px;
+			height: 26px;
 			-webkit-appearance: none;
 			appearance: none;
 			background: transparent;
 			cursor: pointer;
 			outline: none;
 			margin: 0;
+			border-radius: 0;
 		}
-		/* Track */
+		/* Track — rectangular bar with subtle fill, matches dropdown border */
 		.compact-slider::-webkit-slider-runnable-track {
-			height: 4px;
-			border-radius: 2px;
+			height: 26px;
+			border-radius: 0;
 			background: linear-gradient(
 				to right,
-				var(--vscode-button-background) 0%,
-				var(--vscode-button-background) var(--slider-pct, 50%),
-				var(--vscode-input-background) var(--slider-pct, 50%),
-				var(--vscode-input-background) 100%
+				var(--vscode-toolbar-activeBackground, rgba(128, 128, 128, 0.25)) 0%,
+				var(--vscode-toolbar-activeBackground, rgba(128, 128, 128, 0.25)) var(--slider-pct, 50%),
+				var(--vscode-dropdown-background, var(--vscode-input-background)) var(--slider-pct, 50%),
+				var(--vscode-dropdown-background, var(--vscode-input-background)) 100%
 			);
-			border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.2));
+			border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border));
+			transition: border-color 0.1s ease;
 		}
-		/* Thumb */
+		.compact-slider:hover::-webkit-slider-runnable-track {
+			border-color: var(--vscode-focusBorder);
+		}
+		.compact-slider:focus-visible::-webkit-slider-runnable-track {
+			border-color: var(--vscode-focusBorder);
+		}
+		/* Thumb — thin vertical line */
 		.compact-slider::-webkit-slider-thumb {
 			-webkit-appearance: none;
 			appearance: none;
-			width: 14px;
-			height: 14px;
-			border-radius: 50%;
-			background: var(--vscode-button-background);
-			border: 2px solid var(--vscode-editor-background);
-			box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-			margin-top: -6px;
-			transition: transform 0.1s ease, box-shadow 0.1s ease;
+			width: 4px;
+			height: 24px;
+			border-radius: 1px;
+			background: var(--vscode-foreground);
+			border: none;
+			box-shadow: none;
+			margin-top: 0;
+			opacity: 0.6;
+			transition: opacity 0.1s ease, width 0.1s ease;
 		}
 		.compact-slider:hover::-webkit-slider-thumb {
-			transform: scale(1.15);
-			box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+			opacity: 1;
+			width: 5px;
 		}
 		.compact-slider:active::-webkit-slider-thumb {
-			transform: scale(1.05);
+			opacity: 1;
 		}
 		.compact-slider:focus-visible::-webkit-slider-thumb {
-			outline: 2px solid var(--vscode-focusBorder);
-			outline-offset: 1px;
+			opacity: 1;
+		}
+		/* Slider wrapper with ghost text overlay */
+		.slider-wrap {
+			position: relative;
+			flex: 1 1 auto;
+			min-width: 0;
+			display: flex;
+		}
+		.slider-wrap .compact-slider {
+			width: 100%;
+		}
+		.slider-ghost-text {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 10px;
+			font-family: var(--vscode-editor-font-family, monospace);
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+			pointer-events: none;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
 		}
 		/* Editable value input (click-to-edit number beside slider) */
 		.slider-value-input {

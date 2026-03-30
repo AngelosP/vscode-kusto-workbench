@@ -35,7 +35,7 @@ export const styles = css`
 	}
 	.kusto-dropdown-btn:hover {
 		background-color: var(--vscode-dropdown-background);
-		border-color: var(--vscode-dropdown-border);
+		border-color: var(--vscode-focusBorder);
 	}
 	.kusto-dropdown-btn:focus {
 		outline: none;
