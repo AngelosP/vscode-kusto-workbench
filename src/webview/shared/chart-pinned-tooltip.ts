@@ -22,9 +22,11 @@ interface HoverState {
 	el: KwChartTooltip;
 	hideTimer: number;
 	showTimer: number;
+	outsideGrid: boolean;
 	data: TooltipData;
 	inst: any;
 	needsUpdate: boolean;
+	_onMouseMove: ((e: MouseEvent) => void) | null;
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -50,12 +52,16 @@ export function handleTooltipFormatter(
 	let state = _states.get(chartId);
 
 	if (state) {
-		_cancelHide(state);
+		if (!state.outsideGrid) { _cancelHide(state); }
 		if (state.data.dataIndex !== dataIndex) {
 			state.data = data;
 			state.needsUpdate = true;
-			// Content changed — restart the show delay
-			_resetShowTimer(state);
+			if (!state.outsideGrid) {
+				// If already visible, show new content instantly; otherwise
+				// restart the show delay.
+				const alreadyVisible = !state.showTimer && state.el.style.opacity !== '0';
+				if (!alreadyVisible) { _resetShowTimer(state); }
+			}
 		}
 		// Same data index → no content change (user may be interacting)
 	} else {
@@ -71,9 +77,11 @@ export function handleTooltipFormatter(
 			el,
 			hideTimer: 0,
 			showTimer: 0,
+			outsideGrid: false,
 			data,
 			inst: null,
 			needsUpdate: true,
+			_onMouseMove: null,
 		};
 		_states.set(chartId, state);
 		_resetShowTimer(state);
@@ -98,6 +106,13 @@ export function handleTooltipPosition(
 
 	state.inst = inst;
 
+	// Attach a direct mousemove listener the first time we have the inst,
+	// so we can reliably track whether the cursor is inside the grid area
+	// independent of ECharts callback ordering.
+	if (!state._onMouseMove) {
+		_attachMouseMoveListener(state);
+	}
+
 	if (state.needsUpdate) {
 		_pushDataToElement(state);
 		state.needsUpdate = false;
@@ -110,7 +125,9 @@ export function scheduleHideTooltip(chartId: string): void {
 	const state = _states.get(chartId);
 	if (!state) return;
 	_cancelHide(state);
-	state.hideTimer = window.setTimeout(() => _destroyState(chartId), 200);
+	// Cancel any pending show timer so the tooltip doesn't appear after hiding
+	if (state.showTimer) { clearTimeout(state.showTimer); state.showTimer = 0; }
+	state.hideTimer = window.setTimeout(() => _destroyState(chartId), 500);
 }
 
 /** Immediately dismiss the hover tooltip for a specific chart, or all. */
@@ -138,7 +155,7 @@ function _resetShowTimer(state: HoverState): void {
 			st.el.style.opacity = '';
 			st.el.style.pointerEvents = '';
 		}
-	}, 1000);
+	}, 500);
 }
 
 function _cancelHide(state: HoverState): void {
@@ -194,9 +211,65 @@ function _destroyState(chartId: string): void {
 	if (!state) return;
 	_cancelHide(state);
 	if (state.showTimer) { clearTimeout(state.showTimer); state.showTimer = 0; }
+	_detachMouseMoveListener(state);
 	try { state.inst?.dispatchAction?.({ type: 'downplay' }); } catch { /* noop */ }
 	try { state.el.remove(); } catch { /* noop */ }
 	_states.delete(chartId);
+}
+
+// ── Mouse-move grid tracking ──────────────────────────────────────────────────
+
+/** Attach a mousemove listener on the ECharts DOM to track grid in/out. */
+function _attachMouseMoveListener(state: HoverState): void {
+	const chartDom = state.inst?.getDom?.() as HTMLElement | undefined;
+	if (!chartDom) return;
+
+	const chartId = state.chartId;
+	const handler = (e: MouseEvent) => {
+		const st = _states.get(chartId);
+		if (!st?.inst) return;
+
+		try {
+			const gridModel = st.inst.getModel?.()?.getComponent?.('grid', 0);
+			const gridRect = gridModel?.coordinateSystem?.getRect?.();
+			if (!gridRect) return;
+
+			const domRect = chartDom.getBoundingClientRect();
+			const localY = e.clientY - domRect.top;
+
+			const inside = localY >= gridRect.y && localY <= gridRect.y + gridRect.height;
+
+			if (!inside && !st.outsideGrid) {
+				st.outsideGrid = true;
+				if (st.showTimer) {
+					// Still waiting to show — cancel immediately
+					clearTimeout(st.showTimer); st.showTimer = 0;
+					st.el.style.opacity = '0';
+					st.el.style.pointerEvents = 'none';
+				} else {
+					// Already visible — schedule a delayed hide so the user
+					// can move the mouse onto the tooltip before it vanishes
+					scheduleHideTooltip(chartId);
+				}
+			} else if (inside && st.outsideGrid) {
+				st.outsideGrid = false;
+				_resetShowTimer(st);
+			}
+		} catch { /* noop */ }
+	};
+
+	chartDom.addEventListener('mousemove', handler);
+	state._onMouseMove = handler;
+}
+
+/** Remove the mousemove listener from the ECharts DOM. */
+function _detachMouseMoveListener(state: HoverState): void {
+	if (!state._onMouseMove) return;
+	try {
+		const chartDom = state.inst?.getDom?.() as HTMLElement | undefined;
+		chartDom?.removeEventListener('mousemove', state._onMouseMove);
+	} catch { /* noop */ }
+	state._onMouseMove = null;
 }
 
 // ── Data extraction ───────────────────────────────────────────────────────────

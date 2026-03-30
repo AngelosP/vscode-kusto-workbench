@@ -468,6 +468,8 @@ export const styles = css`
 			border-radius: 50%;
 			margin-left: 4px;
 			vertical-align: middle;
+			position: relative;
+			top: -1px;
 		}
 
 		/* ── Axis settings popup content (form controls — slotted inside kw-popover) ── */

@@ -1105,6 +1105,8 @@
 			border-radius: 50%;
 			margin-left: 4px;
 			vertical-align: middle;
+			position: relative;
+			top: -2px;
 		}
 
 		/* Indicator dot when Labels has custom settings */
@@ -1117,6 +1119,8 @@
 			border-radius: 50%;
 			margin-left: 4px;
 			vertical-align: middle;
+			position: relative;
+			top: -2px;
 		}
 
 		/* Axis settings popup */
