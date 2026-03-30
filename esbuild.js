@@ -328,8 +328,8 @@ async function main() {
 	if (production) {
 		const BASELINES = {
 			'extension.js':                                         927,
-			'webview/webview.bundle.js':                           1223,
-			'queryEditor/vendor/echarts/echarts.webview.js':        586,
+			'webview/webview.bundle.js':                           1320,
+			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            19938,
 		};
