@@ -198,6 +198,11 @@
         "command": "kusto.showDevelopmentNotes",
         "title": "Show Development Notes",
         "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.exportSkill",
+        "title": "Export Agent Skill...",
+        "category": "Kusto Workbench"
       }
     ],
     "menus": {
@@ -209,6 +214,11 @@
       "view/title": [
         {
           "command": "kusto.openQueryEditor",
+          "group": "navigation",
+          "when": "view == kustoWorkbench.quickAccess"
+        },
+        {
+          "command": "kusto.exportSkill",
           "group": "navigation",
           "when": "view == kustoWorkbench.quickAccess"
         }

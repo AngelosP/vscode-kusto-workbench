@@ -13,6 +13,7 @@ import { recordTextEditorSelection } from './selectionTracker';
 import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './kustoWorkbenchTools';
 import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
+import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -464,6 +465,13 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-desc">Write KQL queries, explore results, build charts, and use Copilot for the boring stuff.</div>
 			<button class="button" onclick="sendCommand('openWalkthroughEditor')">Start Tutorial</button>
 		</div>
+		<div class="card">
+			<div class="card-title">
+				<i class="codicon codicon-export"></i> Export Agent Skill
+			</div>
+			<div class="card-desc">Export a SKILL.md file that teaches any Copilot agent how to operate Kusto Workbench. Share with your team or keep it local.</div>
+			<button class="button" onclick="sendCommand('exportSkill')">Export Skill...</button>
+		</div>
 	</div>
 
 	<div class="section">
@@ -569,8 +577,9 @@ export function activate(context: vscode.ExtensionContext) {
 							break;
 						case 'openWalkthroughEditor':
 							await vscode.commands.executeCommand('workbench.action.openWalkthrough', { category: 'angelos-petropoulos.vscode-kusto-workbench#kusto-workbench.editor-first' }, true);
-							break;
-					}
+							break;					case 'exportSkill':
+						await vscode.commands.executeCommand('kusto.exportSkill');
+						break;					}
 				});
 			}
 		})
@@ -751,6 +760,15 @@ export function activate(context: vscode.ExtensionContext) {
 			await openKustoWorkbenchAgentChat();
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.exportSkill', async () => {
+			await exportSkillCommand(context);
+		})
+	);
+
+	// Fire-and-forget: update previously exported skill files if the template changed.
+	void checkAndUpdateSkillFiles(context);
 }
 
 // This method is called when your extension is deactivated

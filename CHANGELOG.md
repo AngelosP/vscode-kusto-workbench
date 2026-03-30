@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [3.1.0] - 2026-03-27
+## [3.1.0] - 2026-03-30
 
 * Better instructions for performance optimizations. Now expicitely told to try out join optimization techniques as well. (thank you Alexandra Kemper)
 * 'Comment / uncomment' toolbar icon for Kusto sections.
@@ -12,7 +12,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Shortcuts for collapsing / expanding all sections or all sections of a particular type.
 * Transformation sections now support joining datasets together, instead of just working on single dataset.
 * Improvements to the UX of the 'compare two queries' feature.
-* Lots of chart improvements.
+* Lots of chart improvements, including new chart types: Stacked variations of Line / Area / Bar, Sankey, Heatmap
+* Skill for enabling any agent to operate Kusto Workbench and driving analysis and manipulation of .kqlx and .kql and .csl files
 * Bugs:
     * Chart axis get stuck showing column names that no longer exist if the column name is renamed
     * CTRL+ENTER inside a python section did not execute it
