@@ -1843,7 +1843,7 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 		// Check chart type
 		const chartType = typeof st.chartType === 'string' ? st.chartType : '';
 		if (!chartType) {
-			issues.push('No chart type selected. Specify chartType (line, area, bar, scatter, pie, funnel, or sankey).');
+			issues.push('No chart type selected. Specify chartType (line, area, bar, scatter, pie, funnel, sankey, or heatmap).');
 		}
 		
 		// Check if data source exists and has data
@@ -1905,6 +1905,23 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 				}
 				if (!valueColumn) {
 					issues.push(`sankey chart requires valueColumn (the numeric flow values). Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(valueColumn)) {
+					issues.push(`valueColumn "${valueColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+			} else if (chartType === 'heatmap') {
+				if (!xColumn) {
+					issues.push(`heatmap chart requires xColumn. Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(xColumn)) {
+					issues.push(`xColumn "${xColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				const yColumn = typeof st.yColumn === 'string' ? st.yColumn : '';
+				if (!yColumn) {
+					issues.push(`heatmap chart requires yColumn. Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(yColumn)) {
+					issues.push(`yColumn "${yColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				if (!valueColumn) {
+					issues.push(`heatmap chart requires valueColumn (the numeric intensity). Available columns: ${availableColumns.join(', ')}`);
 				} else if (!availableColumns.includes(valueColumn)) {
 					issues.push(`valueColumn "${valueColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
 				}

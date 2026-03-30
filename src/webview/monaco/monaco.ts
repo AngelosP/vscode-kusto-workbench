@@ -196,7 +196,8 @@ function ensureMonaco() {
 		try {
 			waitForAmdLoader().then((req) => {
 				// Monaco workers run via AMD (workerMain.js → importScripts kustoWorker.js).
-				// No ESM MonacoEnvironment.getWorker registration is needed.
+				// MonacoEnvironment.getWorkerUrl is configured in queryEditor.html
+				// (blob URL workaround for VS Code webview cross-origin restrictions).
 
 				try {
 					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig!.monacoVsUri } });

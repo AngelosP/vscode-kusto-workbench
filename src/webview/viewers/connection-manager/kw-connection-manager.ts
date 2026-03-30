@@ -307,6 +307,8 @@ export class KwConnectionManager extends LitElement {
 					<span class="item-sep">·</span>
 					<span class="explorer-list-item-meta">${dbCount > 0 ? `${dbCount} database${dbCount !== 1 ? 's' : ''}` : 'click to explore'}</span>
 					<div class="explorer-list-item-actions">
+						<button class="btn-icon ${isLnt ? 'is-lnt' : ''}" title="${isLnt ? 'Remove from Leave No Trace' : 'Add to Leave No Trace'}"
+							@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: isLnt ? 'leaveNoTrace.remove' : 'leaveNoTrace.add', clusterUrl: conn.clusterUrl }); }}>${ICONS.shield}</button>
 						<button class="btn-icon" title="Edit" @click=${(e: Event) => { e.stopPropagation(); this._openModal('edit', conn.id); }}>${ICONS.edit}</button>
 						<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
 						<button class="btn-icon" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'connection.delete', id: conn.id }); }}>${ICONS.delete}</button>

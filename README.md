@@ -63,6 +63,12 @@ The agent can:
 
 ![VS Code custom agent that actually works called Kusto Workbench](media/marketplace/vscode-custom-agent.png)
 
+### Let your own agent control Kusto Workbench
+
+Export a skill that teaches your own agent how to control Kusto Workbench and its advanced features
+
+![Export a skill that teaches your own agent how to control Kusto Workbench](media/marketplace/export-skill.png)
+
 ### Integrated Copilot Chat (per section)
 
 Each Kusto query section has its own Copilot Chat window built right in. Click the Copilot button in the query toolbar to open it. The LLM knows your database schema, can execute queries to validate its suggestions, and has full conversation history so you can iterate naturally. You manage the conversation history directly in the UI, remove stale tool calls, clear the whole chat, or just keep going. Use this when working inside a very specific section of the overall workbook, to make surgical changes, not to build a new workbook from scratch; use the custom Kusto Workbench agent via the VS Code chat window for that instead.
@@ -75,19 +81,28 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ### Load .csv data directly from the internet
 
-If you have a URL, then you can load it.
+* If you have a URL, then you can load it.
+* Supports image files like .png and .jpg and all sorts of orientations and sizing options.
+* Supports .csv files with access to all the tabular controls and tools like search, scroll to column, etc.
+* You can transform .csv files just like you can transform Kusto query results, and you can join them all too!
 
 ![Load .csv data directly from the internet](./media/marketplace/csv.png)
 
 ### Transform data
 
-You can transform Kusto query results without changing the query itself. Derive new columns, summarize and aggregate, get distinct values, or pivot your data and all without writing another line of KQL. Transformations also work on .csv files loaded via a URL section.
+* You can transform Kusto query results without changing the query itself.
+* Derive new columns, summarize and aggregate, get distinct values, or pivot your data and all without writing another line of KQL.
+* Transformations also work on .csv files loaded via a URL section.
 
 ![Using data transformation to add a calculated column](media/marketplace/transformation.png)
 
 ### Chart data
 
-Create charts from Kusto query results or .csv data. Supports line, area, bar, scatter, pie, and funnel chart types. Configure axes, legends, data labels, and more. Charts update live when you re-run your query.
+* Create charts from Kusto query results or .csv data.
+* Supports line, area, bar, scatter, pie, sankey, and funnel chart types (more to come).
+* Configure axes, legends, data labels, and more.
+* Click on the X, Y, Legend labels to configure additional settings.
+* Charts update live when you re-run your query.
 
 ![Creating a bar chart from a Kusto query](media/marketplace/chart.png)
 
@@ -112,12 +127,6 @@ When a query fails, Kusto Workbench surfaces helpful, human-friendly diagnostics
 If you have an existing query that you want to improve without changing its behavior and the results it returns, you can use the built-in functionality to compare its performance and to guarantee that the data returned is identical, even if the rows and columns might be out of order.
 
 ![Performance optimization of an existing query](media/marketplace/perf-optimization.png)
-
-Now with server-side stats too! Performance statistics from the Kusto cluster itself are surfaced on hover over the results label, and automatically when comparing queries.
-
-![Performance optimization of an existing query using server-side stats](media/marketplace/perf-optimization-server-side-stats.png)
-
-![Query execution with server-side stats](media/marketplace/query-execution-server-side-stats.png)
 
 ### Share to Teams and Azure Data Explorer
 
@@ -149,9 +158,14 @@ Full WYSIWYG and raw markdown editing powered by TOAST UI Editor. Add narrative 
 
 ![Markdown editing](media/marketplace/markdown.png)
 
-### Cell Value Viewer
+### Python sections
 
-Double-click any cell in the results table to open its contents in a dedicated viewer with search capabilities. Works great for long strings, JSON, and any value that doesn't fit comfortably in a table cell.
+* Embed Python code cells alongside your KQL.
+* Python runs locally on your machine, and output is captured inline.
+* Great for post-processing query results or running custom analysis.
+* P.S. Very soon it will be possible to connect the Python sections to all the other sections automagically, stay tuned :)
+
+![Python sections with pandras and np](media/marketplace/python-sections.png)
 
 ### Search results
 
@@ -164,10 +178,6 @@ Open `.kqlx` files directly from GitHub or SharePoint using sharing or raw URLs.
 ### Development Notes
 
 The Copilot agent can store development notes per file (corrections, schema hints, gotchas) that persist across sessions and improve AI-assisted workflows over time. View them with `Kusto Workbench: Show Development Notes`.
-
-### Python sections
-
-Embed Python code cells alongside your KQL. Python runs locally on your machine, and output is captured inline. Great for post-processing query results or running custom analysis.
 
 ## Quick start
 
@@ -216,6 +226,7 @@ You can open files directly from GitHub or SharePoint using sharing or raw URLs 
 | `Kusto Workbench: Reset Copilot Model Selection` | Reset the sticky model choice for integrated Copilot Chat |
 | `Kusto Workbench: Open Walkthroughs...` | Launch the built-in guided walkthroughs |
 | `Kusto Workbench: Open Kusto Workbench Custom Agent` | Open the Copilot Chat panel with the Kusto Workbench agent |
+| `Kusto Workbench: Export Agent Skill...` | Export a SKILL.md file so other Copilot agents can use Kusto Workbench as a tool |
 | `Kusto Workbench: Show Development Notes` | View AI development notes stored in the current file |
 
 ## Requirements

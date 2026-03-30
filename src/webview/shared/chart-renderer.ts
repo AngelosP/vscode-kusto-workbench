@@ -1284,6 +1284,172 @@ export function renderChart(boxId: any) {
 					try { delete st.__lastTimeAxis; } catch (e) { console.error('[kusto]', e); }
 				}
 			}
+		} else if (chartType === 'heatmap') {
+			const xi = indexOf(st.xColumn);
+			const yi = indexOf(st.yColumn);
+			const vi = indexOf(st.valueColumn);
+			const xColName = st.xColumn || 'X';
+			const yColName = st.yColumn || 'Y';
+			const valueColName = st.valueColumn || 'Value';
+			if (xi < 0 || yi < 0 || vi < 0) {
+				showErrorAndReturn('Select X, Y, and Value columns.');
+				return;
+			} else {
+				const useTime = inferTimeXAxisFromRows(rows, xi);
+
+				// Collect unique X and Y categories, and aggregate values for duplicate (X, Y) pairs.
+				const xSet = new Map<string, string>();   // display → display (preserve order)
+				const ySet = new Map<string, string>();
+				const dataMap = new Map<string, { sum: number; count: number; tt: any }>();
+
+				for (const r of (rows || [])) {
+					const xRaw = (r && (r as any).length > xi) ? (r as any)[xi] : null;
+					const yRaw = (r && (r as any).length > yi) ? (r as any)[yi] : null;
+					const v = (r && (r as any).length > vi) ? cellToNumber((r as any)[vi]) : null;
+					const xStr = useTime
+						? (typeof cellToTimeMs(xRaw) === 'number' ? String(cellToTimeMs(xRaw)) : cellToChartString(xRaw))
+						: cellToChartString(xRaw);
+					const yStr = cellToChartString(yRaw);
+
+					if (!xSet.has(xStr)) xSet.set(xStr, xStr);
+					if (!ySet.has(yStr)) ySet.set(yStr, yStr);
+
+					const key = xStr + '\0' + yStr;
+					const existing = dataMap.get(key);
+					const numValue = (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
+					if (existing) {
+						existing.sum += numValue;
+						existing.count++;
+					} else {
+						dataMap.set(key, { sum: numValue, count: 1, tt: getTooltipPayloadForRow(r) });
+					}
+				}
+
+				const xCategories = Array.from(xSet.keys());
+				const yCategories = Array.from(ySet.keys());
+
+				// Sort X categories (time-based numerically, otherwise alphabetically)
+				if (useTime) {
+					xCategories.sort((a, b) => Number(a) - Number(b));
+				} else {
+					xCategories.sort();
+				}
+				yCategories.sort();
+
+				// Build ECharts data: [xIndex, yIndex, value]
+				let minVal = Infinity;
+				let maxVal = -Infinity;
+				const data: any[] = [];
+				for (let xIdx = 0; xIdx < xCategories.length; xIdx++) {
+					for (let yIdx = 0; yIdx < yCategories.length; yIdx++) {
+						const key = xCategories[xIdx] + '\0' + yCategories[yIdx];
+						const entry = dataMap.get(key);
+						const val = entry ? entry.sum : 0;
+						if (val < minVal) minVal = val;
+						if (val > maxVal) maxVal = val;
+						data.push({
+							value: [xIdx, yIdx, val],
+							__kustoTooltip: entry ? entry.tt : null,
+						});
+					}
+				}
+				if (!Number.isFinite(minVal)) minVal = 0;
+				if (!Number.isFinite(maxVal)) maxVal = 1;
+				if (minVal === maxVal) maxVal = minVal + 1;
+
+				// Build display labels for X axis (format timestamps if time-based)
+				const showTime = useTime ? shouldShowTimeForUtcAxis(xCategories.map(Number)) : false;
+				const xDisplayLabels = useTime
+					? xCategories.map(k => formatUtcDateTime(Number(k), showTime))
+					: xCategories;
+
+				const labelStats = measureLabelChars(useTime ? xDisplayLabels : xCategories);
+				const yLabelStats = measureLabelChars(yCategories);
+				const rotate = useTime
+					? computeTimeAxisLabelRotation(canvasWidthPx, xCategories.length, showTime)
+					: computeCategoryLabelRotation(canvasWidthPx, xCategories.length, labelStats.avgLabelChars, labelStats.maxLabelChars);
+				const axisFontSize = computeAxisFontSize(xCategories.length, canvasWidthPx, false);
+				const bottomMargin = (rotate > 30 ? 60 : 40);
+				const leftMargin = Math.min(120, Math.max(50, yLabelStats.maxLabelChars * 7 + 15));
+
+				option = {
+					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
+					backgroundColor: 'transparent',
+					grid: {
+						left: leftMargin,
+						right: 60,
+						top: 20 + _chartTitleSpace,
+						bottom: bottomMargin,
+						containLabel: false
+					},
+					xAxis: {
+						type: 'category',
+						data: xDisplayLabels,
+						splitArea: { show: true },
+						axisLabel: {
+							rotate,
+							fontSize: axisFontSize,
+							fontFamily: 'monospace',
+						},
+					},
+					yAxis: {
+						type: 'category',
+						data: yCategories,
+						splitArea: { show: true },
+						axisLabel: {
+							fontSize: 11,
+							fontFamily: 'monospace',
+						},
+					},
+					visualMap: {
+						min: minVal,
+						max: maxVal,
+						calculable: true,
+						orient: 'vertical',
+						right: 0,
+						top: 'center',
+						inRange: {
+							color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
+						},
+					},
+					tooltip: {
+						...tooltipCommon,
+						trigger: 'item',
+						formatter: (params: any) => {
+							try {
+								const v = params && params.value ? params.value : null;
+								const xIdx = v && v.length > 0 ? v[0] : 0;
+								const yIdx = v && v.length > 1 ? v[1] : 0;
+								const val = v && v.length > 2 ? v[2] : 0;
+								const xLabel = xDisplayLabels[xIdx] || '';
+								const yLabel = yCategories[yIdx] || '';
+								const lines = [
+									`<div style="font-weight:600; margin-bottom:2px">${escHtml(xLabel)} × ${escHtml(yLabel)}</div>`,
+									`<div><strong>${escHtml(valueColName)}</strong>: ${escHtml(formatNumber(val))}</div>`
+								];
+								const payload = params && params.data && params.data.__kustoTooltip ? params.data.__kustoTooltip : null;
+								appendTooltipColumnsHtmlLines(lines, payload, 0);
+								return lines.join('');
+							} catch {
+								return '';
+							}
+						}
+					},
+					series: [{
+						type: 'heatmap',
+						data,
+						label: {
+							show: false,
+						},
+						emphasis: {
+							itemStyle: {
+								shadowBlur: 10,
+								shadowColor: 'rgba(0, 0, 0, 0.5)',
+							}
+						},
+					}]
+				};
+			}
 		} else {
 			// line / bar / area
 			const xi = indexOf(st.xColumn);

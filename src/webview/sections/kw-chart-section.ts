@@ -41,7 +41,7 @@ import { ChartDataSourceController, type DatasetEntry } from './chart-data-sourc
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | '';
+export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap' | '';
 export type ChartMode = 'edit' | 'preview';
 export type { LegendPosition, StackMode, LegendSettings, LegendSortMode, XAxisSettings, YAxisSettings };
 export type SortDirection = 'asc' | 'desc' | '';
@@ -99,13 +99,14 @@ const CHART_TYPE_ICONS: Record<string, string> = {
 	pie: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="16" cy="16" r="12" fill="currentColor" fill-opacity="0.2"/><path d="M16,16 L16,4 A12,12 0 0,1 27.2,20.8 Z" fill="currentColor" fill-opacity="0.5"/><path d="M16,16 L27.2,20.8 A12,12 0 0,1 8,25.6 Z" fill="currentColor" fill-opacity="0.7"/></svg>',
 	funnel: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><path d="M4,4 L28,4 L28,7 L4,7 Z"/><path d="M6,9 L26,9 L26,12 L6,12 Z" fill-opacity="0.6"/><path d="M8,14 L24,14 L24,17 L8,17 Z" fill-opacity="0.5"/><path d="M10,19 L22,19 L22,22 L10,22 Z" fill-opacity="0.4"/><path d="M12,24 L20,24 L20,27 L12,27 Z" fill-opacity="0.3"/></svg>',
 	sankey: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><rect x="2" y="3" width="5" height="8" rx="1"/><rect x="2" y="13" width="5" height="6" rx="1"/><rect x="2" y="21" width="5" height="8" rx="1"/><rect x="25" y="5" width="5" height="10" rx="1"/><rect x="25" y="18" width="5" height="10" rx="1"/><path d="M7,7 C16,7 16,10 25,10" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/><path d="M7,16 C16,16 16,12 25,12" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4"/><path d="M7,25 C16,25 16,23 25,23" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/><path d="M7,9 C16,9 16,21 25,21" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4"/></svg>',
+	heatmap: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><rect x="2" y="2" width="8" height="8" rx="1" opacity="0.3"/><rect x="12" y="2" width="8" height="8" rx="1" opacity="0.7"/><rect x="22" y="2" width="8" height="8" rx="1" opacity="0.5"/><rect x="2" y="12" width="8" height="8" rx="1" opacity="0.9"/><rect x="12" y="12" width="8" height="8" rx="1" opacity="0.4"/><rect x="22" y="12" width="8" height="8" rx="1" opacity="0.8"/><rect x="2" y="22" width="8" height="8" rx="1" opacity="0.6"/><rect x="12" y="22" width="8" height="8" rx="1" opacity="1.0"/><rect x="22" y="22" width="8" height="8" rx="1" opacity="0.2"/></svg>',
 };
 
 const CHART_TYPE_LABELS: Record<string, string> = {
-	line: 'Line', area: 'Area', bar: 'Bar', scatter: 'Scatter', pie: 'Pie', funnel: 'Funnel', sankey: 'Sankey',
+	line: 'Line', area: 'Area', bar: 'Bar', scatter: 'Scatter', pie: 'Pie', funnel: 'Funnel', sankey: 'Sankey', heatmap: 'Heatmap',
 };
 
-const CHART_TYPES_ORDERED: ChartType[] = ['area', 'bar', 'funnel', 'line', 'pie', 'sankey', 'scatter'];
+const CHART_TYPES_ORDERED: ChartType[] = ['area', 'bar', 'funnel', 'heatmap', 'line', 'pie', 'sankey', 'scatter'];
 
 const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 	top: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="10" height="8" rx="1"/><path d="M3 3h10"/></svg>',
@@ -526,6 +527,7 @@ export class KwChartSection extends LitElement {
 		const isXY = this._chartType === 'line' || this._chartType === 'area' || this._chartType === 'bar' || this._chartType === 'scatter';
 		const isPieOrFunnel = this._chartType === 'pie' || this._chartType === 'funnel';
 		const isSankey = this._chartType === 'sankey';
+		const isHeatmap = this._chartType === 'heatmap';
 		const supportsLegend = this._chartType === 'line' || this._chartType === 'area' || this._chartType === 'bar';
 		const isFunnel = this._chartType === 'funnel';
 		const colNames = this._getColumnNames();
@@ -600,6 +602,9 @@ export class KwChartSection extends LitElement {
 
 										<!-- Sankey mapping -->
 										${isSankey ? this._renderSankeyMapping(colNames) : nothing}
+
+										<!-- Heatmap mapping -->
+										${isHeatmap ? this._renderHeatmapMapping(colNames) : nothing}
 									</div>
 								</div>
 							</div>
@@ -843,6 +848,56 @@ export class KwChartSection extends LitElement {
 							<option value="TB" ?selected=${this._orient === 'TB'}>Top → Bottom</option>
 							<option value="BT" ?selected=${this._orient === 'BT'}>Bottom → Top</option>
 						</select>
+					</span>
+
+					<span class="chart-grid-spacer" aria-hidden="true"></span>
+				</div>
+			</div>
+		`;
+	}
+
+	private _renderHeatmapMapping(colNames: string[]): TemplateResult {
+		const heatmapY = this._yColumns.length ? this._yColumns[0] : '';
+		return html`
+			<div class="chart-mapping">
+				<div class="chart-mapping-grid">
+					<!-- X column -->
+					<span class="chart-field-group">
+						<label>X</label>
+						<select class="chart-select" @change=${this._onXColumnChanged}>
+							<option value="" ?selected=${!this._xColumn}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${this._xColumn === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Y column (singular) -->
+					<span class="chart-field-group">
+						<label>Y</label>
+						<select class="chart-select" @change=${this._onHeatmapYColumnChanged}>
+							<option value="" ?selected=${!heatmapY}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${heatmapY === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Value column -->
+					<span class="chart-field-group">
+						<label>Value</label>
+						<select class="chart-select" @change=${this._onValueColumnChanged}>
+							<option value="" ?selected=${!this._valueColumn}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${this._valueColumn === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Tooltip -->
+					<span class="chart-field-group">
+						<label>Tooltip</label>
+						${this._renderCheckboxDropdown('tooltip-heatmap', colNames, this._tooltipColumns, '(none)')}
 					</span>
 
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
@@ -1311,6 +1366,12 @@ export class KwChartSection extends LitElement {
 
 	private _onXColumnChanged(e: Event): void {
 		this._xColumn = (e.target as HTMLSelectElement).value;
+		this._schedulePersist();
+	}
+
+	private _onHeatmapYColumnChanged(e: Event): void {
+		const val = (e.target as HTMLSelectElement).value;
+		this._yColumns = val ? [val] : [];
 		this._schedulePersist();
 	}
 

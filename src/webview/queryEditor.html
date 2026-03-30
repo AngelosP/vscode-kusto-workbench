@@ -167,6 +167,34 @@
 			toastUiEditorUrl: "{{toastUiEditorUrl}}",
 			toastUiCssUrls: {{toastUiCssUrlsJson}}
 		};
+
+		// Monaco web workers fail with importScripts in VS Code webviews
+		// because vscode-resource URLs are cross-origin to the worker blob.
+		// Work-around: pre-fetch workerMain.js, inline it with the correct
+		// baseUrl, and hand Monaco the resulting blob: URL.
+		(function () {
+			var baseUrl = "{{monacoVsUri}}".replace(/\/vs\/?$/, '/');
+			var workerUrl = baseUrl + "vs/base/worker/workerMain.js";
+			var blobUrl = null;
+
+			fetch(workerUrl)
+				.then(function (r) { return r.text(); })
+				.then(function (text) {
+					var prefix = 'self.MonacoEnvironment = { baseUrl: "' + baseUrl + '" };\n';
+					blobUrl = URL.createObjectURL(
+						new Blob([prefix + text], { type: 'text/javascript' })
+					);
+				})
+				.catch(function (err) {
+					console.warn('[Kusto Workbench] Worker prefetch failed, workers will run on main thread', err);
+				});
+
+			window.MonacoEnvironment = {
+				getWorkerUrl: function () {
+					return blobUrl || workerUrl;
+				}
+			};
+		})();
 	</script>
 	<script src="{{queryEditorJsUri}}"></script>
 </body>

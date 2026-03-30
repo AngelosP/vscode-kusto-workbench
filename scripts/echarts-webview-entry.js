@@ -3,14 +3,15 @@
 
 import * as echarts from 'echarts/core';
 
-import { LineChart, BarChart, ScatterChart, PieChart, FunnelChart, SankeyChart } from 'echarts/charts';
+import { LineChart, BarChart, ScatterChart, PieChart, FunnelChart, SankeyChart, HeatmapChart } from 'echarts/charts';
 import {
 	DatasetComponent,
 	GridComponent,
 	LegendComponent,
 	TitleComponent,
 	TooltipComponent,
-	ToolboxComponent
+	ToolboxComponent,
+	VisualMapComponent
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
@@ -23,12 +24,14 @@ echarts.use([
 	PieChart,
 	FunnelChart,
 	SankeyChart,
+	HeatmapChart,
 	DatasetComponent,
 	GridComponent,
 	LegendComponent,
 	TitleComponent,
 	TooltipComponent,
 	ToolboxComponent,
+	VisualMapComponent,
 	CanvasRenderer
 ]);
 
