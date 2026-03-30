@@ -49,16 +49,25 @@ export const styles = css`
 		font-size: 12px;
 	}
 
+	.popover-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
 	.popover-close {
 		background: transparent;
 		border: none;
-		padding: 2px;
+		padding: 0;
+		width: 24px;
+		height: 24px;
 		cursor: pointer;
 		color: var(--vscode-foreground);
 		opacity: 0.7;
-		display: flex;
+		display: inline-flex;
 		align-items: center;
-		border-radius: 0;
+		justify-content: center;
+		border-radius: 4px;
 	}
 	.popover-close:hover {
 		opacity: 1;
@@ -66,10 +75,10 @@ export const styles = css`
 	}
 
 	.popover-content {
-		padding: 12px;
+		padding: 10px 12px;
 		display: flex;
 		flex-direction: column;
-		gap: 14px;
+		gap: 8px;
 	}
 
 	.popover-footer {

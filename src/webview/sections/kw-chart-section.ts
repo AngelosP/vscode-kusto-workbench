@@ -4,6 +4,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { codiconSheet } from '../shared/codicon-styles.js';
+import { cellToChartString } from '../shared/data-utils.js';
 import {
 	maximizeChartBox,
 	disposeChartEcharts,
@@ -374,6 +376,9 @@ export class KwChartSection extends LitElement {
 	private _onChartAxisTitleClickBound = this._onChartAxisTitleClick.bind(this) as EventListener;
 	private _scrollAtPopupOpen = 0;
 
+	/** Sticky slider max overrides, keyed by 'axis:key' (e.g. 'x:titleGap'). */
+	private _sliderMaxOverrides = new Map<string, number>();
+
 	// Stable dismiss callbacks for dismiss stack
 	private _dismissDropdown = (): void => { this._openDropdownId = ''; document.removeEventListener('mousedown', this._closeDropdownBound); };
 	private _dismissModeDropdown = (): void => { this._modeDropdownOpen = false; };
@@ -486,7 +491,7 @@ export class KwChartSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [codiconSheet, styles];
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render(): TemplateResult {
@@ -763,7 +768,8 @@ export class KwChartSection extends LitElement {
 
 	private _renderXAxisPopup(): TemplateResult {
 		const s = this._xAxisSettings;
-		const densityLabel = s.labelDensity >= 100 ? 'All' : s.labelDensity + '%';
+		const gapMax = this._effectiveMax('x:titleGap', 200);
+		const densMax = this._effectiveMax('x:labelDensity', 100);
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'x'}
@@ -771,46 +777,65 @@ export class KwChartSection extends LitElement {
 				.title=${'X-Axis Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-checkbox">
+				<div class="axis-popup-inline">
+					<label>Title</label>
+					<label class="toggle-switch" title="Show axis title">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('x', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
-						<label>Show axis title</label>
-					</div>
+						<span class="toggle-switch-track"></span>
+					</label>
 					${s.showAxisLabel !== false ? html`
-						<div class="axis-popup-row">
-							<input type="text" .value=${s.customLabel || ''} placeholder="Column name"
-								@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
-						</div>
-						<div class="axis-popup-slider-row">
-							<div class="axis-popup-slider-header"><label>Title Gap</label><span>${s.titleGap}</span></div>
-							<input type="range" class="axis-popup-slider" min="10" max="200" .value=${String(s.titleGap)}
-								@input=${(e: Event) => this._onAxisSetting('x', 'titleGap', parseInt((e.target as HTMLInputElement).value, 10))}>
-						</div>
+						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._xColumn || 'Axis title'}
+							@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
 					` : nothing}
-					<div class="axis-popup-row">
-						<label>Sort Direction</label>
-						<select @change=${(e: Event) => this._onAxisSetting('x', 'sortDirection', (e.target as HTMLSelectElement).value)}>
-							<option value="" ?selected=${!s.sortDirection}>Auto (default)</option>
-							<option value="asc" ?selected=${s.sortDirection === 'asc'}>Ascending</option>
-							<option value="desc" ?selected=${s.sortDirection === 'desc'}>Descending</option>
-						</select>
-					</div>
-					<div class="axis-popup-row">
-						<label>Scale Type</label>
-						<select @change=${(e: Event) => this._onAxisSetting('x', 'scaleType', (e.target as HTMLSelectElement).value)}>
-							<option value="" ?selected=${!s.scaleType}>Auto (default)</option>
-							<option value="category" ?selected=${s.scaleType === 'category'}>Categorical</option>
-							<option value="continuous" ?selected=${s.scaleType === 'continuous'}>Continuous</option>
-						</select>
-					</div>
-					<div class="axis-popup-slider-row">
-						<div class="axis-popup-slider-header"><label>Label Density</label><span>${densityLabel}</span></div>
-						<input type="range" class="axis-popup-slider" min="1" max="100" .value=${String(Math.max(1, s.labelDensity))}
-							@input=${(e: Event) => this._onAxisSetting('x', 'labelDensity', parseInt((e.target as HTMLInputElement).value, 10))}>
 				</div>
-				<div slot="footer">
-					<button class="axis-popup-reset" @click=${() => this._resetAxisSettings('x')}>Reset to defaults</button>
+				${s.showAxisLabel !== false ? html`
+					<div class="compact-slider-row">
+						<label>Title Gap</label>
+						<input type="range" class="compact-slider" min="10" .max=${String(gapMax)}
+							style=${this._sliderPct(s.titleGap, 10, gapMax)}
+							.value=${String(s.titleGap)}
+							@input=${(e: Event) => this._onSliderInput('x', 'titleGap', e)}>
+						<input type="number" class="slider-value-input" min="10"
+							.value=${String(s.titleGap)}
+							@change=${(e: Event) => this._onSliderValueInput('x', 'titleGap', (e.target as HTMLInputElement).value, 10, 200)}>
+					</div>
+				` : nothing}
+				<div class="axis-popup-inline">
+					<label>Sort</label>
+					<div class="seg-control">
+						<button type="button" class="seg-btn ${!s.sortDirection ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'sortDirection', '')}>Auto</button>
+						<button type="button" class="seg-btn ${s.sortDirection === 'asc' ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'sortDirection', 'asc')}>Asc</button>
+						<button type="button" class="seg-btn ${s.sortDirection === 'desc' ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'sortDirection', 'desc')}>Desc</button>
+					</div>
 				</div>
+				<div class="axis-popup-inline">
+					<label>Scale</label>
+					<div class="seg-control">
+						<button type="button" class="seg-btn ${!s.scaleType ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'scaleType', '')}>Auto</button>
+						<button type="button" class="seg-btn ${s.scaleType === 'category' ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'scaleType', 'category')}>Cat</button>
+						<button type="button" class="seg-btn ${s.scaleType === 'continuous' ? 'is-active' : ''}"
+							@click=${() => this._onAxisSetting('x', 'scaleType', 'continuous')}>Cont</button>
+					</div>
+				</div>
+				<div class="compact-slider-row">
+					<label>Density</label>
+					<input type="range" class="compact-slider" min="1" .max=${String(densMax)}
+						style=${this._sliderPct(s.labelDensity, 1, densMax)}
+						.value=${String(Math.max(1, s.labelDensity))}
+						@input=${(e: Event) => this._onSliderInput('x', 'labelDensity', e)}>
+					<input type="number" class="slider-value-input" min="1"
+						.value=${String(s.labelDensity)}
+						@change=${(e: Event) => this._onSliderValueInput('x', 'labelDensity', (e.target as HTMLInputElement).value, 1, 100)}>
+				</div>
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('x')} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
 			</kw-popover>
 		`;
 	}
@@ -818,6 +843,7 @@ export class KwChartSection extends LitElement {
 	private _renderYAxisPopup(): TemplateResult {
 		const s = this._yAxisSettings;
 		const defColors = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b8d0'];
+		const gapMax = this._effectiveMax('y:titleGap', 200);
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'y'}
@@ -825,58 +851,77 @@ export class KwChartSection extends LitElement {
 				.title=${'Y-Axis Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-checkbox">
+				<div class="axis-popup-inline">
+					<label>Title</label>
+					<label class="toggle-switch" title="Show axis title">
 						<input type="checkbox" .checked=${s.showAxisLabel !== false}
 							@change=${(e: Event) => this._onAxisSetting('y', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
-						<label>Show axis title</label>
-					</div>
+						<span class="toggle-switch-track"></span>
+					</label>
 					${s.showAxisLabel !== false ? html`
-						<div class="axis-popup-row">
-							<input type="text" .value=${s.customLabel || ''} placeholder="Column name"
-								@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
-						</div>
-						<div class="axis-popup-slider-row">
-							<div class="axis-popup-slider-header"><label>Title Gap</label><span>${s.titleGap}</span></div>
-							<input type="range" class="axis-popup-slider" min="10" max="200" .value=${String(s.titleGap)}
-								@input=${(e: Event) => this._onAxisSetting('y', 'titleGap', parseInt((e.target as HTMLInputElement).value, 10))}>
-						</div>
+						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._yColumns.join(', ') || 'Axis title'}
+							@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
 					` : nothing}
-					<div class="axis-popup-minmax">
-						<div class="axis-popup-minmax-field">
-							<label>Min</label>
-							<input type="text" inputmode="decimal" .value=${s.min || ''} placeholder="Auto"
-								@change=${(e: Event) => this._onAxisSetting('y', 'min', (e.target as HTMLInputElement).value)}>
-						</div>
-						<div class="axis-popup-minmax-field">
-							<label>Max</label>
-							<input type="text" inputmode="decimal" .value=${s.max || ''} placeholder="Auto"
-								@change=${(e: Event) => this._onAxisSetting('y', 'max', (e.target as HTMLInputElement).value)}>
-						</div>
+				</div>
+				${s.showAxisLabel !== false ? html`
+					<div class="compact-slider-row">
+						<label>Title Gap</label>
+						<input type="range" class="compact-slider" min="10" .max=${String(gapMax)}
+							style=${this._sliderPct(s.titleGap, 10, gapMax)}
+							.value=${String(s.titleGap)}
+							@input=${(e: Event) => this._onSliderInput('y', 'titleGap', e)}>
+						<input type="number" class="slider-value-input" min="10"
+							.value=${String(s.titleGap)}
+							@change=${(e: Event) => this._onSliderValueInput('y', 'titleGap', (e.target as HTMLInputElement).value, 10, 200)}>
 					</div>
-					${this._yColumns.length > 0 ? html`
+				` : nothing}
+				${(() => {
+					const isStacked100 = this._stackMode === 'stacked100' || this._legendSettings.stackMode === 'stacked100';
+					return html`
+					<div class="axis-popup-minmax" title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : ''}>
+						<label style=${isStacked100 ? 'opacity: 0.4' : ''}>Range</label>
+						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
+							.value=${s.min || ''} placeholder="Min"
+							?disabled=${isStacked100}
+							@change=${(e: Event) => this._onAxisSetting('y', 'min', (e.target as HTMLInputElement).value)}>
+						<span class="axis-popup-minmax-sep">–</span>
+						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
+							.value=${s.max || ''} placeholder="Max"
+							?disabled=${isStacked100}
+							@change=${(e: Event) => this._onAxisSetting('y', 'max', (e.target as HTMLInputElement).value)}>
+					</div>`;
+				})()}
+				${(() => {
+					const legendVals = this._legendColumn ? this._getLegendValues() : [];
+					const seriesNames = legendVals.length > 0 ? legendVals : this._yColumns;
+					return seriesNames.length > 0 ? html`
 						<div>
 							<div class="axis-popup-colors-header">Series Colors</div>
-							${this._yColumns.map((col, i) => {
-								const custom = s.seriesColors?.[col] || '';
-								const def = defColors[i % defColors.length];
-								return html`
-									<div class="axis-popup-color-row">
-										<input type="color" .value=${custom || def}
-											@change=${(e: Event) => this._onSeriesColorChanged(col, (e.target as HTMLInputElement).value, def)}>
-										<span class="axis-popup-color-label" title=${col}>${col}</span>
-									</div>
-								`;
-							})}
+							<div class="axis-popup-colors-grid">
+								${seriesNames.map((col, i) => {
+									const custom = s.seriesColors?.[col] || '';
+									const def = defColors[i % defColors.length];
+									return html`
+										<div class="axis-popup-color-chip">
+											<input type="color" .value=${custom || def}
+												@change=${(e: Event) => this._onSeriesColorChanged(col, (e.target as HTMLInputElement).value, def)}>
+											<span class="axis-popup-color-label" title=${col}>${col}</span>
+										</div>
+									`;
+								})}
+							</div>
 						</div>
-					` : nothing}
-				<div slot="footer">
-					<button class="axis-popup-reset" @click=${() => this._resetAxisSettings('y')}>Reset to defaults</button>
-				</div>
+					` : nothing;
+				})()}
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('y')} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
 			</kw-popover>
 		`;
 	}
 
 	private _renderLabelSettingsPopup(): TemplateResult {
+		const densMax = this._effectiveMax('labels:labelDensity', 100);
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'labels'}
@@ -884,33 +929,41 @@ export class KwChartSection extends LitElement {
 				.title=${'Label Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-row">
-						<label>Display Mode</label>
-						<select @change=${(e: Event) => { this._labelMode = (e.target as HTMLSelectElement).value as LabelMode; this._schedulePersist(); }}>
-							<option value="auto" ?selected=${this._labelMode === 'auto'}>Auto (smart)</option>
-							<option value="all" ?selected=${this._labelMode === 'all'}>All slices</option>
-							<option value="top5" ?selected=${this._labelMode === 'top5'}>Top 5 only</option>
-							<option value="top10" ?selected=${this._labelMode === 'top10'}>Top 10 only</option>
-							<option value="topPercent" ?selected=${this._labelMode === 'topPercent'}>\u22655% only</option>
-						</select>
+				<div class="axis-popup-inline">
+					<label>Display</label>
+					<div class="seg-control">
+						<button type="button" class="seg-btn ${this._labelMode === 'auto' ? 'is-active' : ''}"
+							@click=${() => { this._labelMode = 'auto'; this._schedulePersist(); }}>Auto</button>
+						<button type="button" class="seg-btn ${this._labelMode === 'all' ? 'is-active' : ''}"
+							@click=${() => { this._labelMode = 'all'; this._schedulePersist(); }}>All</button>
+						<button type="button" class="seg-btn ${this._labelMode === 'top5' ? 'is-active' : ''}"
+							@click=${() => { this._labelMode = 'top5'; this._schedulePersist(); }}>Top 5</button>
+						<button type="button" class="seg-btn ${this._labelMode === 'top10' ? 'is-active' : ''}"
+							@click=${() => { this._labelMode = 'top10'; this._schedulePersist(); }}>Top 10</button>
+						<button type="button" class="seg-btn ${this._labelMode === 'topPercent' ? 'is-active' : ''}"
+							@click=${() => { this._labelMode = 'topPercent'; this._schedulePersist(); }}>≥5%</button>
 					</div>
-					${this._labelMode === 'auto' ? html`
-						<div class="axis-popup-slider-row">
-							<div class="axis-popup-slider-header"><label>Density</label><span>${this._labelDensity}%</span></div>
-							<input type="range" class="axis-popup-slider" min="0" max="100" .value=${String(this._labelDensity)}
-								@input=${(e: Event) => { this._labelDensity = parseInt((e.target as HTMLInputElement).value, 10); this._schedulePersist(); }}>
-						</div>
-					` : nothing}
+				</div>
+				${this._labelMode === 'auto' ? html`
+					<div class="compact-slider-row">
+						<label>Density</label>
+						<input type="range" class="compact-slider" min="0" .max=${String(densMax)}
+							style=${this._sliderPct(this._labelDensity, 0, densMax)}
+							.value=${String(this._labelDensity)}
+							@input=${(e: Event) => this._onSliderInput('labels', 'labelDensity', e)}>
+						<input type="number" class="slider-value-input" min="0"
+							.value=${String(this._labelDensity)}
+							@change=${(e: Event) => this._onSliderValueInput('labels', 'labelDensity', (e.target as HTMLInputElement).value, 0, 100)}>
+					</div>
+				` : nothing}
 			</kw-popover>
 		`;
 	}
 
 	private _renderLegendPopup(): TemplateResult {
 		const ls = this._legendSettings;
-		const posLabel = (p: string) => p.charAt(0).toUpperCase() + p.slice(1);
-		const isHorizontal = ls.position === 'top' || ls.position === 'bottom';
-		const gapLabel = isHorizontal ? 'Vertical gap' : 'Horizontal gap';
 		const titlePlaceholder = this._legendColumn || 'Column name';
+		const gapMax = this._effectiveMax('legend:gap', 80);
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'legend'}
@@ -918,33 +971,46 @@ export class KwChartSection extends LitElement {
 				.title=${'Legend Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-row">
+				<div class="axis-popup-inline">
 					<label>Position</label>
-					<select @change=${(e: Event) => this._onLegendSetting('position', (e.target as HTMLSelectElement).value)}>
+					<div class="seg-control seg-control--compact">
 						${(['top', 'right', 'bottom', 'left'] as const).map(p => html`
-							<option value=${p} ?selected=${ls.position === p}>${posLabel(p)}</option>
+							<button type="button" class="seg-btn seg-btn--icon-only ${ls.position === p ? 'is-active' : ''}"
+								title=${p.charAt(0).toUpperCase() + p.slice(1)}
+								@click=${() => this._onLegendSetting('position', p)}>
+								<span .innerHTML=${LEGEND_POSITION_ICONS[p]}></span>
+							</button>
 						`)}
-					</select>
+					</div>
 				</div>
-				<div class="axis-popup-row">
+				<div class="axis-popup-inline">
 					<label>Mode</label>
-					<select @change=${(e: Event) => this._onLegendSetting('stackMode', (e.target as HTMLSelectElement).value)}>
-						<option value="normal" ?selected=${ls.stackMode === 'normal'}>Normal</option>
-						<option value="stacked" ?selected=${ls.stackMode === 'stacked'}>Stacked</option>
-						<option value="stacked100" ?selected=${ls.stackMode === 'stacked100'}>Stacked 100%</option>
-					</select>
+					<div class="seg-control seg-control--compact">
+						${(['normal', 'stacked', 'stacked100'] as const).map(m => html`
+							<button type="button" class="seg-btn seg-btn--icon-only ${ls.stackMode === m ? 'is-active' : ''}"
+								title=${STACK_MODE_LABELS[m]}
+								@click=${() => this._onLegendSetting('stackMode', m)}>
+								<span .innerHTML=${STACK_MODE_ICONS[m]}></span>
+							</button>
+						`)}
+					</div>
 				</div>
-				<div class="axis-popup-row">
+				<div class="axis-popup-inline">
 					<label>Title</label>
 					<input type="text" .value=${ls.title || ''} placeholder=${titlePlaceholder}
 						@input=${(e: Event) => this._onLegendSetting('title', (e.target as HTMLInputElement).value)}>
 				</div>
-				<div class="axis-popup-slider-row">
-					<div class="axis-popup-slider-header"><label>${gapLabel}</label><span>${ls.gap}px</span></div>
-					<input type="range" class="axis-popup-slider" min="0" max="80" .value=${String(ls.gap)}
-						@input=${(e: Event) => this._onLegendSetting('gap', parseInt((e.target as HTMLInputElement).value, 10))}>
+				<div class="compact-slider-row">
+					<label>Gap</label>
+					<input type="range" class="compact-slider" min="0" .max=${String(gapMax)}
+						style=${this._sliderPct(ls.gap, 0, gapMax)}
+						.value=${String(ls.gap)}
+						@input=${(e: Event) => this._onSliderInput('legend', 'gap', e)}>
+					<input type="number" class="slider-value-input" min="0"
+						.value=${String(ls.gap)}
+						@change=${(e: Event) => this._onSliderValueInput('legend', 'gap', (e.target as HTMLInputElement).value, 0, 80)}>
 				</div>
-				<div class="axis-popup-row">
+				<div class="axis-popup-inline">
 					<label>Sort</label>
 					<select @change=${(e: Event) => this._onLegendSetting('sortMode', (e.target as HTMLSelectElement).value)}>
 						<option value="" ?selected=${!ls.sortMode}>Default (data order)</option>
@@ -954,7 +1020,7 @@ export class KwChartSection extends LitElement {
 						<option value="value-desc" ?selected=${ls.sortMode === 'value-desc'}>Value descending</option>
 					</select>
 				</div>
-				<div class="axis-popup-row">
+				<div class="axis-popup-inline">
 					<label>Top N</label>
 					<select @change=${(e: Event) => this._onLegendSetting('topN', parseInt((e.target as HTMLSelectElement).value, 10))}>
 						<option value="0" ?selected=${!ls.topN}>All (no limit)</option>
@@ -964,14 +1030,19 @@ export class KwChartSection extends LitElement {
 						<option value="20" ?selected=${ls.topN === 20}>Top 20 + Other</option>
 					</select>
 				</div>
-				<div class="axis-popup-checkbox">
-					<input type="checkbox" .checked=${!!ls.showEndLabels}
-						@change=${(e: Event) => this._onLegendSetting('showEndLabels', (e.target as HTMLInputElement).checked)}>
-					<label>Show labels at end of series</label>
-				</div>
-				<div slot="footer">
-					<button class="axis-popup-reset" @click=${() => this._resetLegendSettings()}>Reset to defaults</button>
-				</div>
+				${this._chartType === 'line' || this._chartType === 'area' ? html`
+					<div class="axis-popup-inline">
+						<label>End labels</label>
+						<label class="toggle-switch" title="Show labels at end of series">
+							<input type="checkbox" .checked=${!!ls.showEndLabels}
+								@change=${(e: Event) => this._onLegendSetting('showEndLabels', (e.target as HTMLInputElement).checked)}>
+							<span class="toggle-switch-track"></span>
+						</label>
+					</div>
+				` : nothing}
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetLegendSettings()} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
 			</kw-popover>
 		`;
 	}
@@ -1138,6 +1209,7 @@ export class KwChartSection extends LitElement {
 		this._legendSettings = getDefaultLegendSettings();
 		this._legendPosition = this._legendSettings.position;
 		this._stackMode = this._legendSettings.stackMode;
+		this._sliderMaxOverrides.delete('legend:gap');
 		this._schedulePersist();
 	}
 
@@ -1263,8 +1335,11 @@ export class KwChartSection extends LitElement {
 	private _resetAxisSettings(axis: 'x' | 'y'): void {
 		if (axis === 'x') {
 			this._xAxisSettings = defaultXAxisSettings();
+			this._sliderMaxOverrides.delete('x:titleGap');
+			this._sliderMaxOverrides.delete('x:labelDensity');
 		} else {
 			this._yAxisSettings = defaultYAxisSettings();
+			this._sliderMaxOverrides.delete('y:titleGap');
 		}
 		this._schedulePersist();
 	}
@@ -1279,6 +1354,53 @@ export class KwChartSection extends LitElement {
 
 	private _hasCustomLabelSettings(): boolean {
 		return hasCustomLabelSettings({ labelMode: this._labelMode, labelDensity: this._labelDensity });
+	}
+
+	// ── Compact slider / segmented control helpers ─────────────────────────────
+
+	/** CSS custom property for slider accent fill. */
+	private _sliderPct(value: number, min: number, max: number): string {
+		const pct = max > min ? ((value - min) / (max - min)) * 100 : 0;
+		return `--slider-pct: ${Math.round(Math.max(0, Math.min(100, pct)))}%`;
+	}
+
+	/** Effective slider max — uses sticky override if the user typed a custom max, otherwise defaultMax. */
+	private _effectiveMax(sliderKey: string, defaultMax: number): number {
+		const override = this._sliderMaxOverrides.get(sliderKey);
+		return override !== undefined ? Math.max(defaultMax, override) : defaultMax;
+	}
+
+	/** Handle the editable number input next to a slider — sets value and stretches max if needed. */
+	private _onSliderValueInput(axis: 'x' | 'y' | 'legend' | 'labels', key: string, rawStr: string, min: number, defaultMax: number): void {
+		const parsed = parseInt(rawStr, 10);
+		if (!Number.isFinite(parsed)) return;
+		const clamped = Math.max(min, parsed);
+		// Store a sticky max override if the typed value exceeds the default max
+		const sliderKey = `${axis}:${key}`;
+		if (clamped > defaultMax) {
+			this._sliderMaxOverrides.set(sliderKey, clamped);
+		}
+		if (axis === 'x' || axis === 'y') {
+			this._onAxisSetting(axis, key, clamped);
+		} else if (axis === 'legend') {
+			this._onLegendSetting(key, clamped);
+		} else if (axis === 'labels') {
+			this._labelDensity = clamped;
+			this._schedulePersist();
+		}
+	}
+
+	/** Handle slider range input — sync both the setting and the CSS fill. */
+	private _onSliderInput(axis: 'x' | 'y' | 'legend' | 'labels', key: string, e: Event): void {
+		const value = parseInt((e.target as HTMLInputElement).value, 10);
+		if (axis === 'x' || axis === 'y') {
+			this._onAxisSetting(axis, key, value);
+		} else if (axis === 'legend') {
+			this._onLegendSetting(key, value);
+		} else if (axis === 'labels') {
+			this._labelDensity = value;
+			this._schedulePersist();
+		}
 	}
 
 	// ── Theme observer ────────────────────────────────────────────────────────
@@ -1442,6 +1564,56 @@ export class KwChartSection extends LitElement {
 	/** Get column names from the currently selected dataset. */
 	private _getColumnNames(): string[] {
 		return this.dataSourceCtrl.getColumnNames();
+	}
+
+	/** Get unique values of the legend column from the current dataset, respecting topN. */
+	private _getLegendValues(): string[] {
+		if (!this._legendColumn || !this._dataSourceId) return [];
+		const ds = this._datasets.find(d => d.id === this._dataSourceId);
+		if (!ds || !Array.isArray(ds.columns) || !Array.isArray(ds.rows)) return [];
+		const colNames = ds.columns.map((c: unknown) => {
+			if (typeof c === 'string') return c;
+			if (c && typeof c === 'object') return (c as Record<string, string>).name || (c as Record<string, string>).columnName || '';
+			return '';
+		});
+		const colIdx = colNames.indexOf(this._legendColumn);
+		if (colIdx < 0) return [];
+
+		// Find Y column index for topN ranking
+		const yCol = this._yColumns.length > 0 ? this._yColumns[0] : '';
+		const yIdx = yCol ? colNames.indexOf(yCol) : -1;
+
+		// Collect unique legend values and their aggregate Y sums
+		const order: string[] = [];
+		const sums: Record<string, number> = {};
+		const seen = new Set<string>();
+		for (const row of ds.rows) {
+			if (!Array.isArray(row) || row.length <= colIdx) continue;
+			const val = cellToChartString(row[colIdx]);
+			if (!val) continue;
+			if (!seen.has(val)) {
+				seen.add(val);
+				order.push(val);
+				sums[val] = 0;
+			}
+			if (yIdx >= 0 && row.length > yIdx) {
+				const raw = cellToChartString(row[yIdx]);
+				const num = parseFloat(raw);
+				if (Number.isFinite(num)) sums[val] += Math.abs(num);
+			}
+		}
+
+		// Apply topN filtering
+		const topN = this._legendSettings.topN || 0;
+		if (topN > 0 && order.length > topN) {
+			const ranked = [...order].sort((a, b) => (sums[b] || 0) - (sums[a] || 0));
+			const topSet = new Set(ranked.slice(0, topN));
+			const filtered = order.filter(n => topSet.has(n));
+			if (order.length > topN) filtered.push('Other');
+			return filtered;
+		}
+
+		return order;
 	}
 
 	/** Shorthand used internally. */

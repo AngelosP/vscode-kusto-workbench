@@ -37,6 +37,7 @@ const CODICON_CHARS: Record<string, number> = {
 	'comment': 0xea6b,
 	'arrow-up': 0xeaa1,
 	'debug-stop': 0xead7,
+	'discard': 0xeae2,
 	'settings-gear': 0xeb51,
 };
 

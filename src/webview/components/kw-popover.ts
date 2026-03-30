@@ -112,9 +112,12 @@ export class KwPopover extends LitElement {
 				@mousedown=${(e: Event) => e.stopPropagation()}>
 				<div class="popover-header">
 					<span>${this.title}</span>
-					<button class="popover-close" @click=${this._close} title="Close">
-						<span .innerHTML=${SVG_CLOSE}></span>
-					</button>
+					<div class="popover-header-actions">
+						<slot name="header-actions"></slot>
+						<button class="popover-close" @click=${this._close} title="Close">
+							<span .innerHTML=${SVG_CLOSE}></span>
+						</button>
+					</div>
 				</div>
 				<div class="popover-content">
 					<slot></slot>

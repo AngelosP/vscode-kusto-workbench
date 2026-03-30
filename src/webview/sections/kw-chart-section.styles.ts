@@ -463,6 +463,70 @@ export const styles = css`
 		}
 
 		/* ── Axis settings popup content (form controls — slotted inside kw-popover) ── */
+
+		/* Inline row: label + control on one line */
+		.axis-popup-inline {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+		.axis-popup-inline > label {
+			flex: 0 0 60px;
+			min-width: 60px;
+			font-size: 11px;
+			font-weight: 500;
+			opacity: 0.85;
+			white-space: nowrap;
+		}
+		/* Toggle switches are <label> elements — override the 60px label sizing */
+		.axis-popup-inline > label.toggle-switch {
+			flex: 0 0 32px;
+			min-width: 32px;
+			max-width: 32px;
+			opacity: 1;
+			font-weight: normal;
+		}
+		.axis-popup-inline > input[type="text"],
+		.axis-popup-inline > .axis-text-input {
+			flex: 1 1 auto;
+			min-width: 0;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 2px;
+			padding: 3px 8px;
+			font-size: 12px;
+			font-family: var(--vscode-font-family);
+			outline: none;
+			height: 26px;
+		}
+		.axis-popup-inline > input[type="text"]:focus,
+		.axis-popup-inline > .axis-text-input:focus { border-color: var(--vscode-focusBorder); }
+		.axis-popup-inline > input[type="text"]::placeholder,
+		.axis-popup-inline > .axis-text-input::placeholder { color: var(--vscode-input-placeholderForeground); }
+		.axis-popup-inline > select {
+			flex: 1 1 auto;
+			min-width: 0;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 2px;
+			padding: 3px 8px;
+			font-size: 12px;
+			outline: none;
+			height: 26px;
+			appearance: none;
+			-webkit-appearance: none;
+			cursor: pointer;
+			background-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z' fill='%23858585'/%3E%3C/svg%3E");
+			background-repeat: no-repeat;
+			background-position: right 4px center;
+			background-size: 14px 14px;
+			padding-right: 22px;
+		}
+		.axis-popup-inline > select:focus { border-color: var(--vscode-focusBorder); }
+
+		/* Legacy column-based row — kept for backwards compat, now rarely used */
 		.axis-popup-row {
 			display: flex;
 			flex-direction: column;
@@ -477,7 +541,7 @@ export const styles = css`
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border, transparent);
-			border-radius: 0;
+			border-radius: 2px;
 			padding: 3px 8px;
 			font-size: 12px;
 			font-family: var(--vscode-font-family);
@@ -490,13 +554,216 @@ export const styles = css`
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border);
-			border-radius: 0;
+			border-radius: 2px;
 			padding: 3px 8px;
 			font-size: 12px;
 			outline: none;
 			width: 100%;
 		}
 		.axis-popup-row > select:focus { border-color: var(--vscode-focusBorder); }
+
+		/* ── Toggle switch ────────────────────────────────────────────── */
+		.toggle-switch {
+			position: relative;
+			display: inline-flex;
+			width: 32px;
+			min-width: 32px;
+			max-width: 32px;
+			height: 18px;
+			flex: 0 0 32px;
+			cursor: pointer;
+		}
+		.toggle-switch input {
+			opacity: 0;
+			width: 0;
+			height: 0;
+			position: absolute;
+		}
+		.toggle-switch-track {
+			position: absolute;
+			inset: 0;
+			background: var(--vscode-input-background);
+			border: 1px solid var(--vscode-input-border, var(--vscode-contrastBorder, transparent));
+			border-radius: 9px;
+			transition: background 0.15s ease, border-color 0.15s ease;
+		}
+		.toggle-switch-track::after {
+			content: '';
+			position: absolute;
+			top: 2px;
+			left: 2px;
+			width: 12px;
+			height: 12px;
+			background: var(--vscode-foreground);
+			border-radius: 50%;
+			opacity: 0.5;
+			transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s ease, background 0.15s ease;
+		}
+		.toggle-switch input:checked + .toggle-switch-track {
+			background: var(--vscode-button-background);
+			border-color: var(--vscode-button-background);
+		}
+		.toggle-switch input:checked + .toggle-switch-track::after {
+			transform: translateX(14px);
+			background: var(--vscode-button-foreground);
+			opacity: 1;
+		}
+		.toggle-switch:hover .toggle-switch-track {
+			border-color: var(--vscode-focusBorder);
+		}
+		.toggle-switch input:focus-visible + .toggle-switch-track {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		/* ── Segmented control ────────────────────────────────────────── */
+		.seg-control {
+			display: inline-flex;
+			align-items: stretch;
+			background: var(--vscode-input-background);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 4px;
+			overflow: hidden;
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+		.seg-btn {
+			flex: 1 1 0;
+			min-width: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			padding: 2px 8px;
+			font-size: 11px;
+			font-family: inherit;
+			color: var(--vscode-foreground);
+			background: transparent;
+			border: none;
+			border-right: 1px solid var(--vscode-input-border, rgba(128,128,128,0.15));
+			cursor: pointer;
+			white-space: nowrap;
+			transition: background 0.12s ease, color 0.12s ease;
+			height: 24px;
+			line-height: 1;
+			outline: none;
+		}
+		.seg-btn:last-child { border-right: none; }
+		.seg-btn:hover:not(.is-active) {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.seg-btn.is-active {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+		}
+		.seg-btn:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+		.seg-btn svg { display: block; width: 14px; height: 14px; }
+		.seg-btn--icon-only {
+			padding: 2px 6px;
+			flex: 0 0 auto;
+		}
+		/* When all buttons are icon-only, don't stretch the container */
+		.seg-control--compact {
+			flex: 0 0 auto;
+		}
+
+		/* ── Compact slider with editable value ───────────────────────── */
+		.compact-slider-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+		.compact-slider-row > label {
+			flex: 0 0 60px;
+			min-width: 60px;
+			font-size: 11px;
+			font-weight: 500;
+			opacity: 0.85;
+			white-space: nowrap;
+		}
+		.compact-slider {
+			flex: 1 1 auto;
+			min-width: 0;
+			height: 4px;
+			-webkit-appearance: none;
+			appearance: none;
+			background: transparent;
+			cursor: pointer;
+			outline: none;
+			margin: 0;
+		}
+		/* Track */
+		.compact-slider::-webkit-slider-runnable-track {
+			height: 4px;
+			border-radius: 2px;
+			background: linear-gradient(
+				to right,
+				var(--vscode-button-background) 0%,
+				var(--vscode-button-background) var(--slider-pct, 50%),
+				var(--vscode-input-background) var(--slider-pct, 50%),
+				var(--vscode-input-background) 100%
+			);
+			border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.2));
+		}
+		/* Thumb */
+		.compact-slider::-webkit-slider-thumb {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			background: var(--vscode-button-background);
+			border: 2px solid var(--vscode-editor-background);
+			box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+			margin-top: -6px;
+			transition: transform 0.1s ease, box-shadow 0.1s ease;
+		}
+		.compact-slider:hover::-webkit-slider-thumb {
+			transform: scale(1.15);
+			box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+		}
+		.compact-slider:active::-webkit-slider-thumb {
+			transform: scale(1.05);
+		}
+		.compact-slider:focus-visible::-webkit-slider-thumb {
+			outline: 2px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+		/* Editable value input (click-to-edit number beside slider) */
+		.slider-value-input {
+			flex: 0 0 auto;
+			width: 40px;
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: 1px solid transparent;
+			border-radius: 2px;
+			padding: 1px 4px;
+			font-size: 11px;
+			font-family: var(--vscode-editor-font-family, monospace);
+			text-align: right;
+			outline: none;
+			cursor: text;
+			-moz-appearance: textfield;
+			transition: border-color 0.1s ease, background 0.1s ease;
+		}
+		.slider-value-input::-webkit-inner-spin-button,
+		.slider-value-input::-webkit-outer-spin-button {
+			-webkit-appearance: none;
+			margin: 0;
+		}
+		.slider-value-input:hover {
+			border-color: var(--vscode-input-border, rgba(128,128,128,0.5));
+			background: var(--vscode-input-background);
+		}
+		.slider-value-input:focus {
+			background: var(--vscode-input-background);
+			border-color: var(--vscode-focusBorder);
+			border-style: solid;
+		}
+
+		/* ── Checkbox (legacy) ────────────────────────────────────────── */
 		.axis-popup-checkbox {
 			display: flex;
 			align-items: center;
@@ -507,6 +774,8 @@ export const styles = css`
 			height: 16px;
 			cursor: pointer;
 		}
+
+		/* ── Slider row (legacy, kept for backwards compat) ───────────── */
 		.axis-popup-slider-row {
 			display: flex;
 			flex-direction: column;
@@ -522,50 +791,123 @@ export const styles = css`
 			width: 100%;
 			cursor: pointer;
 		}
+
+		/* ── Min/Max fields ───────────────────────────────────────────── */
 		.axis-popup-minmax {
 			display: flex;
+			align-items: center;
 			gap: 8px;
 		}
-		.axis-popup-minmax-field {
-			flex: 1;
-			display: flex;
-			flex-direction: column;
-			gap: 4px;
-		}
-		.axis-popup-minmax-field > label {
+		.axis-popup-minmax > label {
+			flex: 0 0 60px;
+			min-width: 60px;
 			font-size: 11px;
+			font-weight: 500;
 			opacity: 0.85;
+			white-space: nowrap;
 		}
-		.axis-popup-minmax-field > input {
+		.axis-popup-minmax-input {
+			flex: 1 1 0;
+			min-width: 0;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border, transparent);
-			border-radius: 0;
+			border-radius: 2px;
 			padding: 3px 8px;
 			font-size: 12px;
-			width: 100%;
 			outline: none;
+			height: 26px;
 		}
-		.axis-popup-minmax-field > input:focus { border-color: var(--vscode-focusBorder); }
-		.axis-popup-minmax-field > input::placeholder { color: var(--vscode-input-placeholderForeground); }
+		.axis-popup-minmax-input:focus { border-color: var(--vscode-focusBorder); }
+		.axis-popup-minmax-input::placeholder { color: var(--vscode-input-placeholderForeground); }		.axis-popup-minmax-input:disabled {
+			opacity: 0.4;
+			cursor: not-allowed;
+		}		.axis-popup-minmax-sep {
+			font-size: 11px;
+			opacity: 0.4;
+			flex-shrink: 0;
+		}
+
+		/* ── Reset button (icon in header) ────────────────────────────── */
+		.axis-popup-reset-icon {
+			background: transparent;
+			border: none;
+			padding: 0;
+			width: 24px;
+			height: 24px;
+			cursor: pointer;
+			color: var(--vscode-foreground);
+			opacity: 0.5;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 4px;
+			transition: opacity 0.1s ease, background 0.1s ease;
+		}
+		.axis-popup-reset-icon:hover {
+			opacity: 1;
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+		.axis-popup-reset-icon svg { display: block; }
+
+		/* Legacy full-width reset (kept for backwards compat) */
 		.axis-popup-reset {
 			background: transparent;
-			border: 1px solid var(--vscode-input-border);
-			color: var(--vscode-foreground);
-			border-radius: 0;
-			padding: 4px 12px;
+			border: none;
+			color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+			border-radius: 2px;
+			padding: 4px 0;
 			font-size: 11px;
 			cursor: pointer;
-			width: 100%;
+			width: auto;
+			float: right;
+			opacity: 0.75;
+			transition: opacity 0.1s ease;
 		}
-		.axis-popup-reset:hover { background: var(--vscode-list-hoverBackground); }
+		.axis-popup-reset:hover {
+			opacity: 1;
+			text-decoration: underline;
+		}
 
+		/* ── Series colors ────────────────────────────────────────────── */
 		.axis-popup-colors-header {
 			font-size: 11px;
 			font-weight: 500;
 			opacity: 0.85;
-			margin-bottom: 4px;
+			margin-bottom: 6px;
 		}
+		.axis-popup-colors-grid {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 4px;
+		}
+		.axis-popup-color-chip {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			background: var(--vscode-input-background);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 3px;
+			padding: 2px 6px 2px 2px;
+			max-width: 120px;
+		}
+		.axis-popup-color-chip input[type="color"] {
+			width: 18px;
+			height: 18px;
+			padding: 0;
+			border: none;
+			border-radius: 3px;
+			cursor: pointer;
+			background: transparent;
+			flex-shrink: 0;
+		}
+		.axis-popup-color-chip .axis-popup-color-label {
+			font-size: 11px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		/* Legacy single-row color layout */
 		.axis-popup-color-row {
 			display: flex;
 			align-items: center;
