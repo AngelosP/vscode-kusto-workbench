@@ -1,4 +1,0 @@
-Γ£ÿ [ERROR] Unexpected "}"
-    src/webview/modules/main.ts:31:0:
-[watch] failed to bundle webview Lit components: Build failed with 1 error:
-src/webview/modules/main.ts:31:0: ERROR: Unexpected "}"

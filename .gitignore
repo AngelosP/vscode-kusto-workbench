@@ -12,3 +12,4 @@ browser-ext/node_modules/
 tests/vscode-extension-tester/runs/
 coverage/
 esbuild-errors.txt
+esbuild-result.txt
