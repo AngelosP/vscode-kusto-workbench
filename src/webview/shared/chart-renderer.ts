@@ -26,6 +26,7 @@ import {
 	normalizeStackMode,
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
+	getDefaultHeatmapSettings,
 	formatUtcDateTime,
 	computeTimePeriodGranularity,
 	formatTimePeriodLabel,
@@ -1297,6 +1298,12 @@ export function renderChart(boxId: any) {
 			} else {
 				const useTime = inferTimeXAxisFromRows(rows, xi);
 
+				// Read axis and heatmap settings
+				const xAxisSettings = st.xAxisSettings || getDefaultXAxisSettings();
+				const yAxisSettings = st.yAxisSettings || getDefaultYAxisSettings();
+				const heatmapSettings = st.heatmapSettings || getDefaultHeatmapSettings();
+				const xAxisSortDir = xAxisSettings.sortDirection || '';
+
 				// Collect unique X and Y categories, and aggregate values for duplicate (X, Y) pairs.
 				const xSet = new Map<string, string>();   // display → display (preserve order)
 				const ySet = new Map<string, string>();
@@ -1328,13 +1335,18 @@ export function renderChart(boxId: any) {
 				const xCategories = Array.from(xSet.keys());
 				const yCategories = Array.from(ySet.keys());
 
-				// Sort X categories (time-based numerically, otherwise alphabetically)
+				// Sort X categories (respect xAxisSettings.sortDirection)
 				if (useTime) {
-					xCategories.sort((a, b) => Number(a) - Number(b));
+					const dir = xAxisSortDir || 'asc';
+					xCategories.sort((a, b) => dir === 'desc' ? Number(b) - Number(a) : Number(a) - Number(b));
 				} else {
-					xCategories.sort();
+					const dir = xAxisSortDir || 'asc';
+					xCategories.sort((a, b) => dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
 				}
 				yCategories.sort();
+				// Apply Y-axis sort direction if configured
+				const yAxisSortDir = yAxisSettings.sortDirection || '';
+				if (yAxisSortDir === 'desc') yCategories.reverse();
 
 				// Build ECharts data: [xIndex, yIndex, value]
 				let minVal = Infinity;
@@ -1357,6 +1369,25 @@ export function renderChart(boxId: any) {
 				if (!Number.isFinite(maxVal)) maxVal = 1;
 				if (minVal === maxVal) maxVal = minVal + 1;
 
+				// ── Cell label filtering ──────────────────────────
+				// Build a set of values that should be labeled based on heatmapSettings
+				const showCellLabels = !!heatmapSettings.showCellLabels;
+				let labelValueSet: Set<number> | null = null;
+				if (showCellLabels && heatmapSettings.cellLabelMode !== 'all') {
+					const allValues = data.map((d: any) => d.value[2] as number).filter(Number.isFinite);
+					const sorted = [...new Set(allValues)].sort((a, b) => a - b);
+					const n = Math.max(1, heatmapSettings.cellLabelN || 5);
+					const mode = heatmapSettings.cellLabelMode || 'all';
+					const labelVals = new Set<number>();
+					if (mode === 'lowest' || mode === 'both') {
+						for (let i = 0; i < Math.min(n, sorted.length); i++) labelVals.add(sorted[i]);
+					}
+					if (mode === 'highest' || mode === 'both') {
+						for (let i = Math.max(0, sorted.length - n); i < sorted.length; i++) labelVals.add(sorted[i]);
+					}
+					labelValueSet = labelVals;
+				}
+
 				// Build display labels for X axis (format timestamps if time-based)
 				const showTime = useTime ? shouldShowTimeForUtcAxis(xCategories.map(Number)) : false;
 				const xDisplayLabels = useTime
@@ -1365,20 +1396,76 @@ export function renderChart(boxId: any) {
 
 				const labelStats = measureLabelChars(useTime ? xDisplayLabels : xCategories);
 				const yLabelStats = measureLabelChars(yCategories);
+
 				const rotate = useTime
 					? computeTimeAxisLabelRotation(canvasWidthPx, xCategories.length, showTime)
 					: computeCategoryLabelRotation(canvasWidthPx, xCategories.length, labelStats.avgLabelChars, labelStats.maxLabelChars);
 				const axisFontSize = computeAxisFontSize(xCategories.length, canvasWidthPx, false);
-				const bottomMargin = (rotate > 30 ? 60 : 40);
-				const leftMargin = Math.min(120, Math.max(50, yLabelStats.maxLabelChars * 7 + 15));
+
+				// ── Visual map position/gap ──────────────────────
+				const vmPos = heatmapSettings.visualMapPosition || 'right';
+				const vmGap = typeof heatmapSettings.visualMapGap === 'number' ? heatmapSettings.visualMapGap : 60;
+				const isVmHorizontal = vmPos === 'top' || vmPos === 'bottom';
+
+				const xTitleGap = typeof xAxisSettings.titleGap === 'number' ? xAxisSettings.titleGap : 30;
+				// Y-axis nameGap must cover the label width so the title sits just outside the labels.
+				// Compute a dynamic default based on the longest label, then let the user's titleGap
+				// setting offset from that baseline.
+				const yLabelPixelWidth = yLabelStats.maxLabelChars * 7 + 10;
+				const yTitleGapDefault = yLabelPixelWidth;
+				const yTitleGapSetting = typeof yAxisSettings.titleGap === 'number' ? yAxisSettings.titleGap : 45;
+				const yTitleGap = yTitleGapDefault + (yTitleGapSetting - 45);
+
+				// ── X-axis name (title) ──────────────────────────
+				// Empty customLabel → use column name; space-only customLabel → hide title
+				const xCustom = xAxisSettings.customLabel;
+				const xAxisName = (typeof xCustom === 'string' && xCustom.length > 0)
+					? (xCustom.trim() === '' ? '' : xCustom)
+					: (xColName || '');
+				const yCustom = yAxisSettings.customLabel;
+				const yAxisName = (typeof yCustom === 'string' && yCustom.length > 0)
+					? (yCustom.trim() === '' ? '' : yCustom)
+					: (yColName || '');
+
+				// Compute grid margins based on visual map position and axis titles
+				const baseBottom = (rotate > 30 ? 60 : 40);
+				const baseLeft = Math.min(120, Math.max(50, yLabelStats.maxLabelChars * 7 + 15));
+				const xTitleExtra = xAxisName ? (xTitleGap > 30 ? xTitleGap - 30 + 15 : 15) : 0;
+				// When a Y-axis title is shown, the left margin must be wide enough to fit the
+				// rotated title text (placed at nameGap from the axis line) plus padding.
+				const yTitleExtra = yAxisName ? Math.max(20, yTitleGap - baseLeft + 25) : 0;
+				const bottomMargin = baseBottom + xTitleExtra + (vmPos === 'bottom' ? vmGap : 0);
+				const leftMargin = baseLeft + yTitleExtra + (vmPos === 'left' ? vmGap : 0);
+				// Estimate label width for the formatted max value to give the slicer enough room
+				const vmMaxLabel = formatNumber(maxVal);
+				const vmLabelWidth = Math.max(40, vmMaxLabel.length * 8 + 16);
+				const vmSlicerWidth = 30 + vmLabelWidth; // slicer bar + label text
+				const rightMargin = vmPos === 'right' ? vmGap + vmSlicerWidth : 20;
+				const topMargin = 20 + _chartTitleSpace + (vmPos === 'top' ? vmGap : 0);
+
+				// ── Visual map options ───────────────────────────
+				const visualMapOption: Record<string, any> = {
+					min: minVal,
+					max: maxVal,
+					calculable: true,
+					orient: isVmHorizontal ? 'horizontal' : 'vertical',
+					formatter: (value: number) => formatNumber(value),
+					inRange: {
+						color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
+					},
+				};
+				if (vmPos === 'right') { visualMapOption.right = 0; visualMapOption.top = 'center'; }
+				else if (vmPos === 'left') { visualMapOption.left = 0; visualMapOption.top = 'center'; }
+				else if (vmPos === 'bottom') { visualMapOption.bottom = 0; visualMapOption.left = 'center'; }
+				else if (vmPos === 'top') { visualMapOption.top = _chartTitleSpace; visualMapOption.left = 'center'; }
 
 				option = {
 					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
 					grid: {
 						left: leftMargin,
-						right: 60,
-						top: 20 + _chartTitleSpace,
+						right: rightMargin,
+						top: topMargin,
 						bottom: bottomMargin,
 						containLabel: false
 					},
@@ -1386,7 +1473,10 @@ export function renderChart(boxId: any) {
 						type: 'category',
 						data: xDisplayLabels,
 						splitArea: { show: true },
+						triggerEvent: true,
+						...(xAxisName ? { name: xAxisName, nameLocation: 'center', nameGap: xTitleGap } : {}),
 						axisLabel: {
+							interval: 0,
 							rotate,
 							fontSize: axisFontSize,
 							fontFamily: 'monospace',
@@ -1396,22 +1486,14 @@ export function renderChart(boxId: any) {
 						type: 'category',
 						data: yCategories,
 						splitArea: { show: true },
+						triggerEvent: true,
+						...(yAxisName ? { name: yAxisName, nameLocation: 'center', nameGap: yTitleGap } : {}),
 						axisLabel: {
 							fontSize: 11,
 							fontFamily: 'monospace',
 						},
 					},
-					visualMap: {
-						min: minVal,
-						max: maxVal,
-						calculable: true,
-						orient: 'vertical',
-						right: 0,
-						top: 'center',
-						inRange: {
-							color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
-						},
-					},
+					visualMap: visualMapOption,
 					tooltip: {
 						...tooltipCommon,
 						trigger: 'item',
@@ -1439,7 +1521,22 @@ export function renderChart(boxId: any) {
 						type: 'heatmap',
 						data,
 						label: {
-							show: false,
+							show: showCellLabels,
+							fontSize: 10,
+							fontFamily: 'monospace',
+							color: '#fff',
+							textBorderColor: 'rgba(0, 0, 0, 0.65)',
+							textBorderWidth: 2,
+							formatter: (params: any) => {
+								try {
+									if (!showCellLabels) return '';
+									const v = params && params.value ? params.value : null;
+									const val = v && v.length > 2 ? v[2] : 0;
+									// If filtering by lowest/highest, check membership
+									if (labelValueSet && !labelValueSet.has(val)) return '';
+									return formatNumber(val);
+								} catch { return ''; }
+							}
 						},
 						emphasis: {
 							itemStyle: {

@@ -3,9 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [3.2.0] - Unreleased
+## [3.2.0] - 2026-03-30
 
-* Bugs:
+* Heatmap chart type improvements
+* Bugs: Theming changes are crashing the editor!
 
 ## [3.1.0] - 2026-03-30
 

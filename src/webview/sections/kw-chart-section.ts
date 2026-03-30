@@ -21,10 +21,12 @@ import {
 	getDefaultXAxisSettings,
 	getDefaultYAxisSettings,
 	getDefaultLegendSettings,
+	getDefaultHeatmapSettings,
 	hasCustomXAxisSettings,
 	hasCustomYAxisSettings,
 	hasCustomLabelSettings,
 	hasCustomLegendSettings,
+	hasCustomHeatmapSettings,
 	normalizeLegendPosition,
 	normalizeStackMode,
 	type XAxisSettings,
@@ -33,6 +35,9 @@ import {
 	type StackMode,
 	type LegendSettings,
 	type LegendSortMode,
+	type HeatmapSettings,
+	type HeatmapVisualMapPosition,
+	type HeatmapCellLabelMode,
 } from '../shared/chart-utils.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
@@ -43,7 +48,7 @@ import { ChartDataSourceController, type DatasetEntry } from './chart-data-sourc
 
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap' | '';
 export type ChartMode = 'edit' | 'preview';
-export type { LegendPosition, StackMode, LegendSettings, LegendSortMode, XAxisSettings, YAxisSettings };
+export type { LegendPosition, StackMode, LegendSettings, LegendSortMode, XAxisSettings, YAxisSettings, HeatmapSettings, HeatmapVisualMapPosition, HeatmapCellLabelMode };
 export type SortDirection = 'asc' | 'desc' | '';
 export type ScaleType = 'category' | 'continuous' | '';
 export type LabelMode = 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
@@ -77,6 +82,7 @@ export interface ChartSectionData {
 	xAxisSettings?: Partial<XAxisSettings>;
 	yAxisSettings?: Partial<YAxisSettings>;
 	legendSettings?: Partial<LegendSettings>;
+	heatmapSettings?: Partial<HeatmapSettings>;
 	chartTitle?: string;
 	chartSubtitle?: string;
 	chartTitleAlign?: 'left' | 'center' | 'right';
@@ -225,6 +231,9 @@ export class KwChartSection extends LitElement {
 			// Back-sync top-level fields so the renderer reads consistent values
 			if (typeof st.legendSettings.position === 'string') st.legendPosition = st.legendSettings.position;
 			if (typeof st.legendSettings.stackMode === 'string') st.stackMode = st.legendSettings.stackMode;
+		}
+		if (options.heatmapSettings && typeof options.heatmapSettings === 'object') {
+			st.heatmapSettings = { ...getDefaultHeatmapSettings(), ...st.heatmapSettings, ...options.heatmapSettings };
 		}
 
 		const container = document.getElementById('queries-container');
@@ -377,6 +386,7 @@ export class KwChartSection extends LitElement {
 	@state() private _xAxisSettings: XAxisSettings = defaultXAxisSettings();
 	@state() private _yAxisSettings: YAxisSettings = defaultYAxisSettings();
 	@state() private _legendSettings: LegendSettings = getDefaultLegendSettings();
+	@state() private _heatmapSettings: HeatmapSettings = getDefaultHeatmapSettings();
 	@state() private _chartTitle = '';
 	@state() private _chartSubtitle = '';
 	@state() private _chartTitleAlign: 'left' | 'center' | 'right' = 'center';
@@ -388,7 +398,7 @@ export class KwChartSection extends LitElement {
 	// UI sub-state
 	@state() private _modeDropdownOpen = false;
 	@state() private _openDropdownId = '';
-	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' | 'legend' = '';
+	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer' = '';
 	@state() private _popoverAnchorRect: PopoverAnchorRect | null = null;
 
 	private _userResized = false;
@@ -509,7 +519,7 @@ export class KwChartSection extends LitElement {
 			'_chartType', '_dataSourceId', '_xColumn', '_yColumns', '_legendColumn',
 			'_legendPosition', '_stackMode', '_legendSettings', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
-			'_sortDirection', '_xAxisSettings', '_yAxisSettings',
+			'_sortDirection', '_xAxisSettings', '_yAxisSettings', '_heatmapSettings',
 			'_sourceColumn', '_targetColumn', '_orient',
 		];
 		if (chartTriggers.some(k => changed.has(k))) {
@@ -858,12 +868,15 @@ export class KwChartSection extends LitElement {
 
 	private _renderHeatmapMapping(colNames: string[]): TemplateResult {
 		const heatmapY = this._yColumns.length ? this._yColumns[0] : '';
+		const hs = this._heatmapSettings;
 		return html`
 			<div class="chart-mapping">
 				<div class="chart-mapping-grid">
 					<!-- X column -->
 					<span class="chart-field-group">
-						<label>X</label>
+						<label class="axis-label-clickable ${this._hasCustomXSettings() ? 'has-settings' : ''}" data-axis="x"
+							@click=${(e: Event) => this._toggleAxisPopup('x', e)}
+							title="Click to configure X-axis settings">X</label>
 						<select class="chart-select" @change=${this._onXColumnChanged}>
 							<option value="" ?selected=${!this._xColumn}>(select)</option>
 							${colNames.map(c => html`
@@ -874,7 +887,9 @@ export class KwChartSection extends LitElement {
 
 					<!-- Y column (singular) -->
 					<span class="chart-field-group">
-						<label>Y</label>
+						<label class="axis-label-clickable ${this._hasCustomYSettings() ? 'has-settings' : ''}" data-axis="y"
+							@click=${(e: Event) => this._toggleAxisPopup('y', e)}
+							title="Click to configure Y-axis settings">Y</label>
 						<select class="chart-select" @change=${this._onHeatmapYColumnChanged}>
 							<option value="" ?selected=${!heatmapY}>(select)</option>
 							${colNames.map(c => html`
@@ -900,9 +915,42 @@ export class KwChartSection extends LitElement {
 						${this._renderCheckboxDropdown('tooltip-heatmap', colNames, this._tooltipColumns, '(none)')}
 					</span>
 
+					<!-- Cell labels -->
+					<span class="chart-field-group">
+						<label class="axis-label-clickable ${this._hasCustomHeatmapLabelSettings() ? 'has-settings' : ''}"
+							@click=${(e: Event) => this._toggleAxisPopup('heatmap-labels', e)}
+							title="Click to configure cell label settings">Labels</label>
+						<label class="toggle-switch" title="Show values inside each cell">
+							<input type="checkbox" .checked=${!!hs.showCellLabels}
+								@change=${(e: Event) => this._onHeatmapSetting('showCellLabels', (e.target as HTMLInputElement).checked)}>
+							<span class="toggle-switch-track"></span>
+						</label>
+					</span>
+
+					<!-- Slicer (visual map) -->
+					<span class="chart-field-group">
+						<label class="axis-label-clickable ${this._hasCustomHeatmapSlicerSettings() ? 'has-settings' : ''}"
+							@click=${(e: Event) => this._toggleAxisPopup('heatmap-slicer', e)}
+							title="Click to configure slicer position and spacing">Slicer</label>
+						<div class="seg-control seg-control--compact">
+							${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
+								<button type="button" class="seg-btn ${hs.visualMapPosition === p ? 'is-active' : ''}"
+									title=${'Place slicer at the ' + p}
+									@click=${() => this._onHeatmapSetting('visualMapPosition', p)}>
+									${p.charAt(0).toUpperCase() + p.slice(1)}
+								</button>
+							`)}
+						</div>
+					</span>
+
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
 				</div>
 			</div>
+
+			${this._renderXAxisPopup()}
+			${this._renderYAxisPopup()}
+			${this._renderHeatmapLabelsPopup()}
+			${this._renderHeatmapSlicerPopup()}
 		`;
 	}
 
@@ -976,6 +1024,7 @@ export class KwChartSection extends LitElement {
 		const s = this._xAxisSettings;
 		const gapMax = 1000;
 		const densMax = this._effectiveMax('x:labelDensity', 100);
+		const isHeatmap = this._chartType === 'heatmap';
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'x'}
@@ -1010,6 +1059,7 @@ export class KwChartSection extends LitElement {
 							@click=${() => this._onAxisSetting('x', 'sortDirection', 'desc')}>Desc</button>
 					</div>
 				</div>
+				${!isHeatmap ? html`
 				<div class="axis-popup-inline" title="How X-axis values are interpreted and spaced">
 					<label>Scale</label>
 					<div class="seg-control">
@@ -1032,6 +1082,7 @@ export class KwChartSection extends LitElement {
 						onInput: (e: Event) => this._onSliderInput('x', 'labelDensity', e),
 					})}
 				</div>
+				` : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('x')} title="Reset to defaults">
 					<span class="codicon codicon-discard" aria-hidden="true"></span>
 				</button>
@@ -1043,6 +1094,7 @@ export class KwChartSection extends LitElement {
 		const s = this._yAxisSettings;
 		const defColors = ['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b8d0'];
 		const gapMax = 1000;
+		const isHeatmap = this._chartType === 'heatmap';
 		return html`
 			<kw-popover
 				.open=${this._openAxisPopup === 'y'}
@@ -1063,7 +1115,23 @@ export class KwChartSection extends LitElement {
 						})}
 					</div>
 				</div>
-				${(() => {
+				${isHeatmap ? html`
+				<div class="axis-popup-inline" title="Sort order for Y-axis values">
+					<label>Sort</label>
+					<div class="seg-control">
+						<button type="button" class="seg-btn ${!s.sortDirection ? 'is-active' : ''}"
+							title="Automatic sort order (alphabetical ascending)"
+							@click=${() => this._onAxisSetting('y', 'sortDirection', '')}>Auto</button>
+						<button type="button" class="seg-btn ${s.sortDirection === 'asc' ? 'is-active' : ''}"
+							title="Sort values in ascending order (A→Z)"
+							@click=${() => this._onAxisSetting('y', 'sortDirection', 'asc')}>Asc</button>
+						<button type="button" class="seg-btn ${s.sortDirection === 'desc' ? 'is-active' : ''}"
+							title="Sort values in descending order (Z→A)"
+							@click=${() => this._onAxisSetting('y', 'sortDirection', 'desc')}>Desc</button>
+					</div>
+				</div>
+				` : nothing}
+				${!isHeatmap ? (() => {
 					const isStacked100 = this._stackMode === 'stacked100' || this._legendSettings.stackMode === 'stacked100';
 					return html`
 					<div class="axis-popup-minmax" title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : 'Set custom minimum and maximum values for the Y axis'}>
@@ -1080,8 +1148,8 @@ export class KwChartSection extends LitElement {
 							?disabled=${isStacked100}
 							@change=${(e: Event) => this._onAxisSetting('y', 'max', (e.target as HTMLInputElement).value)}>
 					</div>`;
-				})()}
-				${(() => {
+				})() : nothing}
+				${!isHeatmap ? (() => {
 					const legendVals = this._legendColumn ? this._getLegendValues() : [];
 					const seriesNames = legendVals.length > 0 ? legendVals : this._yColumns;
 					return seriesNames.length > 0 ? html`
@@ -1102,7 +1170,7 @@ export class KwChartSection extends LitElement {
 							</div>
 						</div>
 					` : nothing;
-				})()}
+				})() : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('y')} title="Reset to defaults">
 					<span class="codicon codicon-discard" aria-hidden="true"></span>
 				</button>
@@ -1238,6 +1306,110 @@ export class KwChartSection extends LitElement {
 		`;
 	}
 
+	private _renderHeatmapLabelsPopup(): TemplateResult {
+		const hs = this._heatmapSettings;
+		return html`
+			<kw-popover
+				.open=${this._openAxisPopup === 'heatmap-labels'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Cell Label Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-inline" title="Show values inside each heatmap cell">
+					<label>Show</label>
+					<label class="toggle-switch" title="Show values inside each cell">
+						<input type="checkbox" .checked=${!!hs.showCellLabels}
+							@change=${(e: Event) => this._onHeatmapSetting('showCellLabels', (e.target as HTMLInputElement).checked)}>
+						<span class="toggle-switch-track"></span>
+					</label>
+				</div>
+				${hs.showCellLabels ? html`
+					<div class="axis-popup-inline" title="Which cells to label">
+						<label>Filter</label>
+						<div class="seg-control">
+							<button type="button" class="seg-btn ${hs.cellLabelMode === 'all' ? 'is-active' : ''}"
+								title="Show values in all cells"
+								@click=${() => this._onHeatmapSetting('cellLabelMode', 'all')}>All</button>
+							<button type="button" class="seg-btn ${hs.cellLabelMode === 'lowest' ? 'is-active' : ''}"
+								title="Show values only in the N lowest cells"
+								@click=${() => this._onHeatmapSetting('cellLabelMode', 'lowest')}>Low</button>
+							<button type="button" class="seg-btn ${hs.cellLabelMode === 'highest' ? 'is-active' : ''}"
+								title="Show values only in the N highest cells"
+								@click=${() => this._onHeatmapSetting('cellLabelMode', 'highest')}>High</button>
+							<button type="button" class="seg-btn ${hs.cellLabelMode === 'both' ? 'is-active' : ''}"
+								title="Show values in the N lowest and N highest cells"
+								@click=${() => this._onHeatmapSetting('cellLabelMode', 'both')}>Both</button>
+						</div>
+					</div>
+					${hs.cellLabelMode !== 'all' ? html`
+						<div class="compact-slider-row" title="Number of lowest/highest values to label">
+							<label>N</label>
+							${this._renderSlider({
+								min: 1, max: this._effectiveMax('heatmap:cellLabelN', 50), value: hs.cellLabelN,
+								label: String(hs.cellLabelN),
+								onInput: (e: Event) => {
+									const v = parseInt((e.target as HTMLInputElement).value, 10);
+									this._onHeatmapSetting('cellLabelN', v);
+								},
+							})}
+							<input type="number" class="slider-value-input" min="1"
+								title="Number of lowest/highest values to label"
+								.value=${String(hs.cellLabelN)}
+								@change=${(e: Event) => this._onSliderValueInput('heatmap' as any, 'cellLabelN', (e.target as HTMLInputElement).value, 1, 50)}>
+						</div>
+					` : nothing}
+				` : nothing}
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapLabelSettings()} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
+			</kw-popover>
+		`;
+	}
+
+	private _renderHeatmapSlicerPopup(): TemplateResult {
+		const hs = this._heatmapSettings;
+		const gapMax = this._effectiveMax('heatmap:visualMapGap', 200);
+		return html`
+			<kw-popover
+				.open=${this._openAxisPopup === 'heatmap-slicer'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Slicer Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="axis-popup-inline" title="Where the color slicer is placed relative to the chart">
+					<label>Position</label>
+					<div class="seg-control">
+						${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
+							<button type="button" class="seg-btn ${hs.visualMapPosition === p ? 'is-active' : ''}"
+								title=${'Place slicer at the ' + p + ' of the chart'}
+								@click=${() => this._onHeatmapSetting('visualMapPosition', p)}>
+								${p.charAt(0).toUpperCase() + p.slice(1)}
+							</button>
+						`)}
+					</div>
+				</div>
+				<div class="compact-slider-row" title="Space in pixels between the chart area and the slicer">
+					<label>Gap</label>
+					${this._renderSlider({
+						min: 0, max: gapMax, value: hs.visualMapGap,
+						label: `${hs.visualMapGap}px`,
+						onInput: (e: Event) => {
+							const v = parseInt((e.target as HTMLInputElement).value, 10);
+							this._onHeatmapSetting('visualMapGap', v);
+						},
+					})}
+					<input type="number" class="slider-value-input" min="0"
+						title="Space in pixels between the chart area and the slicer"
+						.value=${String(hs.visualMapGap)}
+						@change=${(e: Event) => this._onSliderValueInput('heatmap' as any, 'visualMapGap', (e.target as HTMLInputElement).value, 0, 200)}>
+				</div>
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapSlicerSettings()} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
+			</kw-popover>
+		`;
+	}
+
 	// ── Event handlers ─────────────────────────────────────────────────────────
 
 	private _onShellNameChange(e: CustomEvent<{ name: string }>): void {
@@ -1300,7 +1472,7 @@ export class KwChartSection extends LitElement {
 			this._yColumns = next;
 			if (next.length > 1) this._legendColumn = '';
 			this._schedulePersist();
-		} else if (dropdownId === 'tooltip' || dropdownId === 'tooltip-pie') {
+		} else if (dropdownId === 'tooltip' || dropdownId === 'tooltip-pie' || dropdownId === 'tooltip-heatmap') {
 			const next = checked
 				? [...this._tooltipColumns, value]
 				: this._tooltipColumns.filter(c => c !== value);
@@ -1417,6 +1589,48 @@ export class KwChartSection extends LitElement {
 		return hasCustomLegendSettings(this._legendSettings);
 	}
 
+	// ── Heatmap settings handlers ─────────────────────────────────────────────
+
+	private _onHeatmapSetting(key: string, value: unknown): void {
+		this._heatmapSettings = { ...this._heatmapSettings, [key]: value };
+		this._schedulePersist();
+	}
+
+	private _resetHeatmapLabelSettings(): void {
+		const d = getDefaultHeatmapSettings();
+		this._heatmapSettings = {
+			...this._heatmapSettings,
+			showCellLabels: d.showCellLabels,
+			cellLabelMode: d.cellLabelMode,
+			cellLabelN: d.cellLabelN,
+		};
+		this._sliderMaxOverrides.delete('heatmap:cellLabelN');
+		this._schedulePersist();
+	}
+
+	private _resetHeatmapSlicerSettings(): void {
+		const d = getDefaultHeatmapSettings();
+		this._heatmapSettings = {
+			...this._heatmapSettings,
+			visualMapPosition: d.visualMapPosition,
+			visualMapGap: d.visualMapGap,
+		};
+		this._sliderMaxOverrides.delete('heatmap:visualMapGap');
+		this._schedulePersist();
+	}
+
+	private _hasCustomHeatmapLabelSettings(): boolean {
+		const hs = this._heatmapSettings;
+		const d = getDefaultHeatmapSettings();
+		return hs.showCellLabels !== d.showCellLabels || hs.cellLabelMode !== d.cellLabelMode || hs.cellLabelN !== d.cellLabelN;
+	}
+
+	private _hasCustomHeatmapSlicerSettings(): boolean {
+		const hs = this._heatmapSettings;
+		const d = getDefaultHeatmapSettings();
+		return hs.visualMapPosition !== d.visualMapPosition || hs.visualMapGap !== d.visualMapGap;
+	}
+
 	private _toggleDataLabels(): void {
 		this._showDataLabels = !this._showDataLabels;
 		if (this._showDataLabels && this._labelDensity <= 0) {
@@ -1473,7 +1687,7 @@ export class KwChartSection extends LitElement {
 
 	// ── Axis settings handlers ────────────────────────────────────────────────
 
-	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend', e: Event): void {
+	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer', e: Event): void {
 		if (this._openAxisPopup === axis) {
 			this._openAxisPopup = '';
 			return;
@@ -1629,7 +1843,7 @@ export class KwChartSection extends LitElement {
 	}
 
 	/** Handle the editable number input next to a slider — sets value and stretches max if needed. */
-	private _onSliderValueInput(axis: 'x' | 'y' | 'legend' | 'labels', key: string, rawStr: string, min: number, defaultMax: number): void {
+	private _onSliderValueInput(axis: 'x' | 'y' | 'legend' | 'labels' | 'heatmap', key: string, rawStr: string, min: number, defaultMax: number): void {
 		const parsed = parseInt(rawStr, 10);
 		if (!Number.isFinite(parsed)) return;
 		const clamped = Math.max(min, parsed);
@@ -1645,6 +1859,8 @@ export class KwChartSection extends LitElement {
 		} else if (axis === 'labels') {
 			this._labelDensity = clamped;
 			this._schedulePersist();
+		} else if (axis === 'heatmap') {
+			this._onHeatmapSetting(key, clamped);
 		}
 	}
 
@@ -1766,6 +1982,9 @@ export class KwChartSection extends LitElement {
 			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
 			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
 		}
+		if (st.heatmapSettings && typeof st.heatmapSettings === 'object') {
+			this._heatmapSettings = { ...getDefaultHeatmapSettings(), ...st.heatmapSettings };
+		}
 	}
 
 	/**
@@ -1805,6 +2024,7 @@ export class KwChartSection extends LitElement {
 		st.xAxisSettings = { ...this._xAxisSettings };
 		st.yAxisSettings = { ...this._yAxisSettings };
 		st.legendSettings = { ...this._legendSettings };
+		st.heatmapSettings = { ...this._heatmapSettings };
 
 		win.chartStateByBoxId[this.boxId] = st;
 	}
@@ -1982,6 +2202,10 @@ export class KwChartSection extends LitElement {
 			data.legendSettings = { ...this._legendSettings };
 		}
 
+		if (hasCustomHeatmapSettings(this._heatmapSettings)) {
+			data.heatmapSettings = { ...this._heatmapSettings };
+		}
+
 		// Wrapper height
 		const heightPx = this._getWrapperHeightPx();
 		if (heightPx !== undefined) {
@@ -2034,6 +2258,9 @@ export class KwChartSection extends LitElement {
 			this._legendSettings = { ...getDefaultLegendSettings(), ...this._legendSettings, ...(options.legendSettings as Partial<LegendSettings>) };
 			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
 			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
+		}
+		if (options.heatmapSettings && typeof options.heatmapSettings === 'object') {
+			this._heatmapSettings = { ...getDefaultHeatmapSettings(), ...this._heatmapSettings, ...(options.heatmapSettings as Partial<HeatmapSettings>) };
 		}
 	}
 

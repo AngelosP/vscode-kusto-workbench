@@ -126,6 +126,7 @@ export type KqlxSectionV1 =
 				max?: string;
 				seriesColors?: Record<string, string>;
 				titleGap?: number;
+				sortDirection?: 'asc' | 'desc' | '';
 			};
 			// Legend customization settings
 			legendSettings?: {
@@ -136,6 +137,14 @@ export type KqlxSectionV1 =
 				topN?: number;
 				title?: string;
 				showEndLabels?: boolean;
+			};
+			// Heatmap-specific settings
+			heatmapSettings?: {
+				visualMapPosition?: 'right' | 'left' | 'bottom' | 'top';
+				visualMapGap?: number;
+				showCellLabels?: boolean;
+				cellLabelMode?: 'all' | 'lowest' | 'highest' | 'both';
+				cellLabelN?: number;
 			};
 			// Chart title / subtitle
 			chartTitle?: string;

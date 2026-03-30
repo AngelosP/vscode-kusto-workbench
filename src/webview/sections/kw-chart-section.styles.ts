@@ -353,7 +353,7 @@ export const styles = css`
 			min-width: 0;
 		}
 
-		.chart-field-group > label {
+		.chart-field-group > label:not(.toggle-switch) {
 			flex: 0 0 var(--kusto-chart-label-width);
 			min-width: var(--kusto-chart-label-width);
 			font-size: 12px;

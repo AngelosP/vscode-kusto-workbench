@@ -19,6 +19,7 @@ export interface YAxisSettings {
 	max: string;
 	seriesColors: Record<string, string>;
 	titleGap: number;
+	sortDirection: '' | 'asc' | 'desc';
 }
 
 export type LegendPosition = 'top' | 'right' | 'bottom' | 'left';
@@ -34,6 +35,22 @@ export interface LegendSettings {
 	topN: number;          // 0 = disabled, positive = show top N + 'Other'
 	title: string;         // '' = use column name
 	showEndLabels: boolean; // show legend label at end of each series
+}
+
+export type HeatmapVisualMapPosition = 'right' | 'left' | 'bottom' | 'top';
+export type HeatmapCellLabelMode = 'all' | 'lowest' | 'highest' | 'both';
+
+export interface HeatmapSettings {
+	/** Position of the visual map (color slicer) relative to the chart */
+	visualMapPosition: HeatmapVisualMapPosition;
+	/** Gap in pixels between the chart area and the visual map */
+	visualMapGap: number;
+	/** Whether to show values inside each cell */
+	showCellLabels: boolean;
+	/** Which cells get labels: all, N lowest, N highest, or both N lowest & N highest */
+	cellLabelMode: HeatmapCellLabelMode;
+	/** Number of lowest/highest values to label */
+	cellLabelN: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -109,6 +126,7 @@ export function getDefaultYAxisSettings(): YAxisSettings {
 		max: '',
 		seriesColors: {},
 		titleGap: 45,
+		sortDirection: '',
 	};
 }
 
@@ -122,7 +140,8 @@ export function hasCustomYAxisSettings(settings: Partial<YAxisSettings> | null |
 		(settings.min !== '' && settings.min !== undefined && settings.min !== null) ||
 		(settings.max !== '' && settings.max !== undefined && settings.max !== null) ||
 		hasCustomColors ||
-		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap)
+		(typeof settings.titleGap === 'number' && settings.titleGap !== defaults.titleGap) ||
+		(settings.sortDirection && settings.sortDirection !== defaults.sortDirection)
 	);
 }
 
@@ -156,6 +175,28 @@ export function hasCustomLegendSettings(settings: Partial<LegendSettings> | null
 		(typeof settings.topN === 'number' && settings.topN !== d.topN) ||
 		(settings.title && settings.title !== d.title) ||
 		(settings.showEndLabels === true)
+	);
+}
+
+export function getDefaultHeatmapSettings(): HeatmapSettings {
+	return {
+		visualMapPosition: 'right',
+		visualMapGap: 60,
+		showCellLabels: false,
+		cellLabelMode: 'all',
+		cellLabelN: 5,
+	};
+}
+
+export function hasCustomHeatmapSettings(settings: Partial<HeatmapSettings> | null | undefined): boolean {
+	if (!settings || typeof settings !== 'object') return false;
+	const d = getDefaultHeatmapSettings();
+	return !!(
+		(settings.visualMapPosition && settings.visualMapPosition !== d.visualMapPosition) ||
+		(typeof settings.visualMapGap === 'number' && settings.visualMapGap !== d.visualMapGap) ||
+		(settings.showCellLabels === true) ||
+		(settings.cellLabelMode && settings.cellLabelMode !== d.cellLabelMode) ||
+		(typeof settings.cellLabelN === 'number' && settings.cellLabelN !== d.cellLabelN)
 	);
 }
 

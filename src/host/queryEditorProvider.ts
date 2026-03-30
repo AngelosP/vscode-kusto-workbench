@@ -114,13 +114,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean }
 	): Promise<void> {
 		this.panel = panel;
-		try {
-			const light = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-light.svg');
-			const dark = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-file-dark.svg');
-			this.panel.iconPath = { light, dark };
-		} catch {
-			// ignore
-		}
+		// Do NOT set panel.iconPath here — this method is called for custom editors
+		// where VS Code owns the panel. Setting iconPath on a custom-editor panel
+		// can crash VS Code's renderer-side editor integration ("Unexpected type"
+		// in $setIconPath) and break the entire webview. Standalone panels set
+		// their icon in openEditor() instead.
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context, {
 			hideFooterControls: !!options?.hideFooterControls
 		});
