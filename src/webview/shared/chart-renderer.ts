@@ -642,12 +642,39 @@ export function renderChart(boxId: any) {
 		const SIDE_LEGEND_TEXT_WIDTH = 120;
 		const SIDE_LEGEND_TOTAL = SIDE_LEGEND_TEXT_WIDTH + 30;   // text + icon + padding
 		const SIDE_LEGEND_GAP = 15;                              // breathing room before axis title
+
+		// ── Chart title / subtitle offset ─────────────────────────
+		// Computed once so buildLegendOption and grid calculations can account for it.
+		const _chartTitle = (typeof st.chartTitle === 'string') ? st.chartTitle.trim() : '';
+		const _chartSubtitle = (typeof st.chartSubtitle === 'string') ? st.chartSubtitle.trim() : '';
+		const _chartTitleAlign = (typeof st.chartTitleAlign === 'string' && (st.chartTitleAlign === 'left' || st.chartTitleAlign === 'center' || st.chartTitleAlign === 'right'))
+			? st.chartTitleAlign : 'center';
+		const _titleHeight = _chartTitle ? 24 : 0;
+		const _subtitleHeight = _chartSubtitle ? 18 : 0;
+		const _chartTitleSpace = _titleHeight + _subtitleHeight + ((_chartTitle || _chartSubtitle) ? 6 : 0);
+
+		/** Build the ECharts title option for the user's chart title/subtitle, or undefined. */
+		const buildChartTitleOption = (): any => {
+			if (!_chartTitle && !_chartSubtitle) return undefined;
+			const isDark = getIsDarkThemeForEcharts();
+			return {
+				show: true,
+				text: _chartTitle || '',
+				subtext: _chartSubtitle || '',
+				left: _chartTitleAlign,
+				top: 0,
+				textStyle: { fontSize: 14, fontWeight: 'bold', color: isDark ? '#eeeeee' : '#333333' },
+				subtextStyle: { fontSize: 11, color: isDark ? '#aaaaaa' : '#666666' },
+				itemGap: 4,
+			};
+		};
+
 		const buildLegendOption = (pos: any) => {
 			const p = normalizeLegendPosition(pos);
 			if (p === 'bottom') return { type: 'scroll', bottom: 0, left: 'center', orient: 'horizontal' };
-			if (p === 'left') return { type: 'scroll', left: 0, top: 20, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
-			if (p === 'right') return { type: 'scroll', right: 0, top: 20, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
-			return { type: 'scroll', top: 0, left: 'center', orient: 'horizontal' };
+			if (p === 'left') return { type: 'scroll', left: 0, top: 20 + _chartTitleSpace, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
+			if (p === 'right') return { type: 'scroll', right: 0, top: 20 + _chartTitleSpace, orient: 'vertical', textStyle: { width: SIDE_LEGEND_TEXT_WIDTH, overflow: 'truncate' } };
+			return { type: 'scroll', top: 0 + _chartTitleSpace, left: 'center', orient: 'horizontal' };
 		};
 
 		if (chartType === 'pie') {
@@ -822,6 +849,7 @@ export function renderChart(boxId: any) {
 				};
 
 				option = {
+					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
 					tooltip: {
 						...tooltipCommon,
@@ -913,6 +941,7 @@ export function renderChart(boxId: any) {
 				const maxValue = data.length > 0 ? Math.max(...data.map((d: any) => d.value)) : 1;
 				const showLabels = !!st.showDataLabels;
 				option = {
+					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
 					tooltip: {
 						...tooltipCommon,
@@ -983,6 +1012,118 @@ export function renderChart(boxId: any) {
 					}]
 				};
 			}
+		} else if (chartType === 'sankey') {
+			const si = indexOf(st.sourceColumn);
+			const ti = indexOf(st.targetColumn);
+			const vi = indexOf(st.valueColumn);
+			const valueColName = st.valueColumn || 'Value';
+			if (si < 0 || ti < 0 || vi < 0) {
+				showErrorAndReturn('Select Source, Target, and Value columns.');
+				return;
+			} else {
+				// Orient: LR/RL → horizontal, TB/BT → vertical.
+				// For RL/BT, we reverse source↔target in links to flip flow direction.
+				const rawOrient = (typeof st.orient === 'string') ? st.orient : 'LR';
+				const orient = (rawOrient === 'TB' || rawOrient === 'BT') ? 'vertical' : 'horizontal';
+				const reverseFlow = (rawOrient === 'RL' || rawOrient === 'BT');
+
+				// Build nodes and links from rows, aggregating duplicate source→target pairs.
+				const nodeSet = new Set<string>();
+				const linkMap = new Map<string, { source: string; target: string; value: number }>();
+
+				for (const r of (rows || [])) {
+					const source = (r && (r as any).length > si) ? cellToChartString((r as any)[si]) : '';
+					const target = (r && (r as any).length > ti) ? cellToChartString((r as any)[ti]) : '';
+					const value = (r && (r as any).length > vi) ? cellToNumber((r as any)[vi]) : null;
+					const numValue = (typeof value === 'number' && Number.isFinite(value)) ? value : 0;
+
+					if (source) nodeSet.add(source);
+					if (target) nodeSet.add(target);
+
+					const key = source + '\0' + target;
+					const existing = linkMap.get(key);
+					if (existing) {
+						existing.value += numValue;
+					} else {
+						linkMap.set(key, { source, target, value: numValue });
+					}
+				}
+
+				const nodes = Array.from(nodeSet).map(name => ({ name }));
+				const links = Array.from(linkMap.values()).map(l => ({
+					source: reverseFlow ? l.target : l.source,
+					target: reverseFlow ? l.source : l.target,
+					value: l.value,
+					// Stash original direction for tooltip display
+					__kustoOrigSource: l.source,
+					__kustoOrigTarget: l.target,
+				}));
+
+				// Get series colors from Y-axis settings if available
+				const seriesColors = (yAxisSettings && yAxisSettings.seriesColors && typeof yAxisSettings.seriesColors === 'object')
+					? yAxisSettings.seriesColors
+					: {};
+				const nodesWithColor = nodes.map(n => {
+					const color = seriesColors[n.name];
+					return color ? { ...n, itemStyle: { color } } : n;
+				});
+
+				option = {
+					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
+					backgroundColor: 'transparent',
+					tooltip: {
+						...tooltipCommon,
+						trigger: 'item',
+						formatter: (params: any) => {
+							try {
+								if (params.dataType === 'edge') {
+									const source = params.data?.__kustoOrigSource || params.data?.source || '';
+									const target = params.data?.__kustoOrigTarget || params.data?.target || '';
+									const value = typeof params.data?.value === 'number' ? formatNumber(params.data.value) : '';
+									const lines = [
+										`<div style="font-weight:600; margin-bottom:2px">${escHtml(source)} → ${escHtml(target)}</div>`,
+										`<div><strong>${escHtml(valueColName)}</strong>: ${escHtml(value)}</div>`
+									];
+									return lines.join('');
+								}
+								// Node tooltip
+								const name = params.name || '';
+								const value = typeof params.value === 'number' ? formatNumber(params.value) : '';
+								return `<div style="font-weight:600">${escHtml(name)}</div><div>${escHtml(value)}</div>`;
+							} catch {
+								return '';
+							}
+						}
+					},
+					series: [{
+						type: 'sankey',
+						orient,
+						layoutIterations: 32,
+						nodeAlign: 'justify',
+						nodeGap: 10,
+						nodeWidth: 20,
+						data: nodesWithColor,
+						links,
+						lineStyle: {
+							color: 'gradient',
+							opacity: 0.4,
+							curveness: 0.5,
+						},
+						emphasis: {
+							focus: 'adjacency',
+						},
+						label: {
+							show: true,
+							fontFamily: 'monospace',
+							fontSize: 11,
+						},
+						itemStyle: {
+							borderWidth: 1,
+							borderColor: 'transparent',
+						},
+					}]
+				};
+			}
 		} else if (chartType === 'scatter') {
 			const xi = indexOf(st.xColumn);
 			const yi = indexOf(st.yColumn);
@@ -1041,11 +1182,12 @@ export function renderChart(boxId: any) {
 				const bottomMargin = (rotate > 30 ? 45 : 25) + xAxisTitleGap;
 				const leftMargin = 15 + yAxisTitleGap;
 				option = {
+					...(buildChartTitleOption() ? { title: buildChartTitleOption() } : {}),
 					backgroundColor: 'transparent',
 					grid: {
 						left: leftMargin,
 						right: 20,
-						top: 20,
+						top: 20 + _chartTitleSpace,
 						bottom: bottomMargin,
 						containLabel: false
 					},
@@ -1161,6 +1303,18 @@ export function renderChart(boxId: any) {
 			const chartPlotWidth = Math.max(100, canvasWidthPx - 80);
 			const chartPlotHeight = Math.max(100, canvasHeightPx - 80);
 			const isBarChart = chartType === 'bar';
+
+			// Shared label style for bar / line / area — white text with dark
+			// halo for universal readability on any background or series color.
+			const xyLabelBase = {
+				fontSize: 11,
+				fontFamily: 'monospace',
+				color: '#fff',
+				textBorderColor: 'rgba(0, 0, 0, 0.65)',
+				textBorderWidth: 3,
+				textShadowColor: 'rgba(0, 0, 0, 0.35)',
+				textShadowBlur: 4,
+			};
 
 			/**
 			 * Decides whether to show a label for a given data point.
@@ -1396,16 +1550,13 @@ export function renderChart(boxId: any) {
 								label: {
 									show: showLabels,
 									position: 'top',
-									fontSize: 10,
-									fontFamily: 'monospace',
+									...xyLabelBase,
 									formatter: (params: any) => {
 										try {
-											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-											const total = timeKeys.length || 1;
-											const v = params && params.value ? params.value : null;
-											const numV = typeof v === 'number' ? v : null;
-											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
-											return formatNumber(v);
+											const idx = params?.dataIndex ?? 0;
+											const v = typeof params?.value === 'number' ? params.value : null;
+											if (!shouldShowLabel(v, timeKeys.length || 1, idx, yRangeForLabels)) return '';
+											return typeof v === 'number' ? formatNumber(v) : '';
 										} catch {
 											return '';
 										}
@@ -1436,16 +1587,13 @@ export function renderChart(boxId: any) {
 								label: {
 									show: showLabels,
 									position: 'top',
-									fontSize: 10,
-									fontFamily: 'monospace',
+									...xyLabelBase,
 									formatter: (params: any) => {
 										try {
-											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-											const total = xLabels.length || 1;
-											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
-											const numV = typeof v === 'number' ? v : null;
-											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
-											return (typeof v === 'number') ? formatNumber(v) : '';
+											const idx = params?.dataIndex ?? 0;
+											const v = typeof params?.value === 'number' ? params.value : null;
+											if (!shouldShowLabel(v, xLabels.length || 1, idx, yRangeForLabels)) return '';
+											return typeof v === 'number' ? formatNumber(v) : '';
 										} catch {
 											return '';
 										}
@@ -1486,16 +1634,13 @@ export function renderChart(boxId: any) {
 								label: {
 									show: showLabels,
 									position: 'top',
-									fontSize: 10,
-									fontFamily: 'monospace',
+									...xyLabelBase,
 									formatter: (params: any) => {
 										try {
-											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-											const total = timeKeys.length || 1;
-											const v = params && params.value ? params.value : null;
-											const numV = typeof v === 'number' ? v : null;
-											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
-											return formatNumber(v);
+											const idx = params?.dataIndex ?? 0;
+											const v = typeof params?.value === 'number' ? params.value : null;
+											if (!shouldShowLabel(v, timeKeys.length || 1, idx, yRangeForLabels)) return '';
+											return typeof v === 'number' ? formatNumber(v) : '';
 										} catch {
 											return '';
 										}
@@ -1522,16 +1667,13 @@ export function renderChart(boxId: any) {
 								label: {
 									show: showLabels,
 									position: 'top',
-									fontSize: 10,
-									fontFamily: 'monospace',
+									...xyLabelBase,
 									formatter: (params: any) => {
 										try {
-											const idx = params && typeof params.dataIndex === 'number' ? params.dataIndex : 0;
-											const total = yData.length || 1;
-											const v = params && typeof params.value === 'number' ? params.value : (params && params.data);
-											const numV = typeof v === 'number' ? v : null;
-											if (!shouldShowLabel(numV, total, idx, yRangeForLabels)) return '';
-											return (typeof v === 'number') ? formatNumber(v) : '';
+											const idx = params?.dataIndex ?? 0;
+											const v = typeof params?.value === 'number' ? params.value : null;
+											if (!shouldShowLabel(v, yData.length || 1, idx, yRangeForLabels)) return '';
+											return typeof v === 'number' ? formatNumber(v) : '';
 										} catch {
 											return '';
 										}
@@ -1586,6 +1728,10 @@ export function renderChart(boxId: any) {
 									if (stackMode === 'stacked100') {
 										const v = params?.data?.value;
 										if (typeof v === 'number' && v < 5) return '';
+										const pct = typeof v === 'number' ? v.toFixed(1) + '%' : '';
+										const orig = params?.data?.__kustoOriginalValue;
+										const raw = typeof orig === 'number' ? formatNumber(orig) : '';
+										return raw ? pct + ' (' + raw + ')' : pct;
 									} else {
 										// In normal stacked mode, only show label when
 										// the segment is at least ~8% of the column total.
@@ -1687,28 +1833,59 @@ export function renderChart(boxId: any) {
 				const gridLeft = (legendEnabled && !useEndLabels && legendPosition === 'left') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap + yAxisTitleGap) : (15 + yAxisTitleGap);
 				const gridRight = useEndLabels ? (20 + endLabelRightMargin)
 					: ((legendEnabled && legendPosition === 'right') ? (SIDE_LEGEND_TOTAL + SIDE_LEGEND_GAP + legendGap) : 20);
-				const gridTop = (legendEnabled && !useEndLabels && legendPosition === 'top') ? (50 + legendGap) : 20;
+				const gridTop = _chartTitleSpace + ((legendEnabled && !useEndLabels && legendPosition === 'top') ? (50 + legendGap) : 20);
 				const gridBottom = bottomMargin + ((legendEnabled && !useEndLabels && legendPosition === 'bottom') ? (40 + legendGap) : 0);
 
 				// Build legend title (ECharts title component positioned near the legend)
 				let legendTitleOpt: any = undefined;
 				const effectiveLegendTitle = legendTitle || (legendEnabled && legendCol ? legendCol : '');
+				const isDarkForLegend = getIsDarkThemeForEcharts();
+				const legendTitleColor = isDarkForLegend ? '#aaaaaa' : '#666666';
 				if (effectiveLegendTitle && legendEnabled && !useEndLabels) {
-					const titleStyle = { fontSize: 11, fontWeight: 'normal' as const, fontStyle: 'italic' as const, color: 'auto' };
-					if (legendPosition === 'top') {
-						legendTitleOpt = { text: effectiveLegendTitle, top: 0, right: 0, textStyle: titleStyle };
-					} else if (legendPosition === 'bottom') {
-						legendTitleOpt = { text: effectiveLegendTitle, bottom: 0, right: 0, textStyle: titleStyle };
-					} else if (legendPosition === 'left') {
-						legendTitleOpt = { text: effectiveLegendTitle, top: 4, left: 0, textStyle: titleStyle };
+					const titleStyle = { fontSize: 11, fontWeight: 'normal' as const, fontStyle: 'italic' as const, color: legendTitleColor };
+					if (legendPosition === 'left') {
+						// Above the vertically-oriented legend on the left side
+						legendTitleOpt = { show: true, text: effectiveLegendTitle, top: 4 + _chartTitleSpace, left: 0, textStyle: titleStyle };
 					} else {
-						legendTitleOpt = { text: effectiveLegendTitle, top: 4, right: 0, textStyle: titleStyle };
+						// For top, bottom, and right: inject a phantom series so the
+						// title appears as a no-icon legend entry before the real items.
+						// This keeps it left-aligned with the items and, for horizontal
+						// legends, centered as one unit.
+						if (legendOpt) {
+							const phantomName = '\u200B' + effectiveLegendTitle;
+							seriesData.unshift({
+								name: phantomName,
+								type: 'line',
+								data: [],
+								showSymbol: false,
+								tooltip: { show: false },
+							});
+							legendOpt.data = [
+								{
+									name: phantomName,
+									icon: 'none',
+									textStyle: {
+										fontSize: 11,
+										fontStyle: 'italic',
+										color: legendTitleColor,
+										padding: [0, 2, 0, -31],
+									},
+								},
+								...seriesData.slice(1).map((s: any) => s.name),
+							];
+						}
 					}
 				}
 
+				// Build the combined title array: chart title + legend title
+				const _xyChartTitleOpt = buildChartTitleOption();
+				const _xyTitleArray: any[] = [];
+				if (_xyChartTitleOpt) _xyTitleArray.push(_xyChartTitleOpt);
+				if (legendTitleOpt) _xyTitleArray.push(legendTitleOpt);
+
 				option = {
 					backgroundColor: 'transparent',
-					...(legendTitleOpt ? { title: legendTitleOpt } : {}),
+					...(_xyTitleArray.length === 1 ? { title: _xyTitleArray[0] } : _xyTitleArray.length > 1 ? { title: _xyTitleArray } : {}),
 					grid: {
 						left: gridLeft,
 						right: gridRight,

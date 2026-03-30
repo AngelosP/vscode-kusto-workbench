@@ -28,7 +28,7 @@ export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElem
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_CHAT_WIDTH_PX = 720;
+const DEFAULT_CHAT_WIDTH_PX = 500;
 const MIN_CHAT_WIDTH_PX = 160;
 const MIN_EDITOR_WIDTH_PX = 240;
 const COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';
@@ -282,10 +282,16 @@ export class CopilotChatManagerController implements ReactiveController {
 			// Hoist vertical query resizer to wrapper level.
 			try { const qr = document.getElementById(boxId + '_query_resizer'); if (qr) editorWrapper.appendChild(qr); } catch (e) { console.error('[kusto]', e); }
 
-			// Restore persisted width.
+			// Restore persisted width, or compute a dynamic default:
+			// min(half of available width, 500px).
 			try {
 				const persisted = this._copilotChatWidthPx;
-				if (typeof persisted === 'number' && Number.isFinite(persisted)) this.setCopilotChatWidthPx(persisted);
+				if (typeof persisted === 'number' && Number.isFinite(persisted)) {
+					this.setCopilotChatWidthPx(persisted);
+				} else {
+					const totalW = Math.round(split.getBoundingClientRect().width || 0);
+					if (totalW > 0) this.setCopilotChatWidthPx(Math.min(Math.round(totalW / 2), DEFAULT_CHAT_WIDTH_PX));
+				}
 			} catch (e) { console.error('[kusto]', e); }
 
 			// ── Wire <kw-copilot-chat> events to vscode.postMessage ───────

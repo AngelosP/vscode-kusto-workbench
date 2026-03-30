@@ -512,6 +512,12 @@ export const styles = css`
 		.axis-popup-inline > .axis-text-input:focus { border-color: var(--vscode-focusBorder); }
 		.axis-popup-inline > input[type="text"]::placeholder,
 		.axis-popup-inline > .axis-text-input::placeholder { color: var(--vscode-input-placeholderForeground); }
+		/* Inline title-gap slider next to the title input */
+		.axis-title-gap-slider {
+			flex: 0 0 72px;
+			min-width: 72px;
+			display: flex;
+		}
 		.axis-popup-inline > select {
 			flex: 1 1 auto;
 			min-width: 0;
@@ -972,6 +978,127 @@ export const styles = css`
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
+		}
+
+		/* ── Chart title / subtitle row ───────────────────────────── */
+
+		.chart-title-row {
+			display: flex;
+			align-items: flex-start;
+			gap: 10px;
+			flex-wrap: nowrap;
+		}
+		.chart-title-row > label {
+			flex: 0 0 var(--kusto-chart-label-width);
+			min-width: var(--kusto-chart-label-width);
+			font-size: 12px;
+			white-space: nowrap;
+			padding-top: 5px;
+		}
+		.chart-title-inputs {
+			flex: 1 1 auto;
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-width: 0;
+		}
+		.chart-title-input,
+		.chart-subtitle-input {
+			flex: 1 1 0;
+			min-width: 0;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border, transparent);
+			border-radius: 3px;
+			padding: 4px 8px;
+			font-size: 12px;
+			font-family: var(--vscode-font-family, sans-serif);
+			outline: none;
+			height: 28px;
+			transition: border-color 0.15s ease;
+		}
+		.chart-title-input:focus,
+		.chart-subtitle-input:focus {
+			border-color: var(--vscode-focusBorder, #007acc);
+		}
+		.chart-title-input::placeholder,
+		.chart-subtitle-input::placeholder {
+			color: var(--vscode-input-placeholderForeground);
+		}
+		.chart-title-input {
+			font-weight: 600;
+		}
+		.chart-subtitle-input {
+			font-size: 11px;
+		}
+
+		/* ── Title / Subtitle splitter ─────────────────────────── */
+		.chart-title-splitter {
+			flex: 0 0 1px;
+			width: 1px;
+			align-self: stretch;
+			cursor: ew-resize;
+			background: transparent;
+			position: relative;
+			touch-action: none;
+			z-index: 1;
+		}
+		/* Extended hit area */
+		.chart-title-splitter::after {
+			content: '';
+			position: absolute;
+			top: 0; bottom: 0;
+			left: -3px; right: -3px;
+		}
+		/* Sash highlight on hover / drag */
+		.chart-title-splitter::before {
+			content: '';
+			position: absolute;
+			top: 0; bottom: 0; left: 50%;
+			width: 0;
+			transform: translateX(-50%);
+			background: var(--vscode-sash-hoverBorder, #007fd4);
+			transition: width 0.1s ease;
+			pointer-events: none;
+			z-index: 1;
+			border-radius: 2px;
+		}
+		.chart-title-splitter:hover::before { width: 4px; }
+		.chart-title-splitter.is-dragging::before { width: 4px; }
+		.chart-title-align-group {
+			display: inline-flex;
+			gap: 1px;
+			flex-shrink: 0;
+			margin-left: 6px;
+			background: var(--vscode-input-border, rgba(128,128,128,0.2));
+			border-radius: 4px;
+			padding: 1px;
+		}
+		.chart-title-align-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 24px;
+			height: 24px;
+			padding: 0;
+			background: transparent;
+			border: none;
+			border-radius: 3px;
+			color: var(--vscode-foreground);
+			cursor: pointer;
+			opacity: 0.5;
+			transition: opacity 0.1s ease, background 0.1s ease;
+		}
+		.chart-title-align-btn:hover {
+			opacity: 0.85;
+			background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.12));
+		}
+		.chart-title-align-btn.is-active {
+			opacity: 1;
+			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128,128,128,0.25)));
+		}
+		.chart-title-align-btn svg {
+			display: block;
 		}
 
 		/* ── Canvas slot ──────────────────────────────────────────────── */

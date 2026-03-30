@@ -128,7 +128,7 @@ export const styles = css`
 
 	.msg-assistant {
 		align-self: flex-start;
-		background: var(--vscode-editorWidget-background);
+		background: transparent;
 		color: var(--vscode-foreground);
 		border: none;
 		white-space: normal;
@@ -454,6 +454,7 @@ export const styles = css`
 		width: 18px;
 		height: 18px;
 		margin-left: 0;
+		margin-bottom: -2px;
 		padding: 0;
 		flex: 0 0 auto;
 	}
@@ -566,7 +567,7 @@ export const styles = css`
 	/* ── Model dropdown slot ────────────────────────────────────── */
 
 	::slotted(.kusto-copilot-chat-model-dropdown) {
-		max-width: 200px;
+		max-width: 300px;
 		min-width: 0;
 		flex: 1 1 auto;
 		overflow: hidden;

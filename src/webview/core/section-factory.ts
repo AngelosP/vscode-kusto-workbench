@@ -1797,6 +1797,15 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		if (typeof config.sortDirection === 'string') {
 			st.sortDirection = config.sortDirection;
 		}
+		if (typeof config.sourceColumn === 'string') {
+			st.sourceColumn = config.sourceColumn;
+		}
+		if (typeof config.targetColumn === 'string') {
+			st.targetColumn = config.targetColumn;
+		}
+		if (typeof config.orient === 'string') {
+			st.orient = config.orient;
+		}
 		
 		// Update the UI dropdowns to reflect new state and re-render the chart
 		try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
@@ -1834,7 +1843,7 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 		// Check chart type
 		const chartType = typeof st.chartType === 'string' ? st.chartType : '';
 		if (!chartType) {
-			issues.push('No chart type selected. Specify chartType (line, area, bar, scatter, pie, or funnel).');
+			issues.push('No chart type selected. Specify chartType (line, area, bar, scatter, pie, funnel, or sankey).');
 		}
 		
 		// Check if data source exists and has data
@@ -1881,6 +1890,24 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 				} else if (!availableColumns.includes(valueColumn)) {
 					issues.push(`valueColumn "${valueColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
 				}
+			} else if (chartType === 'sankey') {
+				const sourceColumn = typeof st.sourceColumn === 'string' ? st.sourceColumn : '';
+				const targetColumn = typeof st.targetColumn === 'string' ? st.targetColumn : '';
+				if (!sourceColumn) {
+					issues.push(`sankey chart requires sourceColumn. Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(sourceColumn)) {
+					issues.push(`sourceColumn "${sourceColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				if (!targetColumn) {
+					issues.push(`sankey chart requires targetColumn. Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(targetColumn)) {
+					issues.push(`targetColumn "${targetColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
+				if (!valueColumn) {
+					issues.push(`sankey chart requires valueColumn (the numeric flow values). Available columns: ${availableColumns.join(', ')}`);
+				} else if (!availableColumns.includes(valueColumn)) {
+					issues.push(`valueColumn "${valueColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
+				}
 			} else {
 				if (!xColumn) {
 					issues.push(`${chartType} chart requires xColumn. Available columns: ${availableColumns.join(', ')}`);
@@ -1911,7 +1938,9 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 				yColumns: (Array.isArray(st.yColumns) && st.yColumns.length > 0) ? st.yColumns : null,
 				labelColumn: st.labelColumn || null,
 				valueColumn: st.valueColumn || null,
-				legendColumn: st.legendColumn || null
+				legendColumn: st.legendColumn || null,
+				sourceColumn: st.sourceColumn || null,
+				targetColumn: st.targetColumn || null
 			},
 			...(issues.length > 0 ? { issues } : {})
 		};

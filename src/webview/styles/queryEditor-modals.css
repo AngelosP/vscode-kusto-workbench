@@ -126,6 +126,17 @@
 		.cache-info {
 			color: var(--vscode-descriptionForeground);
 			font-size: 11px;
+			border-top: 1px solid var(--vscode-editorWidget-border);
+			padding-top: 8px;
+			margin-top: 4px;
+		}
+
+		.cache-info p {
+			margin: 0 0 4px 0;
+		}
+
+		.cache-info p:last-child {
+			margin-bottom: 0;
 		}
 
 

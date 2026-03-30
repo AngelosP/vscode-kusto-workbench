@@ -93,7 +93,7 @@ export type KqlxSectionV1 =
 			editorHeightPx?: number;
 			// Chart builder configuration (optional; webview-specific).
 			dataSourceId?: string;
-			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel';
+			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey';
 			xColumn?: string;
 			yColumns?: string[];
 			yColumn?: string;
@@ -103,6 +103,9 @@ export type KqlxSectionV1 =
 			stackMode?: 'normal' | 'stacked' | 'stacked100';
 			labelColumn?: string;
 			valueColumn?: string;
+			sourceColumn?: string;
+			targetColumn?: string;
+			orient?: 'LR' | 'RL' | 'TB' | 'BT';
 			showDataLabels?: boolean;
 			sortColumn?: string;
 			sortDirection?: 'asc' | 'desc' | '';
@@ -134,6 +137,10 @@ export type KqlxSectionV1 =
 				title?: string;
 				showEndLabels?: boolean;
 			};
+			// Chart title / subtitle
+			chartTitle?: string;
+			chartSubtitle?: string;
+			chartTitleAlign?: 'left' | 'center' | 'right';
 		}
 	| {
 			id?: string;

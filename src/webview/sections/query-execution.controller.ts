@@ -288,7 +288,7 @@ export class QueryExecutionController implements ReactiveController {
 
 	lockCacheForBenchmark(): void {
 		const boxId = this.host.boxId;
-		const msg = 'When doing performance benchmarks we cannot use caching.';
+		const msg = 'When doing performance benchmarks we cannot use query plan caching.';
 		try {
 			const checkbox = document.getElementById(boxId + '_cache_enabled') as any;
 			const valueInput = document.getElementById(boxId + '_cache_value') as any;

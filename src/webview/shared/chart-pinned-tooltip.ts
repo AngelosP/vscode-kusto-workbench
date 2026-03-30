@@ -3,38 +3,26 @@
 // Shown on hover, stays while mouse is over the tooltip, supports sort,
 // search, and click-to-highlight.
 // Pure ES module — no window bridges.
+// Delegates all rendering to the <kw-chart-tooltip> Lit component.
 
-import { escapeHtml } from '../core/utils';
 import { formatNumber } from './chart-utils.js';
+import type { KwChartTooltip, ChartTooltipRow, ChartTooltipExtra } from '../components/kw-chart-tooltip.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface TooltipRow {
-	color: string;
-	seriesName: string;
-	value: number | null;
-	formattedValue: string;
-	seriesIndex: number;
-}
 
 interface TooltipData {
 	title: string;
 	dataIndex: number;
-	rows: TooltipRow[];
-	extraPayload: Record<string, string> | null;
+	rows: ChartTooltipRow[];
+	extraPayload: ChartTooltipExtra | null;
 }
-
-type SortField = '' | 'name' | 'value';
-type SortDir = '' | 'asc' | 'desc';
 
 interface HoverState {
 	chartId: string;
-	el: HTMLElement;
+	el: KwChartTooltip;
 	hideTimer: number;
+	showTimer: number;
 	data: TooltipData;
-	sortField: SortField;
-	sortDir: SortDir;
-	searchTerm: string;
 	inst: any;
 	needsUpdate: boolean;
 }
@@ -42,14 +30,6 @@ interface HoverState {
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const _states = new Map<string, HoverState>();
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const SORT_ASC = '&#9650;';   // ▲
-const SORT_DESC = '&#9660;';  // ▼
-const SORT_NONE = '<span style="opacity:0.35">&#8693;</span>'; // ⇕
-
-const CLOSE_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z"/></svg>';
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -73,8 +53,9 @@ export function handleTooltipFormatter(
 		_cancelHide(state);
 		if (state.data.dataIndex !== dataIndex) {
 			state.data = data;
-			state.searchTerm = '';
 			state.needsUpdate = true;
+			// Content changed — restart the show delay
+			_resetShowTimer(state);
 		}
 		// Same data index → no content change (user may be interacting)
 	} else {
@@ -89,14 +70,13 @@ export function handleTooltipFormatter(
 			chartId,
 			el,
 			hideTimer: 0,
+			showTimer: 0,
 			data,
-			sortField: '',
-			sortDir: '',
-			searchTerm: '',
 			inst: null,
 			needsUpdate: true,
 		};
 		_states.set(chartId, state);
+		_resetShowTimer(state);
 	}
 }
 
@@ -119,7 +99,7 @@ export function handleTooltipPosition(
 	state.inst = inst;
 
 	if (state.needsUpdate) {
-		_renderContent(state);
+		_pushDataToElement(state);
 		state.needsUpdate = false;
 		_positionElement(state, chartRelX, chartRelY);
 	}
@@ -146,6 +126,21 @@ export function dismissHoverTooltip(chartId?: string): void {
 
 // ── Lifecycle helpers ─────────────────────────────────────────────────────────
 
+function _resetShowTimer(state: HoverState): void {
+	if (state.showTimer) { clearTimeout(state.showTimer); state.showTimer = 0; }
+	state.el.style.opacity = '0';
+	state.el.style.pointerEvents = 'none';
+	const chartId = state.chartId;
+	state.showTimer = window.setTimeout(() => {
+		const st = _states.get(chartId);
+		if (st) {
+			st.showTimer = 0;
+			st.el.style.opacity = '';
+			st.el.style.pointerEvents = '';
+		}
+	}, 1000);
+}
+
 function _cancelHide(state: HoverState): void {
 	if (state.hideTimer) {
 		clearTimeout(state.hideTimer);
@@ -153,9 +148,8 @@ function _cancelHide(state: HoverState): void {
 	}
 }
 
-function _createTooltipElement(chartId: string): HTMLElement {
-	const el = document.createElement('div');
-	el.className = 'kusto-pinned-tooltip';
+function _createTooltipElement(chartId: string): KwChartTooltip {
+	const el = document.createElement('kw-chart-tooltip') as KwChartTooltip;
 	el.addEventListener('mousedown', (e) => e.stopPropagation());
 	el.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
 	el.addEventListener('mouseenter', () => {
@@ -172,13 +166,34 @@ function _createTooltipElement(chartId: string): HTMLElement {
 		} catch { /* noop */ }
 	});
 	el.addEventListener('mouseleave', () => scheduleHideTooltip(chartId));
+	el.addEventListener('tooltip-close', () => _destroyState(chartId));
+	el.addEventListener('tooltip-highlight', ((e: CustomEvent) => {
+		const st = _states.get(chartId);
+		if (!st) return;
+		const { seriesIndex, active } = e.detail;
+		try {
+			st.inst?.dispatchAction?.({ type: 'downplay' });
+			if (active) {
+				st.inst?.dispatchAction?.({ type: 'highlight', seriesIndex });
+			}
+		} catch (err) { console.error('[kusto]', err); }
+	}) as EventListener);
 	return el;
+}
+
+function _pushDataToElement(state: HoverState): void {
+	const { el, data } = state;
+	el.tooltipTitle = data.title;
+	el.rows = data.rows;
+	el.extraPayload = data.extraPayload;
+	el.resetInteractionState();
 }
 
 function _destroyState(chartId: string): void {
 	const state = _states.get(chartId);
 	if (!state) return;
 	_cancelHide(state);
+	if (state.showTimer) { clearTimeout(state.showTimer); state.showTimer = 0; }
 	try { state.inst?.dispatchAction?.({ type: 'downplay' }); } catch { /* noop */ }
 	try { state.el.remove(); } catch { /* noop */ }
 	_states.delete(chartId);
@@ -189,8 +204,8 @@ function _destroyState(chartId: string): void {
 function _buildData(params: any[], dataIndex: number, stackMode: string): TooltipData {
 	const first = params[0];
 	const title = String(first?.name ?? first?.axisValue ?? '');
-	const rows: TooltipRow[] = [];
-	let extraPayload: Record<string, string> | null = null;
+	const rows: ChartTooltipRow[] = [];
+	let extraPayload: ChartTooltipExtra | null = null;
 
 	for (const p of params) {
 		const rawData = p?.data;
@@ -226,153 +241,6 @@ function _buildData(params: any[], dataIndex: number, stackMode: string): Toolti
 	return { title, dataIndex, rows, extraPayload };
 }
 
-// ── Rendering ─────────────────────────────────────────────────────────────────
-
-function _renderContent(state: HoverState): void {
-	const esc = (v: any) => escapeHtml(String(v ?? ''));
-	const { data, sortField, sortDir, searchTerm } = state;
-
-	let rows = [...data.rows];
-
-	// Filter
-	if (searchTerm) {
-		const lower = searchTerm.toLowerCase();
-		rows = rows.filter(r =>
-			r.seriesName.toLowerCase().includes(lower) ||
-			r.formattedValue.toLowerCase().includes(lower)
-		);
-	}
-
-	// Sort
-	if (sortField === 'name' && sortDir) {
-		rows.sort((a, b) => {
-			const cmp = a.seriesName.localeCompare(b.seriesName);
-			return sortDir === 'asc' ? cmp : -cmp;
-		});
-	} else if (sortField === 'value' && sortDir) {
-		rows.sort((a, b) => {
-			const diff = (a.value ?? -Infinity) - (b.value ?? -Infinity);
-			return sortDir === 'asc' ? diff : -diff;
-		});
-	}
-
-	// Column header sort indicators
-	const nameInd = sortField === 'name'
-		? (sortDir === 'asc' ? SORT_ASC : SORT_DESC)
-		: SORT_NONE;
-	const valueInd = sortField === 'value'
-		? (sortDir === 'asc' ? SORT_ASC : SORT_DESC)
-		: SORT_NONE;
-
-	// Table rows
-	const rowsHtml = rows.map(r =>
-		`<tr class="kpt-row" data-series-index="${r.seriesIndex}">` +
-			`<td class="kpt-marker"><span class="kpt-dot" style="background:${esc(r.color)}"></span></td>` +
-			`<td class="kpt-name">${esc(r.seriesName)}</td>` +
-			`<td class="kpt-value">${esc(r.formattedValue)}</td>` +
-		`</tr>`
-	).join('');
-
-	// Extra tooltip columns
-	let extraHtml = '';
-	if (data.extraPayload) {
-		const entries = Object.entries(data.extraPayload).filter(([, v]) => v);
-		if (entries.length) {
-			extraHtml = `<div class="kpt-extra">` +
-				entries.map(([k, v]) =>
-					`<div class="kpt-extra-row"><span class="kpt-extra-key">${esc(k)}:</span> ${esc(v)}</div>`
-				).join('') + `</div>`;
-		}
-	}
-
-	state.el.innerHTML =
-		`<div class="kpt-header">` +
-			`<span class="kpt-title">${esc(data.title)}</span>` +
-			`<button class="kpt-btn kpt-close-btn" title="Close">${CLOSE_ICON}</button>` +
-		`</div>` +
-		`<div class="kpt-search-wrap">` +
-			`<input class="kpt-search" type="text" placeholder="Search\u2026" value="${esc(searchTerm)}" />` +
-		`</div>` +
-		`<div class="kpt-table-wrap">` +
-			`<table class="kpt-table">` +
-				`<thead><tr>` +
-					`<th class="kpt-th-marker"></th>` +
-					`<th class="kpt-th-name" data-sort="name" title="Sort by name">Series ${nameInd}</th>` +
-					`<th class="kpt-th-value" data-sort="value" title="Sort by value">Value ${valueInd}</th>` +
-				`</tr></thead>` +
-				`<tbody>${rowsHtml}</tbody>` +
-			`</table>` +
-		`</div>` +
-		extraHtml;
-
-	_wireEvents(state);
-}
-
-function _wireEvents(state: HoverState): void {
-	const el = state.el;
-
-	// Close
-	el.querySelector('.kpt-close-btn')?.addEventListener('click', (e) => {
-		e.stopPropagation();
-		_destroyState(state.chartId);
-	});
-
-	// Search
-	const searchInput = el.querySelector('.kpt-search') as HTMLInputElement | null;
-	if (searchInput) {
-		searchInput.addEventListener('input', () => {
-			state.searchTerm = searchInput.value;
-			_renderContent(state);
-		});
-		if (state.searchTerm) {
-			requestAnimationFrame(() => {
-				searchInput.focus();
-				searchInput.setSelectionRange(state.searchTerm.length, state.searchTerm.length);
-			});
-		}
-	}
-
-	// Sortable column headers
-	el.querySelectorAll('[data-sort]').forEach(th => {
-		th.addEventListener('click', (e) => {
-			e.stopPropagation();
-			const field = (th as HTMLElement).dataset.sort as SortField;
-			if (state.sortField === field) {
-				state.sortDir = state.sortDir === '' ? 'desc'
-					: state.sortDir === 'desc' ? 'asc' : '';
-				if (!state.sortDir) state.sortField = '';
-			} else {
-				state.sortField = field;
-				state.sortDir = 'desc';
-			}
-			_renderContent(state);
-		});
-	});
-
-	// Row click → highlight series in chart
-	el.querySelectorAll('.kpt-row').forEach(tr => {
-		tr.addEventListener('click', (e) => {
-			e.stopPropagation();
-			const idx = parseInt((tr as HTMLElement).dataset.seriesIndex || '-1', 10);
-			if (idx < 0) return;
-
-			const isActive = tr.classList.contains('kpt-active');
-			el.querySelectorAll('.kpt-row').forEach(r => r.classList.remove('kpt-active'));
-
-			try {
-				state.inst?.dispatchAction?.({ type: 'downplay' });
-				if (!isActive) {
-					tr.classList.add('kpt-active');
-					state.inst?.dispatchAction?.({
-						type: 'highlight',
-						seriesIndex: idx,
-					});
-				}
-			} catch (err) { console.error('[kusto]', err); }
-		});
-	});
-}
-
 // ── Positioning ───────────────────────────────────────────────────────────────
 
 function _positionElement(
@@ -397,8 +265,17 @@ function _positionElement(
 	const elW = state.el.offsetWidth || 280;
 	const wW = wrapperRect.width;
 
-	// Always 20px below cursor, allow overflow outside section
-	const top = cursorY + 20;
+	// Position just below the X axis (bottom of the ECharts grid + axis labels)
+	let top = cursorY + 20; // fallback
+	try {
+		const gridModel = state.inst?.getModel?.()?.getComponent?.('grid', 0);
+		const gridRect = gridModel?.coordinateSystem?.getRect?.();
+		if (gridRect) {
+			// gridRect.y + gridRect.height = bottom of the plot area (chart-relative)
+			// Add ~30px for the X axis labels below the grid
+			top = offsetY + gridRect.y + gridRect.height + 30;
+		}
+	} catch { /* use fallback */ }
 
 	// Center horizontally on cursor, clamped within wrapper
 	let left = cursorX - elW / 2;

@@ -299,13 +299,13 @@ export class KwQuerySection extends LitElement {
 				<div class="cache-controls">
 					<span class="cache-label" id="${id}_cache_label"
 						@click=${() => callGlobal('toggleCachePopup', id)}
-						title="Click to configure cache duration">Cache results</span>
+						title="Cache the server-side query plan and execution and get the results back from the server instantly">Cache query plan</span>
 					<input type="checkbox" id="${id}_cache_enabled" checked
 						@change=${() => { callGlobal('toggleCachePill', id); try { schedulePersist(); } catch { /* ignore */ } }}
-						class="cache-checkbox" title="Toggle result caching" />
+						class="cache-checkbox" title="Toggle query plan caching" />
 					<div class="cache-popup" id="${id}_cache_popup">
 						<div class="cache-popup-content">
-							<span class="cache-popup-label">Cache results for</span>
+							<span class="cache-popup-label">Cache query plan for</span>
 							<div class="cache-popup-inputs">
 								<input type="number" id="${id}_cache_value" value="1" min="1"
 									@input=${() => { try { schedulePersist(); } catch { /* ignore */ } }} />
@@ -315,6 +315,10 @@ export class KwQuerySection extends LitElement {
 									<option value="hours">Hours</option>
 									<option value="days" selected>Days</option>
 								</select>
+							</div>
+							<div class="cache-info">
+								<p>Cache the server-side query plan and execution and get the results back from the server instantly.</p>
+								<p>This does not control whether query results are saved in the local file (those are saved automatically).</p>
 							</div>
 						</div>
 					</div>

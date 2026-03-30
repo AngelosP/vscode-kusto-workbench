@@ -27,6 +27,7 @@ interface HostState {
 	datasets: DatasetEntry[];
 	xColumn: string; yColumns: string[]; legendColumn: string;
 	labelColumn: string; valueColumn: string;
+	sourceColumn: string; targetColumn: string;
 	tooltipColumns: string[]; sortColumn: string;
 	xAxisSettings: XAxisSettings; yAxisSettings: YAxisSettings;
 }
@@ -38,6 +39,7 @@ function createMockHost(overrides: Partial<HostState> = {}): ChartSectionHost {
 		datasets: [],
 		xColumn: '', yColumns: [], legendColumn: '',
 		labelColumn: '', valueColumn: '',
+		sourceColumn: '', targetColumn: '',
 		tooltipColumns: [], sortColumn: '',
 		xAxisSettings: defaultXAxis(), yAxisSettings: defaultYAxis(),
 		...overrides,
@@ -69,6 +71,10 @@ function createMockHost(overrides: Partial<HostState> = {}): ChartSectionHost {
 		setTooltipColumns: (v: string[]) => { state.tooltipColumns = v; },
 		getSortColumn: () => state.sortColumn,
 		setSortColumn: (v: string) => { state.sortColumn = v; },
+		getSourceColumn: () => state.sourceColumn,
+		setSourceColumn: (v: string) => { state.sourceColumn = v; },
+		getTargetColumn: () => state.targetColumn,
+		setTargetColumn: (v: string) => { state.targetColumn = v; },
 		getXAxisSettings: () => state.xAxisSettings,
 		setXAxisSettings: (v: XAxisSettings) => { state.xAxisSettings = v; },
 		getYAxisSettings: () => state.yAxisSettings,

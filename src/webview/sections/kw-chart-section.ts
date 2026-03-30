@@ -41,7 +41,7 @@ import { ChartDataSourceController, type DatasetEntry } from './chart-data-sourc
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | '';
+export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | '';
 export type ChartMode = 'edit' | 'preview';
 export type { LegendPosition, StackMode, LegendSettings, LegendSortMode, XAxisSettings, YAxisSettings };
 export type SortDirection = 'asc' | 'desc' | '';
@@ -66,6 +66,9 @@ export interface ChartSectionData {
 	stackMode?: string;
 	labelColumn?: string;
 	valueColumn?: string;
+	sourceColumn?: string;
+	targetColumn?: string;
+	orient?: string;
 	showDataLabels?: boolean;
 	labelMode?: string;
 	labelDensity?: number;
@@ -74,6 +77,9 @@ export interface ChartSectionData {
 	xAxisSettings?: Partial<XAxisSettings>;
 	yAxisSettings?: Partial<YAxisSettings>;
 	legendSettings?: Partial<LegendSettings>;
+	chartTitle?: string;
+	chartSubtitle?: string;
+	chartTitleAlign?: 'left' | 'center' | 'right';
 	editorHeightPx?: number;
 	validation?: unknown;
 }
@@ -92,13 +98,14 @@ const CHART_TYPE_ICONS: Record<string, string> = {
 	scatter: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor"><circle cx="8" cy="20" r="2.5"/><circle cx="14" cy="12" r="2.5"/><circle cx="20" cy="18" r="2.5"/><circle cx="26" cy="8" r="2.5"/><circle cx="11" cy="24" r="2.5"/><circle cx="23" cy="22" r="2.5"/></svg>',
 	pie: '<svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><circle cx="16" cy="16" r="12" fill="currentColor" fill-opacity="0.2"/><path d="M16,16 L16,4 A12,12 0 0,1 27.2,20.8 Z" fill="currentColor" fill-opacity="0.5"/><path d="M16,16 L27.2,20.8 A12,12 0 0,1 8,25.6 Z" fill="currentColor" fill-opacity="0.7"/></svg>',
 	funnel: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><path d="M4,4 L28,4 L28,7 L4,7 Z"/><path d="M6,9 L26,9 L26,12 L6,12 Z" fill-opacity="0.6"/><path d="M8,14 L24,14 L24,17 L8,17 Z" fill-opacity="0.5"/><path d="M10,19 L22,19 L22,22 L10,22 Z" fill-opacity="0.4"/><path d="M12,24 L20,24 L20,27 L12,27 Z" fill-opacity="0.3"/></svg>',
+	sankey: '<svg viewBox="0 0 32 32" width="32" height="32" fill="currentColor" fill-opacity="0.7"><rect x="2" y="3" width="5" height="8" rx="1"/><rect x="2" y="13" width="5" height="6" rx="1"/><rect x="2" y="21" width="5" height="8" rx="1"/><rect x="25" y="5" width="5" height="10" rx="1"/><rect x="25" y="18" width="5" height="10" rx="1"/><path d="M7,7 C16,7 16,10 25,10" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/><path d="M7,16 C16,16 16,12 25,12" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4"/><path d="M7,25 C16,25 16,23 25,23" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/><path d="M7,9 C16,9 16,21 25,21" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4"/></svg>',
 };
 
 const CHART_TYPE_LABELS: Record<string, string> = {
-	line: 'Line', area: 'Area', bar: 'Bar', scatter: 'Scatter', pie: 'Pie', funnel: 'Funnel',
+	line: 'Line', area: 'Area', bar: 'Bar', scatter: 'Scatter', pie: 'Pie', funnel: 'Funnel', sankey: 'Sankey',
 };
 
-const CHART_TYPES_ORDERED: ChartType[] = ['area', 'bar', 'funnel', 'line', 'pie', 'scatter'];
+const CHART_TYPES_ORDERED: ChartType[] = ['area', 'bar', 'funnel', 'line', 'pie', 'sankey', 'scatter'];
 
 const LEGEND_POSITION_ICONS: Record<LegendPosition, string> = {
 	top: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="10" height="8" rx="1"/><path d="M3 3h10"/></svg>',
@@ -200,6 +207,12 @@ export class KwChartSection extends LitElement {
 			: (Array.isArray(st.tooltipColumns) ? st.tooltipColumns : []);
 		st.sortColumn = typeof options.sortColumn === 'string' ? String(options.sortColumn) : (st.sortColumn || '');
 		st.sortDirection = typeof options.sortDirection === 'string' ? String(options.sortDirection) : (st.sortDirection || '');
+		st.sourceColumn = typeof options.sourceColumn === 'string' ? String(options.sourceColumn) : (st.sourceColumn || '');
+		st.targetColumn = typeof options.targetColumn === 'string' ? String(options.targetColumn) : (st.targetColumn || '');
+		st.orient = typeof options.orient === 'string' ? String(options.orient) : (st.orient || 'LR');
+		st.chartTitle = typeof options.chartTitle === 'string' ? String(options.chartTitle) : (st.chartTitle || '');
+		st.chartSubtitle = typeof options.chartSubtitle === 'string' ? String(options.chartSubtitle) : (st.chartSubtitle || '');
+		st.chartTitleAlign = typeof options.chartTitleAlign === 'string' ? String(options.chartTitleAlign) : (st.chartTitleAlign || 'center');
 		if (options.xAxisSettings && typeof options.xAxisSettings === 'object') {
 			st.xAxisSettings = { ...getDefaultXAxisSettings(), ...st.xAxisSettings, ...options.xAxisSettings };
 		}
@@ -357,9 +370,16 @@ export class KwChartSection extends LitElement {
 	@state() private _tooltipColumns: string[] = [];
 	@state() private _sortColumn = '';
 	@state() private _sortDirection: SortDirection = '';
+	@state() private _sourceColumn = '';
+	@state() private _targetColumn = '';
+	@state() private _orient: 'LR' | 'RL' | 'TB' | 'BT' = 'LR';
 	@state() private _xAxisSettings: XAxisSettings = defaultXAxisSettings();
 	@state() private _yAxisSettings: YAxisSettings = defaultYAxisSettings();
 	@state() private _legendSettings: LegendSettings = getDefaultLegendSettings();
+	@state() private _chartTitle = '';
+	@state() private _chartSubtitle = '';
+	@state() private _chartTitleAlign: 'left' | 'center' | 'right' = 'center';
+	@state() private _titleSplitPercent = 50;
 
 	// Datasets available for selection
 	@state() private _datasets: DatasetEntry[] = [];
@@ -374,6 +394,7 @@ export class KwChartSection extends LitElement {
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
 	private _onChartAxisTitleClickBound = this._onChartAxisTitleClick.bind(this) as EventListener;
+	private _onSeriesColorChangeBound = this._onSeriesColorChangeFromTooltip.bind(this) as EventListener;
 	private _scrollAtPopupOpen = 0;
 
 	/** Sticky slider max overrides, keyed by 'axis:key' (e.g. 'x:titleGap'). */
@@ -409,6 +430,10 @@ export class KwChartSection extends LitElement {
 	setTooltipColumns(v: string[]): void { this._tooltipColumns = v; }
 	getSortColumn(): string { return this._sortColumn; }
 	setSortColumn(v: string): void { this._sortColumn = v; }
+	getSourceColumn(): string { return this._sourceColumn; }
+	setSourceColumn(v: string): void { this._sourceColumn = v; }
+	getTargetColumn(): string { return this._targetColumn; }
+	setTargetColumn(v: string): void { this._targetColumn = v; }
 	getXAxisSettings(): XAxisSettings { return this._xAxisSettings; }
 	setXAxisSettings(v: XAxisSettings): void { this._xAxisSettings = v; }
 	getYAxisSettings(): YAxisSettings { return this._yAxisSettings; }
@@ -421,6 +446,7 @@ export class KwChartSection extends LitElement {
 		this._syncGlobalChartState();
 		this._setupThemeObserver();
 		this.addEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
+		this.addEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
 		// Close fixed-position popups/dropdowns when the page scrolls so they
 		// don't float detached from their anchor buttons.
 		window.addEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true, passive: true });
@@ -431,6 +457,7 @@ export class KwChartSection extends LitElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		this.removeEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
+		this.removeEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
 		removeDismissable(this._dismissDropdown);
@@ -482,6 +509,7 @@ export class KwChartSection extends LitElement {
 			'_legendPosition', '_stackMode', '_legendSettings', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings',
+			'_sourceColumn', '_targetColumn', '_orient',
 		];
 		if (chartTriggers.some(k => changed.has(k))) {
 			this._writeToGlobalChartState();
@@ -497,6 +525,7 @@ export class KwChartSection extends LitElement {
 	override render(): TemplateResult {
 		const isXY = this._chartType === 'line' || this._chartType === 'area' || this._chartType === 'bar' || this._chartType === 'scatter';
 		const isPieOrFunnel = this._chartType === 'pie' || this._chartType === 'funnel';
+		const isSankey = this._chartType === 'sankey';
 		const supportsLegend = this._chartType === 'line' || this._chartType === 'area' || this._chartType === 'bar';
 		const isFunnel = this._chartType === 'funnel';
 		const colNames = this._getColumnNames();
@@ -548,6 +577,9 @@ export class KwChartSection extends LitElement {
 											</div>
 										</div>
 
+										<!-- Chart title / subtitle -->
+										${this._renderTitleRow()}
+
 										<!-- Data source row -->
 										<div class="chart-row">
 											<label>Data</label>
@@ -565,6 +597,9 @@ export class KwChartSection extends LitElement {
 
 										<!-- Pie/Funnel mapping -->
 										${isPieOrFunnel ? this._renderPieMapping(colNames, isFunnel) : nothing}
+
+										<!-- Sankey mapping -->
+										${isSankey ? this._renderSankeyMapping(colNames) : nothing}
 									</div>
 								</div>
 							</div>
@@ -762,7 +797,125 @@ export class KwChartSection extends LitElement {
 		`;
 	}
 
+	private _renderSankeyMapping(colNames: string[]): TemplateResult {
+		return html`
+			<div class="chart-mapping">
+				<div class="chart-mapping-grid">
+					<!-- Source column -->
+					<span class="chart-field-group">
+						<label>Source</label>
+						<select class="chart-select" @change=${this._onSourceColumnChanged}>
+							<option value="" ?selected=${!this._sourceColumn}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${this._sourceColumn === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Target column -->
+					<span class="chart-field-group">
+						<label>Target</label>
+						<select class="chart-select" @change=${this._onTargetColumnChanged}>
+							<option value="" ?selected=${!this._targetColumn}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${this._targetColumn === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Value column -->
+					<span class="chart-field-group">
+						<label>Value</label>
+						<select class="chart-select" @change=${this._onValueColumnChanged}>
+							<option value="" ?selected=${!this._valueColumn}>(select)</option>
+							${colNames.map(c => html`
+								<option value=${c} ?selected=${this._valueColumn === c}>${c}</option>
+							`)}
+						</select>
+					</span>
+
+					<!-- Orient -->
+					<span class="chart-field-group">
+						<label>Orient</label>
+						<select class="chart-select" @change=${this._onOrientChanged}>
+							<option value="LR" ?selected=${this._orient === 'LR'}>Left → Right</option>
+							<option value="RL" ?selected=${this._orient === 'RL'}>Right → Left</option>
+							<option value="TB" ?selected=${this._orient === 'TB'}>Top → Bottom</option>
+							<option value="BT" ?selected=${this._orient === 'BT'}>Bottom → Top</option>
+						</select>
+					</span>
+
+					<span class="chart-grid-spacer" aria-hidden="true"></span>
+				</div>
+			</div>
+		`;
+	}
+
 	// ── Axis settings popup templates ─────────────────────────────────────────
+
+	private _renderTitleRow(): TemplateResult {
+		const ALIGN_OPTIONS = ['left', 'center', 'right'] as const;
+		const ALIGN_ICONS: Record<string, string> = {
+			left: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1 3h14v1.5H1zm0 4h9v1.5H1zm0 4h12v1.5H1z"/></svg>',
+			center: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1 3h14v1.5H1zm3.5 4h7v1.5h-7zM2 11h12v1.5H2z"/></svg>',
+			right: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1 3h14v1.5H1zm6 4h8v1.5H7zm3 4h5v1.5h-5z"/></svg>',
+		};
+
+		return html`
+			<div class="chart-title-row">
+				<label>Title</label>
+				<div class="chart-title-inputs">
+					<input type="text" class="chart-title-input"
+						placeholder="Chart title"
+						style="flex-basis:${this._titleSplitPercent}%"
+						.value=${this._chartTitle}
+						@input=${(e: Event) => { this._chartTitle = (e.target as HTMLInputElement).value; this._writeToGlobalChartState(); this._renderChart(); this._schedulePersist(); }} />
+					<div class="chart-title-splitter" @mousedown=${this._onTitleSplitterDown}></div>
+					<input type="text" class="chart-subtitle-input"
+						placeholder="Subtitle"
+						style="flex-basis:${100 - this._titleSplitPercent}%"
+						.value=${this._chartSubtitle}
+						@input=${(e: Event) => { this._chartSubtitle = (e.target as HTMLInputElement).value; this._writeToGlobalChartState(); this._renderChart(); this._schedulePersist(); }} />
+					<div class="chart-title-align-group">
+						${ALIGN_OPTIONS.map(a => html`
+							<button type="button"
+								class="chart-title-align-btn ${this._chartTitleAlign === a ? 'is-active' : ''}"
+								title="${a.charAt(0).toUpperCase() + a.slice(1)} align"
+								@click=${() => { this._chartTitleAlign = a; this._writeToGlobalChartState(); this._renderChart(); this._schedulePersist(); }}>
+								<span .innerHTML=${ALIGN_ICONS[a]}></span>
+							</button>
+						`)}
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private _onTitleSplitterDown(e: MouseEvent): void {
+		e.preventDefault();
+		const splitter = e.currentTarget as HTMLElement;
+		const container = splitter.parentElement;
+		if (!container) return;
+		splitter.classList.add('is-dragging');
+		const containerRect = container.getBoundingClientRect();
+		// Subtract space taken by the align-group button cluster
+		const alignGroup = container.querySelector('.chart-title-align-group') as HTMLElement | null;
+		const alignW = alignGroup ? alignGroup.getBoundingClientRect().width : 0;
+		const availableW = containerRect.width - alignW;
+
+		const onMove = (ev: MouseEvent) => {
+			const x = ev.clientX - containerRect.left;
+			const pct = Math.min(85, Math.max(15, (x / availableW) * 100));
+			this._titleSplitPercent = Math.round(pct);
+		};
+		const onUp = () => {
+			splitter.classList.remove('is-dragging');
+			document.removeEventListener('mousemove', onMove);
+			document.removeEventListener('mouseup', onUp);
+		};
+		document.addEventListener('mousemove', onMove);
+		document.addEventListener('mouseup', onUp);
+	}
 
 	private _renderXAxisPopup(): TemplateResult {
 		const s = this._xAxisSettings;
@@ -777,27 +930,17 @@ export class KwChartSection extends LitElement {
 			>
 				<div class="axis-popup-inline">
 					<label>Title</label>
-					<label class="toggle-switch" title="Show or hide the X-axis title below the chart">
-						<input type="checkbox" .checked=${s.showAxisLabel !== false}
-							@change=${(e: Event) => this._onAxisSetting('x', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
-						<span class="toggle-switch-track"></span>
-					</label>
-					${s.showAxisLabel !== false ? html`
-						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._xColumn || 'Axis title'}
-							title="Custom title text for the X axis (leave empty to use column name)"
-							@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
-					` : nothing}
-				</div>
-				${s.showAxisLabel !== false ? html`
-					<div class="compact-slider-row" title="Space in pixels between the axis title and the axis labels">
-						<label>Title Gap</label>
+					<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._xColumn || 'Axis title'}
+						title="Custom title text for the X axis (leave empty to use column name, enter a space to hide)"
+						@input=${(e: Event) => this._onAxisSetting('x', 'customLabel', (e.target as HTMLInputElement).value)}>
+					<div class="axis-title-gap-slider" title="Title gap — space in pixels between the axis title and the tick labels">
 						${this._renderSlider({
 							min: 10, max: gapMax, value: s.titleGap,
 							label: `${s.titleGap}px`,
 							onInput: (e: Event) => this._onSliderInput('x', 'titleGap', e),
 						})}
 					</div>
-				` : nothing}
+				</div>
 				<div class="axis-popup-inline" title="Sort order for X-axis values">
 					<label>Sort</label>
 					<div class="seg-control">
@@ -854,27 +997,17 @@ export class KwChartSection extends LitElement {
 			>
 				<div class="axis-popup-inline">
 					<label>Title</label>
-					<label class="toggle-switch" title="Show or hide the Y-axis title beside the chart">
-						<input type="checkbox" .checked=${s.showAxisLabel !== false}
-							@change=${(e: Event) => this._onAxisSetting('y', 'showAxisLabel', (e.target as HTMLInputElement).checked)}>
-						<span class="toggle-switch-track"></span>
-					</label>
-					${s.showAxisLabel !== false ? html`
-						<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._yColumns.join(', ') || 'Axis title'}
-							title="Custom title text for the Y axis (leave empty to use column name)"
-							@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
-					` : nothing}
-				</div>
-				${s.showAxisLabel !== false ? html`
-					<div class="compact-slider-row" title="Space in pixels between the axis title and the axis labels">
-						<label>Title Gap</label>
+					<input type="text" class="axis-text-input" .value=${s.customLabel || ''} placeholder=${this._yColumns.join(', ') || 'Axis title'}
+						title="Custom title text for the Y axis (leave empty to use column name, enter a space to hide)"
+						@input=${(e: Event) => this._onAxisSetting('y', 'customLabel', (e.target as HTMLInputElement).value)}>
+					<div class="axis-title-gap-slider" title="Title gap — space in pixels between the axis title and the tick labels">
 						${this._renderSlider({
 							min: 10, max: gapMax, value: s.titleGap,
 							label: `${s.titleGap}px`,
 							onInput: (e: Event) => this._onSliderInput('y', 'titleGap', e),
 						})}
 					</div>
-				` : nothing}
+				</div>
 				${(() => {
 					const isStacked100 = this._stackMode === 'stacked100' || this._legendSettings.stackMode === 'stacked100';
 					return html`
@@ -882,13 +1015,13 @@ export class KwChartSection extends LitElement {
 						<label style=${isStacked100 ? 'opacity: 0.4' : ''}>Range</label>
 						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
 							.value=${s.min || ''} placeholder="Min"
-							title="Minimum Y-axis value (leave empty for auto)"
+							title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : 'Minimum Y-axis value (leave empty for auto)'}
 							?disabled=${isStacked100}
 							@change=${(e: Event) => this._onAxisSetting('y', 'min', (e.target as HTMLInputElement).value)}>
 						<span class="axis-popup-minmax-sep">–</span>
 						<input type="text" class="axis-popup-minmax-input" inputmode="decimal"
 							.value=${s.max || ''} placeholder="Max"
-							title="Maximum Y-axis value (leave empty for auto)"
+							title=${isStacked100 ? 'Range is fixed at 0–100% in Stacked 100% mode' : 'Maximum Y-axis value (leave empty for auto)'}
 							?disabled=${isStacked100}
 							@change=${(e: Event) => this._onAxisSetting('y', 'max', (e.target as HTMLInputElement).value)}>
 					</div>`;
@@ -1262,6 +1395,21 @@ export class KwChartSection extends LitElement {
 		this._schedulePersist();
 	}
 
+	private _onSourceColumnChanged(e: Event): void {
+		this._sourceColumn = (e.target as HTMLSelectElement).value;
+		this._schedulePersist();
+	}
+
+	private _onTargetColumnChanged(e: Event): void {
+		this._targetColumn = (e.target as HTMLSelectElement).value;
+		this._schedulePersist();
+	}
+
+	private _onOrientChanged(e: Event): void {
+		this._orient = (e.target as HTMLSelectElement).value as 'LR' | 'RL' | 'TB' | 'BT';
+		this._schedulePersist();
+	}
+
 	// ── Axis settings handlers ────────────────────────────────────────────────
 
 	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend', e: Event): void {
@@ -1348,6 +1496,15 @@ export class KwChartSection extends LitElement {
 		} else {
 			colors[col] = newColor;
 		}
+		this._yAxisSettings = { ...this._yAxisSettings, seriesColors: colors };
+		this._schedulePersist();
+	}
+
+	private _onSeriesColorChangeFromTooltip(e: Event): void {
+		const detail = (e as CustomEvent).detail;
+		if (!detail?.seriesName || !detail?.color) return;
+		const colors = { ...(this._yAxisSettings.seriesColors || {}) };
+		colors[detail.seriesName] = detail.color;
 		this._yAxisSettings = { ...this._yAxisSettings, seriesColors: colors };
 		this._schedulePersist();
 	}
@@ -1534,6 +1691,9 @@ export class KwChartSection extends LitElement {
 		if (Array.isArray(st.tooltipColumns)) this._tooltipColumns = st.tooltipColumns.filter((c: unknown) => c);
 		if (typeof st.sortColumn === 'string') this._sortColumn = st.sortColumn;
 		if (typeof st.sortDirection === 'string') this._sortDirection = st.sortDirection as SortDirection;
+		if (typeof st.sourceColumn === 'string') this._sourceColumn = st.sourceColumn;
+		if (typeof st.targetColumn === 'string') this._targetColumn = st.targetColumn;
+		if (typeof st.orient === 'string') this._orient = this._normalizeOrient(st.orient);
 		if (st.xAxisSettings && typeof st.xAxisSettings === 'object') {
 			this._xAxisSettings = { ...defaultXAxisSettings(), ...st.xAxisSettings };
 		}
@@ -1575,6 +1735,12 @@ export class KwChartSection extends LitElement {
 		st.tooltipColumns = [...this._tooltipColumns];
 		st.sortColumn = this._sortColumn;
 		st.sortDirection = this._sortDirection;
+		st.sourceColumn = this._sourceColumn;
+		st.targetColumn = this._targetColumn;
+		st.orient = this._orient;
+		st.chartTitle = this._chartTitle;
+		st.chartSubtitle = this._chartSubtitle;
+		st.chartTitleAlign = this._chartTitleAlign;
 		st.xAxisSettings = { ...this._xAxisSettings };
 		st.yAxisSettings = { ...this._yAxisSettings };
 		st.legendSettings = { ...this._legendSettings };
@@ -1727,6 +1893,12 @@ export class KwChartSection extends LitElement {
 		if (this._labelDensity !== 50) data.labelDensity = this._labelDensity;
 		if (this._sortColumn) data.sortColumn = this._sortColumn;
 		if (this._sortDirection) data.sortDirection = this._sortDirection;
+		if (this._sourceColumn) data.sourceColumn = this._sourceColumn;
+		if (this._targetColumn) data.targetColumn = this._targetColumn;
+		if (this._orient !== 'LR') data.orient = this._orient;
+		if (this._chartTitle) data.chartTitle = this._chartTitle;
+		if (this._chartSubtitle) data.chartSubtitle = this._chartSubtitle;
+		if (this._chartTitleAlign !== 'center') data.chartTitleAlign = this._chartTitleAlign;
 
 		// Axis settings — only include if they differ from defaults
 		const xDef = defaultXAxisSettings();
@@ -1785,6 +1957,12 @@ export class KwChartSection extends LitElement {
 		if (Array.isArray(options.tooltipColumns)) this._tooltipColumns = (options.tooltipColumns as string[]).filter(c => c);
 		if (typeof options.sortColumn === 'string') this._sortColumn = options.sortColumn;
 		if (typeof options.sortDirection === 'string') this._sortDirection = options.sortDirection as SortDirection;
+		if (typeof options.sourceColumn === 'string') this._sourceColumn = options.sourceColumn;
+		if (typeof options.targetColumn === 'string') this._targetColumn = options.targetColumn;
+		if (typeof options.orient === 'string') this._orient = this._normalizeOrient(options.orient as string);
+		if (typeof options.chartTitle === 'string') this._chartTitle = options.chartTitle;
+		if (typeof options.chartSubtitle === 'string') this._chartSubtitle = options.chartSubtitle;
+		if (typeof options.chartTitleAlign === 'string') this._chartTitleAlign = (options.chartTitleAlign as 'left' | 'center' | 'right') || 'center';
 		if (options.xAxisSettings && typeof options.xAxisSettings === 'object') {
 			this._xAxisSettings = { ...defaultXAxisSettings(), ...this._xAxisSettings, ...(options.xAxisSettings as Partial<XAxisSettings>) };
 		}
@@ -1799,6 +1977,13 @@ export class KwChartSection extends LitElement {
 	}
 
 	// ── Private helpers ───────────────────────────────────────────────────────
+
+	/** Normalize orient values, including back-compat with old 'horizontal'/'vertical'. */
+	private _normalizeOrient(v: string): 'LR' | 'RL' | 'TB' | 'BT' {
+		if (v === 'RL' || v === 'TB' || v === 'BT') return v;
+		if (v === 'vertical') return 'TB';
+		return 'LR';
+	}
 
 	private _getWrapperHeightPx(): number | undefined {
 		// Wrapper is in light DOM, accessible via document.getElementById

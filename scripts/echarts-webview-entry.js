@@ -3,7 +3,7 @@
 
 import * as echarts from 'echarts/core';
 
-import { LineChart, BarChart, ScatterChart, PieChart, FunnelChart } from 'echarts/charts';
+import { LineChart, BarChart, ScatterChart, PieChart, FunnelChart, SankeyChart } from 'echarts/charts';
 import {
 	DatasetComponent,
 	GridComponent,
@@ -22,6 +22,7 @@ echarts.use([
 	ScatterChart,
 	PieChart,
 	FunnelChart,
+	SankeyChart,
 	DatasetComponent,
 	GridComponent,
 	LegendComponent,

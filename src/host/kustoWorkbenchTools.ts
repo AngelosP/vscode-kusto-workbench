@@ -89,7 +89,7 @@ export interface AddSectionInput {
 	/** For chart sections: data source section ID */
 	dataSourceId?: string;
 	/** For chart sections: chart type */
-	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel';
+	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey';
 	/** Section name/title */
 	name?: string;
 }
@@ -133,12 +133,15 @@ export interface ConfigureChartInput {
 	/** Optional name/title for the section */
 	name?: string;
 	dataSourceId?: string;
-	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel';
+	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey';
 	xColumn?: string;
 	yColumns?: string[];
 	legendColumn?: string;
 	legendPosition?: 'left' | 'right' | 'top' | 'bottom';
 	showDataLabels?: boolean;
+	sourceColumn?: string;
+	targetColumn?: string;
+	orient?: 'LR' | 'RL' | 'TB' | 'BT';
 }
 
 export interface ConfigureTransformationInput {

@@ -26,6 +26,7 @@ import './components/kw-unique-values-dialog.js';
 import './components/kw-copilot-chat.js';
 import './components/kw-section-shell.js';
 import './components/kw-popover.js';
+import './components/kw-chart-tooltip.js';
 import './components/kw-section-reorder-popup.js';
 import './viewers/cached-values/kw-cached-values.js';
 import './viewers/connection-manager/kw-connection-manager.js';

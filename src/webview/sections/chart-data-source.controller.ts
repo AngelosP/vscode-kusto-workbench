@@ -21,6 +21,7 @@ export interface DatasetEntry {
 export interface ColumnMemoryEntry {
 	xColumn: string; yColumns: string[]; legendColumn: string;
 	labelColumn: string; valueColumn: string;
+	sourceColumn: string; targetColumn: string;
 	tooltipColumns: string[]; sortColumn: string;
 	wrapperHeight: string;
 	xAxisSettings: XAxisSettings; yAxisSettings: YAxisSettings;
@@ -42,6 +43,8 @@ export interface ChartSectionHost extends ReactiveControllerHost, HTMLElement {
 	getValueColumn(): string;  setValueColumn(v: string): void;
 	getTooltipColumns(): string[]; setTooltipColumns(v: string[]): void;
 	getSortColumn(): string;   setSortColumn(v: string): void;
+	getSourceColumn(): string; setSourceColumn(v: string): void;
+	getTargetColumn(): string; setTargetColumn(v: string): void;
 	getXAxisSettings(): XAxisSettings; setXAxisSettings(v: XAxisSettings): void;
 	getYAxisSettings(): YAxisSettings; setYAxisSettings(v: YAxisSettings): void;
 	// Persistence
@@ -86,6 +89,8 @@ export class ChartDataSourceController implements ReactiveController {
 				valueColumn: this.host.getValueColumn(),
 				tooltipColumns: [...this.host.getTooltipColumns()],
 				sortColumn: this.host.getSortColumn(),
+				sourceColumn: this.host.getSourceColumn(),
+				targetColumn: this.host.getTargetColumn(),
 				wrapperHeight: h,
 				xAxisSettings: { ...this.host.getXAxisSettings() },
 				yAxisSettings: { ...this.host.getYAxisSettings() },
@@ -106,6 +111,8 @@ export class ChartDataSourceController implements ReactiveController {
 			const restoredTooltip = saved.tooltipColumns.filter(c => cols.has(c));
 			if (restoredTooltip.length) this.host.setTooltipColumns(restoredTooltip);
 			if (saved.sortColumn && cols.has(saved.sortColumn)) this.host.setSortColumn(saved.sortColumn);
+			if (saved.sourceColumn && cols.has(saved.sourceColumn)) this.host.setSourceColumn(saved.sourceColumn);
+			if (saved.targetColumn && cols.has(saved.targetColumn)) this.host.setTargetColumn(saved.targetColumn);
 			if (saved.xAxisSettings) this.host.setXAxisSettings({ ...saved.xAxisSettings });
 			if (saved.yAxisSettings) this.host.setYAxisSettings({ ...saved.yAxisSettings });
 			// Restore wrapper height.
@@ -171,6 +178,8 @@ export class ChartDataSourceController implements ReactiveController {
 		if (this.host.getLabelColumn() && !cols.has(this.host.getLabelColumn())) this.host.setLabelColumn('');
 		if (this.host.getValueColumn() && !cols.has(this.host.getValueColumn())) this.host.setValueColumn('');
 		if (this.host.getSortColumn() && !cols.has(this.host.getSortColumn())) this.host.setSortColumn('');
+		if (this.host.getSourceColumn() && !cols.has(this.host.getSourceColumn())) this.host.setSourceColumn('');
+		if (this.host.getTargetColumn() && !cols.has(this.host.getTargetColumn())) this.host.setTargetColumn('');
 	}
 
 	/** Get column names from the currently selected dataset. */

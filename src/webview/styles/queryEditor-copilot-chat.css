@@ -146,7 +146,7 @@
 		.kusto-copilot-chat-model-dropdown {
 			/* Shrink with the chat pane width; cap default size a bit smaller. */
 			width: 100%;
-			max-width: 225px;
+			max-width: 300px;
 			min-width: 0;
 		}
 
@@ -463,7 +463,7 @@
 		}
 
 		.kusto-copilot-chat-input-bar .kusto-copilot-chat-model-dropdown {
-			max-width: 200px;
+			max-width: 300px;
 			min-width: 0;
 			flex: 1 1 auto;
 			overflow: hidden;
@@ -530,6 +530,7 @@
 			width: 18px;
 			height: 18px;
 			margin-left: 0;
+			margin-bottom: -2px;
 			padding: 0;
 			flex: 0 0 auto;
 		}
