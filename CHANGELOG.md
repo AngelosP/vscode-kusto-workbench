@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [3.2.0] - Unreleased
+
+* Bugs:
+
 ## [3.1.0] - 2026-03-30
 
 * Better instructions for performance optimizations. Now expicitely told to try out join optimization techniques as well. (thank you Alexandra Kemper)
