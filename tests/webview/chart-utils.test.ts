@@ -21,6 +21,7 @@ import {
 	measureLabelChars,
 	DEFAULT_SERIES_COLORS,
 	LEGEND_POSITION_CYCLE,
+	normalizeLegendSortMode,
 } from '../../src/webview/shared/chart-utils';
 
 // ── formatNumber ──────────────────────────────────────────────────────────────
@@ -148,6 +149,39 @@ describe('hasCustomLegendSettings', () => {
 	});
 	it('detects non-default topN', () => {
 		expect(hasCustomLegendSettings({ ...getDefaultLegendSettings(), topN: 10 })).toBe(true);
+	});
+});
+
+// ── normalizeLegendSortMode ───────────────────────────────────────────────────
+
+describe('normalizeLegendSortMode', () => {
+	it('returns canonical values unchanged', () => {
+		expect(normalizeLegendSortMode('alpha-asc')).toBe('alpha-asc');
+		expect(normalizeLegendSortMode('alpha-desc')).toBe('alpha-desc');
+		expect(normalizeLegendSortMode('value-asc')).toBe('value-asc');
+		expect(normalizeLegendSortMode('value-desc')).toBe('value-desc');
+	});
+	it('returns empty string for empty/null/undefined', () => {
+		expect(normalizeLegendSortMode('')).toBe('');
+		expect(normalizeLegendSortMode(null)).toBe('');
+		expect(normalizeLegendSortMode(undefined)).toBe('');
+	});
+	it('maps common aliases', () => {
+		expect(normalizeLegendSortMode('alphabetical')).toBe('alpha-asc');
+		expect(normalizeLegendSortMode('alphabetical-asc')).toBe('alpha-asc');
+		expect(normalizeLegendSortMode('alphabetical-desc')).toBe('alpha-desc');
+		expect(normalizeLegendSortMode('by-value')).toBe('value-desc');
+		expect(normalizeLegendSortMode('by-value-asc')).toBe('value-asc');
+		expect(normalizeLegendSortMode('by-value-desc')).toBe('value-desc');
+	});
+	it('is case-insensitive', () => {
+		expect(normalizeLegendSortMode('Alpha-Asc')).toBe('alpha-asc');
+		expect(normalizeLegendSortMode('ALPHABETICAL')).toBe('alpha-asc');
+		expect(normalizeLegendSortMode('BY-VALUE')).toBe('value-desc');
+	});
+	it('returns empty string for unrecognized values', () => {
+		expect(normalizeLegendSortMode('random')).toBe('');
+		expect(normalizeLegendSortMode('ascending')).toBe('');
 	});
 });
 

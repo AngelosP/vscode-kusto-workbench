@@ -94,6 +94,25 @@ export function normalizeStackMode(mode: unknown): StackMode {
 	return (m === 'normal' || m === 'stacked' || m === 'stacked100') ? m : 'normal';
 }
 
+const SORT_MODE_ALIASES: Record<string, LegendSortMode> = {
+	'alpha-asc': 'alpha-asc',
+	'alpha-desc': 'alpha-desc',
+	'value-asc': 'value-asc',
+	'value-desc': 'value-desc',
+	'alphabetical': 'alpha-asc',
+	'alphabetical-asc': 'alpha-asc',
+	'alphabetical-desc': 'alpha-desc',
+	'by-value': 'value-desc',
+	'by-value-asc': 'value-asc',
+	'by-value-desc': 'value-desc',
+};
+
+export function normalizeLegendSortMode(mode: unknown): LegendSortMode {
+	const m = String(mode ?? '').toLowerCase().trim();
+	if (!m) return '';
+	return SORT_MODE_ALIASES[m] ?? '';
+}
+
 export function getDefaultXAxisSettings(): XAxisSettings {
 	return {
 		sortDirection: '',

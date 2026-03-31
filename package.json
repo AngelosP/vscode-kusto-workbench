@@ -562,7 +562,9 @@
                 "bar",
                 "scatter",
                 "pie",
-                "funnel"
+                "funnel",
+                "sankey",
+                "heatmap"
               ],
               "description": "For chart sections: the type of chart to create"
             },
@@ -799,7 +801,9 @@
                 "bar",
                 "scatter",
                 "pie",
-                "funnel"
+                "funnel",
+                "sankey",
+                "heatmap"
               ],
               "description": "The type of chart"
             },
@@ -831,6 +835,117 @@
             "showDataLabels": {
               "type": "boolean",
               "description": "Whether to show data labels on the chart"
+            },
+            "sourceColumn": {
+              "type": "string",
+              "description": "For sankey charts: the column containing source node names"
+            },
+            "targetColumn": {
+              "type": "string",
+              "description": "For sankey charts: the column containing target node names"
+            },
+            "valueColumn": {
+              "type": "string",
+              "description": "For sankey/pie/funnel charts: the column containing numeric values"
+            },
+            "labelColumn": {
+              "type": "string",
+              "description": "For pie/funnel charts: the column containing category labels"
+            },
+            "orient": {
+              "type": "string",
+              "enum": ["LR", "RL", "TB", "BT"],
+              "description": "For sankey charts: flow direction (left-to-right, right-to-left, top-to-bottom, bottom-to-top)"
+            },
+            "stackMode": {
+              "type": "string",
+              "enum": ["normal", "stacked", "stacked100"],
+              "description": "For line/area/bar charts: how series are stacked (normal = side-by-side, stacked = cumulative, stacked100 = percentage)"
+            },
+            "tooltipColumns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Additional columns to show in chart tooltips"
+            },
+            "sortColumn": {
+              "type": "string",
+              "description": "Column to sort chart data by"
+            },
+            "sortDirection": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "description": "Sort direction for sortColumn"
+            },
+            "labelMode": {
+              "type": "string",
+              "enum": ["auto", "all", "top5", "top10", "topPercent"],
+              "description": "Controls which data points get labels when showDataLabels is true"
+            },
+            "labelDensity": {
+              "type": "number",
+              "description": "Label density percentage (0-100) when labelMode is auto"
+            },
+            "chartTitle": {
+              "type": "string",
+              "description": "Title text displayed above the chart"
+            },
+            "chartSubtitle": {
+              "type": "string",
+              "description": "Subtitle text displayed below the chart title"
+            },
+            "chartTitleAlign": {
+              "type": "string",
+              "enum": ["left", "center", "right"],
+              "description": "Alignment of the chart title"
+            },
+            "xAxisSettings": {
+              "type": "object",
+              "description": "X-axis configuration",
+              "properties": {
+                "sortDirection": { "type": "string", "enum": ["", "asc", "desc"], "description": "Sort direction for X-axis values" },
+                "scaleType": { "type": "string", "enum": ["", "category", "continuous"], "description": "Scale type: category (discrete) or continuous (numeric/time)" },
+                "labelDensity": { "type": "number", "description": "Label density percentage (0-100)" },
+                "showAxisLabel": { "type": "boolean", "description": "Whether to show the axis title label" },
+                "customLabel": { "type": "string", "description": "Custom axis title text (overrides column name)" },
+                "titleGap": { "type": "number", "description": "Gap in pixels between axis title and axis line" }
+              }
+            },
+            "yAxisSettings": {
+              "type": "object",
+              "description": "Y-axis configuration",
+              "properties": {
+                "showAxisLabel": { "type": "boolean", "description": "Whether to show the axis title label" },
+                "customLabel": { "type": "string", "description": "Custom axis title text (overrides column name)" },
+                "min": { "type": "string", "description": "Minimum Y-axis value (empty string for auto)" },
+                "max": { "type": "string", "description": "Maximum Y-axis value (empty string for auto)" },
+                "seriesColors": { "type": "object", "description": "Map of series name (must match a yColumn name) to hex color. Example: {\"Errors\": \"#ee6666\", \"Warnings\": \"#faad14\"}. Arrays of colors are also accepted and will be mapped to yColumns in order.", "additionalProperties": { "type": "string" } },
+                "titleGap": { "type": "number", "description": "Gap in pixels between axis title and axis line" },
+                "sortDirection": { "type": "string", "enum": ["", "asc", "desc"], "description": "Sort direction for Y-axis values" }
+              }
+            },
+            "legendSettings": {
+              "type": "object",
+              "description": "Legend configuration (overrides top-level legendPosition and stackMode when provided)",
+              "properties": {
+                "position": { "type": "string", "enum": ["top", "right", "bottom", "left"], "description": "Legend position" },
+                "stackMode": { "type": "string", "enum": ["normal", "stacked", "stacked100"], "description": "Stack mode" },
+                "gap": { "type": "number", "description": "Gap in pixels between legend and chart" },
+                "sortMode": { "type": "string", "enum": ["", "alpha-asc", "alpha-desc", "value-asc", "value-desc"], "description": "Legend sort order. Use exactly: 'alpha-asc', 'alpha-desc', 'value-asc', 'value-desc', or '' (default). Aliases like 'alphabetical' or 'by-value' are also accepted." },
+                "topN": { "type": "number", "description": "Show only top N series (0 = show all)" },
+                "title": { "type": "string", "description": "Custom legend title (empty = use column name)" },
+                "showEndLabels": { "type": "boolean", "description": "Show legend label at end of each series line" }
+              }
+            },
+            "heatmapSettings": {
+              "type": "object",
+              "description": "Heatmap-specific configuration (only used when chartType is heatmap)",
+              "properties": {
+                "visualMapPosition": { "type": "string", "enum": ["right", "left", "bottom", "top"], "description": "Position of the color scale legend" },
+                "visualMapGap": { "type": "number", "description": "Gap in pixels between chart and color scale" },
+                "showCellLabels": { "type": "boolean", "description": "Whether to show values inside heatmap cells" },
+                "cellLabelMode": { "type": "string", "enum": ["all", "lowest", "highest", "both"], "description": "Which cells get labels" },
+                "cellLabelN": { "type": "number", "description": "Number of lowest/highest values to label" }
+              }
             }
           },
           "required": [
@@ -873,7 +988,8 @@
                 "derive",
                 "summarize",
                 "distinct",
-                "pivot"
+                "pivot",
+                "join"
               ],
               "description": "The type of transformation"
             },
@@ -950,6 +1066,39 @@
                 "first"
               ],
               "description": "For pivot: the aggregation function"
+            },
+            "joinRightDataSourceId": {
+              "type": "string",
+              "description": "For join: the ID of the right-side data source (query or transformation section)"
+            },
+            "joinKind": {
+              "type": "string",
+              "enum": [
+                "inner",
+                "leftouter",
+                "rightouter",
+                "fullouter",
+                "leftanti",
+                "rightanti",
+                "leftsemi",
+                "rightsemi"
+              ],
+              "description": "For join: the join kind"
+            },
+            "joinKeys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "left": { "type": "string" },
+                  "right": { "type": "string" }
+                }
+              },
+              "description": "For join: key column pairs (left column name, right column name)"
+            },
+            "joinOmitDuplicateColumns": {
+              "type": "boolean",
+              "description": "For join: whether to omit duplicate key columns from the right side"
             }
           },
           "required": [

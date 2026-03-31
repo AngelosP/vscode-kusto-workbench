@@ -71,6 +71,7 @@ import {
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
 import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
+import { normalizeLegendSortMode } from '../shared/chart-utils';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber, tryParseDate } from '../shared/transform-expr';
@@ -1769,9 +1770,12 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		}
 		if (Array.isArray(config.yColumns)) {
 			st.yColumns = config.yColumns.map((c: any) => String(c));
+			// Keep st.yColumn in sync for heatmap validation
+			st.yColumn = st.yColumns.length ? st.yColumns[0] : '';
 		} else if (typeof config.yColumn === 'string') {
 			// Support single yColumn for backwards compat
 			st.yColumns = [config.yColumn];
+			st.yColumn = config.yColumn;
 		}
 		if (typeof config.labelColumn === 'string') {
 			st.labelColumn = config.labelColumn;
@@ -1805,6 +1809,54 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		}
 		if (typeof config.orient === 'string') {
 			st.orient = config.orient;
+		}
+		if (typeof config.stackMode === 'string') {
+			st.stackMode = config.stackMode;
+		}
+		if (typeof config.labelMode === 'string') {
+			st.labelMode = config.labelMode;
+		}
+		if (typeof config.labelDensity === 'number') {
+			st.labelDensity = config.labelDensity;
+		}
+		if (typeof config.chartTitle === 'string') {
+			st.chartTitle = config.chartTitle;
+		}
+		if (typeof config.chartSubtitle === 'string') {
+			st.chartSubtitle = config.chartSubtitle;
+		}
+		if (typeof config.chartTitleAlign === 'string') {
+			st.chartTitleAlign = config.chartTitleAlign;
+		}
+		if (config.xAxisSettings && typeof config.xAxisSettings === 'object') {
+			st.xAxisSettings = { ...(st.xAxisSettings || {}), ...config.xAxisSettings };
+		}
+		if (config.yAxisSettings && typeof config.yAxisSettings === 'object') {
+			const yas = { ...config.yAxisSettings };
+			// Normalize seriesColors: accept arrays by mapping to yColumns
+			if (Array.isArray(yas.seriesColors)) {
+				const cols = Array.isArray(st.yColumns) ? st.yColumns : [];
+				const obj: Record<string, string> = {};
+				for (let i = 0; i < yas.seriesColors.length; i++) {
+					const key = cols[i] || `series${i}`;
+					obj[key] = String(yas.seriesColors[i]);
+				}
+				yas.seriesColors = obj;
+			}
+			st.yAxisSettings = { ...(st.yAxisSettings || {}), ...yas };
+		}
+		if (config.legendSettings && typeof config.legendSettings === 'object') {
+			const ls = { ...config.legendSettings };
+			// Normalize sortMode aliases (e.g. "alphabetical" → "alpha-asc")
+			if (typeof ls.sortMode === 'string') {
+				ls.sortMode = normalizeLegendSortMode(ls.sortMode);
+			}
+			st.legendSettings = { ...(st.legendSettings || {}), ...ls };
+			if (typeof st.legendSettings.position === 'string') st.legendPosition = st.legendSettings.position;
+			if (typeof st.legendSettings.stackMode === 'string') st.stackMode = st.legendSettings.stackMode;
+		}
+		if (config.heatmapSettings && typeof config.heatmapSettings === 'object') {
+			st.heatmapSettings = { ...(st.heatmapSettings || {}), ...config.heatmapSettings };
 		}
 		
 		// Update the UI dropdowns to reflect new state and re-render the chart
@@ -1914,7 +1966,9 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 				} else if (!availableColumns.includes(xColumn)) {
 					issues.push(`xColumn "${xColumn}" not found in data. Available columns: ${availableColumns.join(', ')}`);
 				}
-				const yColumn = typeof st.yColumn === 'string' ? st.yColumn : '';
+				const yColumn = (typeof st.yColumn === 'string' && st.yColumn)
+					? st.yColumn
+					: (Array.isArray(st.yColumns) && st.yColumns.length ? String(st.yColumns[0]) : '');
 				if (!yColumn) {
 					issues.push(`heatmap chart requires yColumn. Available columns: ${availableColumns.join(', ')}`);
 				} else if (!availableColumns.includes(yColumn)) {

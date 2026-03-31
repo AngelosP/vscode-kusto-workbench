@@ -89,7 +89,7 @@ export interface AddSectionInput {
 	/** For chart sections: data source section ID */
 	dataSourceId?: string;
 	/** For chart sections: chart type */
-	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey';
+	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
 	/** Section name/title */
 	name?: string;
 }
@@ -133,7 +133,7 @@ export interface ConfigureChartInput {
 	/** Optional name/title for the section */
 	name?: string;
 	dataSourceId?: string;
-	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey';
+	chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
 	xColumn?: string;
 	yColumns?: string[];
 	legendColumn?: string;
@@ -141,7 +141,51 @@ export interface ConfigureChartInput {
 	showDataLabels?: boolean;
 	sourceColumn?: string;
 	targetColumn?: string;
+	valueColumn?: string;
+	labelColumn?: string;
 	orient?: 'LR' | 'RL' | 'TB' | 'BT';
+	stackMode?: 'normal' | 'stacked' | 'stacked100';
+	tooltipColumns?: string[];
+	sortColumn?: string;
+	sortDirection?: 'asc' | 'desc';
+	labelMode?: 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
+	labelDensity?: number;
+	chartTitle?: string;
+	chartSubtitle?: string;
+	chartTitleAlign?: 'left' | 'center' | 'right';
+	xAxisSettings?: {
+		sortDirection?: '' | 'asc' | 'desc';
+		scaleType?: '' | 'category' | 'continuous';
+		labelDensity?: number;
+		showAxisLabel?: boolean;
+		customLabel?: string;
+		titleGap?: number;
+	};
+	yAxisSettings?: {
+		showAxisLabel?: boolean;
+		customLabel?: string;
+		min?: string;
+		max?: string;
+		seriesColors?: Record<string, string>;
+		titleGap?: number;
+		sortDirection?: '' | 'asc' | 'desc';
+	};
+	legendSettings?: {
+		position?: 'top' | 'right' | 'bottom' | 'left';
+		stackMode?: 'normal' | 'stacked' | 'stacked100';
+		gap?: number;
+		sortMode?: '' | 'alpha-asc' | 'alpha-desc' | 'value-asc' | 'value-desc';
+		topN?: number;
+		title?: string;
+		showEndLabels?: boolean;
+	};
+	heatmapSettings?: {
+		visualMapPosition?: 'right' | 'left' | 'bottom' | 'top';
+		visualMapGap?: number;
+		showCellLabels?: boolean;
+		cellLabelMode?: 'all' | 'lowest' | 'highest' | 'both';
+		cellLabelN?: number;
+	};
 }
 
 export interface ConfigureTransformationInput {

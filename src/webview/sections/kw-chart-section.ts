@@ -1920,8 +1920,31 @@ export class KwChartSection extends LitElement {
 			if (Array.isArray(config.tooltipColumns)) this._tooltipColumns = (config.tooltipColumns as string[]).filter(c => c);
 			if (typeof config.showDataLabels === 'boolean') this._showDataLabels = config.showDataLabels;
 			if (typeof config.legendPosition === 'string') this._legendPosition = normalizeLegendPosition(config.legendPosition);
+			if (typeof config.stackMode === 'string') this._stackMode = normalizeStackMode(config.stackMode);
 			if (typeof config.sortColumn === 'string') this._sortColumn = config.sortColumn;
 			if (typeof config.sortDirection === 'string') this._sortDirection = config.sortDirection as SortDirection;
+			if (typeof config.sourceColumn === 'string') this._sourceColumn = config.sourceColumn;
+			if (typeof config.targetColumn === 'string') this._targetColumn = config.targetColumn;
+			if (typeof config.orient === 'string') this._orient = this._normalizeOrient(config.orient);
+			if (typeof config.labelMode === 'string') this._labelMode = config.labelMode as LabelMode;
+			if (typeof config.labelDensity === 'number') this._labelDensity = config.labelDensity;
+			if (typeof config.chartTitle === 'string') this._chartTitle = config.chartTitle;
+			if (typeof config.chartSubtitle === 'string') this._chartSubtitle = config.chartSubtitle;
+			if (typeof config.chartTitleAlign === 'string') this._chartTitleAlign = config.chartTitleAlign as 'left' | 'center' | 'right';
+			if (config.xAxisSettings && typeof config.xAxisSettings === 'object') {
+				this._xAxisSettings = { ...this._xAxisSettings, ...(config.xAxisSettings as Partial<XAxisSettings>) };
+			}
+			if (config.yAxisSettings && typeof config.yAxisSettings === 'object') {
+				this._yAxisSettings = { ...this._yAxisSettings, ...(config.yAxisSettings as Partial<YAxisSettings>) };
+			}
+			if (config.legendSettings && typeof config.legendSettings === 'object') {
+				this._legendSettings = { ...this._legendSettings, ...(config.legendSettings as Partial<LegendSettings>) };
+				this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
+				this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
+			}
+			if (config.heatmapSettings && typeof config.heatmapSettings === 'object') {
+				this._heatmapSettings = { ...this._heatmapSettings, ...(config.heatmapSettings as Partial<HeatmapSettings>) };
+			}
 			this._refreshDatasets();
 			this._schedulePersist();
 			return true;

@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [3.3.0] - 2026-03-31
+
+* Bugs: Added new chart types and forgot to update the Copilot tools to include them. D'oh.
+
 ## [3.2.0] - 2026-03-30
 
 * Heatmap chart type improvements
