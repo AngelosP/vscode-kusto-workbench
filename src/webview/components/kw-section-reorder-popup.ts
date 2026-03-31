@@ -1,5 +1,6 @@
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { pState } from '../shared/persistence-state.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,20 @@ export class KwSectionReorderPopup extends LitElement {
 			border-left-color: var(--vscode-editorGutter-addedBackground, #2ea043);
 		}
 
+		/* Pinned first section */
+		.section-card.is-pinned {
+			cursor: default;
+			opacity: 0.85;
+			border-left-color: var(--vscode-descriptionForeground, #999);
+		}
+		.section-card.is-pinned:hover {
+			cursor: default;
+		}
+		.pinned-icon {
+			font-size: 13px;
+			opacity: 0.8;
+		}
+
 		/* Footer hint */
 		.panel-footer {
 			padding: 6px 16px 10px;
@@ -408,22 +423,26 @@ export class KwSectionReorderPopup extends LitElement {
 		const isDragging = s.id === this._draggingId;
 		const isOrigin = s.id === this._originId;
 		const showIndicator = this._dropIndex === arrIndex && this._draggingId && !isDragging;
+		const isPinned = arrIndex === 0 && pState.firstSectionPinned;
 		const displayName = s.name || '[Unnamed]';
 		return html`
 			<div class="drop-indicator ${showIndicator ? 'is-visible' : ''}" data-drop-index="${arrIndex}"></div>
-			<div class="section-card ${isDragging ? 'is-dragging' : ''} ${isOrigin ? 'is-origin' : ''}"
-				draggable="true"
+			<div class="section-card ${isDragging ? 'is-dragging' : ''} ${isOrigin ? 'is-origin' : ''} ${isPinned ? 'is-pinned' : ''}"
+				draggable="${isPinned ? 'false' : 'true'}"
 				data-section-id="${s.id}"
 				data-arr-index="${arrIndex}"
 				data-change-status="${s.changeStatus}"
-				@dragstart=${(e: DragEvent) => this._onCardDragStart(e, s)}
+				@dragstart=${isPinned ? undefined : (e: DragEvent) => this._onCardDragStart(e, s)}
 				@dragend=${this._onCardDragEnd}
 				@dblclick=${() => this._onCardDoubleClick(s.id)}>
-				<span class="drag-grip" aria-hidden="true">⋮⋮</span>
+				${isPinned
+					? html`<span class="drag-grip pinned-icon" aria-hidden="true" title="Pinned — this section's content is stored in the .kql/.csl file">📌</span>`
+					: html`<span class="drag-grip" aria-hidden="true">⋮⋮</span>`
+				}
 				<span class="section-icon">${sectionIcons[s.type]}</span>
 				<div class="section-info">
 					<div class="section-name">${displayName}</div>
-					<div class="section-type-badge">${sectionTypeLabels[s.type]}</div>
+					<div class="section-type-badge">${sectionTypeLabels[s.type]}${isPinned ? ' (pinned)' : ''}</div>
 				</div>
 				<span class="section-index">#${s.index}</span>
 			</div>
@@ -469,6 +488,10 @@ export class KwSectionReorderPopup extends LitElement {
 				newDropIndex = i;
 				break;
 			}
+		}
+		// Prevent dropping above the pinned first section.
+		if (pState.firstSectionPinned && newDropIndex <= 0) {
+			newDropIndex = 1;
 		}
 		if (newDropIndex !== this._dropIndex) {
 			this._dropIndex = newDropIndex;

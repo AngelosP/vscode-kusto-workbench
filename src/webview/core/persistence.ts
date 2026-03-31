@@ -1248,6 +1248,9 @@ export function handleDocumentDataMessage(message: any) {
 		if (typeof message.compatibilityTooltip === 'string') {
 			pState.compatibilityTooltip = String(message.compatibilityTooltip);
 		}
+		if (typeof message.firstSectionPinned === 'boolean') {
+			pState.firstSectionPinned = message.firstSectionPinned;
+		}
 		try {
 			if (typeof __kustoApplyDocumentCapabilities === 'function') {
 				__kustoApplyDocumentCapabilities();

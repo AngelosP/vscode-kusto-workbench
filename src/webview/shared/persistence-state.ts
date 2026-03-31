@@ -75,6 +75,9 @@ export const pState = {
 	/** Document URI string (set by extension host). */
 	documentUri: '' as string,
 
+	/** True when the first section is pinned to position 0 (e.g. kql+json sidecar). */
+	firstSectionPinned: false,
+
 	// ── Shared runtime state ─────────────────────────────────────────
 
 	/** True while applyKqlxState is rebuilding the UI from a document payload. */

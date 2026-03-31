@@ -6,6 +6,8 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
+import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
+import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 
 /**
  * Compute the sidecar .kqlx URI for a .kql/.csl compat file.
@@ -313,7 +315,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					allowedSectionKinds: KqlCompatEditorProvider.allowedSectionKinds,
 					defaultSectionKind: 'query',
 					upgradeRequestType: 'requestUpgradeToKqlx',
-					compatibilityTooltip: tooltip
+					compatibilityTooltip: tooltip,
+					firstSectionPinned: sidecarEnabled
 				});
 			} catch {
 				// ignore
@@ -321,6 +324,89 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		postPersistenceMode();
+
+		// ── Section-level unsaved-changes tracking ──────────────────────────
+		// For kqlCompat, changes are detected by comparing the current webview state
+		// against the last-saved state. With sidecar: multi-section comparison.
+		// Without sidecar: single query section comparison against the .kql file text.
+		let savedQueryText = document.getText();
+		let savedSidecarSectionCache = new Map<string, Record<string, unknown>>();
+		let lastPostedChangesJson = '';
+
+		const rebuildSavedCache = () => {
+			savedQueryText = document.getText();
+			savedSidecarSectionCache = new Map<string, Record<string, unknown>>();
+			if (sidecarFile) {
+				const sections = Array.isArray(sidecarFile.state.sections) ? sidecarFile.state.sections : [];
+				let isFirst = true;
+				for (const section of sections) {
+					const s = section as Record<string, unknown>;
+					const id = typeof s.id === 'string' ? s.id : '';
+					if (!id) continue;
+
+					if (isFirst) {
+						isFirst = false;
+						// The sidecar's first section stores linkedQueryPath instead of query.
+						// The webview state has the actual query text, not linkedQueryPath.
+						// Reconstruct the normalized saved form with the .kql file's query text
+						// so that comparison against the webview state is accurate.
+						const merged: Record<string, unknown> = { ...s, query: savedQueryText };
+						delete merged.linkedQueryPath;
+						const normalized = normalizeSection(merged);
+						if (normalized) {
+							savedSidecarSectionCache.set(id, normalized);
+						}
+						continue;
+					}
+
+					const normalized = normalizeSection(section);
+					if (normalized) {
+						savedSidecarSectionCache.set(id, normalized);
+					}
+				}
+			}
+		};
+		rebuildSavedCache();
+
+		const postChangedSections = (changes: SectionChangeInfo[]) => {
+			try {
+				const json = JSON.stringify(changes);
+				if (json === lastPostedChangesJson) return;
+				lastPostedChangesJson = json;
+				void webviewPanel.webview.postMessage({
+					type: 'changedSections',
+					changes
+				} satisfies ChangedSectionsMessage);
+			} catch {
+				// ignore
+			}
+		};
+
+		const computeAndPostChanges = (incomingState: KqlxStateV1) => {
+			try {
+				if (sidecarFile) {
+					// Multi-section: compare against sidecar cache.
+					const sections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
+					const changes = computeChangedSections(sections, savedSidecarSectionCache);
+					postChangedSections(changes);
+				} else {
+					// Single query: compare saved text vs incoming query.
+					const firstQuery = incomingState.sections.find((s) => String((s as any)?.type ?? '') === 'query');
+					const queryText = firstQuery && typeof (firstQuery as any).query === 'string' ? String((firstQuery as any).query) : '';
+					const normalizeEol = (s: string) => s.replace(/\r\n/g, '\n');
+					if (normalizeEol(queryText) !== normalizeEol(savedQueryText)) {
+						const id = typeof (firstQuery as any)?.id === 'string' ? String((firstQuery as any).id) : '';
+						if (id) {
+							postChangedSections([{ id, status: 'modified', contentChanged: true, settingsChanged: false }]);
+						}
+					} else {
+						postChangedSections([]);
+					}
+				}
+			} catch {
+				// ignore
+			}
+		};
 
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
@@ -404,10 +490,15 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		subscriptions.push(
 			vscode.workspace.onDidSaveTextDocument(async (saved) => {
 				try {
-					if (!sidecarUri || !sidecarFile) {
+					if (saved.uri.toString() !== document.uri.toString()) {
 						return;
 					}
-					if (saved.uri.toString() !== document.uri.toString()) {
+
+					// Rebuild saved-change cache and clear indicators.
+					savedQueryText = saved.getText();
+
+					if (!sidecarUri || !sidecarFile) {
+						postChangedSections([]);
 						return;
 					}
 					if (!lastKnownSidecarState) {
@@ -417,6 +508,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// Treat the .kql and its .kql.json sidecar as a single logical document:
 					// only write sidecar changes when the user saves the .kql file.
 					if (!sidecarDirty) {
+						rebuildSavedCache();
+						postChangedSections([]);
 						return;
 					}
 					if (!lastKnownSidecarState) {
@@ -429,6 +522,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					sidecarFile = persisted;
 					lastWrittenSidecarText = text;
 					sidecarDirty = false;
+					rebuildSavedCache();
+					postChangedSections([]);
 				} catch {
 					// ignore
 				}
@@ -515,6 +610,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					sidecarUri = enabled.uri;
 					sidecarFile = enabled.file;
 					lastKnownSidecarState = enabled.file.state;
+					rebuildSavedCache();
 					postPersistenceMode();
 					postDocument({ forceReload: true });
 					try {
@@ -610,6 +706,88 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 					} catch {
 						// ignore
+					}
+
+					// Section-level change detection.
+					computeAndPostChanges(incomingState);
+					return;
+				}
+				case 'showSectionDiff': {
+					const sectionId = typeof (message as any).sectionId === 'string' ? String((message as any).sectionId) : '';
+					if (!sectionId) return;
+					try {
+						// Get the saved version from cache.
+						const savedNormalized = sidecarFile
+							? savedSidecarSectionCache.get(sectionId)
+							: undefined;
+
+						// Get the current version from the in-memory state.
+						let currentSection: Record<string, unknown> | undefined;
+						if (lastKnownSidecarState) {
+							const sections = Array.isArray(lastKnownSidecarState.sections) ? lastKnownSidecarState.sections : [];
+							for (const sec of sections) {
+								const s = sec as Record<string, unknown>;
+								if (s.id === sectionId) {
+									currentSection = normalizeSection(sec) ?? undefined;
+									break;
+								}
+							}
+						}
+
+						// For non-sidecar mode, build a synthetic pair from the .kql text.
+						if (!sidecarFile && !currentSection) {
+							const queryText = document.getText();
+							const sections = Array.isArray(lastKnownSidecarState?.sections) ? lastKnownSidecarState!.sections : [];
+							const first = sections.find(s => String((s as any)?.type ?? '') === 'query');
+							if (first && (first as any).id === sectionId) {
+								currentSection = normalizeSection(first) ?? undefined;
+							}
+						}
+
+						const saved = formatSectionDiffContent(savedNormalized, 'section does not exist on disk');
+						const current = formatSectionDiffContent(currentSection, 'section not found');
+
+						const savedUri = vscode.Uri.parse(
+							`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-settings.txt`
+						);
+						const currentUri = vscode.Uri.parse(
+							`kusto-section-diff:current/${encodeURIComponent(sectionId)}-settings.txt`
+						);
+
+						KqlxEditorProvider.sectionDiffContents.set(savedUri.toString(), saved.settingsText);
+						KqlxEditorProvider.sectionDiffContents.set(currentUri.toString(), current.settingsText);
+
+						const sectionLabel = sectionId.replace(/_/g, ' ');
+						const contentChanged = (saved.content?.text ?? '') !== (current.content?.text ?? '')
+							&& !!(saved.content || current.content);
+
+						await vscode.commands.executeCommand(
+							'vscode.diff',
+							savedUri,
+							currentUri,
+							`${sectionLabel} (Saved ↔ Current)`,
+							{ preview: !contentChanged } as vscode.TextDocumentShowOptions
+						);
+
+						if (contentChanged) {
+							const label = current.content?.label ?? saved.content?.label ?? 'Content';
+							const savedContentUri = vscode.Uri.parse(
+								`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-content.txt`
+							);
+							const currentContentUri = vscode.Uri.parse(
+								`kusto-section-diff:current/${encodeURIComponent(sectionId)}-content.txt`
+							);
+							KqlxEditorProvider.sectionDiffContents.set(savedContentUri.toString(), saved.content?.text ?? '');
+							KqlxEditorProvider.sectionDiffContents.set(currentContentUri.toString(), current.content?.text ?? '');
+							await vscode.commands.executeCommand(
+								'vscode.diff',
+								savedContentUri,
+								currentContentUri,
+								`${sectionLabel} — ${label} (Saved ↔ Current)`
+							);
+						}
+					} catch (err) {
+						console.error('[kusto] showSectionDiff error:', err);
 					}
 					return;
 				}

@@ -172,3 +172,19 @@ export type IncomingWebviewMessage =
 	| { type: 'openCopilotAgent' }
 	| { type: 'copilotChatFirstTimeCheck'; boxId: string }
 	| { type: 'showSectionDiff'; sectionId: string };
+
+// ── Section-level unsaved-changes types ─────────────────────────────────────
+
+/** Per-section change descriptor sent from host to webview. */
+export type SectionChangeInfo = {
+	id: string;
+	status: 'modified' | 'new';
+	contentChanged: boolean;
+	settingsChanged: boolean;
+};
+
+/** Host→webview message carrying per-section unsaved-change indicators. */
+export type ChangedSectionsMessage = {
+	type: 'changedSections';
+	changes: SectionChangeInfo[];
+};

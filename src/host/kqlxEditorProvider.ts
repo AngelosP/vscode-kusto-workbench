@@ -6,6 +6,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
+import type { SectionChangeInfo } from './queryEditorTypes';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -139,16 +140,34 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 	// Normalize the type (copilotQuery -> query for comparison)
 	const normalizedType = (type === 'copilotQuery') ? 'query' : type;
 	
-	// Recursively normalize all properties
-	const result: Record<string, unknown> = { type: normalizedType };
-	
+	// Collect all normalized properties first.
+	const raw: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(s)) {
-		if (key === 'type') continue; // Already handled
-		
+		if (key === 'type') continue; // Handled separately
 		const normalized = normalizeValue(value, key);
 		if (normalized !== undefined) {
-			result[key] = normalized;
+			raw[key] = normalized;
 		}
+	}
+
+	// Build the result with a canonical key order so diffs are readable:
+	// type → id → title → clusterUrl → database → content key → expanded → everything else (sorted)
+	const contentKeys = ['query', 'text', 'code', 'url'];
+	const preferredOrder = ['id', 'title', 'clusterUrl', 'database'];
+	const result: Record<string, unknown> = { type: normalizedType };
+
+	for (const key of preferredOrder) {
+		if (key in raw) { result[key] = raw[key]; }
+	}
+	for (const key of contentKeys) {
+		if (key in raw) { result[key] = raw[key]; }
+	}
+	if ('expanded' in raw) { result.expanded = raw.expanded; }
+
+	// Remaining keys in sorted order.
+	const placed = new Set([...preferredOrder, ...contentKeys, 'expanded']);
+	for (const key of Object.keys(raw).sort()) {
+		if (!placed.has(key)) { result[key] = raw[key]; }
 	}
 
 	return result;
@@ -233,6 +252,96 @@ export const deepEqual = (a: unknown, b: unknown): boolean => {
 		}
 	}
 	return true;
+};
+
+/**
+ * Compute per-section changes between an incoming state and a saved section cache.
+ * Pure function — no side effects — suitable for unit testing.
+ */
+export const computeChangedSections = (
+	incomingSections: unknown[],
+	savedCache: Map<string, Record<string, unknown>>
+): SectionChangeInfo[] => {
+	const changes: SectionChangeInfo[] = [];
+	for (const section of incomingSections) {
+		const s = section as Record<string, unknown>;
+		const id = typeof s.id === 'string' ? s.id : '';
+		if (!id) continue;
+
+		const normalized = normalizeSection(section);
+		if (!normalized) continue;
+
+		const saved = savedCache.get(id);
+		if (!saved) {
+			// Section not on disk — it's new.
+			changes.push({ id, status: 'new', contentChanged: true, settingsChanged: true });
+			continue;
+		}
+
+		if (!deepEqual(normalized, saved)) {
+			// Determine what kind of change: content vs settings.
+			const contentKeys = ['query', 'text', 'code', 'url'];
+			let contentChanged = false;
+			let settingsChanged = false;
+			for (const key of Object.keys(normalized)) {
+				if (key === 'type' || key === 'id') continue;
+				if (!deepEqual(normalized[key], saved[key])) {
+					if (contentKeys.includes(key)) {
+						contentChanged = true;
+					} else {
+						settingsChanged = true;
+					}
+				}
+			}
+			// Also check keys present in saved but not in normalized.
+			for (const key of Object.keys(saved)) {
+				if (key === 'type' || key === 'id') continue;
+				if (!(key in normalized) && saved[key] !== undefined) {
+					if (contentKeys.includes(key)) {
+						contentChanged = true;
+					} else {
+						settingsChanged = true;
+					}
+				}
+			}
+			if (contentChanged || settingsChanged) {
+				changes.push({ id, status: 'modified', contentChanged, settingsChanged });
+			}
+		}
+	}
+	return changes;
+};
+
+/**
+ * Format a section for diff display. Returns the JSON text for the normalized
+ * section settings, and an object with the content text and label if applicable.
+ * Pure function — suitable for unit testing.
+ */
+export const formatSectionDiffContent = (
+	normalizedSection: Record<string, unknown> | undefined,
+	fallbackLabel: string
+): { settingsText: string; content?: { text: string; label: string } } => {
+	if (!normalizedSection) {
+		return { settingsText: `(${fallbackLabel})` };
+	}
+
+	const settingsText = JSON.stringify(normalizedSection, null, 2);
+
+	const contentKeyByType: Record<string, { key: string; label: string }> = {
+		query: { key: 'query', label: 'Query' },
+		markdown: { key: 'text', label: 'Markdown' },
+		python: { key: 'code', label: 'Code' },
+	};
+	const sectionType = String(normalizedSection.type ?? '');
+	const contentInfo = contentKeyByType[sectionType];
+	if (contentInfo) {
+		const text = typeof normalizedSection[contentInfo.key] === 'string'
+			? String(normalizedSection[contentInfo.key])
+			: '';
+		return { settingsText, content: { text, label: contentInfo.label } };
+	}
+
+	return { settingsText };
 };
 
 type IncomingWebviewMessage =
@@ -526,58 +635,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// Build initial cache from the document on disk.
 		rebuildSavedSectionCache(lastSavedText);
 
-		type SectionChangeInfo = { id: string; status: 'modified' | 'new'; contentChanged: boolean; settingsChanged: boolean };
-
-		const computeChangedSections = (incomingState: KqlxStateV1): SectionChangeInfo[] => {
-			const changes: SectionChangeInfo[] = [];
+		const computeChangedSectionsForState = (incomingState: KqlxStateV1): SectionChangeInfo[] => {
 			const sections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
-			for (const section of sections) {
-				const s = section as Record<string, unknown>;
-				const id = typeof s.id === 'string' ? s.id : '';
-				if (!id) continue;
-
-				const normalized = normalizeSection(section);
-				if (!normalized) continue;
-
-				const saved = savedSectionCache.get(id);
-				if (!saved) {
-					// Section not on disk — it's new.
-					changes.push({ id, status: 'new', contentChanged: true, settingsChanged: true });
-					continue;
-				}
-
-				if (!deepEqual(normalized, saved)) {
-					// Determine what kind of change: content vs settings.
-					const contentKeys = ['query', 'text', 'code', 'url'];
-					let contentChanged = false;
-					let settingsChanged = false;
-					for (const key of Object.keys(normalized)) {
-						if (key === 'type' || key === 'id') continue;
-						if (!deepEqual(normalized[key], saved[key])) {
-							if (contentKeys.includes(key)) {
-								contentChanged = true;
-							} else {
-								settingsChanged = true;
-							}
-						}
-					}
-					// Also check keys present in saved but not in normalized.
-					for (const key of Object.keys(saved)) {
-						if (key === 'type' || key === 'id') continue;
-						if (!(key in normalized) && saved[key] !== undefined) {
-							if (contentKeys.includes(key)) {
-								contentChanged = true;
-							} else {
-								settingsChanged = true;
-							}
-						}
-					}
-					if (contentChanged || settingsChanged) {
-						changes.push({ id, status: 'modified', contentChanged, settingsChanged });
-					}
-				}
-			}
-			return changes;
+			return computeChangedSections(sections, savedSectionCache);
 		};
 
 		const postChangedSections = (changes: SectionChangeInfo[]) => {
@@ -588,7 +648,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				void webviewPanel.webview.postMessage({
 					type: 'changedSections',
 					changes
-				});
+				} satisfies import('./queryEditorTypes').ChangedSectionsMessage);
 			} catch {
 				// ignore
 			}
@@ -1028,7 +1088,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// gets up-to-date change indicators regardless of whether the persist
 					// short-circuits (e.g. state matches disk).
 					try {
-						const changes = computeChangedSections(state);
+						const changes = computeChangedSectionsForState(state);
 						postChangedSections(changes);
 					} catch {
 						// ignore — change indicators are non-critical

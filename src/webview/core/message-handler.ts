@@ -232,6 +232,9 @@ window.addEventListener('message', async (event: any) => {
 							if (typeof message.compatibilityTooltip === 'string') {
 								pState.compatibilityTooltip = String(message.compatibilityTooltip);
 							}
+							if (typeof message.firstSectionPinned === 'boolean') {
+								pState.firstSectionPinned = message.firstSectionPinned;
+							}
 						} catch (e) { console.error('[kusto]', e); }
 						__kustoSetCompatibilityMode(!!message.compatibilityMode);
 						try {
@@ -1600,6 +1603,8 @@ window.addEventListener('message', async (event: any) => {
 							error = 'Missing section IDs in reorder list: ' + missingIds.join(', ');
 						} else if (unknownIds.length > 0) {
 							error = 'Unknown section IDs: ' + unknownIds.join(', ');
+						} else if (pState.firstSectionPinned && currentIds.length > 0 && sectionIds[0] !== currentIds[0]) {
+							error = 'The first section is pinned and cannot be moved. Its content is stored in the .kql/.csl file.';
 						} else {
 							// Reorder: move sections to match the new order
 							for (const sectionId of sectionIds) {
@@ -2212,8 +2217,9 @@ window.addEventListener('message', async (event: any) => {
 		
 		case 'changedSections':
 			// Update per-section unsaved-change indicators.
+			// Message shape: ChangedSectionsMessage { type, changes: SectionChangeInfo[] }
 			try {
-				const changes: Array<{ id: string; status: 'modified' | 'new' }> = Array.isArray(message.changes) ? message.changes : [];
+				const changes: Array<{ id: string; status: 'modified' | 'new'; contentChanged: boolean; settingsChanged: boolean }> = Array.isArray(message.changes) ? message.changes : [];
 				const changedById = new Map<string, 'modified' | 'new'>();
 				for (const c of changes) {
 					if (c && typeof c.id === 'string' && c.id) {

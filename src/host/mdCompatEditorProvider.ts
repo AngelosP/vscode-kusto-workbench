@@ -7,6 +7,8 @@ import { QueryEditorProvider } from './queryEditorProvider';
 import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
 import { getLastSelectionForUri, onDidRecordSelection } from './selectionTracker';
 import { renderDiffInWebview } from './diffViewerUtils';
+import { normalizeSection, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
+import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -392,6 +394,58 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			// ignore
 		}
 
+		// ── Section-level unsaved-changes tracking ──────────────────────────
+		// For md compat, there's a single markdown section.
+		let savedMarkdownText = document.getText();
+		let lastPostedChangesJson = '';
+		let lastKnownSectionId = '';
+
+		const postChangedSections = (changes: SectionChangeInfo[]) => {
+			try {
+				const json = JSON.stringify(changes);
+				if (json === lastPostedChangesJson) return;
+				lastPostedChangesJson = json;
+				void webviewPanel.webview.postMessage({
+					type: 'changedSections',
+					changes
+				} satisfies ChangedSectionsMessage);
+			} catch {
+				// ignore
+			}
+		};
+
+		const computeAndPostMdChanges = (incomingText: string, sectionId: string) => {
+			try {
+				if (sectionId) {
+					lastKnownSectionId = sectionId;
+				}
+				const normalizeEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+				if (normalizeEol(incomingText) !== normalizeEol(savedMarkdownText)) {
+					const id = sectionId || lastKnownSectionId;
+					if (id) {
+						postChangedSections([{ id, status: 'modified', contentChanged: true, settingsChanged: false }]);
+					}
+				} else {
+					postChangedSections([]);
+				}
+			} catch {
+				// ignore
+			}
+		};
+
+		// Listen for save events to rebuild saved state.
+		disposables.push(
+			vscode.workspace.onDidSaveTextDocument((saved) => {
+				try {
+					if (saved.uri.toString() !== document.uri.toString()) return;
+					savedMarkdownText = saved.getText();
+					postChangedSections([]);
+				} catch {
+					// ignore
+				}
+			})
+		);
+
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
 			const markdownText = document.getText();
@@ -513,6 +567,35 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					const edit = new vscode.WorkspaceEdit();
 					edit.replace(document.uri, fullRange, nextText);
 					await vscode.workspace.applyEdit(edit);
+
+					// Section-level change detection.
+					const sectionId = typeof (firstMarkdown as any)?.id === 'string' ? String((firstMarkdown as any).id) : '';
+					computeAndPostMdChanges(rawNextText, sectionId);
+					return;
+				}
+				case 'showSectionDiff': {
+					const sectionId = typeof (message as any).sectionId === 'string' ? String((message as any).sectionId) : '';
+					if (!sectionId) return;
+					try {
+						const savedContentUri = vscode.Uri.parse(
+							`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-content.txt`
+						);
+						const currentContentUri = vscode.Uri.parse(
+							`kusto-section-diff:current/${encodeURIComponent(sectionId)}-content.txt`
+						);
+						KqlxEditorProvider.sectionDiffContents.set(savedContentUri.toString(), savedMarkdownText);
+						KqlxEditorProvider.sectionDiffContents.set(currentContentUri.toString(), document.getText());
+
+						const sectionLabel = sectionId.replace(/_/g, ' ');
+						await vscode.commands.executeCommand(
+							'vscode.diff',
+							savedContentUri,
+							currentContentUri,
+							`${sectionLabel} — Markdown (Saved ↔ Current)`
+						);
+					} catch (err) {
+						console.error('[kusto] showSectionDiff error:', err);
+					}
 					return;
 				}
 				default:
