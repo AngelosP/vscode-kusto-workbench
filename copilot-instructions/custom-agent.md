@@ -104,6 +104,8 @@ How to get the most out of your questions to **`#askKustoCopilot`**:
 | ---------- | ------------------- |
 | `line`, `area`, `bar`, `scatter` | `dataSourceId` + `chartType` + `xColumn` + `yColumns` (array) |
 | `pie`, `funnel` | `dataSourceId` + `chartType` + `labelColumn` + `valueColumn` |
+| `sankey` | `dataSourceId` + `chartType` + `sourceColumn` + `targetColumn` + `valueColumn`. Optional: `orient` (LR/RL/TB/BT, default LR), `sankeyLeftMargin` (symmetric margin in pixels, default 100) |
+| `heatmap` | `dataSourceId` + `chartType` + `xColumn` + `yColumns` (1 element) + `valueColumn`. Optional: `heatmapSettings` with `visualMapPosition` (right/left/bottom/top), `visualMapGap`, `showCellLabels`, `cellLabelMode` (all = all labels, lowest = only bottom N, highest = only top N, both = both top and bottom N), `cellLabelN` |
 
 4. **Check `validation.valid` in response** — if `false`, fix using `validation.issues` and `availableColumns`
 

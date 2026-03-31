@@ -208,7 +208,7 @@ export const styles = css`
 
 		.chart-type-picker {
 			display: inline-flex;
-			gap: 4px;
+			gap: 2px;
 			flex-wrap: wrap;
 		}
 
@@ -217,7 +217,7 @@ export const styles = css`
 			flex-direction: column;
 			align-items: center;
 			gap: 2px;
-			padding: 4px 8px;
+			padding: 4px 6px;
 			border: 1px solid transparent;
 			border-radius: 4px;
 			background: transparent;

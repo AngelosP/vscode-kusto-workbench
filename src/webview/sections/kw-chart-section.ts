@@ -74,6 +74,7 @@ export interface ChartSectionData {
 	sourceColumn?: string;
 	targetColumn?: string;
 	orient?: string;
+	sankeyLeftMargin?: number;
 	showDataLabels?: boolean;
 	labelMode?: string;
 	labelDensity?: number;
@@ -383,6 +384,7 @@ export class KwChartSection extends LitElement {
 	@state() private _sourceColumn = '';
 	@state() private _targetColumn = '';
 	@state() private _orient: 'LR' | 'RL' | 'TB' | 'BT' = 'LR';
+	@state() private _sankeyLeftMargin = 100;
 	@state() private _xAxisSettings: XAxisSettings = defaultXAxisSettings();
 	@state() private _yAxisSettings: YAxisSettings = defaultYAxisSettings();
 	@state() private _legendSettings: LegendSettings = getDefaultLegendSettings();
@@ -398,7 +400,7 @@ export class KwChartSection extends LitElement {
 	// UI sub-state
 	@state() private _modeDropdownOpen = false;
 	@state() private _openDropdownId = '';
-	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer' = '';
+	@state() private _openAxisPopup: '' | 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer' | 'sankey-orient' = '';
 	@state() private _popoverAnchorRect: PopoverAnchorRect | null = null;
 
 	private _userResized = false;
@@ -520,7 +522,7 @@ export class KwChartSection extends LitElement {
 			'_legendPosition', '_stackMode', '_legendSettings', '_labelColumn', '_valueColumn', '_showDataLabels',
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings', '_heatmapSettings',
-			'_sourceColumn', '_targetColumn', '_orient',
+			'_sourceColumn', '_targetColumn', '_orient', '_sankeyLeftMargin',
 		];
 		if (chartTriggers.some(k => changed.has(k))) {
 			this._writeToGlobalChartState();
@@ -851,7 +853,9 @@ export class KwChartSection extends LitElement {
 
 					<!-- Orient -->
 					<span class="chart-field-group">
-						<label>Orient</label>
+						<label class="axis-label-clickable ${this._sankeyLeftMargin !== 100 ? 'has-settings' : ''}"
+							@click=${(e: Event) => this._toggleAxisPopup('sankey-orient', e)}
+							title="Click to configure layout settings">Orient</label>
 						<select class="chart-select" @change=${this._onOrientChanged}>
 							<option value="LR" ?selected=${this._orient === 'LR'}>Left → Right</option>
 							<option value="RL" ?selected=${this._orient === 'RL'}>Right → Left</option>
@@ -863,6 +867,8 @@ export class KwChartSection extends LitElement {
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
 				</div>
 			</div>
+
+			${this._renderSankeyOrientPopup()}
 		`;
 	}
 
@@ -915,6 +921,20 @@ export class KwChartSection extends LitElement {
 						${this._renderCheckboxDropdown('tooltip-heatmap', colNames, this._tooltipColumns, '(none)')}
 					</span>
 
+					<!-- Slicer (visual map) -->
+					<span class="chart-field-group">
+						<label class="axis-label-clickable ${this._hasCustomHeatmapSlicerSettings() ? 'has-settings' : ''}"
+							@click=${(e: Event) => this._toggleAxisPopup('heatmap-slicer', e)}
+							title="Click to configure slicer position and spacing">Slicer</label>
+						<select class="chart-select" @change=${(e: Event) => this._onHeatmapSetting('visualMapPosition', (e.target as HTMLSelectElement).value as 'right' | 'left' | 'bottom' | 'top')}>
+							${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
+								<option value=${p} ?selected=${hs.visualMapPosition === p}>
+									${p.charAt(0).toUpperCase() + p.slice(1)}
+								</option>
+							`)}
+						</select>
+					</span>
+
 					<!-- Cell labels -->
 					<span class="chart-field-group">
 						<label class="axis-label-clickable ${this._hasCustomHeatmapLabelSettings() ? 'has-settings' : ''}"
@@ -925,22 +945,6 @@ export class KwChartSection extends LitElement {
 								@change=${(e: Event) => this._onHeatmapSetting('showCellLabels', (e.target as HTMLInputElement).checked)}>
 							<span class="toggle-switch-track"></span>
 						</label>
-					</span>
-
-					<!-- Slicer (visual map) -->
-					<span class="chart-field-group">
-						<label class="axis-label-clickable ${this._hasCustomHeatmapSlicerSettings() ? 'has-settings' : ''}"
-							@click=${(e: Event) => this._toggleAxisPopup('heatmap-slicer', e)}
-							title="Click to configure slicer position and spacing">Slicer</label>
-						<div class="seg-control seg-control--compact">
-							${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
-								<button type="button" class="seg-btn ${hs.visualMapPosition === p ? 'is-active' : ''}"
-									title=${'Place slicer at the ' + p}
-									@click=${() => this._onHeatmapSetting('visualMapPosition', p)}>
-									${p.charAt(0).toUpperCase() + p.slice(1)}
-								</button>
-							`)}
-						</div>
 					</span>
 
 					<span class="chart-grid-spacer" aria-hidden="true"></span>
@@ -1315,49 +1319,27 @@ export class KwChartSection extends LitElement {
 				.title=${'Cell Label Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-inline" title="Show values inside each heatmap cell">
+				<div class="axis-popup-inline" title="Which cells to label">
 					<label>Show</label>
-					<label class="toggle-switch" title="Show values inside each cell">
-						<input type="checkbox" .checked=${!!hs.showCellLabels}
-							@change=${(e: Event) => this._onHeatmapSetting('showCellLabels', (e.target as HTMLInputElement).checked)}>
-						<span class="toggle-switch-track"></span>
-					</label>
+					<select class="chart-select" @change=${(e: Event) => this._onHeatmapSetting('cellLabelMode', (e.target as HTMLSelectElement).value)}>
+						<option value="all" ?selected=${hs.cellLabelMode === 'all'}>All labels</option>
+						<option value="lowest" ?selected=${hs.cellLabelMode === 'lowest'}>Only bottom N</option>
+						<option value="highest" ?selected=${hs.cellLabelMode === 'highest'}>Only top N</option>
+						<option value="both" ?selected=${hs.cellLabelMode === 'both'}>Both top and bottom N</option>
+					</select>
 				</div>
-				${hs.showCellLabels ? html`
-					<div class="axis-popup-inline" title="Which cells to label">
-						<label>Filter</label>
-						<div class="seg-control">
-							<button type="button" class="seg-btn ${hs.cellLabelMode === 'all' ? 'is-active' : ''}"
-								title="Show values in all cells"
-								@click=${() => this._onHeatmapSetting('cellLabelMode', 'all')}>All</button>
-							<button type="button" class="seg-btn ${hs.cellLabelMode === 'lowest' ? 'is-active' : ''}"
-								title="Show values only in the N lowest cells"
-								@click=${() => this._onHeatmapSetting('cellLabelMode', 'lowest')}>Low</button>
-							<button type="button" class="seg-btn ${hs.cellLabelMode === 'highest' ? 'is-active' : ''}"
-								title="Show values only in the N highest cells"
-								@click=${() => this._onHeatmapSetting('cellLabelMode', 'highest')}>High</button>
-							<button type="button" class="seg-btn ${hs.cellLabelMode === 'both' ? 'is-active' : ''}"
-								title="Show values in the N lowest and N highest cells"
-								@click=${() => this._onHeatmapSetting('cellLabelMode', 'both')}>Both</button>
-						</div>
+				${hs.cellLabelMode !== 'all' ? html`
+					<div class="compact-slider-row" title="Number of lowest/highest values to label">
+						<label>N</label>
+						${this._renderSlider({
+							min: 1, max: this._effectiveMax('heatmap:cellLabelN', 50), value: hs.cellLabelN,
+							label: String(hs.cellLabelN),
+							onInput: (e: Event) => {
+								const v = parseInt((e.target as HTMLInputElement).value, 10);
+								this._onHeatmapSetting('cellLabelN', v);
+							},
+						})}
 					</div>
-					${hs.cellLabelMode !== 'all' ? html`
-						<div class="compact-slider-row" title="Number of lowest/highest values to label">
-							<label>N</label>
-							${this._renderSlider({
-								min: 1, max: this._effectiveMax('heatmap:cellLabelN', 50), value: hs.cellLabelN,
-								label: String(hs.cellLabelN),
-								onInput: (e: Event) => {
-									const v = parseInt((e.target as HTMLInputElement).value, 10);
-									this._onHeatmapSetting('cellLabelN', v);
-								},
-							})}
-							<input type="number" class="slider-value-input" min="1"
-								title="Number of lowest/highest values to label"
-								.value=${String(hs.cellLabelN)}
-								@change=${(e: Event) => this._onSliderValueInput('heatmap' as any, 'cellLabelN', (e.target as HTMLInputElement).value, 1, 50)}>
-						</div>
-					` : nothing}
 				` : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapLabelSettings()} title="Reset to defaults">
 					<span class="codicon codicon-discard" aria-hidden="true"></span>
@@ -1376,18 +1358,6 @@ export class KwChartSection extends LitElement {
 				.title=${'Slicer Settings'}
 				@popover-close=${() => this._closeAxisPopup()}
 			>
-				<div class="axis-popup-inline" title="Where the color slicer is placed relative to the chart">
-					<label>Position</label>
-					<div class="seg-control">
-						${(['right', 'left', 'bottom', 'top'] as const).map(p => html`
-							<button type="button" class="seg-btn ${hs.visualMapPosition === p ? 'is-active' : ''}"
-								title=${'Place slicer at the ' + p + ' of the chart'}
-								@click=${() => this._onHeatmapSetting('visualMapPosition', p)}>
-								${p.charAt(0).toUpperCase() + p.slice(1)}
-							</button>
-						`)}
-					</div>
-				</div>
 				<div class="compact-slider-row" title="Space in pixels between the chart area and the slicer">
 					<label>Gap</label>
 					${this._renderSlider({
@@ -1398,12 +1368,34 @@ export class KwChartSection extends LitElement {
 							this._onHeatmapSetting('visualMapGap', v);
 						},
 					})}
-					<input type="number" class="slider-value-input" min="0"
-						title="Space in pixels between the chart area and the slicer"
-						.value=${String(hs.visualMapGap)}
-						@change=${(e: Event) => this._onSliderValueInput('heatmap' as any, 'visualMapGap', (e.target as HTMLInputElement).value, 0, 200)}>
 				</div>
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapSlicerSettings()} title="Reset to defaults">
+					<span class="codicon codicon-discard" aria-hidden="true"></span>
+				</button>
+			</kw-popover>
+		`;
+	}
+
+	private _renderSankeyOrientPopup(): TemplateResult {
+		return html`
+			<kw-popover
+				.open=${this._openAxisPopup === 'sankey-orient'}
+				.anchorRect=${this._popoverAnchorRect}
+				.title=${'Layout Settings'}
+				@popover-close=${() => this._closeAxisPopup()}
+			>
+				<div class="compact-slider-row" title="Margin of the sankey chart in pixels">
+					<label>Margin</label>
+					${this._renderSlider({
+						min: 0, max: this._effectiveMax('sankey:leftMargin', 500), value: this._sankeyLeftMargin,
+						label: `${this._sankeyLeftMargin}px`,
+						onInput: (e: Event) => {
+							this._sankeyLeftMargin = parseInt((e.target as HTMLInputElement).value, 10);
+							this._schedulePersist();
+						},
+					})}
+				</div>
+				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => { this._sankeyLeftMargin = 100; this._sliderMaxOverrides.delete('sankey:leftMargin'); this._schedulePersist(); }} title="Reset to defaults">
 					<span class="codicon codicon-discard" aria-hidden="true"></span>
 				</button>
 			</kw-popover>
@@ -1612,7 +1604,6 @@ export class KwChartSection extends LitElement {
 		const d = getDefaultHeatmapSettings();
 		this._heatmapSettings = {
 			...this._heatmapSettings,
-			visualMapPosition: d.visualMapPosition,
 			visualMapGap: d.visualMapGap,
 		};
 		this._sliderMaxOverrides.delete('heatmap:visualMapGap');
@@ -1628,7 +1619,7 @@ export class KwChartSection extends LitElement {
 	private _hasCustomHeatmapSlicerSettings(): boolean {
 		const hs = this._heatmapSettings;
 		const d = getDefaultHeatmapSettings();
-		return hs.visualMapPosition !== d.visualMapPosition || hs.visualMapGap !== d.visualMapGap;
+		return hs.visualMapGap !== d.visualMapGap;
 	}
 
 	private _toggleDataLabels(): void {
@@ -1926,6 +1917,7 @@ export class KwChartSection extends LitElement {
 			if (typeof config.sourceColumn === 'string') this._sourceColumn = config.sourceColumn;
 			if (typeof config.targetColumn === 'string') this._targetColumn = config.targetColumn;
 			if (typeof config.orient === 'string') this._orient = this._normalizeOrient(config.orient);
+			if (typeof config.sankeyLeftMargin === 'number') this._sankeyLeftMargin = config.sankeyLeftMargin;
 			if (typeof config.labelMode === 'string') this._labelMode = config.labelMode as LabelMode;
 			if (typeof config.labelDensity === 'number') this._labelDensity = config.labelDensity;
 			if (typeof config.chartTitle === 'string') this._chartTitle = config.chartTitle;
@@ -1994,6 +1986,7 @@ export class KwChartSection extends LitElement {
 		if (typeof st.sourceColumn === 'string') this._sourceColumn = st.sourceColumn;
 		if (typeof st.targetColumn === 'string') this._targetColumn = st.targetColumn;
 		if (typeof st.orient === 'string') this._orient = this._normalizeOrient(st.orient);
+		if (typeof st.sankeyLeftMargin === 'number') this._sankeyLeftMargin = st.sankeyLeftMargin;
 		if (st.xAxisSettings && typeof st.xAxisSettings === 'object') {
 			this._xAxisSettings = { ...defaultXAxisSettings(), ...st.xAxisSettings };
 		}
@@ -2041,6 +2034,7 @@ export class KwChartSection extends LitElement {
 		st.sourceColumn = this._sourceColumn;
 		st.targetColumn = this._targetColumn;
 		st.orient = this._orient;
+		st.sankeyLeftMargin = this._sankeyLeftMargin;
 		st.chartTitle = this._chartTitle;
 		st.chartSubtitle = this._chartSubtitle;
 		st.chartTitleAlign = this._chartTitleAlign;
@@ -2200,6 +2194,7 @@ export class KwChartSection extends LitElement {
 		if (this._sourceColumn) data.sourceColumn = this._sourceColumn;
 		if (this._targetColumn) data.targetColumn = this._targetColumn;
 		if (this._orient !== 'LR') data.orient = this._orient;
+		if (this._sankeyLeftMargin !== 100) data.sankeyLeftMargin = this._sankeyLeftMargin;
 		if (this._chartTitle) data.chartTitle = this._chartTitle;
 		if (this._chartSubtitle) data.chartSubtitle = this._chartSubtitle;
 		if (this._chartTitleAlign !== 'center') data.chartTitleAlign = this._chartTitleAlign;
@@ -2268,6 +2263,7 @@ export class KwChartSection extends LitElement {
 		if (typeof options.sourceColumn === 'string') this._sourceColumn = options.sourceColumn;
 		if (typeof options.targetColumn === 'string') this._targetColumn = options.targetColumn;
 		if (typeof options.orient === 'string') this._orient = this._normalizeOrient(options.orient as string);
+		if (typeof options.sankeyLeftMargin === 'number') this._sankeyLeftMargin = options.sankeyLeftMargin;
 		if (typeof options.chartTitle === 'string') this._chartTitle = options.chartTitle;
 		if (typeof options.chartSubtitle === 'string') this._chartSubtitle = options.chartSubtitle;
 		if (typeof options.chartTitleAlign === 'string') this._chartTitleAlign = (options.chartTitleAlign as 'left' | 'center' | 'right') || 'center';

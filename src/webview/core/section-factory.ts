@@ -1810,6 +1810,9 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		if (typeof config.orient === 'string') {
 			st.orient = config.orient;
 		}
+		if (typeof config.sankeyLeftMargin === 'number') {
+			st.sankeyLeftMargin = config.sankeyLeftMargin;
+		}
 		if (typeof config.stackMode === 'string') {
 			st.stackMode = config.stackMode;
 		}

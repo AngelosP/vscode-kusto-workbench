@@ -106,6 +106,7 @@ export type KqlxSectionV1 =
 			sourceColumn?: string;
 			targetColumn?: string;
 			orient?: 'LR' | 'RL' | 'TB' | 'BT';
+			sankeyLeftMargin?: number;
 			showDataLabels?: boolean;
 			sortColumn?: string;
 			sortDirection?: 'asc' | 'desc' | '';

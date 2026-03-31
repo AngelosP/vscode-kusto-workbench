@@ -144,6 +144,7 @@ export interface ConfigureChartInput {
 	valueColumn?: string;
 	labelColumn?: string;
 	orient?: 'LR' | 'RL' | 'TB' | 'BT';
+	sankeyLeftMargin?: number;
 	stackMode?: 'normal' | 'stacked' | 'stacked100';
 	tooltipColumns?: string[];
 	sortColumn?: string;

@@ -1027,6 +1027,7 @@ export function renderChart(boxId: any) {
 				const rawOrient = (typeof st.orient === 'string') ? st.orient : 'LR';
 				const orient = (rawOrient === 'TB' || rawOrient === 'BT') ? 'vertical' : 'horizontal';
 				const reverseFlow = (rawOrient === 'RL' || rawOrient === 'BT');
+				const sankeyLeft = typeof st.sankeyLeftMargin === 'number' ? st.sankeyLeftMargin : 100;
 
 				// Build nodes and links from rows, aggregating duplicate source→target pairs.
 				const nodeSet = new Set<string>();
@@ -1099,6 +1100,9 @@ export function renderChart(boxId: any) {
 					series: [{
 						type: 'sankey',
 						orient,
+						top: 20 + _chartTitleSpace,
+						left: sankeyLeft,
+						right: sankeyLeft,
 						layoutIterations: 32,
 						nodeAlign: 'justify',
 						nodeGap: 10,

@@ -5,7 +5,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [3.3.0] - 2026-03-31
 
-* Bugs: Added new chart types and forgot to update the Copilot tools to include them. D'oh.
+* Awesome new change indicators per section, and diff view per section (thanks Leo!)
+* Finished the implementation of the various axis and other settings for Sankey and Heatmap chart types
+* Bugs: 
+    * Added new chart types and forgot to update the Copilot tools to include them. D'oh.
+    * Fixed spacing issues with the title and a couple of the chart types that overlapped their content.
 
 ## [3.2.0] - 2026-03-30
 
